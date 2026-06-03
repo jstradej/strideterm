@@ -349,6 +349,9 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
         title: payload.title,
         description: payload.description || "",
         isDraft: payload.isDraft || false,
+        // Owner profile is the WORKSPACE's — the manager refuses connections
+        // from other profiles with a clear pointer to the right one.
+        workspaceProfileId: workspace.profileId || "default",
       });
 
       if (workspace.quickfix && result.pullRequestNumber) {

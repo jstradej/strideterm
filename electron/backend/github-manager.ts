@@ -1229,6 +1229,7 @@ export class GitHubManager extends BaseProviderManager {
     title,
     description,
     isDraft = false,
+    workspaceProfileId = "",
   }: {
     connectionId: string;
     owner: string;
@@ -1238,8 +1239,20 @@ export class GitHubManager extends BaseProviderManager {
     title: string;
     description: string;
     isDraft?: boolean;
+    /** Owner profile of the originating workspace — the connection must live in the same profile. */
+    workspaceProfileId?: string;
   }): Promise<{ pullRequestNumber: number; url: string; title: string }> {
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
+    // See azure-devops-manager.createPullRequestForWorkspace — the PR is
+    // owned by the workspace's profile; cross-profile connections refuse.
+    const connectionProfileId = (connection as { profileId?: string }).profileId || "default";
+    if (workspaceProfileId && connectionProfileId !== workspaceProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} belongs to profile ${connectionProfileId}, ` +
+          `but this workspace is in profile ${workspaceProfileId}. Create the PR from a workspace in ` +
+          `profile ${connectionProfileId}, or add a connection to profile ${workspaceProfileId}.`,
+      );
+    }
     this.setAuditContext({ connectionId, userInitiated: true });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = this.api as any;

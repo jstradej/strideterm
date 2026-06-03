@@ -367,6 +367,9 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           workspace.review?.connectionId ||
           workspace.quickfix?.connectionId ||
           "",
+        // Owner profile is the WORKSPACE's — the manager refuses connections
+        // from other profiles with a clear pointer to the right one.
+        workspaceProfileId: workspace.profileId || "default",
       });
 
       // Promote quickfix workspace -> full review workspace after PR creation

@@ -1678,6 +1678,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     description,
     isDraft = false,
     connectionId = "",
+    workspaceProfileId = "",
   }: {
     remoteUrl: string;
     sourceBranch: string;
@@ -1686,10 +1687,23 @@ export class AzureDevOpsManager extends BaseProviderManager {
     description?: string;
     isDraft?: boolean;
     connectionId?: string;
+    /** Owner profile of the originating workspace — the connection must live in the same profile. */
+    workspaceProfileId?: string;
   }): Promise<{ pullRequestId: unknown; url: string; title: unknown }> {
     const connection =
       (connectionId && this.findAzureConnection(connectionId)) || this.findConnectionForRemote(remoteUrl);
     if (!connection) throw new Error("No Azure DevOps connection found for this repository.");
+    // The PR is owned by the workspace's profile; publishing through another
+    // profile's connection would use bindings the caller's profile doesn't
+    // own. Refuse with a pointer to the right profile.
+    const connectionProfileId = (connection as { profileId?: string }).profileId || "default";
+    if (workspaceProfileId && connectionProfileId !== workspaceProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} belongs to profile ${connectionProfileId}, ` +
+          `but this workspace is in profile ${workspaceProfileId}. Create the PR from a workspace in ` +
+          `profile ${connectionProfileId}, or add a connection to profile ${workspaceProfileId}.`,
+      );
+    }
     this.setAuditContext({ connectionId: connection.id, userInitiated: true });
     const { token, projectName, repository } = await this.resolveRepository(connection.id, remoteUrl);
     const result = (await this.azureApi.createPullRequest(connection, token, projectName, repository.id, {

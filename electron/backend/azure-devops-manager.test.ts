@@ -872,3 +872,27 @@ describe("azure manager helpers", () => {
     expect(stripRefsPrefix("refs/heads/feature/test")).toBe("feature/test");
   });
 });
+
+describe("createPullRequestForWorkspace — cross-profile connection guard", () => {
+  test("refuses when the connection belongs to a different profile than the workspace", async () => {
+    const { manager } = createManager();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).findAzureConnection = () => ({
+      id: "ado-1",
+      profileId: "profile-a",
+      tokenRef: "cred:ado-main",
+      orgUrl: "https://dev.azure.com/acme",
+    });
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+        sourceBranch: "feature/x",
+        targetBranch: "main",
+        title: "Cross profile",
+        connectionId: "ado-1",
+        workspaceProfileId: "profile-b",
+      }),
+    ).rejects.toThrow(/Cross-profile refused.*profile-a.*profile-b/s);
+  });
+});
