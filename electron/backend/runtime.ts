@@ -438,9 +438,13 @@ export async function createRuntime({
     createReviewBridgeStoreImpl(reviewBridgeRoot),
   ]);
 
-  // Apply persisted log level from stored user config (user setting > ENV var > default "warn")
+  // Apply persisted log level from stored user config — unless an explicit
+  // STRIDETERM_LOG_LEVEL env var is set (explicit ENV > user setting > default
+  // "warn"). dev.ps1 exports trace; letting a persisted "error" silently
+  // downgrade it left whole debugging sessions without a single log line.
+  // A live change via the Settings UI (setLogLevel below) still always applies.
   const storedLogLevel = store.getState().settings?.logLevel;
-  if (storedLogLevel) {
+  if (storedLogLevel && !process.env.STRIDETERM_LOG_LEVEL) {
     reconfigureLogger({ level: storedLogLevel });
     log.info("logger reconfigured from stored settings", { level: storedLogLevel });
   }
@@ -6933,6 +6937,20 @@ export async function createRuntime({
       // State is already persisted on each mutate/replace operation.
       // Avoid rewriting the file on shutdown, which can overwrite newer
       // on-disk state if another instance touched it more recently.
+      // DO wait for any in-flight persist though — exiting between its
+      // tmp-write and rename leaves a full-content orphan .tmp file and a
+      // stale state file (observed on quit in production). Time-capped so
+      // a stuck persist queue can't hold the quit hostage.
+      let flushed = false;
+      await Promise.race([
+        store.flush().then(() => {
+          flushed = true;
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+      ]);
+      if (!flushed) {
+        log.warn("state flush did not settle within 5s on shutdown — persist queue stuck?");
+      }
       return undefined;
     },
     listRemoteUrls() {

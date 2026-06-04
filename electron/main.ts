@@ -12,6 +12,7 @@ import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/re
 import { createDefaultState, normalizeState, MIGRATION_WINDOW_SLOT_ID } from "./backend/default-state.js";
 import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
 import { inheritShellPath } from "./backend/fix-path.js";
+import { startFreezeWatchdog } from "./backend/freeze-watchdog.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
 import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
@@ -148,6 +149,13 @@ let closeFlowConfirmed = false;
 // In-flight confirmation. Coalesces concurrent close paths (last-window close
 // races with Cmd+Q before-quit) onto a single dialog.
 let closeFlowConfirmation: Promise<boolean> | null = null;
+// Stops the freeze watchdog (heartbeat + worker thread) on shutdown.
+let stopFreezeWatchdog: (() => void) | null = null;
+
+// Set once runShutdownCleanupOnce has settled (or timed out) — the re-entrant
+// before-quit then falls through and lets the quit proceed.
+let shutdownCleanupComplete = false;
+
 // Tracks the shutdown cleanup so it runs exactly once even if before-quit
 // fires multiple times (it does — the second re-entry after app.quit() from
 // the dialog callback would otherwise tear the runtime down twice).
@@ -270,6 +278,7 @@ async function runShutdownCleanupOnce(): Promise<void> {
   if (shutdownCleanupPromise) return shutdownCleanupPromise;
   shutdownCleanupPromise = (async () => {
     log.info("app quitting", { quitTrigger: new Error("trigger-trace").stack });
+    stopFreezeWatchdog?.();
     runtimeState.unsubscribeStateUpdated?.();
     runtimeState.unsubscribeRemoteConfig?.();
     runtimeState.disposeIpc?.();
@@ -511,6 +520,41 @@ async function ensureWindowForProfile(profileId: string): Promise<string | null>
   return newWindowId;
 }
 
+/**
+ * Create a brand-new window for `profileId` — always a new slot, never the
+ * focus-existing shortcut (that's ensureWindowForProfile's job). Shared by
+ * the window:create IPC and the second-instance launch path.
+ */
+async function createWindowForProfile(
+  profileId: string,
+  options?: { cloneFromWindowId?: string },
+): Promise<{ windowId?: string; error?: string }> {
+  // Create the window slot in state first
+  let newSlot: Awaited<ReturnType<typeof runtimeState.runtime.createWindowSlot>> | null = null;
+  try {
+    newSlot = (await runtimeState.runtime?.createWindowSlot?.(profileId, options)) ?? null;
+  } catch (err) {
+    log.error("createWindowForProfile: createWindowSlot threw", {
+      profileId,
+      err: (err as Error)?.message,
+      stack: (err as Error)?.stack,
+    });
+  }
+  const newWindowId = newSlot?.id ?? randomUUID();
+  log.info("createWindowForProfile: invoking createWindow", { newWindowId, profileId, hasSlot: !!newSlot });
+  try {
+    createWindow(newWindowId, newSlot ?? { profileId });
+  } catch (err) {
+    log.error("createWindowForProfile: createWindow threw", {
+      newWindowId,
+      err: (err as Error)?.message,
+      stack: (err as Error)?.stack,
+    });
+    return { error: `Failed to create window: ${(err as Error)?.message ?? "unknown"}` };
+  }
+  return { windowId: newWindowId };
+}
+
 function updateNativeAttention(payload: Record<string, unknown> | null | undefined): void {
   if (!payload) return;
   const { count, waitingCount } = summarizeAttention(payload);
@@ -703,9 +747,11 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     registrySize: windowRegistry.size,
   });
 
-  // Persist bounds + save window slot on close
-  win.on("move", () => persistWindowSlot(id, win));
-  win.on("resize", () => persistWindowSlot(id, win));
+  // Persist bounds debounced: Electron streams move/resize events during a
+  // drag, and each immediate persist costs a full state write. The pending
+  // update is flushed in the "close" handler so the final position survives.
+  win.on("move", () => schedulePersistWindowSlot(id, win));
+  win.on("resize", () => schedulePersistWindowSlot(id, win));
 
   win.on("focus", () => {
     windowFocusedAt.set(id, Date.now());
@@ -734,6 +780,10 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   // lost on app shutdown. Closing a non-last window is always safe (other
   // windows + the shared runtime stay alive), so we let those through.
   win.on("close", (event) => {
+    // A debounced bounds update may still be pending — persist it while the
+    // window is alive so the final position isn't lost. Harmless when the
+    // close ends up cancelled below.
+    flushPersistWindowSlot(id, win);
     // Global flag short-circuits after the user has approved the flow.
     if (closeFlowConfirmed) {
       closingWindows.add(id);
@@ -1010,6 +1060,26 @@ function persistWindowSlot(windowId: string, win: BrowserWindow): void {
   const display = screen.getDisplayNearestPoint({ x: wx, y: wy });
   const displayId = display?.id;
   runtimeState.runtime.updateWindowSlotBounds?.(windowId, b, displayId).catch(() => {});
+}
+
+const windowSlotPersistTimers = new Map<string, NodeJS.Timeout>();
+const WINDOW_BOUNDS_PERSIST_DEBOUNCE_MS = 300;
+
+function schedulePersistWindowSlot(windowId: string, win: BrowserWindow): void {
+  clearTimeout(windowSlotPersistTimers.get(windowId));
+  const timer = setTimeout(() => {
+    windowSlotPersistTimers.delete(windowId);
+    persistWindowSlot(windowId, win);
+  }, WINDOW_BOUNDS_PERSIST_DEBOUNCE_MS);
+  windowSlotPersistTimers.set(windowId, timer);
+}
+
+function flushPersistWindowSlot(windowId: string, win: BrowserWindow): void {
+  const timer = windowSlotPersistTimers.get(windowId);
+  if (!timer) return;
+  clearTimeout(timer);
+  windowSlotPersistTimers.delete(windowId);
+  persistWindowSlot(windowId, win);
 }
 
 function emitToWindow(windowId: string, channel: string, payload: unknown): void {
@@ -1369,6 +1439,10 @@ if (mcpMode) {
 } else if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  // Off-main-thread freeze detector — see freeze-watchdog.ts. Not started in
+  // mcp mode (short-lived headless process, no UI to freeze).
+  stopFreezeWatchdog = startFreezeWatchdog();
+
   registerBootstrapIpcHandlers();
 
   // IPC: renderer requests its own windowId
@@ -1397,30 +1471,7 @@ if (mcpMode) {
     }
     const cloneFromWindowId =
       options && typeof options.cloneFromWindowId === "string" ? options.cloneFromWindowId : undefined;
-    // Create the window slot in state first
-    let newSlot: Awaited<ReturnType<typeof runtimeState.runtime.createWindowSlot>> | null = null;
-    try {
-      newSlot = (await runtimeState.runtime?.createWindowSlot?.(profileId, { cloneFromWindowId })) ?? null;
-    } catch (err) {
-      log.error("window:create: createWindowSlot threw", {
-        profileId,
-        err: (err as Error)?.message,
-        stack: (err as Error)?.stack,
-      });
-    }
-    const newWindowId = newSlot?.id ?? randomUUID();
-    log.info("window:create: invoking createWindow", { newWindowId, profileId, hasSlot: !!newSlot });
-    try {
-      createWindow(newWindowId, newSlot ?? { profileId });
-    } catch (err) {
-      log.error("window:create: createWindow threw", {
-        newWindowId,
-        err: (err as Error)?.message,
-        stack: (err as Error)?.stack,
-      });
-      return { error: `Failed to create window: ${(err as Error)?.message ?? "unknown"}` };
-    }
-    return { windowId: newWindowId };
+    return createWindowForProfile(profileId, cloneFromWindowId ? { cloneFromWindowId } : undefined);
   });
 
   // IPC: renderer closes its own window
@@ -1469,9 +1520,15 @@ if (mcpMode) {
   });
 
   app.on("second-instance", (_event, argv) => {
-    log.info("second-instance fired, focusing primary window", {
+    // Launching the exe while the app is already running means "give me
+    // another window", not just "focus what's there". With a single profile
+    // there is nothing to choose — open a new window of it directly; with
+    // several, surface the profile picker (the same NewWindowModal as
+    // Ctrl/Cmd+Shift+N) in the primary window.
+    log.info("second-instance fired", {
       argv: argv.slice(0, 10),
       registrySize: windowRegistry.size,
+      runtimeInteractive: runtimeState.runtimeInteractive,
     });
     const primary = getPrimaryWindow();
     if (!primary || primary.isDestroyed()) {
@@ -1481,6 +1538,17 @@ if (mcpMode) {
     if (primary.isMinimized()) primary.restore();
     primary.show();
     primary.focus();
+    if (!runtimeState.runtimeInteractive) {
+      // Still booting — focusing the primary window is all we can offer.
+      return;
+    }
+    const appState = runtimeState.runtime?.getPayload?.()?.appState as { profiles?: Array<{ id: string }> } | undefined;
+    const profiles = appState?.profiles || [];
+    if (profiles.length === 1) {
+      void createWindowForProfile(profiles[0].id);
+    } else if (profiles.length > 1) {
+      primary.webContents.send("shortcut:new-window");
+    }
   });
 
   app.whenReady().then(async () => {
@@ -1628,7 +1696,19 @@ app.on("before-quit", (event) => {
     });
     return;
   }
-  // Confirmed (or no risky state). Run cleanup exactly once and let the
-  // natural quit proceed.
-  void runShutdownCleanupOnce();
+  // Confirmed (or no risky state). Hold the quit until cleanup has finished —
+  // without preventDefault Electron exits while the cleanup (runtime.stop,
+  // the in-flight state persist it flushes, shutdownLogger) is still running.
+  // That truncation is how quit-time persists were getting cut between
+  // tmp-write and rename (full-content orphan .tmp + stale state file).
+  // Time-capped so a hung cleanup can't make the app unquittable.
+  if (!shutdownCleanupComplete) {
+    event.preventDefault();
+    void Promise.race([runShutdownCleanupOnce(), new Promise<void>((resolve) => setTimeout(resolve, 10000))]).finally(
+      () => {
+        shutdownCleanupComplete = true;
+        app.quit();
+      },
+    );
+  }
 });

@@ -46,6 +46,9 @@ function createMemoryStore(initialState?: any) {
         return state;
       });
     },
+    async flush() {
+      await pending;
+    },
     get saveCalls() {
       return saveCalls;
     },
