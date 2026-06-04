@@ -165,17 +165,16 @@ test.describe("Multi-window — same profile in multiple windows", () => {
   });
 
   test("new-window modal keeps already-open profiles clickable with a window badge", async () => {
-    const { page } = launched!;
+    const { app, page } = launched!;
 
-    // Open the new-window modal from window 1
-    await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pinia = (window as any).__pinia;
-      if (pinia) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { useAppStore } = (window as any).__app_stores__;
-        useAppStore(pinia).openNewWindowModal?.();
-      }
+    // Open the new-window modal from window 1 via the real Ctrl+Shift+N path:
+    // the main process sends `shortcut:new-window` to the window, the
+    // renderer's `onNewWindowShortcut` handler in App.vue calls
+    // openNewWindowModal(). Target window 1 explicitly — two windows are
+    // open in this describe block.
+    const browserWindow = await app.browserWindow(page);
+    await browserWindow.evaluate((win) => {
+      win.webContents.send("shortcut:new-window");
     });
 
     const overlay = page.locator(".overlay");
@@ -187,7 +186,7 @@ test.describe("Multi-window — same profile in multiple windows", () => {
     const workItem = page.locator(".overlay button.profile-pick-item", { hasText: "Work" }).first();
     await expect(workItem).toBeVisible({ timeout: 3_000 });
     await expect(workItem).toBeEnabled();
-    await expect(page.locator(".overlay .profile-pick-badge", { hasText: /Already open in Window/ })).toBeVisible();
+    await expect(workItem.locator(".profile-pick-badge", { hasText: /Already open in Window/ })).toBeVisible();
 
     // "Duplicate current window" primary action is offered (modal opened from a window).
     await expect(page.getByText("Duplicate current window", { exact: true })).toBeVisible();

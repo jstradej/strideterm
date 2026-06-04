@@ -9,7 +9,7 @@ import { createRuntime } from "./backend/runtime.js";
 import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
-import { createDefaultState, normalizeState } from "./backend/default-state.js";
+import { createDefaultState, normalizeState, MIGRATION_WINDOW_SLOT_ID } from "./backend/default-state.js";
 import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
 import { inheritShellPath } from "./backend/fix-path.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
@@ -1567,12 +1567,18 @@ if (mcpMode) {
         createWindow(slot.id, slot);
       }
     } else {
-      createWindow();
+      // No slots in raw state — the backend's normalizeState will create a
+      // migration slot with this exact id, so the boot window and its slot
+      // agree (slot cleanup on close, "Duplicate current window", per-window
+      // bookkeeping all key on windowId === slot.id).
+      createWindow(MIGRATION_WINDOW_SLOT_ID);
     }
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
+        // Same reasoning as boot: with every window closed the slots were
+        // removed too, so normalizeState recreates the migration slot.
+        createWindow(MIGRATION_WINDOW_SLOT_ID);
       }
     });
   });

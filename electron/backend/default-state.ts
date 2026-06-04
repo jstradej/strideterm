@@ -573,6 +573,19 @@ function normalizeProfiles(rawProfiles: any, defaults: { profiles: Profile[] }):
 const DEFAULT_BOUNDS = { x: 100, y: 100, width: 1280, height: 800 };
 
 /**
+ * Deterministic id for the windowSlot created by migration when no slots
+ * exist in persisted state (fresh install or pre-multi-window upgrade).
+ *
+ * Must be a constant, not a randomUUID(): normalizeState runs independently
+ * in main.ts (bootstrap payload) and in the backend store, and main.ts also
+ * spawns the boot BrowserWindow when the raw state has no slots. All three
+ * must agree on the id, otherwise window 1's id never matches its slot —
+ * breaking everything keyed by windowId↔slot (slot cleanup on close,
+ * "Duplicate current window", per-window focus/attention bookkeeping).
+ */
+export const MIGRATION_WINDOW_SLOT_ID = "window-main";
+
+/**
  * Normalise windowSlots:
  * - Each slot is an independent viewer — duplicate profileIds are valid
  *   (multiple windows showing the same profile).
@@ -594,7 +607,7 @@ function normalizeWindowSlots(
   const migrationSlot = (): WindowSlot => {
     const profile = profiles.find((p) => p.id === activeProfileId);
     return {
-      id: randomUUID(),
+      id: MIGRATION_WINDOW_SLOT_ID,
       profileId: activeProfileId,
       activeWorkspaceId,
       activeSessionId: "",
