@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import lockfile from "proper-lockfile";
 import { APP_CONFIG } from "../../../config/app-config.js";
 import { getLogger } from "../logger.js";
+import { renameWithRetries, writeFileDurable } from "./fs-durable.js";
 
 const log = getLogger("credential-store");
 
@@ -109,12 +110,14 @@ export async function createCredentialStore(
 
   async function atomicWrite(): Promise<void> {
     const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-    // mode 0o600: credentials.json contains user secrets (PATs, OAuth tokens,
-    // SSH key passphrases). Without an explicit mode the default umask leaves
-    // it world-readable on shared Linux/macOS hosts. Windows ignores `mode`,
-    // so this is safe everywhere.
-    await fs.writeFile(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
-    await fs.rename(tmpPath, filePath);
+    // mode 0o600 (set by writeFileDurable): credentials.json contains user
+    // secrets (PATs, OAuth tokens, SSH key passphrases). Without an explicit
+    // mode the default umask leaves it world-readable on shared Linux/macOS
+    // hosts. Windows ignores `mode`, so this is safe everywhere. The durable
+    // write (fsync) + rename retry match the state store: a crash mid-write
+    // or a Windows AV/indexer holding the file must not truncate secrets.
+    await writeFileDurable(tmpPath, JSON.stringify(state, null, 2));
+    await renameWithRetries(tmpPath, filePath);
     // Belt-and-suspenders: rename preserves the source mode but if the file
     // already existed the kernel may keep the previous mode bits. chmod
     // explicitly so a permissive ancestor file can't lock us into 0644.

@@ -8,6 +8,9 @@ import security from "eslint-plugin-security";
 const tsRules = {
   // TypeScript handles undefined references better than ESLint's no-undef.
   "no-undef": "off",
+  // Core no-redeclare flags TypeScript function overloads; tsc itself
+  // errors on real same-scope redeclarations.
+  "no-redeclare": "off",
   "no-unused-vars": "off",
   "@typescript-eslint/no-unused-vars": [
     "warn",
