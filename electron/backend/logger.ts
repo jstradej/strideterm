@@ -34,6 +34,11 @@ export function setLogDir(dir: string): void {
   LOG_DIR = dir;
 }
 
+/** Current log directory (after any setLogDir override). */
+export function getLogDir(): string {
+  return LOG_DIR;
+}
+
 // Winston uses syslog-adjacent levels by default. We define custom levels
 // matching the familiar ERROR / WARN / INFO / DEBUG / TRACE hierarchy.
 const CUSTOM_LEVELS = {
