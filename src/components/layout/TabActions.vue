@@ -104,7 +104,7 @@ const { isMobile } = useIsNarrow();
 
 const workspaceKind = computed(() => store.activeWorkspace?.kind || "terminal");
 const gitAvailable = computed(() => {
-  const wsId = store.payload?.appState?.activeWorkspaceId;
+  const wsId = store.myActiveWorkspaceId;
   if (!wsId) return false;
   return !!(store.getGitSnapshot(wsId) as { available?: boolean } | null | undefined)?.available;
 });

@@ -57,6 +57,7 @@ interface WorkspaceActionsCtx {
   payload: ShallowRef<StatePayload | null>;
   activeViewId: Ref<string | null>;
   activeSessionId: Ref<string | null>;
+  myActiveWorkspaceId: ComputedRef<string>;
   splitGroup: Ref<SplitGroup | null>;
   hiddenViewIds: Ref<Set<string>>;
   workspaceTabs: ComputedRef<WorkspaceTab[]>;
@@ -245,10 +246,10 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     // payload only need the workspaces array to be a new reference for the
     // computed selectors to refresh.
     const wsName = displayName || (ws as AnyApi).name || "";
-    const wasActive = ctx.payload.value?.appState?.activeWorkspaceId === workspaceId;
+    const wasActive = ctx.myActiveWorkspaceId.value === workspaceId;
     const before = ctx.payload.value;
     const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
-    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : before?.appState?.activeWorkspaceId || "";
+    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : ctx.myActiveWorkspaceId.value || "";
     // Track the id so any broadcast arriving before the backend finishes the
     // delete (e.g. from a docker poll) doesn't put the workspace back into
     // the sidebar tree.
@@ -669,10 +670,10 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     });
     if (!confirmed) return;
 
-    const wasActive = ctx.payload.value?.appState?.activeWorkspaceId === workspaceId;
+    const wasActive = ctx.myActiveWorkspaceId.value === workspaceId;
     const before = ctx.payload.value;
     const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
-    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : before?.appState?.activeWorkspaceId || "";
+    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : ctx.myActiveWorkspaceId.value || "";
     ctx.optimisticallyDeletedIds.value = new Set([...ctx.optimisticallyDeletedIds.value, workspaceId]);
     if (before) {
       ctx.payload.value = {

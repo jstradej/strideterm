@@ -1021,7 +1021,7 @@ export const useAppStore = defineStore("app", () => {
       if (pendingViewActivationId.value === viewId && !(nextPayload as AnyApi)?.meta?.bootstrap) {
         pendingViewActivationId.value = "";
       }
-      payload.value = maybeApplyMockFromUrl(nextPayload as AnyApi) as StatePayload;
+      payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
     } catch {
       if (pendingViewActivationId.value === viewId) {
         pendingViewActivationId.value = "";
@@ -1092,6 +1092,7 @@ export const useAppStore = defineStore("app", () => {
     payload,
     activeViewId,
     activeSessionId,
+    myActiveWorkspaceId,
     splitGroup,
     hiddenViewIds,
     workspaceTabs: workspaceTabs as AnyApi,

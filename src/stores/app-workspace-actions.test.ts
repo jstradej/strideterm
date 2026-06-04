@@ -53,6 +53,7 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
   const splitGroup = ref<{ layout: string; viewIds: string[] } | null>(null);
   const activeViewId = ref<string | null>(null);
   const activeSessionId = ref<string | null>(null);
+  const myActiveWorkspaceId = computed(() => payload.value?.appState?.activeWorkspaceId || "");
   const hiddenViewIds = ref(new Set<string>());
   const workspaceTabs = computed(
     () => [] as { id: string; type: string; title: string; status: string; tone: string }[],
@@ -67,6 +68,7 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
     payload,
     activeViewId,
     activeSessionId,
+    myActiveWorkspaceId,
     splitGroup,
     hiddenViewIds,
     workspaceTabs,

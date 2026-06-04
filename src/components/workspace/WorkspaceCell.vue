@@ -204,7 +204,7 @@ async function onAddTab(anchorRect: DOMRect): Promise<void> {
   // the active workspace to figure out which workspace receives the new tab.
   // Without this step, clicking + on a non-focused cell would always land
   // the new tab in the focused cell's workspace instead.
-  if (props.workspaceId && store.payload?.appState?.activeWorkspaceId !== props.workspaceId) {
+  if (props.workspaceId && store.myActiveWorkspaceId !== props.workspaceId) {
     await store.activateWorkspace(props.workspaceId);
   }
   // Hand the anchor up to App.vue, which owns the TabPickerDropdown anchor

@@ -463,6 +463,70 @@ describe("useAppStore — remote mode identity", () => {
     expect((store as AnyApi).payload.remoteClient.activeWorkspaceId).toBe("ws2");
     expect((store as AnyApi).payload.appState.activeWorkspaceId).toBe("ws1");
   });
+
+  it("adopts remote session activation responses scoped by remoteClient workspace", async () => {
+    const ws1 = {
+      id: "ws1",
+      name: "WS1",
+      profileId: "p1",
+      panels: [{ id: "sh", title: "Shell", command: "" }],
+      kind: "terminal",
+      cwd: "/tmp",
+    };
+    const ws2 = {
+      id: "ws2",
+      name: "WS2",
+      profileId: "p1",
+      panels: [{ id: "sh", title: "Shell", command: "" }],
+      kind: "terminal",
+      cwd: "/tmp",
+    };
+    const ws1Payload = {
+      workspace: ws1,
+      project: ws1,
+      sessions: [{ sessionId: "ws1:sh", panelId: "sh", title: "Shell", command: "", status: "idle" }],
+    };
+    const initialPayload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "ws1:sh" },
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [ws1, ws2],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "ws1:sh" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+      workspace: ws1Payload,
+    });
+    const responsePayload = {
+      ...initialPayload,
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws2", activeSessionId: "ws2:sh" },
+      // Simulates the remote server response before the renderer scopes it:
+      // appState.activeWorkspaceId / payload.workspace still reflect desktop.
+      appState: { ...initialPayload.appState, activeWorkspaceId: "ws1" },
+      workspace: ws1Payload,
+    };
+    const transport = makeRemoteTransport(initialPayload);
+    transport.activateSession = vi.fn(() => Promise.resolve(responsePayload));
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await store.activateView("ws2:sh");
+
+    expect(store.myActiveWorkspaceId).toBe("ws2");
+    expect(store.activeWorkspace.id).toBe("ws2");
+    expect((store as AnyApi).payload.remoteClient.activeSessionId).toBe("ws2:sh");
+    expect((store as AnyApi).payload.appState.activeWorkspaceId).toBe("ws1");
+  });
 });
 
 describe("handleBroadcastPayload — optimistic-delete suppression", () => {

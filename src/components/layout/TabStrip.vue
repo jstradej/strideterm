@@ -147,7 +147,7 @@ const dragDrop = useTabDragDrop(stripRef);
 const compactTabModels = computed(() => {
   if (!props.compact || !props.workspaceId) return null;
   const wsId = props.workspaceId;
-  const activeWsId = (store.payload as AnyApi)?.appState?.activeWorkspaceId;
+  const activeWsId = store.myActiveWorkspaceId;
   // If this cell is the active workspace, the normal tabModels computation handles it.
   if (wsId === activeWsId) return null;
   const wsEntry = ((store.payload as AnyApi)?.appState?.workspaces || []).find((w: AnyApi) => w.id === wsId);
@@ -279,7 +279,7 @@ function onMenuClick(event: MouseEvent, viewId: string): void {
 
 async function ensureCompactWorkspaceActive(): Promise<void> {
   if (!props.compact || !props.workspaceId) return;
-  const activeWsId = (store.payload as AnyApi)?.appState?.activeWorkspaceId;
+  const activeWsId = store.myActiveWorkspaceId;
   if (activeWsId !== props.workspaceId) {
     await store.activateWorkspace(props.workspaceId);
   }
