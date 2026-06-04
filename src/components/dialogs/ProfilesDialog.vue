@@ -23,34 +23,41 @@
           :style="{ borderColor: profile.id === activeProfileId ? 'var(--accent)' : 'var(--border)' }"
         >
           <div class="profile-card__header">
-            <span v-if="isRemote" class="profile-name-display">{{ profile.name }}</span>
-            <input
-              v-else
-              v-model="profile.name"
-              class="profile-name-input"
-              maxlength="40"
-              title="Rename this profile. The new name takes effect when you click away or press Enter."
-              @click.stop
-              @blur="onRenameProfile(profile)"
-              @keydown.enter="(e: Event) => (e.target as HTMLInputElement).blur()"
-            />
-            <span v-if="profile.id === activeProfileId" class="profile-active-badge">Current</span>
-            <span
-              v-if="isRemote && occupiedByOtherWindow.has(profile.id)"
-              class="profile-desktop-badge"
-              :title="`This profile is open in ${occupiedByOtherWindow.get(profile.id)} desktop window${occupiedByOtherWindow.get(profile.id) === 1 ? '' : 's'}`"
-              >Open on desktop: {{ occupiedByOtherWindow.get(profile.id) }} window{{
-                occupiedByOtherWindow.get(profile.id) === 1 ? "" : "s"
-              }}</span
-            >
-            <span
-              v-else-if="!isRemote && profile.id !== activeProfileId && desktopWindowCount(profile.id) > 0"
-              class="profile-desktop-badge"
-              :title="`This profile is already shown in ${desktopWindowCount(profile.id)} window${desktopWindowCount(profile.id) === 1 ? '' : 's'} — switching here is still fine`"
-              >Open in {{ desktopWindowCount(profile.id) }} window{{
-                desktopWindowCount(profile.id) === 1 ? "" : "s"
-              }}</span
-            >
+            <div class="profile-name-cell">
+              <span
+                class="profile-color-swatch"
+                :style="{ background: profile.color || '#ffa424' }"
+                aria-hidden="true"
+              ></span>
+              <span v-if="isRemote" class="profile-name-display">{{ profile.name }}</span>
+              <input
+                v-else
+                v-model="profile.name"
+                class="profile-name-input"
+                maxlength="40"
+                title="Rename this profile. The new name takes effect when you click away or press Enter."
+                @click.stop
+                @blur="onRenameProfile(profile)"
+                @keydown.enter="(e: Event) => (e.target as HTMLInputElement).blur()"
+              />
+              <span v-if="profile.id === activeProfileId" class="profile-active-badge">Current</span>
+              <span
+                v-if="isRemote && occupiedByOtherWindow.has(profile.id)"
+                class="profile-desktop-badge"
+                :title="`This profile is open in ${occupiedByOtherWindow.get(profile.id)} desktop window${occupiedByOtherWindow.get(profile.id) === 1 ? '' : 's'}`"
+                >Open on desktop: {{ occupiedByOtherWindow.get(profile.id) }} window{{
+                  occupiedByOtherWindow.get(profile.id) === 1 ? "" : "s"
+                }}</span
+              >
+              <span
+                v-else-if="!isRemote && profile.id !== activeProfileId && desktopWindowCount(profile.id) > 0"
+                class="profile-desktop-badge"
+                :title="`This profile is already shown in ${desktopWindowCount(profile.id)} window${desktopWindowCount(profile.id) === 1 ? '' : 's'} — switching here is still fine`"
+                >Open in {{ desktopWindowCount(profile.id) }} window{{
+                  desktopWindowCount(profile.id) === 1 ? "" : "s"
+                }}</span
+              >
+            </div>
             <div class="profile-card__actions">
               <button
                 v-if="profile.id !== activeProfileId"
@@ -61,6 +68,15 @@
                 @click="handleActivate(profile.id)"
               >
                 {{ activatingProfileId === profile.id ? "Switching…" : "Activate" }}
+              </button>
+              <button
+                v-if="!isRemote"
+                type="button"
+                class="button button--ghost"
+                title="Open this profile in a new window. The same profile can be open in any number of windows."
+                @click="handleOpenWindow(profile.id)"
+              >
+                New Window
               </button>
               <button
                 v-if="!isRemote && localProfiles.length > 1"
@@ -264,6 +280,15 @@ async function handleActivate(profileId: string) {
   }
 }
 
+async function handleOpenWindow(profileId: string) {
+  errorMessage.value = "";
+  try {
+    await (attrs.onOpenWindow as ((id: string) => Promise<void>) | undefined)?.(profileId);
+  } catch (err) {
+    handleError(err);
+  }
+}
+
 // Deleting a profile that still has RUNNING task agents requires an explicit
 // decision (pause them or stop them) — never a silent stop. The backend
 // refuses without a taskAction; we surface the three-way choice inline.
@@ -426,7 +451,21 @@ onMounted(() => {
   justify-content: flex-end;
   min-width: 0;
 }
+.profile-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.profile-color-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
 .profile-name-input {
+  flex: 1;
   min-width: 0;
   background: transparent;
   border: 1px solid transparent;
@@ -462,13 +501,15 @@ onMounted(() => {
 .profile-active-badge {
   color: var(--accent);
   font-size: 11px;
-  justify-self: start;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .profile-desktop-badge {
   color: var(--muted);
   font-size: 11px;
   font-style: italic;
-  justify-self: start;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .text-muted {
   color: var(--muted);
@@ -540,9 +581,13 @@ onMounted(() => {
     padding-left: 0;
   }
 
+  .profile-name-cell {
+    flex-wrap: wrap;
+  }
+
   .profile-active-badge,
   .profile-desktop-badge {
-    grid-row: 2;
+    flex-basis: 100%;
   }
 }
 </style>

@@ -527,6 +527,15 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           throw new Error(msg, { cause: err });
         }
       },
+      onOpenWindow: async (profileId: string) => {
+        // Desktop only — the dialog hides the button on remote. createWindow
+        // always makes a fresh window slot; the same profile may be open in
+        // any number of windows (including the current one).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = (await (window as any).strideterm?.createWindow?.(profileId)) as { error?: string } | undefined;
+        if (result?.error) throw new Error(result.error);
+        closeDialog();
+      },
     });
   }
 

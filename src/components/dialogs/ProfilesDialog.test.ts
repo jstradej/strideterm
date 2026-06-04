@@ -199,6 +199,50 @@ describe("ProfilesDialog", () => {
     expect(activateBtnBAfter?.attributes("disabled")).toBeUndefined();
   });
 
+  it("shows New Window on every card in Electron — including the current profile — and calls onOpenWindow", async () => {
+    const onOpenWindow = vi.fn().mockResolvedValue(undefined);
+    const wrapper = mount(ProfilesDialog, {
+      props: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        activeProfileId: "profile-a",
+        workspaces: [],
+        windowSlots: [{ id: "win-1", profileId: "profile-a" }],
+        isRemote: false,
+      },
+      attrs: { onOpenWindow },
+    });
+
+    const cards = wrapper.findAll(".profile-card");
+    // The current profile's card gets the button too — the same profile may
+    // be open in any number of windows.
+    const newWindowBtnA = cards[0].findAll("button").find((b) => b.text() === "New Window");
+    expect(newWindowBtnA?.exists()).toBe(true);
+    const newWindowBtnB = cards[1].findAll("button").find((b) => b.text() === "New Window");
+    expect(newWindowBtnB?.exists()).toBe(true);
+
+    await newWindowBtnA?.trigger("click");
+    expect(onOpenWindow).toHaveBeenCalledWith("profile-a");
+  });
+
+  it("hides New Window in remote mode (no desktop window to spawn from)", () => {
+    const wrapper = mount(ProfilesDialog, {
+      props: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        activeProfileId: "profile-a",
+        workspaces: [],
+        isRemote: true,
+      },
+    });
+
+    expect(wrapper.findAll("button").some((b) => b.text() === "New Window")).toBe(false);
+  });
+
   it("hides create edit delete controls in remote mode", () => {
     const wrapper = mount(ProfilesDialog, {
       props: {
