@@ -101,6 +101,9 @@
       "icon": "assets/icon.ico",
       "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
     },
+    "portable": {
+      "unpackDirName": true
+    },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
