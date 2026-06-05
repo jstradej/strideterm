@@ -1255,6 +1255,15 @@ function registerBootstrapIpcHandlers(): void {
     }
     return runtimeState.bootstrapPayload || (await loadBootstrapPayload());
   });
+  // SSH book lists are fetched by every window's renderer during App setup
+  // (sshStore.load()). Windows restored at startup race registerIpc() — the
+  // real handlers appear only after createRuntime() finishes, so the early
+  // invoke rejected with "No handler registered" (a renderer pageerror the
+  // e2e harness rightly fails on). Park the call on runtimeReady instead:
+  // invokeRuntimeMethod resolves with real data once services are up.
+  for (const channel of ["ssh:hosts:list", "ssh:keys:list", "ssh:certs:list"]) {
+    ipcMain.handle(channel, () => invokeRuntimeMethod(channel));
+  }
 }
 
 function unregisterBootstrapIpcHandlers(): void {
@@ -1263,6 +1272,9 @@ function unregisterBootstrapIpcHandlers(): void {
   ipcMain.removeHandler("project:activate");
   ipcMain.removeHandler("session:activate");
   ipcMain.removeHandler("attention:sync");
+  ipcMain.removeHandler("ssh:hosts:list");
+  ipcMain.removeHandler("ssh:keys:list");
+  ipcMain.removeHandler("ssh:certs:list");
 }
 
 async function loadBootstrapPayload(): Promise<Record<string, unknown>> {
