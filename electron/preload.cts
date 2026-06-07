@@ -243,6 +243,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   fileCreateDir: (p) => ipcRenderer.invoke("file:create-dir", p),
   fileRename: (p) => ipcRenderer.invoke("file:rename", p),
   fileDelete: (p) => ipcRenderer.invoke("file:delete", p),
+  fileGitIgnore: (p) => ipcRenderer.invoke("file:git-ignore", p),
   fileMove: (p) => ipcRenderer.invoke("file:move", p),
   fileCopy: (p) => ipcRenderer.invoke("file:copy", p),
   fileOpenInExplorer: (p) => ipcRenderer.invoke("file:open-in-explorer", p),

@@ -1497,6 +1497,14 @@ async function handleApiRequest(
       json(response, 200, await fm.deleteEntry(body.rootPath as string, body.relativePath as string));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/file/git-ignore") {
+      json(
+        response,
+        200,
+        await fm.addToGitignore(body.rootPath as string, body.relativePath as string, body.isDirectory === true),
+      );
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/file/move") {
       json(response, 200, await fm.moveEntry(body.rootPath as string, body.fromPath as string, body.toPath as string));
       return;

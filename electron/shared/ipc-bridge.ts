@@ -68,6 +68,7 @@ import type {
   FileCreate,
   FileRename,
   FileDelete,
+  FileGitIgnore,
   FileMove,
   FileGitStatus,
   FileGitRefs,
@@ -458,6 +459,7 @@ export interface StridetermAPI {
   fileCreateDir: (p: FileCreate) => Promise<unknown>;
   fileRename: (p: FileRename) => Promise<unknown>;
   fileDelete: (p: FileDelete) => Promise<unknown>;
+  fileGitIgnore: (p: FileGitIgnore) => Promise<unknown>;
   fileMove: (p: FileMove) => Promise<unknown>;
   fileCopy: (p: FileMove) => Promise<unknown>;
   fileOpenInExplorer: (p: FileRead) => Promise<unknown>;

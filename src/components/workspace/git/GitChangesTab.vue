@@ -154,7 +154,7 @@
       </Splitpanes>
     </div>
 
-    <!-- File context menu (right-click a changed file) -->
+    <!-- File / directory context menu (right-click a changed entry) -->
     <Teleport to="body">
       <div
         v-if="fileMenu"
@@ -163,8 +163,17 @@
         :style="{ position: 'fixed', left: fileMenu.x + 'px', top: fileMenu.y + 'px', zIndex: 9999 }"
         @click.stop
       >
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Append this path to the repository's .gitignore (anchored, so only this exact path is ignored). Files git already tracks keep showing until untracked."
+          @click="onMenuIgnore"
+        >
+          <span class="context-menu__icon">&#x29B8;</span><span>Add to .gitignore</span>
+        </button>
         <button type="button" class="context-menu__item context-menu__item--danger" @click="onMenuDelete">
-          <span class="context-menu__icon">&#x2715;</span><span>Delete file</span>
+          <span class="context-menu__icon">&#x2715;</span>
+          <span>{{ fileMenu.kind === "dir" ? "Delete folder" : "Delete file" }}</span>
         </button>
       </div>
     </Teleport>
@@ -173,9 +182,10 @@
     <Teleport to="body">
       <div v-if="deleteDialog" class="fm-dialog-backdrop" @mousedown.self="deleteDialog = null">
         <div class="fm-dialog">
-          <h3>Delete file?</h3>
+          <h3>{{ deleteDialog.kind === "dir" ? "Delete folder?" : "Delete file?" }}</h3>
           <p class="fm-dialog__text">
-            Permanently delete <strong>{{ deleteDialog.name }}</strong> from disk? This cannot be undone.
+            Permanently delete <strong>{{ deleteDialog.name }}</strong>
+            {{ deleteDialog.kind === "dir" ? "and everything inside it" : "" }} from disk? This cannot be undone.
           </p>
           <div class="fm-dialog__actions">
             <button type="button" class="button button--ghost" @click="deleteDialog = null">Cancel</button>
@@ -419,12 +429,12 @@ async function onStashAll() {
   await runAllStash(false);
 }
 
-// --- Right-click delete ---
-const fileMenu = ref<{ x: number; y: number; path: string; name: string } | null>(null);
+// --- Right-click actions (delete / add to .gitignore) ---
+const fileMenu = ref<{ x: number; y: number; path: string; name: string; kind: "file" | "dir" } | null>(null);
 const fileMenuRef = ref<HTMLElement | null>(null);
-const deleteDialog = ref<{ path: string; name: string } | null>(null);
+const deleteDialog = ref<{ path: string; name: string; kind: "file" | "dir" } | null>(null);
 
-function onFileContextMenu(payload: { path: string; name: string; x: number; y: number }) {
+function onFileContextMenu(payload: { path: string; name: string; kind: "file" | "dir"; x: number; y: number }) {
   // Review workspaces are read-only — no destructive file ops.
   if (props.isReviewWorkspace) return;
   fileMenu.value = { ...payload };
@@ -433,7 +443,7 @@ function onFileContextMenu(payload: { path: string; name: string; x: number; y: 
 function onMenuDelete() {
   const target = fileMenu.value;
   fileMenu.value = null;
-  if (target) deleteDialog.value = { path: target.path, name: target.name };
+  if (target) deleteDialog.value = { path: target.path, name: target.name, kind: target.kind };
 }
 
 async function confirmDelete() {
@@ -442,9 +452,32 @@ async function confirmDelete() {
   if (!target || !props.activeRootPath) return;
   const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
   await api.fileDelete({ rootPath: props.activeRootPath, relativePath: target.path });
-  // Drop the diff preview if the deleted file was the one being viewed.
-  if (props.gitUi.selectedDiff?.path === target.path) gitUiStore.gitClearSelectedDiff(props.workspaceId);
-  selectedPaths.value = new Set([...selectedPaths.value].filter((p) => p !== target.path));
+  // Drop the diff preview if the deleted file (or its directory) was the one
+  // being viewed.
+  const selected = props.gitUi.selectedDiff?.path as string | undefined;
+  if (selected && (selected === target.path || (target.kind === "dir" && selected.startsWith(target.path + "/")))) {
+    gitUiStore.gitClearSelectedDiff(props.workspaceId);
+  }
+  selectedPaths.value = new Set(
+    [...selectedPaths.value].filter(
+      (p) => p !== target.path && !(target.kind === "dir" && p.startsWith(target.path + "/")),
+    ),
+  );
+  await gitUiStore.refreshGit(props.workspaceId);
+}
+
+async function onMenuIgnore() {
+  const target = fileMenu.value;
+  fileMenu.value = null;
+  if (!target || !props.activeRootPath) return;
+  const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
+  await api.fileGitIgnore({
+    rootPath: props.activeRootPath,
+    relativePath: target.path,
+    isDirectory: target.kind === "dir",
+  });
+  // Newly ignored untracked entries vanish from the status; the modified
+  // .gitignore itself shows up instead.
   await gitUiStore.refreshGit(props.workspaceId);
 }
 

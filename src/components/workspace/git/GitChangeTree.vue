@@ -41,7 +41,7 @@ const props = withDefaults(
 defineEmits<{
   (e: "select", path: string, scope: string): void;
   (e: "toggle-select", path: string): void;
-  (e: "context-menu", payload: { path: string; name: string; x: number; y: number }): void;
+  (e: "context-menu", payload: { path: string; name: string; kind: "file" | "dir"; x: number; y: number }): void;
 }>();
 
 const expandedSet = ref(new Set<string>());

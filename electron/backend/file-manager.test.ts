@@ -13,6 +13,7 @@ import {
   createDirectory,
   renameEntry,
   deleteEntry,
+  addToGitignore,
   moveEntry,
   copyEntry,
   getGitFileStatus,
@@ -490,5 +491,110 @@ describe("file-manager commit history", () => {
     const result = await computeCommitFileDiff(repo, "alpha.txt", "");
     expect(result.ok).toBe(false);
     expect(result.leftError).toMatch(/missing commit hash/i);
+  });
+});
+
+describe("addToGitignore", () => {
+  let root: string;
+  let seq = 0;
+
+  beforeAll(async () => {
+    root = path.join(tmpRoot, "gitignore-test");
+    await fs.mkdir(root, { recursive: true });
+  });
+
+  /** Fresh sub-root per test so .gitignore files never bleed between tests. */
+  async function freshRoot(): Promise<string> {
+    const dir = path.join(root, `case-${++seq}`);
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  async function readIgnore(dir: string): Promise<string> {
+    return fs.readFile(path.join(dir, ".gitignore"), "utf8");
+  }
+
+  test("creates .gitignore with an anchored entry and trailing newline", async () => {
+    const dir = await freshRoot();
+    await fs.writeFile(path.join(dir, "secret.log"), "x\n");
+
+    const result = await addToGitignore(dir, "secret.log");
+    expect(result).toEqual({ ok: true, entry: "/secret.log", added: true });
+    expect(await readIgnore(dir)).toBe("/secret.log\n");
+  });
+
+  test("directories get a trailing slash", async () => {
+    const dir = await freshRoot();
+    await fs.mkdir(path.join(dir, "node_modules"));
+
+    const result = await addToGitignore(dir, "node_modules", true);
+    expect(result.entry).toBe("/node_modules/");
+    expect(await readIgnore(dir)).toBe("/node_modules/\n");
+  });
+
+  test("appends to an existing .gitignore, fixing a missing final newline", async () => {
+    const dir = await freshRoot();
+    await fs.writeFile(path.join(dir, ".gitignore"), "*.tmp"); // no trailing newline
+    await fs.writeFile(path.join(dir, "out.log"), "x\n");
+
+    await addToGitignore(dir, "out.log");
+    expect(await readIgnore(dir)).toBe("*.tmp\n/out.log\n");
+  });
+
+  test("is a no-op when the identical entry already exists", async () => {
+    const dir = await freshRoot();
+    await fs.writeFile(path.join(dir, ".gitignore"), "/dup.log\n");
+    await fs.writeFile(path.join(dir, "dup.log"), "x\n");
+
+    const result = await addToGitignore(dir, "dup.log");
+    expect(result.added).toBe(false);
+    expect(await readIgnore(dir)).toBe("/dup.log\n");
+  });
+
+  test("normalises backslash separators to forward slashes", async () => {
+    const dir = await freshRoot();
+    await fs.mkdir(path.join(dir, "sub"));
+    await fs.writeFile(path.join(dir, "sub", "win.txt"), "x\n");
+
+    const result = await addToGitignore(dir, "sub\\win.txt");
+    expect(result.entry).toBe("/sub/win.txt");
+  });
+
+  test("works for a path that no longer exists on disk", async () => {
+    const dir = await freshRoot();
+    const result = await addToGitignore(dir, "ghost/never-created.log");
+    expect(result).toMatchObject({ ok: true, entry: "/ghost/never-created.log", added: true });
+  });
+
+  test("rejects path traversal outside the root", async () => {
+    const dir = await freshRoot();
+    await expect(addToGitignore(dir, "../escape.txt")).rejects.toThrow(/Path traversal blocked/);
+  });
+
+  test("rejects the workspace root itself", async () => {
+    const dir = await freshRoot();
+    await expect(addToGitignore(dir, ".")).rejects.toThrow(/Cannot add the workspace root/);
+    await expect(addToGitignore(dir, "./")).rejects.toThrow(/Cannot add the workspace root/);
+  });
+
+  test("end-to-end: an ignored untracked file disappears from git status", async () => {
+    const dir = await freshRoot();
+    await execGit(dir, ["init", "-q"]);
+    await execGit(dir, ["config", "user.email", "test@example.com"]);
+    await execGit(dir, ["config", "user.name", "Test"]);
+    await execGit(dir, ["config", "commit.gpgsign", "false"]);
+    await fs.writeFile(path.join(dir, "README.md"), "# x\n");
+    await execGit(dir, ["add", "."]);
+    await execGit(dir, ["commit", "-q", "-m", "initial"]);
+    await fs.writeFile(path.join(dir, "scratch.log"), "noise\n");
+
+    const before = await getGitFileStatus(dir);
+    expect(before.entries["scratch.log"]?.status).toBe("untracked");
+
+    await addToGitignore(dir, "scratch.log");
+
+    const after = await getGitFileStatus(dir);
+    expect(after.entries["scratch.log"]).toBeUndefined();
+    expect(after.entries[".gitignore"]?.status).toBe("untracked");
   });
 });

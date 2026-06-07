@@ -846,6 +846,13 @@ export const fileDeleteSchema = z.object({
 });
 export type FileDelete = z.infer<typeof fileDeleteSchema>;
 
+export const fileGitIgnoreSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  isDirectory: z.boolean().optional(),
+});
+export type FileGitIgnore = z.infer<typeof fileGitIgnoreSchema>;
+
 export const fileMoveSchema = z.object({
   rootPath: z.string().min(1),
   fromPath: z.string().min(1),

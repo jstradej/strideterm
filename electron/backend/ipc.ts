@@ -37,6 +37,7 @@ import {
   fileCreateSchema,
   fileRenameSchema,
   fileDeleteSchema,
+  fileGitIgnoreSchema,
   fileMoveSchema,
   fileGitStatusSchema,
   fileGitRefsSchema,
@@ -1544,6 +1545,12 @@ export function registerIpc(
       return fm.deleteEntry(p.rootPath, p.relativePath);
     }),
   );
+  ipcMain.handle("file:git-ignore", async (_event, payload) =>
+    withOperationPromise({ opId: "file:git-ignore" }, async () => {
+      const p = validateIpc(fileGitIgnoreSchema, payload, "file:git-ignore");
+      return fm.addToGitignore(p.rootPath, p.relativePath, p.isDirectory === true);
+    }),
+  );
   ipcMain.handle("file:move", async (_event, payload) =>
     withOperationPromise({ opId: "file:move" }, async () => {
       const p = validateIpc(fileMoveSchema, payload, "file:move");
@@ -2110,6 +2117,7 @@ export function registerIpc(
     ipcMain.removeHandler("file:create-dir");
     ipcMain.removeHandler("file:rename");
     ipcMain.removeHandler("file:delete");
+    ipcMain.removeHandler("file:git-ignore");
     ipcMain.removeHandler("file:move");
     ipcMain.removeHandler("file:copy");
     ipcMain.removeHandler("file:open-in-explorer");

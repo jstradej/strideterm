@@ -668,6 +668,42 @@ export async function deleteEntry(rootPath: string, relativePath: string): Promi
   return { ok: true };
 }
 
+/**
+ * Append a workspace-relative path to the root .gitignore. Entries are
+ * anchored with a leading "/" so they match only the clicked path (a bare
+ * "logs" would also ignore every nested "logs" directory); directories get a
+ * trailing "/" so the pattern can't swallow a same-named file. No-op when an
+ * identical entry already exists; creates .gitignore when missing.
+ */
+export async function addToGitignore(
+  rootPath: string,
+  relativePath: string,
+  isDirectory = false,
+): Promise<{ ok: boolean; entry: string; added: boolean }> {
+  // Path-traversal validation only — the target itself may already be
+  // deleted from disk (ignoring a path that's gone is harmless).
+  const absTarget = safePath(rootPath, relativePath);
+  await assertRealPathInside(rootPath, absTarget);
+  const normalized = relativePath
+    .replace(/\\/g, "/")
+    .replace(/^(\.\/)+/, "")
+    .replace(/^\/+|\/+$/g, "");
+  if (!normalized || normalized === ".") throw new Error("Cannot add the workspace root to .gitignore");
+  const entry = `/${normalized}${isDirectory ? "/" : ""}`;
+  const gitignorePath = path.join(path.resolve(rootPath), ".gitignore");
+  let existing = "";
+  try {
+    existing = await fs.readFile(gitignorePath, "utf8");
+  } catch {
+    // No .gitignore yet — appendFile below creates it.
+  }
+  const lines = existing.split(/\r?\n/).map((line) => line.trim());
+  if (lines.includes(entry)) return { ok: true, entry, added: false };
+  const needsNewline = existing.length > 0 && !existing.endsWith("\n");
+  await fs.appendFile(gitignorePath, `${needsNewline ? "\n" : ""}${entry}\n`, "utf8");
+  return { ok: true, entry, added: true };
+}
+
 export async function moveEntry(rootPath: string, fromPath: string, toPath: string): Promise<EntryResult> {
   const absFrom = safePath(rootPath, fromPath);
   const absTo = safePath(rootPath, toPath);

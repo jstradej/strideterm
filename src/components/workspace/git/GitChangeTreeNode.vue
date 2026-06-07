@@ -76,7 +76,7 @@ const emit = defineEmits<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: "select", node: Record<string, any>): void;
   (e: "toggle-select", path: string): void;
-  (e: "context-menu", payload: { path: string; name: string; x: number; y: number }): void;
+  (e: "context-menu", payload: { path: string; name: string; kind: "file" | "dir"; x: number; y: number }): void;
 }>();
 
 const isDir = computed(() => props.node.kind === "dir");
@@ -93,13 +93,13 @@ function onClick() {
 }
 
 function onContextMenu(e: MouseEvent) {
-  // Only files can be deleted from the changes view — directories are
-  // synthetic tree groupings, not real change entries.
-  if (props.node.kind !== "file") return;
+  // Directories in this tree are synthetic groupings, but their path maps to
+  // a real directory on disk, so delete / add-to-.gitignore work on them too.
   e.preventDefault();
   emit("context-menu", {
     path: props.node.path as string,
     name: props.node.name as string,
+    kind: props.node.kind === "dir" ? "dir" : "file",
     x: e.clientX,
     y: e.clientY,
   });

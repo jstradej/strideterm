@@ -771,6 +771,7 @@ export function createRemoteTransport(): Transport {
     fileCreateDir: (p) => fetchJson("/api/file/create-dir", p),
     fileRename: (p) => fetchJson("/api/file/rename", p),
     fileDelete: (p) => fetchJson("/api/file/delete", p),
+    fileGitIgnore: (p) => fetchJson("/api/file/git-ignore", p),
     fileMove: (p) => fetchJson("/api/file/move", p),
     fileCopy: (p) => fetchJson("/api/file/copy", p),
     fileOpenInExplorer: (p) => fetchJson("/api/file/open-in-explorer", p),
