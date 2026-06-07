@@ -12,7 +12,7 @@ When something noteworthy happens in strIDEterm — a task agent finishes, an ag
 
 - **Tap an inline button** — fires the action immediately for short, low-risk operations, or pops a confirmation prompt for destructive ones (stop, reset).
 - **Use Telegram Reply** — reply to a notification with free text and the bot routes it to the right workspace as a `custom-message` command.
-- **Type a slash command** — `/menu` (or `/start`, which is aliased to `/menu`), `/status`, `/workspaces`, `/task`, `/prs`, `/screenshot`, `/tunnel`, `/help`. `/menu` is the recommended entry point on mobile because tapping is faster than typing.
+- **Type a slash command** — `/menu` (or `/start`, which is aliased to `/menu`), `/status`, `/workspaces`, `/task`, `/prs`, `/screenshot`, `/tunnel`, `/profile`, `/help`. `/menu` is the recommended entry point on mobile because tapping is faster than typing.
 
 The whole feature works over Telegram's `getUpdates` long-polling API, so the strIDEterm machine only needs outbound HTTPS to `api.telegram.org`.
 
@@ -43,7 +43,7 @@ When no connection is configured the panel shows a short pitch and a primary **S
 
 - `completed` — agent or shell command finished
 - `waiting` — agent paused waiting for input
-- `subagent_done` — a sub-agent (Task tool) finished within the current turn — one ping per subagent, with only a Dismiss button to keep the chat tidy during complex turns
+- `subagent_done` — a sub-agent (Task tool) finished within the current turn. Opt-in: these alerts exist only when **Settings → General → Notify on sub-agent completion** is enabled (off by default — only the end-of-turn `completed` notifies). When enabled, one ping per subagent with only a Dismiss button to keep the chat tidy during complex turns
 - `review` — Azure DevOps or GitHub PR alert (new comment, your review requested, …)
 - `pipeline` — CI pipeline check completed
 - `error` — error-class notifications
@@ -55,7 +55,7 @@ Each connection has its own filter, so different chats can subscribe to differen
 
 In a multi-profile install a Telegram connection's **Profile** setting controls which profile's alerts arrive in that chat:
 
-- **All profiles (global, default)** — the connection receives alerts from every profile. The profile name is shown on each Telegram message so you can tell at a glance where the alert came from. This is what you want when you have a single bot for everything.
+- **All profiles (global, default)** — the connection receives alerts from every profile. The profile name is shown on each Telegram message so you can tell at a glance where the alert came from. This is what you want when you have a single bot for everything. Commands from a global chat resolve their target profile automatically: a single defined profile is used directly; with several profiles defined but exactly **one open in desktop windows**, that one is used (the bot says "Acting on profile X" once so nothing is silent); only a genuinely ambiguous case asks you to pick — and the pick is then remembered for the chat until you change it with `/profile` (or until the app restarts).
 - **Specific profile** — strict isolation. Only alerts from workspaces in that profile reach the chat, and follow-up commands from this chat always target that profile/context. A profile may be open in several desktop windows at once: window-needing actions pick the window deterministically — a window already showing the target workspace wins, then the most recently focused window of the profile — and `/screenshot` of the "current" window asks you to pick when several windows qualify.
 
 When you click a Telegram action (Open PR review, workspace `/screenshot`, …) for a profile that isn't currently open in any desktop window, strIDEterm spawns a fresh window for that profile, runs the action there, and leaves the window open. Runtime-only commands (`/status`, `/workspaces`, `/task`, task lifecycle buttons) never need a desktop window at all. You don't have to remember which profile lives in which window.
@@ -72,11 +72,12 @@ When you click a Telegram action (Open PR review, workspace `/screenshot`, …) 
 | `/screenshot`       | Capture a PNG of the strIDEterm window (current or any workspace).                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `/tunnel`           | Send the strIDEterm remote-access URL to your phone — auto-picks the Cloudflare quick-tunnel URL when connected, otherwise LAN URLs, with the auth token already appended. Aliased as `/url`. When the Cloudflare tunnel has dropped, the message includes a 🔁 **Reconnect tunnel** button.                                                                                                                                                                           |
 | `/tunnel reconnect` | Restart a dropped Cloudflare quick tunnel from chat (same as the 🔁 button). Only available when remote access is enabled and the tunnel was previously started from the desktop. Aliased as `/reconnect`. If the app still reports the tunnel as _connected_ (cloudflared can hold a dead edge connection while the process stays alive), the bot asks for confirmation — tap **Force restart** or type `/tunnel reconnect force`. A restart issues a new public URL. |
+| `/profile`          | Show which profile this chat's commands target and switch it (numbered picker; the choice is pinned for the chat). `/profile clear` unpins. Only meaningful on global (unbound) connections — a connection bound to a profile in Settings always uses that profile.                                                                                                                                                                                                    |
 | `/help`             | Print the command list.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 Slash-prefix is optional — both `/status` and `status` work, since mobile keyboards make `/` annoying to type.
 
-In multi-profile setups, `/menu` itself is not bound to a profile. Buttons such as **Status**, **New task**, **Workspaces**, **Pull requests**, **Screenshot**, or **Tunnel URL** use the same profile resolution as their matching slash command: a profile-bound Telegram connection runs directly, a single open profile runs directly, and an unbound chat with multiple open profiles asks you to pick one for that action.
+In multi-profile setups, `/menu` itself is not bound to a profile. Buttons such as **Status**, **New task**, **Workspaces**, **Pull requests**, **Screenshot**, or **Tunnel URL** use the same profile resolution as their matching slash command, in order: a profile-bound Telegram connection, the chat's pinned profile (set via the picker or `/profile`), the single defined profile, the only profile open in desktop windows — and only when none of those applies does the bot ask you to pick one (remembering the answer for next time).
 
 ### Task control from chat
 

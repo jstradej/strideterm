@@ -333,12 +333,17 @@ interface PendingRequest {
    * window — without this the user has to be in the originating window's
    * profile when they confirm, which defeats the point of a global bot. */
   profileId?: string;
-  /** Command to resume after choosing a profile for an unbound connection */
+  /** Command to resume after choosing a profile for an unbound connection.
+   * "bind" only pins the chosen profile for the chat (used by /profile). */
   profileCommand?: {
-    type: "status" | "workspaces" | "task" | "screenshot" | "prs" | "tunnel";
+    type: "status" | "workspaces" | "task" | "screenshot" | "prs" | "tunnel" | "bind";
     screenshotArg?: string;
   };
 }
+
+/** How a command's target profile was determined — drives the one-time
+ * "Acting on profile X" notice for the automatic sources. */
+type ProfileResolutionSource = "explicit" | "connection" | "pinned" | "only-profile" | "only-open-profile";
 
 // ---------------------------------------------------------------------------
 // TelegramManager
@@ -411,6 +416,18 @@ export class TelegramManager extends EventEmitter {
 
   /** Per-chat cooldown for /task (and similar destructive commands) */
   private lastTaskCommandAt: Map<string, number> = new Map();
+
+  /** Per-chat profile pin (chatId → profileId), set when the user answers the
+   * profile picker or runs /profile. Lets follow-up commands skip the picker
+   * on unbound (global) connections. In-memory by design: cleared on app
+   * restart (the only-open-profile default below covers the common case
+   * across restarts) and validated against the current profile list at use
+   * time so a deleted profile can never be silently targeted. */
+  private pinnedProfileByChat: Map<string, string> = new Map();
+
+  /** Last auto-resolved profile announced per chat ("Acting on profile X")
+   * so the notice is sent once per change, not on every command. */
+  private announcedProfileByChat: Map<string, string> = new Map();
 
   /** Runtime-provided getter for current workspace list — used by /status and /task commands */
   private getWorkspaces: (() => TelegramWorkspaceInfo[]) | null = null;
@@ -520,17 +537,71 @@ export class TelegramManager extends EventEmitter {
     return [{ id: active, name: active }];
   }
 
-  private _resolveConnectionProfileId(conn: TelegramConnectionConfig, explicitProfileId?: string): string | null {
+  private _resolveCommandProfile(
+    conn: TelegramConnectionConfig,
+    explicitProfileId?: string,
+  ): { profileId: string; source: ProfileResolutionSource } | null {
     const profiles = this._profileChoices();
     const profileExists = (id: string) => profiles.some((profile) => profile.id === id);
-    if (explicitProfileId) return profileExists(explicitProfileId) ? explicitProfileId : null;
-    if (conn.profileId) {
-      if (profileExists(conn.profileId)) return conn.profileId;
-      // Bound profile no longer exists — fall through to the picker.
-      return profiles.length === 0 ? conn.profileId : null;
+    if (explicitProfileId) {
+      return profileExists(explicitProfileId) ? { profileId: explicitProfileId, source: "explicit" } : null;
     }
-    if (profiles.length <= 1) return profiles[0]?.id || this.getActiveProfileId?.() || "default";
+    if (conn.profileId) {
+      if (profileExists(conn.profileId)) return { profileId: conn.profileId, source: "connection" };
+      // Bound profile no longer exists — fall through to the picker.
+      return profiles.length === 0 ? { profileId: conn.profileId, source: "connection" } : null;
+    }
+    // Chat-level pin (profile picker reply or /profile). Re-validated on
+    // every command — a pin to a deleted profile is dropped, not targeted.
+    const pinned = this.pinnedProfileByChat.get(conn.chatId);
+    if (pinned) {
+      if (profileExists(pinned)) return { profileId: pinned, source: "pinned" };
+      this.pinnedProfileByChat.delete(conn.chatId);
+    }
+    if (profiles.length <= 1) {
+      return { profileId: profiles[0]?.id || this.getActiveProfileId?.() || "default", source: "only-profile" };
+    }
+    // Several profiles exist but exactly one is open in desktop windows —
+    // the overwhelmingly likely target for a command typed right now. The
+    // chat gets a one-time "Acting on profile X" notice (see
+    // _maybeAnnounceActingProfile) so this default never routes commands
+    // somewhere surprising; headless profiles stay reachable via /profile.
+    const openProfiles = new Set((this.getWindowSlots?.() ?? []).map((slot) => slot.profileId || "default"));
+    if (openProfiles.size === 1) {
+      const only = [...openProfiles][0];
+      if (profileExists(only)) return { profileId: only, source: "only-open-profile" };
+    }
     return null;
+  }
+
+  private _resolveConnectionProfileId(conn: TelegramConnectionConfig, explicitProfileId?: string): string | null {
+    return this._resolveCommandProfile(conn, explicitProfileId)?.profileId ?? null;
+  }
+
+  private _profileName(profileId: string): string {
+    const profile = this._profileChoices().find((p) => p.id === profileId);
+    return profile?.name || profileId;
+  }
+
+  /** One-time notice when a command profile was chosen automatically (chat
+   * pin or only-open-profile default) so the user always knows where their
+   * commands land. Explicit picks and connection-bound profiles are already
+   * obvious and stay silent. Re-announces only when the profile changes. */
+  private async _maybeAnnounceActingProfile(
+    chatId: string,
+    token: string,
+    profileId: string,
+    source: ProfileResolutionSource,
+  ): Promise<void> {
+    if (source !== "pinned" && source !== "only-open-profile") return;
+    if (this.announcedProfileByChat.get(chatId) === profileId) return;
+    this.announcedProfileByChat.set(chatId, profileId);
+    await this._sendText(
+      token,
+      chatId,
+      `🧭 Acting on profile *${escapeMarkdown(this._profileName(profileId))}* — send /profile to switch\\.`,
+      true,
+    );
   }
 
   private async _resolveProfileOrPrompt(
@@ -543,8 +614,11 @@ export class TelegramManager extends EventEmitter {
     // A profile bound to this connection is valid even when no desktop
     // window shows it — commands are profile-scoped; window-needing actions
     // resolve (or spawn) a window separately.
-    const resolved = this._resolveConnectionProfileId(conn, explicitProfileId);
-    if (resolved) return resolved;
+    const resolved = this._resolveCommandProfile(conn, explicitProfileId);
+    if (resolved) {
+      await this._maybeAnnounceActingProfile(chatId, token, resolved.profileId, resolved.source);
+      return resolved.profileId;
+    }
 
     const choices = this._profileChoices();
     if (choices.length === 0) {
@@ -557,7 +631,7 @@ export class TelegramManager extends EventEmitter {
       lines.push(`${i + 1}\\. *${escapeMarkdown(profile.name || profile.id)}*`);
     }
     lines.push("");
-    lines.push("Reply with a number\\.");
+    lines.push("Reply with a number — remembered for this chat \\(/profile to change later\\)\\.");
 
     this.pendingRequests.set(chatId, {
       type: "profile-selection",
@@ -1710,6 +1784,12 @@ export class TelegramManager extends EventEmitter {
       await this._handleMenuCommand(chatId, token);
       return;
     }
+    if (lower === "/profile" || lower === "profile" || lower === "/profile clear" || lower === "profile clear") {
+      const clear = lower.endsWith(" clear");
+      log.info("telegram command: /profile", { chatId, clear });
+      await this._handleProfileCommand(chatId, token, conn, clear);
+      return;
+    }
     if (lower === "/help" || lower === "help") {
       log.debug("telegram command: /help", { chatId });
       await this._sendText(
@@ -1726,6 +1806,7 @@ export class TelegramManager extends EventEmitter {
           "`/tunnel` — get the strIDEterm remote URL \\(LAN / Cloudflare\\) on this phone",
           "`/tunnel reconnect` — restart the Cloudflare tunnel when it drops",
           "`/screenshot` — capture a screenshot of the strIDEterm window",
+          "`/profile` — show or switch which profile commands target \\(`/profile clear` unpins\\)",
           "",
           "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
         ].join("\n"),
@@ -1754,8 +1835,21 @@ export class TelegramManager extends EventEmitter {
           );
           return;
         }
+        // Remember the choice so follow-up commands from this chat skip the
+        // picker. Pre-seeding the announce map keeps the very next command
+        // from immediately re-announcing what the user just picked.
+        this.pinnedProfileByChat.set(chatId, chosen.id);
+        this.announcedProfileByChat.set(chatId, chosen.id);
         const scopedConn = { ...conn, profileId: chosen.id };
         switch (pending.profileCommand.type) {
+          case "bind":
+            await this._sendText(
+              token,
+              chatId,
+              `✅ Profile pinned: *${escapeMarkdown(chosen.name || chosen.id)}*\\. Commands from this chat now target it\\. Send \`/profile clear\` to unpin\\.`,
+              true,
+            );
+            return;
           case "status":
             await this._handleStatusCommand(chatId, token, scopedConn, chosen.id);
             return;
@@ -2377,6 +2471,79 @@ export class TelegramManager extends EventEmitter {
     }).catch((err) => {
       log.warn("telegram /menu send failed", { err: (err as Error).message });
     });
+  }
+
+  /**
+   * `/profile` — show which profile this chat's commands target and offer a
+   * switch (numbered picker that pins the choice); `/profile clear` drops the
+   * chat pin. Connection-bound profiles (Settings → Telegram) always win and
+   * can't be changed from chat — that binding also scopes alert delivery.
+   */
+  private async _handleProfileCommand(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    clear: boolean,
+  ): Promise<void> {
+    if (conn.profileId) {
+      await this._sendText(
+        token,
+        chatId,
+        `🧭 This connection is bound to profile *${escapeMarkdown(this._profileName(conn.profileId))}* in Settings → Telegram\\. Change it there — chat\\-level switching only applies to unbound \\(global\\) connections\\.`,
+        true,
+      );
+      return;
+    }
+    if (clear) {
+      const had = this.pinnedProfileByChat.delete(chatId);
+      this.announcedProfileByChat.delete(chatId);
+      await this._sendText(
+        token,
+        chatId,
+        had
+          ? "✅ Profile pin cleared\\. Commands resolve automatically again \\(single or only\\-open profile\\); you'll be asked when it's ambiguous\\."
+          : "ℹ️ No profile pin was set\\.",
+        true,
+      );
+      return;
+    }
+    const resolved = this._resolveCommandProfile(conn);
+    const choices = this._profileChoices();
+    const lines: string[] = [];
+    if (resolved) {
+      const sourceLabel: Record<ProfileResolutionSource, string> = {
+        explicit: "explicit",
+        connection: "bound in Settings",
+        pinned: "pinned from this chat",
+        "only-profile": "the only profile",
+        "only-open-profile": "the only profile open in a window",
+      };
+      lines.push(
+        `🧭 Commands target profile *${escapeMarkdown(this._profileName(resolved.profileId))}* \\(${escapeMarkdown(sourceLabel[resolved.source])}\\)\\.`,
+      );
+    } else {
+      lines.push("🧭 No profile is currently resolvable — each command will ask\\.");
+    }
+    if (choices.length <= 1) {
+      await this._sendText(token, chatId, lines.join("\n"), true);
+      return;
+    }
+    lines.push("");
+    lines.push("*Switch to:*");
+    for (let i = 0; i < choices.length; i++) {
+      lines.push(`${i + 1}\\. *${escapeMarkdown(choices[i].name || choices[i].id)}*`);
+    }
+    lines.push("");
+    lines.push("Reply with a number, or send `/profile clear` to unpin\\.");
+    this.pendingRequests.set(chatId, {
+      type: "profile-selection",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      profileChoices: choices,
+      profileCommand: { type: "bind" },
+    });
+    await this._sendText(token, chatId, lines.join("\n"), true);
   }
 
   /**

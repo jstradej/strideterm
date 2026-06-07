@@ -5096,3 +5096,251 @@ describe("TelegramManager — multiple windows per profile", () => {
     expect(summary).toContain("candidateWindowCount=2");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Command profile resolution — chat pin + only-open-profile default + /profile
+// ---------------------------------------------------------------------------
+
+describe("TelegramManager — command profile resolution (pin + open-window default)", () => {
+  function setup(opts: {
+    profiles: Array<{ id: string; name: string }>;
+    slots: Array<{ id: string; profileId: string }>;
+    workspaces?: TelegramWorkspaceInfo[];
+  }) {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setProfilesGetter(() => opts.profiles);
+    manager.setWindowSlotsGetter(() => opts.slots);
+    manager.setWorkspacesGetter(() => opts.workspaces ?? []);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_token: string, _method: string, body: Record<string, unknown>) => {
+      if (body.text) sentTexts.push(body.text as string);
+      return { ok: true, result: { message_id: 1 } };
+    };
+    return { manager, sentTexts };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function send(manager: any, text: string, connOverrides: Partial<TelegramConnectionConfig> = {}) {
+    await manager._handleMessage(
+      { message_id: 1, chat: { id: 12345 }, text },
+      makeConnection(connOverrides),
+      "token123",
+    );
+  }
+
+  const TWO_PROFILES = [
+    { id: "p1", name: "Personal" },
+    { id: "p2", name: "Work" },
+  ];
+
+  function workTask(): TelegramWorkspaceInfo {
+    return makeWorkspace({
+      id: "work-task",
+      name: "work-task",
+      kind: "task",
+      profileId: "p2",
+      task: { state: "running", description: "Work" },
+    });
+  }
+
+  test("auto-targets the only OPEN profile when several profiles are defined (no picker)", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [{ id: "w1", profileId: "p2" }],
+      workspaces: [workTask()],
+    });
+    await send(manager, "/status");
+
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(false);
+    // One-time notice tells the user where commands land.
+    expect(sentTexts.some((t) => t.includes("Acting on profile") && t.includes("Work"))).toBe(true);
+    expect(sentTexts.some((t) => t.includes("work\\-task"))).toBe(true);
+  });
+
+  test("announces the acting profile only once per chat, not on every command", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [{ id: "w1", profileId: "p2" }],
+      workspaces: [workTask()],
+    });
+    await send(manager, "/status");
+    await send(manager, "/status");
+
+    const notices = sentTexts.filter((t) => t.includes("Acting on profile"));
+    expect(notices).toHaveLength(1);
+  });
+
+  test("still asks when several profiles are open in windows", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [
+        { id: "w1", profileId: "p1" },
+        { id: "w2", profileId: "p2" },
+      ],
+    });
+    await send(manager, "/status");
+
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(true);
+  });
+
+  test("remembers the picker choice — follow-up commands skip the picker", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [
+        { id: "w1", profileId: "p1" },
+        { id: "w2", profileId: "p2" },
+      ],
+      workspaces: [workTask()],
+    });
+    await send(manager, "/status");
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(true);
+
+    // Reply "2" → Work; the command runs scoped and the pick is pinned.
+    await send(manager, "2");
+    expect(sentTexts.some((t) => t.includes("work\\-task"))).toBe(true);
+
+    sentTexts.length = 0;
+    await send(manager, "/status");
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(false);
+    expect(sentTexts.some((t) => t.includes("work\\-task"))).toBe(true);
+    // Picking from the picker pre-seeds the announce map — no redundant notice.
+    expect(sentTexts.some((t) => t.includes("Acting on profile"))).toBe(false);
+  });
+
+  test("a pin to a deleted profile is dropped and resolution falls through", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [{ id: "w1", profileId: "p1" }],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pinnedProfileByChat.set("12345", "p-gone");
+    await send(manager, "/status");
+
+    // Falls through to the only-open-profile default (p1), no picker.
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(false);
+    expect(sentTexts.some((t) => t.includes("Acting on profile") && t.includes("Personal"))).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any).pinnedProfileByChat.has("12345")).toBe(false);
+  });
+
+  test("connection binding wins over a chat pin", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [],
+      workspaces: [workTask()],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pinnedProfileByChat.set("12345", "p1");
+    await send(manager, "/status", { profileId: "p2" });
+
+    // Scoped to the connection-bound Work profile, silently (no notice).
+    expect(sentTexts.some((t) => t.includes("work\\-task"))).toBe(true);
+    expect(sentTexts.some((t) => t.includes("Acting on profile"))).toBe(false);
+  });
+
+  test("/profile shows the acting profile and a numbered switch list", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [{ id: "w1", profileId: "p2" }],
+    });
+    await send(manager, "/profile");
+
+    const text = sentTexts.join("\n");
+    expect(text).toContain("Commands target profile");
+    expect(text).toContain("Work");
+    expect(text).toContain("only profile open in a window");
+    expect(text).toContain("Switch to:");
+    expect(text).toContain("Personal");
+  });
+
+  test("/profile reply pins the chosen profile for follow-up commands", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [
+        { id: "w1", profileId: "p1" },
+        { id: "w2", profileId: "p2" },
+      ],
+      workspaces: [workTask()],
+    });
+    await send(manager, "/profile");
+    await send(manager, "2");
+    expect(sentTexts.some((t) => t.includes("Profile pinned") && t.includes("Work"))).toBe(true);
+
+    sentTexts.length = 0;
+    await send(manager, "/status");
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(false);
+    expect(sentTexts.some((t) => t.includes("work\\-task"))).toBe(true);
+  });
+
+  test("/profile clear unpins — ambiguous commands ask again", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: TWO_PROFILES,
+      slots: [
+        { id: "w1", profileId: "p1" },
+        { id: "w2", profileId: "p2" },
+      ],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pinnedProfileByChat.set("12345", "p2");
+    await send(manager, "/profile clear");
+    expect(sentTexts.some((t) => t.includes("Profile pin cleared"))).toBe(true);
+
+    sentTexts.length = 0;
+    await send(manager, "/status");
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(true);
+  });
+
+  test("/profile clear without a pin reports there was nothing to clear", async () => {
+    const { manager, sentTexts } = setup({ profiles: TWO_PROFILES, slots: [] });
+    await send(manager, "/profile clear");
+    expect(sentTexts.some((t) => t.includes("No profile pin was set"))).toBe(true);
+  });
+
+  test("/profile on a connection-bound chat explains the Settings binding (no picker)", async () => {
+    const { manager, sentTexts } = setup({ profiles: TWO_PROFILES, slots: [] });
+    await send(manager, "/profile", { profileId: "p2" });
+
+    const text = sentTexts.join("\n");
+    expect(text).toContain("bound to profile");
+    expect(text).toContain("Work");
+    expect(text).not.toContain("Switch to:");
+  });
+
+  test("single defined profile still resolves directly with no notice (unchanged behavior)", async () => {
+    const { manager, sentTexts } = setup({
+      profiles: [{ id: "p1", name: "Personal" }],
+      slots: [],
+    });
+    await send(manager, "/status");
+
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(false);
+    expect(sentTexts.some((t) => t.includes("Acting on profile"))).toBe(false);
+  });
+
+  test("no window slots getter → multiple profiles still ask (no smart default available)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setProfilesGetter(() => TWO_PROFILES);
+    manager.setWorkspacesGetter(() => []);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_token: string, _method: string, body: Record<string, unknown>) => {
+      if (body.text) sentTexts.push(body.text as string);
+      return { ok: true, result: { message_id: 1 } };
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 1, chat: { id: 12345 }, text: "/status" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(true);
+  });
+});

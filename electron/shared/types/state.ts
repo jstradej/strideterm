@@ -22,6 +22,13 @@ export interface NotificationSettings {
    * can opt back in on a specific panel via PanelState.alertsForceOn.
    */
   agentsOnly: boolean;
+  /**
+   * When true, a sub-agent finishing within a turn (Claude Code SubagentStop)
+   * raises a user-facing "finished" notification. Off by default — sub-agent
+   * completions read as false "done" signals; most users only act on the
+   * end-of-turn Stop.
+   */
+  subagentCompletion: boolean;
 }
 
 export interface RemoteAccessSettings {

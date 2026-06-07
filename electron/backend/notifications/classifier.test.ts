@@ -58,8 +58,14 @@ describe("classifyHookEvent — Stop hook", () => {
 });
 
 describe("classifyHookEvent — SubagentStop", () => {
-  test("SubagentStop → user-facing, T1, normal, subagent_done", () => {
-    expect(classifyHookEvent("SubagentStop")).toMatchObject({
+  test("SubagentStop → system-only by default (sub-agent pings are opt-in)", () => {
+    expect(classifyHookEvent("SubagentStop")).toEqual({ userFacing: false });
+    expect(classifyHookEvent("SubagentStop", "", {})).toEqual({ userFacing: false });
+    expect(classifyHookEvent("SubagentStop", "", { subagentCompletion: false })).toEqual({ userFacing: false });
+  });
+
+  test("SubagentStop → user-facing, T1, normal, subagent_done when opted in", () => {
+    expect(classifyHookEvent("SubagentStop", "", { subagentCompletion: true })).toMatchObject({
       userFacing: true,
       tier: 1,
       urgency: "normal",
@@ -67,8 +73,8 @@ describe("classifyHookEvent — SubagentStop", () => {
     });
   });
 
-  test("SubagentStop kind is distinct from completed (so users can filter independently)", () => {
-    const sub = classifyHookEvent("SubagentStop");
+  test("opted-in SubagentStop kind is distinct from completed (so users can filter independently)", () => {
+    const sub = classifyHookEvent("SubagentStop", "", { subagentCompletion: true });
     const stop = classifyHookEvent("Stop");
     expect(sub.kind).not.toBe(stop.kind);
   });

@@ -1058,7 +1058,9 @@ export async function createRuntime({
     }
 
     // --- 3. Classify ---
-    const classification = classifyHookEvent(hook, subtype);
+    const classification = classifyHookEvent(hook, subtype, {
+      subagentCompletion: state.settings?.notifications?.subagentCompletion === true,
+    });
 
     // --- 4. Side-effects for system-only events (applied regardless of gating) ---
     applyHookSideEffects(signal, hook, subtype);

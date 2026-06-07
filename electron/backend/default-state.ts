@@ -430,6 +430,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         agentHook: APP_CONFIG.notifications.agentHook,
         debug: APP_CONFIG.notifications.debug,
         agentsOnly: APP_CONFIG.notifications.agentsOnly,
+        subagentCompletion: APP_CONFIG.notifications.subagentCompletion,
       },
       remoteAccess: {
         enabled: APP_CONFIG.remoteAccess.enabled,
@@ -1061,6 +1062,10 @@ export function normalizeState(
         typeof rawNotifications.agentsOnly === "boolean"
           ? rawNotifications.agentsOnly
           : defaults.settings.notifications.agentsOnly,
+      subagentCompletion:
+        typeof rawNotifications.subagentCompletion === "boolean"
+          ? rawNotifications.subagentCompletion
+          : defaults.settings.notifications.subagentCompletion,
     },
     remoteAccess: {
       ...defaults.settings.remoteAccess,

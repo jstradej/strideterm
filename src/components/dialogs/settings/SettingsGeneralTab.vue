@@ -257,6 +257,20 @@
 
       <div
         class="settings-check"
+        title="Also notify when a sub-agent (e.g. a Claude Code Task tool) finishes mid-turn. Off by default: sub-agent completions are easy to mistake for the final result — usually only the end-of-turn notification matters."
+      >
+        <label class="settings-check__row">
+          <input v-model="form.notifications.subagentCompletion" type="checkbox" />
+          <span>Notify on sub-agent completion</span>
+        </label>
+        <small class="settings-check__help">
+          Off = only the final end-of-turn notification. On = one extra ping per finished sub-agent (kind subagent_done,
+          filterable per Telegram connection).
+        </small>
+      </div>
+
+      <div
+        class="settings-check"
         title="Inject bash/zsh/PowerShell OSC 133 escape sequences into every PTY so strIDEterm can detect command completion instantly (zero false positives) instead of relying on silence timers."
       >
         <label class="settings-check__row">

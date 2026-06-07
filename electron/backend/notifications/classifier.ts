@@ -21,11 +21,22 @@ export interface Classification {
 
 const SYSTEM_ONLY: Classification = Object.freeze({ userFacing: false });
 
+export interface ClassifyOptions {
+  /**
+   * Raise a user-facing alert for SubagentStop (kind "subagent_done"). Off by
+   * default — sub-agents finishing mid-turn read as false "done" signals;
+   * most users only act on the end-of-turn Stop. Mirrors
+   * settings.notifications.subagentCompletion.
+   */
+  subagentCompletion?: boolean;
+}
+
 /**
  * @param hook     — hook name (Notification, Stop, SubagentStop, UserPromptSubmit, ...)
  * @param subtype  — for Notification: idle_prompt / permission_prompt / etc.
+ * @param options  — user settings that influence classification.
  */
-export function classifyHookEvent(hook: unknown, subtype?: unknown): Classification {
+export function classifyHookEvent(hook: unknown, subtype?: unknown, options?: ClassifyOptions): Classification {
   const hookName = String(hook || "").trim();
   const sub = String(subtype || "").trim();
 
@@ -91,9 +102,12 @@ export function classifyHookEvent(hook: unknown, subtype?: unknown): Classificat
   if (hookName === "SubagentStop") {
     // Sub-agent finished within a turn (e.g. a Task tool completed). Task
     // runner gets first dibs via onSubagentStop — when it consumes the hook
-    // for a task workspace, this user-facing branch never fires.
-    // Distinct kind so users can filter subagent pings out of Telegram
-    // without also dropping turn-end Stop notifications.
+    // for a task workspace, this branch never fires. User-facing only when
+    // the user opted in (settings.notifications.subagentCompletion, default
+    // off): one ping per finished sub-agent is noise for most users, who
+    // only act on the turn-end Stop. Distinct kind so Telegram forwardKinds
+    // can filter subagent pings independently of Stop notifications.
+    if (!options?.subagentCompletion) return SYSTEM_ONLY;
     return {
       userFacing: true,
       tier: 1,

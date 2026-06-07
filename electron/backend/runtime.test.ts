@@ -1612,6 +1612,106 @@ describe("runtime integration", () => {
     });
   });
 
+  test("SubagentStop does not raise a user alert by default (only the turn-end Stop does)", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      // A sub-agent finishing mid-turn is internal noise — no alert.
+      fixture.runtime.notifyAgentHook("backend:shell", "", "SubagentStop");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+
+      // The eventual turn-end Stop still alerts as before.
+      fixture.runtime.notifyAgentHook("backend:shell", "", "Stop");
+      const payload = fixture.runtime.getPayload();
+      expect(payload.attention.byProject.backend).toMatchObject({ count: 1 });
+      expect(payload.attention.byProject.backend.alerts[0]).toMatchObject({
+        panelId: "shell",
+        kind: "completed",
+        detail: "hook:Stop",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("SubagentStop raises a subagent_done alert when notifications.subagentCompletion is enabled", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          settings: {
+            notifications: { subagentCompletion: true },
+          },
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      fixture.runtime.notifyAgentHook("backend:shell", "", "SubagentStop");
+      const payload = fixture.runtime.getPayload();
+      expect(payload.attention.byProject.backend).toMatchObject({ count: 1 });
+      expect(payload.attention.byProject.backend.alerts[0]).toMatchObject({
+        panelId: "shell",
+        kind: "subagent_done",
+        detail: "hook:SubagentStop",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("notifyAgentHook raises instant alert for idle_prompt", async () => {
     vi.useFakeTimers();
     try {

@@ -116,6 +116,41 @@ describe("SettingsDialog — notifications.agentsOnly", () => {
   });
 });
 
+describe("SettingsDialog — notifications.subagentCompletion", () => {
+  function findSubagentCheckbox(wrapper: VueWrapper) {
+    const labels = wrapper.findAll("label.settings-check__row");
+    const target = labels.find((label) => label.text().includes("Notify on sub-agent completion"));
+    if (!target) throw new Error("Sub-agent completion checkbox not found");
+    return target.find('input[type="checkbox"]');
+  }
+
+  test("checkbox defaults to unchecked when settings omit subagentCompletion (opt-in)", async () => {
+    const wrapper = await mountDialog({ notifications: {} });
+    const checkbox = findSubagentCheckbox(wrapper);
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false);
+  });
+
+  test("checkbox reflects initial value true", async () => {
+    const wrapper = await mountDialog({ notifications: { subagentCompletion: true } });
+    const checkbox = findSubagentCheckbox(wrapper);
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true);
+  });
+
+  test("toggling the checkbox round-trips through Save (false -> true)", async () => {
+    const wrapper = await mountDialog({ notifications: { subagentCompletion: false } });
+    const checkbox = findSubagentCheckbox(wrapper);
+    await checkbox.setValue(true);
+    await clickSave(wrapper);
+    expect(lastSavedNotifications(wrapper).subagentCompletion).toBe(true);
+  });
+
+  test("Save emits subagentCompletion=false by default", async () => {
+    const wrapper = await mountDialog({ notifications: {} });
+    await clickSave(wrapper);
+    expect(lastSavedNotifications(wrapper).subagentCompletion).toBe(false);
+  });
+});
+
 const FONT_SIZE_STUBS = {
   SettingsHookProviderSection: true,
   CustomSelect: true,

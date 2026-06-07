@@ -62,6 +62,9 @@ export const APP_CONFIG = {
     // Suppress shell-completion alerts globally, leaving agent alerts on.
     // Users opt back in per-panel via PanelState.alertsForceOn.
     agentsOnly: envBoolean("STRIDETERM_NOTIFY_AGENTS_ONLY", true),
+    // Opt-in pings when a sub-agent finishes mid-turn (Claude Code
+    // SubagentStop). Off by default — only the end-of-turn Stop notifies.
+    subagentCompletion: envBoolean("STRIDETERM_NOTIFY_SUBAGENT_COMPLETION", false),
   },
   logging: {
     level: envString("STRIDETERM_LOG_LEVEL", "warn"),
