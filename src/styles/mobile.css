@@ -28,6 +28,11 @@
   display: none;
 }
 
+/* ── Mobile composer input bar (hidden on desktop) ── */
+.mobile-input-bar {
+  display: none;
+}
+
 .sidebar-backdrop {
   display: none;
 }
@@ -212,6 +217,110 @@
   .mobile-keyboard-btn:hover,
   .mobile-keyboard-btn:active {
     background: rgba(var(--tint), 0.08);
+  }
+
+  /* ── Mobile composer input bar ── */
+  /* Last grid row of .workspace-main (implicit auto row — the stage's
+     minmax(0, 1fr) row absorbs the shrink). safe-area inset keeps the row
+     clear of the iPhone home indicator. */
+  .mobile-input-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  .mobile-input-bar--collapsed {
+    padding: 0 0 env(safe-area-inset-bottom);
+  }
+
+  .mobile-input-bar__expand {
+    width: 100%;
+    height: 22px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .mobile-input-bar__expand:hover,
+  .mobile-input-bar__expand:active {
+    background: rgba(var(--tint), 0.08);
+    color: var(--text);
+  }
+
+  .mobile-input-bar__keys {
+    display: flex;
+    gap: 4px;
+  }
+
+  .mobile-input-bar__key {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .mobile-input-bar__key:hover,
+  .mobile-input-bar__key:active {
+    background: rgba(var(--tint), 0.12);
+  }
+
+  .mobile-input-bar__key--collapse {
+    flex: 0 0 32px;
+    color: var(--muted);
+  }
+
+  .mobile-input-bar__row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .mobile-input-bar__input {
+    flex: 1;
+    min-width: 0;
+    height: 38px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text);
+    /* 16px minimum — anything smaller makes iOS Safari auto-zoom the page
+       on focus, which fights the visualViewport resize handling. */
+    font-size: 16px;
+  }
+
+  .mobile-input-bar__input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .mobile-input-bar__send {
+    flex: 0 0 48px;
+    height: 38px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: rgba(var(--tint), 0.1);
+    color: var(--text);
+    font-size: 17px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .mobile-input-bar__send:hover,
+  .mobile-input-bar__send:active {
+    background: rgba(var(--tint), 0.2);
   }
 
   .mobile-tab-picker__dropdown {

@@ -270,6 +270,22 @@ export function writeSidebarCollapsed(value: boolean): void {
   }
 }
 
+export function readMobileInputBarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem("strideterm-mobile-input-collapsed") === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeMobileInputBarCollapsed(value: boolean): void {
+  try {
+    window.localStorage.setItem("strideterm-mobile-input-collapsed", value ? "1" : "0");
+  } catch {
+    // Ignore localStorage failures in restricted browser contexts.
+  }
+}
+
 export function readSidebarWidth(): number | null {
   try {
     const raw = window.localStorage.getItem("strideterm-sidebar-width");

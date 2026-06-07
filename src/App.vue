@@ -237,6 +237,13 @@
 
         <!-- Workspace stage (grid or single pane) -->
         <WorkspaceStage v-else-if="store.payload" />
+
+        <!-- Mobile composer input bar (remote clients only; hidden on
+             desktop viewports via mobile.css). Sits as the last grid row of
+             workspace-main so it pins above the on-screen keyboard — the
+             visualViewport handler in useGlobalEvents shrinks the document
+             to the visible area when the keyboard opens. -->
+        <MobileInputBar />
       </section>
     </main>
 
@@ -311,6 +318,7 @@ import ProfileBar from "./components/layout/ProfileBar.vue";
 import SidebarPanel from "./components/layout/SidebarPanel.vue";
 import TabStrip from "./components/layout/TabStrip.vue";
 import TabActions from "./components/layout/TabActions.vue";
+import MobileInputBar from "./components/layout/MobileInputBar.vue";
 import WorkspaceHero from "./components/workspace/WorkspaceHero.vue";
 import WelcomeScreen from "./components/workspace/WelcomeScreen.vue";
 import WorkspaceStage from "./components/workspace/WorkspaceStage.vue";

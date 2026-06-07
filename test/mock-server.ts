@@ -78,6 +78,8 @@ export interface MockServerHandle {
   url: string;
   wsUrl: string;
   browserUrl: string;
+  /** Every `terminal:input` WS message received from clients, in arrival order. */
+  terminalInputs: Array<{ sessionId: string; data: string }>;
   close(): Promise<void>;
 }
 
@@ -126,6 +128,7 @@ export async function startMockServer({
   }
   const TOKEN = "test-token";
   const sockets = new Set<WebSocket>();
+  const terminalInputs: Array<{ sessionId: string; data: string }> = [];
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://localhost");
@@ -429,6 +432,18 @@ export async function startMockServer({
       wss.handleUpgrade(req, socket as import("node:net").Socket, head, (ws) => {
         sockets.add(ws);
         ws.on("close", () => sockets.delete(ws));
+        // Record terminal input so tests can assert what the frontend wrote
+        // to a PTY (real remote-server forwards these to the runtime).
+        ws.on("message", (raw) => {
+          try {
+            const msg = JSON.parse(String(raw));
+            if (msg?.type === "terminal:input" && typeof msg.sessionId === "string") {
+              terminalInputs.push({ sessionId: msg.sessionId, data: String(msg.data ?? "") });
+            }
+          } catch {
+            // Non-JSON frames are not part of the app protocol — ignore.
+          }
+        });
         ws.send(JSON.stringify({ type: "state:updated", payload }));
         sendTerminalOutput(ws);
       });
@@ -477,6 +492,7 @@ export async function startMockServer({
     url: `http://127.0.0.1:${actualPort}`,
     wsUrl: `ws://127.0.0.1:${actualPort}/ws?token=${TOKEN}`,
     browserUrl: `http://127.0.0.1:${actualPort}/?token=${TOKEN}`,
+    terminalInputs,
     async close() {
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
