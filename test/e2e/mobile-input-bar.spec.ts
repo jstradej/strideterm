@@ -55,7 +55,7 @@ test.describe("Mobile composer input bar", () => {
     assertNoErrors(page);
   });
 
-  test("sends the composed line plus Enter over the terminal:input channel", async ({ page }) => {
+  test("sends the composed line, then Enter as a separate frame", async ({ page }) => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await openApp(page, mock);
 
@@ -63,9 +63,15 @@ test.describe("Mobile composer input bar", () => {
     await input.fill("echo from-mobile-composer");
     await page.locator(".mobile-input-bar__send").click();
 
+    // Text first, Enter as its own delayed frame — a \r in the same chunk as
+    // the text would be swallowed by agent TUIs' paste detection (same
+    // pattern as #writeAndSubmit in agent-task-runner.ts).
     await expect
       .poll(() => mock.terminalInputs, { timeout: 5_000 })
-      .toContainEqual({ sessionId: ACTIVE_SESSION_ID, data: "echo from-mobile-composer\r" });
+      .toEqual([
+        { sessionId: ACTIVE_SESSION_ID, data: "echo from-mobile-composer" },
+        { sessionId: ACTIVE_SESSION_ID, data: "\r" },
+      ]);
     // The field clears after sending so the next command starts fresh.
     await expect(input).toHaveValue("");
 
@@ -82,7 +88,10 @@ test.describe("Mobile composer input bar", () => {
 
     await expect
       .poll(() => mock.terminalInputs, { timeout: 5_000 })
-      .toContainEqual({ sessionId: ACTIVE_SESSION_ID, data: "ls -la\r" });
+      .toEqual([
+        { sessionId: ACTIVE_SESSION_ID, data: "ls -la" },
+        { sessionId: ACTIVE_SESSION_ID, data: "\r" },
+      ]);
 
     assertNoErrors(page);
   });
@@ -102,10 +111,10 @@ test.describe("Mobile composer input bar", () => {
 
     await expect
       .poll(() => mock.terminalInputs, { timeout: 5_000 })
-      .toContainEqual({ sessionId: "ws-frontend:panel-claude", data: "pwd\r" });
+      .toContainEqual({ sessionId: "ws-frontend:panel-claude", data: "pwd" });
     expect(mock.terminalInputs).not.toContainEqual({
       sessionId: "ws-frontend:panel-claude",
-      data: "do not forward\r",
+      data: "do not forward",
     });
 
     assertNoErrors(page);
@@ -139,6 +148,23 @@ test.describe("Mobile composer input bar", () => {
         { sessionId: ACTIVE_SESSION_ID, data: "\x03" },
         { sessionId: ACTIVE_SESSION_ID, data: "\x1b[A" },
       ]);
+
+    assertNoErrors(page);
+  });
+
+  test("paste button inserts clipboard text into the composer without sending", async ({ page, context }) => {
+    // localhost is a secure context, so the async Clipboard API is available
+    // once the permission is granted on the browser context.
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.setViewportSize(MOBILE_VIEWPORT);
+    await openApp(page, mock);
+
+    await page.evaluate(() => navigator.clipboard.writeText("echo from-clipboard"));
+    await page.locator(".mobile-input-bar__key--paste").click();
+
+    await expect(page.locator(INPUT)).toHaveValue("echo from-clipboard");
+    // Nothing reaches the terminal until the user hits send.
+    expect(mock.terminalInputs).toEqual([]);
 
     assertNoErrors(page);
   });

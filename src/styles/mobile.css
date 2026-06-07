@@ -262,6 +262,9 @@
     flex: 1;
     min-width: 0;
     height: 32px;
+    /* No side padding — ten keys share a ~390px row, and the browser default
+       (~6px per side) would clip the widest label (⇧Tab). */
+    padding: 0;
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--panel);
@@ -292,7 +295,10 @@
     min-width: 0;
     height: 38px;
     padding: 0 10px;
-    border: 1px solid var(--border);
+    /* A faint accent tint instead of the near-invisible default border —
+       the field is the whole point of the bar, so it must read as "type
+       here" at a glance without competing with the focused state below. */
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
     border-radius: 4px;
     background: var(--bg);
     color: var(--text);

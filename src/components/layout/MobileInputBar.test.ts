@@ -3,8 +3,8 @@
  * xterm.js Android IME bug (xtermjs/xterm.js#3600) by composing lines in a
  * plain input and pushing them to the PTY via Transport.writeTerminal.
  */
-import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { mount, type VueWrapper } from "@vue/test-utils";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 import { nextTick } from "vue";
 import MobileInputBar from "./MobileInputBar.vue";
@@ -100,7 +100,7 @@ describe("MobileInputBar", () => {
       expect(wrapper.find("[data-role='mobile-input-bar']").exists()).toBe(true);
       await wrapper.find("[data-role='mobile-input-bar-input']").setValue("pwd");
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "pwd\r");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "pwd");
     });
 
     it.each([
@@ -145,15 +145,29 @@ describe("MobileInputBar", () => {
   });
 
   describe("composing and sending", () => {
-    it("sends the composed line plus Enter and clears the field on submit", async () => {
+    // The Enter is written separately after SUBMIT_DELAY_MS (agent TUIs would
+    // swallow a \r arriving in the same chunk as the text — see the component).
+    // Fake timers make the delayed write assertable.
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("sends the composed line, then Enter as a separate delayed write", async () => {
       const { wrapper, writeTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
       await input.setValue("echo mobile-composer");
       await wrapper.find("form").trigger("submit");
 
       expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo mobile-composer\r");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo mobile-composer");
       expect((input.element as HTMLInputElement).value).toBe("");
+
+      vi.advanceTimersByTime(200);
+      expect(writeTerminal).toHaveBeenCalledTimes(2);
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
     });
 
     it("preserves leading/trailing whitespace in the composed line", async () => {
@@ -161,15 +175,37 @@ describe("MobileInputBar", () => {
       await wrapper.find("[data-role='mobile-input-bar-input']").setValue("ls ");
       await wrapper.find("form").trigger("submit");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "ls \r");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "ls ");
+      vi.advanceTimersByTime(200);
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
     });
 
-    it("sends a bare Enter when the field is empty", async () => {
+    it("sends a bare Enter immediately when the field is empty", async () => {
       const { wrapper, writeTerminal } = mountBar();
       await wrapper.find("form").trigger("submit");
 
       expect(writeTerminal).toHaveBeenCalledTimes(1);
       expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r");
+      // No stray delayed write follows a bare Enter.
+      vi.advanceTimersByTime(500);
+      expect(writeTerminal).toHaveBeenCalledTimes(1);
+    });
+
+    it("routes the delayed Enter to the session that received the text", async () => {
+      const { wrapper, writeTerminal } = mountBar();
+      const store = useAppStore();
+      await wrapper.find("[data-role='mobile-input-bar-input']").setValue("echo hi");
+      await wrapper.find("form").trigger("submit");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo hi");
+
+      // Tab switch during the submit delay — the pending Enter still belongs
+      // to the terminal that got the text, not the newly active one.
+      store.activeViewId = "ws-a:panel-other";
+      store.activeSessionId = "ws-a:panel-other";
+      await nextTick();
+
+      vi.advanceTimersByTime(200);
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
     });
 
     it("sends the committed IME composition result", async () => {
@@ -184,7 +220,9 @@ describe("MobileInputBar", () => {
       await input.trigger("compositionend");
       await wrapper.find("form").trigger("submit");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz\r");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz");
+      vi.advanceTimersByTime(200);
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
     });
 
     it("defers submit until the active IME composition commits", async () => {
@@ -203,7 +241,10 @@ describe("MobileInputBar", () => {
       await nextTick();
 
       expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz\r");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz");
+      vi.advanceTimersByTime(200);
+      expect(writeTerminal).toHaveBeenCalledTimes(2);
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
     });
 
     it("clears a pending draft when the target session changes", async () => {
@@ -289,6 +330,77 @@ describe("MobileInputBar", () => {
 
       expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "git che\t");
       expect((input.element as HTMLInputElement).value).toBe("");
+    });
+  });
+
+  describe("clipboard paste button", () => {
+    const PASTE = ".mobile-input-bar__key--paste";
+
+    function mockClipboard(text: string | null): void {
+      Object.defineProperty(window.navigator, "clipboard", {
+        value: {
+          readText: () => (text === null ? Promise.reject(new Error("denied")) : Promise.resolve(text)),
+        },
+        configurable: true,
+      });
+    }
+
+    it("appends the clipboard text to the draft without sending anything", async () => {
+      mockClipboard("npm run dev");
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.find("[data-role='mobile-input-bar-input']");
+      await input.setValue("sudo ");
+
+      await wrapper.find(PASTE).trigger("click");
+      await flushPromises();
+
+      expect((input.element as HTMLInputElement).value).toBe("sudo npm run dev");
+      expect(writeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("flattens multi-line clipboard content to single spaces", async () => {
+      mockClipboard("line one\r\nline two\nline three");
+      const { wrapper } = mountBar();
+
+      await wrapper.find(PASTE).trigger("click");
+      await flushPromises();
+
+      const input = wrapper.find("[data-role='mobile-input-bar-input']");
+      expect((input.element as HTMLInputElement).value).toBe("line one line two line three");
+    });
+
+    it("leaves the draft untouched when the clipboard read is blocked", async () => {
+      mockClipboard(null);
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.find("[data-role='mobile-input-bar-input']");
+      await input.setValue("keep me");
+
+      await wrapper.find(PASTE).trigger("click");
+      await flushPromises();
+
+      expect((input.element as HTMLInputElement).value).toBe("keep me");
+      expect(writeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("commits an active IME composition before appending", async () => {
+      mockClipboard("pasted");
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.find("[data-role='mobile-input-bar-input']");
+      const element = input.element as HTMLInputElement;
+
+      await input.trigger("compositionstart");
+      element.value = "prik";
+      await input.trigger("input");
+      await wrapper.find(PASTE).trigger("click");
+      await flushPromises();
+
+      expect(element.value).toBe("prikpasted");
+      // The late compositionend must not clobber the merged draft.
+      await input.trigger("compositionend");
+      expect(element.value).toBe("prikpasted");
+
+      await wrapper.find("form").trigger("submit");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "prikpasted");
     });
   });
 

@@ -42,6 +42,15 @@
         </button>
         <button
           type="button"
+          class="mobile-input-bar__key mobile-input-bar__key--paste"
+          title="Paste the clipboard into the field — review or edit the text, then send it with ⏎. If the browser blocks clipboard access, long-press the field and paste from its menu instead."
+          @mousedown.prevent
+          @click="pasteFromClipboard"
+        >
+          📋
+        </button>
+        <button
+          type="button"
           class="mobile-input-bar__key mobile-input-bar__key--collapse"
           title="Collapse the input bar to a slim handle so the terminal gets the vertical space back. Tap the handle to bring it back."
           @mousedown.prevent
@@ -106,10 +115,17 @@ const inputRef = ref<HTMLInputElement | null>(null);
 const composing = ref(false);
 const submitAfterComposition = ref(false);
 const ignoreCompositionEnd = ref(false);
+// What the field must contain after an ignored compositionend: "" for cancel/
+// flush keys and session switches, the merged draft after paste. Vue's v-model
+// commits the IME echo into `draft` on the same compositionend event (in
+// listener order we don't control), so the ignore branch can't trust `draft` —
+// it restores from this instead.
+let valueAfterIgnoredComposition = "";
 
 watch(targetSessionId, (sessionId, previousSessionId) => {
   if (sessionId !== previousSessionId) {
     ignoreCompositionEnd.value = composing.value;
+    valueAfterIgnoredComposition = "";
     draft.value = "";
     if (inputRef.value) inputRef.value.value = "";
     composing.value = false;
@@ -190,6 +206,7 @@ function sendData(data: string): void {
 function sendKey(key: AccessoryKey): void {
   const currentDraft = composing.value ? (inputRef.value?.value ?? draft.value) : draft.value;
   ignoreCompositionEnd.value = composing.value;
+  valueAfterIgnoredComposition = "";
   composing.value = false;
   submitAfterComposition.value = false;
   sendData((key.flushDraft ? currentDraft : "") + key.seq);
@@ -197,16 +214,32 @@ function sendKey(key: AccessoryKey): void {
   if (inputRef.value) inputRef.value.value = "";
 }
 
+// Delay between the composed text and its Enter, matching #writeAndSubmit in
+// agent-task-runner.ts. Agent TUIs (Claude Code, Copilot…) classify a fast
+// multi-char chunk as a paste, and a \r inside a paste inserts a newline
+// instead of submitting — so the Enter must arrive as its own write, late
+// enough not to be coalesced with the text. Plain shells don't care.
+const SUBMIT_DELAY_MS = 200;
+
 function sendComposed(): void {
   if (composing.value) {
     submitAfterComposition.value = true;
     return;
   }
+  const sessionId = targetSessionId.value;
+  if (!sessionId) return;
   // Empty draft sends a bare Enter — confirming TUI prompts without typing.
+  if (!draft.value) {
+    api?.writeTerminal(sessionId, "\r");
+    return;
+  }
   // No trimming: predictive-text picks leave a trailing space, which is
   // harmless, and intentional leading/trailing spaces must survive.
-  sendData(draft.value + "\r");
+  api?.writeTerminal(sessionId, draft.value);
   draft.value = "";
+  // The session id is captured above so switching tabs mid-delay can't route
+  // the pending Enter to a different terminal than the one that got the text.
+  setTimeout(() => api?.writeTerminal(sessionId, "\r"), SUBMIT_DELAY_MS);
 }
 
 function handleCompositionStart(): void {
@@ -214,11 +247,37 @@ function handleCompositionStart(): void {
   composing.value = true;
 }
 
+// Paste never writes to the PTY directly — the clipboard text lands in the
+// draft so the user can review and edit it before sending. An active IME
+// composition is force-committed first (same dance as sendKey), so the late
+// compositionend can't clobber the merged draft.
+async function pasteFromClipboard(): Promise<void> {
+  let text = "";
+  try {
+    text = (await navigator.clipboard?.readText()) ?? "";
+  } catch {
+    // Insecure origin or permission denied — the field still accepts the
+    // platform's long-press paste menu.
+  }
+  const current = composing.value ? (inputRef.value?.value ?? draft.value) : draft.value;
+  ignoreCompositionEnd.value = composing.value;
+  composing.value = false;
+  submitAfterComposition.value = false;
+  // A single-line <input> can't render line breaks — flatten them so the
+  // field shows exactly what would be sent.
+  draft.value = current + text.replace(/\r?\n/g, " ");
+  valueAfterIgnoredComposition = draft.value;
+  // Set the element directly: Vue's v-model skips view updates while the
+  // browser still considers the composition active.
+  if (inputRef.value) inputRef.value.value = draft.value;
+  inputRef.value?.focus();
+}
+
 function handleCompositionEnd(event: CompositionEvent): void {
   if (ignoreCompositionEnd.value) {
     ignoreCompositionEnd.value = false;
-    (event.target as HTMLInputElement).value = "";
-    draft.value = "";
+    (event.target as HTMLInputElement).value = valueAfterIgnoredComposition;
+    draft.value = valueAfterIgnoredComposition;
     return;
   }
   composing.value = false;
