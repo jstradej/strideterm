@@ -62,7 +62,8 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceAction(workspace, git.pull(workspace, { connection, rootPath }));
+      const stashDirty = Boolean(payload.stashDirty);
+      return runGitWorkspaceAction(workspace, git.pull(workspace, { connection, rootPath, stashDirty }));
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitPush(payload: any = {}, windowId?: string) {

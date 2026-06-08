@@ -985,13 +985,18 @@ export class GitManager extends EventEmitter {
 
   async pull(
     workspace: WorkspaceRef,
-    { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {},
+    {
+      connection = null,
+      rootPath = "",
+      stashDirty = false,
+    }: { connection?: Connection | null; rootPath?: string; stashDirty?: boolean } = {},
   ): Promise<Record<string, unknown>> {
     return this.runWriteAction(workspace, {
       type: "pull",
       label: "Pull",
       run: (cwd) => runEffect(this.execAuthGitEffect(cwd, ["pull", "--ff-only"], { connection })),
       allowDirty: true,
+      stashDirty,
       connection,
       rootPath,
     });

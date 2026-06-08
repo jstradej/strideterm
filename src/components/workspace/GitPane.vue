@@ -130,9 +130,9 @@
             :class="['button', pullIsPrimary ? '' : 'button--ghost', gitUi.busyAction === 'pull' && 'button--busy']"
             :disabled="pullDisabled"
             :title="pullTooltip"
-            @click="gitUiStore.gitPull(workspaceId)"
+            @click="gitUiStore.gitPull(workspaceId, { stashDirty: pullStashMode })"
           >
-            {{ gitUi.busyAction === "pull" ? "Pulling…" : "Pull" }}
+            {{ pullLabel }}
           </button>
 
           <!-- Push: hidden when detached/review/no-remotes (structural impossibility) -->
@@ -533,21 +533,36 @@ const pullIsPrimary = computed(() => primaryAction.value === "pull");
 const pullDisabled = computed(() => {
   if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction) return true;
   if (!snapshot.value?.upstream) return true;
-  if (snapshot.value?.dirty) return true;
   if (isDetachedHead.value) return true;
   if ((snapshot.value?.behindCount || 0) === 0 && !isDiverged.value) return true;
   return false;
+});
+// When the working tree is dirty but there is something to pull, offer an
+// explicit stash-pull-restore instead of disabling: stash local changes,
+// fast-forward, then pop the stash (the backend keeps the stash if the pop
+// would need manual conflict resolution).
+const pullStashMode = computed(() => {
+  const s = snapshot.value;
+  if (!s?.dirty) return false;
+  if (!s.upstream) return false;
+  if (isDetachedHead.value) return false;
+  if ((s.behindCount || 0) === 0 && !isDiverged.value) return false;
+  return true;
+});
+const pullLabel = computed(() => {
+  if (gitUi.value.busyAction === "pull") return "Pulling…";
+  return pullStashMode.value ? "Pull (stash & restore)" : "Pull";
 });
 const pullTooltip = computed(() => {
   const s = snapshot.value;
   if (!s?.upstream)
     return "Disabled — this branch has no upstream tracking ref. Set one with the Push button (it publishes and tracks at the same time).";
-  if (s.dirty)
-    return "Disabled — commit or stash your uncommitted changes first; git refuses to pull when the working tree is dirty.";
   if (isDetachedHead.value) return "Disabled — HEAD is detached from any branch. Check out a branch first, then pull.";
-  if (s.behindCount > 0)
-    return `Run git pull (fast-forward + merge) to bring in ${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""} from ${s.upstream} and update the working tree.`;
-  return "Disabled — local branch is already up to date with upstream; nothing to pull.";
+  if ((s.behindCount || 0) === 0 && !isDiverged.value)
+    return "Disabled — local branch is already up to date with upstream; nothing to pull.";
+  if (pullStashMode.value)
+    return `Stash your uncommitted changes, fast-forward ${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""} from ${s.upstream}, then restore the changes. If the restore conflicts you'll get standard conflict markers to resolve.`;
+  return `Run git pull (fast-forward) to bring in ${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""} from ${s.upstream} and update the working tree.`;
 });
 
 // Push state

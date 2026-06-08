@@ -318,10 +318,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
     );
   }
 
-  async function gitPull(workspaceId: string): Promise<void> {
+  async function gitPull(workspaceId: string, { stashDirty = false }: { stashDirty?: boolean } = {}): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "pull", () =>
-      (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({ workspaceId, rootPath }),
+      (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
+        workspaceId,
+        rootPath,
+        stashDirty,
+      }),
     );
   }
 
