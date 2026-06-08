@@ -417,6 +417,7 @@
                     :selected-path="selectedCommitFile"
                     selected-scope="commit"
                     @select="onSelectCommitFile"
+                    @context-menu="onCommitFileContextMenu"
                   />
                 </div>
               </Pane>
@@ -514,6 +515,7 @@
             :selected-path="selectedCommitFile"
             selected-scope="commit"
             @select="onSelectCommitFile"
+            @context-menu="onCommitFileContextMenu"
           />
         </div>
         <div class="git-branches__commit-diff git-branches__commit-diff--mobile">
@@ -538,11 +540,39 @@
       @pick="onMenuPick"
       @close="ctxMenu = null"
     />
+
+    <!-- Commit file context menu (right-click a file in the commit's file tree) -->
+    <Teleport to="body">
+      <div
+        v-if="fileMenu"
+        ref="fileMenuRef"
+        class="context-menu"
+        :style="{ position: 'fixed', left: fileMenu.x + 'px', top: fileMenu.y + 'px', zIndex: 9999 }"
+        @click.stop
+      >
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Copy the file's full absolute path on disk."
+          @click="copyAbsolutePath"
+        >
+          <span class="context-menu__icon">&#x1F4C1;</span><span>Copy absolute path</span>
+        </button>
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Copy the file's path relative to the repository root."
+          @click="copyRelativePath"
+        >
+          <span class="context-menu__icon">&#x1F4CB;</span><span>Copy relative path</span>
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
@@ -1726,6 +1756,51 @@ async function copyToClipboard(text: string) {
     // best-effort
   }
 }
+
+// --- Commit file context menu (copy absolute / relative path) -----------
+const fileMenu = ref<{ x: number; y: number; path: string } | null>(null);
+const fileMenuRef = ref<HTMLElement | null>(null);
+
+function onCommitFileContextMenu(payload: { path: string; name: string; kind: "file" | "dir"; x: number; y: number }) {
+  fileMenu.value = { x: payload.x, y: payload.y, path: payload.path };
+}
+
+// Join the repo-relative path onto activeRootPath using the root's own
+// separator, so the absolute path reads natively on Windows and POSIX alike.
+function toAbsolutePath(relPath: string): string {
+  const root = props.activeRootPath || "";
+  if (!root) return relPath;
+  const sep = root.includes("\\") ? "\\" : "/";
+  const rel = sep === "\\" ? relPath.replace(/\//g, "\\") : relPath;
+  return `${root.replace(/[\\/]+$/, "")}${sep}${rel}`;
+}
+
+async function copyAbsolutePath() {
+  const target = fileMenu.value;
+  fileMenu.value = null;
+  if (target) await copyToClipboard(toAbsolutePath(target.path));
+}
+
+async function copyRelativePath() {
+  const target = fileMenu.value;
+  fileMenu.value = null;
+  if (target) await copyToClipboard(target.path);
+}
+
+function onFileMenuDocClick(e: MouseEvent) {
+  if (fileMenuRef.value && !fileMenuRef.value.contains(e.target as Node)) fileMenu.value = null;
+}
+function onFileMenuKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") fileMenu.value = null;
+}
+onMounted(() => {
+  document.addEventListener("click", onFileMenuDocClick);
+  document.addEventListener("keydown", onFileMenuKeydown);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("click", onFileMenuDocClick);
+  document.removeEventListener("keydown", onFileMenuKeydown);
+});
 
 async function onMenuPick(id: string) {
   const menu = ctxMenu.value;
