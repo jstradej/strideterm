@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   getAzurePipelineRunStatus: (payload) => ipcRenderer.invoke("azure:pipelines:run-status", payload),
   cancelAzureBuild: (payload) => ipcRenderer.invoke("azure:pipelines:cancel", payload),
   getAzureBuildLog: (payload) => ipcRenderer.invoke("azure:pipelines:build-log", payload),
+  getAzurePipelineRunDetail: (payload) => ipcRenderer.invoke("azure:pipelines:run-detail", payload),
   verifyGitHubConnection: (connection) => ipcRenderer.invoke("github:verify-connection", connection),
   saveGitHubConnection: (connection) => ipcRenderer.invoke("github:save-connection", connection),
   deleteGitHubConnection: (connectionId) => ipcRenderer.invoke("github:delete-connection", connectionId),

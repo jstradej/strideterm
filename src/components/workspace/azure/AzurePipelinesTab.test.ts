@@ -62,6 +62,7 @@ function makeApi() {
     listAzurePipelines: vi.fn(async () => PIPELINES),
     listAzurePipelineRuns: vi.fn(async () => RUNS),
     getAzurePipelineRunSeed: vi.fn(async () => ({ branch: "refs/heads/main", parameters: {}, variables: [] })),
+    getAzurePipelineRunDetail: vi.fn(async () => ({ stages: [], errors: [] })),
     runAzurePipeline: vi.fn(async () => ({ id: 999, state: "inProgress", webUrl: "https://web/run/999" })),
     openExternal: vi.fn(),
   };

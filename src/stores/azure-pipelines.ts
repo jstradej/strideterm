@@ -7,6 +7,7 @@ import type {
   AzurePipelineSummary,
   AzurePipelineRun,
   AzurePipelineRunSeed,
+  AzureRunDetail,
 } from "../../electron/shared/types/azure-pipelines.js";
 
 /** A run the user triggered from this client — watched until it finishes so we can notify. */
@@ -35,6 +36,12 @@ interface PipelineRuns {
   loading: boolean;
   error: string;
   runs: AzurePipelineRun[];
+}
+
+interface RunDetailState {
+  loading: boolean;
+  error: string;
+  detail: AzureRunDetail | null;
 }
 
 interface RunPayload {
@@ -68,6 +75,11 @@ type PipelinesApi = Transport & {
   }) => Promise<unknown>;
   cancelAzureBuild: (p: { connectionId: string; projectName: string; buildId: number | string }) => Promise<unknown>;
   getAzureBuildLog: (p: { connectionId: string; projectName: string; buildId: number | string }) => Promise<unknown>;
+  getAzurePipelineRunDetail: (p: {
+    connectionId: string;
+    projectName: string;
+    buildId: number | string;
+  }) => Promise<unknown>;
 };
 
 /** A build/run status is terminal once Azure marks it "completed". */
@@ -87,6 +99,7 @@ function errorMessage(err: unknown): string {
 export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
   const byConnection = ref<Record<string, ConnectionPipelines>>({});
   const runsByPipeline = ref<Record<string, PipelineRuns>>({});
+  const detailByRun = ref<Record<string, RunDetailState>>({});
 
   let _api: PipelinesApi | null = null;
   function init(api: Transport): void {
@@ -145,6 +158,34 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
       runsByPipeline.value[key] = { loading: false, error: "", runs: Array.isArray(result) ? result : [] };
     } catch (err) {
       runsByPipeline.value[key] = { loading: false, error: errorMessage(err), runs: existing?.runs || [] };
+    }
+  }
+
+  /** On-demand stages + errors for one run (build timeline). Cached per build id. */
+  async function getRunDetail(
+    connectionId: string,
+    projectName: string,
+    buildId: number | string,
+    { force = false } = {},
+  ): Promise<void> {
+    const key = `${connectionId}:${buildId}`;
+    const existing = detailByRun.value[key];
+    if (existing?.loading) return;
+    if (existing?.detail && !force) return;
+    if (!_api?.getAzurePipelineRunDetail) {
+      detailByRun.value[key] = { loading: false, error: "", detail: { stages: [], errors: [] } };
+      return;
+    }
+    detailByRun.value[key] = { loading: true, error: "", detail: existing?.detail || null };
+    try {
+      const result = (await _api.getAzurePipelineRunDetail({ connectionId, projectName, buildId })) as AzureRunDetail;
+      detailByRun.value[key] = {
+        loading: false,
+        error: "",
+        detail: result || { stages: [], errors: [] },
+      };
+    } catch (err) {
+      detailByRun.value[key] = { loading: false, error: errorMessage(err), detail: existing?.detail || null };
     }
   }
 
@@ -310,9 +351,11 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
   return {
     byConnection,
     runsByPipeline,
+    detailByRun,
     init,
     load,
     loadRuns,
+    getRunDetail,
     getRunSeed,
     run,
     cancel,

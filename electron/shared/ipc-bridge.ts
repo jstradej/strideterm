@@ -207,6 +207,11 @@ export interface StridetermAPI {
     projectName: string;
     buildId: number | string;
   }) => Promise<unknown>;
+  getAzurePipelineRunDetail: (payload: {
+    connectionId: string;
+    projectName: string;
+    buildId: number | string;
+  }) => Promise<unknown>;
 
   // GitHub integration
   verifyGitHubConnection: (connection: GithubConnectionPayload) => Promise<unknown>;

@@ -9,6 +9,7 @@ import type {
   AzureBuildRef,
   AzurePipelineRun,
   AzurePipelineRunSeed,
+  AzureRunDetail,
 } from "../shared/types/azure-pipelines.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
 import type { CredentialStore } from "./shared/credential-store.js";
@@ -396,6 +397,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
         finishTime?: string;
         requestedFor?: { displayName?: string };
         reason?: string;
+        sourceVersion?: string;
         _links?: { web?: { href?: string } };
       } | null;
       if (!b || b.id == null) return undefined;
@@ -410,6 +412,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
         finishTime: b.finishTime,
         requestedFor: b.requestedFor?.displayName || undefined,
         reason: b.reason || undefined,
+        sourceVersion: b.sourceVersion || undefined,
         webUrl: b._links?.web?.href || "",
       };
     };
@@ -455,7 +458,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return pipelines;
   }
 
-  /** Recent runs for a single pipeline (for the expand view). */
+  /**
+   * Recent runs for a single pipeline (for the expand view). Sourced from the
+   * Build API so each run carries who/branch/commit/timing — `state` is filled
+   * from the build `status` to keep the status-icon logic unchanged.
+   */
   async listPipelineRuns({
     connectionId,
     projectName,
@@ -467,26 +474,102 @@ export class AzureDevOpsManager extends BaseProviderManager {
   }): Promise<AzurePipelineRun[]> {
     const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
     this.setAuditContext({ connectionId, userInitiated: true });
-    const runs = (await this.azureApi.listPipelineRuns(connection, token, projectName, pipelineId)) as Array<{
+    const builds = (await this.azureApi.listBuildsByDefinition(connection, token, projectName, pipelineId)) as Array<{
       id?: number | string;
-      name?: string;
-      state?: string;
+      buildNumber?: string;
+      status?: string;
       result?: string;
-      createdDate?: string;
-      finishedDate?: string;
+      queueTime?: string;
+      startTime?: string;
+      finishTime?: string;
+      sourceBranch?: string;
+      sourceVersion?: string;
+      requestedFor?: { displayName?: string };
       _links?: { web?: { href?: string } };
     }>;
-    return runs
-      .filter((r) => r.id != null)
-      .map((r) => ({
-        id: Number(r.id),
-        name: r.name || `#${r.id}`,
-        state: r.state || "",
-        result: r.result || undefined,
-        createdDate: r.createdDate,
-        finishedDate: r.finishedDate,
-        webUrl: r._links?.web?.href || "",
+    return builds
+      .filter((b) => b.id != null)
+      .map((b) => ({
+        id: Number(b.id),
+        name: b.buildNumber || `#${b.id}`,
+        state: b.status || "",
+        result: b.result || undefined,
+        createdDate: b.startTime || b.queueTime,
+        finishedDate: b.finishTime,
+        requestedFor: b.requestedFor?.displayName || undefined,
+        sourceBranch: b.sourceBranch || undefined,
+        sourceVersion: b.sourceVersion || undefined,
+        startTime: b.startTime,
+        finishTime: b.finishTime,
+        webUrl: b._links?.web?.href || "",
       }));
+  }
+
+  /**
+   * On-demand detail for one run: its stages and surfaced errors, derived from a
+   * single build-timeline fetch. Best-effort — returns empties if the timeline
+   * is unavailable. buildId == run id.
+   */
+  async getPipelineRunDetail({
+    connectionId,
+    projectName,
+    buildId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    buildId: number | string;
+  }): Promise<AzureRunDetail> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    let records: Array<{
+      id?: string;
+      parentId?: string | null;
+      name?: string;
+      type?: string;
+      state?: string;
+      result?: string;
+      order?: number;
+      issues?: Array<{ type?: string; message?: string }>;
+    }> = [];
+    try {
+      const timeline = (await this.azureApi.fetchBuildTimeline(connection, token, projectName, buildId)) as {
+        records?: typeof records;
+      };
+      records = timeline?.records || [];
+    } catch {
+      return { stages: [], errors: [] };
+    }
+
+    const byId = new Map(records.map((r) => [String(r.id), r]));
+    // Walk the parent chain to a stage→job→task breadcrumb (skip structural noise).
+    const breadcrumb = (rec: (typeof records)[number]): string => {
+      const parts: string[] = [];
+      let cur: (typeof records)[number] | undefined = rec;
+      let guard = 0;
+      while (cur && guard++ < 12) {
+        if (cur.name && cur.type !== "Checkpoint" && cur.type !== "Phase") parts.unshift(cur.name);
+        cur = cur.parentId ? byId.get(String(cur.parentId)) : undefined;
+      }
+      return parts.join(" • ");
+    };
+
+    const stages = records
+      .filter((r) => r.type === "Stage")
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .map((r) => ({ name: r.name || "Stage", state: r.state || "", result: r.result || undefined }));
+
+    const errors: AzureRunDetail["errors"] = [];
+    for (const rec of records) {
+      for (const issue of rec.issues || []) {
+        if (issue.type === "error" && issue.message) {
+          errors.push({ message: issue.message, context: breadcrumb(rec) });
+          if (errors.length >= 100) break;
+        }
+      }
+      if (errors.length >= 100) break;
+    }
+
+    return { stages, errors };
   }
 
   /** Seed the re-run dialog from a specific past run's branch, parameters and variables. */

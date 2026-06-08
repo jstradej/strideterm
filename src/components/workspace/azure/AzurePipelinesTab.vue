@@ -8,6 +8,25 @@
         placeholder="Filter pipelines…"
         title="Filter the list by pipeline name."
       />
+      <select
+        v-if="allProjects.length > 1"
+        v-model="projectFilter"
+        class="azure-pipelines__select"
+        title="Show only one project."
+      >
+        <option value="">All projects</option>
+        <option v-for="name in allProjects" :key="name" :value="name">{{ name }}</option>
+      </select>
+      <select
+        v-model="timeFilter"
+        class="azure-pipelines__select"
+        title="Show only pipelines whose last run is recent."
+      >
+        <option value="all">Any time</option>
+        <option value="1">Last 24h</option>
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+      </select>
       <span class="azure-pipelines__spacer"></span>
       <button
         type="button"
@@ -32,6 +51,9 @@
       <div v-else-if="!stateOf(conn.id).pipelines.length" class="azure-pipelines__msg">No pipelines found.</div>
 
       <template v-else>
+        <div v-if="!projectsOf(conn.id).length" class="azure-pipelines__msg">
+          No pipelines match the current filters.
+        </div>
         <div v-for="group in projectsOf(conn.id)" :key="group.name" class="azure-pipelines__project">
           <div class="azure-pipelines__project-head">{{ group.name }}</div>
           <AzurePipelineRow
@@ -63,6 +85,27 @@ const appStore = useAppStore();
 const store = useAzurePipelinesStore();
 const notify = useNotificationStore();
 const filter = ref("");
+const projectFilter = ref("");
+const timeFilter = ref("all");
+
+/** Distinct project names across all connections, for the project dropdown. */
+const allProjects = computed(() => {
+  const names = new Set<string>();
+  for (const conn of props.connections) {
+    for (const pipeline of stateOf(conn.id).pipelines) {
+      names.add(pipeline.project?.name || "(no project)");
+    }
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
+});
+
+/** Last-run timestamp of a pipeline, for the time-window filter. */
+function lastRunTimeMs(pipeline: AzurePipelineSummary): number {
+  const r = pipeline.lastRun;
+  const stamp = r?.finishTime || r?.startTime || r?.queueTime;
+  const ms = stamp ? new Date(stamp).getTime() : NaN;
+  return Number.isNaN(ms) ? 0 : ms;
+}
 
 const workspaceName = computed(
   () => appStore.payload?.appState?.workspaces?.find((w) => w.id === props.workspaceId)?.name || "Azure DevOps",
@@ -81,10 +124,14 @@ const anyLoading = computed(() => props.connections.some((c) => stateOf(c.id).lo
 
 function projectsOf(connectionId: string): Array<{ name: string; pipelines: AzurePipelineSummary[] }> {
   const needle = filter.value.trim().toLowerCase();
+  const maxAgeMs = timeFilter.value === "all" ? 0 : Number(timeFilter.value) * 86_400_000;
+  const cutoff = maxAgeMs ? Date.now() - maxAgeMs : 0;
   const groups = new Map<string, AzurePipelineSummary[]>();
   for (const pipeline of stateOf(connectionId).pipelines) {
-    if (needle && !pipeline.name.toLowerCase().includes(needle)) continue;
     const name = pipeline.project?.name || "(no project)";
+    if (needle && !pipeline.name.toLowerCase().includes(needle)) continue;
+    if (projectFilter.value && name !== projectFilter.value) continue;
+    if (cutoff && lastRunTimeMs(pipeline) < cutoff) continue;
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name)!.push(pipeline);
   }
@@ -217,6 +264,10 @@ async function onDownloadLog({ pipeline, run }: { pipeline: AzurePipelineSummary
   flex: 0 1 240px;
   font-size: 12px;
   padding: 3px 8px;
+}
+.azure-pipelines__select {
+  font-size: 12px;
+  padding: 3px 6px;
 }
 .azure-pipelines__spacer {
   flex: 1;

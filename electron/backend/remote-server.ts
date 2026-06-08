@@ -804,6 +804,10 @@ async function handleApiRequest(
       json(response, 200, await runtime.getAzureBuildLog(body));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run-detail") {
+      json(response, 200, await runtime.getAzurePipelineRunDetail(body));
+      return;
+    }
 
     // --- GitHub ---
     if (request.method === "POST" && url.pathname === "/api/github/verify-connection") {

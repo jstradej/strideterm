@@ -571,6 +571,15 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/pipelines/${pipelineId}/runs?api-version=${API_VERSION}`;
   }
 
+  function buildBuildsByDefinitionUrl(
+    connection: AzureConnection,
+    projectName: string,
+    definitionId: string | number,
+    top: number,
+  ) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/build/builds?definitions=${definitionId}&queryOrder=queueTimeDescending&$top=${top}&api-version=${API_VERSION}`;
+  }
+
   function buildPipelineRunUrl(
     connection: AzureConnection,
     projectName: string,
@@ -597,6 +606,21 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     pipelineId: string | number,
   ) {
     const result = (await requestJson(buildPipelineRunsUrl(connection, projectName, pipelineId), {
+      login: connection.login,
+      token,
+    })) as { value?: unknown[] };
+    return result.value || [];
+  }
+
+  /** Recent builds for a definition (Build API — richer than Pipelines runs: who/branch/commit/timing). */
+  async function listBuildsByDefinition(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    definitionId: string | number,
+    top = 25,
+  ) {
+    const result = (await requestJson(buildBuildsByDefinitionUrl(connection, projectName, definitionId, top), {
       login: connection.login,
       token,
     })) as { value?: unknown[] };
@@ -738,6 +762,7 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     buildPipelineRunUrl,
     listBuildDefinitionsWithLatest,
     listPipelineRuns,
+    listBuildsByDefinition,
     getPipelineRun,
     runPipeline,
     cancelBuild,

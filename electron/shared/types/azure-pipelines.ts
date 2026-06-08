@@ -23,6 +23,8 @@ export interface AzureBuildRef {
   requestedFor?: string;
   /** Raw Azure reason: manual | individualCI | schedule | pullRequest | … */
   reason?: string;
+  /** Commit sha the run built (sourceVersion), when available. */
+  sourceVersion?: string;
   /** Browser URL (_links.web.href) for the run. */
   webUrl: string;
 }
@@ -43,17 +45,52 @@ export interface AzurePipelineSummary {
   lastRun?: AzureBuildRef;
 }
 
-/** A pipeline run in the per-pipeline history (expand view). */
+/**
+ * A pipeline run in the per-pipeline history (expand view). Sourced from the
+ * Build API so it carries the same rich fields as {@link AzureBuildRef} (who,
+ * branch, commit, timing) — `state` is filled from the build `status` so the
+ * existing status-icon logic keeps working.
+ */
 export interface AzurePipelineRun {
   id: number;
   name: string;
-  /** Raw Pipelines run state: unknown | inProgress | canceling | completed */
+  /** Build status used as run state: notStarted | inProgress | completed | cancelling | … */
   state: string;
-  /** Raw Pipelines run result: unknown | succeeded | failed | canceled */
+  /** Raw result (only when completed): succeeded | partiallySucceeded | failed | canceled */
   result?: string;
   createdDate?: string;
   finishedDate?: string;
+  /** Display name of who requested the run, when available. */
+  requestedFor?: string;
+  /** Full source ref, e.g. "refs/heads/main". */
+  sourceBranch?: string;
+  /** Commit sha the run built (sourceVersion), when available. */
+  sourceVersion?: string;
+  startTime?: string;
+  finishTime?: string;
   webUrl: string;
+}
+
+/** One stage of a run, from the build timeline (run-detail view). */
+export interface AzureRunStage {
+  name: string;
+  /** Timeline record state: pending | inProgress | completed. */
+  state: string;
+  /** Timeline record result: succeeded | failed | canceled | skipped | … */
+  result?: string;
+}
+
+/** A single error issue from the build timeline, with its stage→job→task breadcrumb. */
+export interface AzureRunError {
+  message: string;
+  /** Breadcrumb of the record that raised it, e.g. "Deploy • Deploy New Version • Check pods". */
+  context: string;
+}
+
+/** On-demand detail for one run: its stages and surfaced errors (one timeline fetch). */
+export interface AzureRunDetail {
+  stages: AzureRunStage[];
+  errors: AzureRunError[];
 }
 
 /** Seed values extracted from a past run to pre-fill the re-run dialog. */
