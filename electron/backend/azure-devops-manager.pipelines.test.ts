@@ -174,6 +174,42 @@ describe("AzureDevOpsManager pipelines", () => {
     expect(result).toEqual({ id: 999, state: "inProgress", result: undefined, webUrl: "https://web/run/999" });
   });
 
+  test("getBuildLogText concatenates step logs ordered + labelled by the timeline", async () => {
+    const fetchImpl = vi.fn(async (url: unknown) => {
+      const href = String(url);
+      if (/\/_apis\/build\/builds\/555\/timeline/.test(href)) {
+        return ok({
+          records: [
+            { name: "Build", type: "Job", order: 1, log: { id: 2 } },
+            { name: "Tests", type: "Task", order: 2, log: { id: 3 } },
+            { name: "Checkout", type: "Task", order: 0, log: { id: 1 } },
+          ],
+        });
+      }
+      const single = href.match(/\/_apis\/build\/builds\/555\/logs\/(\d+)/);
+      if (single) {
+        return { ok: true, text: async () => `content for log ${single[1]}\n` };
+      }
+      if (/\/_apis\/build\/builds\/555\/logs\?/.test(href)) {
+        return ok({ value: [{ id: 1 }, { id: 2 }, { id: 3 }] });
+      }
+      return ok({});
+    });
+
+    const manager = createManager(fetchImpl);
+    const log = await manager.getBuildLogText({ connectionId: "ado-1", projectName: "Platform", buildId: 555 });
+
+    // Ordered by timeline order: Checkout (0) → Build (1) → Tests (2).
+    const iCheckout = log.indexOf("===== Task: Checkout =====");
+    const iBuild = log.indexOf("===== Job: Build =====");
+    const iTests = log.indexOf("===== Task: Tests =====");
+    expect(iCheckout).toBeGreaterThanOrEqual(0);
+    expect(iCheckout).toBeLessThan(iBuild);
+    expect(iBuild).toBeLessThan(iTests);
+    expect(log).toContain("content for log 1");
+    expect(log).toContain("content for log 3");
+  });
+
   test("runPipeline propagates a 403 with the HTTP status in the message", async () => {
     const fetchImpl = vi.fn(async () => ({
       ok: false,

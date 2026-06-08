@@ -636,6 +636,11 @@ export function registerIpc(
       runtime.cancelAzureBuild(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:cancel")),
     ),
   );
+  ipcMain.handle("azure:pipelines:build-log", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:build-log" }, () =>
+      runtime.getAzureBuildLog(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:build-log")),
+    ),
+  );
 
   // --- GitHub ---
   ipcMain.handle("github:verify-connection", async (_event, connection) =>

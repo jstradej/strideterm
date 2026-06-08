@@ -359,6 +359,14 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       });
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async getAzureBuildLog(payload: any = {}) {
+      return azure.getBuildLogText({
+        connectionId: payload.connectionId,
+        projectName: payload.projectName,
+        buildId: payload.buildId,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async cancelAzureBuild(payload: any = {}) {
       try {
         return await azure.cancelBuild({

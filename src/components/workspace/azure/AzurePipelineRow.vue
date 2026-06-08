@@ -44,6 +44,16 @@
 
       <div class="azure-pl-row__actions">
         <button
+          v-if="pipeline.lastRun"
+          type="button"
+          :class="['button', 'button--ghost', 'button--xs', isDownloading(pipeline.lastRun.id) && 'button--busy']"
+          :disabled="isDownloading(pipeline.lastRun.id)"
+          title="Download the full raw log of the latest run as a .log file."
+          @click="$emit('download-log', { pipeline, run: { id: pipeline.lastRun.id } })"
+        >
+          {{ isDownloading(pipeline.lastRun.id) ? "Downloading…" : "↓ Log" }}
+        </button>
+        <button
           v-if="lastRunRunning"
           type="button"
           class="button button--ghost button--xs"
@@ -105,6 +115,15 @@
           >
             ▶ Re-run
           </button>
+          <button
+            type="button"
+            :class="['button', 'button--ghost', 'button--xs', isDownloading(run.id) && 'button--busy']"
+            :disabled="isDownloading(run.id)"
+            title="Download this run's full raw log."
+            @click="$emit('download-log', { pipeline, run: { id: run.id } })"
+          >
+            {{ isDownloading(run.id) ? "Downloading…" : "↓ Log" }}
+          </button>
           <a
             v-if="run.webUrl"
             class="azure-pl-run__link"
@@ -124,11 +143,17 @@ import { computed, inject, ref } from "vue";
 import { useAzurePipelinesStore } from "../../../stores/azure-pipelines.js";
 import type { AzurePipelineSummary, AzurePipelineRun } from "../../../../electron/shared/types/azure-pipelines.js";
 
-const props = defineProps<{ pipeline: AzurePipelineSummary }>();
+const props = defineProps<{ pipeline: AzurePipelineSummary; downloadingRunId?: number | string | null }>();
+
+/** True while the given run's log is being fetched — drives the button spinner. */
+function isDownloading(id: number | string): boolean {
+  return props.downloadingRunId != null && props.downloadingRunId === id;
+}
 
 defineEmits<{
   (e: "rerun", payload: { pipeline: AzurePipelineSummary; run: { id: number | string } }): void;
   (e: "cancel", payload: { pipeline: AzurePipelineSummary; run: { id: number | string } }): void;
+  (e: "download-log", payload: { pipeline: AzurePipelineSummary; run: { id: number | string } }): void;
 }>();
 
 /** A run/build is in progress until Azure marks it "completed". */

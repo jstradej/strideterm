@@ -646,6 +646,7 @@ export function createRemoteTransport(): Transport {
     runAzurePipeline: (payload) => fetchJson("/api/azure/pipelines/run", payload),
     getAzurePipelineRunStatus: (payload) => fetchJson("/api/azure/pipelines/run-status", payload),
     cancelAzureBuild: (payload) => fetchJson("/api/azure/pipelines/cancel", payload),
+    getAzureBuildLog: (payload) => fetchJson("/api/azure/pipelines/build-log", payload),
     verifyGitHubConnection: (connection) => fetchJson("/api/github/verify-connection", { connection }),
     saveGitHubConnection: (connection) => fetchJson("/api/github/save-connection", { connection }),
     deleteGitHubConnection: (connectionId) => fetchJson("/api/github/delete-connection", { connectionId }),

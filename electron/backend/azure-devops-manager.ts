@@ -572,6 +572,57 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return { id: Number(build.id ?? buildId), status: build.status || "cancelling" };
   }
 
+  /** Concatenate a build's step/job logs into one raw text document for download. */
+  async getBuildLogText({
+    connectionId,
+    projectName,
+    buildId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    buildId: number | string;
+  }): Promise<string> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+
+    // Map logId → { name, type, order } from the timeline so sections are labelled.
+    const labelById = new Map<number, { name: string; type: string; order: number }>();
+    try {
+      const timeline = (await this.azureApi.fetchBuildTimeline(connection, token, projectName, buildId)) as {
+        records?: Array<{ name?: string; type?: string; order?: number; log?: { id?: number } }>;
+      };
+      for (const rec of timeline?.records || []) {
+        if (rec.log?.id != null) {
+          labelById.set(Number(rec.log.id), { name: rec.name || "", type: rec.type || "", order: rec.order ?? 0 });
+        }
+      }
+    } catch {
+      // Timeline is best-effort labelling — fall back to log ids.
+    }
+
+    const logs = (await this.azureApi.listBuildLogs(connection, token, projectName, buildId)) as Array<{
+      id?: number | string;
+    }>;
+    const ids = logs
+      .map((l) => Number(l.id))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => (labelById.get(a)?.order ?? a) - (labelById.get(b)?.order ?? b));
+
+    const parts: string[] = [];
+    for (const id of ids) {
+      const label = labelById.get(id);
+      const header = label?.name ? `===== ${label.type || "Log"}: ${label.name} =====` : `===== Log ${id} =====`;
+      let text: string;
+      try {
+        text = await this.azureApi.getBuildLogText(connection, token, projectName, buildId, id);
+      } catch (err) {
+        text = `(failed to fetch log ${id}: ${(err as Error).message})`;
+      }
+      parts.push(`${header}\n${text.replace(/\s+$/, "")}\n`);
+    }
+    return parts.length ? parts.join("\n") : "(no logs available for this run)";
+  }
+
   /** Queue a new run. Throws on 401/403 (PAT lacks Build read & execute) — surfaced to the UI. */
   async runPipeline({
     connectionId,

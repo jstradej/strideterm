@@ -133,6 +133,52 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     }
   }
 
+  // Plain-text fetch (build logs are text, not JSON). Audited like requestJson,
+  // but no ETag cache — logs are large and fetched on explicit user action.
+  async function requestText(url: string, { login, token, headers = {} }: RequestOptions = {}): Promise<string> {
+    const startTime = Date.now();
+    let statusCode = 0;
+    const requestHeaders: Record<string, string> = {
+      Accept: "text/plain",
+      Authorization: `Basic ${Buffer.from(`${login}:${token}`, "utf8").toString("base64")}`,
+      ...headers,
+    };
+    try {
+      const response = await fetchImpl(url, { method: "GET", headers: requestHeaders });
+      statusCode = response.status;
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        let message = text || response.statusText;
+        try {
+          const parsed = JSON.parse(text) as { message?: string; error?: { message?: string } };
+          message = parsed?.message || parsed?.error?.message || message;
+        } catch {}
+        throw new Error(`Azure DevOps request failed (${response.status}): ${message}`);
+      }
+      const body = await response.text();
+      if (auditLogger) {
+        try {
+          auditLogger({ method: "GET", url, statusCode, success: true, durationMs: Date.now() - startTime });
+        } catch {}
+      }
+      return body;
+    } catch (err) {
+      if (auditLogger) {
+        try {
+          auditLogger({
+            method: "GET",
+            url,
+            statusCode,
+            success: false,
+            errorMessage: (err as Error).message,
+            durationMs: Date.now() - startTime,
+          });
+        } catch {}
+      }
+      throw err;
+    }
+  }
+
   function buildProjectsUrl(connection: AzureConnection) {
     return `${trimTrailingSlash(connection.orgUrl)}/_apis/projects?api-version=${API_VERSION}&$top=200`;
   }
@@ -587,6 +633,60 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     });
   }
 
+  function buildBuildLogsUrl(connection: AzureConnection, projectName: string, buildId: string | number) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/build/builds/${buildId}/logs?api-version=${API_VERSION}`;
+  }
+
+  function buildBuildLogUrl(
+    connection: AzureConnection,
+    projectName: string,
+    buildId: string | number,
+    logId: string | number,
+  ) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/build/builds/${buildId}/logs/${logId}?api-version=${API_VERSION}`;
+  }
+
+  /** List the per-step/job log references for a build. */
+  async function listBuildLogs(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    buildId: string | number,
+  ) {
+    const result = (await requestJson(buildBuildLogsUrl(connection, projectName, buildId), {
+      login: connection.login,
+      token,
+    })) as { value?: unknown[] };
+    return result.value || [];
+  }
+
+  /** Raw text of a single build log. */
+  async function getBuildLogText(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    buildId: string | number,
+    logId: string | number,
+  ): Promise<string> {
+    return requestText(buildBuildLogUrl(connection, projectName, buildId, logId), {
+      login: connection.login,
+      token,
+    });
+  }
+
+  /** Build timeline (job/step records) — used to label log sections. */
+  async function fetchBuildTimeline(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    buildId: string | number,
+  ) {
+    return requestJson(buildBuildTimelineUrl(connection, projectName, buildId), {
+      login: connection.login,
+      token,
+    });
+  }
+
   /** Cancel an in-progress build/run. Requires Build (read & execute). buildId == pipeline run id. */
   async function cancelBuild(
     connection: AzureConnection,
@@ -641,5 +741,8 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     getPipelineRun,
     runPipeline,
     cancelBuild,
+    listBuildLogs,
+    getBuildLogText,
+    fetchBuildTimeline,
   };
 }

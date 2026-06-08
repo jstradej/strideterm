@@ -102,8 +102,8 @@ describe("AzurePipelinesTab", () => {
     const wrapper = mountTab();
     await flushPromises();
     const rows = wrapper.findAll(".azure-pl-row");
-    const nightlyRerun = rows[1].find(".azure-pl-row__actions button");
-    expect(nightlyRerun.attributes("disabled")).toBeDefined();
+    const nightlyRerun = rows[1].findAll(".azure-pl-row__actions button").find((b) => b.text().includes("Re-run"));
+    expect(nightlyRerun?.attributes("disabled")).toBeDefined();
   });
 
   test("expanding a pipeline loads and renders its recent runs", async () => {
@@ -129,7 +129,11 @@ describe("AzurePipelinesTab", () => {
     const wrapper = mountTab();
     await flushPromises();
 
-    await wrapper.findAll(".azure-pl-row")[0].find(".azure-pl-row__actions button").trigger("click");
+    const rerun = wrapper
+      .findAll(".azure-pl-row")[0]
+      .findAll(".azure-pl-row__actions button")
+      .find((b) => b.text().includes("Re-run"));
+    await rerun!.trigger("click");
 
     expect(openDialog).toHaveBeenCalledTimes(1);
     const [name, props] = openDialog.mock.calls[0];

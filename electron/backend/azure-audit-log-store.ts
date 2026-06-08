@@ -40,6 +40,8 @@ export function classifyAzureRequest(
   if (p.includes("/statuses")) return { operation: "listStatuses", category: "read", resourceType: "status" };
   if (p.includes("/policy/evaluations")) return { operation: "listPolicies", category: "read", resourceType: "policy" };
   if (p.includes("/timeline")) return { operation: "fetchBuildTimeline", category: "read", resourceType: "build" };
+  if (/\/build\/builds\/\d+\/logs/.test(p))
+    return { operation: "fetchBuildLog", category: "read", resourceType: "log" };
   if (/\/build\/builds\/\d+\?/.test(p))
     return { operation: "fetchBuildDetail", category: "read", resourceType: "build" };
   if (p.includes("/_apis/build/definitions"))

@@ -67,6 +67,7 @@ type PipelinesApi = Transport & {
     runId: number | string;
   }) => Promise<unknown>;
   cancelAzureBuild: (p: { connectionId: string; projectName: string; buildId: number | string }) => Promise<unknown>;
+  getAzureBuildLog: (p: { connectionId: string; projectName: string; buildId: number | string }) => Promise<unknown>;
 };
 
 /** A build/run status is terminal once Azure marks it "completed". */
@@ -172,6 +173,11 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
     await _api.cancelAzureBuild({ connectionId, projectName, buildId });
     // Reflect the cancellation quickly.
     void load(connectionId, { force: true });
+  }
+
+  async function getBuildLog(connectionId: string, projectName: string, buildId: number | string): Promise<string> {
+    if (!_api?.getAzureBuildLog) throw new Error("Transport unavailable.");
+    return (await _api.getAzureBuildLog({ connectionId, projectName, buildId })) as string;
   }
 
   // --- Completion watcher (notify when a triggered run finishes) ---
@@ -312,5 +318,6 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
     cancel,
     watchRun,
     getRunStatus,
+    getBuildLog,
   };
 });

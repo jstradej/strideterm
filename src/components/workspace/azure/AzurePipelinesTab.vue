@@ -38,8 +38,10 @@
             v-for="pipeline in group.pipelines"
             :key="pipeline.id"
             :pipeline="pipeline"
+            :downloading-run-id="downloadingRunId"
             @rerun="onRerun"
             @cancel="onCancel"
+            @download-log="onDownloadLog"
           />
         </div>
       </template>
@@ -161,6 +163,42 @@ async function onCancel({ pipeline, run }: { pipeline: AzurePipelineSummary; run
       kind: "error",
       profileId: profileId.value,
     });
+  }
+}
+
+const downloadingRunId = ref<number | string | null>(null);
+
+async function onDownloadLog({ pipeline, run }: { pipeline: AzurePipelineSummary; run: { id: number | string } }) {
+  if (downloadingRunId.value != null) return;
+  downloadingRunId.value = run.id;
+  const toastId = notify.pushEphemeralToast({
+    title: "Preparing log…",
+    body: `${pipeline.name} — run #${run.id}`,
+    kind: "info",
+    durationMs: 0,
+  });
+  try {
+    const text = await store.getBuildLog(pipeline.connectionId, pipeline.project.name, run.id);
+    const slug = pipeline.name.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "pipeline";
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${slug}-run-${run.id}.log`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    notify.pushPersistentToast({
+      title: "Couldn't download log",
+      body: (err as Error)?.message || "Unknown error",
+      kind: "error",
+      profileId: profileId.value,
+    });
+  } finally {
+    notify.dismissPersistentToast(toastId);
+    downloadingRunId.value = null;
   }
 }
 </script>
