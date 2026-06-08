@@ -171,6 +171,37 @@ export interface StridetermAPI {
   azureQuickFixListBranches: (payload: QuickFixListBranches) => Promise<unknown>;
   azureQuickFixCreate: (payload: QuickFixCreate) => Promise<unknown>;
   rerunAzureCheck: (prKey: string, checkItem: RerunCheck["checkItem"]) => Promise<unknown>;
+  listAzurePipelines: (payload: { connectionId: string }) => Promise<unknown>;
+  listAzurePipelineRuns: (payload: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+  }) => Promise<unknown>;
+  getAzurePipelineRunSeed: (payload: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    runId: number | string;
+  }) => Promise<unknown>;
+  runAzurePipeline: (payload: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    branch?: string;
+    parameters?: Record<string, string>;
+    variables?: Array<{ name: string; value: string; isSecret?: boolean }>;
+  }) => Promise<unknown>;
+  getAzurePipelineRunStatus: (payload: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    runId: number | string;
+  }) => Promise<unknown>;
+  cancelAzureBuild: (payload: {
+    connectionId: string;
+    projectName: string;
+    buildId: number | string;
+  }) => Promise<unknown>;
 
   // GitHub integration
   verifyGitHubConnection: (connection: GithubConnectionPayload) => Promise<unknown>;

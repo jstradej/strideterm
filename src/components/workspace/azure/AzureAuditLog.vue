@@ -21,6 +21,24 @@
       >
         {{ loading ? "Loading\u2026" : "Refresh" }}
       </button>
+      <button
+        type="button"
+        class="button button--ghost"
+        :disabled="loading || exporting || !entries.length"
+        title="Download all matching entries as CSV (respects the current filters)."
+        @click="exportLog('csv')"
+      >
+        \u2b07 CSV
+      </button>
+      <button
+        type="button"
+        class="button button--ghost"
+        :disabled="loading || exporting || !entries.length"
+        title="Download all matching entries as JSON (respects the current filters)."
+        @click="exportLog('json')"
+      >
+        \u2b07 JSON
+      </button>
     </div>
 
     <!-- Stats -->
@@ -386,6 +404,92 @@ async function loadData() {
   page.value = 0;
   expandedId.value = null;
   await Promise.all([loadEntries(), loadStats()]);
+}
+
+// --- Export (CSV / JSON) ---
+const exporting = ref(false);
+const EXPORT_COLUMNS = [
+  "timestamp",
+  "operation",
+  "category",
+  "method",
+  "statusCode",
+  "success",
+  "durationMs",
+  "userInitiated",
+  "project",
+  "organization",
+  "resourceType",
+  "resourceId",
+  "summary",
+  "errorMessage",
+  "url",
+  "connectionId",
+];
+
+// Page through the audit query (capped at 500/page server-side) up to a sane
+// ceiling so a download reflects all matching entries, not just the visible page.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchAllEntries(): Promise<Record<string, any>[]> {
+  const queryFn = isGitHub.value ? getApi().queryGitHubAuditLog : getApi().queryAzureAuditLog;
+  if (!queryFn) return [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const out: Record<string, any>[] = [];
+  const EXPORT_PAGE = 500;
+  const MAX_ROWS = 10000;
+  let offset = 0;
+  while (out.length < MAX_ROWS) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await queryFn({ ...buildFilters(), limit: EXPORT_PAGE, offset });
+    const batch = result?.entries || [];
+    out.push(...batch);
+    const total = result?.total ?? out.length;
+    offset += EXPORT_PAGE;
+    if (batch.length < EXPORT_PAGE || out.length >= total) break;
+  }
+  return out;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCsv(rows: Record<string, any>[]): string {
+  const esc = (v: unknown) => {
+    const s = v == null ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = EXPORT_COLUMNS.join(",");
+  const lines = rows.map((r) => EXPORT_COLUMNS.map((c) => esc(r[c])).join(","));
+  return [header, ...lines].join("\n");
+}
+
+function downloadFile(filename: string, content: string, mime: string): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportLog(format: "csv" | "json"): Promise<void> {
+  if (exporting.value) return;
+  exporting.value = true;
+  try {
+    const rows = await fetchAllEntries();
+    const provider = isGitHub.value ? "github" : "azure";
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    if (format === "csv") {
+      downloadFile(`${provider}-audit-log-${stamp}.csv`, toCsv(rows), "text/csv;charset=utf-8");
+    } else {
+      downloadFile(`${provider}-audit-log-${stamp}.json`, JSON.stringify(rows, null, 2), "application/json");
+    }
+  } catch (err) {
+    console.warn("Audit log export failed:", err);
+  } finally {
+    exporting.value = false;
+  }
 }
 
 function formatTime(iso: string) {

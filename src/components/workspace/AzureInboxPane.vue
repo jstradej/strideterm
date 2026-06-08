@@ -206,6 +206,10 @@
           <template v-else-if="tab.id === 'activity' && activeTab === 'activity'">
             <AzureAuditLog />
           </template>
+          <!-- Pipelines tab -->
+          <template v-else-if="tab.id === 'pipelines' && activeTab === 'pipelines'">
+            <AzurePipelinesTab :connections="connections" :workspace-id="workspaceId" />
+          </template>
           <!-- PR list tabs — only render when this tab is active -->
           <template v-else-if="activeTab === tab.id">
             <!-- Repo filter -->
@@ -293,14 +297,17 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import PaneShell from "../layout/PaneShell.vue";
 import AzurePrRow from "./azure/AzurePrRow.vue";
 import AzureAuditLog from "./azure/AzureAuditLog.vue";
+import AzurePipelinesTab from "./azure/AzurePipelinesTab.vue";
 
 withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
+const pipelinesStore = useAzurePipelinesStore();
 const { isMobile } = useIsNarrow();
 const menuOpen = ref(false);
 const tabsMenuOpen = ref(false);
@@ -414,6 +421,33 @@ watch(
   { immediate: true },
 );
 
+// Pipelines with a failed/canceled latest run — surfaced as the Pipelines tab
+// badge so failures stand out without opening the tab. Reflects whatever the
+// pipelines store has loaded (see the eager background load below).
+const failingPipelineCount = computed(() => {
+  let n = 0;
+  for (const c of connections.value) {
+    const entry = pipelinesStore.byConnection[c.id];
+    if (!entry) continue;
+    for (const p of entry.pipelines) {
+      const result = (p.lastRun?.result || "").toLowerCase();
+      if (result === "failed" || result === "canceled") n++;
+    }
+  }
+  return n;
+});
+
+// Eagerly load pipelines for this profile's connections so the failing badge
+// populates without opening the tab. Cached in the store — re-runs only when
+// the connection set changes, not on every render.
+watch(
+  () => connections.value.map((c) => c.id).join(","),
+  () => {
+    for (const c of connections.value) void pipelinesStore.load(c.id);
+  },
+  { immediate: true },
+);
+
 const inboxTabs = computed(() => [
   {
     id: "all",
@@ -442,6 +476,12 @@ const inboxTabs = computed(() => [
     count: inbox.value.myPullRequests?.length || 0,
     alert: false,
     emptyMessage: "You have no active pull requests.",
+  },
+  {
+    id: "pipelines",
+    label: "Pipelines",
+    count: failingPipelineCount.value || null,
+    alert: failingPipelineCount.value > 0,
   },
   {
     id: "connections",

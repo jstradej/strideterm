@@ -213,6 +213,16 @@ export const gitPayloadSchema = z
   .passthrough();
 export type GitPayload = z.infer<typeof gitPayloadSchema>;
 
+// Permissive payload for the Azure DevOps Pipelines tab IPC calls. Only the
+// connection is required; projectName / pipelineId / runId / branch /
+// parameters / variables ride along via passthrough.
+export const azurePipelinePayloadSchema = z
+  .object({
+    connectionId: nonEmptyString,
+  })
+  .passthrough();
+export type AzurePipelinePayload = z.infer<typeof azurePipelinePayloadSchema>;
+
 export const gitLogPageSchema = z.object({
   workspaceId: nonEmptyString,
   rootPath: z.string().optional(),

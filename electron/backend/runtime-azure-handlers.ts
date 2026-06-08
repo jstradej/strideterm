@@ -305,6 +305,78 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       broadcastState();
       return getPayload();
     },
+    // --- Pipelines tab (on-demand; not part of the global payload) ---
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async listAzurePipelines(payload: any = {}) {
+      return azure.listPipelines({ connectionId: payload.connectionId });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async listAzurePipelineRuns(payload: any = {}) {
+      return azure.listPipelineRuns({
+        connectionId: payload.connectionId,
+        projectName: payload.projectName,
+        pipelineId: payload.pipelineId,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async getAzurePipelineRunSeed(payload: any = {}) {
+      return azure.getPipelineRunSeed({
+        connectionId: payload.connectionId,
+        projectName: payload.projectName,
+        pipelineId: payload.pipelineId,
+        runId: payload.runId,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async runAzurePipeline(payload: any = {}) {
+      try {
+        return await azure.runPipeline({
+          connectionId: payload.connectionId,
+          projectName: payload.projectName,
+          pipelineId: payload.pipelineId,
+          branch: payload.branch,
+          parameters: payload.parameters,
+          variables: payload.variables,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/\((401|403)\)/.test(message)) {
+          throw new Error(
+            "This PAT can't queue pipeline runs — it needs the Build (Read & execute) scope, or you lack permission on this pipeline.",
+            { cause: err },
+          );
+        }
+        throw err instanceof Error ? err : new Error(message, { cause: err });
+      }
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async getAzurePipelineRunStatus(payload: any = {}) {
+      return azure.getPipelineRunStatus({
+        connectionId: payload.connectionId,
+        projectName: payload.projectName,
+        pipelineId: payload.pipelineId,
+        runId: payload.runId,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async cancelAzureBuild(payload: any = {}) {
+      try {
+        return await azure.cancelBuild({
+          connectionId: payload.connectionId,
+          projectName: payload.projectName,
+          buildId: payload.buildId,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/\((401|403)\)/.test(message)) {
+          throw new Error(
+            "This PAT can't cancel runs — it needs the Build (Read & execute) scope, or you lack permission on this pipeline.",
+            { cause: err },
+          );
+        }
+        throw err instanceof Error ? err : new Error(message, { cause: err });
+      }
+    },
     async fetchAzureReviewWorkspace(workspaceId: string) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;

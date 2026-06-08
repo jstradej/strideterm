@@ -7,6 +7,7 @@ import { APP_CONFIG } from "../config/app-config.js";
 import { useAppStore } from "./stores/app.js";
 import { useTerminalStore } from "./stores/terminal.js";
 import { useGitUiStore } from "./stores/git-ui.js";
+import { useAzurePipelinesStore } from "./stores/azure-pipelines.js";
 
 // crypto.randomUUID is gated to secure contexts (HTTPS / localhost / file://).
 // The remote web client served over LAN HTTP is not a secure context, so it
@@ -124,7 +125,6 @@ if (typeof window !== "undefined") {
 // init — the popout doesn't need workspaces, sessions, or git polling.
 const popoutView = new URL(window.location.href).searchParams.get("view");
 if (popoutView === "diff-popout") {
-  // eslint-disable-next-line @typescript-eslint/no-floating-promises
   import("./DiffPopoutApp.vue").then((mod) => {
     const popApp = createApp(mod.default);
     popApp.mount("#app");
@@ -141,6 +141,7 @@ if (popoutView === "diff-popout") {
   const appStore = useAppStore();
   const terminalStore = useTerminalStore();
   const gitUiStore = useGitUiStore();
+  const azurePipelinesStore = useAzurePipelinesStore();
 
   terminalStore.init(api, APP_CONFIG, {
     getActiveSessionId: () => appStore.activeSessionId,
@@ -150,6 +151,7 @@ if (popoutView === "diff-popout") {
 
   appStore.init(api);
   gitUiStore.init(api);
+  azurePipelinesStore.init(api);
 }
 
 // Pre-render noise texture to PNG once — replaces runtime SVG feTurbulence filter

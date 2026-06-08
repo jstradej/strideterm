@@ -774,6 +774,33 @@ async function handleApiRequest(
       return;
     }
 
+    // Pipelines tab — connectionId-addressed reads/actions, handled inline like
+    // the quickfix reads above (they don't touch local workspace/slot state).
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/list") {
+      json(response, 200, await runtime.listAzurePipelines(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/runs") {
+      json(response, 200, await runtime.listAzurePipelineRuns(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run-seed") {
+      json(response, 200, await runtime.getAzurePipelineRunSeed(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run") {
+      json(response, 200, await runtime.runAzurePipeline(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run-status") {
+      json(response, 200, await runtime.getAzurePipelineRunStatus(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/cancel") {
+      json(response, 200, await runtime.cancelAzureBuild(body));
+      return;
+    }
+
     // --- GitHub ---
     if (request.method === "POST" && url.pathname === "/api/github/verify-connection") {
       json(response, 200, await runtime.verifyGitHubConnection(body.connection || {}));

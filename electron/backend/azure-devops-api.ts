@@ -515,6 +515,93 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     });
   }
 
+  // --- Pipelines (Build definitions + Pipelines run API) ---
+
+  function buildPipelineDefinitionsUrl(connection: AzureConnection, projectName: string) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/build/definitions?includeLatestBuilds=true&queryOrder=lastModifiedDescending&$top=200&api-version=${API_VERSION}`;
+  }
+
+  function buildPipelineRunsUrl(connection: AzureConnection, projectName: string, pipelineId: string | number) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/pipelines/${pipelineId}/runs?api-version=${API_VERSION}`;
+  }
+
+  function buildPipelineRunUrl(
+    connection: AzureConnection,
+    projectName: string,
+    pipelineId: string | number,
+    runId: string | number,
+  ) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/pipelines/${pipelineId}/runs/${runId}?api-version=${API_VERSION}`;
+  }
+
+  /** Build definitions with their latest/latestCompleted builds inline (one call per project). */
+  async function listBuildDefinitionsWithLatest(connection: AzureConnection, token: string, projectName: string) {
+    const result = (await requestJson(buildPipelineDefinitionsUrl(connection, projectName), {
+      login: connection.login,
+      token,
+    })) as { value?: unknown[] };
+    return result.value || [];
+  }
+
+  /** Recent runs for a pipeline (definition id == pipelineId). */
+  async function listPipelineRuns(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    pipelineId: string | number,
+  ) {
+    const result = (await requestJson(buildPipelineRunsUrl(connection, projectName, pipelineId), {
+      login: connection.login,
+      token,
+    })) as { value?: unknown[] };
+    return result.value || [];
+  }
+
+  /** A single run including templateParameters, variables and resource refName (for re-run seeding). */
+  async function getPipelineRun(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    pipelineId: string | number,
+    runId: string | number,
+  ) {
+    return requestJson(buildPipelineRunUrl(connection, projectName, pipelineId, runId), {
+      login: connection.login,
+      token,
+    });
+  }
+
+  /** Queue a new pipeline run. Requires the PAT to have Build (read & execute). */
+  async function runPipeline(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    pipelineId: string | number,
+    body: unknown,
+  ) {
+    return requestJson(buildPipelineRunsUrl(connection, projectName, pipelineId), {
+      login: connection.login,
+      token,
+      method: "POST",
+      body,
+    });
+  }
+
+  /** Cancel an in-progress build/run. Requires Build (read & execute). buildId == pipeline run id. */
+  async function cancelBuild(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    buildId: string | number,
+  ) {
+    return requestJson(buildBuildDetailUrl(connection, projectName, buildId), {
+      login: connection.login,
+      token,
+      method: "PATCH",
+      body: { status: "cancelling" },
+    });
+  }
+
   return {
     requestJson,
     buildProjectsUrl,
@@ -546,5 +633,13 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     listRepositories,
     listRepositoryRefs,
     createPullRequest,
+    buildPipelineDefinitionsUrl,
+    buildPipelineRunsUrl,
+    buildPipelineRunUrl,
+    listBuildDefinitionsWithLatest,
+    listPipelineRuns,
+    getPipelineRun,
+    runPipeline,
+    cancelBuild,
   };
 }

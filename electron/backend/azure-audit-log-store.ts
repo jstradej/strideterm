@@ -24,6 +24,8 @@ export function classifyAzureRequest(
       return { operation: "createPullRequest", category: "write", resourceType: "pullRequest" };
     if (p.includes("/policy/evaluations") && m === "PATCH")
       return { operation: "reEvaluatePolicy", category: "write", resourceType: "policy" };
+    if (p.includes("/_apis/pipelines/") && p.includes("/runs") && m === "POST")
+      return { operation: "runPipeline", category: "write", resourceType: "run" };
     return { operation: `${m.toLowerCase()}Request`, category: "write", resourceType: "" };
   }
 
@@ -40,6 +42,12 @@ export function classifyAzureRequest(
   if (p.includes("/timeline")) return { operation: "fetchBuildTimeline", category: "read", resourceType: "build" };
   if (/\/build\/builds\/\d+\?/.test(p))
     return { operation: "fetchBuildDetail", category: "read", resourceType: "build" };
+  if (p.includes("/_apis/build/definitions"))
+    return { operation: "listPipelines", category: "read", resourceType: "pipeline" };
+  if (/\/_apis\/pipelines\/\d+\/runs\/\d+/.test(p))
+    return { operation: "fetchPipelineRun", category: "read", resourceType: "run" };
+  if (p.includes("/_apis/pipelines/") && p.includes("/runs"))
+    return { operation: "listPipelineRuns", category: "read", resourceType: "run" };
   if (p.includes("/refs?")) return { operation: "listBranches", category: "read", resourceType: "branch" };
   if (p.includes("/repositories?") || p.includes("/_apis/git/repositories"))
     return { operation: "listRepositories", category: "read", resourceType: "repository" };

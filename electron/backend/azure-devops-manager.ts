@@ -4,6 +4,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
+import type {
+  AzurePipelineSummary,
+  AzureBuildRef,
+  AzurePipelineRun,
+  AzurePipelineRunSeed,
+} from "../shared/types/azure-pipelines.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
 import type { CredentialStore } from "./shared/credential-store.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
@@ -368,6 +374,253 @@ export class AzureDevOpsManager extends BaseProviderManager {
         description: project.description || "",
         state: project.state || "",
       })),
+    };
+  }
+
+  // --- Pipelines tab (Build definitions + Pipelines run API) ---
+
+  /** List pipelines (build definitions) with their latest run, honoring projectFilters. */
+  async listPipelines({ connectionId }: { connectionId: string }): Promise<AzurePipelineSummary[]> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+
+    const toBuildRef = (raw: unknown): AzureBuildRef | undefined => {
+      const b = raw as {
+        id?: number | string;
+        buildNumber?: string;
+        status?: string;
+        result?: string;
+        sourceBranch?: string;
+        queueTime?: string;
+        startTime?: string;
+        finishTime?: string;
+        requestedFor?: { displayName?: string };
+        reason?: string;
+        _links?: { web?: { href?: string } };
+      } | null;
+      if (!b || b.id == null) return undefined;
+      return {
+        id: Number(b.id),
+        buildNumber: b.buildNumber || String(b.id),
+        status: b.status || "",
+        result: b.result || undefined,
+        sourceBranch: b.sourceBranch || "",
+        queueTime: b.queueTime,
+        startTime: b.startTime,
+        finishTime: b.finishTime,
+        requestedFor: b.requestedFor?.displayName || undefined,
+        reason: b.reason || undefined,
+        webUrl: b._links?.web?.href || "",
+      };
+    };
+
+    const projects = (await this.azureApi.listProjects(connection, token)) as AzureProject[];
+    const filteredProjects = connection.projectFilters?.length
+      ? projects.filter(
+          (project) =>
+            connection.projectFilters!.includes(project.name) || connection.projectFilters!.includes(project.id),
+        )
+      : projects;
+
+    const pipelines: AzurePipelineSummary[] = [];
+    for (const project of filteredProjects) {
+      const definitions = (await this.azureApi.listBuildDefinitionsWithLatest(
+        connection,
+        token,
+        project.name,
+      )) as Array<{
+        id?: number | string;
+        name?: string;
+        path?: string;
+        queueStatus?: string;
+        url?: string;
+        _links?: { web?: { href?: string } };
+        project?: { id?: string; name?: string };
+        latestBuild?: unknown;
+      }>;
+      for (const def of definitions) {
+        if (def.id == null) continue;
+        pipelines.push({
+          connectionId,
+          project: { id: def.project?.id || project.id, name: def.project?.name || project.name },
+          id: Number(def.id),
+          name: def.name || `#${def.id}`,
+          folder: def.path || "",
+          queueStatus: def.queueStatus || "enabled",
+          webUrl: def._links?.web?.href || def.url || "",
+          lastRun: toBuildRef(def.latestBuild),
+        });
+      }
+    }
+    return pipelines;
+  }
+
+  /** Recent runs for a single pipeline (for the expand view). */
+  async listPipelineRuns({
+    connectionId,
+    projectName,
+    pipelineId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+  }): Promise<AzurePipelineRun[]> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const runs = (await this.azureApi.listPipelineRuns(connection, token, projectName, pipelineId)) as Array<{
+      id?: number | string;
+      name?: string;
+      state?: string;
+      result?: string;
+      createdDate?: string;
+      finishedDate?: string;
+      _links?: { web?: { href?: string } };
+    }>;
+    return runs
+      .filter((r) => r.id != null)
+      .map((r) => ({
+        id: Number(r.id),
+        name: r.name || `#${r.id}`,
+        state: r.state || "",
+        result: r.result || undefined,
+        createdDate: r.createdDate,
+        finishedDate: r.finishedDate,
+        webUrl: r._links?.web?.href || "",
+      }));
+  }
+
+  /** Seed the re-run dialog from a specific past run's branch, parameters and variables. */
+  async getPipelineRunSeed({
+    connectionId,
+    projectName,
+    pipelineId,
+    runId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    runId: number | string;
+  }): Promise<AzurePipelineRunSeed> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const run = (await this.azureApi.getPipelineRun(connection, token, projectName, pipelineId, runId)) as {
+      templateParameters?: Record<string, unknown>;
+      variables?: Record<string, { value?: string; isSecret?: boolean }>;
+      resources?: { repositories?: { self?: { refName?: string } } };
+    };
+    const parameters: Record<string, string> = {};
+    for (const [key, value] of Object.entries(run.templateParameters || {})) {
+      parameters[key] = value == null ? "" : String(value);
+    }
+    const variables = Object.entries(run.variables || {}).map(([name, v]) => ({
+      name,
+      // Secrets are not returned by Azure — blank them but flag so the UI can hint.
+      value: v?.isSecret ? "" : String(v?.value ?? ""),
+      isSecret: Boolean(v?.isSecret),
+    }));
+    return {
+      branch: run.resources?.repositories?.self?.refName || "",
+      parameters,
+      variables,
+    };
+  }
+
+  /** Lightweight status poll of a single run (for completion watching). */
+  async getPipelineRunStatus({
+    connectionId,
+    projectName,
+    pipelineId,
+    runId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    runId: number | string;
+  }): Promise<{ id: number; state: string; result?: string; webUrl: string }> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: false });
+    const run = (await this.azureApi.getPipelineRun(connection, token, projectName, pipelineId, runId)) as {
+      id?: number | string;
+      state?: string;
+      result?: string;
+      _links?: { web?: { href?: string } };
+    };
+    return {
+      id: Number(run.id),
+      state: run.state || "",
+      result: run.result || undefined,
+      webUrl: run._links?.web?.href || "",
+    };
+  }
+
+  /** Cancel an in-progress build/run (buildId == run id). Throws on 401/403 — surfaced to the UI. */
+  async cancelBuild({
+    connectionId,
+    projectName,
+    buildId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    buildId: number | string;
+  }): Promise<{ id: number; status: string }> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const build = (await this.azureApi.cancelBuild(connection, token, projectName, buildId)) as {
+      id?: number | string;
+      status?: string;
+    };
+    return { id: Number(build.id ?? buildId), status: build.status || "cancelling" };
+  }
+
+  /** Queue a new run. Throws on 401/403 (PAT lacks Build read & execute) — surfaced to the UI. */
+  async runPipeline({
+    connectionId,
+    projectName,
+    pipelineId,
+    branch,
+    parameters = {},
+    variables = [],
+  }: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    branch?: string;
+    parameters?: Record<string, string>;
+    variables?: Array<{ name: string; value: string; isSecret?: boolean }>;
+  }): Promise<{ id: number; state: string; result?: string; webUrl: string }> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+
+    const body: {
+      resources?: { repositories: { self: { refName: string } } };
+      templateParameters?: Record<string, string>;
+      variables?: Record<string, { value: string }>;
+    } = {};
+    if (branch) {
+      body.resources = { repositories: { self: { refName: branch } } };
+    }
+    if (parameters && Object.keys(parameters).length) {
+      body.templateParameters = parameters;
+    }
+    // Only send variables the user actually filled in — blank values (including
+    // seeded secret placeholders left empty) are omitted so the pipeline keeps
+    // its own default instead of being overwritten with "".
+    const filledVars = variables.filter((v) => v.name && v.value !== "");
+    if (filledVars.length) {
+      body.variables = Object.fromEntries(filledVars.map((v) => [v.name, { value: v.value }]));
+    }
+
+    const run = (await this.azureApi.runPipeline(connection, token, projectName, pipelineId, body)) as {
+      id?: number | string;
+      state?: string;
+      result?: string;
+      _links?: { web?: { href?: string } };
+    };
+    return {
+      id: Number(run.id),
+      state: run.state || "",
+      result: run.result || undefined,
+      webUrl: run._links?.web?.href || "",
     };
   }
 

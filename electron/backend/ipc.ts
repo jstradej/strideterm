@@ -45,6 +45,7 @@ import {
   fileCommitFilesSchema,
   fileCommitDiffSchema,
   gitPayloadSchema,
+  azurePipelinePayloadSchema,
   gitDiffPreviewSchema,
   gitLogPageSchema,
   gitCommitSchema,
@@ -604,6 +605,36 @@ export function registerIpc(
       const validated = validateIpc(rerunCheckSchema, { prKey, checkItem }, "azure:rerun-check");
       return runtime.rerunAzureCheck(validated.prKey, validated.checkItem);
     }),
+  );
+  ipcMain.handle("azure:pipelines:list", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:list" }, () =>
+      runtime.listAzurePipelines(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:list")),
+    ),
+  );
+  ipcMain.handle("azure:pipelines:runs", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:runs" }, () =>
+      runtime.listAzurePipelineRuns(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:runs")),
+    ),
+  );
+  ipcMain.handle("azure:pipelines:run-seed", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:run-seed" }, () =>
+      runtime.getAzurePipelineRunSeed(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:run-seed")),
+    ),
+  );
+  ipcMain.handle("azure:pipelines:run", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:run" }, () =>
+      runtime.runAzurePipeline(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:run")),
+    ),
+  );
+  ipcMain.handle("azure:pipelines:run-status", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:run-status" }, () =>
+      runtime.getAzurePipelineRunStatus(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:run-status")),
+    ),
+  );
+  ipcMain.handle("azure:pipelines:cancel", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:cancel" }, () =>
+      runtime.cancelAzureBuild(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:cancel")),
+    ),
   );
 
   // --- GitHub ---
