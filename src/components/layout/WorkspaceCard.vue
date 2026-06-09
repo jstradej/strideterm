@@ -66,12 +66,23 @@
           🔔<span class="workspace-card__attention-count">{{ workspace.attentionCount }}</span>
         </span>
       </span>
-      <small
-        >{{ workspace.summary
-        }}<span v-if="workspace.relativeAge" class="workspace-card__age" :title="`Created ${workspace.relativeAge} ago`"
-          >· {{ workspace.relativeAge }}</span
-        ></small
-      >
+      <small class="workspace-card__subline">
+        <span class="workspace-card__summary"
+          >{{ workspace.summary
+          }}<span
+            v-if="workspace.relativeAge"
+            class="workspace-card__age"
+            :title="`Created ${workspace.relativeAge} ago`"
+            >· {{ workspace.relativeAge }}</span
+          ></span
+        >
+        <span
+          v-if="workspace.lastActivity"
+          class="workspace-card__last-activity"
+          :title="workspace.lastActivityTitle"
+          >{{ workspace.lastActivity }}</span
+        >
+      </small>
     </span>
     <span class="workspace-card__actions">
       <button
@@ -139,6 +150,8 @@ interface WorkspaceCardData {
   inGrid?: boolean;
   slotIndex?: number;
   relativeAge?: string;
+  lastActivity?: string;
+  lastActivityTitle?: string;
 }
 
 const props = defineProps<{

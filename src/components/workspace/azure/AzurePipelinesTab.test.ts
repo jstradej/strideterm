@@ -1,9 +1,10 @@
 /**
  * Component test for AzurePipelinesTab with a mocked Azure transport.
  *
- * Exercises the real azure-pipelines Pinia store end-to-end: list render +
- * status icons, queueStatus=disabled blocking re-run, expand → recent runs
- * load, and the Re-run click opening the run dialog with the chosen run's id.
+ * Exercises the real azure-pipelines Pinia store end-to-end: flat table render +
+ * status icons, queueStatus=disabled blocking re-run, row-click → detail panel
+ * loads recent runs, and the Re-run click opening the run dialog with the
+ * chosen run's id.
  */
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
@@ -79,6 +80,11 @@ function mountTab() {
   });
 }
 
+/** Find the ▶ Re-run button within a table row's action cell. */
+function rerunButton(row: ReturnType<ReturnType<typeof mountTab>["findAll"]>[number]) {
+  return row.findAll("button").find((b) => b.text() === "▶");
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   api = makeApi();
@@ -90,11 +96,11 @@ describe("AzurePipelinesTab", () => {
     await flushPromises();
 
     expect(api.listAzurePipelines).toHaveBeenCalledWith({ connectionId: "ado-1" });
-    const rows = wrapper.findAll(".azure-pl-row");
+    const rows = wrapper.findAll("tbody tr");
     expect(rows).toHaveLength(2);
     expect(wrapper.text()).toContain("ci-build");
     expect(wrapper.text()).toContain("nightly");
-    // ci-build succeeded → ok icon; nightly failed → fail icon
+    // Default sort = newest first: ci-build (09:00, succeeded) then nightly (02:00, failed).
     expect(rows[0].find(".azure-pl-row__icon--ok").exists()).toBe(true);
     expect(rows[1].find(".azure-pl-row__icon--fail").exists()).toBe(true);
   });
@@ -102,17 +108,17 @@ describe("AzurePipelinesTab", () => {
   test("disables Re-run for a pipeline whose queueing is disabled", async () => {
     const wrapper = mountTab();
     await flushPromises();
-    const rows = wrapper.findAll(".azure-pl-row");
-    const nightlyRerun = rows[1].findAll(".azure-pl-row__actions button").find((b) => b.text().includes("Re-run"));
-    expect(nightlyRerun?.attributes("disabled")).toBeDefined();
+    const rows = wrapper.findAll("tbody tr");
+    expect(rerunButton(rows[0])?.attributes("disabled")).toBeUndefined();
+    expect(rerunButton(rows[1])?.attributes("disabled")).toBeDefined();
   });
 
-  test("expanding a pipeline loads and renders its recent runs", async () => {
+  test("clicking a pipeline row loads its recent runs in the detail panel", async () => {
     const wrapper = mountTab();
     await flushPromises();
-    const firstRow = wrapper.findAll(".azure-pl-row")[0];
 
-    await firstRow.find(".azure-pl-row__expand").trigger("click");
+    // Click a data cell of the first row to select it.
+    await wrapper.findAll("tbody tr")[0].find("td").trigger("click");
     await flushPromises();
 
     expect(api.listAzurePipelineRuns).toHaveBeenCalledWith({
@@ -120,21 +126,48 @@ describe("AzurePipelinesTab", () => {
       projectName: "Platform",
       pipelineId: 10,
     });
-    const runItems = firstRow.findAll(".azure-pl-run");
+    const runItems = wrapper.findAll(".azure-pl-run");
     expect(runItems).toHaveLength(2);
   });
 
-  test("clicking Re-run last opens the run dialog seeded with that run's id", async () => {
+  test("floats an in-progress pipeline to the top with a spinner", async () => {
+    const running = {
+      connectionId: "ado-1",
+      project: { id: "p1", name: "Platform" },
+      id: 12,
+      name: "deploying",
+      folder: "\\",
+      queueStatus: "enabled",
+      webUrl: "https://web/def/12",
+      lastRun: {
+        id: 700,
+        buildNumber: "20260317.9",
+        status: "inProgress",
+        result: "none",
+        sourceBranch: "refs/heads/main",
+        // Old timestamp: by the default "when desc" sort it would land last,
+        // so reaching the top proves the running-pin overrides the column sort.
+        finishTime: "2026-03-10T00:00:00.000Z",
+        webUrl: "https://web/build/700",
+      },
+    };
+    api.listAzurePipelines = vi.fn(async () => [...PIPELINES, running]);
+    const wrapper = mountTab();
+    await flushPromises();
+
+    const rows = wrapper.findAll("tbody tr");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].text()).toContain("deploying");
+    expect(rows[0].find(".azure-pl-spinner").exists()).toBe(true);
+  });
+
+  test("clicking Re-run opens the run dialog seeded with that run's id", async () => {
     const appStore = useAppStore();
     const openDialog = vi.spyOn(appStore, "openDialog").mockImplementation(() => {});
     const wrapper = mountTab();
     await flushPromises();
 
-    const rerun = wrapper
-      .findAll(".azure-pl-row")[0]
-      .findAll(".azure-pl-row__actions button")
-      .find((b) => b.text().includes("Re-run"));
-    await rerun!.trigger("click");
+    await rerunButton(wrapper.findAll("tbody tr")[0])!.trigger("click");
 
     expect(openDialog).toHaveBeenCalledTimes(1);
     const [name, props] = openDialog.mock.calls[0];

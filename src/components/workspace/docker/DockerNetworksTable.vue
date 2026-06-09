@@ -48,6 +48,7 @@
       :columns="columns"
       :row-id="(r) => r.ID || r.Name"
       :default-sort="{ key: 'Name', dir: 'asc' }"
+      persist-key="docker-networks"
       :selected="selected"
       :has-row-actions="true"
       :row-class="(r) => (isProtected(r) ? 'net-row--protected' : undefined)"

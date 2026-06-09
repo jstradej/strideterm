@@ -121,7 +121,11 @@
         <section
           v-for="tab in inboxTabs"
           :key="tab.id"
-          :class="['azure-section', activeTab === tab.id && 'azure-section--active']"
+          :class="[
+            'azure-section',
+            activeTab === tab.id && 'azure-section--active',
+            tab.id === 'pipelines' && 'azure-section--fill',
+          ]"
         >
           <!-- Only render heavy content for the active tab -->
           <template v-if="tab.id === 'connections' && activeTab === 'connections'">

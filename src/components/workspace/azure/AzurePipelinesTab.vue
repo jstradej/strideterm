@@ -5,18 +5,9 @@
         v-model="filter"
         class="azure-pipelines__filter"
         type="search"
-        placeholder="Filter pipelines…"
-        title="Filter the list by pipeline name."
+        placeholder="Search…"
+        title="Search across pipeline name, project and branch. Use the per-column filters for narrower matches."
       />
-      <select
-        v-if="allProjects.length > 1"
-        v-model="projectFilter"
-        class="azure-pipelines__select"
-        title="Show only one project."
-      >
-        <option value="">All projects</option>
-        <option v-for="name in allProjects" :key="name" :value="name">{{ name }}</option>
-      </select>
       <select
         v-model="timeFilter"
         class="azure-pipelines__select"
@@ -27,6 +18,7 @@
         <option value="7">Last 7 days</option>
         <option value="30">Last 30 days</option>
       </select>
+      <span class="azure-pipelines__count">{{ filteredRows.length }} / {{ allRows.length }}</span>
       <span class="azure-pipelines__spacer"></span>
       <button
         type="button"
@@ -39,72 +31,463 @@
       </button>
     </div>
 
-    <div v-for="conn in connections" :key="conn.id" class="azure-pipelines__conn">
-      <div class="azure-pipelines__conn-head">{{ conn.label || conn.id }}</div>
-
-      <div v-if="stateOf(conn.id).loading && !stateOf(conn.id).pipelines.length" class="azure-pipelines__msg">
-        Loading pipelines…
+    <div v-if="errors.length" class="azure-pipelines__errors">
+      <div v-for="e in errors" :key="e.label" class="azure-pipelines__error">
+        <strong>{{ e.label }}:</strong> {{ e.error }}
       </div>
-      <div v-else-if="stateOf(conn.id).error" class="azure-pipelines__error">
-        {{ stateOf(conn.id).error }}
-      </div>
-      <div v-else-if="!stateOf(conn.id).pipelines.length" class="azure-pipelines__msg">No pipelines found.</div>
+    </div>
 
-      <template v-else>
-        <div v-if="!projectsOf(conn.id).length" class="azure-pipelines__msg">
-          No pipelines match the current filters.
-        </div>
-        <div v-for="group in projectsOf(conn.id)" :key="group.name" class="azure-pipelines__project">
-          <div class="azure-pipelines__project-head">{{ group.name }}</div>
-          <AzurePipelineRow
-            v-for="pipeline in group.pipelines"
-            :key="pipeline.id"
-            :pipeline="pipeline"
-            :downloading-run-id="downloadingRunId"
-            @rerun="onRerun"
-            @cancel="onCancel"
-            @download-log="onDownloadLog"
-          />
-        </div>
-      </template>
+    <div ref="splitRef" class="azure-pipelines__split" :style="{ '--azure-pl-detail-w': detailWidth + 'px' }">
+      <div class="azure-pipelines__table-area">
+        <DockerResourceTable
+          :rows="filteredRows"
+          :columns="columns"
+          :row-id="rowKey"
+          :selectable="false"
+          :has-row-actions="true"
+          :default-sort="{ key: 'when', dir: 'desc' }"
+          :row-class="rowClassFor"
+          :pinned-first="inProgressOf"
+          persist-key="azure-pipelines"
+          :filter-values="colFilters"
+          @row-click="selectRow"
+          @update:filter="onColFilter"
+        >
+          <template #cell-status="{ row }">
+            <span
+              v-if="inProgressOf(row)"
+              class="azure-pl-spinner"
+              title="Running"
+              role="img"
+              aria-label="Running"
+            ></span>
+            <span
+              v-else
+              :class="['azure-pl-row__icon', `azure-pl-row__icon--${visualOf(row).cls}`]"
+              :title="visualOf(row).label"
+              >{{ visualOf(row).icon }}</span
+            >
+          </template>
+          <template #cell-name="{ row }">
+            <span class="azure-pl-table__name" :title="row.name">{{ row.name }}</span>
+            <span v-if="row.folder && row.folder !== '\\'" class="azure-pl-table__folder">{{ row.folder }}</span>
+          </template>
+          <template #cell-build="{ row }">
+            <span v-if="row.lastRun">#{{ row.lastRun.buildNumber }}</span>
+            <span v-else class="azure-pl-table__dim">no runs</span>
+          </template>
+          <template #cell-branch="{ row }">
+            <span v-if="row.lastRun?.sourceBranch">{{ stripRef(row.lastRun.sourceBranch) }}</span>
+            <span v-else class="azure-pl-table__dim">—</span>
+          </template>
+          <template #cell-who="{ row }">
+            <span v-if="row.lastRun?.requestedFor">{{ row.lastRun.requestedFor }}</span>
+            <span v-else class="azure-pl-table__dim">—</span>
+          </template>
+          <template #cell-duration="{ row }">{{ durationOf(row) || "—" }}</template>
+          <template #cell-when="{ row }">
+            <span :title="fullTimeOf(row)">{{ relativeOf(row) || "—" }}</span>
+          </template>
+          <template #row-actions="{ row }">
+            <a
+              v-if="row.webUrl"
+              class="azure-pl-table__open"
+              title="Open this pipeline in your browser."
+              @click.stop.prevent="openUrl(row.webUrl)"
+              >↗</a
+            >
+            <button
+              v-if="row.lastRun"
+              type="button"
+              :class="['button', 'button--ghost', 'button--xs', isDownloading(row.lastRun.id) && 'button--busy']"
+              :disabled="isDownloading(row.lastRun.id)"
+              title="Download the full raw log of the latest run as a .log file."
+              @click.stop="onDownloadLog({ pipeline: row, run: { id: row.lastRun.id } })"
+            >
+              {{ isDownloading(row.lastRun.id) ? "…" : "↓ Log" }}
+            </button>
+            <button
+              v-if="row.lastRun && runningOf(row)"
+              type="button"
+              class="button button--ghost button--xs"
+              title="Cancel this in-progress run."
+              @click.stop="onCancel({ pipeline: row, run: { id: row.lastRun.id } })"
+            >
+              ⏹
+            </button>
+            <button
+              v-else-if="row.lastRun"
+              type="button"
+              class="button button--ghost button--xs"
+              :disabled="row.queueStatus === 'disabled'"
+              :title="
+                row.queueStatus === 'disabled'
+                  ? 'Disabled — queueing is turned off for this pipeline in Azure DevOps.'
+                  : 'Re-run this pipeline — opens a dialog pre-filled with the chosen run.'
+              "
+              @click.stop="onRerun({ pipeline: row, run: { id: row.lastRun.id } })"
+            >
+              ▶
+            </button>
+          </template>
+          <template #empty>
+            <span v-if="anyLoading && !allRows.length">Loading pipelines…</span>
+            <span v-else-if="allRows.length">No pipelines match the current filters.</span>
+            <span v-else>No pipelines found.</span>
+          </template>
+        </DockerResourceTable>
+      </div>
+
+      <div
+        v-if="selectedPipeline"
+        class="azure-pipelines__resizer"
+        role="separator"
+        aria-orientation="vertical"
+        title="Drag to resize the detail panel."
+        @pointerdown="startResize"
+        @dblclick="resetWidth"
+      ></div>
+
+      <AzurePipelineDetailPanel
+        v-if="selectedPipeline"
+        :pipeline="selectedPipeline"
+        :downloading-run-id="downloadingRunId"
+        @rerun="onRerun"
+        @cancel="onCancel"
+        @download-log="onDownloadLog"
+        @close="selectedKey = null"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
-import AzurePipelineRow from "./AzurePipelineRow.vue";
+import { computed, onMounted, reactive, ref, watch, inject } from "vue";
+import DockerResourceTable, { type Column } from "../docker/DockerResourceTable.vue";
+import AzurePipelineDetailPanel from "./AzurePipelineDetailPanel.vue";
+import {
+  statusVisual,
+  statusRank,
+  isRunning,
+  stripRef,
+  formatRelative,
+  formatFull,
+  formatDuration,
+  durationMs,
+} from "./azurePipelineFormat.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useAzurePipelinesStore } from "../../../stores/azure-pipelines.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import type { AzurePipelineSummary } from "../../../../electron/shared/types/azure-pipelines.js";
+
+interface PipelineRow extends AzurePipelineSummary {
+  connectionLabel: string;
+}
 
 const props = defineProps<{ connections: Array<{ id: string; label?: string }>; workspaceId?: string }>();
 
 const appStore = useAppStore();
 const store = useAzurePipelinesStore();
 const notify = useNotificationStore();
-const filter = ref("");
-const projectFilter = ref("");
-const timeFilter = ref("all");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const api = inject<any>("api", null);
 
-/** Distinct project names across all connections, for the project dropdown. */
-const allProjects = computed(() => {
-  const names = new Set<string>();
-  for (const conn of props.connections) {
-    for (const pipeline of stateOf(conn.id).pipelines) {
-      names.add(pipeline.project?.name || "(no project)");
+const filter = ref("");
+const timeFilter = ref("all");
+const selectedKey = ref<string | null>(null);
+const downloadingRunId = ref<number | string | null>(null);
+
+// --- Per-column filters ---
+// Project and connection moved out of the toolbar into the table's filter row;
+// the table renders the controls, but the matching stays here (see filteredRows).
+const CONN_FILTER_KEY = "azure-pipelines:connectionFilter";
+
+// Many setups register the same pipelines under several connections (e.g. two
+// orgs pointing at the same project), so showing "all" duplicates every row.
+// Default to a single connection and remember the user's choice; "" = All.
+function initialConnectionFilter(): string {
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(CONN_FILTER_KEY);
+  } catch {
+    // localStorage unavailable — fall through to the default.
+  }
+  const ids = new Set(props.connections.map((c) => c.id));
+  // A prior explicit choice wins: "" (All) or a still-valid connection id.
+  if (saved !== null && (saved === "" || ids.has(saved))) return saved;
+  // First run / stale id: pick one connection so rows aren't duplicated.
+  return props.connections.length > 1 ? props.connections[0].id : "";
+}
+
+const colFilters = reactive<Record<string, string>>({
+  name: "",
+  project: "",
+  connection: initialConnectionFilter(),
+  build: "",
+  branch: "",
+  who: "",
+});
+
+function onColFilter(key: string, value: string): void {
+  colFilters[key] = value;
+}
+
+watch(
+  () => colFilters.connection,
+  (v) => {
+    try {
+      localStorage.setItem(CONN_FILTER_KEY, v);
+    } catch {
+      // Non-fatal — choice just won't persist this session.
+    }
+  },
+);
+
+// --- Detail panel width (drag to resize, persisted) ---
+const DEFAULT_DETAIL_W = 420;
+const MIN_DETAIL_W = 280;
+const WIDTH_KEY = "azure-pipelines:detailWidth";
+const splitRef = ref<HTMLElement | null>(null);
+
+function loadDetailWidth(): number {
+  try {
+    const raw = Number(localStorage.getItem(WIDTH_KEY));
+    if (Number.isFinite(raw) && raw >= MIN_DETAIL_W) return raw;
+  } catch {
+    // localStorage unavailable (e.g. SSR / tests) — fall back to default.
+  }
+  return DEFAULT_DETAIL_W;
+}
+
+const detailWidth = ref(loadDetailWidth());
+
+/** Largest panel width that still leaves room for the table (or a fallback). */
+function maxDetailWidth(): number {
+  const total = splitRef.value?.clientWidth ?? 1200;
+  return Math.max(MIN_DETAIL_W, total - 320);
+}
+
+function startResize(e: PointerEvent): void {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = detailWidth.value;
+  const max = maxDetailWidth();
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = "col-resize";
+  function onMove(ev: PointerEvent) {
+    // Panel sits on the right, so dragging left (negative dx) widens it.
+    const next = startW - (ev.clientX - startX);
+    detailWidth.value = Math.min(max, Math.max(MIN_DETAIL_W, next));
+  }
+  function onUp() {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+    try {
+      localStorage.setItem(WIDTH_KEY, String(Math.round(detailWidth.value)));
+    } catch {
+      // Non-fatal — width just won't persist this session.
     }
   }
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
+function resetWidth(): void {
+  detailWidth.value = DEFAULT_DETAIL_W;
+  try {
+    localStorage.setItem(WIDTH_KEY, String(DEFAULT_DETAIL_W));
+  } catch {
+    // Non-fatal.
+  }
+}
+
+function stateOf(connectionId: string) {
+  return store.byConnection[connectionId] || { loading: false, error: "", pipelines: [], loaded: false };
+}
+
+function connectionLabel(connectionId: string): string {
+  return props.connections.find((c) => c.id === connectionId)?.label || connectionId;
+}
+
+const anyLoading = computed(() => props.connections.some((c) => stateOf(c.id).loading));
+
+const errors = computed(() =>
+  props.connections.map((c) => ({ label: c.label || c.id, error: stateOf(c.id).error })).filter((e) => e.error),
+);
+
+/** All pipelines across every connection, flattened into one table. */
+const allRows = computed<PipelineRow[]>(() => {
+  const rows: PipelineRow[] = [];
+  for (const conn of props.connections) {
+    for (const pipeline of stateOf(conn.id).pipelines) {
+      rows.push({ ...pipeline, connectionLabel: conn.label || conn.id });
+    }
+  }
+  return rows;
+});
+
+const allProjects = computed(() => {
+  const names = new Set<string>();
+  for (const r of allRows.value) names.add(r.project?.name || "(no project)");
   return [...names].sort((a, b) => a.localeCompare(b));
 });
 
-/** Last-run timestamp of a pipeline, for the time-window filter. */
-function lastRunTimeMs(pipeline: AzurePipelineSummary): number {
-  const r = pipeline.lastRun;
+function lastRunTimeMs(row: PipelineRow): number {
+  const r = row.lastRun;
   const stamp = r?.finishTime || r?.startTime || r?.queueTime;
   const ms = stamp ? new Date(stamp).getTime() : NaN;
   return Number.isNaN(ms) ? 0 : ms;
+}
+
+const filteredRows = computed<PipelineRow[]>(() => {
+  const needle = filter.value.trim().toLowerCase();
+  const maxAgeMs = timeFilter.value === "all" ? 0 : Number(timeFilter.value) * 86_400_000;
+  const cutoff = maxAgeMs ? Date.now() - maxAgeMs : 0;
+  const fName = colFilters.name.trim().toLowerCase();
+  const fBuild = colFilters.build.trim().toLowerCase();
+  const fBranch = colFilters.branch.trim().toLowerCase();
+  const fWho = colFilters.who.trim().toLowerCase();
+  return allRows.value.filter((r) => {
+    if (colFilters.connection && r.connectionId !== colFilters.connection) return false;
+    if (colFilters.project && (r.project?.name || "(no project)") !== colFilters.project) return false;
+    if (cutoff && lastRunTimeMs(r) < cutoff) return false;
+    if (fName && !r.name.toLowerCase().includes(fName)) return false;
+    if (
+      fBuild &&
+      !String(r.lastRun?.buildNumber || "")
+        .toLowerCase()
+        .includes(fBuild)
+    )
+      return false;
+    if (fBranch && !stripRef(r.lastRun?.sourceBranch).toLowerCase().includes(fBranch)) return false;
+    if (fWho && !(r.lastRun?.requestedFor || "").toLowerCase().includes(fWho)) return false;
+    if (needle) {
+      const hay =
+        `${r.name} ${r.project?.name || ""} ${stripRef(r.lastRun?.sourceBranch)} ${r.connectionLabel}`.toLowerCase();
+      if (!hay.includes(needle)) return false;
+    }
+    return true;
+  });
+});
+
+const projectOptions = computed(() => allProjects.value.map((name) => ({ value: name, label: name })));
+const connectionOptions = computed(() => props.connections.map((c) => ({ value: c.id, label: c.label || c.id })));
+
+const columns = computed<Column<PipelineRow>[]>(() => {
+  const cols: Column<PipelineRow>[] = [
+    {
+      key: "status",
+      label: "",
+      width: "34px",
+      resizable: false,
+      sortValue: (r) => statusRank(r.lastRun?.status, r.lastRun?.result),
+    },
+    {
+      key: "name",
+      label: "Pipeline",
+      getValue: (r) => r.name,
+      sortValue: (r) => r.name,
+      filter: { kind: "text", placeholder: "name…" },
+    },
+    {
+      key: "project",
+      label: "Project",
+      getValue: (r) => r.project?.name || "",
+      sortValue: (r) => r.project?.name || "",
+      filter: { kind: "select", options: projectOptions.value, placeholder: "All projects" },
+    },
+  ];
+  // Filterable inline — shown whenever more than one connection is configured.
+  if (props.connections.length > 1) {
+    cols.push({
+      key: "connection",
+      label: "Connection",
+      getValue: (r) => r.connectionLabel,
+      sortValue: (r) => r.connectionLabel,
+      filter: { kind: "select", options: connectionOptions.value, placeholder: "All connections" },
+    });
+  }
+  cols.push(
+    {
+      key: "build",
+      label: "#",
+      mono: true,
+      sortValue: (r) => r.lastRun?.buildNumber || "",
+      filter: { kind: "text", placeholder: "#…" },
+    },
+    {
+      key: "branch",
+      label: "Branch",
+      sortValue: (r) => stripRef(r.lastRun?.sourceBranch),
+      filter: { kind: "text", placeholder: "branch…" },
+    },
+    {
+      key: "who",
+      label: "By",
+      sortValue: (r) => r.lastRun?.requestedFor || "",
+      filter: { kind: "text", placeholder: "by…" },
+    },
+    {
+      key: "duration",
+      label: "Duration",
+      align: "right",
+      sortValue: (r) => durationMs(r.lastRun?.startTime, r.lastRun?.finishTime),
+    },
+    { key: "when", label: "When", align: "right", sortValue: (r) => lastRunTimeMs(r) },
+  );
+  return cols;
+});
+
+function rowKey(row: PipelineRow): string {
+  return `${row.connectionId}:${row.id}`;
+}
+
+const selectedPipeline = computed<PipelineRow | null>(
+  () => allRows.value.find((r) => rowKey(r) === selectedKey.value) || null,
+);
+
+function selectRow(row: PipelineRow): void {
+  selectedKey.value = selectedKey.value === rowKey(row) ? null : rowKey(row);
+}
+
+function visualOf(row: PipelineRow) {
+  return row.lastRun
+    ? statusVisual(row.lastRun.status, row.lastRun.result)
+    : { icon: "○", cls: "none", label: "No runs" };
+}
+function runningOf(row: PipelineRow): boolean {
+  return !!row.lastRun && isRunning(row.lastRun.status);
+}
+/** Strictly in-progress (not just queued) — drives the spinner + top pinning. */
+function inProgressOf(row: PipelineRow): boolean {
+  return visualOf(row).cls === "running";
+}
+function rowClassFor(row: PipelineRow): string | undefined {
+  const cls: string[] = [];
+  if (rowKey(row) === selectedKey.value) cls.push("azure-pl-table__row--active");
+  if (inProgressOf(row)) cls.push("azure-pl-table__row--running");
+  return cls.join(" ") || undefined;
+}
+function durationOf(row: PipelineRow): string {
+  return row.lastRun ? formatDuration(row.lastRun.startTime, row.lastRun.finishTime) : "";
+}
+function relativeOf(row: PipelineRow): string {
+  const r = row.lastRun;
+  return r ? formatRelative(r.finishTime || r.startTime || r.queueTime) : "";
+}
+function fullTimeOf(row: PipelineRow): string {
+  const r = row.lastRun;
+  return r ? formatFull(r.finishTime || r.startTime || r.queueTime) : "";
+}
+function isDownloading(id: number | string): boolean {
+  return downloadingRunId.value != null && downloadingRunId.value === id;
+}
+function openUrl(url?: string) {
+  if (!url) return;
+  if (api?.openExternal) api.openExternal(url);
+  else if (typeof window !== "undefined") window.open(url, "_blank");
 }
 
 const workspaceName = computed(
@@ -112,47 +495,28 @@ const workspaceName = computed(
 );
 const profileId = computed(() => appStore.myActiveProfileId || "default");
 
-function connectionLabel(connectionId: string): string {
-  return props.connections.find((c) => c.id === connectionId)?.label || connectionId;
-}
-
-function stateOf(connectionId: string) {
-  return store.byConnection[connectionId] || { loading: false, error: "", pipelines: [], loaded: false };
-}
-
-const anyLoading = computed(() => props.connections.some((c) => stateOf(c.id).loading));
-
-function projectsOf(connectionId: string): Array<{ name: string; pipelines: AzurePipelineSummary[] }> {
-  const needle = filter.value.trim().toLowerCase();
-  const maxAgeMs = timeFilter.value === "all" ? 0 : Number(timeFilter.value) * 86_400_000;
-  const cutoff = maxAgeMs ? Date.now() - maxAgeMs : 0;
-  const groups = new Map<string, AzurePipelineSummary[]>();
-  for (const pipeline of stateOf(connectionId).pipelines) {
-    const name = pipeline.project?.name || "(no project)";
-    if (needle && !pipeline.name.toLowerCase().includes(needle)) continue;
-    if (projectFilter.value && name !== projectFilter.value) continue;
-    if (cutoff && lastRunTimeMs(pipeline) < cutoff) continue;
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name)!.push(pipeline);
-  }
-  return [...groups.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([name, pipelines]) => ({ name, pipelines }));
-}
-
 function loadAll(force = false) {
-  for (const conn of props.connections) {
-    void store.load(conn.id, { force });
-  }
+  for (const conn of props.connections) void store.load(conn.id, { force });
 }
 
 function refreshAll() {
   loadAll(true);
+  // Also refresh the open detail panel's runs so a stale spinner clears at once
+  // (the per-connection reload above doesn't touch the per-pipeline run list).
+  const p = selectedPipeline.value;
+  if (p) void store.loadRuns(p.connectionId, p.project.name, p.id, { force: true });
 }
 
 watch(
   () => props.connections.map((c) => c.id).join(","),
-  () => loadAll(false),
+  () => {
+    loadAll(false);
+    // If the selected connection was removed, fall back so rows aren't all hidden.
+    const ids = new Set(props.connections.map((c) => c.id));
+    if (colFilters.connection && !ids.has(colFilters.connection)) {
+      colFilters.connection = props.connections.length > 1 ? props.connections[0].id : "";
+    }
+  },
   { immediate: false },
 );
 
@@ -176,7 +540,6 @@ function onRerun({ pipeline, run }: { pipeline: AzurePipelineSummary; run: { id:
         kind: "success",
         durationMs: 5000,
       });
-      // Watch the run so the user gets a notification when it completes.
       if (newRun?.id != null) {
         store.watchRun({
           connectionId: pipeline.connectionId,
@@ -212,8 +575,6 @@ async function onCancel({ pipeline, run }: { pipeline: AzurePipelineSummary; run
     });
   }
 }
-
-const downloadingRunId = ref<number | string | null>(null);
 
 async function onDownloadLog({ pipeline, run }: { pipeline: AzurePipelineSummary; run: { id: number | string } }) {
   if (downloadingRunId.value != null) return;
@@ -252,55 +613,169 @@ async function onDownloadLog({ pipeline, run }: { pipeline: AzurePipelineSummary
 
 <style scoped>
 .azure-pipelines {
-  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 .azure-pipelines__toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 .azure-pipelines__filter {
-  flex: 0 1 240px;
+  flex: 0 1 200px;
+  min-width: 120px;
   font-size: 12px;
   padding: 3px 8px;
 }
 .azure-pipelines__select {
+  flex: 0 0 auto;
+  max-width: 130px;
   font-size: 12px;
   padding: 3px 6px;
+}
+.azure-pipelines__count {
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  font-variant-numeric: tabular-nums;
 }
 .azure-pipelines__spacer {
   flex: 1;
 }
-.azure-pipelines__conn {
-  margin-bottom: 14px;
-}
-.azure-pipelines__conn-head {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted, #888);
-  margin-bottom: 6px;
-}
-.azure-pipelines__project {
-  margin-bottom: 10px;
-}
-.azure-pipelines__project-head {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 4px;
-  opacity: 0.85;
-}
-.azure-pipelines__msg {
-  font-size: 12px;
-  color: var(--text-muted, #888);
-  padding: 4px 0;
+.azure-pipelines__errors {
+  flex-shrink: 0;
+  margin-bottom: 8px;
 }
 .azure-pipelines__error {
   font-size: 12px;
   color: var(--danger, #e53935);
   white-space: pre-wrap;
-  padding: 4px 0;
+  padding: 2px 0;
+}
+
+.azure-pipelines__split {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  container-type: inline-size;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.azure-pipelines__table-area {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.azure-pipelines__split :deep(.azure-pl-detail) {
+  flex: 0 0 var(--azure-pl-detail-w, 420px);
+  min-width: 0;
+}
+.azure-pipelines__resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  touch-action: none;
+}
+.azure-pipelines__resizer::after {
+  /* Wider invisible hit area so the 5px handle is easy to grab. */
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+.azure-pipelines__resizer:hover,
+.azure-pipelines__resizer:active {
+  background: var(--accent, #3b82f6);
+}
+
+/* On a narrow pane the detail panel overlays the table as a drawer. */
+@container (max-width: 720px) {
+  .azure-pipelines__resizer {
+    display: none;
+  }
+  .azure-pipelines__split :deep(.azure-pl-detail) {
+    position: absolute;
+    inset: 0;
+    flex-basis: auto;
+    width: 100%;
+    z-index: 5;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+    background: var(--bg, #141416);
+  }
+}
+
+.azure-pl-row__icon {
+  display: inline-block;
+  text-align: center;
+  font-weight: 700;
+}
+.azure-pl-row__icon--ok {
+  color: var(--success, #2e9e44);
+}
+.azure-pl-row__icon--fail {
+  color: var(--danger, #e53935);
+}
+.azure-pl-row__icon--warn {
+  color: var(--warning, #d18616);
+}
+.azure-pl-row__icon--running {
+  color: var(--accent, #3b82f6);
+}
+.azure-pl-row__icon--pending,
+.azure-pl-row__icon--none,
+.azure-pl-row__icon--canceled {
+  color: var(--text-muted, #888);
+}
+
+/* Spinning ring for in-progress runs (mirrors Azure DevOps' "running" state). */
+.azure-pl-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--accent, #3b82f6), transparent 65%);
+  border-top-color: var(--accent, #3b82f6);
+  border-radius: 50%;
+  animation: azure-pl-spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+@keyframes azure-pl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.azure-pl-table__name {
+  font-weight: 600;
+  color: var(--text, inherit);
+}
+.azure-pl-table__folder {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+}
+.azure-pl-table__dim {
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+.azure-pl-table__open {
+  cursor: pointer;
+  color: var(--accent, #3b82f6);
+  text-decoration: none;
+  margin-right: 4px;
+}
+.azure-pipelines__split :deep(.azure-pl-table__row--active) {
+  background: var(--accent-subtle, rgba(99, 179, 237, 0.12));
+}
+.azure-pipelines__split :deep(.azure-pl-table__row--running) {
+  background: color-mix(in srgb, var(--accent, #3b82f6), transparent 90%);
 }
 .button--xs {
   font-size: 10px;

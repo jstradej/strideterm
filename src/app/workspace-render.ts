@@ -31,6 +31,7 @@ interface ChecksLike {
 interface PrStatusInfo {
   status?: string;
   closedDate?: string;
+  lastActivityAt?: string | null;
 }
 
 interface LiveTask {
@@ -67,6 +68,25 @@ function truncateForTooltip(text: string, limit = 400): string {
   const trimmed = (text || "").trim();
   if (trimmed.length <= limit) return trimmed;
   return trimmed.slice(0, limit - 1).trimEnd() + "…";
+}
+
+/**
+ * Pick the most recent of several ISO timestamps, ignoring missing /
+ * unparseable values. Returns null when nothing usable is supplied. Used to
+ * collapse a workspace's activity signals (remote PR activity, local session
+ * alerts) into a single "last activity" instant.
+ */
+function mostRecentIso(...isos: Array<string | null | undefined>): string | null {
+  let bestTime = 0;
+  let bestIso: string | null = null;
+  for (const iso of isos) {
+    if (!iso) continue;
+    const t = Date.parse(iso);
+    if (Number.isNaN(t) || t <= bestTime) continue;
+    bestTime = t;
+    bestIso = iso;
+  }
+  return bestIso;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +281,23 @@ export function buildWorkspaceCards({
     const taskTooltipSegment = taskDescription ? `\n\n${taskDescription}` : "";
     const shortcutSegment = index < 9 ? ` (Ctrl+${index + 1})` : "";
 
+    // "Last activity" = the most recent thing that happened on this workspace,
+    // whichever signal it came from: remote PR activity (commit / comment /
+    // creation, folded into the PR summary's lastActivityAt) or a local session
+    // alert (attention.latestAt). Git log dates are formatted relative
+    // (--date=relative) and therefore not parseable, so they don't feed this.
+    const lastActivityAt = mostRecentIso(prStatusInfo?.lastActivityAt, attention?.latestAt);
+    const lastActivity = formatRelativeAge(lastActivityAt);
+    let lastActivityTitle = "";
+    if (lastActivityAt) {
+      try {
+        lastActivityTitle = `Last activity: ${new Date(lastActivityAt).toLocaleString()}`;
+      } catch {
+        lastActivityTitle = `Last activity: ${lastActivity}`;
+      }
+    }
+    const lastActivitySegment = lastActivityTitle ? `\n${lastActivityTitle}` : "";
+
     return {
       id: workspace.id,
       index: index + 1,
@@ -269,7 +306,7 @@ export function buildWorkspaceCards({
       active,
       color: safeColor(workspace.color),
       summary,
-      title: `${baseTitle}${mergeOrPrSegment}${taskTooltipSegment}${shortcutSegment}`,
+      title: `${baseTitle}${mergeOrPrSegment}${lastActivitySegment}${taskTooltipSegment}${shortcutSegment}`,
       attentionCount: attention?.count || 0,
       attentionFresh: isFreshAttention(attention),
       attentionTooltip,
@@ -292,6 +329,8 @@ export function buildWorkspaceCards({
             : "",
       starred: Boolean(workspace.starred),
       relativeAge,
+      lastActivity,
+      lastActivityTitle,
     };
   });
 }

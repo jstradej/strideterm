@@ -541,6 +541,14 @@ onMounted(() => loadData());
   cursor: pointer;
 }
 
+/* CustomSelect fills its container by default; in this horizontal filter bar
+   that would stretch/wrap each combobox, so pin them to a compact width via
+   CustomSelect's `--cs-width` knob. */
+.azure-audit-log__select {
+  flex: 0 0 auto;
+  --cs-width: 150px;
+}
+
 .azure-audit-log__search {
   background: var(--panel);
   color: var(--fg);

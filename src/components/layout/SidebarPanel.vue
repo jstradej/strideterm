@@ -204,6 +204,7 @@ interface PrEntry {
     state?: string;
   };
   checks?: { failedCount?: number; pendingCount?: number; passedCount?: number };
+  lastActivityAt?: string | null;
 }
 
 interface AzureDevopsWithPrs {
@@ -277,18 +278,24 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
       if (!prKey) return null;
       const provider = workspace.review?.provider;
       if (provider === "azure-devops") {
-        const prData = azureDevops?.pullRequests?.[prKey]?.pullRequest;
+        const entry = azureDevops?.pullRequests?.[prKey];
+        const prData = entry?.pullRequest;
         const status = prData?.status;
-        if (status === "completed") return { status: "completed", closedDate: prData?.closedDate || undefined };
-        if (status === "abandoned") return { status: "abandoned", closedDate: prData?.closedDate || undefined };
-        return { status: "active" };
+        const lastActivityAt = entry?.lastActivityAt;
+        if (status === "completed")
+          return { status: "completed", closedDate: prData?.closedDate || undefined, lastActivityAt };
+        if (status === "abandoned")
+          return { status: "abandoned", closedDate: prData?.closedDate || undefined, lastActivityAt };
+        return { status: "active", lastActivityAt };
       }
       if (provider === "github") {
-        const pr = github?.pullRequests?.[prKey]?.pullRequest;
-        if (pr?.mergedAt) return { status: "completed", closedDate: pr.mergedAt };
+        const entry = github?.pullRequests?.[prKey];
+        const pr = entry?.pullRequest;
+        const lastActivityAt = entry?.lastActivityAt;
+        if (pr?.mergedAt) return { status: "completed", closedDate: pr.mergedAt, lastActivityAt };
         if (pr && pr.state !== "open")
-          return { status: "abandoned", closedDate: pr.closedAt || pr.updatedAt || undefined };
-        return { status: "active" };
+          return { status: "abandoned", closedDate: pr.closedAt || pr.updatedAt || undefined, lastActivityAt };
+        return { status: "active", lastActivityAt };
       }
       return null;
     },

@@ -291,7 +291,11 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
 <style scoped>
 .custom-select {
   position: relative;
-  width: 100%;
+  /* Defaults to filling its container (forms/dialogs). In a horizontal toolbar
+     a consumer can shrink it without fighting scoped-CSS specificity or needing
+     `!important` — just set `--cs-width` (e.g. `--cs-width: 150px`) on the
+     element or an ancestor. */
+  width: var(--cs-width, 100%);
 }
 .custom-select__button {
   display: flex;

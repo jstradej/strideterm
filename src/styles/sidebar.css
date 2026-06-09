@@ -1275,6 +1275,27 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   opacity: 0.75;
 }
 
+.workspace-card__subline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.workspace-card__summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-card__last-activity {
+  flex-shrink: 0;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
 .project__title-row,
 .workspace-card__title-row {
   display: flex;

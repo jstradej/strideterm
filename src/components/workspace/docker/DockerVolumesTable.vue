@@ -41,6 +41,7 @@
       :columns="columns"
       :row-id="(r) => r.Name"
       :default-sort="{ key: 'Name', dir: 'asc' }"
+      persist-key="docker-volumes"
       :selected="selected"
       :has-row-actions="true"
       @row-click="onRowClick"

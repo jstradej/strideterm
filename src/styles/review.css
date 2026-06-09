@@ -109,6 +109,15 @@
   display: block;
 }
 
+/* Pipelines tab fills the inbox height so its table + detail panel can scroll
+   independently, instead of the whole content area scrolling as one column. */
+.azure-section--fill.azure-section--active {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
 .azure-repo-group {
   margin-bottom: 6px;
   border-left: 3px solid color-mix(in srgb, var(--accent), transparent 55%);
@@ -431,6 +440,9 @@
   margin-left: auto;
   min-width: 220px;
   max-width: 360px;
+  /* Size to content within the min/max above; without this CustomSelect's
+     default width:100% pins it to the 360px max. */
+  --cs-width: auto;
 }
 
 .review-diff-monaco {

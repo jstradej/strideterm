@@ -156,6 +156,10 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
         pipelineId,
       })) as AzurePipelineRun[];
       runsByPipeline.value[key] = { loading: false, error: "", runs: Array.isArray(result) ? result : [] };
+      // Keep the detail panel honest: if any fetched run is still in flight, run
+      // the poller so it refreshes here once the run actually finishes (a run not
+      // triggered from this client otherwise never clears its spinner).
+      if (runsByPipeline.value[key].runs.some((r) => !isCompleted(r.state))) ensurePollTimer();
     } catch (err) {
       runsByPipeline.value[key] = { loading: false, error: errorMessage(err), runs: existing?.runs || [] };
     }
@@ -326,8 +330,27 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
         void load(connectionId, { force: true });
       }
 
+      // 2b) Refresh any cached per-pipeline run list that still shows an in-flight
+      // run, so an open detail panel stops spinning once the run finishes — even
+      // for runs this client didn't trigger (and so doesn't `watch`). projectName
+      // is recovered from the already-loaded pipeline list.
+      let busyRuns = 0;
+      for (const [key, runs] of Object.entries(runsByPipeline.value)) {
+        if (!runs.runs.some((r) => !isCompleted(r.state))) continue;
+        const sep = key.lastIndexOf(":");
+        const connectionId = key.slice(0, sep);
+        const pipelineId = key.slice(sep + 1);
+        const projectName = byConnection.value[connectionId]?.pipelines.find((p) => String(p.id) === pipelineId)
+          ?.project.name;
+        // Skip (don't count) when we can't resolve the project — avoids pinning
+        // the timer open forever on an orphaned cache entry.
+        if (!projectName) continue;
+        busyRuns++;
+        void loadRuns(connectionId, projectName, pipelineId, { force: true });
+      }
+
       // 3) Nothing left to watch or refresh → stand down.
-      if (!watchedRuns.size && !busyConnectionIds.size) stopPollTimer();
+      if (!watchedRuns.size && !busyConnectionIds.size && !busyRuns) stopPollTimer();
     } finally {
       ticking = false;
     }

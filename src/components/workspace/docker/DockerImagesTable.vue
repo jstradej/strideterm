@@ -55,6 +55,7 @@
       :columns="columns"
       :row-id="rowKey"
       :default-sort="{ key: 'Size', dir: 'desc' }"
+      persist-key="docker-images"
       :selected="selected"
       :has-row-actions="true"
       :row-class="(r) => (isDangling(r) ? 'img-row--dangling' : undefined)"

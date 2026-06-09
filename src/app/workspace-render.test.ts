@@ -67,6 +67,49 @@ describe("buildWorkspaceCards", () => {
     expect(String(card.title)).toContain("Fix the flaky watcher test");
   });
 
+  test("surfaces last activity from PR lastActivityAt and attention latestAt (most recent wins)", () => {
+    const prActivity = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(); // 4d ago
+    const alertActivity = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h ago
+    const [prCard, attentionCard] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "review-pr",
+          name: "web-app PR #123",
+          kind: "terminal",
+          color: "#0078d4",
+          icon: "AZ",
+          panels: [{ id: "shell", title: "", command: "" }],
+          review: {
+            provider: "azure-devops",
+            prKey: "pr-1",
+            checkout: { mode: "managed-worktree", rootPath: "", cacheRepoPath: "" },
+          },
+        } as unknown as WorkspaceState,
+        {
+          id: "plain",
+          name: "scratch",
+          kind: "terminal",
+          color: "#888",
+          icon: "▶",
+          panels: [{ id: "shell", title: "", command: "" }],
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "review-pr",
+      getGitSnapshot: () => null,
+      // Review child also has a (stale) alert — the more recent PR activity must win.
+      getWorkspaceAttention: (id) =>
+        id === "plain"
+          ? { count: 0, latestAt: alertActivity }
+          : { count: 0, latestAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() },
+      getPrStatus: () => ({ status: "active", lastActivityAt: prActivity }),
+    });
+
+    expect(prCard.lastActivity).toBe("4d");
+    expect(String(prCard.title)).toContain("Last activity:");
+    // A workspace with no PR falls back to its session alert timestamp.
+    expect(attentionCard.lastActivity).toBe("2h");
+  });
+
   test("renders a task workspace without sequenceNumber / createdAt cleanly (backwards compat)", () => {
     // Tasks created before this feature have neither field; the card should
     // fall back to the plain name and produce no age chip rather than NaN /
