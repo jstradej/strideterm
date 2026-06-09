@@ -183,6 +183,22 @@ export interface StridetermAPI {
     pipelineId: number | string;
     runId: number | string;
   }) => Promise<unknown>;
+  getAzurePipelineRunParameters: (payload: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    branch?: string;
+  }) => Promise<unknown>;
+  getAzurePipelineRefs: (payload: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+  }) => Promise<unknown>;
+  getAzurePipelineCommits: (payload: {
+    connectionId: string;
+    projectName: string;
+    repositoryId: string;
+  }) => Promise<unknown>;
   runAzurePipeline: (payload: {
     connectionId: string;
     projectName: string;

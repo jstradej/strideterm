@@ -63,22 +63,16 @@
               :title="runVisual(run).label"
               >{{ runVisual(run).icon }}</span
             >
-            <span class="azure-pl-run__name">{{ run.name }}</span>
-            <span class="azure-pl-run__meta">
-              <span v-if="run.requestedFor" class="azure-pl-run__who" title="Who triggered the run">
-                <span aria-hidden="true">👤</span> {{ run.requestedFor }}
-              </span>
-              <span v-if="runDuration(run)" class="azure-pl-run__dur" title="How long the run took">
-                <span aria-hidden="true">⏱</span> {{ runDuration(run) }}
-              </span>
-              <span
-                v-if="run.finishedDate || run.createdDate"
-                class="azure-pl-run__time"
-                :title="formatFull(run.finishedDate || run.createdDate)"
-              >
-                {{ formatRelative(run.finishedDate || run.createdDate) }}
-              </span>
+            <span class="azure-pl-run__name" :title="run.name">{{ run.name }}</span>
+            <!-- These three are fixed grid columns (always rendered, even when
+                 empty) so every row's data lines up instead of zig-zagging. -->
+            <span class="azure-pl-run__who" :title="run.requestedFor ? `Triggered by ${run.requestedFor}` : ''">
+              <template v-if="run.requestedFor"><span aria-hidden="true">👤</span> {{ run.requestedFor }}</template>
             </span>
+            <span class="azure-pl-run__dur" title="How long the run took">{{ runDuration(run) }}</span>
+            <span class="azure-pl-run__time" :title="formatFull(run.finishedDate || run.createdDate)">{{
+              formatRelative(run.finishedDate || run.createdDate)
+            }}</span>
             <div class="azure-pl-run__actions" @click.stop>
               <button
                 v-if="isRunning(run.state)"
@@ -415,18 +409,34 @@ function openUrl(url?: string) {
   background: var(--surface, rgba(255, 255, 255, 0.02));
   overflow: hidden;
 }
+/* Grid (not flex) so every column lines up across rows like a table: the
+   build number sits in a fixed-width column, so the author/duration/time that
+   follow start at the same x instead of zig-zagging with the number's length. */
 .azure-pl-run {
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px 18px 100px minmax(0, 1fr) 64px 60px auto;
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
   padding: 5px 8px;
   font-size: 12px;
   cursor: pointer;
-  flex-wrap: wrap;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 .azure-pl-run:hover {
   background: var(--surface-hover, rgba(255, 255, 255, 0.05));
+}
+/* Narrow (mobile drawer / tight docked) panel: drop the secondary duration and
+   time columns so build number, author and the action buttons still fit on one
+   line without horizontal scrolling. The split sets container-type: inline-size. */
+@container (max-width: 520px) {
+  .azure-pl-run {
+    grid-template-columns: 14px 18px 92px minmax(0, 1fr) auto;
+    column-gap: 6px;
+  }
+  .azure-pl-run__dur,
+  .azure-pl-run__time {
+    display: none;
+  }
 }
 .azure-pl-run--open {
   background: var(--accent-subtle, rgba(99, 179, 237, 0.12));
@@ -435,45 +445,42 @@ function openUrl(url?: string) {
 .azure-pl-run__caret {
   color: var(--text-muted, #888);
   font-size: 10px;
-  width: 10px;
-  flex-shrink: 0;
+  text-align: center;
 }
 .azure-pl-run--open .azure-pl-run__caret {
   color: var(--accent, #3b82f6);
 }
 .azure-pl-run__icon {
-  width: 16px;
   text-align: center;
-  flex-shrink: 0;
 }
 .azure-pl-run__name {
-  flex: 1 1 90px;
-  min-width: 70px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.azure-pl-run__meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+.azure-pl-run__who {
+  min-width: 0;
+  color: var(--text-muted, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.azure-pl-run__who,
 .azure-pl-run__dur,
 .azure-pl-run__time {
   color: var(--text-muted, #888);
   white-space: nowrap;
+  overflow: hidden;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .azure-pl-run__actions {
   display: flex;
   align-items: center;
   gap: 6px;
   cursor: default;
-  margin-left: auto;
-  flex-shrink: 0;
+  justify-self: end;
 }
 .azure-pl-run__link {
   cursor: pointer;

@@ -328,6 +328,31 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       });
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async getAzurePipelineRunParameters(payload: any = {}) {
+      return azure.getPipelineRunParameterSchema({
+        connectionId: payload.connectionId,
+        projectName: payload.projectName,
+        pipelineId: payload.pipelineId,
+        branch: payload.branch,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async getAzurePipelineRefs(payload: any = {}) {
+      return azure.listPipelineRefs({
+        connectionId: payload.connectionId,
+        projectName: payload.projectName,
+        pipelineId: payload.pipelineId,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async getAzurePipelineCommits(payload: any = {}) {
+      return azure.listPipelineCommits({
+        connectionId: payload.connectionId,
+        projectName: payload.projectName,
+        repositoryId: payload.repositoryId,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async runAzurePipeline(payload: any = {}) {
       try {
         return await azure.runPipeline({

@@ -7,6 +7,9 @@ import type {
   AzurePipelineSummary,
   AzurePipelineRun,
   AzurePipelineRunSeed,
+  AzurePipelineParameterDef,
+  AzurePipelineRefs,
+  AzurePipelineCommit,
   AzureRunDetail,
 } from "../../electron/shared/types/azure-pipelines.js";
 
@@ -66,6 +69,18 @@ type PipelinesApi = Transport & {
     pipelineId: number | string;
     runId: number | string;
   }) => Promise<unknown>;
+  getAzurePipelineRunParameters: (p: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    branch?: string;
+  }) => Promise<unknown>;
+  getAzurePipelineRefs: (p: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+  }) => Promise<unknown>;
+  getAzurePipelineCommits: (p: { connectionId: string; projectName: string; repositoryId: string }) => Promise<unknown>;
   runAzurePipeline: (p: RunPayload) => Promise<unknown>;
   getAzurePipelineRunStatus: (p: {
     connectionId: string;
@@ -206,6 +221,39 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
       pipelineId,
       runId,
     })) as AzurePipelineRunSeed;
+  }
+
+  async function getRunParameters(
+    connectionId: string,
+    projectName: string,
+    pipelineId: number | string,
+    branch?: string,
+  ): Promise<AzurePipelineParameterDef[]> {
+    if (!_api?.getAzurePipelineRunParameters) return [];
+    return (await _api.getAzurePipelineRunParameters({
+      connectionId,
+      projectName,
+      pipelineId,
+      branch,
+    })) as AzurePipelineParameterDef[];
+  }
+
+  async function getRefs(
+    connectionId: string,
+    projectName: string,
+    pipelineId: number | string,
+  ): Promise<AzurePipelineRefs> {
+    if (!_api?.getAzurePipelineRefs) return { branches: [], tags: [], repositoryId: "" };
+    return (await _api.getAzurePipelineRefs({ connectionId, projectName, pipelineId })) as AzurePipelineRefs;
+  }
+
+  async function getCommits(
+    connectionId: string,
+    projectName: string,
+    repositoryId: string,
+  ): Promise<AzurePipelineCommit[]> {
+    if (!_api?.getAzurePipelineCommits || !repositoryId) return [];
+    return (await _api.getAzurePipelineCommits({ connectionId, projectName, repositoryId })) as AzurePipelineCommit[];
   }
 
   async function run(payload: RunPayload): Promise<{ id: number; state: string; result?: string; webUrl: string }> {
@@ -380,6 +428,9 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
     loadRuns,
     getRunDetail,
     getRunSeed,
+    getRunParameters,
+    getRefs,
+    getCommits,
     run,
     cancel,
     watchRun,

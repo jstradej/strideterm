@@ -528,6 +528,25 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return result.value || [];
   }
 
+  function buildListCommitsUrl(connection: AzureConnection, projectName: string, repositoryId: string, top: number) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/commits?searchCriteria.$top=${top}&api-version=${API_VERSION}`;
+  }
+
+  /** Recent commits on the repo's default branch (for the re-run branch picker's Commits tab). */
+  async function listRepositoryCommits(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    top = 30,
+  ) {
+    const result = (await requestJson(buildListCommitsUrl(connection, projectName, repositoryId, top), {
+      login: connection.login,
+      token,
+    })) as { value?: unknown[] };
+    return result.value || [];
+  }
+
   async function createPullRequest(
     connection: AzureConnection,
     token: string,
@@ -589,6 +608,14 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/pipelines/${pipelineId}/runs/${runId}?api-version=${API_VERSION}`;
   }
 
+  // The Run-pipeline panel's parameter schema is served by a contribution data
+  // provider (not a public REST resource), reached via HierarchyQuery. This is
+  // the same call the Azure DevOps web UI makes, so it returns the exact same
+  // types/allowed-values; it's undocumented, hence pinned to its own version.
+  function buildHierarchyQueryUrl(connection: AzureConnection, projectName: string) {
+    return `${trimTrailingSlash(connection.orgUrl)}/_apis/Contribution/HierarchyQuery/project/${encodeURIComponent(projectName)}?api-version=5.0-preview.1`;
+  }
+
   /** Build definitions with their latest/latestCompleted builds inline (one call per project). */
   async function listBuildDefinitionsWithLatest(connection: AzureConnection, token: string, projectName: string) {
     const result = (await requestJson(buildPipelineDefinitionsUrl(connection, projectName), {
@@ -627,6 +654,27 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return result.value || [];
   }
 
+  function buildBuildDefinitionDetailUrl(
+    connection: AzureConnection,
+    projectName: string,
+    definitionId: string | number,
+  ) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/build/definitions/${definitionId}?api-version=${API_VERSION}`;
+  }
+
+  /** A single build definition — carries `repository` (id + type) so we can list its refs. */
+  async function getBuildDefinition(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    definitionId: string | number,
+  ) {
+    return requestJson(buildBuildDefinitionDetailUrl(connection, projectName, definitionId), {
+      login: connection.login,
+      token,
+    });
+  }
+
   /** A single run including templateParameters, variables and resource refName (for re-run seeding). */
   async function getPipelineRun(
     connection: AzureConnection,
@@ -638,6 +686,36 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return requestJson(buildPipelineRunUrl(connection, projectName, pipelineId, runId), {
       login: connection.login,
       token,
+    });
+  }
+
+  /**
+   * Runtime parameter schema for a pipeline (name/type/default/allowed values),
+   * via the same data provider the "Run pipeline" panel uses. Returns the raw
+   * HierarchyQuery payload for the manager to map; `sourceBranch` matters
+   * because YAML parameters can differ per branch.
+   */
+  async function getPipelineRunParameters(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    pipelineId: string | number,
+    sourceBranch?: string,
+  ) {
+    return requestJson(buildHierarchyQueryUrl(connection, projectName), {
+      login: connection.login,
+      token,
+      method: "POST",
+      body: {
+        contributionIds: ["ms.vss-build-web.pipeline-run-parameters-data-provider"],
+        dataProviderContext: {
+          properties: {
+            pipelineId: Number(pipelineId),
+            sourceBranch: sourceBranch || undefined,
+            sourcePage: { routeValues: { project: projectName } },
+          },
+        },
+      },
     });
   }
 
@@ -756,6 +834,7 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     listIterationChanges,
     listRepositories,
     listRepositoryRefs,
+    listRepositoryCommits,
     createPullRequest,
     buildPipelineDefinitionsUrl,
     buildPipelineRunsUrl,
@@ -763,7 +842,9 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     listBuildDefinitionsWithLatest,
     listPipelineRuns,
     listBuildsByDefinition,
+    getBuildDefinition,
     getPipelineRun,
+    getPipelineRunParameters,
     runPipeline,
     cancelBuild,
     listBuildLogs,

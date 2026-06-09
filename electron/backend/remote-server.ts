@@ -788,6 +788,18 @@ async function handleApiRequest(
       json(response, 200, await runtime.getAzurePipelineRunSeed(body));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run-parameters") {
+      json(response, 200, await runtime.getAzurePipelineRunParameters(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/refs") {
+      json(response, 200, await runtime.getAzurePipelineRefs(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/commits") {
+      json(response, 200, await runtime.getAzurePipelineCommits(body));
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run") {
       json(response, 200, await runtime.runAzurePipeline(body));
       return;

@@ -74,6 +74,14 @@
                 <option value="">{{ filterPlaceholder(col) }}</option>
                 <option v-for="o in selectOptions(col)" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
+              <span
+                v-if="resizable && col.resizable !== false"
+                class="dr-table__resizer"
+                title="Drag to resize · double-click to reset"
+                @pointerdown.stop.prevent="startColResize(col.key, $event)"
+                @click.stop
+                @dblclick.stop="resetColWidth(col.key)"
+              ></span>
             </th>
             <th v-if="hasRowActions" class="dr-table__actions-head"></th>
           </tr>
@@ -155,26 +163,33 @@ export interface Column<R> {
     | { kind: "select"; options: { value: string; label: string }[]; placeholder?: string };
 }
 
-const props = defineProps<{
-  rows: T[];
-  columns: Column<T>[];
-  rowId: (row: T) => string;
-  defaultSort?: { key: string; dir: "asc" | "desc" };
-  /** Checkbox selection set. Optional — omit together with `selectable: false`. */
-  selected?: Set<string>;
-  /** Show the leading checkbox column. Defaults to true. */
-  selectable?: boolean;
-  rowClass?: (row: T) => string | undefined;
-  hasRowActions?: boolean;
-  /** Rows for which this returns true are floated to the top, above the column sort. */
-  pinnedFirst?: (row: T) => boolean;
-  /** Enable drag-to-resize column widths. Defaults to true. */
-  resizable?: boolean;
-  /** localStorage key suffix to persist column widths. Omit to not persist. */
-  persistKey?: string;
-  /** Current per-column filter values (owned by the parent), keyed by column.key. */
-  filterValues?: Record<string, string>;
-}>();
+// NOTE: `selectable`/`resizable` must be declared with explicit `true` defaults
+// via withDefaults. They're Boolean props, and Vue casts an *absent* Boolean
+// prop to `false` (HTML boolean-attribute semantics) — not `undefined` — so a
+// parent that omits them would otherwise silently disable selection/resizing.
+const props = withDefaults(
+  defineProps<{
+    rows: T[];
+    columns: Column<T>[];
+    rowId: (row: T) => string;
+    defaultSort?: { key: string; dir: "asc" | "desc" };
+    /** Checkbox selection set. Optional — omit together with `selectable: false`. */
+    selected?: Set<string>;
+    /** Show the leading checkbox column. Defaults to true. */
+    selectable?: boolean;
+    rowClass?: (row: T) => string | undefined;
+    hasRowActions?: boolean;
+    /** Rows for which this returns true are floated to the top, above the column sort. */
+    pinnedFirst?: (row: T) => boolean;
+    /** Enable drag-to-resize column widths. Defaults to true. */
+    resizable?: boolean;
+    /** localStorage key suffix to persist column widths. Omit to not persist. */
+    persistKey?: string;
+    /** Current per-column filter values (owned by the parent), keyed by column.key. */
+    filterValues?: Record<string, string>;
+  }>(),
+  { selectable: true, resizable: true },
+);
 
 const showSelect = computed(() => props.selectable !== false);
 const resizable = computed(() => props.resizable !== false);
@@ -521,34 +536,37 @@ thead th {
   color: var(--accent, #63b3ed);
 }
 
-/* Drag handle straddling the right edge of each header cell. */
+/* Drag handle pinned to the right edge of each header cell. It must sit fully
+   INSIDE the cell (right: 0, no negative overflow): a handle that straddles the
+   border overlaps the next sticky <th>, and that sibling — its own stacking
+   context, painted later — covers the overhanging half, so half the handle
+   stops receiving pointer events. Keeping it inside keeps the whole strip
+   grabbable. top/bottom (not height:100%) so the grab area fills the cell — a
+   percentage height resolves to 0 inside a table cell, leaving nothing to grab. */
 .dr-table__resizer {
   position: absolute;
-  /* top/bottom (not height:100%) so the grab area fills the cell — a percentage
-     height resolves to 0 inside a table cell, which leaves nothing to grab. */
   top: 0;
   bottom: 0;
-  right: -7px;
-  width: 14px;
+  right: 0;
+  width: 12px;
   z-index: 3;
   cursor: col-resize;
   touch-action: none;
 }
-/* Faint always-visible grip so the column is discoverably resizable; the line
-   brightens and fills the full height on hover/drag. */
+/* Faint always-visible grip so the column is discoverably resizable; full row
+   height (in both header rows) so it reads as one continuous divider rather than
+   short dashes, and brightens to the accent on hover/drag. */
 .dr-table__resizer::after {
   content: "";
   position: absolute;
-  top: 6px;
-  bottom: 6px;
-  left: 6px;
+  top: 0;
+  bottom: 0;
+  right: 4px;
   width: 2px;
   background: var(--border-color, rgba(255, 255, 255, 0.16));
 }
 .dr-table__resizer:hover::after,
 .dr-table__resizer:active::after {
-  top: 0;
-  bottom: 0;
   background: var(--accent, #63b3ed);
 }
 

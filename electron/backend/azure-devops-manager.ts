@@ -9,6 +9,9 @@ import type {
   AzureBuildRef,
   AzurePipelineRun,
   AzurePipelineRunSeed,
+  AzurePipelineParameterDef,
+  AzurePipelineRefs,
+  AzurePipelineCommit,
   AzureRunDetail,
 } from "../shared/types/azure-pipelines.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
@@ -290,6 +293,12 @@ export class AzureDevOpsManager extends BaseProviderManager {
   declare reviewStore: AzureReviewStore;
   declare reviewBridgeStore: AzureReviewBridgeStore | null;
   declare auditLogStore: AzureAuditLogStore | null;
+
+  /** Cached pipeline parameter schemas, keyed by connection:project:pipeline:branch. */
+  private paramSchemaCache = new Map<string, { at: number; defs: AzurePipelineParameterDef[] }>();
+  // A pipeline's YAML parameters change rarely (only on a definition edit), so a
+  // long TTL is fine; the cache is in-memory and cleared on restart anyway.
+  private static readonly PARAM_SCHEMA_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
   get azureApi(): AzureApi {
     return this.api as AzureApi;
@@ -608,6 +617,245 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
   }
 
+  /**
+   * Runtime parameter schema for a pipeline (name/type/default/allowed values),
+   * used to render typed controls in the re-run dialog. Cached per
+   * connection:project:pipeline:branch with a short TTL so opening the dialog
+   * repeatedly doesn't re-hit Azure; a pipeline's YAML rarely changes mid-edit.
+   * Best-effort: returns [] (rather than throwing) when the schema can't be read.
+   */
+  async getPipelineRunParameterSchema({
+    connectionId,
+    projectName,
+    pipelineId,
+    branch,
+  }: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    branch?: string;
+  }): Promise<AzurePipelineParameterDef[]> {
+    const branchLabel = branch || "(default)";
+    const cacheKey = `${connectionId}:${projectName}:${pipelineId}:${branch || ""}`;
+    const cached = this.paramSchemaCache.get(cacheKey);
+    if (cached && this.now() - cached.at < AzureDevOpsManager.PARAM_SCHEMA_TTL_MS) {
+      this.log.info("pipeline params: cache hit", {
+        pipelineId,
+        branch: branchLabel,
+        params: cached.defs.length,
+        ageSec: Math.round((this.now() - cached.at) / 1000),
+      });
+      return cached.defs;
+    }
+
+    this.log.info("pipeline params: fetching schema from Azure", {
+      connectionId,
+      projectName,
+      pipelineId,
+      branch: branchLabel,
+      reason: cached ? "expired" : "miss",
+    });
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+
+    let defs: AzurePipelineParameterDef[];
+    try {
+      const raw = (await this.azureApi.getPipelineRunParameters(
+        connection,
+        token,
+        projectName,
+        pipelineId,
+        branch,
+      )) as {
+        dataProviders?: Record<string, { templateParameters?: unknown[]; parameters?: unknown[] } | null>;
+      };
+      const providers = raw?.dataProviders || {};
+      const provider = providers["ms.vss-build-web.pipeline-run-parameters-data-provider"];
+      const list = provider?.templateParameters ?? provider?.parameters ?? [];
+
+      // Raw payload so we can see exactly which keys Azure uses for type/values.
+      this.log.debug("pipeline params: raw provider payload", {
+        pipelineId,
+        branch: branchLabel,
+        raw: JSON.stringify(Array.isArray(list) ? list : provider).slice(0, 2000),
+      });
+
+      // Diagnostic: if the expected provider is missing, surface what *was* returned
+      // so a wrong provider id / context is visible in the log instead of silent [].
+      if (!provider) {
+        this.log.warn("pipeline params: data provider missing in response", {
+          pipelineId,
+          branch: branchLabel,
+          providerKeys: Object.keys(providers),
+        });
+      }
+
+      defs = (Array.isArray(list) ? list : [])
+        .map((entry): AzurePipelineParameterDef | null => {
+          const p = (entry ?? {}) as Record<string, unknown>;
+          const name = String(p.name ?? "");
+          if (!name) return null;
+          const rawValues = Array.isArray(p.values) ? p.values : Array.isArray(p.enum) ? p.enum : undefined;
+          const values = rawValues?.map((v) => String(v)).filter((v) => v.length > 0);
+          const def = p.default ?? p.defaultValue;
+          const defaultStr = def == null ? undefined : String(def);
+          // Azure's data provider encodes the parameter type as a numeric code
+          // (e.g. "3" = boolean), not the YAML type name. We only need to single
+          // out booleans (→ checkbox): a param with no choice-values whose default
+          // reads as true/false. Choice params keep their values (→ dropdown);
+          // everything else stays text.
+          const type =
+            !(values && values.length) && /^(true|false)$/i.test(defaultStr ?? "")
+              ? "boolean"
+              : String(p.type ?? "string");
+          return {
+            name,
+            displayName: String(p.displayName || name),
+            type,
+            default: defaultStr,
+            values: values && values.length ? values : undefined,
+          };
+        })
+        .filter((d): d is AzurePipelineParameterDef => d !== null);
+    } catch (err) {
+      // Best-effort — the re-run dialog falls back to free-text inputs. Don't cache
+      // the failure so a transient error clears on the next open.
+      this.log.warn("pipeline params: schema fetch failed; falling back to free-text", {
+        pipelineId,
+        branch: branchLabel,
+        err: (err as Error)?.message || String(err),
+      });
+      return [];
+    }
+
+    this.paramSchemaCache.set(cacheKey, { at: this.now(), defs });
+    this.log.info("pipeline params: schema fetched + cached", {
+      pipelineId,
+      branch: branchLabel,
+      params: defs.length,
+      // Full parsed shape so we can see why a param renders as text vs combobox/checkbox.
+      defs: defs.map((d) => ({ name: d.name, type: d.type, default: d.default, values: d.values })),
+      ttlSec: Math.round(AzureDevOpsManager.PARAM_SCHEMA_TTL_MS / 1000),
+    });
+    return defs;
+  }
+
+  /**
+   * Branch + tag refs of a pipeline's repository, for the re-run dialog's branch
+   * picker. Best-effort: returns empty lists (the field stays free-text) when the
+   * definition can't be read or the repo isn't Azure Repos Git (e.g. GitHub),
+   * which the git refs API can't enumerate.
+   */
+  async listPipelineRefs({
+    connectionId,
+    projectName,
+    pipelineId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+  }): Promise<AzurePipelineRefs> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+
+    let repo: { id?: string; type?: string } | undefined;
+    try {
+      const def = (await this.azureApi.getBuildDefinition(connection, token, projectName, pipelineId)) as {
+        repository?: { id?: string; type?: string };
+      };
+      repo = def?.repository;
+    } catch (err) {
+      this.log.warn("pipeline refs: definition fetch failed", {
+        pipelineId,
+        err: (err as Error)?.message || String(err),
+      });
+      return { branches: [], tags: [], repositoryId: "" };
+    }
+    const repoId = repo?.id || "";
+    const repoType = repo?.type || "";
+
+    // The git refs API only enumerates Azure Repos Git ("TfsGit"). GitHub/external
+    // repos can't be listed here — leave the branch field as free-text.
+    if (!repoId || repoType !== "TfsGit") {
+      this.log.info("pipeline refs: repo not Azure Git, skipping picker", { pipelineId, repoType });
+      return { branches: [], tags: [], repositoryId: "" };
+    }
+
+    try {
+      const [heads, tags] = await Promise.all([
+        this.azureApi.listRepositoryRefs(connection, token, projectName, repoId, "heads/"),
+        this.azureApi.listRepositoryRefs(connection, token, projectName, repoId, "tags/"),
+      ]);
+      const names = (refs: unknown[]): string[] =>
+        (refs as Array<{ name?: string }>).map((r) => r?.name || "").filter((n) => n.length > 0);
+      const result = { branches: names(heads), tags: names(tags), repositoryId: repoId };
+      this.log.info("pipeline refs: fetched", {
+        pipelineId,
+        repoId,
+        branches: result.branches.length,
+        tags: result.tags.length,
+      });
+      return result;
+    } catch (err) {
+      this.log.warn("pipeline refs: refs fetch failed", {
+        pipelineId,
+        err: (err as Error)?.message || String(err),
+      });
+      return { branches: [], tags: [], repositoryId: "" };
+    }
+  }
+
+  /**
+   * Recent commits on a repo (Commits tab of the re-run branch picker). Takes
+   * the repositoryId from {@link listPipelineRefs}. Best-effort: returns [] when
+   * the repo id is missing or the request fails.
+   */
+  async listPipelineCommits({
+    connectionId,
+    projectName,
+    repositoryId,
+    top = 30,
+  }: {
+    connectionId: string;
+    projectName: string;
+    repositoryId: string;
+    top?: number;
+  }): Promise<AzurePipelineCommit[]> {
+    if (!repositoryId) return [];
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    try {
+      const raw = (await this.azureApi.listRepositoryCommits(
+        connection,
+        token,
+        projectName,
+        repositoryId,
+        top,
+      )) as Array<{ commitId?: string; comment?: string; author?: { name?: string; date?: string } }>;
+      const commits = raw
+        .map((c): AzurePipelineCommit | null => {
+          const id = String(c.commitId || "");
+          if (!id) return null;
+          return {
+            id,
+            shortId: id.slice(0, 8),
+            comment: String(c.comment || "").split("\n")[0],
+            author: String(c.author?.name || ""),
+            date: c.author?.date,
+          };
+        })
+        .filter((c): c is AzurePipelineCommit => c !== null);
+      this.log.info("pipeline commits: fetched", { repositoryId, commits: commits.length });
+      return commits;
+    } catch (err) {
+      this.log.warn("pipeline commits: fetch failed", {
+        repositoryId,
+        err: (err as Error)?.message || String(err),
+      });
+      return [];
+    }
+  }
+
   /** Lightweight status poll of a single run (for completion watching). */
   async getPipelineRunStatus({
     connectionId,
@@ -726,12 +974,16 @@ export class AzureDevOpsManager extends BaseProviderManager {
     this.setAuditContext({ connectionId, userInitiated: true });
 
     const body: {
-      resources?: { repositories: { self: { refName: string } } };
+      resources?: { repositories: { self: { refName?: string; version?: string } } };
       templateParameters?: Record<string, string>;
       variables?: Record<string, { value: string }>;
     } = {};
     if (branch) {
-      body.resources = { repositories: { self: { refName: branch } } };
+      const ref = branch.trim();
+      // The picker drops a full 40-char commit id here when a commit is chosen;
+      // Azure wants that as `version`, whereas branches/tags go in `refName`.
+      const self = /^[0-9a-f]{40}$/i.test(ref) ? { version: ref } : { refName: ref };
+      body.resources = { repositories: { self } };
     }
     if (parameters && Object.keys(parameters).length) {
       body.templateParameters = parameters;

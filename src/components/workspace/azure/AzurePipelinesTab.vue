@@ -1,24 +1,6 @@
 <template>
   <div class="azure-pipelines">
     <div class="azure-pipelines__toolbar">
-      <input
-        v-model="filter"
-        class="azure-pipelines__filter"
-        type="search"
-        placeholder="Search…"
-        title="Search across pipeline name, project and branch. Use the per-column filters for narrower matches."
-      />
-      <select
-        v-model="timeFilter"
-        class="azure-pipelines__select"
-        title="Show only pipelines whose last run is recent."
-      >
-        <option value="all">Any time</option>
-        <option value="1">Last 24h</option>
-        <option value="7">Last 7 days</option>
-        <option value="30">Last 30 days</option>
-      </select>
-      <span class="azure-pipelines__count">{{ filteredRows.length }} / {{ allRows.length }}</span>
       <span class="azure-pipelines__spacer"></span>
       <button
         type="button"
@@ -71,10 +53,6 @@
           <template #cell-name="{ row }">
             <span class="azure-pl-table__name" :title="row.name">{{ row.name }}</span>
             <span v-if="row.folder && row.folder !== '\\'" class="azure-pl-table__folder">{{ row.folder }}</span>
-          </template>
-          <template #cell-build="{ row }">
-            <span v-if="row.lastRun">#{{ row.lastRun.buildNumber }}</span>
-            <span v-else class="azure-pl-table__dim">no runs</span>
           </template>
           <template #cell-branch="{ row }">
             <span v-if="row.lastRun?.sourceBranch">{{ stripRef(row.lastRun.sourceBranch) }}</span>
@@ -192,8 +170,6 @@ const notify = useNotificationStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>("api", null);
 
-const filter = ref("");
-const timeFilter = ref("all");
 const selectedKey = ref<string | null>(null);
 const downloadingRunId = ref<number | string | null>(null);
 
@@ -223,9 +199,9 @@ const colFilters = reactive<Record<string, string>>({
   name: "",
   project: "",
   connection: initialConnectionFilter(),
-  build: "",
   branch: "",
   who: "",
+  when: "",
 });
 
 function onColFilter(key: string, value: string): void {
@@ -342,11 +318,9 @@ function lastRunTimeMs(row: PipelineRow): number {
 }
 
 const filteredRows = computed<PipelineRow[]>(() => {
-  const needle = filter.value.trim().toLowerCase();
-  const maxAgeMs = timeFilter.value === "all" ? 0 : Number(timeFilter.value) * 86_400_000;
+  const maxAgeMs = colFilters.when ? Number(colFilters.when) * 86_400_000 : 0;
   const cutoff = maxAgeMs ? Date.now() - maxAgeMs : 0;
   const fName = colFilters.name.trim().toLowerCase();
-  const fBuild = colFilters.build.trim().toLowerCase();
   const fBranch = colFilters.branch.trim().toLowerCase();
   const fWho = colFilters.who.trim().toLowerCase();
   return allRows.value.filter((r) => {
@@ -354,20 +328,8 @@ const filteredRows = computed<PipelineRow[]>(() => {
     if (colFilters.project && (r.project?.name || "(no project)") !== colFilters.project) return false;
     if (cutoff && lastRunTimeMs(r) < cutoff) return false;
     if (fName && !r.name.toLowerCase().includes(fName)) return false;
-    if (
-      fBuild &&
-      !String(r.lastRun?.buildNumber || "")
-        .toLowerCase()
-        .includes(fBuild)
-    )
-      return false;
     if (fBranch && !stripRef(r.lastRun?.sourceBranch).toLowerCase().includes(fBranch)) return false;
     if (fWho && !(r.lastRun?.requestedFor || "").toLowerCase().includes(fWho)) return false;
-    if (needle) {
-      const hay =
-        `${r.name} ${r.project?.name || ""} ${stripRef(r.lastRun?.sourceBranch)} ${r.connectionLabel}`.toLowerCase();
-      if (!hay.includes(needle)) return false;
-    }
     return true;
   });
 });
@@ -411,13 +373,6 @@ const columns = computed<Column<PipelineRow>[]>(() => {
   }
   cols.push(
     {
-      key: "build",
-      label: "#",
-      mono: true,
-      sortValue: (r) => r.lastRun?.buildNumber || "",
-      filter: { kind: "text", placeholder: "#…" },
-    },
-    {
       key: "branch",
       label: "Branch",
       sortValue: (r) => stripRef(r.lastRun?.sourceBranch),
@@ -435,7 +390,22 @@ const columns = computed<Column<PipelineRow>[]>(() => {
       align: "right",
       sortValue: (r) => durationMs(r.lastRun?.startTime, r.lastRun?.finishTime),
     },
-    { key: "when", label: "When", align: "right", sortValue: (r) => lastRunTimeMs(r) },
+    {
+      key: "when",
+      label: "When",
+      align: "right",
+      sortValue: (r) => lastRunTimeMs(r),
+      filter: {
+        kind: "select",
+        placeholder: "Any time",
+        options: [
+          { value: "1", label: "≤ 1 day" },
+          { value: "7", label: "≤ 1 week" },
+          { value: "30", label: "≤ 1 month" },
+          { value: "90", label: "≤ 3 months" },
+        ],
+      },
+    },
   );
   return cols;
 });
@@ -625,18 +595,6 @@ async function onDownloadLog({ pipeline, run }: { pipeline: AzurePipelineSummary
   margin-bottom: 8px;
   flex-shrink: 0;
   flex-wrap: wrap;
-}
-.azure-pipelines__filter {
-  flex: 0 1 200px;
-  min-width: 120px;
-  font-size: 12px;
-  padding: 3px 8px;
-}
-.azure-pipelines__select {
-  flex: 0 0 auto;
-  max-width: 130px;
-  font-size: 12px;
-  padding: 3px 6px;
 }
 .azure-pipelines__count {
   font-size: 11px;

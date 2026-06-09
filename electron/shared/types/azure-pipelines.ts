@@ -93,6 +93,49 @@ export interface AzureRunDetail {
   errors: AzureRunError[];
 }
 
+/**
+ * One runtime parameter a pipeline declares, used to render typed controls in
+ * the re-run dialog (combobox for choices, checkbox for booleans, …). Sourced
+ * from the same data provider the Azure DevOps "Run pipeline" panel uses.
+ */
+export interface AzurePipelineParameterDef {
+  /** Parameter name (the templateParameters key). */
+  name: string;
+  /** Friendly label from the YAML `displayName`; falls back to `name`. */
+  displayName: string;
+  /** Azure parameter type: string | boolean | number | object | … */
+  type: string;
+  /** Declared default, as a string (booleans as "true"/"false"). */
+  default?: string;
+  /** Allowed values (choice/enum) — render as a combobox. */
+  values?: string[];
+}
+
+/**
+ * Branch and tag refs of a pipeline's repository, for the re-run dialog's
+ * branch picker. Full ref names (e.g. "refs/heads/main", "refs/tags/v1.2") so
+ * they can be used directly as the run's source ref. Empty when the pipeline's
+ * repo isn't Azure Repos Git (e.g. GitHub) — the field stays free-text then.
+ */
+export interface AzurePipelineRefs {
+  branches: string[];
+  tags: string[];
+  /** Repo id (Azure Repos Git only) so the dialog can lazily fetch commits; "" otherwise. */
+  repositoryId: string;
+}
+
+/** A recent commit, for the re-run dialog's Commits tab. */
+export interface AzurePipelineCommit {
+  /** Full 40-char commit id — used as the run's source `version`. */
+  id: string;
+  /** Abbreviated id for display. */
+  shortId: string;
+  /** First line of the commit message. */
+  comment: string;
+  author: string;
+  date?: string;
+}
+
 /** Seed values extracted from a past run to pre-fill the re-run dialog. */
 export interface AzurePipelineRunSeed {
   /** Full ref name the run used, e.g. "refs/heads/main". */

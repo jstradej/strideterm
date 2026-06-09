@@ -621,6 +621,23 @@ export function registerIpc(
       runtime.getAzurePipelineRunSeed(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:run-seed")),
     ),
   );
+  ipcMain.handle("azure:pipelines:run-parameters", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:run-parameters" }, () =>
+      runtime.getAzurePipelineRunParameters(
+        validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:run-parameters"),
+      ),
+    ),
+  );
+  ipcMain.handle("azure:pipelines:refs", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:refs" }, () =>
+      runtime.getAzurePipelineRefs(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:refs")),
+    ),
+  );
+  ipcMain.handle("azure:pipelines:commits", async (_event, payload) =>
+    withOperationPromise({ opId: "azure:pipelines:commits" }, () =>
+      runtime.getAzurePipelineCommits(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:commits")),
+    ),
+  );
   ipcMain.handle("azure:pipelines:run", async (_event, payload) =>
     withOperationPromise({ opId: "azure:pipelines:run" }, () =>
       runtime.runAzurePipeline(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:run")),

@@ -28,7 +28,7 @@
         title="Download all matching entries as CSV (respects the current filters)."
         @click="exportLog('csv')"
       >
-        \u2b07 CSV
+        ⬇ CSV
       </button>
       <button
         type="button"
@@ -37,7 +37,7 @@
         title="Download all matching entries as JSON (respects the current filters)."
         @click="exportLog('json')"
       >
-        \u2b07 JSON
+        ⬇ JSON
       </button>
     </div>
 
