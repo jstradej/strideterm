@@ -524,25 +524,31 @@ thead th {
 /* Drag handle straddling the right edge of each header cell. */
 .dr-table__resizer {
   position: absolute;
+  /* top/bottom (not height:100%) so the grab area fills the cell — a percentage
+     height resolves to 0 inside a table cell, which leaves nothing to grab. */
   top: 0;
+  bottom: 0;
   right: -7px;
   width: 14px;
-  height: 100%;
-  z-index: 2;
+  z-index: 3;
   cursor: col-resize;
   touch-action: none;
 }
+/* Faint always-visible grip so the column is discoverably resizable; the line
+   brightens and fills the full height on hover/drag. */
 .dr-table__resizer::after {
   content: "";
   position: absolute;
-  top: 25%;
-  bottom: 25%;
+  top: 6px;
+  bottom: 6px;
   left: 6px;
   width: 2px;
-  background: transparent;
+  background: var(--border-color, rgba(255, 255, 255, 0.16));
 }
 .dr-table__resizer:hover::after,
 .dr-table__resizer:active::after {
+  top: 0;
+  bottom: 0;
   background: var(--accent, #63b3ed);
 }
 
