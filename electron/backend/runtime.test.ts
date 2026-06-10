@@ -3536,6 +3536,123 @@ describe("runtime integration", () => {
     expect(worktreeRemoveCalls).toHaveLength(0);
   });
 
+  // --- Krok 6: background retry after a failed disk delete ---
+
+  // execFileText that fails `git worktree remove --force` (so the foreground
+  // delete gives up) but lets `git worktree prune` through.
+  function execFileTextRemoveFails() {
+    return vi.fn(async (_cmd: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "worktree" && args[1] === "remove") {
+        throw new Error("git worktree remove failed");
+      }
+      return { stdout: "", stderr: "" };
+    });
+  }
+
+  test("Krok 6: background retry removes the worktree after the foreground delete gives up", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bg-retry-ok-"));
+    tempPaths.push(diskPath);
+
+    let rmCalls = 0;
+    const rmPathMock = vi.fn(async () => {
+      rmCalls++;
+      if (rmCalls === 1) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+      // Background retry (call 2) succeeds.
+    });
+
+    const fixture = await createFixture({
+      execFileTextImpl: execFileTextRemoveFails(),
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("ws-bg", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    vi.useFakeTimers();
+    try {
+      const result = await fixture.runtime.deleteWorkspace("ws-bg", { deleteFromDisk: true, diskPath });
+      // User is informed immediately (unchanged UX contract).
+      expect(result.deleteWorkspaceError).toBeTruthy();
+      expect(rmPathMock).toHaveBeenCalledTimes(1);
+
+      // First retry fires at 10s and succeeds.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(2);
+
+      // No further retries once it succeeded.
+      await vi.advanceTimersByTimeAsync(200_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Krok 6: background retry runs all 4 backoff attempts then gives up", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bg-retry-fail-"));
+    tempPaths.push(diskPath);
+
+    const rmPathMock = vi.fn().mockRejectedValue(Object.assign(new Error("EBUSY"), { code: "EBUSY" }));
+
+    const fixture = await createFixture({
+      execFileTextImpl: execFileTextRemoveFails(),
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("ws-bg2", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    vi.useFakeTimers();
+    try {
+      await fixture.runtime.deleteWorkspace("ws-bg2", { deleteFromDisk: true, diskPath });
+      expect(rmPathMock).toHaveBeenCalledTimes(1); // foreground
+
+      // Backoff schedule: 10s, 30s, 60s, 120s → 4 background attempts.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(5);
+
+      // Exhausted — no further attempts.
+      await vi.advanceTimersByTimeAsync(500_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Krok 6: background retry treats ENOENT as success (someone cleaned up manually)", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bg-retry-enoent-"));
+    tempPaths.push(diskPath);
+
+    let rmCalls = 0;
+    const rmPathMock = vi.fn(async () => {
+      rmCalls++;
+      if (rmCalls === 1) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); // retry: already gone
+    });
+
+    const fixture = await createFixture({
+      execFileTextImpl: execFileTextRemoveFails(),
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("ws-bg3", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    vi.useFakeTimers();
+    try {
+      await fixture.runtime.deleteWorkspace("ws-bg3", { deleteFromDisk: true, diskPath });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(2);
+      // ENOENT ends the sequence — no 30s attempt.
+      await vi.advanceTimersByTimeAsync(200_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // --- Step 3: managed-path guard ---
 
   test("deleteWorkspace with deleteFromDisk on plain (unmanaged) workspace sets deleteWorkspaceError and does not call rmPath", async () => {
@@ -4384,6 +4501,60 @@ describe("runtime integration", () => {
       activate: false,
     });
     expect(result?.workspaceId).toBeTruthy();
+  });
+
+  test("Krok 5: cleanupTaskFiles runs only after the worker/judge PTYs have exited", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-krok5-cleanup-"));
+    tempPaths.push(sharedCwd);
+
+    // makeTaskWorkspace assigns taskId `${id}-tid`.
+    const taskId = "task-a-tid";
+    const taskFilesDir = path.join(sharedCwd, ".strideterm", "tasks", taskId);
+    await fs.mkdir(taskFilesDir, { recursive: true });
+    await fs.writeFile(path.join(taskFilesDir, "TASK.md"), "task brief");
+    const exists = (p: string) =>
+      fs
+        .access(p)
+        .then(() => true)
+        .catch(() => false);
+
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeTaskWorkspace("task-a", "Old task", sharedCwd, "paused")] },
+    });
+    fixtures.push(fixture);
+
+    // Defer PTY exit so we can observe the cleanup ordering.
+    let resolveSessions: () => void = () => {};
+    let sessionsRequested = false;
+    const sessionsExitPromise = new Promise<void>((resolve) => {
+      resolveSessions = resolve;
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fixture.sessionManager.removeWorkspaceSessions = (workspaceId: any) => {
+      sessionsRequested = true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const sessionId of [...fixture.sessionManager.sessions.keys()] as any[]) {
+        if (sessionId.startsWith(`${workspaceId}:`)) fixture.sessionManager.sessions.delete(sessionId);
+      }
+      fixture.sessionManager.removedProjects.push(workspaceId);
+      return sessionsExitPromise;
+    };
+
+    const deletePromise = fixture.runtime.deleteWorkspace("task-a");
+    for (let i = 0; i < 200 && !sessionsRequested; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(sessionsRequested).toBe(true);
+
+    // PTYs not yet exited → cleanup must NOT have run → task files still present.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await exists(taskFilesDir)).toBe(true);
+
+    // Release PTY exit → cleanup now runs in the finally.
+    resolveSessions();
+    await deletePromise;
+
+    expect(await exists(taskFilesDir)).toBe(false);
   });
 
   test("startTask refuses when another task in the same profile is already active at the same cwd", async () => {

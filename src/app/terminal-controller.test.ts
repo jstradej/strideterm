@@ -231,7 +231,10 @@ describe("touch tap-to-focus", () => {
   });
 });
 
-function buildAttachController(apiOverrides: Record<string, unknown> = {}) {
+function buildAttachController(
+  apiOverrides: Record<string, unknown> = {},
+  appConfigOverride: Record<string, unknown> = {},
+) {
   const views = { value: new Map() };
   const buffers = { value: new Map() };
   const api = {
@@ -251,7 +254,7 @@ function buildAttachController(apiOverrides: Record<string, unknown> = {}) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     api: api as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    appConfig: {} as any,
+    appConfig: appConfigOverride as any,
     openTerminalLink: vi.fn(),
     getWindowsPtyOptions: vi.fn(() => null),
     shortcutTabDirection: () => 0,
@@ -544,6 +547,48 @@ describe("visual profile switch — handleTerminalData and pruneTerminalViews", 
     expect(view.term.write).toHaveBeenCalledWith("queued data");
     // Buffer cleared after flush.
     expect(buffers.value.get(sessionId)).toBeUndefined();
+  });
+
+  // Krok 4 — renderer buffer cap for unopened sessions.
+  test("unopened buffer is trimmed from the left to session.replayMaxChars", () => {
+    const cap = 100;
+    const { controller, buffers } = buildAttachController({}, { session: { replayMaxChars: cap } });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+
+    // Push more than the cap across several chunks.
+    for (let i = 0; i < 50; i++) controller.handleTerminalData({ sessionId, data: "0123456789" }); // 500 chars
+
+    const buffered = buffers.value.get(sessionId)!;
+    expect(buffered.length).toBe(cap);
+    // Content is the most-recent suffix of the full stream.
+    expect(buffered).toBe("0123456789".repeat(50).slice(-cap));
+  });
+
+  test("trimmed buffer flushes the trimmed content on attach, then clears", () => {
+    const cap = 30;
+    const { controller, views, buffers } = buildAttachController({}, { session: { replayMaxChars: cap } });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+    controller.handleTerminalData({ sessionId, data: "X".repeat(100) });
+    expect(buffers.value.get(sessionId)!.length).toBe(cap);
+
+    const paneBody = document.createElement("div");
+    document.body.appendChild(paneBody);
+    controller.attachTerminalPane(sessionId, paneBody);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    expect(view.term.write).toHaveBeenCalledWith("X".repeat(cap));
+    expect(buffers.value.get(sessionId)).toBeUndefined();
+  });
+
+  test("buffer below the cap is byte-for-byte unchanged", () => {
+    const { controller, buffers } = buildAttachController({}, { session: { replayMaxChars: 1000 } });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+    controller.handleTerminalData({ sessionId, data: "hello" });
+    controller.handleTerminalData({ sessionId, data: " world" });
+    expect(buffers.value.get(sessionId)).toBe("hello world");
   });
 
   test("pruneTerminalViews does NOT dispose views whose session is in the valid set", () => {

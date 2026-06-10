@@ -102,6 +102,9 @@ import {
   HOOK_FALLBACK_SILENCE_MS,
   ATTENTION_MIN_DISPLAY_MS,
   ATTENTION_VISIBILITY_GRACE_MS,
+  waitForHandleRelease,
+  shouldRefreshNow,
+  createIntervalGate,
 } from "./runtime-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 // @ts-ignore — version-checker.js will be migrated in a later phase
@@ -2674,14 +2677,39 @@ export async function createRuntime({
   }
 
   // perf-3: per-workspace debounce map for git refresh triggered by OSC 133;D
-  const gitRefreshDebounceMap = new Map();
+  const gitRefreshDebounceMap = new Map<string, ReturnType<typeof setTimeout>>();
+  // Krok 3: last time a shell-triggered refresh actually ran, per workspace —
+  // drives the leading-edge rate limit so an agent OSC storm doesn't spawn
+  // ~15 git.exe per OSC, ~1x/sec for the whole turn.
+  const lastShellRefreshAt = new Map<string, number>();
+  const SHELL_GIT_REFRESH_MIN_INTERVAL_MS = Math.max(0, APP_CONFIG.git.shellRefreshMinIntervalMs || 0);
+
+  function runShellGitRefresh(workspaceId: string) {
+    gitRefreshDebounceMap.delete(workspaceId);
+    lastShellRefreshAt.set(workspaceId, Date.now());
+    refreshGit(workspaceId).catch(() => {});
+    broadcastState();
+  }
+
   function scheduleGitRefreshFromShell(workspaceId: string) {
     const existing = gitRefreshDebounceMap.get(workspaceId);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       gitRefreshDebounceMap.delete(workspaceId);
-      refreshGit(workspaceId).catch(() => {});
-      broadcastState();
+      const decision = shouldRefreshNow(
+        Date.now(),
+        lastShellRefreshAt.get(workspaceId) ?? -Infinity,
+        SHELL_GIT_REFRESH_MIN_INTERVAL_MS,
+      );
+      if (decision.refresh) {
+        runShellGitRefresh(workspaceId);
+      } else {
+        // Within the min interval: coalesce — re-arm a timer for the remaining
+        // time so the LAST state is always eventually refreshed (an OSC arriving
+        // before it fires just resets the 1s debounce again, deferring further).
+        const reTimer = setTimeout(() => runShellGitRefresh(workspaceId), decision.deferMs);
+        gitRefreshDebounceMap.set(workspaceId, reTimer);
+      }
     }, 1000);
     gitRefreshDebounceMap.set(workspaceId, timer);
   }
@@ -2691,6 +2719,12 @@ export async function createRuntime({
   // window. Also covers redrawn TUIs (Claude's prompt-limit dialog repaints).
   const lastRateLimitAlertAt = new Map<string, number>();
   const RATE_LIMIT_ALERT_DEDUP_MS = 60_000;
+
+  // Krok 7: throttle the per-PTY-chunk bell/trace log lines. An agent emitting
+  // BEL on every chunk produced ~17.5k log lines/day in dev (trace+debug per
+  // chunk), drowning the log. Gate to ≤1 line / 10s / session; the bell
+  // detection itself is unchanged.
+  const bellLogGate = createIntervalGate(10_000);
 
   /**
    * Raise an urgent waiting-alert when ANY agent (task worker or plain
@@ -3029,7 +3063,9 @@ export async function createRuntime({
         signal.lastOutputAt = Date.now();
 
         if (hasBell) {
-          log.trace("agent hook-capable bell ignored", { sessionId: payload.sessionId });
+          const gate = bellLogGate.allow(`bell:${payload.sessionId}`);
+          if (gate.allow)
+            log.trace("agent hook-capable bell ignored", { sessionId: payload.sessionId, suppressed: gate.suppressed });
         }
         // No silence timer, no hook-fallback: hooks are the source of truth.
       } else if (signal.agentLike) {
@@ -3042,7 +3078,13 @@ export async function createRuntime({
         const hooksEnabled = notifyServerHandle != null;
 
         if (hasBell) {
-          log.debug("bell character detected in agent session", { sessionId: payload.sessionId, hooksEnabled });
+          const gate = bellLogGate.allow(`bell:${payload.sessionId}`);
+          if (gate.allow)
+            log.debug("bell character detected in agent session", {
+              sessionId: payload.sessionId,
+              hooksEnabled,
+              suppressed: gate.suppressed,
+            });
         }
 
         // Track output activity regardless of detection mode.
@@ -3526,6 +3568,74 @@ export async function createRuntime({
   }
 
   const pendingWorktreeDeletions = new Set(); // paths being deleted — skip in syncWorktrees
+
+  // Krok 6: background retry after a failed disk delete. When a worktree stays
+  // locked longer than the foreground probe + rm retries (~7.5s — e.g. an
+  // orphaned agent child or AV scan), the foreground delete gives up, shows the
+  // error toast, and the directory used to stay on disk forever. We keep the
+  // path in pendingWorktreeDeletions (so syncWorktrees doesn't resurrect it as a
+  // workspace) and retry rmPath in the background with backoff. Touches ONLY the
+  // already-failed branch — the happy path is unchanged.
+  const BACKGROUND_DELETE_RETRY_DELAYS_MS = [10_000, 30_000, 60_000, 120_000];
+  const backgroundDeleteRetries = new Map<string, { attempt: number; timer: ReturnType<typeof setTimeout> }>();
+
+  function finishBackgroundDeleteRetry(diskPath: string): void {
+    backgroundDeleteRetries.delete(diskPath);
+    pendingWorktreeDeletions.delete(diskPath);
+  }
+
+  function cancelBackgroundDeleteRetry(diskPath: string): void {
+    const existing = backgroundDeleteRetries.get(diskPath);
+    if (existing) {
+      clearTimeout(existing.timer);
+      backgroundDeleteRetries.delete(diskPath);
+    }
+  }
+
+  function scheduleBackgroundDeleteRetry(diskPath: string, gitCwd: string): void {
+    if (backgroundDeleteRetries.has(diskPath)) return; // one sequence per path
+    const pruneIfPossible = () => {
+      if (gitCwd) execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
+    };
+    const armAttempt = (attempt: number) => {
+      const timer = setTimeout(() => {
+        void (async () => {
+          try {
+            await rmPath(diskPath);
+            log.info("deleteWorkspace: background retry removed worktree", { diskPath, attempt: attempt + 1 });
+            pruneIfPossible();
+            finishBackgroundDeleteRetry(diskPath);
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException)?.code;
+            if (code === "ENOENT") {
+              // Someone (lazygit/CLI) already cleaned it up — treat as success.
+              log.info("deleteWorkspace: background retry — path already gone", { diskPath });
+              pruneIfPossible();
+              finishBackgroundDeleteRetry(diskPath);
+              return;
+            }
+            const next = attempt + 1;
+            if (next < BACKGROUND_DELETE_RETRY_DELAYS_MS.length) {
+              armAttempt(next);
+            } else {
+              // Exhausted — release the hold; state now matches the old behavior
+              // (directory remains, user already got the toast).
+              log.warn("deleteWorkspace: background retry exhausted, directory remains on disk", {
+                diskPath,
+                err: (err as Error)?.message?.slice(0, 200),
+              });
+              finishBackgroundDeleteRetry(diskPath);
+            }
+          }
+        })();
+      }, BACKGROUND_DELETE_RETRY_DELAYS_MS[attempt]);
+      // Never keep the process alive for a cleanup retry.
+      if (typeof timer.unref === "function") timer.unref();
+      backgroundDeleteRetries.set(diskPath, { attempt, timer });
+    };
+    armAttempt(0);
+  }
+
   // Task workspaces currently being deleted, keyed by `${profileId} ${normalizedCwd}`.
   // The guard window covers:
   //   - the synchronous state lookup → store.mutate gap (workspace still in
@@ -3707,6 +3817,11 @@ export async function createRuntime({
       sessions.removeWorkspaceSessions(ws.id);
       clearWorkspaceTerminalReplay(ws.id);
       clearProjectAlerts(ws.id);
+      // Krok 2: same debounce cleanup as deleteWorkspace.
+      const pendingGitRefresh = gitRefreshDebounceMap.get(ws.id);
+      if (pendingGitRefresh) clearTimeout(pendingGitRefresh);
+      gitRefreshDebounceMap.delete(ws.id);
+      lastShellRefreshAt.delete(ws.id);
     }
     log.info("pruneOrphanedWorkspaces removed orphans", {
       count: toRemove.length,
@@ -5283,30 +5398,32 @@ export async function createRuntime({
           : "";
       if (pendingKey) pendingTaskWorkspaceDeletions.add(pendingKey);
 
+      // Krok 5: remember the task-file target now — after store.mutate the
+      // workspace is gone from state, but this local ref survives. cleanupTaskFiles
+      // is deferred to the finally block, run only AFTER the worker/judge PTYs
+      // have exited, so we don't race the still-running agent (re-created files /
+      // EBUSY on Windows).
+      const taskCleanup =
+        workspace?.kind === "task" && workspace.task?.taskId && workspace.cwd
+          ? { cwd: workspace.cwd, taskId: workspace.task.taskId }
+          : null;
+
       // Holds the session-removal promise across the try/finally. For task
       // workspaces, the finally awaits it before releasing the pending flag,
       // so the cwd stays locked until OS-level file handles are released.
       let sessionsExited: Promise<void> | null = null;
 
       try {
-        // Task-file and stopTask cleanup is best-effort. A throw here used to
-        // skip store.mutate entirely, leaving the workspace stuck in state with
-        // no way to remove it short of restarting the app — and blocking every
-        // future task workspace at the same cwd. Catch and log so state is
-        // always cleared.
-        if (workspace?.kind === "task" && workspace.task?.taskId && workspace.cwd) {
+        // stopTask is synchronous (just flips state) and stays before mutate. A
+        // throw here used to skip store.mutate entirely, leaving the workspace
+        // stuck in state with no way to remove it short of restarting the app —
+        // and blocking every future task workspace at the same cwd. Catch and
+        // log so state is always cleared.
+        if (taskCleanup) {
           try {
             taskRunner.stopTask(workspaceId);
           } catch (err) {
             log.warn("deleteWorkspace: stopTask failed, continuing with state cleanup", {
-              workspaceId,
-              err: (err as Error)?.message,
-            });
-          }
-          try {
-            await taskRunner.cleanupTaskFiles(workspace.cwd, workspace.task.taskId);
-          } catch (err) {
-            log.warn("deleteWorkspace: cleanupTaskFiles failed, continuing with state cleanup", {
               workspaceId,
               err: (err as Error)?.message,
             });
@@ -5362,6 +5479,14 @@ export async function createRuntime({
             deleteSessionSignal(sessionId);
           }
         }
+        // Krok 2: cancel any pending shell-triggered git refresh so the timer
+        // can't outlive the delete (and so git.exe never runs inside the
+        // worktree we're about to remove). Today refreshGit filters the deleted
+        // workspace out, but relying on that side effect is a regression risk.
+        const pendingGitRefresh = gitRefreshDebounceMap.get(workspaceId);
+        if (pendingGitRefresh) clearTimeout(pendingGitRefresh);
+        gitRefreshDebounceMap.delete(workspaceId);
+        lastShellRefreshAt.delete(workspaceId);
         clearProjectAlerts(workspaceId);
         ensureVisibleSession();
         broadcastState();
@@ -5378,6 +5503,9 @@ export async function createRuntime({
           }
           if (diskPath && path.isAbsolute(diskPath)) {
             pendingWorktreeDeletions.add(diskPath);
+            // Krok 6: a fresh delete on this exact path supersedes any armed
+            // background retry — cancel it and take the synchronous path.
+            cancelBackgroundDeleteRetry(diskPath);
             const tDelete0 = Date.now();
             log.debug("deleteWorkspace: starting disk delete", {
               workspaceId,
@@ -5388,6 +5516,12 @@ export async function createRuntime({
               isTask: !!workspace.task,
               isQuickfix: !!workspace.quickfix,
             });
+            // Resolve the git cwd up front (depends only on the workspace) so the
+            // catch branch can prune / arm a background retry after a failure.
+            const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
+            const taskWorktreeBase = workspace.task?.worktreeBase || "";
+            const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
+            const gitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
             try {
               const tWait0 = Date.now();
               await sessionsExited;
@@ -5407,34 +5541,18 @@ export async function createRuntime({
               // either eventually succeed or the git fallback will run.
               if (process.platform === "win32") {
                 const tProbe0 = Date.now();
-                const probeTimeout = 5000;
-                const probeInterval = 150;
-                let probedReady = false;
-                while (Date.now() - tProbe0 < probeTimeout) {
-                  try {
-                    // rename(p, p) is a cheap OS-level lock probe — it touches
-                    // the directory entry without scanning contents.
-                    await rename(diskPath, diskPath);
-                    probedReady = true;
-                    break;
-                  } catch {
-                    await new Promise((resolve) => setTimeout(resolve, probeInterval));
-                  }
-                }
+                // Krok 1: ENOENT short-circuits instead of spinning the full
+                // timeout on an already-gone directory.
+                const probe = await waitForHandleRelease(diskPath, { renameImpl: rename });
                 log.debug("deleteWorkspace: handle-release probe finished", {
                   workspaceId,
                   diskPath,
                   probeMs: Date.now() - tProbe0,
-                  released: probedReady,
+                  released: probe.released,
+                  reason: probe.reason,
                 });
               }
 
-              const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
-              // Task worktrees store the base repo path explicitly
-              const taskWorktreeBase = workspace.task?.worktreeBase || "";
-              // workspace.cwd is like /repo/.strideterm/tree/branch-name — 3 levels up to repo root
-              const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
-              const gitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
               log.debug("deleteWorkspace: resolved git cwd", { workspaceId, gitCwd, cacheRepoPath, taskWorktreeBase });
               // Fast path: nuke the directory at the filesystem level, then ask
               // git to prune stale metadata. `git worktree remove --force` walks
@@ -5503,8 +5621,15 @@ export async function createRuntime({
             } catch (err) {
               diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: unknown catch shape
               log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
+              // Krok 6: the foreground attempt gave up (likely a lock held by an
+              // orphaned agent child / AV). Keep the path held in
+              // pendingWorktreeDeletions and retry in the background with backoff
+              // (10s/30s/60s/120s); the retry owns the eventual release.
+              scheduleBackgroundDeleteRetry(diskPath, gitCwd);
             } finally {
-              pendingWorktreeDeletions.delete(diskPath);
+              // On success no retry was armed → release the hold now. On failure
+              // the background retry holds it until it succeeds or exhausts.
+              if (!backgroundDeleteRetries.has(diskPath)) pendingWorktreeDeletions.delete(diskPath);
             }
           }
         }
@@ -5532,18 +5657,32 @@ export async function createRuntime({
         // a fresh task at the same cwd could acquire it before claude.exe
         // / codex.exe released their file handles — exactly the symptom
         // the guard exists to prevent.
-        if (pendingKey) {
-          if (sessionsExited) {
-            try {
-              await sessionsExited;
-            } catch {
-              // Session-removal failure shouldn't keep the cwd locked
-              // forever; the workspace is already gone from state, so
-              // releasing the flag is the safer choice (user can retry).
-            }
+        if (sessionsExited) {
+          try {
+            await sessionsExited;
+          } catch {
+            // Session-removal failure shouldn't keep the cwd locked
+            // forever; the workspace is already gone from state, so
+            // releasing the flag is the safer choice (user can retry).
           }
-          pendingTaskWorkspaceDeletions.delete(pendingKey);
         }
+        // Krok 5: now the agents are gone — safe to remove their task files.
+        // Best-effort; a failure here must not break the (already-completed)
+        // delete. Runs in finally so it still happens if store.mutate threw,
+        // matching the previous pre-mutate placement's "always runs" semantics.
+        if (taskCleanup) {
+          try {
+            await taskRunner.cleanupTaskFiles(taskCleanup.cwd, taskCleanup.taskId);
+          } catch (err) {
+            log.warn("deleteWorkspace: cleanupTaskFiles failed", {
+              workspaceId,
+              err: (err as Error)?.message,
+            });
+          }
+        }
+        // Held the cwd locked across session teardown AND task-file cleanup, so
+        // a fresh task at the same cwd can't appear until everything is gone.
+        if (pendingKey) pendingTaskWorkspaceDeletions.delete(pendingKey);
       }
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -6917,6 +7056,14 @@ export async function createRuntime({
         clearInterval(gitPoll);
         gitPoll = null;
       }
+      // Krok 6: cancel any armed background disk-delete retries. They're
+      // unref()'d so they can't hold the process open, but clear them anyway so
+      // a retry can't fire mid-shutdown.
+      for (const { timer } of backgroundDeleteRetries.values()) clearTimeout(timer);
+      backgroundDeleteRetries.clear();
+      // Krok 2/3: cancel pending shell-triggered git refresh timers too.
+      for (const timer of gitRefreshDebounceMap.values()) clearTimeout(timer);
+      gitRefreshDebounceMap.clear();
       if (reviewBridgeWatcher) {
         reviewBridgeWatcher.close();
         reviewBridgeWatcher = null;

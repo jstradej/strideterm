@@ -119,6 +119,11 @@ export const APP_CONFIG = {
     recentLogLimit: envNumber("STRIDETERM_GIT_LOG_LIMIT", 100),
     logPageSize: envNumber("STRIDETERM_GIT_LOG_PAGE_SIZE", 100),
     lazygitWingetPackagePrefix: envString("STRIDETERM_LAZYGIT_WINGET_PREFIX", "JesseDuffield.lazygit_"),
+    // Min interval between shell-triggered (OSC 133;D) git refreshes per
+    // workspace. Leading-edge: a human typing commands after a pause never
+    // waits; an agent's mid-turn OSC storm is squashed to ≤1 refresh/interval.
+    // Set to 0 to restore the old per-OSC behavior without a code change.
+    shellRefreshMinIntervalMs: envNumber("STRIDETERM_SHELL_GIT_REFRESH_MIN_INTERVAL_MS", 10_000),
   },
   tunnel: {
     mode: envString("STRIDETERM_TUNNEL_MODE", "quick"),

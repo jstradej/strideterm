@@ -1,5 +1,11 @@
-import { describe, expect, test } from "vitest";
-import { detectRateLimit, summarizeAttentionForProfile } from "./runtime-utils.js";
+import { describe, expect, test, vi } from "vitest";
+import {
+  detectRateLimit,
+  summarizeAttentionForProfile,
+  waitForHandleRelease,
+  shouldRefreshNow,
+  createIntervalGate,
+} from "./runtime-utils.js";
 
 // All "now" anchors in this file are local-time Dates; the detectors operate
 // in local time (Claude Code's clock-time format is the user's local zone).
@@ -240,5 +246,108 @@ describe("summarizeAttentionForProfile (native attention routing)", () => {
 
   test("profile with no alerting workspaces reports zero", () => {
     expect(summarizeAttentionForProfile(payload, "profile-empty")).toEqual({ count: 0, waitingCount: 0 });
+  });
+});
+
+// Krok 1 — handle-release probe. Deps injected (rename / sleep / clock) so the
+// loop is fully deterministic on any OS without real timers.
+describe("waitForHandleRelease", () => {
+  function harness(renameImpl: (from: string, to: string) => Promise<unknown>) {
+    let t = 0;
+    const sleeps: number[] = [];
+    const sleepImpl = vi.fn(async (ms: number) => {
+      sleeps.push(ms);
+      t += ms; // each wait advances the injected clock
+    });
+    const now = () => t;
+    return { renameImpl, sleepImpl, sleeps, now };
+  }
+
+  test("ENOENT short-circuits immediately with no sleep", async () => {
+    const err = Object.assign(new Error("nope"), { code: "ENOENT" });
+    const h = harness(vi.fn().mockRejectedValue(err));
+    const result = await waitForHandleRelease("/gone", h);
+    expect(result).toEqual({ released: true, reason: "enoent" });
+    expect(h.sleeps).toHaveLength(0);
+  });
+
+  test("rename succeeds immediately → released, zero sleeps", async () => {
+    const h = harness(vi.fn().mockResolvedValue(undefined));
+    const result = await waitForHandleRelease("/p", h);
+    expect(result).toEqual({ released: true });
+    expect(h.sleeps).toHaveLength(0);
+  });
+
+  test("EBUSY 3× then success → released after exactly 3 sleeps", async () => {
+    const ebusy = Object.assign(new Error("busy"), { code: "EBUSY" });
+    const renameImpl = vi
+      .fn()
+      .mockRejectedValueOnce(ebusy)
+      .mockRejectedValueOnce(ebusy)
+      .mockRejectedValueOnce(ebusy)
+      .mockResolvedValueOnce(undefined);
+    const h = harness(renameImpl);
+    const result = await waitForHandleRelease("/p", h);
+    expect(result).toEqual({ released: true });
+    expect(h.sleeps).toEqual([150, 150, 150]);
+  });
+
+  test("EBUSY forever → released:false after timeout", async () => {
+    const ebusy = Object.assign(new Error("busy"), { code: "EBUSY" });
+    const h = harness(vi.fn().mockRejectedValue(ebusy));
+    const result = await waitForHandleRelease("/p", h);
+    expect(result).toEqual({ released: false });
+    // 5000ms / 150ms interval → ~33 sleeps then give up.
+    expect(h.sleeps.length).toBeGreaterThan(30);
+  });
+});
+
+// Krok 3 — leading-edge refresh decision.
+describe("shouldRefreshNow", () => {
+  test("first call after a quiet period (lastAt=-Infinity) refreshes immediately", () => {
+    expect(shouldRefreshNow(1000, -Infinity, 10_000)).toEqual({ refresh: true, deferMs: 0 });
+  });
+
+  test("elapsed >= interval → refresh now", () => {
+    expect(shouldRefreshNow(20_000, 5_000, 10_000)).toEqual({ refresh: true, deferMs: 0 });
+  });
+
+  test("within interval → defer by the remaining time", () => {
+    expect(shouldRefreshNow(12_000, 5_000, 10_000)).toEqual({ refresh: false, deferMs: 3_000 });
+  });
+
+  test("interval of 0 always refreshes (escape hatch)", () => {
+    expect(shouldRefreshNow(100, 100, 0)).toEqual({ refresh: true, deferMs: 0 });
+  });
+});
+
+// Krok 7 — per-key interval gate for log throttling.
+describe("createIntervalGate", () => {
+  test("allows once per interval per key and counts suppressed in between", () => {
+    let t = 0;
+    const gate = createIntervalGate(10_000, () => t);
+    // 100 calls within 1s → only the first is allowed.
+    let allowed = 0;
+    for (let i = 0; i < 100; i++) {
+      t = i * 10; // 0..990ms
+      if (gate.allow("bell:s1").allow) allowed++;
+    }
+    expect(allowed).toBe(1);
+    // After the interval elapses, the next call is allowed again and reports
+    // how many were suppressed.
+    t = 10_000;
+    const next = gate.allow("bell:s1");
+    expect(next.allow).toBe(true);
+    expect(next.suppressed).toBe(99);
+  });
+
+  test("keys are independent", () => {
+    let t = 0;
+    const gate = createIntervalGate(10_000, () => t);
+    expect(gate.allow("a").allow).toBe(true);
+    expect(gate.allow("b").allow).toBe(true);
+    expect(gate.allow("a").allow).toBe(false);
+    t = 10_000;
+    expect(gate.allow("a").allow).toBe(true);
   });
 });

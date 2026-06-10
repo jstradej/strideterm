@@ -440,3 +440,103 @@ export function summarizeAttentionForProfile(
   }
   return { count, waitingCount };
 }
+
+// --- perf-deletion round 2 helpers -------------------------------------------
+
+export interface HandleReleaseResult {
+  released: boolean;
+  /** "enoent" when the path was already gone (nothing to wait for). */
+  reason?: "enoent";
+}
+
+/**
+ * Windows handle-release probe (Krok 1). Repeatedly attempts
+ * `renameImpl(diskPath, diskPath)` — a cheap OS-level lock probe that fails with
+ * EBUSY/EPERM/EACCES while any file handle inside the directory is still open
+ * and succeeds once they are all released.
+ *
+ * Bug fix vs the old inline loop: a NEEXISTING directory makes `rename` throw
+ * `ENOENT`, which the old catch treated like EBUSY and span the full 5s before
+ * giving up. Here ENOENT short-circuits to `{ released: true, reason: "enoent" }`
+ * — there is nothing to wait for; `rmPath` / `fs.rm({ force: true })` will no-op.
+ *
+ * Platform-neutral and fully dependency-injected (rename / sleep / clock) so it
+ * unit-tests deterministically on any OS. The win32-only guard stays at the call
+ * site — POSIX can unlink directories with open handles, so no probe is needed.
+ */
+export async function waitForHandleRelease(
+  diskPath: string,
+  {
+    renameImpl,
+    timeoutMs = 5000,
+    intervalMs = 150,
+    sleepImpl = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+  }: {
+    renameImpl: (from: string, to: string) => Promise<unknown>;
+    timeoutMs?: number;
+    intervalMs?: number;
+    sleepImpl?: (ms: number) => Promise<void>;
+    now?: () => number;
+  },
+): Promise<HandleReleaseResult> {
+  const start = now();
+  for (;;) {
+    try {
+      await renameImpl(diskPath, diskPath);
+      return { released: true };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") return { released: true, reason: "enoent" };
+      if (now() - start >= timeoutMs) return { released: false };
+      await sleepImpl(intervalMs);
+    }
+  }
+}
+
+/**
+ * Leading-edge rate-limit decision (Krok 3). Given the current clock, the last
+ * time an action actually ran, and a minimum interval, decide whether to run it
+ * now or defer it. Pure so the throttle is unit-testable without timers.
+ *
+ * - `elapsed >= minIntervalMs` → run immediately (leading edge: a human typing a
+ *   command after a quiet period never waits).
+ * - otherwise → defer by the remaining time so the LAST state is always
+ *   eventually refreshed, while an agent OSC storm is squashed to ≤1 run /
+ *   interval.
+ */
+export function shouldRefreshNow(
+  now: number,
+  lastAt: number,
+  minIntervalMs: number,
+): { refresh: boolean; deferMs: number } {
+  const elapsed = now - lastAt;
+  if (elapsed >= minIntervalMs) return { refresh: true, deferMs: 0 };
+  return { refresh: false, deferMs: minIntervalMs - elapsed };
+}
+
+/**
+ * Per-key interval gate (Krok 7). Returns `allow: true` at most once per
+ * `intervalMs` per key; suppressed calls in between are counted and reported
+ * with the next allowed call so a log line can say "(N similar suppressed)".
+ * Used to throttle the per-PTY-chunk bell/trace log lines that flooded the dev
+ * log (17.5k lines/day).
+ */
+export function createIntervalGate(intervalMs = 10_000, now: () => number = () => Date.now()) {
+  const lastAt = new Map<string, number>();
+  const suppressed = new Map<string, number>();
+  return {
+    allow(key: string): { allow: boolean; suppressed: number } {
+      const t = now();
+      const prev = lastAt.get(key);
+      if (prev === undefined || t - prev >= intervalMs) {
+        const skipped = suppressed.get(key) ?? 0;
+        suppressed.set(key, 0);
+        lastAt.set(key, t);
+        return { allow: true, suppressed: skipped };
+      }
+      suppressed.set(key, (suppressed.get(key) ?? 0) + 1);
+      return { allow: false, suppressed: 0 };
+    },
+  };
+}

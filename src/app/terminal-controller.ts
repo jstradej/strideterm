@@ -1198,11 +1198,26 @@ export function createTerminalController({
     return true;
   }
 
+  // Krok 4: cap the per-session renderer queue for views that aren't open yet.
+  // Backend replay is already capped at session.replayMaxChars; this buffer was
+  // not, so a session a client never opens (e.g. 4 of 5 running agents) grew
+  // without bound — a slow memory leak. Trim from the left to the same limit, so
+  // an eventual attach flushes only the most recent scrollback (exactly like the
+  // capped backend replay). Open/active terminals are untouched.
+  const bufferMaxChars = Math.max(0, appConfig.session?.replayMaxChars ?? 0);
+  function appendToSessionBuffer(sessionId: string, chunk: string): void {
+    const next = `${buffers.value.get(sessionId) || ""}${chunk}`;
+    buffers.value.set(
+      sessionId,
+      bufferMaxChars && next.length > bufferMaxChars ? next.slice(next.length - bufferMaxChars) : next,
+    );
+  }
+
   function handleTerminalData({ sessionId, data }: { sessionId: string; data: string }): void {
     sessionsWithRendererData.add(sessionId);
     const view = views.value.get(sessionId);
     if (!view || !view.opened) {
-      buffers.value.set(sessionId, `${buffers.value.get(sessionId) || ""}${data}`);
+      appendToSessionBuffer(sessionId, data);
       return;
     }
     view.term.write(data);
@@ -1225,7 +1240,7 @@ export function createTerminalController({
     if (view?.opened) {
       view.term.writeln(line);
     } else {
-      buffers.value.set(sessionId, `${buffers.value.get(sessionId) || ""}${line}`);
+      appendToSessionBuffer(sessionId, line);
     }
   }
 
