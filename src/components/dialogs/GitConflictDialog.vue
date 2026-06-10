@@ -233,7 +233,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref } from "vue";
+import { computed, defineAsyncComponent, onMounted, ref, watch } from "vue";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useAppStore } from "../../stores/app.js";
 
@@ -263,9 +263,8 @@ const dlg = computed(() => {
   );
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const snapshot = computed(
-  () => appStore.getGitSnapshot(props.workspaceId, props.rootPath) as Record<string, any> | null,
+  () => appStore.getGitSnapshot(props.workspaceId, props.rootPath) as Record<string, unknown> | null,
 );
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const operationState = computed(() => snapshot.value?.operationState as Record<string, any> | null);
@@ -394,6 +393,20 @@ onMounted(() => {
     gitUiStore.openConflictDialog(props.workspaceId, props.rootPath);
   }
 });
+
+// Close when user switches to a different workspace — prevents stale dialog
+watch(
+  () => appStore.activeViewId,
+  (viewId) => {
+    if (!viewId) return;
+    // activeViewId format: "<workspaceId>:..." — close if it's a different workspace
+    const activeWsId = viewId.split(":")[0];
+    if (activeWsId && activeWsId !== props.workspaceId) {
+      gitUiStore.closeConflictDialog(props.workspaceId);
+      emit("close");
+    }
+  },
+);
 </script>
 
 <style scoped>

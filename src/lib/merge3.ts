@@ -193,7 +193,7 @@ export function merge3(base: string, ours: string, theirs: string): Merge3Result
       continue;
     }
 
-    // Both changed — conflict
+    // Both changed — potential conflict
     const conflictOurs: string[] = [];
     const conflictTheirs: string[] = [];
     const conflictBase: string[] = [];
@@ -207,17 +207,28 @@ export function merge3(base: string, ours: string, theirs: string): Merge3Result
     while (peek(ct) !== null && peek(ct)!.op !== "equal") {
       const t = advance(ct)!;
       if (t.op === "insert") conflictTheirs.push(t.line);
-      // deletes from theirs are already accounted in base
+      // deletes from theirs already accounted in base
     }
 
-    chunks.push({
-      kind: "conflict",
-      baseLines: conflictBase,
-      oursLines: conflictOurs,
-      theirsLines: conflictTheirs,
-      resultLines: [],
-      resolved: false,
-    });
+    // Same change on both sides = non-conflicting (diff3 rule: if ours==theirs use that)
+    if (arraysEqual(conflictOurs, conflictTheirs)) {
+      chunks.push({
+        kind: "ours",
+        baseLines: conflictBase,
+        oursLines: conflictOurs,
+        theirsLines: conflictOurs,
+        resultLines: conflictOurs,
+      });
+    } else {
+      chunks.push({
+        kind: "conflict",
+        baseLines: conflictBase,
+        oursLines: conflictOurs,
+        theirsLines: conflictTheirs,
+        resultLines: [],
+        resolved: false,
+      });
+    }
   }
 
   const conflictCount = chunks.filter((c) => c.kind === "conflict").length;
@@ -244,17 +255,22 @@ export function renderResult(chunks: Chunk[]): string {
 export function applyNonConflicting(chunks: Chunk[]): Chunk[] {
   return chunks.map((chunk) => {
     if (chunk.kind === "conflict") return chunk;
-    return {
-      ...chunk,
-      resultLines:
-        chunk.kind === "theirs" ? chunk.theirsLines : chunk.oursLines.length > 0 ? chunk.oursLines : chunk.baseLines,
-    };
+    if (chunk.kind === "theirs") return { ...chunk, resultLines: chunk.theirsLines };
+    if (chunk.kind === "ours") return { ...chunk, resultLines: chunk.oursLines };
+    // unchanged
+    return { ...chunk, resultLines: chunk.baseLines };
   });
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 function splitLines(text: string): string[] {
   if (!text) return [];

@@ -1,5 +1,42 @@
 import { describe, expect, test } from "vitest";
+import { execSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { merge3, applyNonConflicting, renderResult, hasUnresolvedConflicts } from "./merge3.js";
+
+// ---------------------------------------------------------------------------
+// Golden-test helper — compare merge3 output against git merge-file for
+// non-conflicting cases (where git exits 0 and our output must match exactly).
+// ---------------------------------------------------------------------------
+function gitMerge(base: string, ours: string, theirs: string): string | null {
+  let dir: string | null = null;
+  try {
+    dir = mkdtempSync(join(tmpdir(), "merge3-golden-"));
+    const b = join(dir, "base");
+    const o = join(dir, "ours");
+    const t = join(dir, "theirs");
+    writeFileSync(b, base);
+    writeFileSync(o, ours);
+    writeFileSync(t, theirs);
+    // -p writes merged result to stdout (no in-place modification)
+    const out = execSync(`git merge-file -p "${o}" "${b}" "${t}"`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out;
+  } catch {
+    // exit code 1 means conflict — that case is not a golden test target
+    return null;
+  } finally {
+    if (dir)
+      try {
+        rmSync(dir, { recursive: true });
+      } catch {
+        /* ignore */
+      }
+  }
+}
 
 describe("merge3", () => {
   test("identical files produce single unchanged chunk", () => {
@@ -115,5 +152,98 @@ describe("hasUnresolvedConflicts", () => {
   test("false when no conflicts", () => {
     const { chunks } = merge3("a\nb", "a\nb", "a\nb");
     expect(hasUnresolvedConflicts(chunks)).toBe(false);
+  });
+});
+
+describe("CRLF preservation", () => {
+  test("CRLF line endings are round-tripped unchanged", () => {
+    const base = "line1\r\nline2\r\nline3\r\n";
+    const ours = "line1\r\nOURS\r\nline3\r\n";
+    const theirs = "line1\r\nline2\r\nline3\r\n";
+    const { chunks } = merge3(base, ours, theirs);
+    expect(chunks.filter((c) => c.kind === "conflict")).toHaveLength(0);
+    const applied = applyNonConflicting(chunks);
+    const result = renderResult(applied);
+    // Each line retains \r before the \n separator
+    expect(result).toContain("OURS\r");
+    expect(result).toContain("line1\r");
+  });
+
+  test("CRLF conflict chunk preserves \\r in both sides", () => {
+    const base = "a\r\nb\r\nc\r\n";
+    const ours = "a\r\nOURS\r\nc\r\n";
+    const theirs = "a\r\nTHEIRS\r\nc\r\n";
+    const { chunks } = merge3(base, ours, theirs);
+    const conflict = chunks.find((c) => c.kind === "conflict");
+    expect(conflict).toBeDefined();
+    expect(conflict!.oursLines[0]).toBe("OURS\r");
+    expect(conflict!.theirsLines[0]).toBe("THEIRS\r");
+  });
+});
+
+describe("merge3 golden tests vs git merge-file", () => {
+  // These tests compare our merge3 non-conflicting output against
+  // what `git merge-file` produces. git merge-file is the reference
+  // implementation; our output must match for clean merges.
+  // (Conflicting cases are not tested here — git uses different marker
+  //  format/labels than our wizard, so they intentionally differ.)
+
+  function expectMatchesGit(base: string, ours: string, theirs: string) {
+    const gitResult = gitMerge(base, ours, theirs);
+    if (gitResult === null) return; // conflict — skip golden comparison
+    const { chunks } = merge3(base, ours, theirs);
+    expect(chunks.filter((c) => c.kind === "conflict")).toHaveLength(0);
+    const applied = applyNonConflicting(chunks);
+    expect(renderResult(applied)).toBe(gitResult);
+  }
+
+  test("identical files — output equals input", () => {
+    const text = "line1\nline2\nline3\n";
+    expectMatchesGit(text, text, text);
+  });
+
+  test("ours-only change matches git", () => {
+    expectMatchesGit("a\nb\nc\n", "a\nOURS\nc\n", "a\nb\nc\n");
+  });
+
+  test("theirs-only change matches git", () => {
+    expectMatchesGit("a\nb\nc\n", "a\nb\nc\n", "a\nTHEIRS\nc\n");
+  });
+
+  test("both changed different lines matches git (non-adjacent)", () => {
+    expectMatchesGit("a\nb\nc\nd\ne\n", "a\nOURS\nc\nd\ne\n", "a\nb\nc\nTHEIRS\ne\n");
+  });
+
+  test("adjacent non-conflicting changes match git", () => {
+    // ours changes first line, theirs changes last line — adjacent boundary
+    expectMatchesGit("x\ny\nz\n", "X\ny\nz\n", "x\ny\nZ\n");
+  });
+
+  test("ours deletes line, theirs unchanged — matches git", () => {
+    expectMatchesGit("a\nb\nc\n", "a\nc\n", "a\nb\nc\n");
+  });
+
+  test("theirs deletes line, ours unchanged — matches git", () => {
+    expectMatchesGit("a\nb\nc\n", "a\nb\nc\n", "a\nc\n");
+  });
+
+  test("overlapping edits produce conflict — git also exits non-zero", () => {
+    const base = "a\nb\nc\n";
+    const ours = "a\nOURS\nc\n";
+    const theirs = "a\nTHEIRS\nc\n";
+    // git exits 1 for conflict; gitMerge returns null — we just verify our engine also flags conflict
+    const gitResult = gitMerge(base, ours, theirs);
+    expect(gitResult).toBeNull(); // confirms this IS a conflicting case
+    const { conflictCount } = merge3(base, ours, theirs);
+    expect(conflictCount).toBeGreaterThan(0);
+  });
+
+  test("whitespace-only change in ours — matches git", () => {
+    expectMatchesGit("a\nb\nc\n", "a\n  b\nc\n", "a\nb\nc\n");
+  });
+
+  test("empty base with ours-only content — matches git", () => {
+    // both-added case: ours has content, theirs has same content → no conflict
+    expectMatchesGit("", "added\n", "added\n");
   });
 });
