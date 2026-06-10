@@ -23,6 +23,24 @@ interface PendingGitAction {
   payload?: Record<string, any>;
 }
 
+interface ConflictFileEntry {
+  path: string;
+  conflictType: string;
+  stages: number[];
+  binary: boolean;
+  resolved: boolean;
+}
+
+interface ConflictDialogState {
+  open: boolean;
+  workspaceId: string;
+  rootPath: string;
+  /** All files (pending + resolved) — merged across loads so resolved files stay visible */
+  conflicts: ConflictFileEntry[];
+  loading: boolean;
+  error: string;
+}
+
 interface GitUiState {
   busyAction?: string;
   lastResult?: {
@@ -34,6 +52,7 @@ interface GitUiState {
     operationState: unknown;
     at: string;
   } | null;
+  conflictDialog?: ConflictDialogState | null;
   selectedDiff?: { path: string; scope: string } | null;
   diffPreview?: unknown;
   pendingAction?: PendingGitAction | null;
@@ -263,6 +282,21 @@ export const useGitUiStore = defineStore("git-ui", () => {
         ui.lastResult = null;
       } else {
         ui.lastResult = result ? { ...result, at: new Date().toISOString() } : null;
+      }
+
+      // Auto-open conflict dialog when a git action produces conflicts
+      if (result && (result.conflicts?.length ?? 0) > 0) {
+        const rootPath = getActiveRoot(workspaceId);
+        openConflictDialog(workspaceId, rootPath);
+        const { useAppStore } = await import("./app.js");
+        const appStore = useAppStore();
+        if (!appStore.overlay || appStore.overlay === "GitConflictDialog") {
+          appStore.openDialog("GitConflictDialog", {
+            workspaceId,
+            rootPath,
+            onClose: () => appStore.closeDialog(),
+          });
+        }
       }
 
       if (ui.selectedDiff?.path) {
@@ -1189,6 +1223,137 @@ export const useGitUiStore = defineStore("git-ui", () => {
     }
   }
 
+  // --- Conflict resolution dialog ---
+
+  function openConflictDialog(workspaceId: string, rootPath: string): void {
+    const ui = ensure(workspaceId);
+    ui.conflictDialog = { open: true, workspaceId, rootPath, conflicts: [], loading: false, error: "" };
+    void loadConflicts(workspaceId);
+  }
+
+  function closeConflictDialog(workspaceId: string): void {
+    const ui = ensure(workspaceId);
+    if (ui.conflictDialog) ui.conflictDialog = { ...ui.conflictDialog, open: false };
+  }
+
+  async function loadConflicts(workspaceId: string): Promise<void> {
+    const ui = ensure(workspaceId);
+    const dlg = ui.conflictDialog;
+    if (!dlg) return;
+    dlg.loading = true;
+    dlg.error = "";
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = (await (_api as any).gitListConflicts({
+        workspaceId,
+        rootPath: dlg.rootPath,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      })) as Record<string, any>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pending: Record<string, any>[] = result?.conflicts || [];
+      const pendingPaths = new Set(pending.map((e) => e.path as string));
+      // Merge: existing resolved files stay; pending files update/add
+      const existingByPath = new Map(dlg.conflicts.map((c) => [c.path, c]));
+      const merged: ConflictFileEntry[] = [];
+      // Add/update all pending entries
+      for (const p of pending) {
+        merged.push({
+          path: p.path as string,
+          conflictType: (p.conflictType as string) || "both-modified",
+          stages: (p.stages as number[]) || [],
+          binary: (p.binary as boolean) || false,
+          resolved: false,
+        });
+      }
+      // Keep previously-known entries that are now resolved (no longer pending)
+      for (const existing of existingByPath.values()) {
+        if (!pendingPaths.has(existing.path)) {
+          merged.push({ ...existing, resolved: true });
+        }
+      }
+      // Sort: pending first, then resolved
+      merged.sort((a, b) => {
+        if (a.resolved !== b.resolved) return a.resolved ? 1 : -1;
+        return a.path.localeCompare(b.path);
+      });
+      dlg.conflicts = merged;
+    } catch (err) {
+      dlg.error = (err as Error)?.message || "Failed to load conflicts.";
+    } finally {
+      dlg.loading = false;
+    }
+  }
+
+  async function resolveConflictFile(
+    workspaceId: string,
+    filePath: string,
+    mode: "ours" | "theirs" | "delete" | "manual",
+    content?: string,
+  ): Promise<void> {
+    const ui = ensure(workspaceId);
+    const dlg = ui.conflictDialog;
+    if (!dlg) return;
+    await runGitAction(workspaceId, `resolve:${filePath}`, () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitResolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath, mode, content }),
+    );
+    await loadConflicts(workspaceId);
+  }
+
+  async function unresolveConflictFile(workspaceId: string, filePath: string): Promise<void> {
+    const ui = ensure(workspaceId);
+    const dlg = ui.conflictDialog;
+    if (!dlg) return;
+    await runGitAction(workspaceId, `unresolve:${filePath}`, () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitUnresolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath }),
+    );
+    await loadConflicts(workspaceId);
+  }
+
+  async function skipConflictCommit(workspaceId: string): Promise<void> {
+    const ui = ensure(workspaceId);
+    const dlg = ui.conflictDialog;
+    if (!dlg) return;
+    await runGitAction(workspaceId, "skip", () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
+    );
+    // After skip, check if there are more conflicts (rebase may pause again)
+    await refreshGit(workspaceId);
+    // Re-load the conflicts for the current (possibly new) stopped commit
+    await loadConflicts(workspaceId);
+    // If no more conflicts, close the dialog
+    const after = ensure(workspaceId).conflictDialog;
+    if (after && !after.loading && !after.conflicts.length) closeConflictDialog(workspaceId);
+  }
+
+  async function continueAfterConflicts(workspaceId: string): Promise<void> {
+    const ui = ensure(workspaceId);
+    const dlg = ui.conflictDialog;
+    if (!dlg) return;
+    await runGitAction(workspaceId, "continue", () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
+    );
+    // After continue, operation may stop again (next conflicting commit in rebase)
+    await refreshGit(workspaceId);
+    await loadConflicts(workspaceId);
+    const after = ensure(workspaceId).conflictDialog;
+    if (after && !after.loading && !after.conflicts.length) closeConflictDialog(workspaceId);
+  }
+
+  async function abortFromConflictDialog(workspaceId: string): Promise<void> {
+    const ui = ensure(workspaceId);
+    const dlg = ui.conflictDialog;
+    if (!dlg) return;
+    await runGitAction(workspaceId, "abort", () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitAbortOperation({ workspaceId, rootPath: dlg.rootPath }),
+    );
+    closeConflictDialog(workspaceId);
+  }
+
   async function refreshRoot(workspaceId: string, rootPath: string): Promise<void> {
     await runGitAction(workspaceId, `refresh:${rootPath}`, async () => {
       const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
@@ -1279,5 +1444,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
     reviewSetCommentSearch,
     reviewSetAgentSubtab,
     reviewSelectFileDiff,
+    // Conflict resolution dialog
+    openConflictDialog,
+    closeConflictDialog,
+    loadConflicts,
+    resolveConflictFile,
+    unresolveConflictFile,
+    skipConflictCommit,
+    continueAfterConflicts,
+    abortFromConflictDialog,
   };
 });

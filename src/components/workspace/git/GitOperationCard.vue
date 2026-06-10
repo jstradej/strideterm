@@ -20,10 +20,12 @@
       <div class="git-operation-banner git-operation-banner--warning" data-testid="operation-in-progress">
         <strong>{{ operation.label || "Git operation in progress" }}</strong>
         <p v-if="operation.details">{{ operation.details }}</p>
-        <small v-if="operation.conflicts?.length">{{ operation.conflicts.join(", ") }}</small>
         <div class="git-operation-actions">
+          <button v-if="operation.conflicts?.length" type="button" class="button" @click="openConflictDialog">
+            Resolve conflicts… ({{ operation.conflicts.length }})
+          </button>
           <button
-            v-if="operation.canContinue"
+            v-if="operation.canContinue && !operation.conflicts?.length"
             type="button"
             class="button"
             @click="gitUiStore.gitContinue(workspaceId)"
@@ -57,7 +59,11 @@
         <ul v-if="result.warnings?.length" class="git-inline-list">
           <li v-for="(w, i) in result.warnings" :key="i">{{ w }}</li>
         </ul>
-        <p v-if="result.conflicts?.length" class="git-card__hint">Conflicts: {{ result.conflicts.join(", ") }}</p>
+        <div v-if="result.conflicts?.length" class="git-operation-actions">
+          <button type="button" class="button button--small" @click="openConflictDialog">
+            Resolve conflicts… ({{ result.conflicts.length }})
+          </button>
+        </div>
         <pre v-if="result.rawOutput" class="git-output">{{ result.rawOutput }}</pre>
       </div>
     </template>
@@ -67,6 +73,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
+import { useAppStore } from "../../../stores/app.js";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
 const props = withDefaults(
@@ -81,6 +88,7 @@ const props = withDefaults(
 );
 
 const gitUiStore = useGitUiStore();
+const appStore = useAppStore();
 
 const operation = computed(() => props.snapshot.operationState || {});
 const pending = computed(() => props.gitUi.pendingAction || null);
@@ -94,4 +102,14 @@ const heading = computed(() => {
   if (result.value) return "Last result";
   return "Idle";
 });
+
+function openConflictDialog() {
+  const rootPath = gitUiStore.getActiveRoot(props.workspaceId);
+  gitUiStore.openConflictDialog(props.workspaceId, rootPath);
+  appStore.openDialog("GitConflictDialog", {
+    workspaceId: props.workspaceId,
+    rootPath,
+    onClose: () => appStore.closeDialog(),
+  });
+}
 </script>

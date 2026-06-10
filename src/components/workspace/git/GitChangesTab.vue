@@ -30,7 +30,7 @@
                 :selected-scope="gitUi.selectedDiff?.scope || ''"
                 :selectable="snapshot.dirty && !isReviewWorkspace"
                 :selected-set="selectedPaths"
-                @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
+                @select="onFileSelect"
                 @toggle-select="toggleSelect"
                 @context-menu="onFileContextMenu"
               />
@@ -250,6 +250,22 @@ const allChangedFiles = computed(() => {
   for (const f of props.snapshot?.untracked || []) push(f, "untracked");
   return out;
 });
+
+const conflictPaths = computed(() => new Set<string>(props.operation.conflicts || []));
+
+function onFileSelect(path: string, scope: string) {
+  // Conflicted files open the Conflict Center instead of the diff preview
+  if (conflictPaths.value.has(path)) {
+    gitUiStore.openConflictDialog(props.workspaceId, props.activeRootPath);
+    appStore.openDialog("GitConflictDialog", {
+      workspaceId: props.workspaceId,
+      rootPath: props.activeRootPath,
+      onClose: () => appStore.closeDialog(),
+    });
+    return;
+  }
+  gitUiStore.gitSelectDiff(props.workspaceId, path, scope);
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const monacoDiffPayload = ref<Record<string, any> | null>(null);
