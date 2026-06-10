@@ -361,5 +361,40 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
         author: payload.author || "",
       });
     },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitSkipCommit(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(workspace, git.skipCommit(workspace, { rootPath }));
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitListConflicts(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.listConflicts(workspace, { rootPath });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitConflictDetail(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.conflictDetail(workspace, { filePath: payload.filePath, rootPath });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitResolveConflict(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.resolveConflict(workspace, {
+        filePath: payload.filePath,
+        mode: payload.mode,
+        content: payload.content,
+        rootPath,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitUnresolveConflict(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.unresolveConflict(workspace, { filePath: payload.filePath, rootPath });
+    },
   };
 }

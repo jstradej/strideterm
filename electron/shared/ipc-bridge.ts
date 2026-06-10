@@ -465,6 +465,11 @@ export interface StridetermAPI {
       author?: string;
     },
   ) => Promise<unknown>;
+  gitSkipCommit: (payload: GitPayload) => Promise<unknown>;
+  gitListConflicts: (payload: GitPayload) => Promise<unknown>;
+  gitConflictDetail: (payload: GitPayload & { filePath: string }) => Promise<unknown>;
+  gitResolveConflict: (payload: GitPayload & { filePath: string; mode: string; content?: string }) => Promise<unknown>;
+  gitUnresolveConflict: (payload: GitPayload & { filePath: string }) => Promise<unknown>;
   openLazygitSession: (payload: GitPayload) => Promise<unknown>;
   createWorktree: (payload: WorktreePayload) => Promise<unknown>;
 

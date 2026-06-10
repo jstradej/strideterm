@@ -2025,4 +2025,155 @@ describe("GitManager", () => {
       });
     });
   });
+
+  // --- Conflict resolution operations ---
+
+  describe("skipCommit", () => {
+    test("skips when rebase in progress", async () => {
+      const calls: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        calls.push(args);
+        return { stdout: "Successfully skipped\n", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      // mockResolvedValue (not Once) so both the skipCommit pre-check and
+      // runWriteAction's internal inspect call get the same mocked snapshot.
+      mgr.inspectWorkspace = vi.fn().mockResolvedValue({
+        available: true,
+        dirty: false,
+        branch: "feature-x",
+        baseBranch: "main",
+        operationState: { kind: "rebase", inProgress: true, conflicts: ["a.py"], label: "Rebase in progress" },
+      });
+      const result = await mgr.skipCommit({ id: "ws", cwd: "/repo", kind: "terminal" });
+      expect(result.ok).toBe(true);
+      expect(calls).toContainEqual(["rebase", "--skip"]);
+    });
+
+    test("fails when no operation in progress", async () => {
+      const mgr = new GitManager({ execGitImpl: vi.fn() });
+      mgr.inspectWorkspace = vi.fn().mockResolvedValue({
+        available: true,
+        dirty: false,
+        branch: "main",
+        operationState: { kind: "idle", inProgress: false, conflicts: [] },
+      });
+      const result = await mgr.skipCommit({ id: "ws", cwd: "/repo", kind: "terminal" });
+      expect(result.ok).toBe(false);
+    });
+  });
+
+  describe("resolveConflict", () => {
+    test("mode=ours runs checkout --ours then git add", async () => {
+      const calls: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        calls.push(args);
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.resolveConflict(
+        { id: "ws", cwd: "/repo", kind: "terminal" },
+        { filePath: "src/app.py", mode: "ours" },
+      );
+      expect(result.ok).toBe(true);
+      expect(calls).toContainEqual(["checkout", "--ours", "--", "src/app.py"]);
+      expect(calls).toContainEqual(["add", "--", "src/app.py"]);
+    });
+
+    test("mode=theirs runs checkout --theirs then git add", async () => {
+      const calls: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        calls.push(args);
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.resolveConflict(
+        { id: "ws", cwd: "/repo", kind: "terminal" },
+        { filePath: "src/app.py", mode: "theirs" },
+      );
+      expect(result.ok).toBe(true);
+      expect(calls).toContainEqual(["checkout", "--theirs", "--", "src/app.py"]);
+      expect(calls).toContainEqual(["add", "--", "src/app.py"]);
+    });
+
+    test("mode=delete runs git rm", async () => {
+      const calls: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        calls.push(args);
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.resolveConflict(
+        { id: "ws", cwd: "/repo", kind: "terminal" },
+        { filePath: "src/app.py", mode: "delete" },
+      );
+      expect(result.ok).toBe(true);
+      expect(calls).toContainEqual(["rm", "-f", "--", "src/app.py"]);
+    });
+
+    test("mode=manual requires content", async () => {
+      const mgr = new GitManager({ execGitImpl: vi.fn() });
+      const result = await mgr.resolveConflict(
+        { id: "ws", cwd: "/repo", kind: "terminal" },
+        { filePath: "src/app.py", mode: "manual" },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.summary).toContain("Content is required");
+    });
+
+    test("rejects empty filePath", async () => {
+      const mgr = new GitManager({ execGitImpl: vi.fn() });
+      const result = await mgr.resolveConflict(
+        { id: "ws", cwd: "/repo", kind: "terminal" },
+        { filePath: "", mode: "ours" },
+      );
+      expect(result.ok).toBe(false);
+    });
+  });
+
+  describe("unresolveConflict", () => {
+    test("runs git checkout -m", async () => {
+      const calls: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        calls.push(args);
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.unresolveConflict(
+        { id: "ws", cwd: "/repo", kind: "terminal" },
+        { filePath: "src/app.py" },
+      );
+      expect(result.ok).toBe(true);
+      expect(calls).toContainEqual(["checkout", "-m", "--", "src/app.py"]);
+    });
+  });
+
+  describe("inspectOperationState with metadata", () => {
+    test("detects rebase operation", async () => {
+      const { root } = await createGitFixture();
+      const rebaseMergeDir = path.join(root, ".git", "rebase-merge");
+      await fs.mkdir(rebaseMergeDir, { recursive: true });
+      await fs.writeFile(path.join(rebaseMergeDir, "msgnum"), "2\n");
+      await fs.writeFile(path.join(rebaseMergeDir, "end"), "5\n");
+      await fs.writeFile(path.join(rebaseMergeDir, "stopped-sha"), "abc1234567890\n");
+      await fs.writeFile(path.join(rebaseMergeDir, "message"), "feat: add feature\n");
+      await fs.writeFile(path.join(rebaseMergeDir, "head-name"), "refs/heads/main\n");
+      await fs.writeFile(path.join(rebaseMergeDir, "onto_name"), "feature/x\n");
+
+      const execGitImpl = vi.fn(async () => ({ stdout: "", stderr: "" }));
+      const mgr = new GitManager({ execGitImpl });
+      const state = await mgr.inspectOperationState(root, {
+        gitDir: path.join(root, ".git"),
+        gitCommonDir: path.join(root, ".git"),
+      });
+
+      expect(state.kind).toBe("rebase");
+      expect(state.inProgress).toBe(true);
+      expect(state.progress).toEqual({ current: 2, total: 5 });
+      expect(state.currentCommit?.sha).toBe("abc1234");
+      expect(state.currentCommit?.subject).toBe("feat: add feature");
+      expect(state.sides?.ours).toBe("main");
+      expect(state.sides?.theirs).toBe("feature/x");
+    });
+  });
 });

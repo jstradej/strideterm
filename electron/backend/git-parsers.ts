@@ -552,7 +552,87 @@ export function preferBaseBranch(currentBranch: string, upstream: string, branch
 
 // --- Operation state helpers ---
 
-export function buildOperationState({ kind, conflicts = [] }: { kind?: string; conflicts?: string[] } = {}): {
+export type ConflictType = "both-modified" | "both-added" | "deleted-by-us" | "deleted-by-them" | "unknown";
+
+export interface ConflictEntry {
+  path: string;
+  conflictType: ConflictType;
+  binary: boolean;
+  stages: number[];
+}
+
+/**
+ * Parse `git ls-files -u` output to classify conflict types per file.
+ * Format: <mode> <object> <stage>\t<file>
+ * Stages: 1=base, 2=ours, 3=theirs
+ */
+export function parseLsFilesUntracked(rawText: string): ConflictEntry[] {
+  const stagesByPath = new Map<string, Set<number>>();
+  for (const rawLine of String(rawText || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    // Format: "100644 <sha> <stage>\t<path>"
+    const tab = line.indexOf("\t");
+    if (tab === -1) continue;
+    const filePath = line.slice(tab + 1);
+    const parts = line.slice(0, tab).split(/\s+/);
+    const stage = parseInt(parts[2] ?? "", 10);
+    if (!isNaN(stage) && filePath) {
+      if (!stagesByPath.has(filePath)) stagesByPath.set(filePath, new Set());
+      stagesByPath.get(filePath)!.add(stage);
+    }
+  }
+
+  const result: ConflictEntry[] = [];
+  for (const [filePath, stages] of stagesByPath) {
+    const has1 = stages.has(1);
+    const has2 = stages.has(2);
+    const has3 = stages.has(3);
+    let conflictType: ConflictType;
+    if (has1 && has2 && has3) {
+      conflictType = "both-modified";
+    } else if (!has1 && has2 && has3) {
+      conflictType = "both-added";
+    } else if (has1 && !has2 && has3) {
+      conflictType = "deleted-by-us";
+    } else if (has1 && has2 && !has3) {
+      conflictType = "deleted-by-them";
+    } else {
+      conflictType = "unknown";
+    }
+    result.push({ path: filePath, conflictType, binary: false, stages: [...stages].sort() });
+  }
+  return result;
+}
+
+export interface OperationProgress {
+  current: number;
+  total: number;
+}
+
+export interface OperationSides {
+  ours: string;
+  theirs: string;
+}
+
+export interface OperationCurrentCommit {
+  sha: string;
+  subject: string;
+}
+
+export function buildOperationState({
+  kind,
+  conflicts = [],
+  progress = null,
+  currentCommit = null,
+  sides = null,
+}: {
+  kind?: string;
+  conflicts?: string[];
+  progress?: OperationProgress | null;
+  currentCommit?: OperationCurrentCommit | null;
+  sides?: OperationSides | null;
+} = {}): {
   kind: string;
   inProgress: boolean;
   label: string;
@@ -560,9 +640,19 @@ export function buildOperationState({ kind, conflicts = [] }: { kind?: string; c
   conflicts: string[];
   canContinue: boolean;
   canAbort: boolean;
+  canSkip: boolean;
+  progress: OperationProgress | null;
+  currentCommit: OperationCurrentCommit | null;
+  sides: OperationSides | null;
 } {
   if (!kind || kind === "idle") {
-    return { ...DEFAULT_OPERATION_STATE };
+    return {
+      ...DEFAULT_OPERATION_STATE,
+      canSkip: false,
+      progress: null,
+      currentCommit: null,
+      sides: null,
+    };
   }
 
   const labelMap: Record<string, string> = {
@@ -580,6 +670,10 @@ export function buildOperationState({ kind, conflicts = [] }: { kind?: string; c
     conflicts,
     canContinue: kind !== "bisect",
     canAbort: true,
+    canSkip: kind === "rebase" || kind === "cherry-pick",
+    progress: progress ?? null,
+    currentCommit: currentCommit ?? null,
+    sides: sides ?? null,
   };
 }
 
@@ -660,6 +754,12 @@ export function resolveAbortArgs(kind: string): string[] | null {
   if (kind === "rebase") return ["rebase", "--abort"];
   if (kind === "cherry-pick") return ["cherry-pick", "--abort"];
   if (kind === "bisect") return ["bisect", "reset"];
+  return null;
+}
+
+export function resolveSkipArgs(kind: string): string[] | null {
+  if (kind === "rebase") return ["rebase", "--skip"];
+  if (kind === "cherry-pick") return ["cherry-pick", "--skip"];
   return null;
 }
 

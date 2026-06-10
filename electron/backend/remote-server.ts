@@ -1164,6 +1164,31 @@ async function handleApiRequest(
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/skip") {
+      json(response, 200, await runtime.gitSkipCommit(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/list-conflicts") {
+      json(response, 200, await runtime.gitListConflicts(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/conflict-detail") {
+      json(response, 200, await runtime.gitConflictDetail(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/resolve-conflict") {
+      json(response, 200, await runtime.gitResolveConflict(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/unresolve-conflict") {
+      json(response, 200, await runtime.gitUnresolveConflict(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/git/diff-preview") {
       json(response, 200, await runtime.gitDiffPreview(body));
       return;

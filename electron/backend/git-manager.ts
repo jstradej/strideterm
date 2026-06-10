@@ -2,7 +2,7 @@
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync } from "node:fs";
-import { rm as fsRm } from "node:fs/promises";
+import { rm as fsRm, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { execFileText, quotePosixArg } from "./process-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
@@ -37,6 +37,8 @@ import {
   createStructuredResult,
   resolveContinueArgs,
   resolveAbortArgs,
+  resolveSkipArgs,
+  parseLsFilesUntracked,
   inspectWorktreeDirtyState,
   joinRawOutput,
   uniqueByPath,
@@ -49,7 +51,13 @@ import {
   parseConflictPaths,
   EMPTY_TREE_SHA,
 } from "./git-parsers.js";
-import type { StashEntry, StashFile } from "./git-parsers.js";
+import type {
+  StashEntry,
+  StashFile,
+  OperationProgress,
+  OperationSides,
+  OperationCurrentCommit,
+} from "./git-parsers.js";
 
 const log = getLogger("git");
 
@@ -681,8 +689,14 @@ export class GitManager extends EventEmitter {
         compareWithBase,
         lastFetchAt: getFetchTimestamp(gitCommonDir),
         operationState: operationState.inProgress
-          ? buildOperationState({ kind: operationState.kind, conflicts: operationState.conflicts })
-          : { ...DEFAULT_OPERATION_STATE },
+          ? buildOperationState({
+              kind: operationState.kind,
+              conflicts: operationState.conflicts,
+              progress: operationState.progress,
+              currentCommit: operationState.currentCommit,
+              sides: operationState.sides,
+            })
+          : { ...DEFAULT_OPERATION_STATE, canSkip: false, progress: null, currentCommit: null, sides: null },
         error: "",
         lastUpdatedAt: this.now().toISOString(),
       };
@@ -862,7 +876,14 @@ export class GitManager extends EventEmitter {
   async inspectOperationState(
     cwd: string,
     { gitDir, gitCommonDir }: { gitDir: string; gitCommonDir: string },
-  ): Promise<{ kind: string; inProgress: boolean; conflicts: string[] }> {
+  ): Promise<{
+    kind: string;
+    inProgress: boolean;
+    conflicts: string[];
+    progress: OperationProgress | null;
+    currentCommit: OperationCurrentCommit | null;
+    sides: OperationSides | null;
+  }> {
     const mergeHeadPath = path.join(gitDir, "MERGE_HEAD");
     const cherryPickHeadPath = path.join(gitDir, "CHERRY_PICK_HEAD");
     const rebaseMergePath = path.join(gitDir, "rebase-merge");
@@ -870,20 +891,104 @@ export class GitManager extends EventEmitter {
     const bisectPath = path.join(gitCommonDir || gitDir, "BISECT_LOG");
     const conflicts = await this.readConflicts(cwd);
 
+    const readGitFile = async (filePath: string): Promise<string> => {
+      try {
+        return (await fsReadFile(filePath, "utf-8")).trim();
+      } catch {
+        return "";
+      }
+    };
+
     if (existsSync(mergeHeadPath)) {
-      return { kind: "merge", inProgress: true, conflicts };
-    }
-    if (existsSync(rebaseMergePath) || existsSync(rebaseApplyPath)) {
-      return { kind: "rebase", inProgress: true, conflicts };
-    }
-    if (existsSync(cherryPickHeadPath)) {
-      return { kind: "cherry-pick", inProgress: true, conflicts };
-    }
-    if (existsSync(bisectPath)) {
-      return { kind: "bisect", inProgress: true, conflicts };
+      const mergeHead = await readGitFile(mergeHeadPath);
+      const mergeMsg = await readGitFile(path.join(gitDir, "MERGE_MSG"));
+      let branch = "";
+      try {
+        const r = await this.execGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+        branch = r.stdout.trim();
+      } catch {
+        /* empty */
+      }
+      let mergeBranch = "";
+      try {
+        const r = await this.execGit(cwd, ["name-rev", "--name-only", mergeHead]);
+        mergeBranch = r.stdout.trim().replace(/~\d+$/, "");
+      } catch {
+        /* empty */
+      }
+      const subject =
+        mergeMsg
+          .split(/\r?\n/)[0]
+          ?.replace(/^Merge.*?into\s+\S+/, "")
+          .trim() || mergeHead.slice(0, 7);
+      return {
+        kind: "merge",
+        inProgress: true,
+        conflicts,
+        progress: null,
+        currentCommit: mergeHead ? { sha: mergeHead.slice(0, 7), subject } : null,
+        sides: { ours: branch || "HEAD", theirs: mergeBranch || mergeHead.slice(0, 7) },
+      };
     }
 
-    return { kind: "idle", inProgress: false, conflicts: [] };
+    if (existsSync(rebaseMergePath) || existsSync(rebaseApplyPath)) {
+      const rmDir = existsSync(rebaseMergePath) ? rebaseMergePath : rebaseApplyPath;
+      const [msgnumStr, endStr, stoppedSha, msgContent, headName, ontoName] = await Promise.all([
+        readGitFile(path.join(rmDir, "msgnum")),
+        readGitFile(path.join(rmDir, "end")),
+        readGitFile(path.join(rmDir, "stopped-sha")),
+        readGitFile(path.join(rmDir, "message")),
+        readGitFile(path.join(rmDir, "head-name")),
+        readGitFile(path.join(rmDir, "onto_name")),
+      ]);
+      const current = parseInt(msgnumStr, 10) || 0;
+      const total = parseInt(endStr, 10) || 0;
+      const sha = stoppedSha.slice(0, 7);
+      const subject = msgContent.split(/\r?\n/)[0] || sha;
+      // rebase semantics: HEAD=new base (ours), replayed commit=theirs
+      const oursLabel = headName.replace(/^refs\/heads\//, "") || "HEAD";
+      const theirsLabel = ontoName || sha || "commit";
+      return {
+        kind: "rebase",
+        inProgress: true,
+        conflicts,
+        progress: current && total ? { current, total } : null,
+        currentCommit: sha ? { sha, subject } : null,
+        sides: { ours: oursLabel, theirs: theirsLabel },
+      };
+    }
+
+    if (existsSync(cherryPickHeadPath)) {
+      const cpHead = await readGitFile(cherryPickHeadPath);
+      let subject = "";
+      try {
+        const r = await this.execGit(cwd, ["log", "-1", "--format=%s", cpHead]);
+        subject = r.stdout.trim();
+      } catch {
+        /* empty */
+      }
+      let branch = "";
+      try {
+        const r = await this.execGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+        branch = r.stdout.trim();
+      } catch {
+        /* empty */
+      }
+      return {
+        kind: "cherry-pick",
+        inProgress: true,
+        conflicts,
+        progress: null,
+        currentCommit: cpHead ? { sha: cpHead.slice(0, 7), subject: subject || cpHead.slice(0, 7) } : null,
+        sides: { ours: branch || "HEAD", theirs: cpHead.slice(0, 7) },
+      };
+    }
+
+    if (existsSync(bisectPath)) {
+      return { kind: "bisect", inProgress: true, conflicts, progress: null, currentCommit: null, sides: null };
+    }
+
+    return { kind: "idle", inProgress: false, conflicts: [], progress: null, currentCommit: null, sides: null };
   }
 
   async readConflicts(cwd: string): Promise<string[]> {
@@ -1268,6 +1373,189 @@ export class GitManager extends EventEmitter {
     }
 
     return result;
+  }
+
+  async skipCommit(
+    workspace: WorkspaceRef,
+    { rootPath = "" }: { rootPath?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
+    if (!snapshot.available) {
+      return createStructuredResult({ ok: false, summary: String(snapshot.error || "Git workspace is unavailable.") });
+    }
+    const operationState = snapshot.operationState as { kind: string };
+    const args = resolveSkipArgs(operationState.kind);
+    if (!args) {
+      return createStructuredResult({ ok: false, summary: "Current operation does not support skip." });
+    }
+    return this.runWriteAction(workspace, {
+      type: operationState.kind,
+      label: "Skip",
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) => this.execGit(cwd, args),
+      rootPath,
+    });
+  }
+
+  async listConflicts(
+    workspace: WorkspaceRef,
+    { rootPath = "" }: { rootPath?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd || "";
+    if (!effectiveCwd) return { ok: false, entries: [], summary: "No workspace directory." };
+    try {
+      const result = await this.execGit(effectiveCwd, ["ls-files", "-u"]);
+      const entries = parseLsFilesUntracked(result.stdout);
+      // Detect binary files via null-byte sniff on the worktree file
+      const entriesWithBinary = await Promise.all(
+        entries.map(async (entry) => {
+          const absPath = path.join(effectiveCwd, entry.path);
+          let binary = false;
+          try {
+            // Read first 8000 bytes to detect binary
+            const buf = Buffer.alloc(8000);
+            const fh = await import("node:fs/promises").then((m) => m.open(absPath, "r"));
+            try {
+              const { bytesRead } = await fh.read(buf, 0, 8000, 0);
+              binary = buf.slice(0, bytesRead).includes(0);
+            } finally {
+              await fh.close();
+            }
+          } catch {
+            /* use false */
+          }
+          return { ...entry, binary };
+        }),
+      );
+      return { ok: true, entries: entriesWithBinary };
+    } catch (err) {
+      return { ok: false, entries: [], summary: String((err as Error).message) };
+    }
+  }
+
+  async conflictDetail(
+    workspace: WorkspaceRef,
+    { filePath, rootPath = "" }: { filePath: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !filePath) {
+      return { ok: false, summary: "File path and workspace directory are required." };
+    }
+    // Sanitize path
+    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+
+    const readStage = async (stage: number): Promise<string> => {
+      try {
+        const result = await this.execGit(effectiveCwd, ["show", `:${stage}:${normalized}`]);
+        return String(result.stdout || "");
+      } catch {
+        return "";
+      }
+    };
+
+    const [base, ours, theirs] = await Promise.all([readStage(1), readStage(2), readStage(3)]);
+
+    let worktree = "";
+    try {
+      worktree = await fsReadFile(path.join(effectiveCwd, normalized), "utf-8");
+    } catch {
+      /* file may not exist for delete conflicts */
+    }
+
+    // Detect binary via null byte
+    const binary = worktree.includes("\0") || base.includes("\0") || ours.includes("\0") || theirs.includes("\0");
+
+    // Get labels from operationState
+    let sides = { ours: "Ours", theirs: "Theirs" };
+    try {
+      const snap = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
+      const opSides = (snap.operationState as Record<string, unknown>)?.sides as {
+        ours: string;
+        theirs: string;
+      } | null;
+      if (opSides?.ours && opSides?.theirs) sides = opSides;
+    } catch {
+      /* use defaults */
+    }
+
+    // Conflict type from ls-files -u
+    let conflictType = "both-modified";
+    try {
+      const r = await this.execGit(effectiveCwd, ["ls-files", "-u", "--", normalized]);
+      const entries = parseLsFilesUntracked(r.stdout);
+      if (entries[0]) conflictType = entries[0].conflictType;
+    } catch {
+      /* use default */
+    }
+
+    return { ok: true, filePath: normalized, base, ours, theirs, worktree, binary, conflictType, sides };
+  }
+
+  async resolveConflict(
+    workspace: WorkspaceRef,
+    {
+      filePath,
+      mode,
+      content,
+      rootPath = "",
+    }: { filePath: string; mode: "ours" | "theirs" | "manual" | "delete"; content?: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !filePath) {
+      return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
+    }
+    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    try {
+      if (mode === "delete") {
+        await this.execGit(effectiveCwd, ["rm", "-f", "--", normalized]);
+        return createStructuredResult({ ok: true, summary: `Deleted ${normalized}.` });
+      }
+      if (mode === "ours") {
+        await this.execGit(effectiveCwd, ["checkout", "--ours", "--", normalized]);
+        await this.execGit(effectiveCwd, ["add", "--", normalized]);
+        return createStructuredResult({ ok: true, summary: `Resolved ${normalized} using our version.` });
+      }
+      if (mode === "theirs") {
+        await this.execGit(effectiveCwd, ["checkout", "--theirs", "--", normalized]);
+        await this.execGit(effectiveCwd, ["add", "--", normalized]);
+        return createStructuredResult({ ok: true, summary: `Resolved ${normalized} using their version.` });
+      }
+      if (mode === "manual") {
+        if (content === undefined) {
+          return createStructuredResult({ ok: false, summary: "Content is required for manual resolution." });
+        }
+        await fsWriteFile(path.join(effectiveCwd, normalized), content, "utf-8");
+        await this.execGit(effectiveCwd, ["add", "--", normalized]);
+        return createStructuredResult({ ok: true, summary: `Resolved ${normalized} with manual edits.` });
+      }
+      return createStructuredResult({ ok: false, summary: `Unknown resolution mode: ${mode}` });
+    } catch (err) {
+      return createStructuredResult({
+        ok: false,
+        summary: String((err as { stderr?: string }).stderr || (err as Error).message),
+      });
+    }
+  }
+
+  async unresolveConflict(
+    workspace: WorkspaceRef,
+    { filePath, rootPath = "" }: { filePath: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !filePath) {
+      return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
+    }
+    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    try {
+      await this.execGit(effectiveCwd, ["checkout", "-m", "--", normalized]);
+      return createStructuredResult({ ok: true, summary: `Restored conflict markers in ${normalized}.` });
+    } catch (err) {
+      return createStructuredResult({
+        ok: false,
+        summary: String((err as { stderr?: string }).stderr || (err as Error).message),
+      });
+    }
   }
 
   async diffPreview(

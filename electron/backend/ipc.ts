@@ -1259,6 +1259,36 @@ export function registerIpc(
       runtime.gitLogGraph(validateIpc(gitLogGraphSchema, payload, "git:log-graph")),
     ),
   );
+  ipcMain.handle("git:skip-commit", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:skip-commit");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:skip-commit" }, () =>
+      runtime.gitSkipCommit(p),
+    );
+  });
+  ipcMain.handle("git:list-conflicts", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:list-conflicts");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:list-conflicts" }, () =>
+      runtime.gitListConflicts(p),
+    );
+  });
+  ipcMain.handle("git:conflict-detail", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:conflict-detail");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:conflict-detail" }, () =>
+      runtime.gitConflictDetail(p),
+    );
+  });
+  ipcMain.handle("git:resolve-conflict", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:resolve-conflict");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:resolve-conflict" }, () =>
+      runtime.gitResolveConflict(p),
+    );
+  });
+  ipcMain.handle("git:unresolve-conflict", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:unresolve-conflict");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:unresolve-conflict" }, () =>
+      runtime.gitUnresolveConflict(p),
+    );
+  });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ipcMain.handle("docker:action", async (_event, actionOrPayload: any, containerIdArg?: any) =>
     withOperationPromise({ opId: "docker:action" }, async () => {
