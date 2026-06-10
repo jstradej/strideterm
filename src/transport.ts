@@ -722,6 +722,11 @@ export function createRemoteTransport(): Transport {
     gitRenameBranch: (payload) => fetchJson("/api/git/rename-branch", payload),
     gitCheckoutRemoteBranch: (payload) => fetchJson("/api/git/checkout-remote-branch", payload),
     gitLogGraph: (payload) => fetchJson("/api/git/log-graph", payload),
+    gitSkipCommit: (payload) => fetchJson("/api/git/skip", payload),
+    gitListConflicts: (payload) => fetchJson("/api/git/list-conflicts", payload),
+    gitConflictDetail: (payload) => fetchJson("/api/git/conflict-detail", payload),
+    gitResolveConflict: (payload) => fetchJson("/api/git/resolve-conflict", payload),
+    gitUnresolveConflict: (payload) => fetchJson("/api/git/unresolve-conflict", payload),
     // Forward the whole payload so backendId/contextName/workspaceId reach the
     // server (the desktop preload does the same). The HTTP handler picks the
     // fields it cares about; extras like workspaceId are ignored harmlessly.
