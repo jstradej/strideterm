@@ -230,6 +230,14 @@ export class AgentTaskRunner {
   #judgeRateLimitedUntil = new Map<string, number>();
   /** Krok 9 — scheduled judge rate-limit resume timers, keyed by workspaceId. */
   #judgeRateLimitTimers = new Map<string, NodeJS.Timeout>();
+  /** Krok 9c — detection-independent backstop: timestamp of the last prompt
+   * injected into the worker session, and the count of consecutive turns that
+   * ended almost instantly after it. A run of these is the "Cogitated/Worked
+   * for 0s" signature of a rate-limited account that detection missed. */
+  #workerInjectAt = new Map<string, number>();
+  #shortWorkerTurns = new Map<string, number>();
+  static SHORT_WORKER_TURN_MS = 2000;
+  static SHORT_WORKER_TURN_THRESHOLD = 3;
 
   /**
    * Late-init with runtime dependencies (avoids circular refs).
@@ -936,6 +944,9 @@ export class AgentTaskRunner {
     // Krok 9 — clear any judge rate-limit hold/timer too.
     this.#judgeRateLimitedUntil.delete(workspaceId);
     this.#clearJudgeRateLimitTimer(workspaceId);
+    // Krok 9c — reset the short-turn heuristic for the fresh attempt.
+    this.#workerInjectAt.delete(workspaceId);
+    this.#shortWorkerTurns.delete(workspaceId);
 
     await this.#recreateWorkLock(workspace, "reset");
 
@@ -1115,6 +1126,7 @@ export class AgentTaskRunner {
         "worker-idle-detected",
         `Worker went idle via ${source} (${(elapsedMs / 1000).toFixed(1)}s since start). Starting checks…`,
       );
+      this.#trackShortWorkerTurn(workspace);
       this.#evaluateWorker(workspace).catch((err: unknown) => {
         log.error("evaluateWorker error", { workspaceId, err: (err as Error)?.message });
       });
@@ -1395,6 +1407,34 @@ export class AgentTaskRunner {
   }
 
   /**
+   * Krok 9c — detection-independent rate-limit backstop. A worker that ends its
+   * turn in under ~2s right after each re-prompt is almost certainly hitting an
+   * undetected rate limit ("Cogitated/Worked for 0s"); the loop keeps mashing
+   * re-prompts blindly (incident C, worker side). We can't safely auto-pause on
+   * a heuristic, but we surface a TASK_LOG warning after a run of short turns so
+   * the pattern is visible in the audit even when string detection misses it.
+   */
+  #trackShortWorkerTurn(workspace: TaskWorkspaceState): void {
+    const workspaceId = workspace.id;
+    const injectAt = this.#workerInjectAt.get(workspaceId);
+    if (injectAt && Date.now() - injectAt < AgentTaskRunner.SHORT_WORKER_TURN_MS) {
+      const n = (this.#shortWorkerTurns.get(workspaceId) || 0) + 1;
+      this.#shortWorkerTurns.set(workspaceId, n);
+      // ">3 re-prompts" → warn once when the streak first exceeds the threshold.
+      if (n === AgentTaskRunner.SHORT_WORKER_TURN_THRESHOLD + 1) {
+        log.warn("worker short-turn streak — possible undetected rate limit", { workspaceId, streak: n });
+        this.#logTaskEvent(
+          workspace,
+          "worker-short-turns",
+          `Worker ended ${n} consecutive turns in under ${AgentTaskRunner.SHORT_WORKER_TURN_MS}ms ("Cogitated/Worked for 0s") — possible undetected rate limit.`,
+        );
+      }
+    } else {
+      this.#shortWorkerTurns.delete(workspaceId);
+    }
+  }
+
+  /**
    * Krok 9b — handle a rate limit hit on the JUDGE session.
    *
    *  - Press Enter on the Claude "/rate-limit-options" dialog so the turn ends
@@ -1511,6 +1551,12 @@ export class AgentTaskRunner {
   static WATCH_VERDICT_GRACE_MS = 30_000;
   static WATCH_WORKLOCK_GRACE_MS = 120_000;
   static WATCH_POLL_INTERVAL_MS = 10_000;
+
+  /** Krok 1 — how long to wait for a UserPromptSubmit confirmation before
+   *  re-sending Enter, and how many times to re-send. Static so tests can
+   *  override the timeout without waiting the full 8s × 3 in real time. */
+  static SUBMIT_CONFIRM_TIMEOUT_MS = 8000;
+  static MAX_RESUBMITS = 2;
 
   async #startTaskDirWatcher(workspace: TaskWorkspaceState): Promise<void> {
     const workspaceId = workspace.id;
@@ -2798,6 +2844,12 @@ Do NOT continue working on the task — only write the handoff summary.`;
       return;
     }
 
+    // Krok 9c — stamp the worker inject time so onAgentIdle can measure how long
+    // the next worker turn lasts (the short-turn rate-limit heuristic).
+    if (workspace?.task && sessionId === `${workspace.id}:${workspace.task.workerPanelId}`) {
+      this.#workerInjectAt.set(workspace.id, Date.now());
+    }
+
     let injection = text;
 
     // File-based injection for long prompts
@@ -2852,8 +2904,8 @@ Do NOT continue working on the task — only write the handoff summary.`;
       return;
     }
 
-    const SUBMIT_CONFIRM_TIMEOUT_MS = 8000;
-    const MAX_RESUBMITS = 2;
+    const SUBMIT_CONFIRM_TIMEOUT_MS = AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS;
+    const MAX_RESUBMITS = AgentTaskRunner.MAX_RESUBMITS;
     for (let attempt = 0; attempt <= MAX_RESUBMITS; attempt++) {
       const confirmed = this.#waitForSubmitConfirmation(sessionId, SUBMIT_CONFIRM_TIMEOUT_MS);
       if (attempt === 0) {

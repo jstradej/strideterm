@@ -141,4 +141,34 @@ describe("git-ui store", () => {
       });
     });
   });
+
+  describe("Conflict Center — listConflicts contract", () => {
+    // Regression: git-manager.listConflicts returns the list under `entries`.
+    // loadConflicts previously read `result.conflicts`, which never exists, so
+    // the Conflict Center table always rendered empty. This locks the contract.
+    test("loadConflicts populates the dialog from the backend `entries` key", async () => {
+      const mockApi = {
+        gitListConflicts: vi.fn().mockResolvedValue({
+          ok: true,
+          entries: [
+            { path: "app.py", conflictType: "both-modified", stages: [1, 2, 3], binary: false },
+            { path: "logo.png", conflictType: "both-added", stages: [2, 3], binary: true },
+          ],
+        }),
+      } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+
+      store.openConflictDialog("ws1", "/repo/a");
+      await store.loadConflicts("ws1");
+
+      expect(mockApi.gitListConflicts).toHaveBeenCalledWith({ workspaceId: "ws1", rootPath: "/repo/a" });
+      const dlg = store.get("ws1").conflictDialog;
+      expect(dlg?.conflicts.map((c) => c.path)).toEqual(["app.py", "logo.png"]);
+      const png = dlg?.conflicts.find((c) => c.path === "logo.png");
+      expect(png?.binary).toBe(true);
+      expect(png?.conflictType).toBe("both-added");
+      expect(dlg?.conflicts.every((c) => c.resolved === false)).toBe(true);
+    });
+  });
 });

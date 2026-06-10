@@ -247,11 +247,23 @@ const allChangedFiles = computed(() => {
   for (const f of props.snapshot?.staged || []) push(f, "staged");
   for (const f of props.snapshot?.unstaged || []) push(f, "unstaged");
   for (const path of props.operation.conflicts || []) push({ path, code: "UU" }, "unstaged");
+  // Working-tree conflicts with no operation in progress (e.g. stash pop/apply)
+  // live only in changes.unstaged.files, not the raw unstaged array — surface
+  // them so they render and can be clicked to open the Conflict Center.
+  for (const f of props.snapshot?.changes?.unstaged?.files || []) {
+    if (f?.kind === "conflict") push(f, "unstaged");
+  }
   for (const f of props.snapshot?.untracked || []) push(f, "untracked");
   return out;
 });
 
-const conflictPaths = computed(() => new Set<string>(props.operation.conflicts || []));
+const conflictPaths = computed(() => {
+  const set = new Set<string>(props.operation.conflicts || []);
+  for (const f of props.snapshot?.changes?.unstaged?.files || []) {
+    if (f?.kind === "conflict") set.add(f.path as string);
+  }
+  return set;
+});
 
 function onFileSelect(path: string, scope: string) {
   // Conflicted files open the Conflict Center instead of the diff preview

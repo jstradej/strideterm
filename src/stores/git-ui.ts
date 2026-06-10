@@ -1249,8 +1249,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
         rootPath: dlg.rootPath,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       })) as Record<string, any>;
+      // Backend (git-manager.listConflicts) returns the list under `entries`.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pending: Record<string, any>[] = result?.conflicts || [];
+      const pending: Record<string, any>[] = result?.entries || result?.conflicts || [];
       const pendingPaths = new Set(pending.map((e) => e.path as string));
       // Merge: existing resolved files stay; pending files update/add
       const existingByPath = new Map(dlg.conflicts.map((c) => [c.path, c]));

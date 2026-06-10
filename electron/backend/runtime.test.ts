@@ -3653,6 +3653,41 @@ describe("runtime integration", () => {
     }
   });
 
+  test("Krok 6: a fresh delete on the same path cancels the armed retry (single sequence)", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bg-retry-cancel-"));
+    tempPaths.push(diskPath);
+
+    // rmPath always fails → every delete arms a retry; cancellation is what keeps
+    // exactly one sequence alive.
+    const rmPathMock = vi.fn().mockRejectedValue(Object.assign(new Error("EBUSY"), { code: "EBUSY" }));
+
+    const fixture = await createFixture({
+      execFileTextImpl: execFileTextRemoveFails(),
+      dependencies: { rmPath: rmPathMock },
+      // Two workspaces sharing the same managed worktree path.
+      initialState: { workspaces: [makeReviewWorkspace("ws-r1", diskPath), makeReviewWorkspace("ws-r2", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    vi.useFakeTimers();
+    try {
+      await fixture.runtime.deleteWorkspace("ws-r1", { deleteFromDisk: true, diskPath });
+      expect(rmPathMock).toHaveBeenCalledTimes(1); // foreground r1; retry A armed
+
+      // A fresh delete on the SAME path supersedes retry A (cancels it) and takes
+      // the synchronous path, then arms retry B.
+      await fixture.runtime.deleteWorkspace("ws-r2", { deleteFromDisk: true, diskPath });
+      expect(rmPathMock).toHaveBeenCalledTimes(2); // foreground r2
+
+      // Only ONE retry sequence is live: advancing 10s fires exactly one retry.
+      // If retry A had survived, we'd see two retries (call count 4) here.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(rmPathMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // --- Step 3: managed-path guard ---
 
   test("deleteWorkspace with deleteFromDisk on plain (unmanaged) workspace sets deleteWorkspaceError and does not call rmPath", async () => {
@@ -6186,6 +6221,33 @@ describe("task recovery: resolveTaskRecovery", () => {
     const wsAfter = fixture.runtime.getPayload().appState.workspaces.find((w: { id: string }) => w.id === "ws-done");
     expect(wsAfter?.task?.state).toBe("completed");
     expect(wsAfter?.task?.showerResumePrompt).toBe("");
+  });
+});
+
+describe("task recovery: resumeTask delegates candidates (Krok 6 / Test 10)", () => {
+  test("resumeTask on a startup recovery candidate runs the full recovery path", async () => {
+    // Incident B: a plain Dashboard/Sidebar "Continue" goes through resumeTask,
+    // which alone only flips state and can't respawn the dead PTYs. It must
+    // delegate to resolveTaskRecovery for a startup recovery candidate.
+    const ws = makeTaskWorkspace({ id: "ws-redrive", state: "running", currentRound: 2 });
+    const fixture = await createFixture({ initialState: { workspaces: [ws] } });
+    fixtures.push(fixture);
+
+    // Startup reconcile paused it and registered a recovery candidate.
+    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(1);
+
+    const result = await fixture.runtime.resumeTask("ws-redrive");
+    expect(result.ok).toBe(true);
+
+    const wsAfter = fixture.runtime.getPayload().appState.workspaces.find((w: { id: string }) => w.id === "ws-redrive");
+    // Recovery prompt staged + promptSent reset (the resolveTaskRecovery path),
+    // and BOTH PTYs respawned — proof the delegation ran, not bare resumeTask.
+    expect(wsAfter?.task?.showerResumePrompt).toBeTruthy();
+    expect(wsAfter?.task?.promptSent).toBe(false);
+    expect(fixture.sessionManager.sessions.has("ws-redrive:panel-worker")).toBe(true);
+    expect(fixture.sessionManager.sessions.has("ws-redrive:panel-judge")).toBe(true);
+    // Candidate consumed so a second Continue can't double-spawn.
+    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(0);
   });
 });
 
