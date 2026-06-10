@@ -407,6 +407,19 @@ watch(
     }
   },
 );
+
+// Live reconcile (Phase 4): if the conflict set changes underneath us — e.g. a
+// file is resolved outside the app (lazygit/CLI) while the dialog is open — the
+// existing git snapshot refresh updates operationState.conflicts. Re-load the
+// conflict list when that count changes, so the dialog reflects reality. Skipped
+// while the merge editor is showing to avoid yanking it out from under the user.
+watch(
+  () => (operationState.value?.conflicts as unknown[] | undefined)?.length ?? 0,
+  () => {
+    if (!dlg.value.open || mergeTarget.value || dlg.value.loading) return;
+    void gitUiStore.loadConflicts(props.workspaceId);
+  },
+);
 </script>
 
 <style scoped>

@@ -577,6 +577,12 @@ function onCancel() {
 }
 
 // ---- Keyboard shortcuts (Phase 4) ----
+// Scoped to focus within one of the editor panes so they never clobber
+// global app/browser shortcuts when the merge editor is not in use.
+//   F7 / Shift+F7        — next / prev conflict
+//   Alt+ArrowLeft        — apply ours (◀) to current conflict
+//   Alt+ArrowRight       — apply theirs (▶) to current conflict
+//   Alt+A                — apply all non-conflicting changes
 function onKeydown(e: KeyboardEvent) {
   if (
     !resultContainer.value?.contains(document.activeElement) &&
@@ -587,6 +593,16 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === "F7") {
     e.preventDefault();
     e.shiftKey ? prevConflict() : nextConflict();
+  } else if (e.altKey && e.key === "ArrowLeft") {
+    e.preventDefault();
+    applyOurs();
+  } else if (e.altKey && e.key === "ArrowRight") {
+    e.preventDefault();
+    applyTheirs();
+  } else if (e.altKey && (e.key === "a" || e.key === "A")) {
+    if (!hasNonConflicting.value) return;
+    e.preventDefault();
+    applyAllNonConflicting();
   }
 }
 
