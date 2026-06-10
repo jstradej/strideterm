@@ -68,6 +68,33 @@ describe("detectRateLimit", () => {
       const m = detectRateLimit("You've hit your limit · resets 12:00pm", ANCHOR_MORNING);
       expect(m!.resetAt!.getHours()).toBe(12);
     });
+
+    // Krok 9a — the regression from incident C: current Claude Code writes
+    // "session limit", which the old regex (plain "your limit") missed.
+    test("matches the exact 'session limit' screenshot string", () => {
+      const text = "You've hit your session limit · resets 6:10pm (Europe/Prague)";
+      const m = detectRateLimit(text, ANCHOR_MORNING);
+      expect(m).not.toBeNull();
+      expect(m!.providerHint).toBe("claude");
+      expect(m!.needsConfirm).toBe(true);
+      expect(m!.resetAt!.getHours()).toBe(18);
+      expect(m!.resetAt!.getMinutes()).toBe(10);
+    });
+
+    test("matches usage and weekly limit variants", () => {
+      expect(detectRateLimit("You've hit your usage limit · resets 5:50am", ANCHOR_MORNING)).not.toBeNull();
+      expect(detectRateLimit("You've hit your weekly limit · resets 5:50am", ANCHOR_MORNING)).not.toBeNull();
+    });
+
+    test("detects the /rate-limit-options dialog even without a parseable reset time", () => {
+      const text =
+        "Approaching usage limits · /upgrade to increase\n1. Stop and wait for limit to reset\n2. Request more";
+      const m = detectRateLimit(text, ANCHOR_MORNING);
+      expect(m).not.toBeNull();
+      expect(m!.providerHint).toBe("claude");
+      expect(m!.needsConfirm).toBe(true);
+      expect(m!.resetAt).toBeNull();
+    });
   });
 
   describe("Codex CLI", () => {

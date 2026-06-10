@@ -7,7 +7,7 @@ import {
   buildProgrammaticCopilotJudgeCommand,
   shouldUseProgrammaticCopilotJudge,
 } from "./agent-task-runner.js";
-import { TASK_FILE, WORK_LOCK_FILE, extractTaskDescription, taskDir } from "./agent-task-utils.js";
+import { TASK_FILE, VERDICT_FILE, WORK_LOCK_FILE, extractTaskDescription, taskDir } from "./agent-task-utils.js";
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -1367,30 +1367,257 @@ describe("resumeTask - late prompt delivery", () => {
     expect(command).toContain('--model "gpt-5.4-mini"');
   });
 
-  test("does not re-send prompt on resume if it was already sent", async () => {
+  // Krok 3 — resume = active reconciliation from disk.
+  test("resume (running, WORK_LOCK present, worker idle) injects a continuation prompt", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-resume-cont-"));
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
       state: {},
       description: "Real task",
+      cwd: tmp,
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+    await fs.writeFile(path.join(taskDir(tmp, ws.task.taskId), WORK_LOCK_FILE), "work remains");
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps); // no isSessionBusy dep → worker treated as idle
+    ws.task.state = "paused";
+    ws.task.promptSent = true;
+    ws.task.lastJudgeInstructions = "Fix the failing test.";
+    deps.written.length = 0;
+
+    runner.resumeTask(ws.id);
+
+    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await waitFor(() => deps.written.some((w: any) => w.sessionId === workerSessionId));
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  test("resume (running, WORK_LOCK present, worker busy) does NOT inject", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-resume-busy-"));
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: {},
+      description: "Real task",
+      cwd: tmp,
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+    await fs.writeFile(path.join(taskDir(tmp, ws.task.taskId), WORK_LOCK_FILE), "work remains");
+
+    const deps = createMockDeps([ws]);
+    deps.isSessionBusy = () => true; // worker provably still working
+    runner.init(deps);
+    ws.task.state = "paused";
+    ws.task.promptSent = true;
+    deps.written.length = 0;
+
+    runner.resumeTask(ws.id);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    const written = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((w: any) => w.sessionId === workerSessionId);
+    expect(written.length).toBe(0);
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  test("resume processes an unread verdict on disk regardless of pausedFromState", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-resume-verdict-"));
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: {},
+      description: "Real task",
+      cwd: tmp,
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+    // A judge wrote a "complete" verdict that was never consumed (last round
+    // has no judgeVerdict). Resuming must process it, not wait for an idle hook.
+    await fs.writeFile(
+      path.join(taskDir(tmp, ws.task.taskId), VERDICT_FILE),
+      JSON.stringify({ verdict: "complete", reason: "All requirements met." }),
+    );
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+    ws.task.state = "paused";
+    ws.task.pausedFromState = ""; // paused from running, yet verdict still handled
+    ws.task.promptSent = true;
+    ws.task.currentRound = 1;
+    ws.task.rounds = [
+      { round: 1, startedAt: "", checks: [], judgeVerdict: null, judgeReason: "", action: "judge-requested" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any;
+
+    runner.resumeTask(ws.id);
+    await waitFor(() => ws.task.state === "completed");
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+});
+
+describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit)", () => {
+  // Krok 1 — verified injection.
+  test("hook-capable inject sends one Enter and no retry when UserPromptSubmit confirms", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: {},
+      description: "",
+      cwd: "/tmp/test",
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    const deps = createMockDeps([ws]);
+    deps.isSessionHookCapable = () => true;
+    runner.init(deps);
+    ws.task.state = "paused";
+    ws.task.promptSent = false;
+    deps.written.length = 0;
+
+    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    runner.resumeTask(ws.id);
+    // First text + Enter go out, then the inject waits for confirmation.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await waitFor(() => deps.written.some((w: any) => w.sessionId === workerSessionId && w.data === "\r"));
+    // Provider confirms by firing its UserPromptSubmit hook.
+    runner.onUserPromptSubmit(workerSessionId);
+    await waitFor(() => ws.task.promptSent === true);
+
+    const enters = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((w: any) => w.sessionId === workerSessionId && w.data === "\r");
+    expect(enters.length).toBe(1); // confirmed → no re-send
+  });
+
+  // Krok 2 — idle_prompt is not a turn boundary.
+  test("judge idle_prompt with no verdict does NOT nudge or pause", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: {},
+      description: "",
       cwd: "/tmp/test",
       parentWorkspaceId: "",
       maxRounds: 3,
     });
     const deps = createMockDeps([ws]);
     runner.init(deps);
-
-    ws.task.state = "paused";
+    ws.task.state = "judge-evaluating";
+    ws.task.judgeNudged = false;
     ws.task.promptSent = true;
     deps.written.length = 0;
 
-    runner.resumeTask(ws.id);
-    // Same wait window as the positive case, so if a prompt WERE sent we'd see it.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+    runner.onAgentIdle(judgeSessionId, "hook:idle_prompt");
+    await new Promise((resolve) => setTimeout(resolve, 60));
 
-    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
-    const written = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter((w: any) => w.sessionId === workerSessionId);
-    expect(written.length).toBe(0);
+    expect(ws.task.judgeNudged).toBe(false);
+    expect(ws.task.state).toBe("judge-evaluating");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(deps.written.filter((w: any) => w.sessionId === judgeSessionId).length).toBe(0);
+  });
+
+  test("judge Stop with no verdict nudges once (real turn end)", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: {},
+      description: "",
+      cwd: "/tmp/test",
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+    ws.task.state = "judge-evaluating";
+    ws.task.judgeNudged = false;
+    ws.task.promptSent = true;
+    deps.written.length = 0;
+
+    const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+    runner.onAgentIdle(judgeSessionId, "hook:stop");
+    await waitFor(() => ws.task.judgeNudged === true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(deps.written.some((w: any) => w.sessionId === judgeSessionId)).toBe(true);
+  });
+
+  // Krok 9 — judge rate-limit handling.
+  test("judge rate-limit presses Enter on the dialog and holds verdict reading", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-judge-rl-"));
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: {},
+      description: "",
+      cwd: tmp,
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+    ws.task.state = "judge-evaluating";
+    ws.task.judgeNudged = false;
+    ws.task.promptSent = true;
+    const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+    deps.written.length = 0;
+
+    const handled = runner.onAgentRateLimited(
+      judgeSessionId,
+      { resetAt: new Date(Date.now() + 3_600_000), needsConfirm: true, providerHint: "claude" },
+      "test",
+    );
+    expect(handled).toBe(true);
+    // Enter pressed so the dialog turn ends.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(deps.written.some((w: any) => w.sessionId === judgeSessionId && w.data === "\r")).toBe(true);
+
+    // Verdict still missing + hold active → a Stop must NOT nudge.
+    deps.written.length = 0;
+    runner.onAgentIdle(judgeSessionId, "hook:stop");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(ws.task.judgeNudged).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(deps.written.filter((w: any) => w.sessionId === judgeSessionId).length).toBe(0);
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  test("judge rate-limit with a verdict already on disk processes it immediately", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-judge-rl-verdict-"));
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: {},
+      description: "",
+      cwd: tmp,
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+    await fs.writeFile(
+      path.join(taskDir(tmp, ws.task.taskId), VERDICT_FILE),
+      JSON.stringify({ verdict: "complete", reason: "Looks done." }),
+    );
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+    ws.task.state = "judge-evaluating";
+    ws.task.promptSent = true;
+    ws.task.currentRound = 1;
+    ws.task.rounds = [
+      { round: 1, startedAt: "", checks: [], judgeVerdict: null, judgeReason: "", action: "judge-requested" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any;
+    const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+
+    runner.onAgentRateLimited(
+      judgeSessionId,
+      { resetAt: new Date(Date.now() + 3_600_000), needsConfirm: true, providerHint: "claude" },
+      "test",
+    );
+    // A verdict is on disk — the next Stop processes it regardless of the hold.
+    runner.onAgentIdle(judgeSessionId, "hook:stop");
+    await waitFor(() => ws.task.state === "completed");
+    await fs.rm(tmp, { recursive: true, force: true });
   });
 });
 

@@ -457,13 +457,32 @@ async function handleTaskToggle(ws: any): Promise<void> {
       const result = (await api.pauseTask?.({ workspaceId: ws.id })) as { payload?: StatePayload } | undefined;
       if (result?.payload) store.handleBroadcastPayload(result.payload);
     } else if (taskState === "paused") {
-      const result = (await api.resumeTask?.({ workspaceId: ws.id })) as { payload?: StatePayload } | undefined;
+      const result = (await api.resumeTask?.({ workspaceId: ws.id })) as
+        | { ok?: boolean; payload?: StatePayload }
+        | undefined;
       if (result?.payload) store.handleBroadcastPayload(result.payload);
+      if (result && result.ok === false) {
+        // Krok 7 — surface the failure instead of only console.error.
+        const { useNotificationStore } = await import("../../stores/notifications.js");
+        useNotificationStore().pushEphemeralToast({
+          title: "Could not resume task",
+          body: "The task isn't in a state that can be resumed.",
+          kind: "error",
+          durationMs: 5000,
+        });
+      }
     } else {
       await store.startTaskWithHookCheck(ws.id);
     }
   } catch (err) {
     console.error("[sidebar] task toggle failed:", err);
+    const { useNotificationStore } = await import("../../stores/notifications.js");
+    useNotificationStore().pushEphemeralToast({
+      title: "Task action failed",
+      body: (err as Error)?.message || "Unknown error",
+      kind: "error",
+      durationMs: 5000,
+    });
   }
 }
 

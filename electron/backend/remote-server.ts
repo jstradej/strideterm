@@ -1056,7 +1056,7 @@ async function handleApiRequest(
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/task/resume") {
-      json(response, 200, runtime.resumeTask(body.workspaceId));
+      json(response, 200, await runtime.resumeTask(body.workspaceId));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/task/reset") {

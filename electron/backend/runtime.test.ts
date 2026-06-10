@@ -4606,9 +4606,9 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
     await setTaskStateAfterInit(fixture, "task-a", "running");
 
-    // resumeTask is synchronous (taskRunner.resumeTask is sync), so the
-    // guard throws synchronously rather than returning a rejected promise.
-    expect(() => fixture.runtime.resumeTask("task-b")).toThrow(/currently running/i);
+    // resumeTask is now async (Krok 6 delegates recovery candidates to the
+    // async resolveTaskRecovery), so the guard surfaces as a rejected promise.
+    await expect(fixture.runtime.resumeTask("task-b")).rejects.toThrow(/currently running/i);
   });
 
   test("createWorktree on multi-repo workspace requires rootPath and runs inside the selected repo", async () => {

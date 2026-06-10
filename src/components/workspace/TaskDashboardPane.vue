@@ -381,6 +381,12 @@ async function onStartNewRun(brief?: string) {
   }
 }
 
+// Krok 7 — surface failures to the user instead of swallowing them in console.
+async function taskToast(title: string, body: string, kind: "info" | "error" = "error") {
+  const { useNotificationStore } = await import("../../stores/notifications.js");
+  useNotificationStore().pushEphemeralToast({ title, body, kind, durationMs: 5000 });
+}
+
 async function onStart() {
   const id = wsId();
   if (!api || !id) return;
@@ -389,12 +395,16 @@ async function onStart() {
     if (s === "paused" || s === "completed" || s === "failed") {
       const r = await api.resumeTask({ workspaceId: id });
       if (r?.payload) store.handleBroadcastPayload(r.payload);
+      if (r && (r as { ok?: boolean }).ok === false) {
+        await taskToast("Could not resume task", "The task isn't in a state that can be resumed.");
+      }
     } else {
       await store.startTaskWithHookCheck(id);
     }
     activeTab.value = "status";
   } catch (err) {
     console.error("[task-dashboard] start/resume failed:", err);
+    await taskToast("Task action failed", (err as Error)?.message || "Unknown error");
   }
 }
 

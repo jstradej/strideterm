@@ -79,13 +79,33 @@ function parseClockTime(hh: string, mm: string, meridiem: string | undefined, no
 // The TZ suffix is intentionally ignored — Claude Code displays the user's
 // local zone, which matches the host clock.
 const claudeCodePromptDetector: RateLimitDetector = (text, now) => {
-  const m = text.match(/You['’]ve hit your limit\s*[·.]?\s*resets\s+(\d{1,2})[:.](\d{2})\s*(am|pm)?/i);
-  if (!m) return null;
-  return {
-    resetAt: parseClockTime(m[1]!, m[2]!, m[3], now),
-    needsConfirm: true,
-    providerHint: "claude",
-  };
+  // Primary: the notice line. Current Claude Code writes "You've hit your
+  // SESSION limit · resets 6:10pm (Europe/Prague)" — the older pattern lacked
+  // the "session" word and silently stopped matching (incident C). Accept the
+  // session/usage/weekly variants too.
+  const m = text.match(
+    /You['’]ve hit your (?:session |usage |weekly )?limit\s*[·.]?\s*resets\s+(\d{1,2})[:.](\d{2})\s*(am|pm)?/i,
+  );
+  if (m) {
+    return {
+      resetAt: parseClockTime(m[1]!, m[2]!, m[3], now),
+      needsConfirm: true,
+      providerHint: "claude",
+    };
+  }
+  // Secondary signal: the /rate-limit-options dialog itself ("1. Stop and wait
+  // for limit to reset"). The turn never ends while this dialog is open, so it
+  // must be detected even when the notice line scrolled off or the format
+  // changed again. Lift a reset time from a nearby "resets …" fragment if present.
+  if (/Stop and wait for (?:the )?limit to reset/i.test(text) || /\/rate-limit-options\b/i.test(text)) {
+    const resetMatch = text.match(/resets\s+(\d{1,2})[:.](\d{2})\s*(am|pm)?/i);
+    return {
+      resetAt: resetMatch ? parseClockTime(resetMatch[1]!, resetMatch[2]!, resetMatch[3], now) : null,
+      needsConfirm: true,
+      providerHint: "claude",
+    };
+  }
+  return null;
 };
 
 // Codex CLI exits with "Rate limit reached for <model> ... Limit X, Used Y,

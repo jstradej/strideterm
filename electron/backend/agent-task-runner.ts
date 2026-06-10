@@ -1,6 +1,8 @@
 /// <reference types="node" />
 import { randomUUID } from "node:crypto";
 import { access, readFile, writeFile, rm } from "node:fs/promises";
+import { watch as fsWatch } from "node:fs";
+import type { FSWatcher } from "node:fs";
 import path from "node:path";
 import { Effect } from "effect";
 import { getLogger } from "./logger.js";
@@ -33,6 +35,7 @@ import {
   buildJudgePrompt,
   buildJudgeFeedbackPrompt,
   buildUserFeedbackPrompt,
+  buildRecoveryPrompt,
 } from "./agent-task-prompts.js";
 import { execCommand } from "./agent-task-exec.js";
 import type { ExecResult } from "./agent-task-exec.js";
@@ -127,6 +130,16 @@ interface RuntimeDeps {
    * crash; without this, recovery on next startup wouldn't see the active
    * state because nothing wrote it to disk. */
   saveState?: () => void;
+  /** Whether a session is currently producing output / has a sub-agent active.
+   * Used by the judge cycle (Krok 2) to avoid giving up while the judge is
+   * provably still working. Optional — absent means "unknown", treated as not
+   * busy so behaviour matches the pre-feature runner. */
+  isSessionBusy?: (sessionId: string) => boolean;
+  /** Whether a session has proven it emits completion/UserPromptSubmit hooks.
+   * Gates the verified-injection retry loop (Krok 1): only hook-capable
+   * providers can confirm a submit, so non-hook providers keep today's
+   * fire-and-forget behaviour. Optional — absent means "not hook-capable". */
+  isSessionHookCapable?: (sessionId: string) => boolean;
 }
 
 // ------ Module-level pure helpers -------
@@ -204,18 +217,42 @@ export class AgentTaskRunner {
   #raiseAlert: RuntimeDeps["raiseAlert"] | null = null;
   #restartSession: RuntimeDeps["restartSession"] | null = null;
   #saveState: RuntimeDeps["saveState"] | null = null;
+  #isSessionBusy: RuntimeDeps["isSessionBusy"] | null = null;
+  #isSessionHookCapable: RuntimeDeps["isSessionHookCapable"] | null = null;
+
+  /** Krok 1 — sessions awaiting a UserPromptSubmit confirmation after an inject.
+   * onUserPromptSubmit resolves the waiters for the session. */
+  #submitWaiters = new Map<string, Array<() => void>>();
+  /** Krok 8 — fs.watch fallback watchers on task dirs, keyed by workspaceId. */
+  #taskDirWatchers = new Map<string, { close: () => void }>();
+  /** Krok 9 — per-role rate-limit hold expiry for the judge (worker hold is
+   * task.rateLimitedUntil). Keyed by workspaceId. */
+  #judgeRateLimitedUntil = new Map<string, number>();
+  /** Krok 9 — scheduled judge rate-limit resume timers, keyed by workspaceId. */
+  #judgeRateLimitTimers = new Map<string, NodeJS.Timeout>();
 
   /**
    * Late-init with runtime dependencies (avoids circular refs).
    * Called once from runtime.js after all closures are available.
    */
-  init({ writeToSession, getState, broadcastState, raiseAlert, restartSession, saveState }: RuntimeDeps): void {
+  init({
+    writeToSession,
+    getState,
+    broadcastState,
+    raiseAlert,
+    restartSession,
+    saveState,
+    isSessionBusy,
+    isSessionHookCapable,
+  }: RuntimeDeps): void {
     this.#writeToSession = writeToSession;
     this.#getState = getState;
     this.#broadcastState = broadcastState;
     this.#raiseAlert = raiseAlert;
     this.#restartSession = restartSession;
     this.#saveState = saveState ?? null;
+    this.#isSessionBusy = isSessionBusy ?? null;
+    this.#isSessionHookCapable = isSessionHookCapable ?? null;
 
     // Crash-recovery sweep on startup. See #reconcileOnStartup for the full
     // story; the short version is: tasks whose state on disk says they were
@@ -670,6 +707,10 @@ export class AgentTaskRunner {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
 
+    // Krok 4 — record where we paused from so Continue resumes to the right
+    // state (e.g. judge-evaluating, so the verdict gets read) rather than
+    // always falling back to "running".
+    workspace.task.pausedFromState = workspace.task.state;
     this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
     log.info("task stopped (paused)", { workspaceId });
@@ -689,6 +730,8 @@ export class AgentTaskRunner {
     )
       return false;
 
+    // Krok 4 — capture the pre-pause state for a correct Continue.
+    workspace.task.pausedFromState = workspace.task.state;
     this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
     log.info("task paused", { workspaceId });
@@ -710,6 +753,7 @@ export class AgentTaskRunner {
     // verdict can be read.  If paused from evaluating/refreshing, fall back
     // to running (the evaluation was interrupted and needs to restart from
     // the next worker idle).
+    const pausedFromState = task.pausedFromState;
     const resumeTo: TaskStateKind = task.pausedFromState === "judge-evaluating" ? "judge-evaluating" : "running";
     task.pausedFromState = "";
 
@@ -718,43 +762,140 @@ export class AgentTaskRunner {
     this.#logTaskEvent(workspace, "task-resumed", `Resumed to ${resumeTo}`);
     this.#broadcastState!();
 
-    // If the initial prompt was never delivered (startTask ran with an empty
-    // description under the old code path, or the user is resuming a state that
-    // never sent a prompt), inject it now. Without this, Resume would flip the
-    // state badge to "running" but the Worker would still sit idle waiting.
-    // Skip if showerResumePrompt is set — that means recovery set a specific
-    // prompt that the idle hook will inject on first idle, overriding initial.
-    if (!task.promptSent && resumeTo === "running" && !task.showerResumePrompt) {
-      const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
-      // task.useWorkerFile was set by startTask before this path is reachable;
-      // if it's still undefined (legacy task created before this change), the
-      // prompt builder treats undefined as falsy = legacy single-file format,
-      // which is correct for those tasks.
-      const prompt = buildInitialWorkerPrompt(task);
-      this.#injectPrompt(workerSessionId, prompt, workspace)
-        .then(() => {
-          task.promptSent = true;
-          this.#logTaskEvent(workspace, "prompt-sent", "Prompt delivered on resume");
-          this.#broadcastState!();
-        })
-        .catch((err: unknown) => {
-          log.error("late-delivery prompt injection failed", { workspaceId, err: (err as Error)?.message });
-        });
-    }
-
-    // If resumed to judge-evaluating, the judge's idle hook may have already
-    // fired and been ignored while paused.  Proactively try to read the
-    // verdict — if the file exists, handle it; otherwise wait for the next hook.
-    // Skip if showerResumePrompt is set: that means recovery will inject a prompt
-    // first, and the verdict should only be read after the judge writes it.
-    if (resumeTo === "judge-evaluating" && !task.showerResumePrompt) {
-      log.info("resumed to judge-evaluating, proactively checking verdict", { workspaceId });
-      this.#handleJudgeVerdict(workspace).catch((err: unknown) => {
-        log.error("proactive verdict check failed", { workspaceId, err: (err as Error)?.message });
-      });
-    }
+    // Krok 3 — resume actively reconciles against on-disk state instead of
+    // passively flipping the badge and waiting for an idle hook that may never
+    // arrive (incident A: "nothing happened"). All the disk reads are async, so
+    // run it fire-and-forget; resumeTask stays synchronous for its callers.
+    this.#reconcileAfterResume(workspace, { previousState, pausedFromState, resumeTo }).catch((err: unknown) => {
+      log.error("reconcileAfterResume failed", { workspaceId, err: (err as Error)?.message });
+    });
 
     return true;
+  }
+
+  /**
+   * Krok 3 — drive the loop forward on resume based on what's actually on disk,
+   * rather than waiting for an idle hook. Branches (first match wins):
+   *
+   *   0. showerResumePrompt set → recovery owns injection (deferred idle). Skip.
+   *   1. verdict.json present AND the last round has no judgeVerdict → an unread
+   *      verdict (possibly written during the pause) → process it, regardless of
+   *      where we paused from. (Incident A step 4→6.)
+   *   2. resumed to judge-evaluating, no verdict → re-run the full evaluation so
+   *      the "all passed" branch rebuilds and injects a self-contained judge
+   *      prompt — far better than a context-less nudge to a fresh judge.
+   *   3. resumed to running, promptSent:
+   *        - WORK_LOCK absent → worker signalled done → evaluate.
+   *        - WORK_LOCK present, worker idle → inject a continuation prompt.
+   *        - WORK_LOCK present, worker busy → let it run (its hook drives the loop).
+   *   4. promptSent === false → late-deliver the initial prompt (old behaviour).
+   *
+   * Resuming a terminal task (completed/failed) only reconciles an unread
+   * verdict; otherwise it leaves the task running for the user (Send Back / Reset
+   * are the explicit terminal-task flows).
+   */
+  async #reconcileAfterResume(
+    workspace: TaskWorkspaceState,
+    { previousState, pausedFromState, resumeTo }: { previousState: string; pausedFromState: string; resumeTo: string },
+  ): Promise<void> {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+    const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+
+    // 0. Recovery (resolveTaskRecovery) injects via the deferred-idle path — do
+    // not double-drive it.
+    if (task.showerResumePrompt) {
+      this.#logTaskEvent(
+        workspace,
+        "task-resumed-reconcile",
+        "Recovery prompt pending — deferring to recovery idle path",
+      );
+      return;
+    }
+
+    // 1. Unread verdict on disk — highest priority, independent of pausedFromState.
+    const verdict = await readVerdict(workspace.cwd, task.taskId, log);
+    const verdictPresent = verdict.reason !== "Judge did not produce a verdict file.";
+    const rounds = task.rounds as unknown as TaskRound[];
+    const lastRound = rounds?.[rounds.length - 1];
+    const lastRoundUnjudged = !lastRound || !lastRound.judgeVerdict;
+    if (verdictPresent && lastRoundUnjudged) {
+      log.info("reconcileAfterResume: unread verdict on disk — processing", { workspaceId, verdict: verdict.verdict });
+      if (task.state !== "judge-evaluating") this.#setTaskState(task, "judge-evaluating");
+      this.#logTaskEvent(
+        workspace,
+        "task-resumed-reconcile",
+        `Unread verdict on disk (${verdict.verdict}) — processing it.`,
+      );
+      this.#broadcastState!();
+      await this.#handleJudgeVerdict(workspace, "resume-reconcile");
+      return;
+    }
+
+    // 2. Was judge-evaluating, no verdict → re-run evaluation to rebuild a
+    // self-contained judge prompt (checks pass: WORK_LOCK is gone).
+    if (resumeTo === "judge-evaluating" || pausedFromState === "judge-evaluating") {
+      log.info("reconcileAfterResume: judge-evaluating with no verdict — re-running evaluation", { workspaceId });
+      task.judgeNudged = false;
+      if (task.state !== "running") this.#setTaskState(task, "running");
+      this.#logTaskEvent(
+        workspace,
+        "task-resumed-reconcile",
+        "No verdict — re-running evaluation to rebuild judge prompt.",
+      );
+      this.#broadcastState!();
+      await this.#evaluateWorker(workspace);
+      return;
+    }
+
+    // 4. Initial prompt never delivered → send it now (old late-delivery path).
+    if (!task.promptSent) {
+      log.info("reconcileAfterResume: initial prompt never delivered — injecting", { workspaceId });
+      this.#logTaskEvent(workspace, "task-resumed-reconcile", "Initial prompt was never delivered — injecting now.");
+      const prompt = buildInitialWorkerPrompt(task);
+      await this.#injectPrompt(workerSessionId, prompt, workspace);
+      task.promptSent = true;
+      this.#broadcastState!();
+      return;
+    }
+
+    // Terminal tasks (completed/failed) with a judged last round: leave running
+    // for the user — don't silently re-evaluate. Send Back / Reset are explicit.
+    if (previousState === "completed" || previousState === "failed") {
+      this.#logTaskEvent(
+        workspace,
+        "task-resumed-reconcile",
+        `Resumed terminal task (${previousState}); awaiting user.`,
+      );
+      return;
+    }
+
+    // 3. Resumed to running with a prompt already sent — decide by WORK_LOCK.
+    const workerDone = await this.isWorkerCompleted(workspaceId);
+    if (workerDone) {
+      log.info("reconcileAfterResume: WORK_LOCK absent — running evaluation", { workspaceId });
+      this.#logTaskEvent(workspace, "task-resumed-reconcile", "WORK_LOCK absent — worker signalled done; evaluating.");
+      await this.#evaluateWorker(workspace);
+      return;
+    }
+
+    // Work remains. If the worker is provably busy, let its own hook drive the
+    // loop; otherwise it's idle and stuck — inject a continuation prompt.
+    if (this.#isSessionBusy?.(workerSessionId)) {
+      log.info("reconcileAfterResume: worker busy — letting it run", { workspaceId });
+      this.#logTaskEvent(workspace, "task-resumed-reconcile", "Worker busy — letting it continue.");
+      return;
+    }
+    const continuation = task.lastJudgeInstructions
+      ? `Continue the task. Outstanding judge feedback to address:\n\n${task.lastJudgeInstructions}`
+      : buildRecoveryPrompt({ role: "worker", round: task.currentRound, taskId: task.taskId });
+    log.info("reconcileAfterResume: worker idle with work remaining — injecting continuation", { workspaceId });
+    this.#logTaskEvent(
+      workspace,
+      "task-resumed-reconcile",
+      "Worker idle with work remaining — injecting continuation prompt.",
+    );
+    await this.#injectPrompt(workerSessionId, continuation, workspace);
   }
 
   /**
@@ -792,6 +933,9 @@ export class AgentTaskRunner {
       this.#rateLimitTimers.delete(workspaceId);
     }
     this.#rateLimitCtx.delete(workspaceId);
+    // Krok 9 — clear any judge rate-limit hold/timer too.
+    this.#judgeRateLimitedUntil.delete(workspaceId);
+    this.#clearJudgeRateLimitTimer(workspaceId);
 
     await this.#recreateWorkLock(workspace, "reset");
 
@@ -996,7 +1140,7 @@ export class AgentTaskRunner {
       }
       log.info("judge idle detected, reading verdict", { workspaceId, sessionId, source });
       this.#logTaskEvent(workspace, "judge-idle-detected", `Judge went idle via ${source}. Reading verdict…`);
-      this.#handleJudgeVerdict(workspace).catch((err: unknown) => {
+      this.#handleJudgeVerdict(workspace, source).catch((err: unknown) => {
         log.error("handleJudgeVerdict error", { workspaceId, err: (err as Error)?.message });
       });
       return true;
@@ -1040,6 +1184,24 @@ export class AgentTaskRunner {
    *
    * Same-window dedup: redrawn dialogs (UI repaints) won't restack timers.
    */
+  /**
+   * Krok 9 — role-aware rate-limit entry point. Routes to the worker path or
+   * the judge path by panel id. The judge path was previously dropped entirely
+   * (incident C: judge stuck at the dialog, verdict never read for 2h+).
+   */
+  onAgentRateLimited(sessionId: string, match: RateLimitMatch, source = "unknown"): boolean {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return false;
+    const workspaceId = parts.slice(0, -1).join(":");
+    const panelId = parts[parts.length - 1];
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+    if (panelId === workspace.task.judgePanelId) {
+      return this.#handleJudgeRateLimited(workspace, sessionId, match, source);
+    }
+    return this.onWorkerRateLimited(sessionId, match, source);
+  }
+
   onWorkerRateLimited(sessionId: string, match: RateLimitMatch, source = "unknown"): boolean {
     const parts = sessionId.split(":");
     if (parts.length < 2) return false;
@@ -1233,6 +1395,253 @@ export class AgentTaskRunner {
   }
 
   /**
+   * Krok 9b — handle a rate limit hit on the JUDGE session.
+   *
+   *  - Press Enter on the Claude "/rate-limit-options" dialog so the turn ends
+   *    instead of hanging forever (observed 2h+).
+   *  - If a verdict is already on disk, the limit is irrelevant — process it
+   *    immediately (exactly incident C: verdict written, then limit hit).
+   *  - Otherwise set a judge-specific hold (kept separate from the worker hold)
+   *    and schedule a resume; reading the verdict stays blocked only while the
+   *    verdict is MISSING (see #handleJudgeVerdict).
+   */
+  #handleJudgeRateLimited(
+    workspace: TaskWorkspaceState,
+    sessionId: string,
+    match: RateLimitMatch,
+    source: string,
+  ): boolean {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+
+    // Always dismiss the dialog so the turn doesn't hang.
+    if (match.needsConfirm && this.#writeToSession) {
+      this.#writeToSession(sessionId, "\r");
+    }
+
+    const resetAt = match.resetAt ?? this.#fallbackRateLimitReset(0);
+    const waitMs = resetAt.getTime() - Date.now();
+    if (waitMs > AgentTaskRunner.RATE_LIMIT_HARD_STOP_MS) {
+      log.error("judge rate-limit reset > hard stop, pausing task", { workspaceId, waitMs });
+      task.pausedFromState = "judge-evaluating";
+      this.#setTaskState(task, "paused");
+      this.#logTaskEvent(
+        workspace,
+        "judge-rate-limit-failed",
+        `Judge rate-limit reset is ${(waitMs / 3_600_000).toFixed(1)}h away (over 12h limit). Pausing.`,
+      );
+      this.#broadcastState!();
+      return true;
+    }
+
+    this.#judgeRateLimitedUntil.set(workspaceId, resetAt.getTime());
+    log.warn("judge rate-limited, scheduling resume", {
+      workspaceId,
+      source,
+      providerHint: match.providerHint,
+      resetAt: resetAt.toISOString(),
+    });
+    this.#logTaskEvent(
+      workspace,
+      "judge-rate-limited",
+      `Judge hit its rate limit (${match.providerHint}). Resuming after ${resetAt.toLocaleTimeString()}.`,
+    );
+    this.#broadcastState!();
+    this.#scheduleJudgeRateLimitResume(workspaceId, resetAt);
+    return true;
+  }
+
+  #scheduleJudgeRateLimitResume(workspaceId: string, resetAt: Date): void {
+    const prev = this.#judgeRateLimitTimers.get(workspaceId);
+    if (prev) clearTimeout(prev);
+    const margin = AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS;
+    const waitMs = Math.max(margin, resetAt.getTime() - Date.now() + margin);
+    const timer = setTimeout(() => {
+      this.#judgeRateLimitTimers.delete(workspaceId);
+      this.#resumeJudgeFromRateLimit(workspaceId).catch((err: unknown) => {
+        log.error("judge rate-limit resume failed", { workspaceId, err: (err as Error)?.message });
+      });
+    }, waitMs);
+    if (typeof timer.unref === "function") timer.unref();
+    this.#judgeRateLimitTimers.set(workspaceId, timer);
+  }
+
+  /** Krok 9b/9c — judge hold expired: process a verdict if present, else nudge
+   * the judge to continue its evaluation and write the verdict. */
+  async #resumeJudgeFromRateLimit(workspaceId: string): Promise<void> {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return;
+    const task = workspace.task;
+    this.#judgeRateLimitedUntil.delete(workspaceId);
+    this.#logTaskEvent(workspace, "judge-rate-limit-resumed", "Judge rate-limit window expired.");
+    this.#broadcastState!();
+    if (task.state !== "judge-evaluating") return;
+
+    const verdict = await readVerdict(workspace.cwd, task.taskId, log);
+    if (verdict.reason !== "Judge did not produce a verdict file.") {
+      // Verdict already on disk — process it regardless of the (now-expired) hold.
+      await this.#handleJudgeVerdict(workspace, "judge-rate-limit-resume");
+      return;
+    }
+    const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
+    const prompt = `Continue your evaluation — the previous attempt was rate-limited. When you reach a decision, write your verdict JSON to ${taskDirRel(
+      task.taskId,
+    )}/${VERDICT_FILE}.`;
+    await this.#injectPrompt(judgeSessionId, prompt, workspace);
+  }
+
+  #clearJudgeRateLimitTimer(workspaceId: string): void {
+    const t = this.#judgeRateLimitTimers.get(workspaceId);
+    if (!t) return;
+    clearTimeout(t);
+    this.#judgeRateLimitTimers.delete(workspaceId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Krok 8 — fs.watch backstop (NOT a replacement for hooks)
+  // ---------------------------------------------------------------------------
+  // Hooks stay the primary signal. This watcher only covers the case where a
+  // hook never arrives (incident C: judge stuck → no Stop) or arrives in the
+  // wrong state. It watches the FLAT taskDir non-recursively (recursive fs.watch
+  // isn't supported on Linux), debounces the unreliable/duplicated events, and
+  // ALWAYS re-verifies real disk state before acting. On a path where events
+  // aren't delivered (network shares, \\wsl$), fs.watch errors out and we fall
+  // back to a slow poll. Everything is unref()'d so it can't hold the process.
+
+  static WATCH_VERDICT_GRACE_MS = 30_000;
+  static WATCH_WORKLOCK_GRACE_MS = 120_000;
+  static WATCH_POLL_INTERVAL_MS = 10_000;
+
+  async #startTaskDirWatcher(workspace: TaskWorkspaceState): Promise<void> {
+    const workspaceId = workspace.id;
+    if (this.#taskDirWatchers.has(workspaceId)) return; // already watching
+    const dir = taskDir(workspace.cwd, workspace.task.taskId);
+    try {
+      await access(dir);
+    } catch {
+      return; // task dir not initialized — hooks + resume reconcile cover it
+    }
+
+    let debounceTimer: NodeJS.Timeout | null = null;
+    let graceTimer: NodeJS.Timeout | null = null;
+    let watcher: FSWatcher | null = null;
+    let pollTimer: NodeJS.Timeout | null = null;
+    let closed = false;
+
+    const armGrace = (delayMs: number, fire: () => Promise<void>) => {
+      if (graceTimer) return; // one grace window at a time
+      graceTimer = setTimeout(() => {
+        graceTimer = null;
+        void fire().catch((err: unknown) =>
+          log.debug("watcher grace fire failed", { workspaceId, err: (err as Error)?.message }),
+        );
+      }, delayMs);
+      if (typeof graceTimer.unref === "function") graceTimer.unref();
+    };
+
+    const onChange = () => {
+      if (closed) return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        void this.#reconcileFromWatcher(workspaceId, armGrace);
+      }, 500);
+      if (typeof debounceTimer.unref === "function") debounceTimer.unref();
+    };
+
+    try {
+      watcher = fsWatch(dir, { recursive: false }, () => onChange());
+      if (typeof watcher.unref === "function") watcher.unref();
+      watcher.on("error", (err: unknown) => {
+        log.debug("task dir watcher error — falling back to poll", { workspaceId, err: (err as Error)?.message });
+        try {
+          watcher?.close();
+        } catch {
+          /* ignore */
+        }
+        watcher = null;
+        if (!closed && !pollTimer) {
+          pollTimer = setInterval(onChange, AgentTaskRunner.WATCH_POLL_INTERVAL_MS);
+          if (typeof pollTimer.unref === "function") pollTimer.unref();
+        }
+      });
+    } catch (err: unknown) {
+      log.debug("fs.watch unavailable — polling task dir", { workspaceId, err: (err as Error)?.message });
+      pollTimer = setInterval(onChange, AgentTaskRunner.WATCH_POLL_INTERVAL_MS);
+      if (typeof pollTimer.unref === "function") pollTimer.unref();
+    }
+
+    this.#taskDirWatchers.set(workspaceId, {
+      close: () => {
+        if (closed) return;
+        closed = true;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        if (graceTimer) clearTimeout(graceTimer);
+        if (pollTimer) clearInterval(pollTimer);
+        try {
+          watcher?.close();
+        } catch {
+          /* ignore */
+        }
+      },
+    });
+  }
+
+  #stopTaskDirWatcher(workspaceId: string): void {
+    const entry = this.#taskDirWatchers.get(workspaceId);
+    if (!entry) return;
+    entry.close();
+    this.#taskDirWatchers.delete(workspaceId);
+  }
+
+  /**
+   * Krok 8 — a watcher event fired. Re-verify disk and, if a hook-driven handler
+   * should have run but didn't, arm a grace timer that fires the handler only if
+   * the situation still holds after the grace (a hook may handle it first).
+   */
+  async #reconcileFromWatcher(
+    workspaceId: string,
+    armGrace: (delayMs: number, fire: () => Promise<void>) => void,
+  ): Promise<void> {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return;
+    const task = workspace.task;
+
+    if (task.state === "judge-evaluating") {
+      const verdict = await readVerdict(workspace.cwd, task.taskId, log);
+      if (verdict.reason === "Judge did not produce a verdict file.") return;
+      const rounds = task.rounds as unknown as TaskRound[];
+      const lastRound = rounds?.[rounds.length - 1];
+      if (lastRound && lastRound.judgeVerdict) return; // already processed
+      armGrace(AgentTaskRunner.WATCH_VERDICT_GRACE_MS, async () => {
+        const ws = this.#findTaskWorkspace(workspaceId);
+        if (!ws || ws.task.state !== "judge-evaluating") return;
+        const r = ws.task.rounds as unknown as TaskRound[];
+        const lr = r?.[r.length - 1];
+        if (lr && lr.judgeVerdict) return; // a hook handled it during the grace
+        const v = await readVerdict(ws.cwd, ws.task.taskId, log);
+        if (v.reason === "Judge did not produce a verdict file.") return;
+        log.warn("watcher backstop: verdict on disk but no judge hook — handling", { workspaceId });
+        this.#logTaskEvent(ws, "watcher-verdict", "Verdict detected by watcher (no idle hook) — handling it.");
+        await this.#handleJudgeVerdict(ws, "watcher");
+      });
+      return;
+    }
+
+    if (task.state === "running" && task.promptSent) {
+      if (!(await this.isWorkerCompleted(workspaceId))) return;
+      armGrace(AgentTaskRunner.WATCH_WORKLOCK_GRACE_MS, async () => {
+        const ws = this.#findTaskWorkspace(workspaceId);
+        if (!ws || ws.task.state !== "running") return;
+        if (this.#evaluating.has(workspaceId)) return; // a hook started eval already
+        if (!(await this.isWorkerCompleted(workspaceId))) return; // lock came back
+        log.warn("watcher backstop: WORK_LOCK absent but no worker hook — evaluating", { workspaceId });
+        this.#logTaskEvent(ws, "watcher-worklock", "WORK_LOCK absent (watcher, no idle hook) — evaluating.");
+        await this.#evaluateWorker(ws);
+      });
+    }
+  }
+
+  /**
    * Whether the worker has signaled completion. WORK_LOCK is the single
    * authoritative bit: the worker is instructed to delete it ONLY when the
    * task is genuinely done. Used by the runtime confirmation timer to skip
@@ -1422,6 +1831,8 @@ export class AgentTaskRunner {
 
     const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
     if (panelId === workspace.task.workerPanelId && ACTIVE.has(workspace.task.state)) {
+      // Worker crash → resume to running (re-inject). Krok 3's resume reconcile
+      // still processes any verdict left on disk regardless of this value.
       workspace.task.pausedFromState = "";
       this.#setTaskState(workspace.task, "paused");
       this.#evaluating.delete(workspaceId);
@@ -1495,6 +1906,9 @@ export class AgentTaskRunner {
     if (!workspace) return false;
 
     log.trace("onUserPromptSubmit: user sent prompt in task workspace", { sessionId });
+    // Krok 1 — this hook also fires for prompts WE inject, so it doubles as the
+    // submit-confirmation signal: release any waiter parked by #injectPrompt.
+    this.#resolveSubmitWaiters(sessionId);
     // If task is paused and user is taking over, leave it paused — don't
     // resume automatically.  The user can click Continue when ready.
     this.#logTaskEvent(workspace, "user-prompt-submit", "User submitted a prompt");
@@ -1588,11 +2002,29 @@ export class AgentTaskRunner {
 
     task.state = newState;
 
+    // Krok 8 — keep the fs.watch backstop armed only while the task is active.
+    const wsId = this.#workspaceIdForTask(task);
+    if (wsId) {
+      if (ACTIVE.has(newState)) {
+        const ws = this.#findTaskWorkspace(wsId);
+        if (ws) void this.#startTaskDirWatcher(ws);
+      } else {
+        this.#stopTaskDirWatcher(wsId);
+      }
+    }
+
     // Persist immediately on lifecycle transitions so a hard kill (Force-quit,
     // power loss) doesn't leave the on-disk state stale. Without this, the
     // crash-recovery sweep on next startup wouldn't see the task as ACTIVE
     // because the in-memory "running" flag never reached disk.
     this.#saveState?.();
+  }
+
+  /** Resolve the workspaceId owning a given task object (reference equality). */
+  #workspaceIdForTask(task: RuntimeTaskState): string | null {
+    const state = this.#getState?.();
+    const ws = state?.workspaces.find((w) => isTaskWorkspace(w) && w.task === task);
+    return ws?.id ?? null;
   }
 
   /**
@@ -1607,8 +2039,18 @@ export class AgentTaskRunner {
     const rounds = task.rounds as unknown as TaskRound[];
     const last = rounds?.[rounds.length - 1];
     if (last && last.action === "running") return last;
+    const targetRound = task.currentRound || 1;
+    // Krok 12 — after a judge-requested → pause → resume sequence the runner
+    // can re-enter this for the SAME round number; pushing a fresh chip then
+    // renders as a duplicate (ROUNDS "1 1"). Reactivate the existing chip
+    // instead. currentRound is always incremented BEFORE ensureRunningRound on
+    // a genuine new round, so a real round advance still pushes a new chip.
+    if (last && last.round === targetRound) {
+      last.action = "running";
+      return last;
+    }
     const round: TaskRound = {
-      round: task.currentRound || 1,
+      round: targetRound,
       startedAt: new Date().toISOString(),
       checks: [],
       judgeVerdict: null,
@@ -1736,8 +2178,11 @@ export class AgentTaskRunner {
       ),
     ).catch((err: unknown) => {
       log.error("evaluateWorker failed", { workspaceId, err: (err as Error)?.message });
-      task.pausedFromState = "";
+      // Krok 4 — capture the state we fell from (evaluating/judge-evaluating) so
+      // a later Continue resumes to the right place.
+      task.pausedFromState = task.state;
       this.#setTaskState(task, "paused");
+      this.#logTaskEvent(workspace, "evaluation-error", `Evaluation failed: ${(err as Error)?.message || "unknown"}`);
       this.#broadcastState!();
     });
   }
@@ -1859,6 +2304,23 @@ export class AgentTaskRunner {
 
       const judgeSetupStart = Date.now();
 
+      // Krok 5 — don't clear blindly. A verdict file still on disk here was
+      // never consumed (a judge wrote it but it wasn't read — e.g. during a
+      // pause). Krok 3's resume reconcile handles the common case proactively;
+      // as a backstop, log the discarded verdict's reason so an hour of judge
+      // work doesn't vanish silently (incident A step 6).
+      const staleVerdict = await readVerdict(workspace.cwd, task.taskId, log);
+      if (staleVerdict.reason !== "Judge did not produce a verdict file.") {
+        log.warn("evaluateWorkerBody: discarding unconsumed verdict before fresh judge run", {
+          workspaceId,
+          verdict: staleVerdict.verdict,
+        });
+        this.#logTaskEvent(
+          workspace,
+          "verdict-discarded",
+          `Discarded an unconsumed judge verdict (${staleVerdict.verdict}): ${staleVerdict.reason || ""}`,
+        );
+      }
       // Clear old verdict and nudge flag for fresh judge evaluation
       await clearVerdict(workspace.cwd, task.taskId);
       task.judgeNudged = false;
@@ -1903,7 +2365,7 @@ export class AgentTaskRunner {
           return;
         }
         task.judgeNudged = true;
-        await this.#handleJudgeVerdict(workspace);
+        await this.#handleJudgeVerdict(workspace, "programmatic");
         this.#programmaticJudges.delete(workspaceId);
         return;
       }
@@ -1928,34 +2390,77 @@ export class AgentTaskRunner {
   // Judge verdict handling
   // ---------------------------------------------------------------------------
 
-  async #handleJudgeVerdict(workspace: TaskWorkspaceState): Promise<void> {
+  async #handleJudgeVerdict(workspace: TaskWorkspaceState, source = "manual"): Promise<void> {
     const task = workspace.task;
     const workspaceId = workspace.id;
+    const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
+    // Krok 2 — an idle_prompt Notification (Claude's 60s "waiting for input")
+    // is NOT proof the turn ended: our prompt may just be sitting unsubmitted in
+    // the composer. Treat it as "keep waiting", never as a turn boundary.
+    const isIdlePromptOnly = source.includes("idle_prompt") || source.includes("notification");
 
     try {
       const verdict = await readVerdict(workspace.cwd, task.taskId, log);
+      const verdictMissing = verdict.reason === "Judge did not produce a verdict file.";
 
-      // If verdict file is missing, nudge the judge once before giving up.
-      // LLMs sometimes output the verdict as text instead of writing the file.
-      if (verdict.reason === "Judge did not produce a verdict file." && !task.judgeNudged) {
-        task.judgeNudged = true;
-        const dir = taskDirRel(task.taskId);
-        const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} as a JSON file now. Use the Write tool or cat/heredoc. Example:\n\n{"verdict": "complete", "reason": "All requirements met."}\n\nWrite the file now.`;
-        const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
-        log.info("judge verdict file missing, sending nudge", { workspaceId });
-        this.#logTaskEvent(workspace, "judge-nudged", "Verdict file missing — reminded Judge to write it");
-        await this.#injectPrompt(judgeSessionId, nudge, workspace);
-        this.#broadcastState!();
-        return; // Wait for next judge idle — will re-enter #handleJudgeVerdict
-      }
+      if (verdictMissing) {
+        // Krok 9c — under a judge rate-limit hold, the judge can't act until the
+        // window resets; wait for the scheduled resume rather than nudging or
+        // giving up. (An existing verdict is handled below, regardless of hold.)
+        const judgeHold = this.#judgeRateLimitedUntil.get(workspaceId);
+        if (judgeHold && judgeHold > Date.now()) {
+          log.info("judge verdict missing under rate-limit hold — waiting for resume", { workspaceId });
+          return;
+        }
+        // Don't escalate on a mere idle_prompt — wait for a real Stop. Krok 1's
+        // verified submit usually fixes the lost-Enter case the nudge targeted.
+        if (isIdlePromptOnly) {
+          log.info("judge verdict missing on idle_prompt — waiting for a real Stop", { workspaceId, source });
+          return;
+        }
 
-      if (verdict.reason === "Judge did not produce a verdict file.") {
+        // First real idle without a verdict: nudge once. LLMs sometimes print
+        // the verdict as text instead of writing the file.
+        if (!task.judgeNudged) {
+          task.judgeNudged = true;
+          const dir = taskDirRel(task.taskId);
+          // Krok 10 — the example shows "continue", not "complete": a fresh judge
+          // with no context tends to copy the example verbatim, and "bias toward
+          // continue" (JUDGE_PROMPT.md) means an unsure judge must NOT
+          // rubber-stamp unevaluated work as complete.
+          const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} as a JSON file now. Use the Write tool or cat/heredoc. Example:\n\n{"verdict": "continue", "reason": "Describe what still needs work."}\n\nWrite the file now.`;
+          log.info("judge verdict file missing, sending nudge", { workspaceId });
+          this.#logTaskEvent(workspace, "judge-nudged", "Verdict file missing — reminded Judge to write it");
+          await this.#injectPrompt(judgeSessionId, nudge, workspace);
+          this.#broadcastState!();
+          return; // Wait for next judge idle — will re-enter #handleJudgeVerdict
+        }
+
+        // Already nudged. Before giving up, check the judge isn't provably still
+        // working (subagents running, output in the last 30s). "Judge idle" ≠
+        // "judge done" — a premature pause here is incident A.
+        if (this.#isSessionBusy?.(judgeSessionId)) {
+          log.info("judge verdict still missing but judge is busy — waiting", { workspaceId, source });
+          return;
+        }
+
+        // Nudged + a real Stop + not busy + still no verdict → give up.
         log.warn("judge verdict file missing after nudge", { workspaceId, round: task.currentRound });
+        task.pausedFromState = "judge-evaluating"; // Krok 4 — resume reads the verdict
         this.#setTaskState(task, "paused");
+        this.#logTaskEvent(
+          workspace,
+          "judge-give-up",
+          "Judge produced no verdict after nudge + Stop (not busy) — pausing.",
+        ); // Krok 2/7
         this.#broadcastState!();
         this.#raiseTaskAlert(workspace, "failed", "Judge did not produce a verdict file");
         return;
       }
+
+      // A real verdict supersedes any judge rate-limit hold (incident C).
+      this.#judgeRateLimitedUntil.delete(workspaceId);
+      this.#clearJudgeRateLimitTimer(workspaceId);
 
       log.info("judge verdict", { workspaceId, verdict: verdict.verdict, reason: verdict.reason });
       this.#logTaskEvent(workspace, "judge-verdict", `Verdict: ${verdict.verdict}. ${verdict.reason || ""}`);
@@ -2036,7 +2541,10 @@ export class AgentTaskRunner {
       this.#broadcastState!();
     } catch (err: unknown) {
       log.error("handleJudgeVerdict failed", { workspaceId, err: (err as Error)?.message });
+      // Krok 4 — resume should re-read the verdict, so record judge-evaluating.
+      task.pausedFromState = "judge-evaluating";
       this.#setTaskState(task, "paused");
+      this.#logTaskEvent(workspace, "judge-error", `Verdict handling failed: ${(err as Error)?.message || "unknown"}`);
       this.#broadcastState!();
     }
   }
@@ -2133,12 +2641,12 @@ Do NOT continue working on the task — only write the handoff summary.`;
       return false;
     }
 
-    // Step 2: Inject short directive to worker
+    // Step 2: Inject short directive to worker.
+    // Krok 11 — route through #injectPrompt so the directive uses the
+    // per-provider injection strategy and the verified submit + retry (Krok 1),
+    // instead of a raw write + fixed 200ms Enter that can drop the Enter.
     const directive = `Read ${relDir}/SHOWER_REQUEST.md and follow it now. Write the handoff summary to ${relDir}/${HANDOFF_FILE}. After the file is written, stop and wait.`;
-    this.#writeToSession!(workerSessionId, directive);
-    setTimeout(() => {
-      this.#writeToSession!(workerSessionId, "\r");
-    }, 200);
+    await this.#injectPrompt(workerSessionId, directive, workspace);
 
     log.debug("shower mode: handoff directive sent, waiting for handoff file", { workspaceId });
 
@@ -2327,13 +2835,87 @@ Do NOT continue working on the task — only write the handoff summary.`;
       typingGapMs: strategy.typingGapMs,
     });
 
-    await this.#writeAndSubmit(sessionId, injection, strategy);
-    log.debug("prompt injected", {
-      sessionId,
-      length: injection.length,
-      originalLength: text.length,
-      style: strategy.style,
+    // Krok 1 — verified injection. Hook-capable providers (Claude Code) confirm
+    // a submitted prompt by firing UserPromptSubmit; we wait for it and re-send
+    // Enter if it doesn't arrive (the "Enter sat in the composer unsubmitted"
+    // failure from incident A). Providers without hooks keep today's
+    // fire-and-forget behaviour (no wait, no retry).
+    const hookCapable = this.#isSessionHookCapable?.(sessionId) ?? false;
+    if (!hookCapable) {
+      await this.#writeAndSubmit(sessionId, injection, strategy);
+      log.debug("prompt injected (unverified — no hooks)", {
+        sessionId,
+        length: injection.length,
+        originalLength: text.length,
+        style: strategy.style,
+      });
+      return;
+    }
+
+    const SUBMIT_CONFIRM_TIMEOUT_MS = 8000;
+    const MAX_RESUBMITS = 2;
+    for (let attempt = 0; attempt <= MAX_RESUBMITS; attempt++) {
+      const confirmed = this.#waitForSubmitConfirmation(sessionId, SUBMIT_CONFIRM_TIMEOUT_MS);
+      if (attempt === 0) {
+        await this.#writeAndSubmit(sessionId, injection, strategy);
+      } else {
+        // Text is already in the composer — just re-send Enter.
+        log.warn("injectPrompt: submit not confirmed, re-sending Enter", { sessionId, attempt });
+        this.#writeToSession!(sessionId, "\r");
+      }
+      if (await confirmed) {
+        log.debug("prompt injected (submit confirmed)", {
+          sessionId,
+          attempt,
+          length: injection.length,
+          style: strategy.style,
+        });
+        return;
+      }
+    }
+    log.warn("injectPrompt: submit unconfirmed after retries", { sessionId });
+    if (workspace) {
+      void this.#logTaskEvent(
+        workspace,
+        "prompt-submit-unconfirmed",
+        `Provider did not confirm prompt submission for ${sessionId.split(":").pop()} after ${MAX_RESUBMITS} re-sends.`,
+      );
+    }
+  }
+
+  /**
+   * Krok 1 — register a one-shot waiter that resolves when the session's next
+   * UserPromptSubmit hook arrives (via onUserPromptSubmit), or false on timeout.
+   */
+  #waitForSubmitConfirmation(sessionId: string, timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (confirmed: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const list = this.#submitWaiters.get(sessionId);
+        if (list) {
+          const idx = list.indexOf(waiter);
+          if (idx >= 0) list.splice(idx, 1);
+          if (!list.length) this.#submitWaiters.delete(sessionId);
+        }
+        resolve(confirmed);
+      };
+      const waiter = () => finish(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      const list = this.#submitWaiters.get(sessionId) ?? [];
+      list.push(waiter);
+      this.#submitWaiters.set(sessionId, list);
     });
+  }
+
+  /** Krok 1 — resolve all submit waiters for a session (called on UserPromptSubmit). */
+  #resolveSubmitWaiters(sessionId: string): void {
+    const list = this.#submitWaiters.get(sessionId);
+    if (!list?.length) return;
+    this.#submitWaiters.delete(sessionId);
+    for (const waiter of list) waiter();
   }
 
   /**

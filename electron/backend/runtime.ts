@@ -2258,7 +2258,7 @@ export async function createRuntime({
         }
       } else if (cmd.type === "resume-task" && cmd.workspaceId) {
         log.info("telegram: resume task", { workspaceId: cmd.workspaceId });
-        const ok = _rt?.resumeTask(cmd.workspaceId);
+        const ok = await _rt?.resumeTask(cmd.workspaceId);
         if (cmd.chatId) {
           await telegramManager.notifyChat(
             cmd.chatId,
@@ -2297,7 +2297,7 @@ export async function createRuntime({
         } else {
           // Chained follow-up actions (Edit+Continue / Edit+Start)
           if (cmd.followUp === "resume") {
-            const ok = _rt?.resumeTask(cmd.workspaceId);
+            const ok = await _rt?.resumeTask(cmd.workspaceId);
             if (cmd.chatId) {
               await telegramManager.notifyChat(
                 cmd.chatId,
@@ -2583,6 +2583,21 @@ export async function createRuntime({
     saveState() {
       schedulePersist();
     },
+    // Krok 2/9 — is the session provably still working? busy flag plus recent
+    // output (last 30s) or an active sub-agent burst. Used to avoid giving up
+    // on the judge while it's mid-evaluation.
+    isSessionBusy(sessionId: string) {
+      const signal = sessionSignals.get(sessionId);
+      if (!signal) return false;
+      const recentOutput = signal.lastOutputAt > 0 && Date.now() - signal.lastOutputAt < 30_000;
+      return Boolean(signal.busy) && recentOutput;
+    },
+    // Krok 1 — has this session proven it emits completion/UserPromptSubmit
+    // hooks? Only then can we wait for a submit confirmation.
+    isSessionHookCapable(sessionId: string) {
+      const signal = sessionSignals.get(sessionId);
+      return Boolean(signal?.completionHookCapable);
+    },
   });
 
   // Collect tasks that were active when the app last closed.
@@ -2842,7 +2857,14 @@ export async function createRuntime({
         // raise an alert or set rateLimitedUntil (which would block the
         // judge from running). Run the existing idle pipeline instead.
         try {
-          if (await taskRunner.isWorkerCompleted(s.workspaceId)) {
+          // The WORK_LOCK-absence override only makes sense for the WORKER:
+          // for a judge session, WORK_LOCK is absent by definition (the worker
+          // finished — that's why the judge is running), so applying it there
+          // would mistake a real judge rate-limit for "task finished" (incident
+          // C). Only short-circuit for the worker panel.
+          const taskState = taskRunner.getTaskState(s.workspaceId);
+          const isWorkerPanel = !taskState || s.panelId === taskState.workerPanelId;
+          if (isWorkerPanel && (await taskRunner.isWorkerCompleted(s.workspaceId))) {
             log.warn("rate-limit suspicion overridden by WORK_LOCK absence on confirm", {
               sessionId,
               providerHint: s.match.providerHint,
@@ -2867,10 +2889,11 @@ export async function createRuntime({
         raiseRateLimitAlert(sessionId, s.workspaceId, s.panelId, s.panelTitle, s.match);
         // Hand off to the task runner only AFTER confirmation. For non-task
         // sessions this is a no-op; for task workers it sets rateLimitedUntil
-        // and schedules the auto-resume timer. Deferring this is the whole
+        // and schedules the auto-resume timer; for the judge it presses Enter on
+        // the dialog and sets a judge-specific hold. Deferring this is the whole
         // point of the two-stage check — premature handoff is what blocks
         // the judge when the original match was a false positive.
-        taskRunner.onWorkerRateLimited(sessionId, s.match, "output-detect-confirmed");
+        taskRunner.onAgentRateLimited(sessionId, s.match, "output-detect-confirmed");
       })();
     }, RATE_LIMIT_CONFIRM_WINDOW_MS);
     rateLimitSuspicions.set(sessionId, {
@@ -7387,13 +7410,23 @@ export async function createRuntime({
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    resumeTask(workspaceId: any, windowId?: string) {
+    async resumeTask(workspaceId: any, windowId?: string) {
       assertWorkspaceInViewerProfile(String(workspaceId), windowId);
+      const id = String(workspaceId);
+      // Krok 6 — a startup recovery candidate needs the FULL recovery path
+      // (re-spawn the dead PTYs, stash the recovery prompt, fire the deferred
+      // idle). Plain resumeTask only flips state and can't respawn PTYs, so a
+      // Dashboard/Sidebar "Continue" on such a task did nothing (incident B).
+      // Delegate to resolveTaskRecovery, which owns that path.
+      if (_recoveryCandidates.some((c) => c.workspaceId === id)) {
+        log.info("resumeTask: delegating recovery candidate to resolveTaskRecovery", { workspaceId: id });
+        return this.resolveTaskRecovery({ [id]: "continue" });
+      }
       // Resume re-spawns worker/judge PTYs, so the same guard as startTask
       // applies — refuse if another task in this profile is already actively
       // touching the same cwd.
       const state = getState();
-      const workspace = findWorkspace(state, String(workspaceId));
+      const workspace = findWorkspace(state, id);
       if (workspace?.kind === "task" && workspace.cwd) {
         assertNoConflictingActiveTask(state, workspace.cwd, workspace.profileId || "default", workspace.id);
       }
