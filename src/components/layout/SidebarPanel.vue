@@ -375,7 +375,7 @@ const emit = defineEmits<{
   (e: "force-remove-workspace", id: string): void;
   (e: "add-plugin-workspace", id: string): void;
   (e: "activate", id: string): void;
-  (e: "create-task"): void;
+  (e: "create-task", id: string): void;
 }>();
 
 function onCreateEmptyWorkspace(): void {
@@ -578,7 +578,7 @@ function onMenuAction(action: string): void {
   } else if (action === "create-worktree") {
     emit("create-worktree", ws.id as string);
   } else if (action === "create-task") {
-    emit("create-task");
+    emit("create-task", ws.id as string);
   } else if (action === "edit") {
     emit("edit-workspace", ws.id as string);
   } else if (action === "delete") {

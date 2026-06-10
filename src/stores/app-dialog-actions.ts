@@ -685,10 +685,22 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     return segments.slice(-2).join("/") || basename;
   }
 
-  function openTaskWorkspaceDialog(): void {
-    const ws = (ctx.payload.value as AnyApi)?.workspace;
-    const activeWorkspace = ws?.workspace || ws?.project || null;
-    const initialCwd = (activeWorkspace as AnyApi)?.cwd || "";
+  function openTaskWorkspaceDialog(workspaceId?: string): void {
+    // When invoked from a workspace's kebab menu, seed the cwd from the
+    // right-clicked workspace rather than whichever workspace happens to be
+    // active — the parent is auto-detected from cwd downstream, so seeding the
+    // wrong cwd would attach the task to the active workspace instead.
+    // The toolbar / picker entry points pass no id and keep using the active
+    // workspace.
+    let initialCwd: string;
+    if (workspaceId) {
+      const target = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
+      initialCwd = (target as AnyApi)?.cwd || "";
+    } else {
+      const ws = (ctx.payload.value as AnyApi)?.workspace;
+      const activeWorkspace = ws?.workspace || ws?.project || null;
+      initialCwd = (activeWorkspace as AnyApi)?.cwd || "";
+    }
 
     // Re-check Claude CLI availability in the background so the dialog
     // shows up-to-date status (user may have installed claude mid-session)

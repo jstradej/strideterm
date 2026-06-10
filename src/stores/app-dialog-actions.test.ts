@@ -352,4 +352,43 @@ describe("createDialogActions profile-aware saves", () => {
 
     expect(createTaskWorkspace).toHaveBeenCalledWith(expect.objectContaining({ parentWorkspaceId: "ws-b" }));
   });
+
+  it("seeds cwd from the kebab-clicked workspace, not the active one", async () => {
+    const createTaskWorkspace = vi.fn((config: AnyApi) => Promise.resolve({ payload: { ok: true, config } }));
+    const ctx = makeCtx({
+      appState: {
+        profiles: [{ id: "profile-a", name: "A", color: "#fff" }],
+        settings: {},
+        workspaces: [
+          { id: "ws-active", name: "Azure", profileId: "profile-a", cwd: "C:\\active", kind: "azure", panels: [] },
+          { id: "ws-clicked", name: "mhub", profileId: "profile-a", cwd: "C:\\mhub", kind: "terminal", panels: [] },
+        ],
+        windowSlots: [{ id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-active" }],
+      },
+      // Active workspace context points at the Azure workspace.
+      workspace: {
+        workspace: { id: "ws-active", name: "Azure", profileId: "profile-a", cwd: "C:\\active", kind: "azure" },
+      },
+    });
+    ctx.getApi = () => ({ isRemote: false, createTaskWorkspace });
+    const actions = createDialogActions(ctx);
+
+    // Kebab menu on the (non-active) mhub workspace passes its id.
+    actions.openTaskWorkspaceDialog("ws-clicked");
+
+    // The draft cwd must come from the clicked workspace, not the active one.
+    expect((ctx.overlayProps.value.workspace as AnyApi).cwd).toBe("C:\\mhub");
+
+    await (ctx.overlayProps.value.onSubmit as (draft: AnyApi) => Promise<void>)({
+      cwd: "C:\\mhub",
+      name: "Task",
+      icon: "T",
+      color: "#fff",
+      notes: "",
+      task: { description: "Do work", maxRounds: 10 },
+      panels: [],
+    });
+
+    expect(createTaskWorkspace).toHaveBeenCalledWith(expect.objectContaining({ parentWorkspaceId: "ws-clicked" }));
+  });
 });

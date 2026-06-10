@@ -104,7 +104,7 @@
         @delete-workspace="store.deleteWorkspace($event)"
         @force-remove-workspace="store.forceRemoveWorkspace($event)"
         @add-plugin-workspace="store.openNewWorkspaceFlow()"
-        @create-task="store.openTaskWorkspaceDialog()"
+        @create-task="store.openTaskWorkspaceDialog($event)"
       />
 
       <!-- Remote access panel (above footer so version info stays at very bottom) -->
