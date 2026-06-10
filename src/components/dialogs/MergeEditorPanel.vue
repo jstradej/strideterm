@@ -109,7 +109,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
-import { merge3, applyNonConflicting, hasUnresolvedConflicts } from "../../lib/merge3.js";
+import { merge3, applyNonConflicting } from "../../lib/merge3.js";
+import type { Chunk } from "../../lib/merge3.js";
 import { useAppStore } from "../../stores/app.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { guessLanguageFromPath } from "../../../config/language-map.js";
@@ -146,6 +147,7 @@ const language = computed(() => guessLanguageFromPath(props.filePath));
 const baseContent = ref("");
 const oursContent = ref("");
 const theirsContent = ref("");
+const initialResultText = ref("");
 
 // ---- Monaco refs ----
 const oursContainer = ref<HTMLDivElement | null>(null);
@@ -157,197 +159,253 @@ let resultEditor: monaco.editor.IStandaloneCodeEditor | null = null;
 let theirsEditor: monaco.editor.IStandaloneCodeEditor | null = null;
 let resizeObs: ResizeObserver | null = null;
 
-// ---- Chunk tracking ----
-// Each conflict chunk is stored as a marker block in the result model.
-// The MARKER_* constants identify those blocks so we can navigate / apply / count them.
-const MARKER_OURS = "<<<<<<< ";
-const MARKER_SEP = "=======";
-const MARKER_THEIRS = ">>>>>>> ";
+// ---- Chunk tracking with sticky Monaco decorations (IntelliJ-style, no git markers) ----
+// Conflict chunks are represented as a single placeholder line in the Result editor.
+// Their positions are tracked via Monaco model decorations with range stickiness,
+// so navigation and apply arrows keep working after the user edits adjacent text.
 
-// ---- Conflict navigation ----
-// Compute conflict positions by scanning the result model for marker lines.
-interface ConflictRegion {
-  startLine: number; // 1-based (<<< line)
-  sepLine: number; // === line
-  endLine: number; // >>> line
+const CONFLICT_PLACEHOLDER = "⚠ conflict";
+
+interface ConflictTracker {
+  chunkIdx: number; // index into allChunksData
+  oursLines: string[];
+  theirsLines: string[];
+  decorationId: string; // Monaco model decoration ID (range stickiness)
+  resolved: boolean;
 }
 
-const currentConflictIdx = ref(0);
-const conflictRegions = ref<ConflictRegion[]>([]);
-const totalConflicts = computed(() => conflictRegions.value.length);
-const hasNonConflicting = ref(false);
-const currentConflict = computed(() => conflictRegions.value[currentConflictIdx.value] ?? null);
+// Module-level mutable state — Monaco operations are synchronous
+let allChunksData: Chunk[] = [];
+let conflictTrackersMut: ConflictTracker[] = [];
 
-function scanConflicts() {
-  if (!resultEditor) return;
-  const model = resultEditor.getModel();
-  if (!model) return;
-  const regions: ConflictRegion[] = [];
-  const lineCount = model.getLineCount();
-  let startLine = -1;
-  let sepLine = -1;
-  for (let i = 1; i <= lineCount; i++) {
-    const text = model.getLineContent(i);
-    if (text.startsWith(MARKER_OURS)) {
-      startLine = i;
-      sepLine = -1;
-    } else if (text === MARKER_SEP && startLine > 0) {
-      sepLine = i;
-    } else if (text.startsWith(MARKER_THEIRS) && startLine > 0 && sepLine > 0) {
-      regions.push({ startLine, sepLine, endLine: i });
-      startLine = -1;
-      sepLine = -1;
-    }
-  }
-  conflictRegions.value = regions;
-  // Clamp index
-  if (currentConflictIdx.value >= regions.length) {
-    currentConflictIdx.value = Math.max(0, regions.length - 1);
-  }
-  updateConflictDecorations();
+// Reactive mirrors for template
+const conflictTrackersRef = ref<ConflictTracker[]>([]);
+const currentConflictIdx = ref(0); // index into unresolvedTrackers
+
+const unresolvedTrackers = computed(() => conflictTrackersRef.value.filter((t) => !t.resolved));
+const totalConflicts = computed(() => unresolvedTrackers.value.length);
+const currentConflict = computed(() => unresolvedTrackers.value[currentConflictIdx.value] ?? null);
+// Non-conflicting = ours/theirs chunks where only one side changed
+const hasNonConflicting = computed(() => allChunksData.some((c) => c.kind === "ours" || c.kind === "theirs"));
+
+// ---- Build initial result text (no git markers) ----
+interface ConflictPosition {
+  chunkIdx: number;
+  line: number; // 1-based
 }
 
-// ---- Monaco decorations ----
-let oursDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
-let resultDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
-let theirsDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
-
-function updateConflictDecorations() {
-  if (!resultEditor || !oursEditor || !theirsEditor) return;
-  const regions = conflictRegions.value;
-
-  // Result: highlight entire marker blocks
-  const resultRanges = regions.map((r) => ({
-    range: new monaco.Range(r.startLine, 1, r.endLine, 1),
-    options: {
-      isWholeLine: true,
-      className: "mep-conflict-highlight",
-      overviewRuler: { color: "rgba(255, 120, 0, 0.7)", position: monaco.editor.OverviewRulerLane.Right },
-    },
-  }));
-  resultDecorations?.set(resultRanges);
-
-  // Highlight current conflict more prominently
-  if (currentConflict.value) {
-    const r = currentConflict.value;
-    const activeRange = {
-      range: new monaco.Range(r.startLine, 1, r.endLine, 1),
-      options: {
-        isWholeLine: true,
-        className: "mep-conflict-active",
-        overviewRuler: { color: "rgba(255, 165, 0, 1)", position: monaco.editor.OverviewRulerLane.Right },
-      },
-    };
-    resultDecorations?.set([...resultRanges, activeRange]);
-  }
-}
-
-function revealConflict(region: ConflictRegion | null) {
-  if (!region || !resultEditor) return;
-  resultEditor.revealLineInCenter(region.startLine);
-}
-
-function nextConflict() {
-  if (!conflictRegions.value.length) return;
-  currentConflictIdx.value = (currentConflictIdx.value + 1) % conflictRegions.value.length;
-  updateConflictDecorations();
-  revealConflict(currentConflict.value);
-}
-
-function prevConflict() {
-  if (!conflictRegions.value.length) return;
-  const n = conflictRegions.value.length;
-  currentConflictIdx.value = (currentConflictIdx.value - 1 + n) % n;
-  updateConflictDecorations();
-  revealConflict(currentConflict.value);
-}
-
-function applyChunk(region: ConflictRegion, side: "ours" | "theirs") {
-  if (!resultEditor) return;
-  const model = resultEditor.getModel();
-  if (!model) return;
-  // Extract content lines between markers
+function buildInitialResult(appliedChunks: Chunk[]): { text: string; conflictPositions: ConflictPosition[] } {
   const lines: string[] = [];
-  if (side === "ours") {
-    for (let i = region.startLine + 1; i < region.sepLine; i++) {
-      lines.push(model.getLineContent(i));
-    }
-  } else {
-    for (let i = region.sepLine + 1; i < region.endLine; i++) {
-      lines.push(model.getLineContent(i));
-    }
-  }
-  const replacement = lines.join("\n");
-  // Replace from start of startLine to end of endLine (including trailing newline if present)
-  const endCol = model.getLineMaxColumn(region.endLine);
-  const edit: monaco.editor.IIdentifiedSingleEditOperation = {
-    range: new monaco.Range(region.startLine, 1, region.endLine, endCol),
-    text: replacement,
-  };
-  model.pushEditOperations([], [edit], () => null);
-  // Monaco auto-revises the model; rescan
-  nextTick(() => scanConflicts());
-}
+  const conflictPositions: ConflictPosition[] = [];
 
-function applyOurs() {
-  const region = currentConflict.value;
-  if (!region) return;
-  applyChunk(region, "ours");
-}
-
-function applyTheirs() {
-  const region = currentConflict.value;
-  if (!region) return;
-  applyChunk(region, "theirs");
-}
-
-function applyAllNonConflicting() {
-  // Rebuild result from scratch using merge3 + applyNonConflicting, preserve manual edits
-  // to resolved regions by reading current model content and replacing only conflict blocks.
-  // Simpler: re-derive the result from scratch (only works if user hasn't manually edited).
-  if (!resultEditor) return;
-  const model = resultEditor.getModel();
-  if (!model) return;
-
-  // Apply all pending conflict blocks one by one from bottom to top (to avoid line shifting)
-  const regions = [...conflictRegions.value].sort((a, b) => b.startLine - a.startLine);
-  for (const region of regions) {
-    // Auto-merge: try ours if theirs == base, theirs if ours == base, else skip
-    // We don't have the base per-chunk at this point. Resolve all ours side is not right.
-    // Instead, re-apply via merge3 engine using the initial content.
-    void region; // Skip – handled by the initial merge3 application below
-  }
-  // Simpler approach: rerun merge3 and apply non-conflicting only if result model is pristine
-  // (hasn't been manually edited). We detect this by comparing to the initial text.
-  if (model.getValue() !== initialResultText.value) {
-    // User has edited – don't clobber their work. Apply only to unresolved blocks.
-    return;
-  }
-  // Recompute from scratch
-  const { chunks } = merge3(baseContent.value, oursContent.value, theirsContent.value);
-  const applied = applyNonConflicting(chunks);
-  const newResult = buildResultText(applied);
-  model.setValue(newResult);
-  nextTick(() => scanConflicts());
-}
-
-const initialResultText = ref("");
-
-function buildResultText(chunks: ReturnType<typeof applyNonConflicting>): string {
-  const lines: string[] = [];
-  for (const chunk of chunks) {
+  for (let i = 0; i < appliedChunks.length; i++) {
+    const chunk = appliedChunks[i];
     if (chunk.kind === "conflict") {
-      // Insert conflict markers
-      lines.push(`${MARKER_OURS}${oursLabel.value}`);
-      lines.push(...chunk.oursLines);
-      lines.push(MARKER_SEP);
-      lines.push(...chunk.theirsLines);
-      lines.push(`${MARKER_THEIRS}${theirsLabel.value}`);
+      const line = lines.length + 1; // 1-based
+      lines.push(CONFLICT_PLACEHOLDER);
+      conflictPositions.push({ chunkIdx: i, line });
     } else {
       lines.push(...chunk.resultLines);
     }
   }
-  return lines.join("\n");
+
+  return { text: lines.join("\n"), conflictPositions };
+}
+
+// ---- Install sticky decorations for conflict placeholder lines ----
+function installConflictDecorations(conflictPositions: ConflictPosition[]) {
+  const model = resultEditor?.getModel();
+  if (!model) return;
+
+  // Remove any existing sticky decorations
+  if (conflictTrackersMut.length) {
+    const oldIds = conflictTrackersMut.map((t) => t.decorationId).filter(Boolean);
+    if (oldIds.length) model.deltaDecorations(oldIds, []);
+    conflictTrackersMut = [];
+  }
+
+  if (!conflictPositions.length) {
+    conflictTrackersRef.value = [];
+    currentConflictIdx.value = 0;
+    return;
+  }
+
+  // Create sticky model decorations — NeverGrowsWhenTypingAtEdges keeps the placeholder
+  // range exact while still letting Monaco track the range as surrounding text is edited.
+  const decorationDefs: monaco.editor.IModelDeltaDecoration[] = conflictPositions.map((pos) => ({
+    range: new monaco.Range(pos.line, 1, pos.line, model.getLineMaxColumn(pos.line)),
+    options: {
+      stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges,
+    },
+  }));
+
+  const newIds = model.deltaDecorations([], decorationDefs);
+
+  conflictTrackersMut = conflictPositions.map((pos, i) => {
+    const chunk = allChunksData[pos.chunkIdx];
+    return {
+      chunkIdx: pos.chunkIdx,
+      oursLines: chunk.oursLines,
+      theirsLines: chunk.theirsLines,
+      decorationId: newIds[i],
+      resolved: false,
+    };
+  });
+
+  conflictTrackersRef.value = [...conflictTrackersMut];
+  currentConflictIdx.value = 0;
+}
+
+// ---- Editor decoration collections (visual only — separate from sticky tracking) ----
+let resultDecColl: monaco.editor.IEditorDecorationsCollection | null = null;
+
+function updateConflictDecorations() {
+  if (!resultEditor || !resultDecColl) return;
+  const model = resultEditor.getModel();
+  if (!model) return;
+
+  const unresolved = conflictTrackersMut.filter((t) => !t.resolved);
+  const current = unresolved[currentConflictIdx.value];
+
+  const decList: monaco.editor.IModelDeltaDecoration[] = [];
+  for (const tracker of unresolved) {
+    const range = model.getDecorationRange(tracker.decorationId);
+    if (!range) continue;
+    const isCurrent = tracker === current;
+    decList.push({
+      range,
+      options: {
+        isWholeLine: true,
+        className: isCurrent ? "mep-conflict-active" : "mep-conflict-highlight",
+        overviewRuler: {
+          color: isCurrent ? "rgba(255,165,0,1)" : "rgba(255,120,0,0.7)",
+          position: monaco.editor.OverviewRulerLane.Right,
+        },
+      },
+    });
+  }
+  resultDecColl.set(decList);
+}
+
+// ---- Detect when user manually edits a conflict placeholder ----
+function checkManualResolution() {
+  const model = resultEditor?.getModel();
+  if (!model) return;
+
+  let changed = false;
+  for (const tracker of conflictTrackersMut) {
+    if (tracker.resolved) continue;
+    const range = model.getDecorationRange(tracker.decorationId);
+    if (!range) {
+      // Decoration range is gone — user deleted it entirely
+      tracker.resolved = true;
+      changed = true;
+      continue;
+    }
+    const content = model.getValueInRange(range);
+    if (content !== CONFLICT_PLACEHOLDER) {
+      // User typed something in the conflict region — count as resolved
+      tracker.resolved = true;
+      model.deltaDecorations([tracker.decorationId], []);
+      tracker.decorationId = "";
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    conflictTrackersRef.value = [...conflictTrackersMut];
+    const n = unresolvedTrackers.value.length;
+    if (currentConflictIdx.value >= n) currentConflictIdx.value = Math.max(0, n - 1);
+    updateConflictDecorations();
+  }
+}
+
+// ---- Navigation ----
+function revealCurrentConflict() {
+  const model = resultEditor?.getModel();
+  const tracker = currentConflict.value;
+  if (!model || !tracker) return;
+  const range = model.getDecorationRange(tracker.decorationId);
+  if (range) resultEditor?.revealLineInCenter(range.startLineNumber);
+}
+
+function nextConflict() {
+  const n = unresolvedTrackers.value.length;
+  if (!n) return;
+  currentConflictIdx.value = (currentConflictIdx.value + 1) % n;
+  updateConflictDecorations();
+  revealCurrentConflict();
+}
+
+function prevConflict() {
+  const n = unresolvedTrackers.value.length;
+  if (!n) return;
+  currentConflictIdx.value = (currentConflictIdx.value - 1 + n) % n;
+  updateConflictDecorations();
+  revealCurrentConflict();
+}
+
+// ---- Apply ours/theirs to a conflict chunk ----
+function applyChunk(tracker: ConflictTracker, side: "ours" | "theirs") {
+  const model = resultEditor?.getModel();
+  if (!model) return;
+
+  const range = model.getDecorationRange(tracker.decorationId);
+  if (!range) return;
+
+  const lines = side === "ours" ? tracker.oursLines : tracker.theirsLines;
+  const replacement = lines.join("\n");
+
+  // Remove sticky decoration before editing so it doesn't interfere
+  model.deltaDecorations([tracker.decorationId], []);
+  tracker.decorationId = "";
+
+  // Replace the placeholder range with the chosen content
+  model.pushEditOperations([], [{ range, text: replacement }], () => null);
+
+  tracker.resolved = true;
+  conflictTrackersRef.value = [...conflictTrackersMut];
+
+  const n = unresolvedTrackers.value.length;
+  if (currentConflictIdx.value >= n) currentConflictIdx.value = Math.max(0, n - 1);
+  updateConflictDecorations();
+}
+
+function applyOurs() {
+  const tracker = currentConflict.value;
+  if (!tracker) return;
+  applyChunk(tracker, "ours");
+}
+
+function applyTheirs() {
+  const tracker = currentConflict.value;
+  if (!tracker) return;
+  applyChunk(tracker, "theirs");
+}
+
+// ---- Apply all non-conflicting changes ----
+// Rebuilds the result from the original merge3 chunks, resetting to the initial
+// auto-merged state. Non-conflicting ours/theirs changes are re-applied; conflict
+// placeholders are restored. Always works regardless of manual edits.
+function applyAllNonConflicting() {
+  if (!resultEditor || !allChunksData.length) return;
+  const model = resultEditor.getModel();
+  if (!model) return;
+
+  // Remove all existing sticky decorations
+  const oldIds = conflictTrackersMut.map((t) => t.decorationId).filter(Boolean);
+  if (oldIds.length) model.deltaDecorations(oldIds, []);
+  conflictTrackersMut = [];
+
+  // Rebuild from original chunks
+  const applied = applyNonConflicting(allChunksData);
+  const { text, conflictPositions } = buildInitialResult(applied);
+  model.setValue(text);
+  initialResultText.value = text;
+
+  installConflictDecorations(conflictPositions);
+  updateConflictDecorations();
+  revealCurrentConflict();
 }
 
 // ---- Scroll sync ----
@@ -379,6 +437,7 @@ const EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
 function createEditors() {
   if (!oursContainer.value || !resultContainer.value || !theirsContainer.value) return;
   const lang = language.value;
+
   oursEditor = monaco.editor.create(oursContainer.value, {
     ...EDITOR_OPTIONS,
     value: oursContent.value,
@@ -398,21 +457,17 @@ function createEditors() {
     readOnly: true,
   });
 
-  oursDecorations = oursEditor.createDecorationsCollection([]);
-  resultDecorations = resultEditor.createDecorationsCollection([]);
-  theirsDecorations = theirsEditor.createDecorationsCollection([]);
+  resultDecColl = resultEditor.createDecorationsCollection([]);
 
-  // Scroll sync
   oursEditor.onDidScrollChange(() => syncScrollFrom(oursEditor!));
   resultEditor.onDidScrollChange(() => syncScrollFrom(resultEditor!));
   theirsEditor.onDidScrollChange(() => syncScrollFrom(theirsEditor!));
 
-  // Rescan conflicts after every result edit
+  // After each user edit, check if any conflict placeholder was modified
   resultEditor.onDidChangeModelContent(() => {
-    scanConflicts();
+    checkManualResolution();
   });
 
-  // ResizeObserver
   resizeObs = new ResizeObserver(() => layoutEditors());
   if (resultContainer.value.parentElement) {
     resizeObs.observe(resultContainer.value.parentElement);
@@ -427,6 +482,17 @@ function layoutEditors() {
 }
 
 function disposeEditors() {
+  // Remove sticky decorations from the model before disposal
+  if (conflictTrackersMut.length) {
+    const model = resultEditor?.getModel();
+    if (model) {
+      const ids = conflictTrackersMut.map((t) => t.decorationId).filter(Boolean);
+      if (ids.length) model.deltaDecorations(ids, []);
+    }
+    conflictTrackersMut = [];
+    conflictTrackersRef.value = [];
+  }
+
   for (const ed of [oursEditor, resultEditor, theirsEditor]) {
     if (ed) {
       ed.getModel()?.dispose();
@@ -436,18 +502,18 @@ function disposeEditors() {
   oursEditor = null;
   resultEditor = null;
   theirsEditor = null;
+  resultDecColl = null;
   resizeObs?.disconnect();
   resizeObs = null;
 }
 
-// ---- Load conflict detail and initialise ----
+// ---- Load conflict detail ----
 async function loadDetail() {
   loading.value = true;
   loadError.value = "";
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = appStore.getApi() as any;
-
     const detail = (await api.gitConflictDetail({
       workspaceId: props.workspaceId,
       rootPath: props.rootPath,
@@ -459,17 +525,19 @@ async function loadDetail() {
     theirsContent.value = (detail.theirs as string) || "";
 
     const { chunks } = merge3(baseContent.value, oursContent.value, theirsContent.value);
-    hasNonConflicting.value = chunks.some((c) => c.kind !== "unchanged" && c.kind !== "conflict");
+    allChunksData = chunks;
+
     const applied = applyNonConflicting(chunks);
-    const resultText = buildResultText(applied);
-    initialResultText.value = resultText;
+    const { text, conflictPositions } = buildInitialResult(applied);
+    initialResultText.value = text;
 
     loading.value = false;
     await nextTick();
     createEditors();
-    resultEditor?.getModel()?.setValue(resultText);
-    scanConflicts();
-    if (conflictRegions.value.length) revealConflict(conflictRegions.value[0]);
+    resultEditor?.getModel()?.setValue(text);
+    installConflictDecorations(conflictPositions);
+    updateConflictDecorations();
+    revealCurrentConflict();
   } catch (err) {
     loadError.value = (err as Error)?.message || "Failed to load conflict detail.";
     loading.value = false;
@@ -500,7 +568,6 @@ async function onApply() {
 }
 
 function onCancel() {
-  // If result model is dirty (differs from initial), confirm before discarding
   const current = resultEditor?.getModel()?.getValue() ?? "";
   if (current !== initialResultText.value && current !== "") {
     confirmCancel.value = true;
@@ -511,7 +578,6 @@ function onCancel() {
 
 // ---- Keyboard shortcuts (Phase 4) ----
 function onKeydown(e: KeyboardEvent) {
-  // Only when focused inside the merge editor
   if (
     !resultContainer.value?.contains(document.activeElement) &&
     !oursContainer.value?.contains(document.activeElement) &&
@@ -524,11 +590,12 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-// Watch narrow mode: recreate editors when layout changes
+// On layout change, reload from scratch (persisting partial edits across layout
+// switches is not worth the complexity; user can re-apply their choices)
 watch(isNarrow, async () => {
   disposeEditors();
   await nextTick();
-  if (!loading.value) createEditors();
+  if (!loading.value) void loadDetail();
 });
 
 onMounted(() => {
