@@ -1313,6 +1313,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     const dlg = ui.conflictDialog;
     if (!dlg) return;
+    const kind = await currentOperationKind(workspaceId, dlg.rootPath);
     await runGitAction(workspaceId, "skip", () =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (_api as any).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
@@ -1324,12 +1325,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // If no more conflicts, close the dialog
     const after = ensure(workspaceId).conflictDialog;
     if (after && !after.loading && !after.conflicts.length) closeConflictDialog(workspaceId);
+    await surfaceOperationCompletion(workspaceId, dlg.rootPath, kind);
   }
 
   async function continueAfterConflicts(workspaceId: string): Promise<void> {
     const ui = ensure(workspaceId);
     const dlg = ui.conflictDialog;
     if (!dlg) return;
+    const kind = await currentOperationKind(workspaceId, dlg.rootPath);
     await runGitAction(workspaceId, "continue", () =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (_api as any).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
@@ -1339,6 +1342,48 @@ export const useGitUiStore = defineStore("git-ui", () => {
     await loadConflicts(workspaceId);
     const after = ensure(workspaceId).conflictDialog;
     if (after && !after.loading && !after.conflicts.length) closeConflictDialog(workspaceId);
+    await surfaceOperationCompletion(workspaceId, dlg.rootPath, kind);
+  }
+
+  async function currentOperationKind(workspaceId: string, rootPath: string): Promise<string> {
+    const { useAppStore } = await import("./app.js");
+    const snapshot = useAppStore().getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
+    return String((snapshot?.operationState as { kind?: string } | undefined)?.kind || "operation");
+  }
+
+  // After a continue/skip the operation may be fully done — the success toast
+  // alone is easy to miss, so leave a persistent banner on the Overview tab
+  // (where closeConflictDialog lands the user), and point at the follow-up
+  // force push when the rewritten history diverged from upstream.
+  async function surfaceOperationCompletion(workspaceId: string, rootPath: string, kind: string): Promise<void> {
+    const { useAppStore } = await import("./app.js");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = useAppStore().getGitSnapshot(workspaceId, rootPath) as any;
+    const op = snapshot?.operationState;
+    if (!snapshot || op?.inProgress) return;
+    const ui = ensure(workspaceId);
+    // A failed continue/skip keeps its own error banner — don't repaint it.
+    if (ui.lastResult && !ui.lastResult.ok) return;
+    const diverged = (snapshot.aheadCount ?? 0) > 0 && (snapshot.behindCount ?? 0) > 0 && !!snapshot.upstream;
+    const hint = diverged
+      ? "History was rewritten and upstream still has the old commits — publish with “Force push (with lease)” in the banner above."
+      : "";
+    const summary = `${kind.charAt(0).toUpperCase()}${kind.slice(1)} completed.`;
+    if (ui.lastResult) {
+      // Keep backend extras (e.g. "Restored previously stashed local changes.")
+      ui.lastResult.summary = summary;
+      if (hint) (ui.lastResult.warnings as unknown[]).push(hint);
+    } else {
+      ui.lastResult = {
+        ok: true,
+        summary,
+        warnings: hint ? [hint] : [],
+        conflicts: [],
+        rawOutput: "",
+        operationState: null,
+        at: new Date().toISOString(),
+      };
+    }
   }
 
   async function abortFromConflictDialog(workspaceId: string): Promise<void> {

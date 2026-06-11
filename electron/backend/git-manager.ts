@@ -183,7 +183,7 @@ export class GitManager extends EventEmitter {
     if (this.execGitImpl) {
       return this.execGitImpl(cwd, args);
     }
-    return execFileText("git", args, { cwd });
+    return execFileText("git", args, { cwd, env: sanitizeGitEnvironment() });
   }
 
   /**
@@ -1323,7 +1323,7 @@ export class GitManager extends EventEmitter {
       });
     }
 
-    return this.runWriteAction(workspace, {
+    const result = await this.runWriteAction(workspace, {
       type: operationState.kind,
       label: "Continue",
       allowDirty: true,
@@ -1331,6 +1331,34 @@ export class GitManager extends EventEmitter {
       run: async (cwd) => this.execGit(cwd, args),
       rootPath,
     });
+
+    if (result.ok) {
+      const stashRestore = await this.restoreParkedStashIfFinished(workspace, rootPath);
+      if (stashRestore) {
+        result.rawOutput = joinRawOutput(result.rawOutput, stashRestore);
+        (result.warnings as string[]).push("Restored previously stashed local changes.");
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * When a continue/skip finishes the whole operation, bring back changes
+   * that were auto-stashed when it started — the conflict-stop path keeps
+   * them parked ("Stashed local changes were kept…") and only abort restored
+   * them before this helper existed. No-op while the operation still runs.
+   */
+  private async restoreParkedStashIfFinished(workspace: WorkspaceRef, rootPath: string): Promise<string> {
+    // The pre-action inspect (runWriteAction) may still be cached — drop it so
+    // the in-progress check sees the state the continue/skip actually left.
+    this.invalidateSnapshotCache(workspace.id, rootPath || null);
+    const after = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
+    const opAfter = after.operationState as { inProgress?: boolean } | undefined;
+    if (opAfter?.inProgress) return "";
+    const output = await this.restoreStridetermStash(rootPath || String(workspace.cwd || ""));
+    if (output) this.invalidateSnapshotCache(workspace.id, rootPath || null);
+    return output;
   }
 
   async abortOperation(
@@ -1388,7 +1416,7 @@ export class GitManager extends EventEmitter {
     if (!args) {
       return createStructuredResult({ ok: false, summary: "Current operation does not support skip." });
     }
-    return this.runWriteAction(workspace, {
+    const result = await this.runWriteAction(workspace, {
       type: operationState.kind,
       label: "Skip",
       allowDirty: true,
@@ -1396,6 +1424,16 @@ export class GitManager extends EventEmitter {
       run: async (cwd) => this.execGit(cwd, args),
       rootPath,
     });
+
+    if (result.ok) {
+      const stashRestore = await this.restoreParkedStashIfFinished(workspace, rootPath);
+      if (stashRestore) {
+        result.rawOutput = joinRawOutput(result.rawOutput, stashRestore);
+        (result.warnings as string[]).push("Restored previously stashed local changes.");
+      }
+    }
+
+    return result;
   }
 
   async listConflicts(

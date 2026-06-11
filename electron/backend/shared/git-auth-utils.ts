@@ -29,5 +29,12 @@ export function sanitizeGitEnvironment(): Record<string, string | undefined> {
   delete env.GIT_PREFIX;
   delete env.GIT_OBJECT_DIRECTORY;
   delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+  // Backend git must never be interactive: `rebase --continue` /
+  // `cherry-pick --continue` otherwise launch the user's configured editor
+  // to confirm the commit message. `true` is a shell builtin (git invokes
+  // the editor through sh, on Windows too) that exits 0, so git keeps the
+  // original message.
+  env.GIT_EDITOR = "true";
+  env.GIT_SEQUENCE_EDITOR = "true";
   return env;
 }
