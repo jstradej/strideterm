@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createRuntime, detectTerminalEnvironment, hasMeaningfulUserInput } from "./runtime.js";
+import { AgentTaskRunner } from "./agent-task-runner.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 
@@ -3688,6 +3689,239 @@ describe("runtime integration", () => {
     }
   });
 
+  test("Krok 6: syncWorktrees skips a path with an active background delete retry", async () => {
+    // When a worktree disk-delete fails, the path stays in pendingWorktreeDeletions
+    // while the background retry owns it. syncWorktrees must NOT resurrect the
+    // still-on-disk directory as a fresh "Worktree of" workspace in the meantime
+    // (regression on the pendingWorktreeDeletions.has guard).
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bg-retry-sync-"));
+    tempPaths.push(parentDir);
+    const branchDir = path.join(parentDir, ".strideterm", "tree", "locked-branch");
+    await fs.mkdir(branchDir, { recursive: true });
+
+    // rmPath always fails → foreground delete gives up → background retry armed,
+    // holding branchDir. git worktree remove also fails (execFileTextRemoveFails).
+    const rmPathMock = vi.fn().mockRejectedValue(Object.assign(new Error("EBUSY"), { code: "EBUSY" }));
+    const fixture = await createFixture({
+      execFileTextImpl: execFileTextRemoveFails(),
+      dependencies: { rmPath: rmPathMock },
+      initialState: {
+        workspaces: [
+          {
+            id: "parent-sync",
+            name: "Parent",
+            kind: "terminal",
+            cwd: parentDir,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Init syncWorktrees auto-created the child worktree at branchDir.
+    const child = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.cwd === branchDir);
+    expect(child).toBeDefined();
+
+    // Delete it from disk; rmPath fails → background retry armed (path held).
+    const result = await fixture.runtime.deleteWorkspace(child!.id, { deleteFromDisk: true, diskPath: branchDir });
+    expect(result.deleteWorkspaceError).toBeTruthy();
+    expect(rmPathMock).toHaveBeenCalledTimes(1); // foreground only — retry still pending
+
+    // branchDir is STILL on disk (rmPath failed). Without the guard, syncWorktrees
+    // would re-add it as a fresh worktree workspace; the guard makes it skip.
+    await fixture.runtime.syncWorktrees();
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    expect(after.some((w) => w.cwd === branchDir)).toBe(false);
+  });
+
+  // --- Krok 2 & 3: shell-triggered git refresh (debounce + leading-edge limit) ---
+  //
+  // scheduleGitRefreshFromShell is exposed on the runtime (see returnObj) so these
+  // exercise the real debounce + 10s leading-edge coalescing + delete-cancellation
+  // deterministically with fake timers and fixture.git.refreshArgs as the
+  // refreshGit spy (refreshGit → git.refreshProjects([ws]) pushes [ws.id]).
+
+  // Plain git-available terminal workspace; making it the active workspace avoids
+  // the background init refresh that runInitialRefresh schedules for non-active ones.
+  function makeShellWorkspace(id: string) {
+    return {
+      id,
+      name: `Shell ${id}`,
+      kind: "terminal",
+      cwd: `/repo/${id}`,
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    };
+  }
+  const shellRefreshes = (fixture: { git: { refreshArgs: string[][] } }, wsId: string) =>
+    fixture.git.refreshArgs.filter((ids) => ids.length === 1 && ids[0] === wsId).length;
+
+  test("Krok 2: deleteWorkspace cancels a pending shell git-refresh timer", async () => {
+    const fixture = await createFixture({
+      initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a")] },
+    });
+    fixtures.push(fixture);
+    // Drain any background init refresh, then start from a clean refreshArgs.
+    await new Promise((r) => setTimeout(r, 50));
+
+    vi.useFakeTimers();
+    try {
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a"); // arms the 1s debounce
+      // Delete clears gitRefreshDebounceMap[ws-a] (and lastShellRefreshAt) so the
+      // timer can't outlive the workspace.
+      await fixture.runtime.deleteWorkspace("ws-a");
+      fixture.git.refreshArgs = []; // isolate: only a surviving shell timer would push now
+      await vi.advanceTimersByTimeAsync(12_000);
+      // Map key was cleared → the debounced refresh never fires for the gone ws.
+      expect(shellRefreshes(fixture, "ws-a")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Krok 2: deleting one workspace does not cancel another's pending git refresh", async () => {
+    const fixture = await createFixture({
+      initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a"), makeShellWorkspace("ws-b")] },
+    });
+    fixtures.push(fixture);
+    await new Promise((r) => setTimeout(r, 50));
+
+    vi.useFakeTimers();
+    try {
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a");
+      fixture.runtime.scheduleGitRefreshFromShell("ws-b");
+      await fixture.runtime.deleteWorkspace("ws-a"); // cancels ONLY ws-a's timer
+      fixture.git.refreshArgs = [];
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(shellRefreshes(fixture, "ws-b")).toBe(1); // ws-b still refreshes
+      expect(shellRefreshes(fixture, "ws-a")).toBe(0); // ws-a was cancelled
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Krok 3: a single OSC triggers one refresh after the ~1s debounce", async () => {
+    const fixture = await createFixture({
+      initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a")] },
+    });
+    fixtures.push(fixture);
+    await new Promise((r) => setTimeout(r, 50));
+
+    vi.useFakeTimers();
+    try {
+      fixture.git.refreshArgs = [];
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a");
+      await vi.advanceTimersByTimeAsync(999);
+      expect(shellRefreshes(fixture, "ws-a")).toBe(0); // not yet — still within debounce
+      await vi.advanceTimersByTimeAsync(1);
+      expect(shellRefreshes(fixture, "ws-a")).toBe(1); // leading edge → immediate
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Krok 3: a 30s OSC storm is coalesced to ≤4 refreshes (≈1 per 10s)", async () => {
+    const fixture = await createFixture({
+      initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a")] },
+    });
+    fixtures.push(fixture);
+    await new Promise((r) => setTimeout(r, 50));
+
+    vi.useFakeTimers();
+    try {
+      fixture.git.refreshArgs = [];
+      // OSC roughly every second for 30s (the agent mid-turn pattern).
+      for (let i = 0; i < 30; i++) {
+        fixture.runtime.scheduleGitRefreshFromShell("ws-a");
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      const during = shellRefreshes(fixture, "ws-a");
+      // Leading-edge limit (10s) squashes the storm: ~1 refresh at 1s, 11s, 21s.
+      expect(during).toBeGreaterThanOrEqual(1);
+      expect(during).toBeLessThanOrEqual(4);
+      // The LAST state is still eventually refreshed (coalesced re-arm fires).
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(shellRefreshes(fixture, "ws-a")).toBeGreaterThan(during - 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Krok 3: an OSC after a quiet period refreshes immediately again", async () => {
+    const fixture = await createFixture({
+      initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a")] },
+    });
+    fixtures.push(fixture);
+    await new Promise((r) => setTimeout(r, 50));
+
+    vi.useFakeTimers();
+    try {
+      fixture.git.refreshArgs = [];
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(shellRefreshes(fixture, "ws-a")).toBe(1); // first refresh
+
+      // >10s of quiet (no scheduling) — the leading-edge window resets.
+      await vi.advanceTimersByTimeAsync(11_000);
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(shellRefreshes(fixture, "ws-a")).toBe(2); // immediate again, not deferred
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Krok 3: two workspaces have independent debounce + rate-limit windows", async () => {
+    const fixture = await createFixture({
+      initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a"), makeShellWorkspace("ws-b")] },
+    });
+    fixtures.push(fixture);
+    await new Promise((r) => setTimeout(r, 50));
+
+    vi.useFakeTimers();
+    try {
+      fixture.git.refreshArgs = [];
+      // Both scheduled together → both fire on their own debounce.
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a");
+      fixture.runtime.scheduleGitRefreshFromShell("ws-b");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(shellRefreshes(fixture, "ws-a")).toBe(1);
+      expect(shellRefreshes(fixture, "ws-b")).toBe(1);
+
+      // ws-a is now inside its 10s window (next OSC defers); ws-b is untouched and
+      // would still refresh on its own schedule — the maps are keyed per workspace.
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(shellRefreshes(fixture, "ws-a")).toBe(1); // deferred by ws-a's own window
+      expect(shellRefreshes(fixture, "ws-b")).toBe(1); // unaffected by ws-a's storm
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Krok 3: deleting a workspace during the debounce wait fires no refresh", async () => {
+    const fixture = await createFixture({
+      initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a")] },
+    });
+    fixtures.push(fixture);
+    await new Promise((r) => setTimeout(r, 50));
+
+    vi.useFakeTimers();
+    try {
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a"); // timer pending mid-wait
+      await vi.advanceTimersByTimeAsync(500); // still waiting (debounce is 1s)
+      await fixture.runtime.deleteWorkspace("ws-a"); // delete cancels the pending timer
+      fixture.git.refreshArgs = [];
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(shellRefreshes(fixture, "ws-a")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // --- Step 3: managed-path guard ---
 
   test("deleteWorkspace with deleteFromDisk on plain (unmanaged) workspace sets deleteWorkspaceError and does not call rmPath", async () => {
@@ -4590,6 +4824,83 @@ describe("runtime integration", () => {
     await deletePromise;
 
     expect(await exists(taskFilesDir)).toBe(false);
+  });
+
+  test("Krok 5: cleanupTaskFiles failure is best-effort — delete still succeeds and releases the cwd guard", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-krok5-throws-"));
+    tempPaths.push(sharedCwd);
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeTaskWorkspace("task-a", "Old task", sharedCwd, "paused")] },
+    });
+    fixtures.push(fixture);
+
+    const spy = vi.spyOn(AgentTaskRunner.prototype, "cleanupTaskFiles").mockRejectedValue(new Error("EBUSY: locked"));
+    try {
+      // Cleanup throws, but the (already-completed) delete must still resolve.
+      const result = await fixture.runtime.deleteWorkspace("task-a");
+      expect(result).toBeDefined();
+      expect(spy).toHaveBeenCalledTimes(1);
+      // pendingKey was released in the finally despite the throw → a fresh task at
+      // the same cwd can be created (it wouldn't if the guard were still held).
+      const created = await fixture.runtime.createTaskWorkspace({
+        cwd: sharedCwd,
+        description: "fresh task",
+        activate: false,
+      });
+      expect(created?.workspaceId).toBeTruthy();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("Krok 5: cleanupTaskFiles still runs in the finally when store.mutate throws", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-krok5-mutate-"));
+    tempPaths.push(sharedCwd);
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeTaskWorkspace("task-a", "Old task", sharedCwd, "paused")] },
+    });
+    fixtures.push(fixture);
+
+    const spy = vi.spyOn(AgentTaskRunner.prototype, "cleanupTaskFiles").mockResolvedValue(undefined);
+    const origMutate = fixture.store.mutate;
+    // Make the workspace-removal mutate throw — cleanup must still run (finally),
+    // matching the previous pre-mutate placement's "always runs" semantics.
+    fixture.store.mutate = vi.fn(async () => {
+      throw new Error("mutate boom");
+    });
+    try {
+      await expect(fixture.runtime.deleteWorkspace("task-a")).rejects.toThrow(/mutate boom/);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.store.mutate = origMutate;
+      spy.mockRestore();
+    }
+  });
+
+  test("Krok 5: deleting a non-task workspace never calls cleanupTaskFiles", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "plain",
+            name: "Plain",
+            kind: "terminal",
+            cwd: "/tmp/plain-krok5",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const spy = vi.spyOn(AgentTaskRunner.prototype, "cleanupTaskFiles");
+    try {
+      await fixture.runtime.deleteWorkspace("plain");
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("startTask refuses when another task in the same profile is already active at the same cwd", async () => {

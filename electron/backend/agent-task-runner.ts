@@ -198,7 +198,9 @@ export class AgentTaskRunner {
   #programmaticJudges = new Set<string>();
   /** scheduled wakeup timers for workspaces in rate-limit hold */
   #rateLimitTimers = new Map<string, NodeJS.Timeout>();
-  /** per-workspace runtime context for the active rate-limit cycle */
+  /** per-(role, workspace) runtime context for the active rate-limit cycle.
+   *  Keyed via #rlKey so the worker and judge each get their own retry counter,
+   *  sharing the same cap (MAX_RATE_LIMIT_RETRIES) and >12h hard-stop. */
   #rateLimitCtx = new Map<string, { needsRestart: boolean; retries: number }>();
   /** deferred WORK_LOCK-absence checks that override a possibly-false rate-limit hold */
   #workLockOverrideTimers = new Map<string, NodeJS.Timeout>();
@@ -940,8 +942,9 @@ export class AgentTaskRunner {
       clearTimeout(resumeTimer);
       this.#rateLimitTimers.delete(workspaceId);
     }
-    this.#rateLimitCtx.delete(workspaceId);
-    // Krok 9 — clear any judge rate-limit hold/timer too.
+    this.#rateLimitCtx.delete(this.#rlKey(workspaceId, "worker"));
+    // Krok 9 — clear any judge rate-limit hold/timer/retry-ctx too.
+    this.#rateLimitCtx.delete(this.#rlKey(workspaceId, "judge"));
     this.#judgeRateLimitedUntil.delete(workspaceId);
     this.#clearJudgeRateLimitTimer(workspaceId);
     // Krok 9c — reset the short-turn heuristic for the fresh attempt.
@@ -1224,7 +1227,8 @@ export class AgentTaskRunner {
     const task = workspace.task;
     if (panelId !== task.workerPanelId) return false;
 
-    const ctx = this.#rateLimitCtx.get(workspaceId) ?? { needsRestart: false, retries: 0 };
+    const ctxKey = this.#rlKey(workspaceId, "worker");
+    const ctx = this.#rateLimitCtx.get(ctxKey) ?? { needsRestart: false, retries: 0 };
     const isFirstHit = !this.#rateLimitTimers.has(workspaceId);
 
     // Resolve resetAt: provider-supplied, or exponential fallback by retry
@@ -1266,7 +1270,7 @@ export class AgentTaskRunner {
       this.#pauseFromRateLimit(workspace, "retry cap");
       return true;
     }
-    this.#rateLimitCtx.set(workspaceId, ctx);
+    this.#rateLimitCtx.set(ctxKey, ctx);
 
     log.warn("worker rate-limited, scheduling resume", {
       workspaceId,
@@ -1333,7 +1337,7 @@ export class AgentTaskRunner {
     const prev = this.#rateLimitTimers.get(workspace.id);
     if (prev) clearTimeout(prev);
     this.#rateLimitTimers.delete(workspace.id);
-    this.#rateLimitCtx.delete(workspace.id);
+    this.#rateLimitCtx.delete(this.#rlKey(workspace.id, "worker"));
     this.#clearWorkLockOverrideTimer(workspace.id);
     this.#stopPeriodicWorkLockProbe(workspace.id);
     workspace.task.rateLimitedUntil = null;
@@ -1349,7 +1353,7 @@ export class AgentTaskRunner {
     const task = workspace.task;
     if (!task.rateLimitedUntil) return;
 
-    const ctx = this.#rateLimitCtx.get(workspaceId);
+    const ctx = this.#rateLimitCtx.get(this.#rlKey(workspaceId, "worker"));
     task.rateLimitedUntil = null;
     this.#clearWorkLockOverrideTimer(workspaceId);
     this.#stopPeriodicWorkLockProbe(workspaceId);
@@ -1402,8 +1406,14 @@ export class AgentTaskRunner {
   }
 
   /** Clear the per-workspace retry counter once the worker makes progress. */
+  /** Krok 9b — per-role key for #rateLimitCtx so the worker and judge accumulate
+   *  retries independently while sharing one cap + hard-stop. */
+  #rlKey(workspaceId: string, role: "worker" | "judge"): string {
+    return `${role}:${workspaceId}`;
+  }
+
   #clearRateLimitCtx(workspaceId: string): void {
-    this.#rateLimitCtx.delete(workspaceId);
+    this.#rateLimitCtx.delete(this.#rlKey(workspaceId, "worker"));
   }
 
   /**
@@ -1451,7 +1461,6 @@ export class AgentTaskRunner {
     match: RateLimitMatch,
     source: string,
   ): boolean {
-    const task = workspace.task;
     const workspaceId = workspace.id;
 
     // Always dismiss the dialog so the turn doesn't hang.
@@ -1459,36 +1468,79 @@ export class AgentTaskRunner {
       this.#writeToSession(sessionId, "\r");
     }
 
-    const resetAt = match.resetAt ?? this.#fallbackRateLimitReset(0);
+    // Krok 9b — per-role retry cap + hard-stop, sharing the worker's logic
+    // (MAX_RATE_LIMIT_RETRIES, RATE_LIMIT_HARD_STOP_MS) via a judge-keyed ctx.
+    const ctxKey = this.#rlKey(workspaceId, "judge");
+    const ctx = this.#rateLimitCtx.get(ctxKey) ?? { needsRestart: false, retries: 0 };
+    const isFirstHit = !this.#judgeRateLimitTimers.has(workspaceId);
+
+    // Resolve resetAt: provider-supplied, or escalating fallback by retry count
+    // (same ladder as the worker). Hard ceiling guards against parsing typos.
+    const resetAt = match.resetAt ?? this.#fallbackRateLimitReset(ctx.retries);
     const waitMs = resetAt.getTime() - Date.now();
     if (waitMs > AgentTaskRunner.RATE_LIMIT_HARD_STOP_MS) {
       log.error("judge rate-limit reset > hard stop, pausing task", { workspaceId, waitMs });
-      task.pausedFromState = "judge-evaluating";
-      this.#setTaskState(task, "paused");
       this.#logTaskEvent(
         workspace,
         "judge-rate-limit-failed",
         `Judge rate-limit reset is ${(waitMs / 3_600_000).toFixed(1)}h away (over 12h limit). Pausing.`,
       );
-      this.#broadcastState!();
+      this.#pauseJudgeFromRateLimit(workspace, "reset > 12h");
       return true;
     }
+
+    // Same-window dedup: a timer already scheduled for ~this reset → keep it,
+    // don't double-count it against the retry cap.
+    const existing = this.#judgeRateLimitedUntil.get(workspaceId) ?? 0;
+    if (this.#judgeRateLimitTimers.has(workspaceId) && Math.abs(existing - resetAt.getTime()) < 60_000) {
+      log.trace("handleJudgeRateLimited: already scheduled for this window", { workspaceId, source });
+      return true;
+    }
+
+    if (isFirstHit) ctx.retries += 1;
+    if (ctx.retries > AgentTaskRunner.MAX_RATE_LIMIT_RETRIES) {
+      log.error("judge rate-limit retry cap exceeded, pausing task", { workspaceId, retries: ctx.retries });
+      this.#logTaskEvent(
+        workspace,
+        "judge-rate-limit-failed",
+        `Judge rate-limited ${ctx.retries} times in a row — pausing task. Resume manually when usage frees up.`,
+      );
+      this.#pauseJudgeFromRateLimit(workspace, "retry cap");
+      return true;
+    }
+    this.#rateLimitCtx.set(ctxKey, ctx);
 
     this.#judgeRateLimitedUntil.set(workspaceId, resetAt.getTime());
     log.warn("judge rate-limited, scheduling resume", {
       workspaceId,
       source,
       providerHint: match.providerHint,
+      retries: ctx.retries,
       resetAt: resetAt.toISOString(),
     });
     this.#logTaskEvent(
       workspace,
       "judge-rate-limited",
-      `Judge hit its rate limit (${match.providerHint}). Resuming after ${resetAt.toLocaleTimeString()}.`,
+      `Judge hit its rate limit (${match.providerHint}, retry ${ctx.retries}/${AgentTaskRunner.MAX_RATE_LIMIT_RETRIES}). Resuming after ${resetAt.toLocaleTimeString()}.`,
     );
     this.#broadcastState!();
     this.#scheduleJudgeRateLimitResume(workspaceId, resetAt);
     return true;
+  }
+
+  /** Krok 9b — judge counterpart of #pauseFromRateLimit: clears the judge hold,
+   *  timer and per-role retry ctx, pauses from judge-evaluating, and alerts the
+   *  user. The descriptive TASK_LOG event is written by the call site (matching
+   *  the worker's #pauseFromRateLimit contract). */
+  #pauseJudgeFromRateLimit(workspace: TaskWorkspaceState, reason: string): void {
+    const workspaceId = workspace.id;
+    this.#clearJudgeRateLimitTimer(workspaceId);
+    this.#judgeRateLimitedUntil.delete(workspaceId);
+    this.#rateLimitCtx.delete(this.#rlKey(workspaceId, "judge"));
+    workspace.task.pausedFromState = "judge-evaluating";
+    this.#setTaskState(workspace.task, "paused");
+    this.#raiseTaskAlert(workspace, "failed", `Judge rate-limit handling gave up (${reason}) — task paused.`);
+    this.#broadcastState!();
   }
 
   #scheduleJudgeRateLimitResume(workspaceId: string, resetAt: Date): void {
@@ -1842,7 +1894,7 @@ export class AgentTaskRunner {
       clearTimeout(resumeTimer);
       this.#rateLimitTimers.delete(workspaceId);
     }
-    this.#rateLimitCtx.delete(workspaceId);
+    this.#rateLimitCtx.delete(this.#rlKey(workspaceId, "worker"));
     this.#stopPeriodicWorkLockProbe(workspaceId);
     this.#logTaskEvent(
       workspace,
@@ -2504,9 +2556,11 @@ export class AgentTaskRunner {
         return;
       }
 
-      // A real verdict supersedes any judge rate-limit hold (incident C).
+      // A real verdict supersedes any judge rate-limit hold (incident C). The
+      // judge cycle succeeded → reset its per-role retry counter too.
       this.#judgeRateLimitedUntil.delete(workspaceId);
       this.#clearJudgeRateLimitTimer(workspaceId);
+      this.#rateLimitCtx.delete(this.#rlKey(workspaceId, "judge"));
 
       log.info("judge verdict", { workspaceId, verdict: verdict.verdict, reason: verdict.reason });
       this.#logTaskEvent(workspace, "judge-verdict", `Verdict: ${verdict.verdict}. ${verdict.reason || ""}`);

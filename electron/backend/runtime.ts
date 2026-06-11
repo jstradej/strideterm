@@ -4554,6 +4554,17 @@ export async function createRuntime({
     syncWorktrees: async (): Promise<void> => {
       await syncWorktrees();
     },
+    /**
+     * perf-3 / Krok 2-3 — arm the debounced, leading-edge-rate-limited git
+     * refresh that an OSC 133;D command-finished marker triggers. Normally
+     * driven from the `terminal:data` handler; exposed so tests can exercise
+     * the debounce + 10s leading-edge coalescing + delete-cancellation
+     * deterministically with fake timers and a `refreshWorkspaces` spy, instead
+     * of decoding raw OSC byte streams through the whole data pipeline.
+     */
+    scheduleGitRefreshFromShell: (workspaceId: string): void => {
+      scheduleGitRefreshFromShell(workspaceId);
+    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     on(channel: any, handler: any) {
       events.on(channel, handler);

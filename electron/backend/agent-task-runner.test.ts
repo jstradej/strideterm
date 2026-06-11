@@ -1492,6 +1492,42 @@ describe("resumeTask - late prompt delivery", () => {
     await waitFor(() => ws.task.state === "completed");
     await fs.rm(tmp, { recursive: true, force: true });
   });
+
+  // Test 6 — resume(running) with the WORK_LOCK gone means the worker signalled
+  // done while paused → reconcile must run #evaluateWorker (not wait for a hook).
+  test("resume (running, WORK_LOCK absent) runs #evaluateWorker", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-resume-eval-"));
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: {},
+      description: "Real task",
+      cwd: tmp,
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    // Task dir exists but NO WORK_LOCK file (worker removed it = "done") and NO
+    // verdict.json (so branch 1 is skipped and we land on the WORK_LOCK branch).
+    await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+    ws.task.state = "paused";
+    ws.task.pausedFromState = "running"; // resumeTo === "running"
+    ws.task.promptSent = true;
+
+    runner.resumeTask(ws.id);
+
+    // Reconcile logs the WORK_LOCK-absent decision, then #evaluateWorker runs and
+    // logs evaluation-complete after the built-in checks.
+    await waitFor(async () => {
+      const events = await readTaskLogEvents(tmp, ws.task.taskId);
+      return (
+        events.some((e) => e.event === "task-resumed-reconcile" && /WORK_LOCK absent/.test(e.detail || "")) &&
+        events.some((e) => e.event === "evaluation-complete")
+      );
+    });
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
 });
 
 describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit)", () => {
@@ -2122,6 +2158,57 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
         { timeoutMs: 4000 },
       );
       expect(ws.task.state).toBe("judge-evaluating");
+    } finally {
+      AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = prevMargin;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // Krok 9b — the judge shares the worker's retry cap + hard-stop via a per-role
+  // #rateLimitCtx. After MAX_RATE_LIMIT_RETRIES consecutive judge limit hits the
+  // task pauses from judge-evaluating with an urgent alert (no infinite re-prompt).
+  test("judge rate-limit retry cap pauses the task after MAX consecutive hits", async () => {
+    const prevMargin = AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS;
+    AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = 20; // fire each scheduled resume fast
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-judge-rl-cap-"));
+    const runner = new AgentTaskRunner();
+    try {
+      const ws = runner.createTaskWorkspace({
+        state: {},
+        description: "Real task",
+        cwd: tmp,
+        parentWorkspaceId: "",
+        maxRounds: 3,
+      });
+      await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true }); // verdict stays missing
+      const deps = createMockDeps([ws]);
+      runner.init(deps);
+      ws.task.state = "judge-evaluating";
+      ws.task.promptSent = true;
+      const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+
+      // Each hit increments the judge retry counter; the scheduled resume between
+      // hits clears the judge timer so the next hit counts as a fresh retry. The
+      // (MAX+1)th hit trips the cap.
+      for (let i = 1; i <= AgentTaskRunner.MAX_RATE_LIMIT_RETRIES + 1; i++) {
+        runner.onAgentRateLimited(
+          judgeSessionId,
+          { resetAt: new Date(Date.now() + 10), needsConfirm: true, providerHint: "claude" },
+          "test",
+        );
+        if (ws.task.state === "paused") break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+
+      expect(ws.task.state).toBe("paused");
+      // Krok 4 — paused from judge-evaluating so a Continue reads the verdict.
+      expect(ws.task.pausedFromState).toBe("judge-evaluating");
+      // raiseTaskAlert maps failed → urgent alert with detail "task-failed: ...".
+      const failed = deps.alerts.find(
+        (a: { detail: string; urgency: string }) =>
+          a.urgency === "urgent" && typeof a.detail === "string" && a.detail.startsWith("task-failed"),
+      );
+      expect(failed).toBeDefined();
     } finally {
       AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = prevMargin;
       await fs.rm(tmp, { recursive: true, force: true });

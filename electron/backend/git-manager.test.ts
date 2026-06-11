@@ -2,8 +2,20 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { GitManager } from "./git-manager.js";
+
+// Real-git availability gate for the fixture round-trip suite (Phase 1 §5).
+// Mirrors merge3.test.ts's golden-test guard: skip gracefully where git is absent.
+const GIT_AVAILABLE = (() => {
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 const tempPaths: string[] = [];
 
@@ -2174,6 +2186,122 @@ describe("GitManager", () => {
       expect(state.currentCommit?.subject).toBe("feat: add feature");
       expect(state.sides?.ours).toBe("main");
       expect(state.sides?.theirs).toBe("feature/x");
+    });
+  });
+
+  // Phase 1 §5 — integration round-trip against a REAL git repo: create a
+  // conflict, resolve via each mode, and assert the working tree ends clean
+  // (no unmerged entries). Complements the mocked arg-sequence tests above,
+  // which prove WHICH git commands run but not the end-to-end git outcome.
+  describe.skipIf(!GIT_AVAILABLE)("conflict resolution — real git fixture round-trip", () => {
+    const mgr = new GitManager({}); // execGitImpl=null → real `git`
+    const ws = (cwd: string) => ({ id: "ws", cwd, kind: "terminal" as const });
+    // Run real git in the fixture; throws on non-zero exit (callers catch the
+    // expected merge-conflict failure).
+    const rg = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+    const unmerged = (cwd: string) => rg(cwd, ["ls-files", "-u"]).trim();
+
+    async function initRepo(prefix: string): Promise<{ root: string; branch: string }> {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+      tempPaths.push(root);
+      rg(root, ["init", "-q"]);
+      rg(root, ["config", "user.email", "t@example.com"]);
+      rg(root, ["config", "user.name", "Test"]);
+      rg(root, ["config", "commit.gpgsign", "false"]);
+      rg(root, ["config", "core.autocrlf", "false"]); // deterministic content cross-platform
+      await fs.writeFile(path.join(root, "app.txt"), "base\ncommon\n", "utf8");
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "base"]);
+      const branch = rg(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+      return { root, branch };
+    }
+
+    // base → feature edits app.txt → base-branch edits the same line → merge conflicts.
+    async function makeBothModifiedRepo(): Promise<string> {
+      const { root, branch } = await initRepo("strideterm-git-bothmod-");
+      rg(root, ["checkout", "-q", "-b", "feature"]);
+      await fs.writeFile(path.join(root, "app.txt"), "theirs\ncommon\n", "utf8");
+      rg(root, ["commit", "-q", "-am", "feature edit"]);
+      rg(root, ["checkout", "-q", branch]);
+      await fs.writeFile(path.join(root, "app.txt"), "ours\ncommon\n", "utf8");
+      rg(root, ["commit", "-q", "-am", "base-branch edit"]);
+      try {
+        rg(root, ["merge", "--no-edit", "feature"]);
+      } catch {
+        /* expected: conflict in app.txt */
+      }
+      return root;
+    }
+
+    test("lists a both-modified conflict and reads its three stages", async () => {
+      const root = await makeBothModifiedRepo();
+      const list = await mgr.listConflicts(ws(root));
+      expect(list.ok).toBe(true);
+      const entries = list.entries as Array<{ path: string; conflictType: string }>;
+      expect(entries.some((e) => e.path === "app.txt" && e.conflictType === "both-modified")).toBe(true);
+
+      const detail = await mgr.conflictDetail(ws(root), { filePath: "app.txt" });
+      expect(detail.ok).toBe(true);
+      expect(String(detail.base)).toContain("base");
+      expect(String(detail.ours)).toContain("ours");
+      expect(String(detail.theirs)).toContain("theirs");
+    });
+
+    test("mode=ours resolves to our version and leaves no unmerged entries", async () => {
+      const root = await makeBothModifiedRepo();
+      const res = await mgr.resolveConflict(ws(root), { filePath: "app.txt", mode: "ours" });
+      expect(res.ok).toBe(true);
+      expect(await fs.readFile(path.join(root, "app.txt"), "utf8")).toContain("ours");
+      expect(unmerged(root)).toBe(""); // clean
+    });
+
+    test("mode=theirs resolves to their version and leaves no unmerged entries", async () => {
+      const root = await makeBothModifiedRepo();
+      const res = await mgr.resolveConflict(ws(root), { filePath: "app.txt", mode: "theirs" });
+      expect(res.ok).toBe(true);
+      expect(await fs.readFile(path.join(root, "app.txt"), "utf8")).toContain("theirs");
+      expect(unmerged(root)).toBe("");
+    });
+
+    test("mode=manual writes merged content, stages it, and the merge commits clean", async () => {
+      const root = await makeBothModifiedRepo();
+      const merged = "merged result\ncommon\n";
+      const res = await mgr.resolveConflict(ws(root), { filePath: "app.txt", mode: "manual", content: merged });
+      expect(res.ok).toBe(true);
+      expect(await fs.readFile(path.join(root, "app.txt"), "utf8")).toBe(merged);
+      expect(unmerged(root)).toBe("");
+      // Drive the operation to completion — committing the merge succeeds and the tree is clean.
+      rg(root, ["commit", "-q", "--no-edit"]);
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe("");
+    });
+
+    test("unresolveConflict restores conflict markers (Undo)", async () => {
+      const root = await makeBothModifiedRepo();
+      await mgr.resolveConflict(ws(root), { filePath: "app.txt", mode: "ours" });
+      expect(unmerged(root)).toBe("");
+      const undo = await mgr.unresolveConflict(ws(root), { filePath: "app.txt" });
+      expect(undo.ok).toBe(true);
+      expect(unmerged(root)).not.toBe(""); // unmerged again
+      expect(await fs.readFile(path.join(root, "app.txt"), "utf8")).toContain("<<<<<<<");
+    });
+
+    test("mode=delete resolves a modify/delete conflict cleanly", async () => {
+      const { root, branch } = await initRepo("strideterm-git-del-");
+      rg(root, ["checkout", "-q", "-b", "feature"]);
+      rg(root, ["rm", "-q", "app.txt"]);
+      rg(root, ["commit", "-q", "-m", "delete on feature"]);
+      rg(root, ["checkout", "-q", branch]);
+      await fs.writeFile(path.join(root, "app.txt"), "modified\ncommon\n", "utf8");
+      rg(root, ["commit", "-q", "-am", "modify on base branch"]);
+      try {
+        rg(root, ["merge", "--no-edit", "feature"]);
+      } catch {
+        /* expected: modify/delete conflict */
+      }
+      expect(unmerged(root)).not.toBe(""); // sanity: a real conflict exists
+      const res = await mgr.resolveConflict(ws(root), { filePath: "app.txt", mode: "delete" });
+      expect(res.ok).toBe(true);
+      expect(unmerged(root)).toBe(""); // resolved via git rm — clean
     });
   });
 });
