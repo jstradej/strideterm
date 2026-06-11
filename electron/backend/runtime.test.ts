@@ -4549,6 +4549,85 @@ describe("runtime integration", () => {
     expect(worktree?.notes).toMatch(/^Worktree of /);
   });
 
+  test("saveWorkspace inserts a new top-level workspace after the active workspace tree", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [{ id: "profile-a", name: "A", color: "#aaa" }],
+        workspaces: [
+          {
+            id: "before",
+            name: "Before",
+            kind: "terminal",
+            profileId: "profile-a",
+            cwd: "",
+            activePanelId: "",
+            panels: [],
+          },
+          {
+            id: "active",
+            name: "Active",
+            kind: "terminal",
+            profileId: "profile-a",
+            cwd: "",
+            activePanelId: "",
+            panels: [],
+          },
+          {
+            id: "active-child",
+            name: "Active child",
+            kind: "task",
+            profileId: "profile-a",
+            cwd: "",
+            activePanelId: "",
+            panels: [],
+            task: { parentWorkspaceId: "active" },
+          },
+          {
+            id: "after",
+            name: "After",
+            kind: "terminal",
+            profileId: "profile-a",
+            cwd: "",
+            activePanelId: "",
+            panels: [],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-a",
+            profileId: "profile-a",
+            activeWorkspaceId: "active",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.saveWorkspace(
+      {
+        id: "new",
+        name: "New",
+        kind: "terminal",
+        profileId: "profile-a",
+        cwd: "",
+        activePanelId: "",
+        panels: [],
+      },
+      "win-a",
+    );
+
+    expect(fixture.store.getState().workspaces.map((workspace) => workspace.id)).toEqual([
+      "before",
+      "active",
+      "active-child",
+      "new",
+      "after",
+    ]);
+  });
+
   test("deleteWorkspace triggers syncTreeDirWatchers — git poll no longer re-adds removed parent tree (#42)", async () => {
     // syncTreeDirWatchers is called after deleteWorkspace (runtime.ts:5094).
     // After the parent is deleted and its tree-subdir removed from disk,
@@ -7782,7 +7861,13 @@ describe("provider connections — profile ownership across viewers", () => {
           profileId: "profile-a",
           activePanelId: "shell",
           panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
-          review: { provider: "azure-devops", prKey, connectionId: "ado-1", checkout: { mode: "managed-worktree" } },
+          review: {
+            provider: "azure-devops",
+            prKey,
+            connectionId: "ado-1",
+            parentWorkspaceId: "ws-azure",
+            checkout: { mode: "managed-worktree" },
+          },
         },
       };
     }
@@ -7961,6 +8046,53 @@ describe("provider connections — profile ownership across viewers", () => {
     // The OTHER window of the same profile keeps its own view.
     expect(slots.find((s) => s.id === "win-a2")?.activeWorkspaceId).toBe("ws-a1");
     expect(slots.find((s) => s.id === "win-default")?.activeWorkspaceId).toBe("ws-default");
+  });
+
+  test("new PR review is inserted directly below its provider inbox before older reviews", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const initialState: any = makeConnectionState();
+    initialState.projects.push(
+      {
+        id: "ws-azure",
+        name: "Azure DevOps",
+        kind: "azure",
+        profileId: "profile-a",
+        cwd: "/tmp/azure",
+        activePanelId: "",
+        panels: [],
+      },
+      {
+        id: "ws-review-old",
+        name: "Old review",
+        kind: "terminal",
+        profileId: "profile-a",
+        cwd: "/tmp/review-old",
+        activePanelId: "shell",
+        panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        review: {
+          provider: "azure-devops",
+          prKey: "ado-1:repo:122",
+          connectionId: "ado-1",
+          parentWorkspaceId: "ws-azure",
+          checkout: { mode: "managed-worktree" },
+        },
+      },
+    );
+    const fixture = await createFixture({
+      initialState,
+      dependencies: { AzureDevOpsManager: ConnFakeAzureManager },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.openAzurePullRequest({ prKey: "ado-1:repo:123" }, "win-a");
+
+    expect(
+      fixture.store
+        .getState()
+        .workspaces.filter((workspace) => (workspace.profileId || "default") === "profile-a")
+        .map((workspace) => workspace.id),
+    ).toEqual(["ws-a1", "ws-azure", "ws-review-1", "ws-review-old"]);
+    expect(fixture.store.getState().workspaces[0].id).toBe("ws-default");
   });
 
   test("open PR review from remote P activates the remote viewer — desktop windows stay where they were", async () => {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { findWorkspace } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
+import { insertWorkspace } from "./workspace-order.js";
 import type { WorkspaceState, AppState } from "../shared/types/state.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -37,6 +38,7 @@ interface GitHubHandlerCtx {
   getGitHubConnections: (state?: AppState) => any[];
   /** Viewer-aware profile resolution — accepts window slot ids and remote viewer ids. */
   getViewerProfileId: (viewerId?: string) => string | null;
+  getViewerActiveWorkspaceId: (viewerId?: string) => string;
   /** Mirror an activation into a remote viewer's context (no-op for desktop ids). */
   mirrorRemoteViewerWorkspace: (viewerId: string | undefined, workspaceId: string) => void;
 }
@@ -68,6 +70,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     getGitHubSettings,
     getGitHubConnections,
     getViewerProfileId,
+    getViewerActiveWorkspaceId,
     mirrorRemoteViewerWorkspace,
   } = ctx;
 
@@ -228,7 +231,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
         if (index >= 0) {
           draft.workspaces[index] = normalized;
         } else {
-          draft.workspaces.push(normalized);
+          insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         }
         draft.activeWorkspaceId = normalized.id;
         // Mirror only when the review workspace's profile matches the slot's.
@@ -449,7 +452,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
-        draft.workspaces.push(normalized);
+        insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = normalized.id;
         // See openAzurePullRequest for the cross-profile guard rationale.
         if (windowId) {

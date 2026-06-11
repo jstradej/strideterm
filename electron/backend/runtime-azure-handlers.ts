@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { findWorkspace } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { normalizeConnectionInput } from "./azure-devops-manager.js";
+import { insertWorkspace } from "./workspace-order.js";
 import type { WorkspaceState, AppState } from "../shared/types/state.js";
 
 /**
@@ -39,6 +40,7 @@ interface AzureHandlerCtx {
   getAzureConnections: (state?: AppState) => any[];
   /** Viewer-aware profile resolution — accepts window slot ids and remote viewer ids. */
   getViewerProfileId: (viewerId?: string) => string | null;
+  getViewerActiveWorkspaceId: (viewerId?: string) => string;
   /** Mirror an activation into a remote viewer's context (no-op for desktop ids). */
   mirrorRemoteViewerWorkspace: (viewerId: string | undefined, workspaceId: string) => void;
 }
@@ -69,6 +71,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     getAzureSettings,
     getAzureConnections,
     getViewerProfileId,
+    getViewerActiveWorkspaceId,
     mirrorRemoteViewerWorkspace,
   } = ctx;
 
@@ -245,7 +248,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         if (index >= 0) {
           draft.workspaces[index] = normalized;
         } else {
-          draft.workspaces.push(normalized);
+          insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         }
         draft.activeWorkspaceId = normalized.id;
         // Mirror activation into the calling window's slot ONLY when the
@@ -609,28 +612,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
-        const parentId = result.parentWorkspaceId;
-        if (parentId) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          let insertIdx = draft.workspaces.findIndex((ws: any) => ws.id === parentId);
-          if (insertIdx >= 0) {
-            insertIdx++;
-            while (insertIdx < draft.workspaces.length) {
-              const ws = draft.workspaces[insertIdx];
-              const isChild =
-                ws.review?.checkout?.mode === "managed-worktree" ||
-                ws.quickfix?.parentWorkspaceId === parentId ||
-                ((ws.notes || "").startsWith("Worktree of ") && ws.review?.parentWorkspaceId === parentId);
-              if (!isChild) break;
-              insertIdx++;
-            }
-            draft.workspaces.splice(insertIdx, 0, normalized);
-          } else {
-            draft.workspaces.push(normalized);
-          }
-        } else {
-          draft.workspaces.push(normalized);
-        }
+        insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = normalized.id;
         // See openAzurePullRequest for the cross-profile guard rationale.
         if (windowId) {

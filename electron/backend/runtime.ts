@@ -80,6 +80,7 @@ import {
 import { createProviderHandlers } from "./runtime-provider-handlers.js";
 import { createGitHandlers } from "./runtime-git-handlers.js";
 import { createProviderLifecycle } from "./runtime-provider-lifecycle.js";
+import { insertWorkspace } from "./workspace-order.js";
 import { createSshHandlers } from "./ssh/runtime-ssh-handlers.js";
 import { SshManager } from "./ssh/ssh-manager.js";
 import {
@@ -4297,6 +4298,7 @@ export async function createRuntime({
     getGitHubConnections,
     assertWorkspaceInViewerProfile,
     getViewerProfileId: getWindowProfileId,
+    getViewerActiveWorkspaceId,
     mirrorRemoteViewerWorkspace,
   });
 
@@ -4385,6 +4387,17 @@ export async function createRuntime({
     }
     const slot = (getState().windowSlots || []).find((s) => s.id === windowId);
     return slot ? slot.profileId : null;
+  }
+
+  function getViewerActiveWorkspaceId(viewerId: string | undefined): string {
+    const remoteSessionId = parseRemoteViewerId(viewerId);
+    if (remoteSessionId) {
+      return _remoteClientRegistry?.get(remoteSessionId)?.activeWorkspaceId || "";
+    }
+    if (viewerId) {
+      return (getState().windowSlots || []).find((slot) => slot.id === viewerId)?.activeWorkspaceId || "";
+    }
+    return getState().activeWorkspaceId || "";
   }
 
   /**
@@ -5385,27 +5398,7 @@ export async function createRuntime({
         if (index >= 0) {
           draft.workspaces[index] = normalized;
         } else {
-          // Insert child workspaces right after their parent instead of at the end
-          const parentId =
-            normalized.task?.parentWorkspaceId ||
-            normalized.review?.parentWorkspaceId ||
-            normalized.quickfix?.parentWorkspaceId ||
-            "";
-          const parentIdx = parentId ? draft.workspaces.findIndex((item) => item.id === parentId) : -1;
-          if (parentIdx >= 0) {
-            // Find last consecutive child of this parent to insert after the group
-            let insertAt = parentIdx + 1;
-            while (insertAt < draft.workspaces.length) {
-              const ws = draft.workspaces[insertAt];
-              const wsParent =
-                ws.task?.parentWorkspaceId || ws.review?.parentWorkspaceId || ws.quickfix?.parentWorkspaceId || "";
-              if (wsParent !== parentId) break;
-              insertAt++;
-            }
-            draft.workspaces.splice(insertAt, 0, normalized);
-          } else {
-            draft.workspaces.push(normalized);
-          }
+          insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         }
 
         if (!draft.activeWorkspaceId) {
@@ -6966,22 +6959,7 @@ export async function createRuntime({
       });
 
       await store.mutate((draft: AppState) => {
-        // Insert worktree right after parent (and any existing sibling worktrees)
-        const parentIndex = draft.workspaces.findIndex((w) => w.id === targetWorkspaceId);
-        if (parentIndex >= 0) {
-          const prefix = project.name + " / ";
-          let insertAt = parentIndex + 1;
-          while (
-            insertAt < draft.workspaces.length &&
-            draft.workspaces[insertAt].name.startsWith(prefix) &&
-            (draft.workspaces[insertAt].notes || "").startsWith("Worktree of ")
-          ) {
-            insertAt++;
-          }
-          draft.workspaces.splice(insertAt, 0, newProject);
-        } else {
-          draft.workspaces.push(newProject);
-        }
+        insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = newProject.id;
         // Entry check (assertWorkspaceInViewerProfile) already refused any
         // cross-profile request, so the mirror here is always in-profile.
