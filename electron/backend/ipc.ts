@@ -109,6 +109,7 @@ import {
   taskWorkspaceCreateSchema,
   taskWorkspaceActionSchema,
   taskRejectVerdictSchema,
+  taskResendInstructionSchema,
   taskUpdateDescriptionSchema,
   taskRecoveryResolveSchema,
   telegramConnectionSchema,
@@ -1020,6 +1021,12 @@ export function registerIpc(
     withOperationPromise({ opId: "task:reject-verdict" }, async () => {
       const parsed = validateIpc(taskRejectVerdictSchema, payload, "task:reject-verdict");
       return runtime.rejectTaskVerdict(parsed.workspaceId, parsed.feedback);
+    }),
+  );
+  ipcMain.handle("task:resend-instruction", async (_event, payload) =>
+    withOperationPromise({ opId: "task:resend-instruction" }, async () => {
+      const parsed = validateIpc(taskResendInstructionSchema, payload, "task:resend-instruction");
+      return runtime.resendTaskInstruction(parsed.workspaceId, parsed.role);
     }),
   );
   ipcMain.handle("task:update-description", async (event, payload) => {
@@ -2225,6 +2232,7 @@ export function registerIpc(
     ipcMain.removeHandler("task:check-git-repo");
     ipcMain.removeHandler("fs:probe-directory");
     ipcMain.removeHandler("task:reject-verdict");
+    ipcMain.removeHandler("task:resend-instruction");
     ipcMain.removeHandler("git:list-tags");
     ipcMain.removeHandler("git:create-tag");
     ipcMain.removeHandler("git:delete-tag");

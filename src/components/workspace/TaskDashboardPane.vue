@@ -49,6 +49,22 @@
             Pause
           </button>
           <button
+            v-if="['running', 'evaluating', 'judge-evaluating', 'refreshing', 'paused'].includes(taskState?.state)"
+            class="button button--ghost button--sm"
+            title="Re-send the last instruction to the Worker — use if the CLI dropped out of agent mode"
+            @click="onResend('worker')"
+          >
+            ↻ Worker
+          </button>
+          <button
+            v-if="['running', 'evaluating', 'judge-evaluating', 'refreshing', 'paused'].includes(taskState?.state)"
+            class="button button--ghost button--sm"
+            title="Re-send the last instruction to the Judge — use if the CLI dropped out of agent mode"
+            @click="onResend('judge')"
+          >
+            ↻ Judge
+          </button>
+          <button
             v-if="taskState?.state === 'completed' || taskState?.state === 'failed'"
             class="button button--ghost button--sm"
             title="Override the verdict and send the Worker back with your own feedback"
@@ -416,6 +432,23 @@ async function onStop() {
     if (r?.payload) store.handleBroadcastPayload(r.payload);
   } catch (err) {
     console.error("[task-dashboard] stop failed:", err);
+  }
+}
+
+// Manually re-send the last instruction to the worker/judge — escape hatch for
+// when the underlying CLI dropped out of agent mode and didn't auto-recover.
+async function onResend(role: "worker" | "judge") {
+  const id = wsId();
+  if (!api || !id) return;
+  try {
+    const r = await api.resendTaskInstruction({ workspaceId: id, role });
+    if (r?.payload) store.handleBroadcastPayload(r.payload);
+    if (r && (r as { ok?: boolean }).ok === false) {
+      await taskToast("Nothing to resend", `No previous ${role} instruction has been sent yet.`, "info");
+    }
+  } catch (err) {
+    console.error("[task-dashboard] resend failed:", err);
+    await taskToast("Resend failed", (err as Error)?.message || "Unknown error");
   }
 }
 

@@ -140,6 +140,11 @@ interface RuntimeDeps {
    * providers can confirm a submit, so non-hook providers keep today's
    * fire-and-forget behaviour. Optional — absent means "not hook-capable". */
   isSessionHookCapable?: (sessionId: string) => boolean;
+  /** Whether the session's last output looks like a bare shell prompt — i.e.
+   * the agent CLI exited back to its parent shell (forced update / crash /
+   * stray `exit`) without the PTY itself dying. Used to detect a mid-task
+   * dropout and restart the agent. Optional — absent means "can't tell". */
+  isAgentDroppedToShell?: (sessionId: string) => boolean;
 }
 
 // ------ Module-level pure helpers -------
@@ -221,6 +226,20 @@ export class AgentTaskRunner {
   #saveState: RuntimeDeps["saveState"] | null = null;
   #isSessionBusy: RuntimeDeps["isSessionBusy"] | null = null;
   #isSessionHookCapable: RuntimeDeps["isSessionHookCapable"] | null = null;
+  #isAgentDroppedToShell: RuntimeDeps["isAgentDroppedToShell"] | null = null;
+
+  /** Last prompt text injected into each session (keyed by sessionId), captured
+   * by #injectPrompt. Powers the manual "Resend" buttons and the auto-restart
+   * re-injection after a dropout. Holds the ORIGINAL full text (not the
+   * file-pointer rewrite), so re-injecting reconstructs PROMPT.md as needed. */
+  #lastInjected = new Map<string, string>();
+  /** Consecutive auto-restart attempts after a detected agent dropout, keyed by
+   * sessionId. Reset to 0 once the agent accepts a prompt again
+   * (onUserPromptSubmit). Over MAX_DROPOUT_RESTARTS the task is paused. */
+  #dropoutCtx = new Map<string, number>();
+  /** Restart-then-re-inject cap for an agent that keeps dropping out of agent
+   * mode (e.g. a CLI stuck in a forced-update loop). */
+  static MAX_DROPOUT_RESTARTS = 3;
 
   /** Krok 1 — sessions awaiting a UserPromptSubmit confirmation after an inject.
    * onUserPromptSubmit resolves the waiters for the session. */
@@ -254,6 +273,7 @@ export class AgentTaskRunner {
     saveState,
     isSessionBusy,
     isSessionHookCapable,
+    isAgentDroppedToShell,
   }: RuntimeDeps): void {
     this.#writeToSession = writeToSession;
     this.#getState = getState;
@@ -263,6 +283,7 @@ export class AgentTaskRunner {
     this.#saveState = saveState ?? null;
     this.#isSessionBusy = isSessionBusy ?? null;
     this.#isSessionHookCapable = isSessionHookCapable ?? null;
+    this.#isAgentDroppedToShell = isAgentDroppedToShell ?? null;
 
     // Crash-recovery sweep on startup. See #reconcileOnStartup for the full
     // story; the short version is: tasks whose state on disk says they were
@@ -950,11 +971,45 @@ export class AgentTaskRunner {
     // Krok 9c — reset the short-turn heuristic for the fresh attempt.
     this.#workerInjectAt.delete(workspaceId);
     this.#shortWorkerTurns.delete(workspaceId);
+    // Drop the per-session last-instruction cache and dropout counters so a
+    // fresh run never resends a stale prompt or carries an old restart tally.
+    for (const sid of [`${workspaceId}:${task.workerPanelId}`, `${workspaceId}:${task.judgePanelId}`]) {
+      this.#lastInjected.delete(sid);
+      this.#dropoutCtx.delete(sid);
+    }
 
     await this.#recreateWorkLock(workspace, "reset");
 
     log.info("task reset", { workspaceId, previousState });
     this.#logTaskEvent(workspace, "task-reset", `Previous state: ${previousState}`);
+    this.#broadcastState!();
+    return true;
+  }
+
+  /**
+   * Manually re-send the last instruction we injected into the worker or judge
+   * session. Escape hatch for when an agent dropped out of agent mode and the
+   * auto-restart didn't (or couldn't) recover — e.g. a CLI sitting at a forced
+   * update / login prompt the runner can't drive. Re-injects verbatim via the
+   * normal injection path (rebuilding PROMPT.md for long prompts).
+   */
+  async resendLastInstruction(workspaceId: string, role: "worker" | "judge"): Promise<boolean> {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+    const task = workspace.task;
+    const panelId = role === "judge" ? task.judgePanelId : task.workerPanelId;
+    const sessionId = `${workspaceId}:${panelId}`;
+    const text = this.#lastInjected.get(sessionId);
+    if (!text) {
+      log.warn("resendLastInstruction: nothing to resend", { workspaceId, role });
+      this.#logTaskEvent(workspace, "resend-skipped", `No previous ${role} instruction to resend yet.`);
+      return false;
+    }
+    log.info("resendLastInstruction: re-injecting last instruction", { workspaceId, role, length: text.length });
+    this.#logTaskEvent(workspace, "resend-instruction", `Manually re-sent the last instruction to the ${role}.`);
+    this.#injectPrompt(sessionId, text, workspace).catch((err: unknown) => {
+      log.error("resendLastInstruction: inject failed", { workspaceId, role, err: (err as Error)?.message });
+    });
     this.#broadcastState!();
     return true;
   }
@@ -1116,6 +1171,20 @@ export class AgentTaskRunner {
         return true;
       }
 
+      // Dropout guard: the "idle" might actually be the agent CLI having exited
+      // back to the shell (forced update / crash). Re-prompting now would type
+      // the instruction into a bare shell. Restart the agent instead.
+      if (this.#isAgentDroppedToShell?.(sessionId)) {
+        this.#handleAgentDropout(workspace, sessionId, "worker").catch((err: unknown) => {
+          log.error("handleAgentDropout (worker) error", { workspaceId, err: (err as Error)?.message });
+        });
+        return true;
+      }
+      // Reached a normal agent idle (not a shell prompt) → the agent is back to
+      // working, so clear any dropout restart tally. Counting only consecutive
+      // dropouts that never recover is what makes a flapping CLI hit the cap.
+      this.#dropoutCtx.delete(sessionId);
+
       const elapsedMs = task.startedAt ? Date.now() - (task.startedAt as unknown as number) : 0;
       log.info("worker idle detected, starting evaluation", {
         workspaceId,
@@ -1153,6 +1222,17 @@ export class AgentTaskRunner {
         this.#broadcastState!();
         return true; // Wait for next idle to read verdict
       }
+      // Dropout guard (judge side): a "verdict missing" that's really the judge
+      // CLI having exited back to the shell. Restart instead of nudging a shell.
+      if (this.#isAgentDroppedToShell?.(sessionId)) {
+        this.#handleAgentDropout(workspace, sessionId, "judge").catch((err: unknown) => {
+          log.error("handleAgentDropout (judge) error", { workspaceId, err: (err as Error)?.message });
+        });
+        return true;
+      }
+      // Normal judge idle (not a shell prompt) → clear any dropout restart tally.
+      this.#dropoutCtx.delete(sessionId);
+
       log.info("judge idle detected, reading verdict", { workspaceId, sessionId, source });
       this.#logTaskEvent(workspace, "judge-idle-detected", `Judge went idle via ${source}. Reading verdict…`);
       this.#handleJudgeVerdict(workspace, source).catch((err: unknown) => {
@@ -1927,6 +2007,10 @@ export class AgentTaskRunner {
 
     log.trace("onSessionExit: task session exited", { sessionId, panelId, taskState: workspace.task.state });
 
+    // Note: this fires only when the whole PTY (the shell hosting the agent)
+    // dies. The common dropout — the agent CLI exits back to a still-alive
+    // shell after a forced update — produces NO process exit and is handled by
+    // the shell-prompt guard in onAgentIdle (#handleAgentDropout) instead.
     const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
     if (panelId === workspace.task.workerPanelId && ACTIVE.has(workspace.task.state)) {
       // Worker crash → resume to running (re-inject). Krok 3's resume reconcile
@@ -1938,6 +2022,68 @@ export class AgentTaskRunner {
       this.#logTaskEvent(workspace, "worker-crashed", "Worker session exited unexpectedly, task paused");
       this.#raiseTaskAlert(workspace, "failed", "Worker session exited — task paused");
       this.#broadcastState!();
+    }
+  }
+
+  /**
+   * An agent (worker or judge) dropped out of agent mode mid-task: it exited
+   * back to the shell (forced auto-update / crash / stray `exit`) while its PTY
+   * stayed alive, so there's no process exit — only the shell prompt reappears.
+   * Detected by the shell-prompt guard in onAgentIdle.
+   * Restart the session and re-inject the last instruction, capped at
+   * MAX_DROPOUT_RESTARTS consecutive attempts; over the cap, pause + alert so a
+   * CLI stuck in a forced-update loop can't spin forever. The counter resets
+   * when the agent next accepts a prompt (onUserPromptSubmit).
+   *
+   * Re-injection reuses the shower/recovery "inject on next idle" path: the last
+   * instruction is stashed in showerResumePrompt and onAgentIdle injects it once
+   * the freshly-spawned agent settles (mirrors #resumeFromRateLimit's restart).
+   */
+  async #handleAgentDropout(workspace: TaskWorkspaceState, sessionId: string, role: "worker" | "judge"): Promise<void> {
+    const workspaceId = workspace.id;
+    const task = workspace.task;
+    const attempt = (this.#dropoutCtx.get(sessionId) ?? 0) + 1;
+    this.#dropoutCtx.set(sessionId, attempt);
+
+    log.warn("agent dropped out of agent mode", { workspaceId, sessionId, role, attempt });
+    this.#logTaskEvent(
+      workspace,
+      "agent-dropout",
+      `${role[0].toUpperCase()}${role.slice(1)} CLI dropped back to the shell (forced update / crash). Restart attempt ${attempt}/${AgentTaskRunner.MAX_DROPOUT_RESTARTS}.`,
+    );
+
+    if (attempt > AgentTaskRunner.MAX_DROPOUT_RESTARTS) {
+      this.#dropoutCtx.delete(sessionId);
+      task.pausedFromState = task.state;
+      this.#setTaskState(task, "paused");
+      this.#evaluating.delete(workspaceId);
+      this.#raiseTaskAlert(
+        workspace,
+        "failed",
+        `${role} CLI kept dropping out of agent mode (${AgentTaskRunner.MAX_DROPOUT_RESTARTS}× ) — task paused. Fix the CLI, then Continue or use Resend.`,
+      );
+      this.#broadcastState!();
+      return;
+    }
+
+    if (!this.#restartSession) {
+      log.warn("cannot restart dropped-out agent: no restartSession dep", { workspaceId, role });
+      return;
+    }
+
+    // Stash the last instruction so onAgentIdle re-injects it when the new
+    // session settles. Worker: promptSent=false routes the worker idle branch
+    // back through injection. Judge: the judge idle branch injects
+    // showerResumePrompt before reading the verdict.
+    const last = this.#lastInjected.get(sessionId) ?? "";
+    task.showerResumePrompt = last;
+    if (role === "worker") task.promptSent = false;
+    this.#broadcastState!();
+
+    try {
+      await this.#restartSession(sessionId);
+    } catch (err) {
+      log.error("failed to restart dropped-out agent", { workspaceId, sessionId, role, err: (err as Error)?.message });
     }
   }
 
@@ -2897,6 +3043,10 @@ Do NOT continue working on the task — only write the handoff summary.`;
       log.warn("injectPrompt: writeToSession not available", { sessionId });
       return;
     }
+
+    // Remember the last thing we told this session so the manual "Resend"
+    // buttons and the dropout auto-restart can re-send it verbatim.
+    this.#lastInjected.set(sessionId, text);
 
     // Krok 9c — stamp the worker inject time so onAgentIdle can measure how long
     // the next worker turn lasts (the short-turn rate-limit heuristic).

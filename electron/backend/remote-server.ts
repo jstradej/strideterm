@@ -1067,6 +1067,10 @@ async function handleApiRequest(
       json(response, 200, await runtime.rejectTaskVerdict(body.workspaceId, body.feedback));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/task/resend-instruction") {
+      json(response, 200, await runtime.resendTaskInstruction(body.workspaceId, body.role));
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/task/update-description") {
       // OPEN-5: HTTP path was missing the Zod parse its IPC counterpart uses.
       const parsed = validateIpc(taskUpdateDescriptionSchema, body, "POST /api/task/update-description");

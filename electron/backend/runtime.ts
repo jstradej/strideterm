@@ -91,6 +91,7 @@ import {
   matchesPrompt,
   matchesAgentIdle,
   matchesWaitingPattern,
+  looksLikeShellPrompt,
   createSessionSignal,
   detectTerminalEnvironment as detectTerminalEnvironmentImpl,
   OSC133_COMMAND_FINISHED_RE,
@@ -2598,6 +2599,13 @@ export async function createRuntime({
       const signal = sessionSignals.get(sessionId);
       return Boolean(signal?.completionHookCapable);
     },
+    // Dropout detection — last output looks like a bare shell prompt, i.e. the
+    // agent CLI exited back to its parent shell mid-task (forced update / crash)
+    // without the PTY dying. Lets the task runner restart the agent.
+    isAgentDroppedToShell(sessionId: string) {
+      const signal = sessionSignals.get(sessionId);
+      return Boolean(signal?.lastOutputLine && looksLikeShellPrompt(signal.lastOutputLine));
+    },
   });
 
   // Collect tasks that were active when the app last closed.
@@ -2995,6 +3003,14 @@ export async function createRuntime({
           busy: signal.busy,
           hasUserInput: signal.hasUserInput,
         });
+        // Refresh lastOutputLine before the task-runner intercept: OSC chunks
+        // skip the agent branches below that normally update it (see comment at
+        // the end of this branch), but the task runner's dropout guard reads
+        // lastOutputLine right now to tell "agent idle" from "agent exited to a
+        // shell prompt". Without this it would see the pre-exit line and miss
+        // the dropout. Only touches freshness on this path; the alert/silence
+        // consumers run on non-OSC chunks.
+        if (lastLine) signal.lastOutputLine = lastLine;
         // Task runner intercept FIRST — bypass hasUserInput/cooldown guards
         if (taskRunner.onAgentIdle(payload.sessionId, "osc133")) {
           log.debug("OSC 133;D: task runner handled idle", { sessionId: payload.sessionId });
@@ -7492,6 +7508,11 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async rejectTaskVerdict(workspaceId: any, feedback: any) {
       const result = await taskRunner.rejectTaskVerdict(workspaceId, feedback);
+      return { ok: result, payload: getPayload() };
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async resendTaskInstruction(workspaceId: any, role: any) {
+      const result = await taskRunner.resendLastInstruction(String(workspaceId), role === "judge" ? "judge" : "worker");
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

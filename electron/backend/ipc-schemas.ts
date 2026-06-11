@@ -744,6 +744,12 @@ export const taskRejectVerdictSchema = z.object({
 });
 export type TaskRejectVerdict = z.infer<typeof taskRejectVerdictSchema>;
 
+export const taskResendInstructionSchema = z.object({
+  workspaceId: nonEmptyString,
+  role: z.enum(["worker", "judge"]),
+});
+export type TaskResendInstruction = z.infer<typeof taskResendInstructionSchema>;
+
 export const taskUpdateDescriptionSchema = z.object({
   workspaceId: nonEmptyString,
   description: z.string().max(TASK_BRIEF_MAX_CHARS),

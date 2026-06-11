@@ -317,6 +317,37 @@ export function matchesWaitingPattern(line: string): boolean {
   return WAITING_PATTERNS.some((pattern) => pattern.test(line));
 }
 
+// Interactive shell prompts that mean a coding-agent CLI has EXITED back to its
+// parent shell (forced auto-update, crash, or a stray `exit`) mid-task. The
+// task runner launches the agent by typing its command into a shell, so when
+// the agent dies the shell prompt reappears in the SAME PTY — there is no
+// process exit to observe (terminal:exit only fires if the shell itself dies).
+// Detecting that prompt is the only signal the runner gets, so it can restart
+// the agent and re-inject the last instruction.
+//
+// Deliberately TIGHTER than PROMPT_PATTERNS_SAFE: these must never match an
+// agent's OWN idle prompt (Claude's "> " / boxed "╭─ … ─╮", or the bare
+// "❯ " / "➜ " / "› " some TUIs draw). We therefore only accept shapes that
+// carry a real shell body (a PS/drive path, or user@host before $/#) and we
+// omit the ›❯➜ shape entirely because it overlaps with agent prompts. The
+// cost is that oh-my-zsh/powerline prompts ending in ❯ aren't auto-detected —
+// the manual "Resend" buttons cover that fallback.
+const SHELL_DROPOUT_PATTERNS = [
+  /^PS [^\n>]{1,200}>\s*$/, // PowerShell: "PS C:\path>"
+  /^[A-Za-z]:\\[^\n]{0,200}>\s*$/, // cmd / drive path: "C:\path>"
+  /^(?:\([^)\n]{1,80}\)\s*)?[^$#\n]{2,180}[$#]\s*$/, // bash/zsh: "user@host:~$ " / root "#"
+];
+
+// Longer than MAX_PATTERN_LINE_LENGTH (80) on purpose — a real cwd-bearing
+// shell prompt (deep PowerShell path) easily exceeds 80 chars.
+const MAX_SHELL_PROMPT_LENGTH = 240;
+
+export function looksLikeShellPrompt(line: string): boolean {
+  if (!line) return false;
+  if (line.length > MAX_SHELL_PROMPT_LENGTH) return false;
+  return SHELL_DROPOUT_PATTERNS.some((pattern) => pattern.test(line));
+}
+
 export function createSessionSignal(sessionId: string): {
   sessionId: string;
   busy: boolean;
