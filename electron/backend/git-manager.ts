@@ -389,6 +389,45 @@ export class GitManager extends EventEmitter {
     return 0;
   }
 
+  /**
+   * Newest write to the worktree as an ISO string (or null). Combines the
+   * HEAD/worktree mtime already gathered for the current worktree (commits,
+   * checkouts, top-level add/remove) with the mtimes of uncommitted dirty
+   * files, so a plain edit to an existing tracked file still counts as a
+   * "change". Stats are capped so a massively dirty tree can't stall the
+   * snapshot. Feeds the relative "last change" chip on the sidebar card.
+   */
+  async computeLastChangeAt(
+    root: string,
+    baseMs: number,
+    dirtyEntries: Array<{ path?: string }>,
+  ): Promise<string | null> {
+    let bestMs = baseMs > 0 ? baseMs : 0;
+    const seen = new Set<string>();
+    const paths: string[] = [];
+    for (const entry of dirtyEntries) {
+      const rel = entry?.path;
+      if (!rel || seen.has(rel)) continue;
+      seen.add(rel);
+      paths.push(rel);
+      if (paths.length >= 500) break;
+    }
+    if (paths.length) {
+      const { stat } = await import("node:fs/promises");
+      await Promise.all(
+        paths.map(async (rel) => {
+          try {
+            const info = await stat(path.join(root, rel));
+            if (info.mtimeMs > bestMs) bestMs = Math.floor(info.mtimeMs);
+          } catch {
+            // file vanished mid-snapshot or unreadable — skip
+          }
+        }),
+      );
+    }
+    return bestMs > 0 ? new Date(bestMs).toISOString() : null;
+  }
+
   async detectLazygit(workspace: WorkspaceRef, rootPath: string | null = null): Promise<Record<string, unknown>> {
     const cwd = rootPath || workspace.cwd;
     const hostBinary = this.resolveLazygitBinary();
@@ -699,6 +738,11 @@ export class GitManager extends EventEmitter {
           : { ...DEFAULT_OPERATION_STATE, canSkip: false, progress: null, currentCommit: null, sides: null },
         error: "",
         lastUpdatedAt: this.now().toISOString(),
+        lastChangeAt: await this.computeLastChangeAt(
+          root,
+          siblingWorktrees.find((entry) => entry.isCurrent)?.lastActivityMs || 0,
+          [...staged, ...unstaged, ...untracked, ...conflicts],
+        ),
       };
     } catch (error) {
       return createUnavailableSnapshot(workspace, extractErrorMessage(error));

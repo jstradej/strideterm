@@ -134,6 +134,7 @@ export function createUnavailableSnapshot(
     operationState: { ...DEFAULT_OPERATION_STATE },
     error,
     lastUpdatedAt: null,
+    lastChangeAt: null,
   };
 }
 

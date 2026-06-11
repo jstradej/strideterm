@@ -283,10 +283,12 @@ export function buildWorkspaceCards({
 
     // "Last activity" = the most recent thing that happened on this workspace,
     // whichever signal it came from: remote PR activity (commit / comment /
-    // creation, folded into the PR summary's lastActivityAt) or a local session
-    // alert (attention.latestAt). Git log dates are formatted relative
-    // (--date=relative) and therefore not parseable, so they don't feed this.
-    const lastActivityAt = mostRecentIso(prStatusInfo?.lastActivityAt, attention?.latestAt);
+    // creation, folded into the PR summary's lastActivityAt), a local session
+    // alert (attention.latestAt), or the last local write (gitSnapshot's
+    // lastChangeAt — newest of the last commit/checkout and any uncommitted
+    // working-tree edit). The git log's own dates are --date=relative and not
+    // parseable, which is why lastChangeAt is computed separately.
+    const lastActivityAt = mostRecentIso(prStatusInfo?.lastActivityAt, attention?.latestAt, gitSnapshot?.lastChangeAt);
     const lastActivity = formatRelativeAge(lastActivityAt);
     let lastActivityTitle = "";
     if (lastActivityAt) {

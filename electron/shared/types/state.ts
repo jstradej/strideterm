@@ -665,6 +665,12 @@ export interface GitSnapshot {
   operationState: GitOperationState;
   error: string;
   lastUpdatedAt: string;
+  /**
+   * ISO timestamp of the last write to this workspace — the newest of the last
+   * commit/checkout (HEAD mtime) and any uncommitted working-tree edit. Null
+   * when unknown. Drives the relative "last change" chip on the sidebar card.
+   */
+  lastChangeAt: string | null;
 }
 
 export interface GitConnectionInfo {
