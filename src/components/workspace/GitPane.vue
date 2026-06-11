@@ -326,9 +326,9 @@
                 :is-review-workspace="isReviewWorkspace"
               />
             </article>
-            <!-- Confirm dialogs/result banners must render here too — without
-              this, Delete on the Worktrees tab silently sets a pending action
-              that never surfaces (it only renders inside the Branch tab). -->
+            <!-- Result banners must render here too — without this, Delete on
+              the Worktrees tab reports its outcome only on the Branch tab.
+              (Confirms are a pane-level modal, no longer tied to this card.) -->
             <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
           </div>
         </template>
@@ -347,6 +347,23 @@
         </template>
       </section>
     </div>
+
+    <!-- Git action confirm — a blocking yes/no decision surfaces as a modal,
+      not an inline banner that can sit outside the viewport. -->
+    <Teleport to="body">
+      <div v-if="pendingAction" class="dialog-overlay" @click.self="gitUiStore.clearPendingGitAction(workspaceId)">
+        <ConfirmDialog
+          eyebrow="Confirm action"
+          :title="pendingConfirmTitle"
+          :message="pendingConfirmMessage"
+          :confirm-label="pendingAction.confirmLabel || 'Confirm'"
+          :cancel-label="pendingAction.cancelLabel || 'Cancel'"
+          :danger="pendingAction.severity === 'danger'"
+          @confirm="gitUiStore.gitConfirmAction(workspaceId)"
+          @cancel="gitUiStore.clearPendingGitAction(workspaceId)"
+        />
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -364,6 +381,7 @@ import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitOperationCard from "./git/GitOperationCard.vue";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
+import ConfirmDialog from "../dialogs/ConfirmDialog.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 
@@ -444,6 +462,24 @@ const allRootsSnapshots = computed(() => {
 });
 const isLinkedWorktree = computed(() => snapshot.value?.isWorktree && !snapshot.value?.isMainWorktree);
 const operation = computed(() => snapshot.value?.operationState || {});
+
+// Pending confirm (rebase/merge/force-push/delete…) rendered as a modal below
+const pendingAction = computed(() => gitUi.value.pendingAction || null);
+const pendingConfirmTitle = computed(() => {
+  const p = pendingAction.value;
+  if (!p) return "";
+  if (p.isDestructive) return String(p.title || "Confirm action");
+  return String(p.message || "").split("\n")[0] || "Confirm action";
+});
+const pendingConfirmMessage = computed(() => {
+  const p = pendingAction.value;
+  if (!p) return "";
+  if (p.isDestructive) return String(p.body || "");
+  return String(p.message || "")
+    .split("\n")
+    .slice(1)
+    .join("\n");
+});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
 const defaultBranch = computed(() => String(snapshot.value?.defaultBranch || ""));
 const defaultRemote = computed(() => String(snapshot.value?.defaultRemote || ""));

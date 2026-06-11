@@ -7,14 +7,6 @@
       </div>
     </div>
 
-    <!-- Pending confirm — severity-aware (info/warn/danger) -->
-    <ConfirmDialog
-      v-if="pending"
-      :pending="pending"
-      @confirm="gitUiStore.gitConfirmAction(workspaceId)"
-      @cancel="gitUiStore.clearPendingGitAction(workspaceId)"
-    />
-
     <!-- Active operation banner -->
     <template v-if="operation.inProgress">
       <div class="git-operation-banner git-operation-banner--warning" data-testid="operation-in-progress">
@@ -73,7 +65,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
-import ConfirmDialog from "./ConfirmDialog.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -89,13 +80,11 @@ const props = withDefaults(
 const gitUiStore = useGitUiStore();
 
 const operation = computed(() => props.snapshot.operationState || {});
-const pending = computed(() => props.gitUi.pendingAction || null);
 const result = computed(() => props.gitUi.lastResult || null);
 
-const shouldRender = computed(() => operation.value.inProgress || !!result.value || !!pending.value);
+const shouldRender = computed(() => operation.value.inProgress || !!result.value);
 
 const heading = computed(() => {
-  if (pending.value) return "Confirm action";
   if (operation.value.inProgress) return operation.value.label || "In progress";
   if (result.value) return "Last result";
   return "Idle";
