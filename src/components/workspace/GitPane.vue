@@ -281,6 +281,13 @@
           :active-root-path="activeRootPath"
         />
 
+        <!-- ===== Conflicts tab (only while an operation has conflicts) ===== -->
+        <GitConflictsTab
+          v-else-if="activeTab === 'conflicts'"
+          :workspace-id="workspaceId"
+          :root-path="activeRootPath"
+        />
+
         <!-- ===== Pull Request tab ===== -->
         <GitPullRequestTab
           v-else-if="activeTab === 'pr'"
@@ -352,6 +359,7 @@ import GitBranchTab from "./git/GitBranchTab.vue";
 import GitBranchesTab from "./git/GitBranchesTab.vue";
 import GitChangesTab from "./git/GitChangesTab.vue";
 import GitStashesTab from "./git/GitStashesTab.vue";
+import GitConflictsTab from "./git/GitConflictsTab.vue";
 import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitOperationCard from "./git/GitOperationCard.vue";
@@ -449,9 +457,18 @@ const compare = computed(() => snapshot.value?.compareWithBase || {});
 // "branches" — anything persisted with those ids is silently redirected so
 // users don't land on a blank pane after the consolidation. History was
 // the last to go once Branches got the Flat view + Compare picker.
+// Conflicts tab appears while an operation reports conflicted paths, or while
+// the conflict state is open (covers working-tree conflicts, e.g. stash pop).
+const hasConflictsTab = computed(
+  () => (operation.value.conflicts?.length ?? 0) > 0 || gitUi.value.conflictDialog?.open === true,
+);
+
 const activeTab = computed(() => {
   const t = gitUi.value.activeTab || "branch";
   if (t === "graph" || t === "tags" || t === "history") return "branches";
+  // Conflicts tab only exists while conflicts are present — fall back to
+  // Overview if the persisted tab outlived the operation.
+  if (t === "conflicts" && !hasConflictsTab.value) return "branch";
   return t;
 });
 
@@ -733,6 +750,10 @@ const tabs = computed(() => {
   ];
   if (isMultiRepo.value) {
     list.push({ id: "bulk", label: "Bulk", badge: "" });
+  }
+  if (hasConflictsTab.value) {
+    const count = operation.value.conflicts?.length ?? 0;
+    list.push({ id: "conflicts", label: "Conflicts", badge: count > 0 ? String(count) : "" });
   }
   return list;
 });

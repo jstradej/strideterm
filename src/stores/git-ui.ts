@@ -284,19 +284,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
         ui.lastResult = result ? { ...result, at: new Date().toISOString() } : null;
       }
 
-      // Auto-open conflict dialog when a git action produces conflicts
+      // Auto-switch to the Conflicts tab when a git action produces conflicts
       if (result && (result.conflicts?.length ?? 0) > 0) {
         const rootPath = getActiveRoot(workspaceId);
         openConflictDialog(workspaceId, rootPath);
-        const { useAppStore } = await import("./app.js");
-        const appStore = useAppStore();
-        if (!appStore.overlay || appStore.overlay === "GitConflictDialog") {
-          appStore.openDialog("GitConflictDialog", {
-            workspaceId,
-            rootPath,
-            onClose: () => appStore.closeDialog(),
-          });
-        }
+        gitSwitchTab(workspaceId, "conflicts");
       }
 
       if (ui.selectedDiff?.path) {
@@ -1234,6 +1226,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
   function closeConflictDialog(workspaceId: string): void {
     const ui = ensure(workspaceId);
     if (ui.conflictDialog) ui.conflictDialog = { ...ui.conflictDialog, open: false };
+    // The Conflicts tab disappears with the conflict state — land on Overview.
+    if (ui.activeTab === "conflicts") ui.activeTab = "branch";
   }
 
   async function loadConflicts(workspaceId: string): Promise<void> {

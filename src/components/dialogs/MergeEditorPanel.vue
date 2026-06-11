@@ -7,21 +7,50 @@
         <button
           type="button"
           class="button button--ghost button--small"
+          title="Auto-resolve every chunk that was changed on only one side — only real conflicts remain"
           :disabled="!hasNonConflicting"
           @click="applyAllNonConflicting"
         >
           ⚡ Apply non-conflicting
         </button>
         <div class="mep__nav">
-          <button type="button" class="mep__nav-btn" :disabled="totalConflicts === 0" @click="prevConflict">◀</button>
+          <button
+            type="button"
+            class="mep__nav-btn"
+            title="Jump to the previous unresolved conflict"
+            :disabled="totalConflicts === 0"
+            @click="prevConflict"
+          >
+            ◀
+          </button>
           <span class="mep__nav-count" :class="{ 'mep__nav-count--done': totalConflicts === 0 }">
             {{ totalConflicts === 0 ? "no conflicts" : `${currentConflictIdx + 1} / ${totalConflicts}` }}
           </span>
-          <button type="button" class="mep__nav-btn" :disabled="totalConflicts === 0" @click="nextConflict">▶</button>
+          <button
+            type="button"
+            class="mep__nav-btn"
+            title="Jump to the next unresolved conflict"
+            :disabled="totalConflicts === 0"
+            @click="nextConflict"
+          >
+            ▶
+          </button>
         </div>
         <template v-if="currentConflict">
-          <button type="button" class="button button--ghost button--small" @click="applyOurs">◀ {{ oursLabel }}</button>
-          <button type="button" class="button button--ghost button--small" @click="applyTheirs">
+          <button
+            type="button"
+            class="button button--ghost button--small"
+            :title="`Resolve the current conflict with ${oursLabel}'s version (left pane)`"
+            @click="applyOurs"
+          >
+            ◀ {{ oursLabel }}
+          </button>
+          <button
+            type="button"
+            class="button button--ghost button--small"
+            :title="`Resolve the current conflict with ${theirsLabel}'s version (right pane)`"
+            @click="applyTheirs"
+          >
             {{ theirsLabel }} ▶
           </button>
         </template>
@@ -35,6 +64,13 @@
         :key="tab"
         type="button"
         :class="['mep__tab', { 'mep__tab--active': activeTab === tab }]"
+        :title="
+          tab === 'ours'
+            ? `Show ${oursLabel}'s version (read-only)`
+            : tab === 'theirs'
+              ? `Show ${theirsLabel}'s version (read-only)`
+              : 'Show the editable merged result'
+        "
         @click="activeTab = tab"
       >
         {{ tab === "ours" ? oursLabel : tab === "theirs" ? theirsLabel : "Result" }}
@@ -75,12 +111,23 @@
         <template v-else>✓ All resolved</template>
       </span>
       <div class="mep__footer-actions">
-        <button type="button" class="button button--ghost" @click="onCancel">Cancel</button>
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Discard the edits in Result and go back to the conflict list"
+          @click="onCancel"
+        >
+          Cancel
+        </button>
         <button
           type="button"
           class="button"
           :disabled="totalConflicts > 0 || busy"
-          :title="totalConflicts > 0 ? 'Resolve all conflicts before applying' : ''"
+          :title="
+            totalConflicts > 0
+              ? 'Resolve all conflicts before applying'
+              : 'Save the Result as the file content and mark the conflict resolved'
+          "
           @click="onApply"
         >
           {{ busy ? "Applying…" : "Apply" }}
@@ -95,8 +142,21 @@
       <div class="mep-confirm">
         <p>Discard unsaved changes to the Result?</p>
         <div class="mep-confirm__actions">
-          <button type="button" class="button button--ghost" @click="confirmCancel = false">Keep editing</button>
-          <button type="button" class="button" style="background: var(--danger)" @click="emit('cancel')">
+          <button
+            type="button"
+            class="button button--ghost"
+            title="Stay in the merge editor and keep the changes"
+            @click="confirmCancel = false"
+          >
+            Keep editing
+          </button>
+          <button
+            type="button"
+            class="button"
+            style="background: var(--danger)"
+            title="Throw away the edits to Result and return to the conflict list"
+            @click="emit('cancel')"
+          >
             Discard
           </button>
         </div>
@@ -567,14 +627,22 @@ async function onApply() {
   }
 }
 
-function onCancel() {
+function isDirty(): boolean {
   const current = resultEditor?.getModel()?.getValue() ?? "";
-  if (current !== initialResultText.value && current !== "") {
+  return current !== initialResultText.value && current !== "";
+}
+
+function onCancel() {
+  if (isDirty()) {
     confirmCancel.value = true;
   } else {
     emit("cancel");
   }
 }
+
+// Parent (Conflicts tab) checks this before navigating to another file so
+// unsaved Result edits aren't silently dropped by a remount.
+defineExpose({ isDirty });
 
 // ---- Keyboard shortcuts (Phase 4) ----
 // Scoped to focus within one of the editor panes so they never clobber

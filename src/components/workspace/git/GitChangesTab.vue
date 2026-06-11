@@ -266,14 +266,10 @@ const conflictPaths = computed(() => {
 });
 
 function onFileSelect(path: string, scope: string) {
-  // Conflicted files open the Conflict Center instead of the diff preview
+  // Conflicted files open the Conflicts tab instead of the diff preview
   if (conflictPaths.value.has(path)) {
     gitUiStore.openConflictDialog(props.workspaceId, props.activeRootPath);
-    appStore.openDialog("GitConflictDialog", {
-      workspaceId: props.workspaceId,
-      rootPath: props.activeRootPath,
-      onClose: () => appStore.closeDialog(),
-    });
+    gitUiStore.gitSwitchTab(props.workspaceId, "conflicts");
     return;
   }
   gitUiStore.gitSelectDiff(props.workspaceId, path, scope);

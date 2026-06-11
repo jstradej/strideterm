@@ -73,7 +73,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
-import { useAppStore } from "../../../stores/app.js";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
 const props = withDefaults(
@@ -88,7 +87,6 @@ const props = withDefaults(
 );
 
 const gitUiStore = useGitUiStore();
-const appStore = useAppStore();
 
 const operation = computed(() => props.snapshot.operationState || {});
 const pending = computed(() => props.gitUi.pendingAction || null);
@@ -106,10 +104,6 @@ const heading = computed(() => {
 function openConflictDialog() {
   const rootPath = gitUiStore.getActiveRoot(props.workspaceId);
   gitUiStore.openConflictDialog(props.workspaceId, rootPath);
-  appStore.openDialog("GitConflictDialog", {
-    workspaceId: props.workspaceId,
-    rootPath,
-    onClose: () => appStore.closeDialog(),
-  });
+  gitUiStore.gitSwitchTab(props.workspaceId, "conflicts");
 }
 </script>
