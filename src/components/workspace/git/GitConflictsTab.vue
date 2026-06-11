@@ -556,17 +556,30 @@ onMounted(() => {
 });
 
 // Live reconcile: if the conflict set changes underneath us — e.g. a file is
-// resolved outside the app (lazygit/CLI) while the tab is open — the existing
-// git snapshot refresh updates operationState.conflicts. Re-load the conflict
-// list when that count changes, so the tab reflects reality. Skipped while the
-// merge editor is showing to avoid yanking it out from under the user.
-watch(
-  () => (operationState.value?.conflicts as unknown[] | undefined)?.length ?? 0,
-  () => {
-    if (!dlg.value.open || mergeTarget.value || dlg.value.loading) return;
-    void gitUiStore.loadConflicts(props.workspaceId);
-  },
-);
+// resolved outside the app (lazygit/CLI), or the operation moved to the next
+// commit entirely — any snapshot refresh (incl. the pane's Refresh button)
+// updates operationState. Keyed on the stopped commit + the conflicted paths,
+// not just the count: a new commit can conflict in the same number of files.
+// Skipped while the merge editor is showing to avoid yanking it out from
+// under the user.
+const reconcileKey = computed(() => {
+  const op = operationState.value;
+  const commit =
+    (op?.currentCommit as { hash?: string } | null)?.hash ??
+    String((op?.progress as { current?: number } | null)?.current ?? "");
+  const paths = ((op?.conflicts as string[] | undefined) || []).join("\n");
+  return `${commit}|${paths}`;
+});
+watch(reconcileKey, (val, old) => {
+  if (!dlg.value.open || mergeTarget.value || dlg.value.loading) return;
+  // New stopped commit: rows from the previous commit (incl. its resolved
+  // history) no longer apply — start the list fresh instead of merging.
+  const ui = gitUiStore.get(props.workspaceId);
+  if (val.split("|")[0] !== old.split("|")[0] && ui.conflictDialog) {
+    ui.conflictDialog.conflicts = [];
+  }
+  void gitUiStore.loadConflicts(props.workspaceId);
+});
 </script>
 
 <style scoped>

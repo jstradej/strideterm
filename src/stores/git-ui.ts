@@ -335,6 +335,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
       );
       return { payload };
     });
+    // An explicit refresh also reloads the open conflict list — the reactive
+    // reconcile in the Conflicts tab only fires when the snapshot changes.
+    if (ensure(workspaceId).conflictDialog?.open) await loadConflicts(workspaceId);
   }
 
   async function gitFetch(workspaceId: string): Promise<void> {
