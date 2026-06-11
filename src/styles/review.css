@@ -101,6 +101,49 @@
   padding: 0;
 }
 
+.azure-inbox__filters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+
+.azure-inbox__filter-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.azure-inbox__filter-label {
+  width: 42px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.azure-inbox__filter-button {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.azure-inbox__filter-button.button--active {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.azure-inbox__author-select {
+  min-width: 180px;
+  padding: 3px 26px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
 .azure-section {
   display: none;
 }

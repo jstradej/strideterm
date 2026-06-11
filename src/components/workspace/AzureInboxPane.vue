@@ -216,39 +216,79 @@
           </template>
           <!-- PR list tabs — only render when this tab is active -->
           <template v-else-if="activeTab === tab.id">
-            <!-- Repo filter -->
             <div
-              v-if="repoNames.length > 1 && tabItems(activeTab).length"
-              style="display: flex; gap: 4px; padding: 0 12px 8px; flex-wrap: wrap"
+              v-if="tabItems(activeTab).length && (repoNames.length > 1 || authorOptions.length > 1)"
+              class="azure-inbox__filters"
             >
-              <button
-                type="button"
-                :class="['button', 'button--ghost', !repoFilter && 'button--active']"
-                :style="
-                  !repoFilter
-                    ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
-                    : 'font-size:11px;padding:2px 8px;'
-                "
-                title="Show pull requests across every project / repository."
-                @click="repoFilter = ''"
-              >
-                All repos
-              </button>
-              <button
-                v-for="repo in repoNames"
-                :key="repo"
-                type="button"
-                :class="['button', 'button--ghost', repoFilter === repo && 'button--active']"
-                :style="
-                  repoFilter === repo
-                    ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
-                    : 'font-size:11px;padding:2px 8px;'
-                "
-                :title="`Show only PRs from ${repo}.`"
-                @click="repoFilter = repoFilter === repo ? '' : repo"
-              >
-                {{ repo }}
-              </button>
+              <div v-if="repoNames.length > 1" class="azure-inbox__filter-row">
+                <span class="azure-inbox__filter-label">Repo</span>
+                <button
+                  type="button"
+                  :class="['button', 'button--ghost', 'azure-inbox__filter-button', !repoFilter && 'button--active']"
+                  title="Show pull requests across every project / repository."
+                  @click="repoFilter = ''"
+                >
+                  All repos
+                </button>
+                <button
+                  v-for="repo in repoNames"
+                  :key="repo"
+                  type="button"
+                  :class="[
+                    'button',
+                    'button--ghost',
+                    'azure-inbox__filter-button',
+                    repoFilter === repo && 'button--active',
+                  ]"
+                  :title="`Show only PRs from ${repo}.`"
+                  @click="repoFilter = repoFilter === repo ? '' : repo"
+                >
+                  {{ repo }}
+                </button>
+              </div>
+              <div v-if="authorOptions.length > 1" class="azure-inbox__filter-row">
+                <span class="azure-inbox__filter-label">Author</span>
+                <template v-if="authorOptions.length <= 5">
+                  <button
+                    type="button"
+                    :class="[
+                      'button',
+                      'button--ghost',
+                      'azure-inbox__filter-button',
+                      !authorFilter && 'button--active',
+                    ]"
+                    @click="authorFilter = ''"
+                  >
+                    All authors
+                  </button>
+                  <button
+                    v-for="author in authorOptions"
+                    :key="author.key"
+                    type="button"
+                    :class="[
+                      'button',
+                      'button--ghost',
+                      'azure-inbox__filter-button',
+                      authorFilter === author.key && 'button--active',
+                    ]"
+                    :title="author.uniqueName || author.label"
+                    @click="authorFilter = authorFilter === author.key ? '' : author.key"
+                  >
+                    {{ author.label }}
+                  </button>
+                </template>
+                <select
+                  v-else
+                  v-model="authorFilter"
+                  class="azure-inbox__author-select"
+                  aria-label="Filter pull requests by author"
+                >
+                  <option value="">All authors</option>
+                  <option v-for="author in authorOptions" :key="author.key" :value="author.key">
+                    {{ author.label }}
+                  </option>
+                </select>
+              </div>
             </div>
             <!-- Needs Attention: same visual frame as the All tab (azure-repo-group),
                  but the groups are sub-buckets by *why* the PR needs attention
@@ -289,7 +329,7 @@
               </div>
             </template>
             <div v-else class="azure-empty">
-              <p>{{ tab.emptyMessage }}</p>
+              <p>{{ hasActiveFilters ? "No pull requests match the selected filters." : tab.emptyMessage }}</p>
             </div>
           </template>
         </section>
@@ -497,6 +537,7 @@ const inboxTabs = computed(() => [
 ]);
 
 const repoFilter = ref<string>("");
+const authorFilter = ref<string>("");
 
 const activeTabInfo = computed(() => inboxTabs.value.find((t) => t.id === activeTab.value) || inboxTabs.value[0]);
 
@@ -515,6 +556,44 @@ const repoNames = computed(() => {
   const names = [...new Set(all.map((item: any) => `${item.project?.name || ""}/${item.repository?.name || ""}`))];
   return names.sort();
 });
+
+function authorKey(item: { author?: { id?: string; uniqueName?: string; displayName?: string } }) {
+  const author = item.author || {};
+  return author.id || author.uniqueName || author.displayName || "unknown-author";
+}
+
+const authorOptions = computed(() => {
+  const authors = new Map<string, { key: string; label: string; uniqueName: string }>();
+  for (const item of inbox.value.recentlyUpdated || []) {
+    const key = authorKey(item);
+    if (authors.has(key)) continue;
+    authors.set(key, {
+      key,
+      label: item.author?.displayName || item.author?.uniqueName || "Unknown author",
+      uniqueName: item.author?.uniqueName || "",
+    });
+  }
+  return [...authors.values()].sort((a, b) => a.label.localeCompare(b.label));
+});
+
+watch(authorOptions, (options) => {
+  if (authorFilter.value && !options.some((author) => author.key === authorFilter.value)) {
+    authorFilter.value = "";
+  }
+});
+
+const hasActiveFilters = computed(() => Boolean(repoFilter.value || authorFilter.value));
+
+function matchesActiveFilters(item: {
+  project?: { name?: string };
+  repository?: { name?: string };
+  author?: { id?: string; uniqueName?: string; displayName?: string };
+}) {
+  if (repoFilter.value && `${item.project?.name || ""}/${item.repository?.name || ""}` !== repoFilter.value) {
+    return false;
+  }
+  return !authorFilter.value || authorKey(item) === authorFilter.value;
+}
 
 // Sub-buckets for the "Needs attention" tab: route reviews-of-mine /
 // commented-on / mine-as-author into the same screen but split by source.
@@ -550,10 +629,7 @@ const attentionBuckets = [
 
 const attentionGroupedItems = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let items: any[] = [...(inbox.value.needsAttention || [])];
-  if (repoFilter.value) {
-    items = items.filter((item) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value);
-  }
+  const items: any[] = [...(inbox.value.needsAttention || [])].filter(matchesActiveFilters);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const buckets: { bucket: string; label: string; hint: string; items: any[] }[] = attentionBuckets.map((b) => ({
     bucket: b.bucket,
@@ -574,12 +650,7 @@ const attentionGroupedItems = computed(() => {
 
 // Group items by project/repo for the active tab, cached as computed
 const activeGroupedItems = computed(() => {
-  let items: unknown[] = tabItems(activeTab.value);
-  if (repoFilter.value) {
-    items = items.filter(
-      (item: any) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: inbox item is open-ended server JSON
-    );
-  }
+  const items: unknown[] = tabItems(activeTab.value).filter(matchesActiveFilters);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const groups = new Map<string, any[]>();
   for (const item of items) {

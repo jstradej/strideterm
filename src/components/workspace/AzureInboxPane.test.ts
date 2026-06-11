@@ -57,7 +57,8 @@ function buildPayload(overrides: Record<string, unknown> = {}): StatePayload {
               targetRefName: "refs/heads/main",
               url: "",
             },
-            author: { displayName: "Alice" },
+            author: { id: "alice", displayName: "Alice", uniqueName: "alice@example.com" },
+            connectionId: "ado-1",
             role: "reviewer",
             hasAttention: true,
             attentionReason: "new comment",
@@ -77,7 +78,8 @@ function buildPayload(overrides: Record<string, unknown> = {}): StatePayload {
               targetRefName: "refs/heads/main",
               url: "",
             },
-            author: { displayName: "Alice" },
+            author: { id: "alice", displayName: "Alice", uniqueName: "alice@example.com" },
+            connectionId: "ado-1",
             role: "reviewer",
             hasAttention: true,
             attentionReason: "new comment",
@@ -93,9 +95,9 @@ function buildPayload(overrides: Record<string, unknown> = {}): StatePayload {
   } as unknown as StatePayload;
 }
 
-function mountPane() {
+function mountPane(payload = buildPayload()) {
   const appStore = useAppStore();
-  appStore.payload = buildPayload();
+  appStore.payload = payload;
   return mount(AzureInboxPane, {
     props: { workspaceId: "ws-azure" },
     global: {
@@ -104,7 +106,10 @@ function mountPane() {
         // chrome-collapse assertion; stubbing speeds up mount and avoids
         // pulling their dependencies into the test.
         PaneShell: true,
-        AzurePrRow: true,
+        AzurePrRow: {
+          props: ["item"],
+          template: '<div class="azure-pr-row-stub">{{ item.author.displayName }}</div>',
+        },
         AzureAuditLog: true,
       },
     },
@@ -188,5 +193,114 @@ describe("AzureInboxPane responsive chrome", () => {
     // Default tab is "Needs attention" (most-actionable-first).
     const triggerLabel = wrapper.find(".azure-inbox__tabs-trigger__label").text();
     expect(triggerLabel).toBe("Needs attention");
+  });
+});
+
+function buildPr(id: number, author: string, repo = "platform-api") {
+  return {
+    prKey: `ado:${id}`,
+    connectionId: "ado-1",
+    project: { name: "MockProject" },
+    repository: { name: repo },
+    pullRequest: {
+      id,
+      title: `PR ${id}`,
+      isDraft: false,
+      sourceRefName: `refs/heads/feat/${id}`,
+      targetRefName: "refs/heads/main",
+      url: "",
+    },
+    author: {
+      id: author.toLowerCase(),
+      displayName: author,
+      uniqueName: `${author.toLowerCase()}@example.com`,
+    },
+    role: "reviewer",
+    hasAttention: true,
+    attentionReason: "new comment",
+    checks: { failedCount: 0, pendingCount: 0, passedCount: 1 },
+  };
+}
+
+function payloadWithPrs(prs: ReturnType<typeof buildPr>[]) {
+  return buildPayload({
+    azureDevops: {
+      connections: [
+        {
+          id: "ado-1",
+          label: "Mock org",
+          orgUrl: "https://dev.azure.com/mock-org",
+          login: "you@example.com",
+          status: "ok",
+          enabled: true,
+        },
+      ],
+      inbox: {
+        recentlyUpdated: prs,
+        needsAttention: prs,
+        needsMyReview: prs,
+        myPullRequests: [],
+      },
+    },
+  });
+}
+
+function filterRow(wrapper: ReturnType<typeof mountPane>, label: string) {
+  return wrapper
+    .findAll(".azure-inbox__filter-row")
+    .find((row) => row.find(".azure-inbox__filter-label").text() === label)!;
+}
+
+describe("AzureInboxPane author filter", () => {
+  beforeEach(() => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+  });
+
+  test("shows author buttons for up to five authors and filters the PR rows", async () => {
+    const wrapper = mountPane(payloadWithPrs([buildPr(1, "Alice"), buildPr(2, "Bob"), buildPr(3, "Carol")]));
+    await flushPromises();
+
+    const authorRow = filterRow(wrapper, "Author");
+    expect(authorRow.find("select").exists()).toBe(false);
+    expect(authorRow.findAll("button").map((button) => button.text())).toEqual([
+      "All authors",
+      "Alice",
+      "Bob",
+      "Carol",
+    ]);
+
+    await authorRow.findAll("button")[2].trigger("click");
+    expect(wrapper.findAll(".azure-pr-row-stub").map((row) => row.text())).toEqual(["Bob"]);
+  });
+
+  test("uses a select for more than five authors", async () => {
+    const prs = ["Alice", "Bob", "Carol", "Dave", "Erin", "Frank"].map((author, index) => buildPr(index + 1, author));
+    const wrapper = mountPane(payloadWithPrs(prs));
+    await flushPromises();
+
+    const select = wrapper.get('select[aria-label="Filter pull requests by author"]');
+    expect(select.findAll("option")).toHaveLength(7);
+
+    await select.setValue("frank");
+    expect(wrapper.findAll(".azure-pr-row-stub").map((row) => row.text())).toEqual(["Frank"]);
+  });
+
+  test("combines author and repository filters", async () => {
+    const wrapper = mountPane(
+      payloadWithPrs([buildPr(1, "Alice", "api"), buildPr(2, "Bob", "api"), buildPr(3, "Bob", "web")]),
+    );
+    await flushPromises();
+
+    await filterRow(wrapper, "Repo")
+      .findAll("button")
+      .find((button) => button.text() === "MockProject/api")!
+      .trigger("click");
+    await filterRow(wrapper, "Author")
+      .findAll("button")
+      .find((button) => button.text() === "Bob")!
+      .trigger("click");
+
+    expect(wrapper.findAll(".azure-pr-row-stub").map((row) => row.text())).toEqual(["Bob"]);
   });
 });
