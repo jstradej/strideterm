@@ -5701,7 +5701,7 @@ describe("runtime integration", () => {
     }
   });
 
-  test("UserPromptSubmit alone does not disable hook fallback", async () => {
+  test("hook-primary mode never raises silence-fallback waiting alert", async () => {
     vi.useFakeTimers();
     try {
       const fixture = await createTwoWorkspaceFixture();
@@ -5711,8 +5711,10 @@ describe("runtime integration", () => {
       fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "openai codex\n" });
       fixture.runtime.writeToSession("backend:shell", "do a thing\r");
 
-      // UserPromptSubmit proves only the bookkeeping hook works. If Stop is
-      // still blocked by Codex /hooks review, fallback must remain available.
+      // With the notify server running, hooks are the only user-facing alert
+      // source. Even if completion hooks never arrive (e.g. Stop blocked by
+      // Codex /hooks review, or an idle prompt while a background agent is
+      // still working), silence must NOT produce a "waiting" alert.
       fixture.runtime.notifyAgentHook("backend:shell", "", "UserPromptSubmit");
       await vi.advanceTimersByTimeAsync(16_000);
 
@@ -5720,12 +5722,7 @@ describe("runtime integration", () => {
       fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "> " });
       await vi.advanceTimersByTimeAsync(120_000);
 
-      expect(fixture.runtime.getPayload().attention.byProject.backend.alerts[0]).toMatchObject({
-        panelId: "shell",
-        kind: "waiting",
-        detail: "hook-fallback",
-        tier: 3,
-      });
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

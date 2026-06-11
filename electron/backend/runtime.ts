@@ -3157,17 +3157,25 @@ export async function createRuntime({
         }
 
         if (hooksEnabled) {
-          // --- Hook-primary mode: suppress bell/silence, use 2min fallback ---
+          // --- Hook-primary mode: hooks are the only user-facing alert source ---
+          // The 2-min silence timer no longer raises a fallback "waiting"
+          // alert. When the user runs with the notify server on, a session
+          // whose hooks don't deliver stays silent instead of producing false
+          // positives — e.g. Claude Code sitting at an idle prompt while a
+          // background agent is still working looked exactly like "waiting
+          // for input" to the silence heuristic. Hook delivery problems are
+          // visible in hook.log and the one-shot misconfig warning above.
           // Record output time; the self-rescheduling timer checks this lazily
           // instead of cancel+restart on every PTY chunk.
           signal.lastOutputAt = Date.now();
 
-          // Task sessions bypass the hasUserInput gate — the runner has its
-          // own state machine and must be notified even if nothing has been
-          // typed into the PTY yet (e.g. task started with no description,
-          // waiting for the first idle so we can inject "read TASK.md").
+          // Task sessions still need the silence timer: the runner has its
+          // own state machine and must get the idle tick even if nothing has
+          // been typed into the PTY yet (e.g. task started with no
+          // description, waiting for the first idle so we can inject
+          // "read TASK.md").
           const isTaskSession = taskRunner.getIdleTimeout(payload.sessionId) != null;
-          if (signal.busy && !inCooldown && (signal.hasUserInput || isTaskSession) && !signal.promptTimer) {
+          if (signal.busy && !inCooldown && isTaskSession && !signal.promptTimer) {
             const sid = payload.sessionId;
             signal.promptTimer = setTimeout(function hookFallbackCheck() {
               const silentFor = Date.now() - (signal.lastOutputAt || 0);
@@ -3177,53 +3185,13 @@ export async function createRuntime({
                 return;
               }
               signal.promptTimer = null;
-              // Task runner intercept FIRST — task workspaces have their own
-              // validation (WORK_LOCK, TODO checks) so they don't need the
-              // idle-pattern guard.  Claude Code's statusbar line doesn't match
-              // AGENT_IDLE_PATTERNS, which would block task detection otherwise.
+              // Task workspaces have their own validation (WORK_LOCK, TODO
+              // checks) so they don't need the idle-pattern guard.  Claude
+              // Code's statusbar line doesn't match AGENT_IDLE_PATTERNS,
+              // which would block task detection otherwise.
               if (taskRunner.onAgentIdle(sid, "hook-fallback")) {
                 log.info("hook-fallback silence: task runner handled idle", { sessionId: sid });
-                return;
               }
-              if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
-                log.trace("agent hook-primary fallback: last line not idle", {
-                  sessionId: sid,
-                  lastOutputLine: signal.lastOutputLine,
-                });
-                return;
-              }
-              if (isSessionVisible(sid)) {
-                log.trace("agent hook-primary fallback: session visible, resetting", { sessionId: sid });
-                resetSessionSignal(sid);
-                return;
-              }
-              // Plan Phase 1 § 4.7: user was actively typing in this session
-              // very recently — they are not gone, don't alert.
-              if (isInInteractionGrace(signal, notifConfig)) {
-                log.trace("agent hook-primary fallback: user interacted recently", { sessionId: sid });
-                return;
-              }
-              if (!allowT3ForCommandClass(signal.commandClass)) {
-                log.trace("agent hook-primary fallback: command class suppresses T3", {
-                  sessionId: sid,
-                  commandClass: signal.commandClass,
-                });
-                return;
-              }
-              log.info("agent hook-primary fallback: no hook arrived, raising T3 alert", {
-                sessionId: sid,
-                fallbackMs: HOOK_FALLBACK_SILENCE_MS,
-              });
-              raiseAlert({
-                sessionId: sid,
-                projectId: descriptor.workspaceId,
-                panelId: descriptor.panelId,
-                title: panel?.title || descriptor.panelId,
-                kind: "waiting",
-                tier: 3,
-                urgency: "normal",
-                detail: "hook-fallback",
-              });
             }, HOOK_FALLBACK_SILENCE_MS);
           }
         } else {
