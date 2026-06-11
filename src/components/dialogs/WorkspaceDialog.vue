@@ -411,6 +411,7 @@ const PROVIDER_CHOICES = [
     defaultSkipPermissions: true,
     models: [
       { id: "", name: "Default", suggestedRole: null },
+      { id: "claude-fable-5", name: "Fable 5", suggestedRole: null },
       { id: "sonnet", name: "Sonnet", suggestedRole: "worker" },
       { id: "opus", name: "Opus", suggestedRole: "judge" },
       { id: "haiku", name: "Haiku", suggestedRole: null },
