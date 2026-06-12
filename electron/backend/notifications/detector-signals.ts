@@ -18,11 +18,11 @@
 //   ESC[?25h/l    — show/hide cursor
 export const CURSOR_MOVEMENT_RE = /\u001b\[(?:\??\d*[hl]|\d*;?\d*[HfJK]|\d*[ABCDGs]|\d*u|\?25[hl])/;
 
-// Progress bar characters — `-` isn't special inside a character class but some
-// lint configs flag bare `\-`. Use literal dash at end of class instead.
-
-// Braille spinner frames, block spinners, ASCII spinners.
-export const SPINNER_RE = /[\u2800-\u28ff]|[▏▎▍▌▋▊▉█]|[/|\\-]/;
+// Braille spinner frames and block spinners. Deliberately NO ASCII class
+// (slash, pipe, backslash, dash): those characters appear in virtually every
+// chunk containing a path, flag, or prose dash, which made the animation
+// signal fire on almost all output and carry no information.
+export const SPINNER_RE = /[\u2800-\u28ff]|[▏▎▍▌▋▊▉█]/;
 
 // Progress bar patterns common in install/build output.
 export const PROGRESS_RE = /\[[=> -]+\]|\b\d{1,3}%\b/;

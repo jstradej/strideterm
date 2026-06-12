@@ -137,27 +137,47 @@ process.stdin.on("end", () => {
   const outgoing = JSON.stringify(parsed);
   let pending = allUrls.length;
   function done() { if (--pending <= 0) process.exit(0); }
-  for (const u of allUrls) {
+  // One retry after a short delay: a transient failure (strideterm
+  // restarting, notify server rebinding) would otherwise lose the event
+  // forever. Per-request timeout is 2s so the worst case (2s + 0.5s + 2s)
+  // stays inside Claude Code's 5s hook timeout.
+  function post(u, attempt) {
     let p;
-    try { p = new URL(u); } catch (e) { log("ERROR", "invalid url: " + u); done(); continue; }
+    try { p = new URL(u); } catch (e) { log("ERROR", "invalid url: " + u); done(); return; }
     const options = {
       hostname: p.hostname,
       port: p.port,
       path: p.pathname + p.search,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      timeout: 4000,
+      timeout: 2000,
+    };
+    let settled = false;
+    const fail = (msg) => {
+      if (settled) return;
+      settled = true;
+      if (attempt < 1) {
+        log("WARN", msg + " — retrying (hook=" + parsed.hook + ")");
+        setTimeout(() => post(u, attempt + 1), 500);
+      } else {
+        log("ERROR", msg + " (hook=" + parsed.hook + ")");
+        done();
+      }
     };
     const req = http.request(options, (res) => {
+      if (settled) return;
+      settled = true;
       if (res.statusCode !== 200 && res.statusCode !== 403) {
         log("WARN", "POST " + p.port + " -> " + res.statusCode + " (hook=" + parsed.hook + ")");
       }
+      res.resume();
       done();
     });
-    req.on("error", (e) => { log("ERROR", "POST failed: " + e.message + " (hook=" + parsed.hook + ")"); done(); });
-    req.on("timeout", () => { log("ERROR", "POST timeout 4s (hook=" + parsed.hook + ")"); req.destroy(); done(); });
+    req.on("error", (e) => fail("POST failed: " + e.message));
+    req.on("timeout", () => { req.destroy(); fail("POST timeout 2s"); });
     req.end(outgoing);
   }
+  for (const u of allUrls) post(u, 0);
 });
 process.stdin.resume();
 `;

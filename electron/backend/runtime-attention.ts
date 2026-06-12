@@ -106,7 +106,7 @@ export function createRuntimeAttentionManager({
   const projectAlerts = new Map<string, ProjectAlertBucket>();
   const sessionSignals = new Map<string, SessionSignal>();
 
-  function getAttentionSnapshot(state = getState()) {
+  function getAttentionSnapshot() {
     const sessionsSnapshot: Record<string, unknown> = {};
     for (const [sessionId, signal] of sessionSignals) {
       const descriptor = parseSessionId(sessionId);
@@ -133,12 +133,13 @@ export function createRuntimeAttentionManager({
         lastCommandFinishedAt: signal.lastCommandFinishedAt || 0,
       };
     }
+    const byWorkspace = Object.fromEntries(projectAlerts.entries());
     return {
       sessions: sessionsSnapshot,
-      byWorkspace: Object.fromEntries(projectAlerts.entries()),
-      byProject: Object.fromEntries(projectAlerts.entries()),
-      activeWorkspace: projectAlerts.get(state.activeWorkspaceId) || null,
-      activeProject: projectAlerts.get(state.activeProjectId || "") || null,
+      byWorkspace,
+      // Wire-compat alias: older clients (and the frontend fallback in
+      // runtime-bindings) still read byProject.
+      byProject: byWorkspace,
     };
   }
 

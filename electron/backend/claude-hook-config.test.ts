@@ -2,6 +2,8 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import http from "node:http";
+import { execFile } from "node:child_process";
 import { afterEach, describe, expect, test, beforeEach } from "vitest";
 import {
   ensureNotifyScript,
@@ -532,4 +534,68 @@ describe("detectClaudeHookStatus", () => {
     expect(result.status).toBe("configured");
     expect(result.registered).toEqual(HOOKS_TO_REGISTER);
   });
+});
+
+// --- notify.mjs delivery (end-to-end: spawn the real script) ---
+
+describe("notify.mjs retry", () => {
+  test("retries once after a transient connection failure and delivers the event", async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+    const scriptResult = await ensureNotifyScript(userDataPath);
+    expect(scriptResult.ok).toBe(true);
+
+    // Server that kills the FIRST connection before responding (simulates
+    // strideterm restarting / notify server rebinding) and accepts the rest.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const received: any[] = [];
+    let firstKilled = false;
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        received.push(JSON.parse(body));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("{}");
+      });
+    });
+    server.on("connection", (socket) => {
+      if (!firstKilled) {
+        firstKilled = true;
+        socket.destroy();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const port = (server.address() as any).port;
+
+    try {
+      // notify-urls.json next to the script maps the project dir to our server.
+      const projectDir = path.join(tempDir, "proj");
+      const key = projectDir.replace(/\\/g, "/").toLowerCase();
+      await fs.writeFile(
+        path.join(userDataPath, "hooks", "notify-urls.json"),
+        JSON.stringify({ [key]: [`http://127.0.0.1:${port}/notify?sid=ws%3Ap&secret=s`] }),
+      );
+
+      // Run the script exactly as Claude Code would: hook name as argv[2],
+      // JSON payload on stdin. STRIDETERM_NOTIFY_URL cleared so resolution
+      // goes through CLAUDE_PROJECT_DIR + notify-urls.json.
+      await new Promise<void>((resolve, reject) => {
+        const child = execFile(
+          process.execPath,
+          [scriptResult.path, "Stop"],
+          { env: { ...process.env, STRIDETERM_NOTIFY_URL: "", CLAUDE_PROJECT_DIR: projectDir } },
+          (err) => (err ? reject(err) : resolve()),
+        );
+        child.stdin!.end(JSON.stringify({ session_id: "abc" }));
+      });
+
+      expect(firstKilled).toBe(true);
+      expect(received).toHaveLength(1);
+      expect(received[0].hook).toBe("Stop");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 15_000);
 });

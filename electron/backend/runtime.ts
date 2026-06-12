@@ -90,6 +90,7 @@ import {
   stripAnsi,
   lastNonEmptyLine,
   matchesPrompt,
+  matchesShellPromptStrict,
   matchesAgentIdle,
   matchesWaitingPattern,
   looksLikeShellPrompt,
@@ -531,6 +532,33 @@ export async function createRuntime({
       log.debug("notify-urls.json updated", { cwd: key, urls: data[key].length, port: myPort });
     } catch (err) {
       log.warn("failed to write notify-urls.json", { err: (err as Error).message });
+    }
+  }
+
+  /**
+   * Re-register notify URLs for every live PTY session. Called right after
+   * the notify server starts: entries are otherwise only written at session
+   * spawn (getSessionEnv), so a server (re)start — app restart with a new
+   * port, or the agentHook setting toggled off/on — would leave hooks
+   * POSTing to a dead port until each session happened to respawn. Claude
+   * Code's notify.mjs reads the file per event, so refreshing here heals
+   * those sessions immediately.
+   */
+  function refreshNotifyUrls(): void {
+    const port = notifyServerHandle?.port;
+    if (!port) return;
+    const state = getState();
+    let count = 0;
+    for (const sessionId of sessions.sessions.keys()) {
+      const descriptor = parseSessionId(sessionId);
+      if (!descriptor) continue;
+      const workspace = findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null;
+      if (!workspace?.cwd) continue;
+      registerNotifyUrl(workspace.cwd, buildNotifyUrl(port, sessionId, notifySecret));
+      count += 1;
+    }
+    if (count > 0) {
+      log.info("notify-urls refreshed for live sessions", { count, port });
     }
   }
 
@@ -1218,6 +1246,11 @@ export async function createRuntime({
         logger: log,
       });
       log.info("notify server started", { port: notifyServerHandle.port });
+      // Purge leftovers claiming our port (previous run that crashed without
+      // cleanup — the port is ours now, so anything else on it is stale),
+      // then re-point every live session at the fresh server.
+      cleanupNotifyUrls(notifyServerHandle.port);
+      refreshNotifyUrls();
     } catch (error) {
       log.warn("notify server failed to start (silence detection still active)", {
         err: (error as Error).message,
@@ -1674,7 +1707,7 @@ export async function createRuntime({
         }
         return ws;
       })(),
-      attention: getAttentionSnapshot(state),
+      attention: getAttentionSnapshot(),
       docker: docker.getSnapshot(),
       git: {
         workspaces: git.getProjectMap(),
@@ -3012,6 +3045,23 @@ export async function createRuntime({
         // the dropout. Only touches freshness on this path; the alert/silence
         // consumers run on non-OSC chunks.
         if (lastLine) signal.lastOutputLine = lastLine;
+        // Agent exited back to its host shell? agentLike is otherwise sticky,
+        // which would leave the shell without completion alerts forever (the
+        // agent branches below swallow everything). OSC 133;D plus an
+        // unambiguous shell prompt (PS / drive / $ / # — NOT ❯/›/➜, which
+        // agent TUI status lines also use) is reliable evidence the shell
+        // owns the terminal again. AGENT_OUTPUT_RE re-promotes on the next
+        // agent launch, and getSessionSignal re-promotes panels whose command
+        // itself is an agent.
+        if (signal.agentLike && lastLine && matchesShellPromptStrict(lastLine)) {
+          log.debug("agent session demoted to shell (shell prompt after OSC 133;D)", {
+            sessionId: payload.sessionId,
+            lastLine,
+          });
+          signal.agentLike = false;
+          signal.hookCapable = false;
+          signal.completionHookCapable = false;
+        }
         // Task runner intercept FIRST — bypass hasUserInput/cooldown guards
         if (taskRunner.onAgentIdle(payload.sessionId, "osc133")) {
           log.debug("OSC 133;D: task runner handled idle", { sessionId: payload.sessionId });
@@ -3138,6 +3188,11 @@ export async function createRuntime({
 
         // Log a one-shot warning if an agent session has been busy for a long
         // time with no hook ever arriving — almost always a config issue.
+        // Anchored on lastUserInteractionAt (PTY input, hook-independent):
+        // the previous anchor was lastAlertAt, which never gets set now that
+        // hook-primary mode raises no fallback alerts — the warning would be
+        // dead exactly when it matters (broken hook delivery). The 5-minute
+        // threshold keeps it quiet during ordinary long agent turns.
         if (
           signal.busy &&
           !signal.completionHookCapable &&
@@ -3145,13 +3200,16 @@ export async function createRuntime({
           !(signal as any)._hookMissingWarned &&
           signal.lastOutputAt > 0 &&
           Date.now() - signal.lastOutputAt < 30_000 &&
-          signal.lastAlertAt > 0 &&
-          Date.now() - signal.lastAlertAt > 60_000
+          signal.lastUserInteractionAt > 0 &&
+          Date.now() - signal.lastUserInteractionAt > 300_000
         ) {
-          log.warn("agent session has been active >60s with no completion hook event — hook may be misconfigured", {
-            sessionId: payload.sessionId,
-            agentLike: signal.agentLike,
-          });
+          log.warn(
+            "agent session active >5min since last input with no completion hook event — hook may be misconfigured",
+            {
+              sessionId: payload.sessionId,
+              agentLike: signal.agentLike,
+            },
+          );
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (signal as any)._hookMissingWarned = true;
         }

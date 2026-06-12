@@ -5728,6 +5728,56 @@ describe("runtime integration", () => {
     }
   });
 
+  test("agentLike demotes when OSC 133;D shows a strict shell prompt, re-promotes on next agent output", async () => {
+    const fixture = await createTwoWorkspaceFixture();
+    fixtures.push(fixture);
+    const agentLike = () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime.getPayload().attention.sessions["backend:shell"] as any)?.agentLike;
+
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "claude code v1.0\n" });
+    expect(agentLike()).toBe(true);
+
+    // Agent exits back to the host shell: shell integration emits OSC 133;D
+    // and an unambiguous shell prompt repaints.
+    fixture.sessionManager.emit("terminal:data", {
+      sessionId: "backend:shell",
+      data: "\u001b]133;D;0\u0007PS C:\\backend> ",
+    });
+    expect(agentLike()).toBe(false);
+
+    // Ambiguous ❯ prompts must NOT demote (agent TUI status lines use them):
+    // re-promote via agent output, then feed an OSC chunk ending in ❯.
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "claude code v1.0\n" });
+    expect(agentLike()).toBe(true);
+    fixture.sessionManager.emit("terminal:data", {
+      sessionId: "backend:shell",
+      data: "\u001b]133;D;0\u0007❯ ",
+    });
+    expect(agentLike()).toBe(true);
+  });
+
+  test("notify server restart re-registers notify URLs for live sessions", async () => {
+    const fixture = await createTwoWorkspaceFixture();
+    fixtures.push(fixture);
+
+    // A live PTY session known to the session manager.
+    fixture.sessionManager.sessions.set("backend:shell", { status: "running" });
+
+    // Toggle the agentHook setting off and back on — the server restarts on
+    // a new port; without the refresh, hooks for the live session would keep
+    // POSTing to the dead old port until the session respawned.
+    await fixture.runtime.updateSettings({ notifications: { agentHook: false } });
+    await fixture.runtime.updateSettings({ notifications: { agentHook: true } });
+
+    const urlsPath = path.join(fixture.userDataPath, "hooks", "notify-urls.json");
+    const data = JSON.parse(await fs.readFile(urlsPath, "utf8"));
+    const urls: string[] = data["/tmp/backend"] || [];
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.some((u) => u.includes("sid=backend%3Ashell"))).toBe(true);
+  });
+
   test("repeat idle_prompt with no new activity does NOT re-alert (real-world repeat bug)", async () => {
     vi.useFakeTimers();
     try {

@@ -225,12 +225,17 @@ export const WAITING_PATTERNS = [
   /\?\s*\((?:yes\/no|y\/n)\)\s*$/i,
 ];
 
-export const PROMPT_PATTERNS_SAFE = [
+// Unambiguous shell prompts only — excludes ›/❯/➜, which agent TUI status
+// lines also emit. Used to demote a session's sticky agentLike flag when the
+// agent exits back to its host shell (OSC 133;D + one of these = the shell
+// owns the terminal again).
+export const SHELL_PROMPT_PATTERNS_STRICT = [
   /^PS [^\n>]{0,200}>\s*$/,
   /^[A-Za-z]:[^\n]{0,180}>\s*$/,
   /^(?:\([^)\n]{1,80}\)\s*)?[^$\n]{1,180}[$#]\s*$/,
-  /^(?:\([^)\n]{1,80}\)\s*)?.{0,180}[›❯➜]\s*$/,
 ];
+
+export const PROMPT_PATTERNS_SAFE = [...SHELL_PROMPT_PATTERNS_STRICT, /^(?:\([^)\n]{1,80}\)\s*)?.{0,180}[›❯➜]\s*$/];
 
 // Plan § 3.2.3: drop single-char catcher (`/^\s*>\s*$/` matched any grep /
 // markdown line with just `>`). Require trailing space or full box closure.
@@ -296,6 +301,12 @@ export function matchesPrompt(line: string): boolean {
   // Long lines are not prompts — they're output text that happens to match.
   if (line.length > MAX_PATTERN_LINE_LENGTH) return false;
   return PROMPT_PATTERNS_SAFE.some((pattern) => pattern.test(line));
+}
+
+export function matchesShellPromptStrict(line: string): boolean {
+  if (!line) return false;
+  if (line.length > MAX_PATTERN_LINE_LENGTH) return false;
+  return SHELL_PROMPT_PATTERNS_STRICT.some((pattern) => pattern.test(line));
 }
 
 // Plan § 3.2.3: empty line is NOT idle by default. Previous behavior fired

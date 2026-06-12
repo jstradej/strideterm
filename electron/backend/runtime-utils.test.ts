@@ -5,6 +5,7 @@ import {
   waitForHandleRelease,
   shouldRefreshNow,
   createIntervalGate,
+  matchesShellPromptStrict,
 } from "./runtime-utils.js";
 
 // All "now" anchors in this file are local-time Dates; the detectors operate
@@ -376,5 +377,28 @@ describe("createIntervalGate", () => {
     expect(gate.allow("a").allow).toBe(false);
     t = 10_000;
     expect(gate.allow("a").allow).toBe(true);
+  });
+});
+
+describe("matchesShellPromptStrict", () => {
+  test("matches unambiguous shell prompts", () => {
+    expect(matchesShellPromptStrict("PS C:\\work\\strideterm> ")).toBe(true);
+    expect(matchesShellPromptStrict("C:\\work>")).toBe(true);
+    expect(matchesShellPromptStrict("user@host:~/repo$ ")).toBe(true);
+    expect(matchesShellPromptStrict("(venv) box ~ # ")).toBe(true);
+  });
+
+  test("does NOT match ambiguous agent-TUI prompt characters", () => {
+    // ❯ / › / ➜ also appear in agent TUI status lines — demoting agentLike
+    // on them would misclassify a working agent as a shell.
+    expect(matchesShellPromptStrict("❯ ")).toBe(false);
+    expect(matchesShellPromptStrict("› ")).toBe(false);
+    expect(matchesShellPromptStrict("my-repo ➜ ")).toBe(false);
+    expect(matchesShellPromptStrict("> ")).toBe(false); // Claude Code idle prompt
+  });
+
+  test("rejects empty and overlong lines", () => {
+    expect(matchesShellPromptStrict("")).toBe(false);
+    expect(matchesShellPromptStrict("x".repeat(85) + " $ ")).toBe(false);
   });
 });
