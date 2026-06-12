@@ -21,7 +21,11 @@ jobs:
         include:
           - os: windows-latest
             args: --win
-          - os: macos-latest
+          # Pinned to a fixed image (not macos-latest) so the build
+          # environment doesn't shift under us when GitHub migrates the
+          # `latest` label to a newer macOS/SDK. macos-14 = Apple Silicon,
+          # stable, broad runtime compatibility for the produced app.
+          - os: macos-14
             args: --mac
           - os: ubuntu-latest
             args: --linux

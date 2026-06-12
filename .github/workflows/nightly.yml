@@ -18,7 +18,9 @@ jobs:
         include:
           - os: windows-latest
             args: --win
-          - os: macos-latest
+          # Pinned to match release.yml so nightly and release builds share
+          # the same macOS/SDK and don't drift when `latest` migrates.
+          - os: macos-14
             args: --mac
           - os: ubuntu-latest
             args: --linux
