@@ -390,12 +390,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   // `hashes` arrive in display order (newest first); backend handles replay
   // ordering. Both operations are audited server-side via runWriteAction.
+  // Copy `hashes` into a plain array: callers pass Vue reactive proxies, and
+  // structured clone in ipcRenderer.invoke rejects proxies with the opaque
+  // "An object could not be cloned" error before the action ever runs.
   async function gitCherryPick(workspaceId: string, hashes: string[]): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "cherry-pick", () =>
       (_api as Transport & { gitCherryPick: (p: unknown) => Promise<unknown> }).gitCherryPick!({
         workspaceId,
-        hashes,
+        hashes: [...hashes],
         rootPath,
       }),
     );
@@ -406,7 +409,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     await runGitAction(workspaceId, "squash", () =>
       (_api as Transport & { gitSquashCommits: (p: unknown) => Promise<unknown> }).gitSquashCommits!({
         workspaceId,
-        hashes,
+        hashes: [...hashes],
         message,
         rootPath,
       }),
