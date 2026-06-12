@@ -257,6 +257,25 @@ export const gitTagSchema = z.object({
 });
 export type GitTag = z.infer<typeof gitTagSchema>;
 
+// Hex-only commit hashes (short or full) — rules out option injection in the
+// execFile args array the same way safeGitRef does, but stricter.
+const commitHashString = z.string().regex(/^[0-9a-fA-F]{4,40}$/);
+
+export const gitCherryPickSchema = z.object({
+  workspaceId: nonEmptyString,
+  hashes: z.array(commitHashString).min(1).max(200),
+  rootPath: z.string().optional(),
+});
+export type GitCherryPick = z.infer<typeof gitCherryPickSchema>;
+
+export const gitSquashSchema = z.object({
+  workspaceId: nonEmptyString,
+  hashes: z.array(commitHashString).min(2).max(200),
+  message: nonEmptyString,
+  rootPath: z.string().optional(),
+});
+export type GitSquash = z.infer<typeof gitSquashSchema>;
+
 // --- Stash detail / lifecycle schemas ---
 // A strict `stash@{N}` regex on `ref` defends the IPC layer against
 // command-injection through the git CLI.

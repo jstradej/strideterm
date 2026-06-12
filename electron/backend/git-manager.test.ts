@@ -746,6 +746,209 @@ describe("GitManager", () => {
     expect(result.summary).toContain("Failed");
   });
 
+  // ─── cherry-pick / squash ────────────────────────────────────────
+
+  const cleanSnapshot = {
+    available: true,
+    branch: "main",
+    dirty: false,
+    operationState: { kind: "idle", inProgress: false, conflicts: [] },
+  };
+
+  test("cherryPick applies commits oldest-first and audits via connection", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const auditLogStore = { logEntry: vi.fn() };
+    const manager = new GitManager({ execGitImpl, auditLogStore });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue(cleanSnapshot);
+
+    // hashes arrive newest-first (display order)
+    const result = await manager.cherryPick(
+      { id: "ws-1", cwd: root },
+      { hashes: ["bbb222", "aaa111"], connection: { id: "az-1", provider: "azure" } },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["cherry-pick", "aaa111", "bbb222"]);
+    expect(auditLogStore.logEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "gitCherry-pick", success: true }),
+    );
+  });
+
+  test("cherryPick rejects empty and non-hex hashes without touching git", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn();
+    const manager = new GitManager({ execGitImpl });
+
+    const empty = await manager.cherryPick({ id: "ws-1", cwd: root }, { hashes: [] });
+    expect(empty.ok).toBe(false);
+    expect(empty.summary).toContain("No commits");
+
+    const injected = await manager.cherryPick({ id: "ws-1", cwd: root }, { hashes: ["--exec=evil"] });
+    expect(injected.ok).toBe(false);
+    expect(injected.summary).toContain("Invalid commit hash");
+    expect(execGitImpl).not.toHaveBeenCalled();
+  });
+
+  test("cherryPick refuses dirty working tree", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn();
+    const manager = new GitManager({ execGitImpl });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue({ ...cleanSnapshot, dirty: true });
+
+    const result = await manager.cherryPick({ id: "ws-1", cwd: root }, { hashes: ["aaa111"] });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("Working tree is dirty");
+    expect(execGitImpl).not.toHaveBeenCalled();
+  });
+
+  test("squashCommits at HEAD soft-resets and commits with the given message", async () => {
+    const { root } = await createGitFixture();
+    const responses: Record<string, { stdout: string; stderr: string }> = {
+      "rev-list aaaa3333^..cccc1111": { stdout: "cccc1111\nbbbb2222\naaaa3333\n", stderr: "" },
+      "rev-list --merges aaaa3333^..HEAD": { stdout: "", stderr: "" },
+      "merge-base --is-ancestor cccc1111 HEAD": { stdout: "", stderr: "" },
+      "rev-parse HEAD": { stdout: "cccc1111\n", stderr: "" },
+      "rev-parse --abbrev-ref HEAD": { stdout: "main\n", stderr: "" },
+      "reset --soft aaaa3333^": { stdout: "", stderr: "" },
+      "commit -m feat: combined": { stdout: "[main ffff6666] feat: combined\n", stderr: "" },
+    };
+    const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+      const key = args.join(" ");
+      if (!(key in responses)) throw { stdout: "", stderr: `Unexpected git call: ${key}` };
+      return responses[key];
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue(cleanSnapshot);
+
+    const result = await manager.squashCommits(
+      { id: "ws-1", cwd: root },
+      { hashes: ["cccc1111", "bbbb2222", "aaaa3333"], message: "feat: combined" },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["reset", "--soft", "aaaa3333^"]);
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["commit", "-m", "feat: combined"]);
+    // The at-HEAD path must not rebase or detach.
+    const calls = execGitImpl.mock.calls.map(([, args]: [string, string[]]) => args[0]);
+    expect(calls).not.toContain("rebase");
+    expect(calls).not.toContain("checkout");
+  });
+
+  test("squashCommits below HEAD detaches, squashes, and rebases descendants", async () => {
+    const { root } = await createGitFixture();
+    let revParseHeadCalls = 0;
+    const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+      const key = args.join(" ");
+      if (key === "rev-parse HEAD") {
+        revParseHeadCalls += 1;
+        // 1st: resolve current HEAD; 2nd: resolve the squashed commit.
+        return { stdout: revParseHeadCalls === 1 ? "eeee5555\n" : "ffff6666\n", stderr: "" };
+      }
+      const responses: Record<string, { stdout: string; stderr: string }> = {
+        "rev-list aaaa3333^..cccc1111": { stdout: "cccc1111\nbbbb2222\naaaa3333\n", stderr: "" },
+        "rev-list --merges aaaa3333^..HEAD": { stdout: "", stderr: "" },
+        "merge-base --is-ancestor cccc1111 HEAD": { stdout: "", stderr: "" },
+        "rev-parse --abbrev-ref HEAD": { stdout: "main\n", stderr: "" },
+        "checkout --detach cccc1111": { stdout: "", stderr: "" },
+        "reset --soft aaaa3333^": { stdout: "", stderr: "" },
+        "commit -m feat: combined": { stdout: "", stderr: "" },
+        "rebase --onto ffff6666 cccc1111 main": { stdout: "Successfully rebased\n", stderr: "" },
+      };
+      if (!(key in responses)) throw { stdout: "", stderr: `Unexpected git call: ${key}` };
+      return responses[key];
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue(cleanSnapshot);
+
+    const result = await manager.squashCommits(
+      { id: "ws-1", cwd: root },
+      { hashes: ["cccc1111", "bbbb2222", "aaaa3333"], message: "feat: combined" },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["checkout", "--detach", "cccc1111"]);
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["rebase", "--onto", "ffff6666", "cccc1111", "main"]);
+  });
+
+  test("squashCommits rejects a non-contiguous selection", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+      if (args.join(" ") === "rev-list aaaa3333^..cccc1111") {
+        // extra commit in the range that was not selected
+        return { stdout: "cccc1111\nbbbb2222\ndddd4444\naaaa3333\n", stderr: "" };
+      }
+      throw { stdout: "", stderr: "unexpected" };
+    });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.squashCommits(
+      { id: "ws-1", cwd: root },
+      { hashes: ["cccc1111", "bbbb2222", "aaaa3333"], message: "m" },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("not a contiguous range");
+  });
+
+  test("squashCommits rejects when merge commits sit in the rewrite range", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+      const key = args.join(" ");
+      if (key === "rev-list aaaa3333^..cccc1111") return { stdout: "cccc1111\nbbbb2222\naaaa3333\n", stderr: "" };
+      if (key === "rev-list --merges aaaa3333^..HEAD") return { stdout: "abcd9999\n", stderr: "" };
+      throw { stdout: "", stderr: "unexpected" };
+    });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.squashCommits(
+      { id: "ws-1", cwd: root },
+      { hashes: ["cccc1111", "bbbb2222", "aaaa3333"], message: "m" },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("merge commits");
+  });
+
+  test("squashCommits rejects commits that are not on the current branch", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+      const key = args.join(" ");
+      if (key === "rev-list aaaa3333^..cccc1111") return { stdout: "cccc1111\nbbbb2222\naaaa3333\n", stderr: "" };
+      if (key === "rev-list --merges aaaa3333^..HEAD") return { stdout: "", stderr: "" };
+      if (key === "merge-base --is-ancestor cccc1111 HEAD") throw { stdout: "", stderr: "" };
+      throw { stdout: "", stderr: "unexpected" };
+    });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.squashCommits(
+      { id: "ws-1", cwd: root },
+      { hashes: ["cccc1111", "bbbb2222", "aaaa3333"], message: "m" },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("not on the current branch");
+  });
+
+  test("squashCommits requires at least two commits and a message", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn();
+    const manager = new GitManager({ execGitImpl });
+
+    const single = await manager.squashCommits({ id: "ws-1", cwd: root }, { hashes: ["aaaa3333"], message: "m" });
+    expect(single.ok).toBe(false);
+    expect(single.summary).toContain("at least two");
+
+    const noMessage = await manager.squashCommits(
+      { id: "ws-1", cwd: root },
+      { hashes: ["bbbb2222", "aaaa3333"], message: "  " },
+    );
+    expect(noMessage.ok).toBe(false);
+    expect(noMessage.summary).toContain("message");
+    expect(execGitImpl).not.toHaveBeenCalled();
+  });
+
   // ─── execAuthGit login resolution ────────────────────────────────
 
   function extractAuthCredentials(execMock: ReturnType<typeof vi.fn>) {

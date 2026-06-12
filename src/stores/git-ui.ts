@@ -388,6 +388,31 @@ export const useGitUiStore = defineStore("git-ui", () => {
     );
   }
 
+  // `hashes` arrive in display order (newest first); backend handles replay
+  // ordering. Both operations are audited server-side via runWriteAction.
+  async function gitCherryPick(workspaceId: string, hashes: string[]): Promise<void> {
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "cherry-pick", () =>
+      (_api as Transport & { gitCherryPick: (p: unknown) => Promise<unknown> }).gitCherryPick!({
+        workspaceId,
+        hashes,
+        rootPath,
+      }),
+    );
+  }
+
+  async function gitSquashCommits(workspaceId: string, hashes: string[], message: string): Promise<void> {
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "squash", () =>
+      (_api as Transport & { gitSquashCommits: (p: unknown) => Promise<unknown> }).gitSquashCommits!({
+        workspaceId,
+        hashes,
+        message,
+        rootPath,
+      }),
+    );
+  }
+
   // --- Branch list & graph (Branches sub-tab) ---
 
   // Skip a refetch when the same workspace+rootPath was hit recently and the
@@ -1440,6 +1465,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     revealRoot,
     gitCheckoutBranch,
     gitCreateBranch,
+    gitCherryPick,
+    gitSquashCommits,
     gitListBranches,
     gitDeleteBranch,
     gitDeleteRemoteBranch,

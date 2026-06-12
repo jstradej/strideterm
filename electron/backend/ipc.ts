@@ -50,6 +50,8 @@ import {
   gitLogPageSchema,
   gitCommitSchema,
   gitTagSchema,
+  gitCherryPickSchema,
+  gitSquashSchema,
   gitStashListSchema,
   gitStashFilesSchema,
   gitStashFileDiffSchema,
@@ -1089,6 +1091,18 @@ export function registerIpc(
     const p = validateIpc(gitPayloadSchema, payload, "git:rebase-onto");
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:rebase-onto" }, () =>
       runtime.gitRebaseOnto(p),
+    );
+  });
+  ipcMain.handle("git:cherry-pick", async (_event, payload) => {
+    const p = validateIpc(gitCherryPickSchema, payload, "git:cherry-pick");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:cherry-pick" }, () =>
+      runtime.gitCherryPick(p),
+    );
+  });
+  ipcMain.handle("git:squash-commits", async (_event, payload) => {
+    const p = validateIpc(gitSquashSchema, payload, "git:squash-commits");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:squash-commits" }, () =>
+      runtime.gitSquashCommits(p),
     );
   });
   ipcMain.handle("git:continue", async (_event, payload) => {
@@ -2145,6 +2159,8 @@ export function registerIpc(
     ipcMain.removeHandler("git:create-branch");
     ipcMain.removeHandler("git:merge-into-current");
     ipcMain.removeHandler("git:rebase-onto");
+    ipcMain.removeHandler("git:cherry-pick");
+    ipcMain.removeHandler("git:squash-commits");
     ipcMain.removeHandler("git:continue");
     ipcMain.removeHandler("git:abort");
     ipcMain.removeHandler("git:diff-preview");

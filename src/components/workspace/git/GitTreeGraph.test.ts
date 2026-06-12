@@ -115,13 +115,45 @@ describe("GitTreeGraph", () => {
     expect(mobile.findAll(".git-tree__cell--author").length).toBe(0);
   });
 
-  test("clicking a row emits select with its full hash", async () => {
+  test("clicking a row emits select with its full hash and no modifiers", async () => {
     const wrapper = mountGraph();
     const rows = wrapper.findAll(".git-tree__row");
     await rows[2].trigger("click"); // commit E
     const emitted = wrapper.emitted("select");
     expect(emitted).toBeTruthy();
-    expect(emitted![0]).toEqual([linearCommits[2].hash]);
+    expect(emitted![0]).toEqual([linearCommits[2].hash, { ctrl: false, shift: false }]);
+  });
+
+  test("Ctrl/Shift+click emit their modifier flags", async () => {
+    const wrapper = mountGraph();
+    const rows = wrapper.findAll(".git-tree__row");
+    await rows[1].trigger("click", { ctrlKey: true });
+    await rows[3].trigger("click", { shiftKey: true });
+    const emitted = wrapper.emitted("select");
+    expect(emitted).toBeTruthy();
+    expect(emitted![0]).toEqual([linearCommits[1].hash, { ctrl: true, shift: false }]);
+    expect(emitted![1]).toEqual([linearCommits[3].hash, { ctrl: false, shift: true }]);
+  });
+
+  test("selectedHashes highlights every commit in the multi-selection", () => {
+    const wrapper = mountGraph({
+      selectedHash: linearCommits[0].hash,
+      selectedHashes: [linearCommits[0].hash, linearCommits[1].hash],
+    });
+    const selected = wrapper.findAll(".git-tree__row--selected");
+    expect(selected.length).toBe(2);
+  });
+
+  test("right-click inside the multi-selection keeps the selection intact", async () => {
+    const wrapper = mountGraph({
+      selectedHash: linearCommits[0].hash,
+      selectedHashes: [linearCommits[0].hash, linearCommits[1].hash],
+    });
+    const rows = wrapper.findAll(".git-tree__row");
+    await rows[1].trigger("contextmenu");
+    // No re-select: the menu should act on the whole selection.
+    expect(wrapper.emitted("select")).toBeFalsy();
+    expect(wrapper.emitted("contextmenu")).toBeTruthy();
   });
 
   test("double-click emits open", async () => {

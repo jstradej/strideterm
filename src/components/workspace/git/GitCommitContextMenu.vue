@@ -18,7 +18,10 @@
         :key="item.id"
         type="button"
         class="commit-ctx__item"
+        :class="{ 'commit-ctx__item--disabled': item.disabled }"
         role="menuitem"
+        :disabled="item.disabled"
+        :title="item.title"
         @click="run(item.id)"
       >
         <span class="commit-ctx__label">{{ item.label }}</span>
@@ -35,6 +38,9 @@ interface MenuItem {
   id: string;
   label: string;
   shortcut?: string;
+  // Greyed-out but visible, JetBrains-style — `title` explains why.
+  disabled?: boolean;
+  title?: string;
 }
 
 const props = defineProps<{
@@ -161,6 +167,14 @@ onBeforeUnmount(() => {
 .commit-ctx__item:focus-visible {
   background: rgba(var(--tint), 0.12);
   outline: none;
+}
+
+.commit-ctx__item--disabled,
+.commit-ctx__item--disabled:hover {
+  color: var(--muted);
+  opacity: 0.55;
+  background: transparent;
+  cursor: default;
 }
 
 .commit-ctx__label {

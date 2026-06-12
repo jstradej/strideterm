@@ -691,6 +691,8 @@ export function createRemoteTransport(): Transport {
     gitCreateBranch: (payload) => fetchJson("/api/git/create-branch", payload),
     gitMergeIntoCurrent: (payload) => fetchJson("/api/git/merge-into-current", payload),
     gitRebaseOnto: (payload) => fetchJson("/api/git/rebase-onto", payload),
+    gitCherryPick: (payload) => fetchJson("/api/git/cherry-pick", payload),
+    gitSquashCommits: (payload) => fetchJson("/api/git/squash-commits", payload),
     gitContinueOperation: (payload) => fetchJson("/api/git/continue", payload),
     gitAbortOperation: (payload) => fetchJson("/api/git/abort", payload),
     gitDiffPreview: (payload) => fetchJson("/api/git/diff-preview", payload),

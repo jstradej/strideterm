@@ -26,6 +26,7 @@ import {
   gitBranchListSchema,
   gitBranchRenameSchema,
   gitCheckoutRemoteSchema,
+  gitCherryPickSchema,
   gitLogGraphSchema,
   gitPayloadSchema,
   gitRemoteBranchDeleteSchema,
@@ -37,6 +38,7 @@ import {
   gitStashFilesSchema,
   gitStashImportSchema,
   gitStashListSchema,
+  gitSquashSchema,
   taskUpdateDescriptionSchema,
   terminalSessionSchema,
   validateIpc,
@@ -1158,6 +1160,24 @@ async function handleApiRequest(
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/cherry-pick") {
+      json(
+        response,
+        200,
+        await runtime.gitCherryPick(validateIpc(gitCherryPickSchema, body, "POST /api/git/cherry-pick")),
+      );
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/squash-commits") {
+      json(
+        response,
+        200,
+        await runtime.gitSquashCommits(validateIpc(gitSquashSchema, body, "POST /api/git/squash-commits")),
+      );
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/git/continue") {
       json(response, 200, await runtime.gitContinueOperation(body));
       return;
@@ -1973,6 +1993,12 @@ export async function startRemoteServer({
         "/api/git/create-branch": (body, windowId) => runtime.gitCreateBranch(body, windowId),
         "/api/git/merge-into-current": (body, windowId) => runtime.gitMergeIntoCurrent(body, windowId),
         "/api/git/rebase-onto": (body, windowId) => runtime.gitRebaseOnto(body, windowId),
+        // Cherry-pick / squash rewrite history in the workspace's cwd —
+        // validate like the IPC path (hash regex blocks option injection).
+        "/api/git/cherry-pick": (body, windowId) =>
+          runtime.gitCherryPick(validateIpc(gitCherryPickSchema, body, "POST /api/git/cherry-pick"), windowId),
+        "/api/git/squash-commits": (body, windowId) =>
+          runtime.gitSquashCommits(validateIpc(gitSquashSchema, body, "POST /api/git/squash-commits"), windowId),
         "/api/git/continue": (body, windowId) => runtime.gitContinueOperation(body, windowId),
         "/api/git/abort": (body, windowId) => runtime.gitAbortOperation(body, windowId),
         "/api/git/diff-preview": (body, windowId) => runtime.gitDiffPreview(body, windowId),

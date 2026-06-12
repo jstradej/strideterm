@@ -64,6 +64,14 @@ const log = getLogger("git");
 const WORKTREE_DIRTY_CACHE_TTL_MS = 1500;
 const SNAPSHOT_CACHE_TTL_MS = 8000;
 
+// Hex-only commit hashes (short or full) — also rules out option injection
+// ("-x") since execGit passes args verbatim.
+const COMMIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
+
+function normalizeCommitHashes(hashes: unknown): string[] {
+  return (Array.isArray(hashes) ? hashes : []).map((hash) => String(hash || "").trim()).filter(Boolean);
+}
+
 interface GitExecResult {
   stdout: string;
   stderr: string;
@@ -1373,6 +1381,179 @@ export class GitManager extends EventEmitter {
         runEffect(this.execAuthGitEffect(cwd, ["rebase", resolvedBaseBranch], { connection })),
       connection,
       rootPath,
+    });
+  }
+
+  // --- Cherry-pick / squash ------------------------------------------------
+  // Both take `hashes` in display order (newest first), matching the commit
+  // log the selection came from. Hashes are re-validated here so the remote
+  // HTTP transport gets the same guarantees as the schema-checked IPC path.
+
+  async cherryPick(
+    workspace: WorkspaceRef,
+    {
+      hashes = [],
+      rootPath = "",
+      connection = null,
+    }: { hashes?: string[]; rootPath?: string; connection?: Connection | null } = {},
+  ): Promise<Record<string, unknown>> {
+    const list = normalizeCommitHashes(hashes);
+    if (!list.length) {
+      return createStructuredResult({ ok: false, summary: "No commits selected to cherry-pick." });
+    }
+    if (list.some((hash) => !COMMIT_HASH_RE.test(hash))) {
+      return createStructuredResult({ ok: false, summary: "Invalid commit hash." });
+    }
+    // git applies arguments in order — replay oldest → newest.
+    const ordered = [...list].reverse();
+    return this.runWriteAction(workspace, {
+      type: "cherry-pick",
+      label: "Cherry-pick",
+      run: async (cwd) => this.execGit(cwd, ["cherry-pick", ...ordered]),
+      connection,
+      rootPath,
+      extraAudit: { commits: ordered },
+    });
+  }
+
+  async squashCommits(
+    workspace: WorkspaceRef,
+    {
+      hashes = [],
+      message = "",
+      rootPath = "",
+      connection = null,
+    }: { hashes?: string[]; message?: string; rootPath?: string; connection?: Connection | null } = {},
+  ): Promise<Record<string, unknown>> {
+    const list = normalizeCommitHashes(hashes);
+    if (list.length < 2) {
+      return createStructuredResult({ ok: false, summary: "Select at least two commits to squash." });
+    }
+    if (list.some((hash) => !COMMIT_HASH_RE.test(hash))) {
+      return createStructuredResult({ ok: false, summary: "Invalid commit hash." });
+    }
+    const commitMessage = String(message || "").trim();
+    if (!commitMessage) {
+      return createStructuredResult({ ok: false, summary: "A commit message is required to squash." });
+    }
+    const effectiveCwd = rootPath || String(workspace.cwd || "");
+    if (!effectiveCwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+
+    const newest = list[0];
+    const oldest = list[list.length - 1];
+
+    // Pre-validate "technically possible" before the audited write action so
+    // impossible selections fail with a precise reason and zero mutation.
+    // 1. The selection must be a contiguous linear range (rev-list of
+    //    oldest^..newest yields exactly the selected commits, newest first).
+    let fullHashes: string[];
+    try {
+      const rangeResult = await this.execGit(effectiveCwd, ["rev-list", `${oldest}^..${newest}`]);
+      fullHashes = String(rangeResult.stdout || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } catch {
+      return createStructuredResult({
+        ok: false,
+        summary: "Cannot squash: the oldest selected commit has no parent, or the selection is not a valid range.",
+      });
+    }
+    const matchesSelection =
+      fullHashes.length === list.length &&
+      fullHashes.every((full, index) => full.toLowerCase().startsWith(list[index].toLowerCase()));
+    if (!matchesSelection) {
+      return createStructuredResult({
+        ok: false,
+        summary: "Cannot squash: the selected commits are not a contiguous range.",
+      });
+    }
+    // 2. No merge commits between the oldest selected commit and HEAD —
+    //    replaying over a merge would silently flatten it.
+    try {
+      const mergesResult = await this.execGit(effectiveCwd, ["rev-list", "--merges", `${oldest}^..HEAD`]);
+      if (String(mergesResult.stdout || "").trim()) {
+        return createStructuredResult({
+          ok: false,
+          summary: "Cannot squash: the range contains merge commits.",
+        });
+      }
+    } catch {
+      return createStructuredResult({ ok: false, summary: "Cannot squash: failed to inspect the commit range." });
+    }
+    // 3. The selection must sit on the current branch.
+    try {
+      await this.execGit(effectiveCwd, ["merge-base", "--is-ancestor", newest, "HEAD"]);
+    } catch {
+      return createStructuredResult({
+        ok: false,
+        summary: "Cannot squash: the selected commits are not on the current branch.",
+      });
+    }
+
+    let headHash = "";
+    let branch = "";
+    try {
+      headHash = (await this.execGit(effectiveCwd, ["rev-parse", "HEAD"])).stdout.trim();
+      branch = (await this.execGit(effectiveCwd, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
+    } catch {
+      return createStructuredResult({ ok: false, summary: "Cannot squash: failed to resolve HEAD." });
+    }
+    const newestFull = fullHashes[0];
+    const squashAtHead = headHash === newestFull;
+    if (!squashAtHead && branch === "HEAD") {
+      return createStructuredResult({
+        ok: false,
+        summary: "Cannot squash below a detached HEAD. Check out a branch first.",
+      });
+    }
+
+    return this.runWriteAction(workspace, {
+      type: "squash",
+      label: "Squash",
+      run: async (cwd) => {
+        if (squashAtHead) {
+          const resetResult = await this.execGit(cwd, ["reset", "--soft", `${oldest}^`]);
+          try {
+            const commitResult = await this.execGit(cwd, ["commit", "-m", commitMessage]);
+            return {
+              stdout: joinRawOutput(resetResult.stdout, commitResult.stdout),
+              stderr: joinRawOutput(resetResult.stderr, commitResult.stderr),
+            };
+          } catch (error) {
+            // Soft reset moved the ref but left tree+index intact — putting
+            // the branch back on the old head is lossless.
+            await this.execGit(cwd, ["reset", "--soft", headHash]).catch(() => {});
+            throw error;
+          }
+        }
+        // Mid-history squash: build the squashed commit on a detached HEAD,
+        // then replay the newer commits on top of it.
+        const stepOutputs: GitExecResult[] = [];
+        try {
+          stepOutputs.push(await this.execGit(cwd, ["checkout", "--detach", newestFull]));
+          stepOutputs.push(await this.execGit(cwd, ["reset", "--soft", `${oldest}^`]));
+          stepOutputs.push(await this.execGit(cwd, ["commit", "-m", commitMessage]));
+        } catch (error) {
+          // Nothing rewritten yet — go back to the original branch.
+          await this.execGit(cwd, ["checkout", branch]).catch(() => {});
+          throw error;
+        }
+        const squashed = (await this.execGit(cwd, ["rev-parse", "HEAD"])).stdout.trim();
+        // Replays the branch's commits above `newest` onto the squashed commit
+        // and re-attaches the branch. Conflicts leave a normal
+        // rebase-in-progress state the existing conflict UI can continue/abort.
+        const rebaseResult = await this.execGit(cwd, ["rebase", "--onto", squashed, newestFull, branch]);
+        return {
+          stdout: joinRawOutput(...stepOutputs.map((r) => r.stdout), rebaseResult.stdout),
+          stderr: joinRawOutput(...stepOutputs.map((r) => r.stderr), rebaseResult.stderr),
+        };
+      },
+      connection,
+      rootPath,
+      extraAudit: { commits: fullHashes, count: fullHashes.length },
     });
   }
 

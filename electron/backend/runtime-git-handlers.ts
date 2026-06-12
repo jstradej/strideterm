@@ -99,6 +99,28 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return runGitWorkspaceAction(workspace, git.rebaseOnto(workspace, { ...payload, connection, rootPath }));
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCherryPick(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      // Connection is audit-only here (no network) — it routes the operation
+      // into the connection's audit log like merge/rebase.
+      const connection = resolveGitConnection(workspace);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(
+        workspace,
+        git.cherryPick(workspace, { hashes: payload.hashes, connection, rootPath }),
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitSquashCommits(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const connection = resolveGitConnection(workspace);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(
+        workspace,
+        git.squashCommits(workspace, { hashes: payload.hashes, message: payload.message, connection, rootPath }),
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitContinueOperation(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);

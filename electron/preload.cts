@@ -193,6 +193,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   gitCreateBranch: (payload) => ipcRenderer.invoke("git:create-branch", payload),
   gitMergeIntoCurrent: (payload) => ipcRenderer.invoke("git:merge-into-current", payload),
   gitRebaseOnto: (payload) => ipcRenderer.invoke("git:rebase-onto", payload),
+  gitCherryPick: (payload) => ipcRenderer.invoke("git:cherry-pick", payload),
+  gitSquashCommits: (payload) => ipcRenderer.invoke("git:squash-commits", payload),
   gitContinueOperation: (payload) => ipcRenderer.invoke("git:continue", payload),
   gitAbortOperation: (payload) => ipcRenderer.invoke("git:abort", payload),
   gitDiffPreview: (payload) => ipcRenderer.invoke("git:diff-preview", payload),

@@ -91,7 +91,7 @@
           <div
             v-for="node in nodes"
             :key="`row:${node.hash}`"
-            :class="['git-tree__row', { 'git-tree__row--selected': node.hash === selectedHash }]"
+            :class="['git-tree__row', { 'git-tree__row--selected': isSelected(node.hash) }]"
             :style="{
               top: `${node.y}px`,
               height: `${ROW_HEIGHT}px`,
@@ -99,9 +99,9 @@
               borderLeftColor: node.hash === selectedHash ? laneColor(node.lane) : 'transparent',
             }"
             role="treeitem"
-            :aria-selected="node.hash === selectedHash ? 'true' : 'false'"
+            :aria-selected="isSelected(node.hash) ? 'true' : 'false'"
             :title="rowTooltip(node)"
-            @click="select(node)"
+            @click="select(node, $event)"
             @dblclick="onDoubleClick(node)"
             @contextmenu="onContextMenu($event, node)"
           >
@@ -164,6 +164,10 @@ const props = withDefaults(
     head?: string;
     refs?: Record<string, string>;
     selectedHash?: string;
+    // Multi-selection (Ctrl/Shift+click) owned by the parent. When non-empty
+    // it drives row highlighting; `selectedHash` stays the primary commit
+    // that feeds the diff pane.
+    selectedHashes?: string[];
     loading?: boolean;
     error?: string;
     compact?: boolean;
@@ -178,6 +182,7 @@ const props = withDefaults(
     head: "",
     refs: () => ({}),
     selectedHash: "",
+    selectedHashes: () => [],
     loading: false,
     error: "",
     compact: false,
@@ -186,7 +191,7 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  (e: "select", hash: string): void;
+  (e: "select", hash: string, mods: { ctrl: boolean; shift: boolean }): void;
   (e: "open", hash: string): void;
   (e: "contextmenu", payload: { hash: string; x: number; y: number }): void;
 }>();
@@ -530,8 +535,19 @@ function rowTooltip(node: GraphNode): string {
   }`;
 }
 
-function select(node: GraphNode) {
-  if (props.selectedHash !== node.hash) emit("select", node.hash);
+const selectedSet = computed(() => {
+  if (props.selectedHashes?.length) return new Set(props.selectedHashes);
+  return new Set(props.selectedHash ? [props.selectedHash] : []);
+});
+
+function isSelected(hash: string): boolean {
+  return selectedSet.value.has(hash);
+}
+
+function select(node: GraphNode, event?: MouseEvent) {
+  const mods = { ctrl: !!(event?.ctrlKey || event?.metaKey), shift: !!event?.shiftKey };
+  if (!mods.ctrl && !mods.shift && props.selectedHash === node.hash && selectedSet.value.size <= 1) return;
+  emit("select", node.hash, mods);
 }
 
 function onDoubleClick(node: GraphNode) {
@@ -541,8 +557,9 @@ function onDoubleClick(node: GraphNode) {
 function onContextMenu(event: MouseEvent, node: GraphNode) {
   event.preventDefault();
   // Select the commit under the cursor so the menu's actions clearly target
-  // the right row even if the user right-clicks without left-clicking first.
-  if (props.selectedHash !== node.hash) emit("select", node.hash);
+  // the right row — unless it's already part of the current (multi-)selection,
+  // which the menu should act on as a whole.
+  if (!selectedSet.value.has(node.hash)) emit("select", node.hash, { ctrl: false, shift: false });
   emit("contextmenu", { hash: node.hash, x: event.clientX, y: event.clientY });
 }
 
@@ -555,23 +572,24 @@ function copyHash(hash: string) {
 
 function onKeydown(event: KeyboardEvent) {
   if (!nodes.value.length) return;
+  const noMods = { ctrl: false, shift: false };
   const cur = nodes.value.findIndex((n) => n.hash === props.selectedHash);
   if (event.key === "ArrowDown" || event.key === "j") {
     event.preventDefault();
     const next = nodes.value[Math.min(nodes.value.length - 1, cur < 0 ? 0 : cur + 1)];
-    if (next) emit("select", next.hash);
+    if (next) emit("select", next.hash, noMods);
   } else if (event.key === "ArrowUp" || event.key === "k") {
     event.preventDefault();
     const next = nodes.value[Math.max(0, cur < 0 ? 0 : cur - 1)];
-    if (next) emit("select", next.hash);
+    if (next) emit("select", next.hash, noMods);
   } else if (event.key === "Enter") {
     if (cur >= 0) emit("open", nodes.value[cur].hash);
   } else if (event.key === "Home") {
     event.preventDefault();
-    emit("select", nodes.value[0].hash);
+    emit("select", nodes.value[0].hash, noMods);
   } else if (event.key === "End") {
     event.preventDefault();
-    emit("select", nodes.value[nodes.value.length - 1].hash);
+    emit("select", nodes.value[nodes.value.length - 1].hash, noMods);
   }
 }
 
@@ -668,6 +686,7 @@ watch(
   align-items: center;
   padding-right: 10px;
   cursor: pointer;
+  user-select: none; /* Shift+click extends the selection — don't highlight text */
   white-space: nowrap;
   border-left: 2px solid transparent;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);

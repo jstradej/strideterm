@@ -697,6 +697,9 @@ export function createOperationWarnings(
   if (type === "rebase" && snapshot.upstream) {
     warnings.push("Rebase rewrites the history of the current branch. Push with care if this branch is shared.");
   }
+  if (type === "squash" && snapshot.upstream) {
+    warnings.push("Squash rewrites the history of the current branch. Push with care if this branch is shared.");
+  }
   if ((snapshot.aheadCount ?? 0) > 0 && snapshot.upstream) {
     warnings.push(`Current branch is ${snapshot.aheadCount} commit(s) ahead of ${snapshot.upstream}.`);
   }

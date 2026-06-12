@@ -22,6 +22,8 @@ import type {
   GitDiffPreview,
   GitCommit,
   GitTag,
+  GitCherryPick,
+  GitSquash,
   GitStashList,
   GitStashRef,
   GitStashFileDiff,
@@ -423,6 +425,8 @@ export interface StridetermAPI {
   gitCreateBranch: (payload: GitPayload) => Promise<unknown>;
   gitMergeIntoCurrent: (payload: GitPayload) => Promise<unknown>;
   gitRebaseOnto: (payload: GitPayload) => Promise<unknown>;
+  gitCherryPick: (payload: GitCherryPick) => Promise<unknown>;
+  gitSquashCommits: (payload: GitSquash) => Promise<unknown>;
   gitContinueOperation: (payload: GitPayload) => Promise<unknown>;
   gitAbortOperation: (payload: GitPayload) => Promise<unknown>;
   gitDiffPreview: (payload: GitDiffPreview) => Promise<unknown>;
