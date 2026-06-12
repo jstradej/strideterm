@@ -217,10 +217,12 @@
           <!-- PR list tabs — only render when this tab is active -->
           <template v-else-if="activeTab === tab.id">
             <div
-              v-if="tabItems(activeTab).length && (repoNames.length > 1 || authorOptions.length > 1)"
+              v-if="
+                hasActiveFilters || (tabItems(activeTab).length && (repoNames.length > 1 || authorOptions.length > 1))
+              "
               class="azure-inbox__filters"
             >
-              <div v-if="repoNames.length > 1" class="azure-inbox__filter-row">
+              <div v-if="repoNames.length > 1 || repoFilter" class="azure-inbox__filter-row">
                 <span class="azure-inbox__filter-label">Repo</span>
                 <button
                   type="button"
@@ -246,7 +248,7 @@
                   {{ repo }}
                 </button>
               </div>
-              <div v-if="authorOptions.length > 1" class="azure-inbox__filter-row">
+              <div v-if="authorOptions.length > 1 || authorFilter" class="azure-inbox__filter-row">
                 <span class="azure-inbox__filter-label">Author</span>
                 <template v-if="authorOptions.length <= 5">
                   <button
@@ -549,11 +551,18 @@ function tabItems(tabId: string) {
   return [];
 }
 
-// All unique repo names across all PRs (for filter buttons)
+function repoKey(item: { project?: { name?: string }; repository?: { name?: string } }) {
+  return `${item.project?.name || ""}/${item.repository?.name || ""}`;
+}
+
+// Repo names offered as filter buttons — faceted: when an author is selected,
+// only repos that actually contain PRs by that author are listed (and vice
+// versa for authorOptions below).
 const repoNames = computed(() => {
-  const all: unknown[] = inbox.value.recentlyUpdated || [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const names = [...new Set(all.map((item: any) => `${item.project?.name || ""}/${item.repository?.name || ""}`))];
+  const all: any[] = inbox.value.recentlyUpdated || [];
+  const items = authorFilter.value ? all.filter((item) => authorKey(item) === authorFilter.value) : all;
+  const names = [...new Set(items.map(repoKey))];
   return names.sort();
 });
 
@@ -565,6 +574,7 @@ function authorKey(item: { author?: { id?: string; uniqueName?: string; displayN
 const authorOptions = computed(() => {
   const authors = new Map<string, { key: string; label: string; uniqueName: string }>();
   for (const item of inbox.value.recentlyUpdated || []) {
+    if (repoFilter.value && repoKey(item) !== repoFilter.value) continue;
     const key = authorKey(item);
     if (authors.has(key)) continue;
     authors.set(key, {
@@ -576,9 +586,17 @@ const authorOptions = computed(() => {
   return [...authors.values()].sort((a, b) => a.label.localeCompare(b.label));
 });
 
+// Keep a stale selection from silently hiding everything when the facet it
+// came from disappears (data refresh or cross-filter narrowing).
 watch(authorOptions, (options) => {
   if (authorFilter.value && !options.some((author) => author.key === authorFilter.value)) {
     authorFilter.value = "";
+  }
+});
+
+watch(repoNames, (names) => {
+  if (repoFilter.value && !names.includes(repoFilter.value)) {
+    repoFilter.value = "";
   }
 });
 
@@ -589,7 +607,7 @@ function matchesActiveFilters(item: {
   repository?: { name?: string };
   author?: { id?: string; uniqueName?: string; displayName?: string };
 }) {
-  if (repoFilter.value && `${item.project?.name || ""}/${item.repository?.name || ""}` !== repoFilter.value) {
+  if (repoFilter.value && repoKey(item) !== repoFilter.value) {
     return false;
   }
   return !authorFilter.value || authorKey(item) === authorFilter.value;

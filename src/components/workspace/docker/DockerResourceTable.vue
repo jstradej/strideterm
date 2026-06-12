@@ -570,10 +570,13 @@ thead th {
   background: var(--accent, #63b3ed);
 }
 
-/* Second header row: per-column filter controls. */
+/* Second header row: per-column filter controls. Extra right padding keeps the
+   control clear of the 12px resize hit-zone pinned to the cell's right edge —
+   without it the input visually touches the column divider and its last few
+   pixels grab the resizer instead of the input. */
 .dr-table__filter-row th {
   top: var(--dr-head-h, 32px);
-  padding: 4px 6px;
+  padding: 4px 12px 4px 6px;
   border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
 }
 .dr-table__filter-input,
