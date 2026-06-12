@@ -446,7 +446,16 @@ const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);
 
 const workspace = computed(() => (appStore.filteredWorkspaces || []).find((ws) => ws.id === props.workspaceId));
-const isReviewWorkspace = computed(() => !!workspace.value?.review?.prKey);
+// "Review-locked": git write operations are hidden only for PR-linked
+// workspaces where the user is NOT the PR author and has not explicitly
+// enabled editing (review.writable). Authors (quickfix-origin workspaces)
+// keep full git operations — being linked to a PR is not read-only.
+const isReviewWorkspace = computed(() => {
+  const review = workspace.value?.review;
+  if (!review?.prKey) return false;
+  if (review.role === "author") return false;
+  return review.writable !== true;
+});
 
 // Multi-repo computed values
 const gitRoots = computed(() => workspace.value?.gitRoots || []);
@@ -510,8 +519,26 @@ const activeTab = computed(() => {
 
 const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);
 
-// Effective base branch: override from UI, or auto-detected
-const effectiveBaseBranch = computed(() => gitUi.value.overrideBaseBranch || baseBranch.value);
+// For PR-linked workspaces the natural base is the PR target branch —
+// auto-detection would otherwise pick the workspace's own upstream and
+// report "nothing to rebase". Prefer the local target branch if present,
+// else its remote tracking ref.
+const reviewTargetBranch = computed(() => {
+  const target = String(workspace.value?.review?.pullRequest?.targetRefName || "")
+    .replace(/^refs\/heads\//, "")
+    .trim();
+  if (!target) return "";
+  const names: string[] = snapshot.value?.branchNames || [];
+  if (names.includes(target)) return target;
+  const remoteRef = `${pushRemote.value}/${target}`;
+  if (names.includes(remoteRef)) return remoteRef;
+  return "";
+});
+
+// Effective base branch: override from UI, PR target branch, or auto-detected
+const effectiveBaseBranch = computed(
+  () => gitUi.value.overrideBaseBranch || reviewTargetBranch.value || baseBranch.value,
+);
 
 // Remote / upstream state
 const remoteCount = computed(() => Object.keys(snapshot.value?.remotes || {}).filter((k) => !k.includes(":")).length);

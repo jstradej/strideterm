@@ -350,6 +350,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
               }
             : null,
           role: workspace.review.role || "",
+          writable: workspace.review.writable === true,
           checkout: workspace.review.checkout
             ? {
                 mode: workspace.review.checkout.mode || "",

@@ -87,14 +87,16 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitMergeIntoCurrent(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceAction(workspace, git.mergeIntoCurrent(workspace, { ...payload, rootPath }));
+      return runGitWorkspaceAction(workspace, git.mergeIntoCurrent(workspace, { ...payload, connection, rootPath }));
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitRebaseOnto(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceAction(workspace, git.rebaseOnto(workspace, { ...payload, rootPath }));
+      return runGitWorkspaceAction(workspace, git.rebaseOnto(workspace, { ...payload, connection, rootPath }));
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitContinueOperation(payload: any = {}, windowId?: string) {

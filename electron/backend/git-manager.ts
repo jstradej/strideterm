@@ -1175,11 +1175,24 @@ export class GitManager extends EventEmitter {
     const upstreamBranch = upstream.startsWith(`${remote}/`) ? upstream.slice(remote.length + 1) : "";
     const upstreamMatchesBranch = upstreamBranch === branch;
 
+    // Managed review checkouts name the local branch pr-<id>-<source>; pushing
+    // that name verbatim would create a bogus remote branch. Map to the PR
+    // source branch via an explicit refspec instead.
+    const reviewSourceBranch = String(workspace.review?.pullRequest?.sourceRefName || "")
+      .replace(/^refs\/heads\//, "")
+      .trim();
+    const pushToReviewSource = !!reviewSourceBranch && reviewSourceBranch !== branch;
+
     // Decide push strategy:
+    // - review checkout with renamed local branch: refspec to the PR source branch
     // - upstream tracks same branch name on remote: simple push
     // - upstream missing or tracks different branch: set-upstream to fix tracking
-    const pushArgs = upstreamMatchesBranch ? ["push", remote, "HEAD"] : ["push", "--set-upstream", remote, branch];
-    const target = `${remote}/${branch}`;
+    const pushArgs = pushToReviewSource
+      ? ["push", "-u", remote, `HEAD:refs/heads/${reviewSourceBranch}`]
+      : upstreamMatchesBranch
+        ? ["push", remote, "HEAD"]
+        : ["push", "--set-upstream", remote, branch];
+    const target = `${remote}/${pushToReviewSource ? reviewSourceBranch : branch}`;
 
     return this.runWriteAction(workspace, {
       type: "push",
@@ -1219,7 +1232,13 @@ export class GitManager extends EventEmitter {
     );
     const upstream = String(snapshot.upstream || "");
     const remote = remoteNames.find((r) => upstream.startsWith(`${r}/`)) || remoteNames[0] || "origin";
-    const target = `${remote}/${branch}`;
+    // Managed review checkouts name the local branch pr-<id>-<source> — force-push
+    // must target the PR source branch on the remote, not the local alias.
+    const reviewSourceBranch = String(workspace.review?.pullRequest?.sourceRefName || "")
+      .replace(/^refs\/heads\//, "")
+      .trim();
+    const remoteBranch = reviewSourceBranch && reviewSourceBranch !== branch ? reviewSourceBranch : branch;
+    const target = `${remote}/${remoteBranch}`;
     const effectiveCwd = rootPath || String(workspace.cwd || "");
 
     // Resolve expected ref hash (current remote tracking ref = what --force-with-lease checks)
@@ -1235,8 +1254,9 @@ export class GitManager extends EventEmitter {
     }
 
     const leaseArg = extraAudit.expectedRef
-      ? `--force-with-lease=${branch}:${extraAudit.expectedRef}`
+      ? `--force-with-lease=${remoteBranch}:${extraAudit.expectedRef}`
       : "--force-with-lease";
+    const pushRefspec = remoteBranch === branch ? branch : `HEAD:refs/heads/${remoteBranch}`;
 
     return this.runWriteAction(workspace, {
       type: "force-push",
@@ -1245,7 +1265,7 @@ export class GitManager extends EventEmitter {
       allowDirty: true,
       skipPreflight: true,
       run: async (cwd) => {
-        const r = await runEffect(this.execAuthGitEffect(cwd, ["push", leaseArg, remote, branch], { connection }));
+        const r = await runEffect(this.execAuthGitEffect(cwd, ["push", leaseArg, remote, pushRefspec], { connection }));
         try {
           const headResult = await this.execGit(cwd, ["rev-parse", "HEAD"]);
           extraAudit.newRemoteRef = headResult.stdout.trim();
@@ -1316,14 +1336,19 @@ export class GitManager extends EventEmitter {
       baseBranch,
       stashDirty = false,
       rootPath = "",
-    }: { baseBranch?: string; stashDirty?: boolean; rootPath?: string } = {},
+      connection = null,
+    }: { baseBranch?: string; stashDirty?: boolean; rootPath?: string; connection?: Connection | null } = {},
   ): Promise<Record<string, unknown>> {
     return this.runWriteAction(workspace, {
       type: "merge",
       label: "Merge",
       baseBranch,
       stashDirty,
-      run: (cwd, resolvedBaseBranch) => runEffect(this.execGitEffect(cwd, ["merge", "--no-edit", resolvedBaseBranch])),
+      // Auth matters in partial clones (--filter=blob:none): merge may lazily
+      // fetch missing blobs, and that fetch inherits the auth config via -c.
+      run: (cwd, resolvedBaseBranch) =>
+        runEffect(this.execAuthGitEffect(cwd, ["merge", "--no-edit", resolvedBaseBranch], { connection })),
+      connection,
       rootPath,
     });
   }
@@ -1334,14 +1359,19 @@ export class GitManager extends EventEmitter {
       baseBranch,
       stashDirty = false,
       rootPath = "",
-    }: { baseBranch?: string; stashDirty?: boolean; rootPath?: string } = {},
+      connection = null,
+    }: { baseBranch?: string; stashDirty?: boolean; rootPath?: string; connection?: Connection | null } = {},
   ): Promise<Record<string, unknown>> {
     return this.runWriteAction(workspace, {
       type: "rebase",
       label: "Rebase",
       baseBranch,
       stashDirty,
-      run: (cwd, resolvedBaseBranch) => runEffect(this.execGitEffect(cwd, ["rebase", resolvedBaseBranch])),
+      // Auth matters in partial clones (--filter=blob:none): rebase may lazily
+      // fetch missing blobs, and that fetch inherits the auth config via -c.
+      run: (cwd, resolvedBaseBranch) =>
+        runEffect(this.execAuthGitEffect(cwd, ["rebase", resolvedBaseBranch], { connection })),
+      connection,
       rootPath,
     });
   }

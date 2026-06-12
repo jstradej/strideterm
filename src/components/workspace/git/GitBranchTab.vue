@@ -56,17 +56,31 @@
         <strong>Linked to a PR review</strong>
         <p>
           Rebase, Merge, Push, and Force push are disabled while this workspace is linked to a pull request review.
-          Detaching makes it a regular workspace — the PR on the server is not touched.
+          Enable editing to fix the PR directly from here (push goes to the PR source branch), or detach to make it a
+          regular workspace — the PR on the server is not touched either way.
         </p>
-        <button
-          type="button"
-          data-testid="detach-review-button"
-          class="button button--ghost"
-          :disabled="!!gitUi.busyAction || detachingReview"
-          @click="onDetachReview"
-        >
-          {{ detachingReview ? "Detaching…" : "Detach from PR review" }}
-        </button>
+        <div class="git-diverged-banner__actions">
+          <button
+            type="button"
+            data-testid="enable-review-editing-button"
+            class="button button--ghost"
+            :disabled="!!gitUi.busyAction || enablingEditing"
+            title="Re-enable Rebase, Merge, Push, and Force push on this review checkout. Push targets the PR source branch, so commits update the author's PR. The workspace stays linked to the review."
+            @click="onEnableEditing"
+          >
+            {{ enablingEditing ? "Enabling…" : "Enable editing" }}
+          </button>
+          <button
+            type="button"
+            data-testid="detach-review-button"
+            class="button button--ghost"
+            :disabled="!!gitUi.busyAction || detachingReview"
+            title="Unlink this workspace from the PR review and make it a regular workspace. The PR on the server is not touched."
+            @click="onDetachReview"
+          >
+            {{ detachingReview ? "Detaching…" : "Detach from PR review" }}
+          </button>
+        </div>
       </div>
       <div class="git-detail-list">
         <span><strong>Current branch:</strong> {{ snapshot.branch }}</span>
@@ -334,6 +348,7 @@ const appStore = useAppStore();
 const switchBranchTarget = ref("");
 const newBranchName = ref("");
 const detachingReview = ref(false);
+const enablingEditing = ref(false);
 
 async function onDetachReview() {
   if (detachingReview.value) return;
@@ -348,6 +363,25 @@ async function onDetachReview() {
     await appStore.detachWorkspaceReview(props.workspaceId);
   } finally {
     detachingReview.value = false;
+  }
+}
+
+async function onEnableEditing() {
+  if (enablingEditing.value) return;
+  const confirmed = await appStore.confirmInApp({
+    title: "Enable editing on this review?",
+    message:
+      "Re-enable Rebase, Merge, Push, and Force push on this review checkout? " +
+      "Push targets the PR source branch, so your commits update the author's PR. " +
+      "The workspace stays linked to the review.",
+    confirmLabel: "Enable editing",
+  });
+  if (!confirmed) return;
+  enablingEditing.value = true;
+  try {
+    await appStore.setWorkspaceReviewWritable(props.workspaceId);
+  } finally {
+    enablingEditing.value = false;
   }
 }
 

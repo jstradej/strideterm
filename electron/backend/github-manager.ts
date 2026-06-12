@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
@@ -882,7 +882,21 @@ export class GitHubManager extends BaseProviderManager {
     const repoExists = await exists(path.join(repositoryRoot, ".git"));
     await mkdir(path.dirname(repositoryRoot), { recursive: true });
     if (!repoExists) {
-      await this.runGit(process.cwd(), ["clone", "--no-checkout", remoteUrl, repositoryRoot], { token });
+      // Partial clone keeps the first checkout fast on large repos — blobs are
+      // fetched lazily. Older self-hosted servers may not support promisor
+      // filters, so fall back to a full clone if the filtered one fails.
+      try {
+        await this.runGit(process.cwd(), ["clone", "--no-checkout", "--filter=blob:none", remoteUrl, repositoryRoot], {
+          token,
+        });
+      } catch (error) {
+        this.log.warn("partial clone failed, retrying with full clone", {
+          repository: `${owner}/${repo}`,
+          err: (error as Error)?.message || String(error),
+        });
+        await rm(repositoryRoot, { recursive: true, force: true }).catch(() => {});
+        await this.runGit(process.cwd(), ["clone", "--no-checkout", remoteUrl, repositoryRoot], { token });
+      }
     }
     return repositoryRoot;
   }
@@ -1004,6 +1018,7 @@ export class GitHubManager extends BaseProviderManager {
       repository: clone(summary.repository as Record<string, unknown>),
       pullRequest: clone(summary.pullRequest as Record<string, unknown>),
       role: summary.role,
+      writable: extra.writable === true,
       checkout: {
         mode: checkout.mode || "managed-worktree",
         rootPath: checkout.rootPath,
@@ -1069,6 +1084,7 @@ export class GitHubManager extends BaseProviderManager {
         ...ew,
         review: this.buildReviewMetadata(summary, checkout as Record<string, unknown>, {
           parentWorkspaceId: checkout.mode === "managed-worktree" ? parentWorkspaceId : "",
+          writable: (ew.review as { writable?: boolean } | undefined)?.writable === true,
         }),
       };
       await this.reviewStore.upsertTrackedPullRequest(prKey, {
@@ -1174,14 +1190,21 @@ export class GitHubManager extends BaseProviderManager {
     const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
     this.log.info("fetch review workspace", { workspaceId: workspace.id });
-    await this.runGit(workspace.cwd!, ["fetch", "origin"], { token });
+    await this.runAuditedGitOperation({ type: "fetch", connection, workspaceId: workspace.id }, () =>
+      this.runGit(workspace.cwd!, ["fetch", "origin"], { token }),
+    );
   }
 
   async rebaseReviewWorkspace({ workspace }: { workspace: SyncWorkspace }): Promise<void> {
     await this.fetchReviewWorkspace({ workspace });
     const targetBranch = stripRefsPrefix((workspace.review?.pullRequest?.targetRefName as string) || "");
     this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
-    await this.runGit(workspace.cwd!, ["rebase", `origin/${targetBranch}`]);
+    // Token so partial-clone checkouts can lazily fetch blobs mid-rebase.
+    const connection = this.findConnection(workspace.review?.connectionId || "");
+    const token = connection ? this.credentialStore.getSecret(connection.tokenRef || "") : "";
+    await this.runAuditedGitOperation({ type: "rebase", connection, workspaceId: workspace.id }, () =>
+      this.runGit(workspace.cwd!, ["rebase", `origin/${targetBranch}`], { token: token || undefined }),
+    );
   }
 
   async pushReviewWorkspace({
@@ -1206,7 +1229,10 @@ export class GitHubManager extends BaseProviderManager {
       ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
       : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
     this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
-    await this.runGit(workspace.cwd!, pushArgs, { token });
+    await this.runAuditedGitOperation(
+      { type: force ? "force-push" : "push", connection, workspaceId: workspace.id },
+      () => this.runGit(workspace.cwd!, pushArgs, { token }),
+    );
   }
 
   async listRemoteBranches(connectionId: string, owner: string, repo: string): Promise<string[]> {

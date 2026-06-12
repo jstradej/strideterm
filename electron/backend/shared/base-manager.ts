@@ -171,6 +171,68 @@ export class BaseProviderManager extends EventEmitter {
     this._auditUserInitiated = userInitiated;
   }
 
+  /**
+   * Run a user-initiated git operation on a review checkout and log it to the
+   * audit store. API calls are audited via _logAudit's fetch hook; git
+   * subprocesses bypass it, so review git ops (fetch/rebase/push) go through
+   * this wrapper instead. Entry shape mirrors GitManager._logGitAudit.
+   */
+  async runAuditedGitOperation<T>(
+    {
+      type,
+      connection,
+      workspaceId = "",
+    }: {
+      type: string;
+      connection: {
+        id?: string;
+        orgUrl?: string;
+        hostUrl?: string;
+        baseUrl?: string;
+        label?: string;
+        provider?: string;
+      } | null;
+      workspaceId?: string;
+    },
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const startedAt = Date.now();
+    const logAudit = (success: boolean, errorMessage = "") => {
+      if (!connection?.id || !this.auditLogStore) return;
+      const writeOps = new Set(["push", "force-push"]);
+      try {
+        this.auditLogStore.logEntry({
+          timestamp: new Date().toISOString(),
+          connectionId: connection.id,
+          organization: String(connection.orgUrl || connection.hostUrl || connection.baseUrl || connection.label || ""),
+          project: "",
+          operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
+          category: writeOps.has(type) ? "write" : "read",
+          method: "GIT",
+          url: "",
+          statusCode: null,
+          success,
+          errorMessage: errorMessage || null,
+          durationMs: Date.now() - startedAt,
+          resourceType: "git",
+          resourceId: workspaceId,
+          summary: `git ${type} (review workspace)`,
+          userInitiated: true,
+        });
+      } catch {
+        // Never let audit logging break the main flow
+      }
+    };
+    try {
+      const result = await fn();
+      logAudit(true);
+      return result;
+    } catch (error) {
+      logAudit(false, (error as Error)?.message || String(error));
+      throw error;
+    }
+  }
+
   getSnapshot(): ProviderSnapshot {
     return clone(this.snapshot);
   }

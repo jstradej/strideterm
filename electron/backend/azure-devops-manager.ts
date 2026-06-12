@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
 import type {
@@ -261,6 +261,7 @@ interface ReviewWorkspace {
     checkout?: ReviewCheckout;
     parentWorkspaceId?: string;
     role?: string;
+    writable?: boolean;
     orgUrl?: string;
   };
   quickfix?: Record<string, unknown>;
@@ -1773,10 +1774,26 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const repositoryExists = await exists(path.join(repositoryRoot, ".git"));
     await mkdir(path.dirname(repositoryRoot), { recursive: true });
     if (!repositoryExists) {
-      await this.runGit(process.cwd(), ["clone", "--no-checkout", repository.remoteUrl!, repositoryRoot], {
-        login: connection.login,
-        token,
-      });
+      // Partial clone keeps the first checkout fast on large repos — blobs are
+      // fetched lazily. Older on-prem servers may not support promisor
+      // filters, so fall back to a full clone if the filtered one fails.
+      try {
+        await this.runGit(
+          process.cwd(),
+          ["clone", "--no-checkout", "--filter=blob:none", repository.remoteUrl!, repositoryRoot],
+          { login: connection.login, token },
+        );
+      } catch (error) {
+        this.log.warn("partial clone failed, retrying with full clone", {
+          repository: repository.name,
+          err: (error as Error)?.message || String(error),
+        });
+        await rm(repositoryRoot, { recursive: true, force: true }).catch(() => {});
+        await this.runGit(process.cwd(), ["clone", "--no-checkout", repository.remoteUrl!, repositoryRoot], {
+          login: connection.login,
+          token,
+        });
+      }
     }
     return repositoryRoot;
   }
@@ -1917,7 +1934,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     summary: AzurePrSummary,
     checkout: ReviewCheckout,
     mode = checkout.mode,
-    extra: { parentWorkspaceId?: string } = {},
+    extra: { parentWorkspaceId?: string; writable?: boolean } = {},
   ) {
     return {
       provider: "azure-devops",
@@ -1929,6 +1946,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       repository: clone(summary.repository),
       pullRequest: clone(summary.pullRequest),
       role: summary.role,
+      writable: extra.writable === true,
       checkout: {
         mode,
         rootPath: checkout.rootPath,
@@ -2040,6 +2058,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
         ...existingWorkspace,
         review: this.buildReviewMetadata(summary, checkout, checkout.mode, {
           parentWorkspaceId: checkout.mode === "managed-worktree" ? parentWorkspaceId : "",
+          writable: existingWorkspace.review?.writable === true,
         }),
       };
       await this.reviewStore.upsertTrackedPullRequest(prKey, {
@@ -2235,17 +2254,27 @@ export class AzureDevOpsManager extends BaseProviderManager {
       throw new Error("PAT is missing.");
     }
     this.log.info("fetch review workspace", { workspaceId: workspace.id });
-    await this.runGit(workspace.cwd || "", ["fetch", "origin"], {
-      login: connection.login,
-      token,
-    });
+    await this.runAuditedGitOperation({ type: "fetch", connection, workspaceId: workspace.id }, () =>
+      this.runGit(workspace.cwd || "", ["fetch", "origin"], {
+        login: connection.login,
+        token,
+      }),
+    );
   }
 
   async rebaseReviewWorkspace({ workspace }: { workspace: ReviewWorkspace }): Promise<void> {
     await this.fetchReviewWorkspace({ workspace });
     const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName || "");
     this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
-    await this.runGit(workspace.cwd || "", ["rebase", `origin/${targetBranch}`]);
+    // Token so partial-clone checkouts can lazily fetch blobs mid-rebase.
+    const connection = this.findAzureConnection(workspace.review?.connectionId || "");
+    const token = connection ? this.credentialStore.getSecret(connection.tokenRef) : "";
+    await this.runAuditedGitOperation({ type: "rebase", connection, workspaceId: workspace.id }, () =>
+      this.runGit(workspace.cwd || "", ["rebase", `origin/${targetBranch}`], {
+        login: connection?.login,
+        token: token || undefined,
+      }),
+    );
   }
 
   findConnectionForRemote(remoteUrl: string): AzureConnection | null {
@@ -2386,10 +2415,14 @@ export class AzureDevOpsManager extends BaseProviderManager {
       ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
       : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
     this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
-    await this.runGit(workspace.cwd || "", pushArgs, {
-      login: connection.login,
-      token,
-    });
+    await this.runAuditedGitOperation(
+      { type: force ? "force-push" : "push", connection, workspaceId: workspace.id },
+      () =>
+        this.runGit(workspace.cwd || "", pushArgs, {
+          login: connection.login,
+          token,
+        }),
+    );
   }
 
   // ---------------------------------------------------------------------------

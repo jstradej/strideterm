@@ -161,6 +161,28 @@ describe("GitPane repo picker", () => {
     expect(wrapper.find(".git-repo-picker").exists()).toBe(false);
   });
 
+  test("PR-linked workspace with role=author is not review-locked", () => {
+    // Quickfix-origin workspaces are promoted to review workspaces after PR
+    // creation but stay fully writable — the author keeps git operations.
+    const ws = buildWorkspace({
+      id: "ws-author",
+      gitRoots: ["/ms/api", "/ms/web"],
+      review: { prKey: "pr-123", provider: "azure-devops", role: "author" },
+    });
+    const wrapper = mountPane("ws-author", [ws]);
+    expect(wrapper.find(".git-repo-picker").exists()).toBe(true);
+  });
+
+  test("review workspace with writable opt-in is not review-locked", () => {
+    const ws = buildWorkspace({
+      id: "ws-writable",
+      gitRoots: ["/ms/api", "/ms/web"],
+      review: { prKey: "pr-123", provider: "azure-devops", role: "reviewer", writable: true },
+    });
+    const wrapper = mountPane("ws-writable", [ws]);
+    expect(wrapper.find(".git-repo-picker").exists()).toBe(true);
+  });
+
   test("connection picker hides connections from other profiles", () => {
     // payload.git.connections now contains connections from every open
     // profile. The GitPane in a workspace belonging to profile-b must

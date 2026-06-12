@@ -1958,6 +1958,55 @@ describe("GitManager", () => {
       });
     });
 
+    describe("push on review checkouts", () => {
+      function makeReviewMgr({ branch, upstream }: { branch: string; upstream: string }) {
+        const calls: string[][] = [];
+        const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+          calls.push(args);
+          return { stdout: "", stderr: "" };
+        });
+        const mgr = new GitManager({ execGitImpl });
+        mgr.inspectWorkspace = vi.fn().mockResolvedValue({
+          available: true,
+          branch,
+          baseBranch: "main",
+          upstream,
+          dirty: false,
+          aheadCount: 1,
+          behindCount: 1,
+          operationState: { kind: "idle", inProgress: false, conflicts: [] },
+          remotes: { origin: "https://example.com/repo.git" },
+        });
+        return { mgr, calls };
+      }
+      const reviewWorkspace = {
+        id: "ws-1",
+        cwd: "/repo",
+        review: { pullRequest: { sourceRefName: "refs/heads/feature/foo" } },
+      };
+
+      test("push maps the pr-N local branch to the PR source branch via refspec", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "pr-12-feature-foo", upstream: "origin/feature/foo" });
+        const result = await mgr.push(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "-u", "origin", "HEAD:refs/heads/feature/foo"]);
+      });
+
+      test("push keeps normal strategy when the local branch already matches the source branch", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "feature/foo", upstream: "origin/feature/foo" });
+        const result = await mgr.push(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "origin", "HEAD"]);
+      });
+
+      test("forcePushWithLease maps the pr-N local branch to the PR source branch", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "pr-12-feature-foo", upstream: "origin/feature/foo" });
+        const result = await mgr.forcePushWithLease(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "--force-with-lease", "origin", "HEAD:refs/heads/feature/foo"]);
+      });
+    });
+
     describe("renameBranch", () => {
       test("renames named branch with branch -m old new", async () => {
         const { mgr, calls } = makeMgr();

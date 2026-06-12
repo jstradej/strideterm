@@ -308,6 +308,8 @@ export interface ReviewInfo {
   repository: ReviewRepository | null;
   pullRequest: ReviewPrInfo | null;
   role: string;
+  /** User opted in to git write operations (rebase/merge/push) on a reviewer-role checkout. */
+  writable: boolean;
   checkout: ReviewCheckout | null;
 }
 

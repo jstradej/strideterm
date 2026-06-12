@@ -159,6 +159,18 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   /**
+   * Opt a reviewer-role PR checkout into git write operations (rebase/merge/
+   * push). The workspace stays linked to the review; push targets the PR
+   * source branch. Authors get write access without this flag.
+   */
+  async function setWorkspaceReviewWritable(workspaceId: string): Promise<void> {
+    const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
+    if (!ws || !(ws as AnyApi).review) return;
+    const next: AnyApi = { ...(ws as AnyApi), review: { ...(ws as AnyApi).review, writable: true } };
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(next)) as StatePayload;
+  }
+
+  /**
    * Optimistic workspace delete.
    *
    * Deleting a worktree-backed workspace (regular worktree, review checkout,
@@ -710,6 +722,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     confirmInApp,
     saveWorkspace,
     detachWorkspaceReview,
+    setWorkspaceReviewWritable,
     deleteWorkspace,
     forceRemoveWorkspace,
     closeTab,

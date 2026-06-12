@@ -233,6 +233,24 @@ describe("default state", () => {
     expect(workspace.review!.prKey).toBe("ado-main:repo-1:123");
     expect(workspace.review!.parentWorkspaceId).toBe("azure-root");
     expect(workspace.review!.checkout!.cacheRepoPath).toBe("C:/cache/repo");
+    // writable defaults to false for review metadata that predates the flag
+    expect(workspace.review!.writable).toBe(false);
+  });
+
+  test("normalizeWorkspace preserves review.writable opt-in", () => {
+    const workspace = normalizeWorkspace({
+      id: "review-1",
+      name: "Review",
+      cwd: "C:/work/review",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      review: {
+        provider: "azure-devops",
+        prKey: "ado-main:repo-1:123",
+        writable: true,
+      },
+    });
+
+    expect(workspace.review!.writable).toBe(true);
   });
 
   test("normalizeState preserves Azure connection config", () => {
