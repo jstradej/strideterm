@@ -13,20 +13,26 @@
         <span class="commit-ctx__hash">{{ shortHash }}</span>
         <span class="commit-ctx__subject">{{ subject || "—" }}</span>
       </div>
-      <button
-        v-for="item in items"
-        :key="item.id"
-        type="button"
-        class="commit-ctx__item"
-        :class="{ 'commit-ctx__item--disabled': item.disabled }"
-        role="menuitem"
-        :disabled="item.disabled"
-        :title="item.title"
-        @click="run(item.id)"
-      >
-        <span class="commit-ctx__label">{{ item.label }}</span>
-        <span v-if="item.shortcut" class="commit-ctx__shortcut">{{ item.shortcut }}</span>
-      </button>
+      <template v-for="(item, idx) in items" :key="item.id">
+        <div
+          v-if="idx > 0 && item.group && item.group !== items[idx - 1].group"
+          class="commit-ctx__divider"
+          role="separator"
+        ></div>
+        <button
+          type="button"
+          class="commit-ctx__item"
+          :class="{ 'commit-ctx__item--disabled': item.disabled }"
+          role="menuitem"
+          :disabled="item.disabled"
+          :title="item.title"
+          @click="run(item.id)"
+        >
+          <span v-if="hasIcons" class="commit-ctx__icon" aria-hidden="true">{{ item.icon }}</span>
+          <span class="commit-ctx__label">{{ item.label }}</span>
+          <span v-if="item.shortcut" class="commit-ctx__shortcut">{{ item.shortcut }}</span>
+        </button>
+      </template>
     </div>
   </Teleport>
 </template>
@@ -41,6 +47,11 @@ interface MenuItem {
   // Greyed-out but visible, JetBrains-style — `title` explains why.
   disabled?: boolean;
   title?: string;
+  // Leading glyph for quick visual scanning.
+  icon?: string;
+  // Items sharing a group render together; a divider is drawn where the
+  // group changes between adjacent items.
+  group?: string;
 }
 
 const props = defineProps<{
@@ -59,6 +70,10 @@ const emit = defineEmits<{
 const menuRef = ref<HTMLElement | null>(null);
 const adjustedX = ref(props.x);
 const adjustedY = ref(props.y);
+
+// Reserve the icon gutter only when the menu actually supplies icons, so
+// callers that pass plain items keep their original alignment.
+const hasIcons = computed(() => props.items.some((i) => !!i.icon));
 
 const positionStyle = computed(() => ({
   position: "fixed" as const,
@@ -152,7 +167,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   width: 100%;
-  gap: 12px;
+  gap: 8px;
   padding: 5px 12px;
   background: transparent;
   border: 0;
@@ -161,6 +176,21 @@ onBeforeUnmount(() => {
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+}
+
+.commit-ctx__icon {
+  flex: 0 0 16px;
+  width: 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.commit-ctx__divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
 }
 
 .commit-ctx__item:hover,

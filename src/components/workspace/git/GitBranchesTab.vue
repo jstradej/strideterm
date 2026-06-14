@@ -1756,6 +1756,8 @@ interface CtxMenuItem {
   label: string;
   disabled?: boolean;
   title?: string;
+  icon?: string;
+  group?: string;
 }
 
 interface CtxMenuState {
@@ -1781,22 +1783,72 @@ function buildMenuItemsFor(entry: GraphCommit): CtxMenuItem[] {
   const isHeadCommit = !!headHash && headHash === entry.hash;
   const isMerge = (entry.parents || []).length >= 2;
   const items: CtxMenuItem[] = [
-    { id: "details", label: "Show commit details…" },
-    { id: "copyHash", label: "Copy commit hash" },
-    { id: "copyShort", label: "Copy short hash" },
-    { id: "copySubject", label: "Copy subject" },
+    {
+      id: "details",
+      label: "Show commit details…",
+      icon: "🔎",
+      group: "inspect",
+      title: "Open the full commit: message, author, and the files it changed.",
+    },
+    {
+      id: "copyHash",
+      label: "Copy commit hash",
+      icon: "⧉",
+      group: "copy",
+      title: "Copy the full 40-character commit SHA to the clipboard.",
+    },
+    {
+      id: "copyShort",
+      label: "Copy short hash",
+      icon: "⧉",
+      group: "copy",
+      title: "Copy the abbreviated commit SHA to the clipboard.",
+    },
+    {
+      id: "copySubject",
+      label: "Copy subject",
+      icon: "⧉",
+      group: "copy",
+      title: "Copy the commit's subject line (first line of the message).",
+    },
     {
       id: "cherryPick",
       label: "Cherry-pick this commit…",
+      icon: "🍒",
+      group: "apply",
       disabled: isMerge,
       title: isMerge ? "Cherry-pick of a merge commit is not supported." : "Apply this commit onto the current branch.",
     },
-    { id: "checkout", label: "Checkout this commit" },
-    { id: "newBranch", label: "New branch from here…" },
-    { id: "newTag", label: "New tag here…" },
+    {
+      id: "checkout",
+      label: "Checkout this commit",
+      icon: "↪",
+      group: "apply",
+      title: "Check out this commit as a detached HEAD to inspect or build from it.",
+    },
+    {
+      id: "newBranch",
+      label: "New branch from here…",
+      icon: "⎇",
+      group: "create",
+      title: "Create a new branch starting at this commit.",
+    },
+    {
+      id: "newTag",
+      label: "New tag here…",
+      icon: "🏷",
+      group: "create",
+      title: "Create a tag pointing at this commit.",
+    },
   ];
   if (props.hasAzureConnection && isHeadCommit) {
-    items.push({ id: "createPr", label: "Create pull request from this branch…" });
+    items.push({
+      id: "createPr",
+      label: "Create pull request from this branch…",
+      icon: "⤴",
+      group: "create",
+      title: "Push this branch and open a pull request from its tip.",
+    });
   }
   return items;
 }
@@ -1812,6 +1864,8 @@ function buildMultiMenuItems(selection: GraphCommit[]): CtxMenuItem[] {
     {
       id: "cherryPick",
       label: `Cherry-pick ${n} commits…`,
+      icon: "🍒",
+      group: "apply",
       disabled: mergeCount > 0,
       title:
         mergeCount > 0
@@ -1821,6 +1875,8 @@ function buildMultiMenuItems(selection: GraphCommit[]): CtxMenuItem[] {
     {
       id: "squash",
       label: `Squash ${n} commits into one…`,
+      icon: "🗜",
+      group: "apply",
       disabled: !squash.ok,
       title: squash.ok ? "Combine the selected commits into a single commit." : squash.reason,
     },
