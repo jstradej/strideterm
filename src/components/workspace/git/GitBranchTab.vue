@@ -137,38 +137,57 @@
         </p>
 
         <div v-if="!isReviewWorkspace" class="git-operation-actions git-update-actions">
-          <span class="git-strategy-toggle" role="group" aria-label="Update strategy">
+          <div ref="splitButtonRef" class="git-split-button" @keydown.esc="strategyMenuOpen = false">
             <button
               type="button"
-              data-testid="strategy-rebase"
-              :class="['button', 'button--small', updateStrategy === 'rebase' && 'button--active']"
+              data-testid="update-from-base"
+              class="button git-split-button__main"
+              :class="isUpdating && 'button--busy'"
               :disabled="updateDisabled"
-              title="Replay your commits on top of the base (linear history, rewrites your commit hashes)."
-              @click="updateStrategy = 'rebase'"
+              :title="updateTitle"
+              @click="onUpdateFromBase"
             >
-              Rebase
+              {{ isUpdating ? "Updating…" : updateActionLabel }}
             </button>
             <button
               type="button"
-              data-testid="strategy-merge"
-              :class="['button', 'button--small', updateStrategy === 'merge' && 'button--active']"
+              data-testid="update-strategy-caret"
+              class="button git-split-button__caret"
               :disabled="updateDisabled"
-              title="Merge the base into your branch (keeps history, adds a merge commit)."
-              @click="updateStrategy = 'merge'"
+              aria-haspopup="menu"
+              :aria-expanded="strategyMenuOpen ? 'true' : 'false'"
+              title="Choose update strategy (rebase or merge)"
+              @click="strategyMenuOpen = !strategyMenuOpen"
             >
-              Merge
+              ▾
             </button>
-          </span>
-          <button
-            type="button"
-            data-testid="update-from-base"
-            :class="['button', isUpdating && 'button--busy']"
-            :disabled="updateDisabled"
-            :title="updateTitle"
-            @click="onUpdateFromBase"
-          >
-            {{ isUpdating ? "Updating…" : `Update from ${opRef}` }}
-          </button>
+            <div v-if="strategyMenuOpen" class="git-split-button__menu" role="menu">
+              <button
+                type="button"
+                data-testid="strategy-rebase"
+                class="git-split-button__option"
+                role="menuitemradio"
+                :aria-checked="updateStrategy === 'rebase'"
+                title="Replay your commits on top of the base (linear history, rewrites your commit hashes)."
+                @click="selectStrategy('rebase')"
+              >
+                <span class="git-split-button__check">{{ updateStrategy === "rebase" ? "✓" : "" }}</span>
+                Rebase onto {{ opRef }}
+              </button>
+              <button
+                type="button"
+                data-testid="strategy-merge"
+                class="git-split-button__option"
+                role="menuitemradio"
+                :aria-checked="updateStrategy === 'merge'"
+                title="Merge the base into your branch (keeps history, adds a merge commit)."
+                @click="selectStrategy('merge')"
+              >
+                <span class="git-split-button__check">{{ updateStrategy === "merge" ? "✓" : "" }}</span>
+                Merge {{ opRef }} in
+              </button>
+            </div>
+          </div>
         </div>
 
         <label v-if="hasLocalAndRemote && !isReviewWorkspace" class="git-card__hint git-base-local-toggle">
@@ -315,7 +334,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onBeforeUnmount } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useAppStore } from "../../../stores/app.js";
 import GitOperationCard from "./GitOperationCard.vue";
@@ -388,6 +407,8 @@ const enablingEditing = ref(false);
 // escape hatch for local-only/offline/deliberate-local cases.
 const updateStrategy = ref<"rebase" | "merge">("rebase");
 const preferLocalBase = ref(false);
+const strategyMenuOpen = ref(false);
+const splitButtonRef = ref<HTMLElement | null>(null);
 
 const resolvedBase = computed(() =>
   resolveBaseRef(
@@ -501,10 +522,12 @@ const isUpdating = computed(() => props.gitUi.busyAction === "rebase" || props.g
 const updateDisabled = computed(
   () => !!props.gitUi.busyAction || props.operation.inProgress || !!props.gitUi.pendingAction,
 );
+const updateActionLabel = computed(() =>
+  updateStrategy.value === "merge" ? `Merge ${opRef.value} in` : `Rebase onto ${opRef.value}`,
+);
 const updateTitle = computed(() => {
-  const verb = updateStrategy.value === "merge" ? "Merge" : "Rebase onto";
-  const fetchNote = opIsRemote.value ? " (fetches latest first)" : " (local branch — no fetch)";
-  return `${verb} ${opRef.value}${fetchNote}`;
+  const fetchNote = opIsRemote.value ? " — fetches latest first" : " — local branch, no fetch";
+  return `${updateActionLabel.value}${fetchNote}`;
 });
 
 function onUpdateFromBase() {
@@ -516,6 +539,25 @@ function onUpdateFromBase() {
     gitUiStore.gitRebaseBase(props.workspaceId, opRef.value, { fetchFirst });
   }
 }
+
+// Split-button dropdown picks the default strategy (updates the main button
+// label); the user then clicks the main button to run it — one deliberate
+// step for a history-rewriting op.
+function selectStrategy(strategy: "rebase" | "merge") {
+  updateStrategy.value = strategy;
+  strategyMenuOpen.value = false;
+}
+
+function onSplitButtonOutsideClick(e: MouseEvent) {
+  if (splitButtonRef.value && !splitButtonRef.value.contains(e.target as Node)) {
+    strategyMenuOpen.value = false;
+  }
+}
+watch(strategyMenuOpen, (open) => {
+  if (open) document.addEventListener("mousedown", onSplitButtonOutsideClick, true);
+  else document.removeEventListener("mousedown", onSplitButtonOutsideClick, true);
+});
+onBeforeUnmount(() => document.removeEventListener("mousedown", onSplitButtonOutsideClick, true));
 
 watch(
   () => [opRef.value, props.snapshot?.branch, props.snapshot?.lastFetchAt],

@@ -215,19 +215,63 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-/* Update-strategy segmented toggle (Rebase / Merge) in the Update card. */
-.git-strategy-toggle {
+/* Update-from-base split button: primary action + caret that opens a
+   strategy (rebase / merge) dropdown, in the Update card. */
+.git-split-button {
+  position: relative;
   display: inline-flex;
-  gap: 0;
 }
-.git-strategy-toggle .button--small:first-child {
+.git-split-button__main {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
-.git-strategy-toggle .button--small:last-child {
+.git-split-button__caret {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   margin-left: -1px;
+  padding-left: 8px;
+  padding-right: 8px;
+  min-width: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.28);
+  font-size: 10px;
+}
+.git-split-button__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  z-index: 10050;
+  white-space: nowrap;
+  background: var(--panel-elevated, #1e2127);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 4px 0;
+}
+.git-split-button__option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 12px 5px 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.git-split-button__option:hover,
+.git-split-button__option:focus-visible {
+  background: rgba(var(--tint), 0.12);
+  outline: none;
+}
+.git-split-button__check {
+  flex: 0 0 14px;
+  width: 14px;
+  text-align: center;
+  color: var(--accent);
 }
 .git-base-local-toggle {
   display: flex;
