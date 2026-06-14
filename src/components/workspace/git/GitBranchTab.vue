@@ -49,7 +49,7 @@
       <div class="section-head">
         <div>
           <p class="eyebrow">Update Current Branch</p>
-          <h3>{{ effectiveBaseBranch || "?" }} &rarr; {{ snapshot.branch }}</h3>
+          <h3>{{ opRef || "?" }} &rarr; {{ snapshot.branch }}</h3>
         </div>
       </div>
       <div v-if="isReviewWorkspace" class="git-info-banner" data-testid="review-detach-banner">
@@ -105,45 +105,76 @@
         </span>
         <span><strong>Last fetch:</strong> {{ formatDateLabel(snapshot.lastFetchAt) }}</span>
       </div>
-      <template v-if="effectiveBaseBranch">
+      <template v-if="opRef">
         <p class="git-card__hint git-card__hint--compare" data-testid="base-compare-status">
-          <template v-if="baseCompare.loading">Comparing with {{ effectiveBaseBranch }}…</template>
+          <template v-if="baseCompare.loading">Comparing with {{ opRef }}…</template>
           <template v-else-if="baseCompare.error">{{ baseCompare.error }}</template>
           <template v-else-if="baseCompare.aheadCount === 0 && baseCompare.behindCount === 0">
-            Already up to date with {{ effectiveBaseBranch }} — nothing to rebase or merge.
+            Already up to date with {{ opRef }} — nothing to rebase or merge.
           </template>
           <template v-else>
             Current branch is
             <strong v-if="baseCompare.aheadCount">{{ baseCompare.aheadCount }} ahead</strong>
             <template v-if="baseCompare.aheadCount && baseCompare.behindCount">, </template>
             <strong v-if="baseCompare.behindCount">{{ baseCompare.behindCount }} behind</strong>
-            {{ effectiveBaseBranch }}.
+            {{ opRef }}.
           </template>
         </p>
-        <div v-if="!isReviewWorkspace" class="git-operation-actions">
+
+        <p class="git-card__hint" data-testid="base-target-note">
+          <template v-if="opIsRemote">
+            Updates run against <code>{{ opRef }}</code> and fetch the latest first.
+            <template v-if="hasLocalAndRemote">
+              The local <code>{{ resolvedBase.shortName }}</code> branch is not used.
+            </template>
+          </template>
+          <template v-else-if="resolvedBase.isLocalOnly">
+            No remote tracking for <code>{{ opRef }}</code> — using the local branch (no fetch).
+          </template>
+          <template v-else>
+            Using the local <code>{{ opRef }}</code> branch by choice (no fetch).
+          </template>
+        </p>
+
+        <div v-if="!isReviewWorkspace" class="git-operation-actions git-update-actions">
+          <span class="git-strategy-toggle" role="group" aria-label="Update strategy">
+            <button
+              type="button"
+              data-testid="strategy-rebase"
+              :class="['button', 'button--small', updateStrategy === 'rebase' && 'button--active']"
+              :disabled="updateDisabled"
+              title="Replay your commits on top of the base (linear history, rewrites your commit hashes)."
+              @click="updateStrategy = 'rebase'"
+            >
+              Rebase
+            </button>
+            <button
+              type="button"
+              data-testid="strategy-merge"
+              :class="['button', 'button--small', updateStrategy === 'merge' && 'button--active']"
+              :disabled="updateDisabled"
+              title="Merge the base into your branch (keeps history, adds a merge commit)."
+              @click="updateStrategy = 'merge'"
+            >
+              Merge
+            </button>
+          </span>
           <button
             type="button"
-            class="button"
-            :disabled="rebaseDisabled"
-            :title="rebaseTitle"
-            @click="gitUiStore.gitRebaseBase(workspaceId, effectiveBaseBranch)"
+            data-testid="update-from-base"
+            :class="['button', isUpdating && 'button--busy']"
+            :disabled="updateDisabled"
+            :title="updateTitle"
+            @click="onUpdateFromBase"
           >
-            {{ gitUi.busyAction === "rebase" ? "Rebasing…" : `Rebase onto ${effectiveBaseBranch}` }}
-          </button>
-          <button
-            v-if="!isReviewWorkspace"
-            type="button"
-            class="button button--ghost"
-            :disabled="mergeDisabled"
-            :title="mergeTitle"
-            @click="gitUiStore.gitMergeBase(workspaceId, effectiveBaseBranch)"
-          >
-            {{ gitUi.busyAction === "merge" ? "Merging…" : `Merge ${effectiveBaseBranch} in` }}
+            {{ isUpdating ? "Updating…" : `Update from ${opRef}` }}
           </button>
         </div>
-        <p class="git-card__hint">
-          Operations use the local {{ effectiveBaseBranch }} branch. Fetch first to sync with remote.
-        </p>
+
+        <label v-if="hasLocalAndRemote && !isReviewWorkspace" class="git-card__hint git-base-local-toggle">
+          <input type="checkbox" :checked="preferLocalBase" @change="preferLocalBase = !preferLocalBase" />
+          Use local <code>{{ resolvedBase.localRef }}</code> instead (no fetch — advanced/offline)
+        </label>
       </template>
       <template v-else>
         <p class="git-card__hint">Select a base branch above to enable rebase/merge operations.</p>
@@ -291,6 +322,7 @@ import GitOperationCard from "./GitOperationCard.vue";
 import GitMergeBackCard from "./GitMergeBackCard.vue";
 import GitBaseBranchPicker from "./GitBaseBranchPicker.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
+import { resolveBaseRef, isRemoteRef } from "./base-ref.js";
 
 const props = withDefaults(
   defineProps<{
@@ -349,6 +381,29 @@ const switchBranchTarget = ref("");
 const newBranchName = ref("");
 const detachingReview = ref(false);
 const enablingEditing = ref(false);
+
+// Update strategy + base resolution. "develop" is ambiguous (local branch vs
+// origin/develop); for pulling the base in we prefer the remote-tracking ref so
+// the user isn't rebasing onto a stale local branch. preferLocalBase is the
+// escape hatch for local-only/offline/deliberate-local cases.
+const updateStrategy = ref<"rebase" | "merge">("rebase");
+const preferLocalBase = ref(false);
+
+const resolvedBase = computed(() =>
+  resolveBaseRef(
+    props.effectiveBaseBranch,
+    (props.snapshot?.branchNames as string[]) || [],
+    props.remoteNames || [],
+    props.defaultRemote || props.snapshot?.defaultRemote || "",
+  ),
+);
+const opRef = computed(() => {
+  const r = resolvedBase.value;
+  if (preferLocalBase.value && r.localRef) return r.localRef;
+  return r.opRef;
+});
+const opIsRemote = computed(() => isRemoteRef(opRef.value, props.remoteNames || []));
+const hasLocalAndRemote = computed(() => !!resolvedBase.value.localRef && !!resolvedBase.value.remoteRef);
 
 async function onDetachReview() {
   if (detachingReview.value) return;
@@ -417,7 +472,7 @@ function onCreateBranch() {
 // gitUi.baseComparison. Re-fetched on snapshot.lastFetchAt so a Fetch updates
 // the chip without the user re-selecting the base.
 const baseCompare = computed(() => {
-  const base = props.effectiveBaseBranch;
+  const base = opRef.value;
   const loading = !!props.gitUi?.baseComparisonLoading;
   if (!base) return { loading: false, error: "", aheadCount: 0, behindCount: 0 };
   const cached = props.gitUi?.baseComparison;
@@ -442,31 +497,28 @@ const baseCompare = computed(() => {
   return { loading: true, error: "", aheadCount: 0, behindCount: 0 };
 });
 
-const nothingToRebase = computed(
-  () => !baseCompare.value.loading && !baseCompare.value.error && baseCompare.value.behindCount === 0,
+const isUpdating = computed(() => props.gitUi.busyAction === "rebase" || props.gitUi.busyAction === "merge");
+const updateDisabled = computed(
+  () => !!props.gitUi.busyAction || props.operation.inProgress || !!props.gitUi.pendingAction,
 );
+const updateTitle = computed(() => {
+  const verb = updateStrategy.value === "merge" ? "Merge" : "Rebase onto";
+  const fetchNote = opIsRemote.value ? " (fetches latest first)" : " (local branch — no fetch)";
+  return `${verb} ${opRef.value}${fetchNote}`;
+});
 
-const rebaseDisabled = computed(() => {
-  if (props.gitUi.busyAction || props.operation.inProgress || props.gitUi.pendingAction) return true;
-  if (nothingToRebase.value) return true;
-  return false;
-});
-const rebaseTitle = computed(() => {
-  if (nothingToRebase.value) return `Already up to date with ${props.effectiveBaseBranch} — nothing to rebase.`;
-  return `Rebase current branch onto local ${props.effectiveBaseBranch}`;
-});
-const mergeDisabled = computed(() => {
-  if (props.gitUi.busyAction || props.operation.inProgress || props.gitUi.pendingAction) return true;
-  if (nothingToRebase.value) return true;
-  return false;
-});
-const mergeTitle = computed(() => {
-  if (nothingToRebase.value) return `Already up to date with ${props.effectiveBaseBranch} — nothing to merge.`;
-  return `Merge local ${props.effectiveBaseBranch} into current branch`;
-});
+function onUpdateFromBase() {
+  if (!opRef.value) return;
+  const fetchFirst = opIsRemote.value;
+  if (updateStrategy.value === "merge") {
+    gitUiStore.gitMergeBase(props.workspaceId, opRef.value, { fetchFirst });
+  } else {
+    gitUiStore.gitRebaseBase(props.workspaceId, opRef.value, { fetchFirst });
+  }
+}
 
 watch(
-  () => [props.effectiveBaseBranch, props.snapshot?.branch, props.snapshot?.lastFetchAt],
+  () => [opRef.value, props.snapshot?.branch, props.snapshot?.lastFetchAt],
   ([base]) => {
     if (!base) return;
     // Skip the network call when the snapshot already has counts for this

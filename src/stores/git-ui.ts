@@ -9,6 +9,8 @@ interface PendingGitAction {
   type: string;
   baseBranch: string;
   stashDirty?: boolean;
+  /** Fetch the remote before running the action so the base ref is current. */
+  fetchFirst?: boolean;
   message?: string;
   severity?: string;
   isDestructive?: boolean;
@@ -122,10 +124,12 @@ function buildConfirmMessage({
   type,
   snapshot,
   baseBranch,
+  fetchFirst,
 }: {
   type: string;
   snapshot: GitSnapshot | null;
   baseBranch?: string;
+  fetchFirst?: boolean;
 }): string {
   const target = baseBranch || snapshot?.baseBranch || "base";
   const lines: string[] = [];
@@ -143,6 +147,9 @@ function buildConfirmMessage({
     lines.push("Abort the current Git operation?");
   }
 
+  if (fetchFirst && (type === "merge" || type === "rebase")) {
+    lines.push(`Fetches the latest ${target} from the remote first, then ${type === "merge" ? "merges" : "rebases"}.`);
+  }
   if (snapshot?.dirty && type !== "abort") {
     lines.push("This workspace has uncommitted changes. Local changes will be stashed and restored afterwards.");
   }
@@ -644,14 +651,20 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function setPendingGitAction(
     workspaceId: string,
-    { type, baseBranch, snapshot }: { type: string; baseBranch: string; snapshot: GitSnapshot | null },
+    {
+      type,
+      baseBranch,
+      snapshot,
+      fetchFirst = false,
+    }: { type: string; baseBranch: string; snapshot: GitSnapshot | null; fetchFirst?: boolean },
   ): void {
     const ui = ensure(workspaceId);
     ui.pendingAction = {
       type,
       baseBranch,
+      fetchFirst,
       stashDirty: snapshot?.dirty || false,
-      message: buildConfirmMessage({ type, snapshot, baseBranch }),
+      message: buildConfirmMessage({ type, snapshot, baseBranch, fetchFirst }),
       severity: "info",
       isDestructive: false,
       snapshotHash: computeSnapshotHash(snapshot),
@@ -742,9 +755,17 @@ export const useGitUiStore = defineStore("git-ui", () => {
       return;
     }
     const payload = { workspaceId, baseBranch: pending.baseBranch, stashDirty: pending.stashDirty, rootPath };
-    await runGitAction(workspaceId, pending.type, () =>
-      pending.type === "merge" ? api.gitMergeIntoCurrent(payload) : api.gitRebaseOnto(payload),
-    );
+    const fetchFirst = !!pending.fetchFirst;
+    await runGitAction(workspaceId, pending.type, async () => {
+      if (fetchFirst) {
+        // Pull the latest remote refs first so the base is current. If the
+        // fetch fails (offline / auth), surface that and don't rebase/merge
+        // onto a stale base.
+        const fetchResp = (await api.gitFetch({ workspaceId, rootPath })) as { result?: { ok?: boolean } } | null;
+        if (fetchResp?.result && fetchResp.result.ok === false) return fetchResp;
+      }
+      return pending.type === "merge" ? api.gitMergeIntoCurrent(payload) : api.gitRebaseOnto(payload);
+    });
   }
 
   function confirmDeleteLocalTag(workspaceId: string, tagName: string): void {
@@ -860,22 +881,40 @@ export const useGitUiStore = defineStore("git-ui", () => {
     setPendingGitAction(workspaceId, { type: "abort", snapshot, baseBranch: "" });
   }
 
-  async function gitMergeBase(workspaceId: string, baseBranch: string): Promise<void> {
+  async function gitMergeBase(
+    workspaceId: string,
+    baseBranch: string,
+    { fetchFirst = false }: { fetchFirst?: boolean } = {},
+  ): Promise<void> {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
     const rootPath = getActiveRoot(workspaceId);
     const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
     if (!snapshot?.available) return;
-    setPendingGitAction(workspaceId, { type: "merge", snapshot, baseBranch: baseBranch || snapshot.baseBranch });
+    setPendingGitAction(workspaceId, {
+      type: "merge",
+      snapshot,
+      baseBranch: baseBranch || snapshot.baseBranch,
+      fetchFirst,
+    });
   }
 
-  async function gitRebaseBase(workspaceId: string, baseBranch: string): Promise<void> {
+  async function gitRebaseBase(
+    workspaceId: string,
+    baseBranch: string,
+    { fetchFirst = false }: { fetchFirst?: boolean } = {},
+  ): Promise<void> {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
     const rootPath = getActiveRoot(workspaceId);
     const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
     if (!snapshot?.available) return;
-    setPendingGitAction(workspaceId, { type: "rebase", snapshot, baseBranch: baseBranch || snapshot.baseBranch });
+    setPendingGitAction(workspaceId, {
+      type: "rebase",
+      snapshot,
+      baseBranch: baseBranch || snapshot.baseBranch,
+      fetchFirst,
+    });
   }
 
   async function gitMergeIntoBase(workspaceId: string, baseBranch: string): Promise<void> {

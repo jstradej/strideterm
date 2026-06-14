@@ -215,6 +215,31 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* Update-strategy segmented toggle (Rebase / Merge) in the Update card. */
+.git-strategy-toggle {
+  display: inline-flex;
+  gap: 0;
+}
+.git-strategy-toggle .button--small:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.git-strategy-toggle .button--small:last-child {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin-left: -1px;
+}
+.git-base-local-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  cursor: pointer;
+}
+.git-base-local-toggle input {
+  margin: 0;
+}
+
 .git-file-list,
 .git-sibling-list,
 .git-inline-list {

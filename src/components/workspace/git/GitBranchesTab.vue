@@ -588,6 +588,7 @@ import CustomSelect from "../../common/CustomSelect.vue";
 import BranchSelectPopover from "./BranchSelectPopover.vue";
 import GitCommitContextMenu from "./GitCommitContextMenu.vue";
 import GitDiffStat from "./GitDiffStat.vue";
+import { isRemoteRef } from "./base-ref.js";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
@@ -1578,12 +1579,14 @@ function onRename(ref: string) {
   });
 }
 
+// When the target is a remote-tracking ref (e.g. origin/develop), fetch first
+// so the rebase/merge runs against the latest — matches the Update card.
 function onMergeInto(ref: string) {
-  gitUiStore.gitMergeBase(props.workspaceId, ref);
+  gitUiStore.gitMergeBase(props.workspaceId, ref, { fetchFirst: isRemoteRef(ref, effectiveRemoteNames.value) });
 }
 
 function onRebaseOnto(ref: string) {
-  gitUiStore.gitRebaseBase(props.workspaceId, ref);
+  gitUiStore.gitRebaseBase(props.workspaceId, ref, { fetchFirst: isRemoteRef(ref, effectiveRemoteNames.value) });
 }
 
 // --- Commit selection + file diff ---------------------------------------
