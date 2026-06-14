@@ -277,11 +277,22 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  width: fit-content;
   margin-top: 4px;
   cursor: pointer;
 }
+/* Override the global input{width:100%;padding} so the checkbox stays its
+   natural size at the start of the row instead of stretching. */
 .git-base-local-toggle input {
+  flex: 0 0 auto;
+  width: auto;
   margin: 0;
+  padding: 0;
+}
+.git-base-local-toggle__text {
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 .git-file-list,

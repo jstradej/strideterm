@@ -192,7 +192,9 @@
 
         <label v-if="hasLocalAndRemote && !isReviewWorkspace" class="git-card__hint git-base-local-toggle">
           <input type="checkbox" :checked="preferLocalBase" @change="preferLocalBase = !preferLocalBase" />
-          Use local <code>{{ resolvedBase.localRef }}</code> instead (no fetch — advanced/offline)
+          <span class="git-base-local-toggle__text">
+            Use local <code>{{ resolvedBase.localRef }}</code> instead (no fetch — advanced/offline)
+          </span>
         </label>
       </template>
       <template v-else>
