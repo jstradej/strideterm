@@ -521,13 +521,24 @@ const baseCompare = computed(() => {
 });
 
 const isUpdating = computed(() => props.gitUi.busyAction === "rebase" || props.gitUi.busyAction === "merge");
+// Nothing to pull in when the base has no commits HEAD lacks. The count is
+// against the last-known remote ref, so a Fetch can revive it (the watch
+// recomputes on snapshot.lastFetchAt).
+const nothingToPull = computed(
+  () => !baseCompare.value.loading && !baseCompare.value.error && (baseCompare.value.behindCount || 0) === 0,
+);
 const updateDisabled = computed(
-  () => !!props.gitUi.busyAction || props.operation.inProgress || !!props.gitUi.pendingAction,
+  () => !!props.gitUi.busyAction || props.operation.inProgress || !!props.gitUi.pendingAction || nothingToPull.value,
 );
 const updateActionLabel = computed(() =>
   updateStrategy.value === "merge" ? `Merge ${opRef.value} in` : `Rebase onto ${opRef.value}`,
 );
 const updateTitle = computed(() => {
+  if (nothingToPull.value) {
+    return `Already up to date with ${opRef.value} — nothing to integrate.${
+      opIsRemote.value ? " Fetch to check for new commits." : ""
+    }`;
+  }
   const fetchNote = opIsRemote.value ? " — fetches latest first" : " — local branch, no fetch";
   return `${updateActionLabel.value}${fetchNote}`;
 });
