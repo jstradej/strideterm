@@ -7,6 +7,16 @@
       </div>
     </div>
 
+    <!-- Busy banner — a git action is running right now (spinner + live phase) -->
+    <template v-if="busyAction">
+      <div class="git-operation-banner git-operation-banner--busy" data-testid="operation-busy">
+        <div class="git-operation-busy">
+          <span class="git-spinner" aria-hidden="true"></span>
+          <strong>{{ busyPhase }}</strong>
+        </div>
+      </div>
+    </template>
+
     <!-- Active operation banner -->
     <template v-if="operation.inProgress">
       <div class="git-operation-banner git-operation-banner--warning" data-testid="operation-in-progress">
@@ -81,10 +91,13 @@ const gitUiStore = useGitUiStore();
 
 const operation = computed(() => props.snapshot.operationState || {});
 const result = computed(() => props.gitUi.lastResult || null);
+const busyAction = computed(() => String(props.gitUi.busyAction || ""));
+const busyPhase = computed(() => String(props.gitUi.busyPhase || "Working…"));
 
-const shouldRender = computed(() => operation.value.inProgress || !!result.value);
+const shouldRender = computed(() => !!busyAction.value || operation.value.inProgress || !!result.value);
 
 const heading = computed(() => {
+  if (busyAction.value) return "In progress";
   if (operation.value.inProgress) return operation.value.label || "In progress";
   if (result.value) return "Last result";
   return "Idle";

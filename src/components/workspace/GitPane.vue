@@ -97,13 +97,15 @@
             />
             <span class="git-repo-picker__hint">{{ gitRoots.length }}</span>
           </label>
-          <!-- Refresh: always visible, never primary -->
+          <!-- Refresh: always visible, never primary. Stays clickable even while
+               another action is busy so it doubles as the recovery hatch for a
+               wedged UI (refreshGit drops stuck busy/pending state). -->
           <button
             type="button"
             data-testid="refresh-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'refresh' && 'button--busy']"
-            :disabled="!!gitUi.busyAction"
-            title="Re-read this repository's branch, ahead/behind counts, dirty list, worktrees, and tags from disk. No network operations."
+            :disabled="gitUi.busyAction === 'refresh'"
+            title="Re-read this repository's branch, ahead/behind counts, dirty list, worktrees, and tags from disk. Also clears a stuck/in-progress action so a frozen view recovers. No network operations."
             @click="gitUiStore.refreshGit(workspaceId)"
           >
             {{ gitUi.busyAction === "refresh" ? "Refreshing…" : "Refresh" }}

@@ -438,6 +438,28 @@
   border-color: rgba(110, 223, 182, 0.4);
 }
 
+.git-operation-banner--busy {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+  background: color-mix(in srgb, var(--panel-elevated), var(--accent) 5%);
+}
+
+.git-operation-busy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Standalone spinner (reuses the button spinner keyframes from sidebar.css). */
+.git-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: btn-spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
 .git-operation-banner--error {
   border-color: rgba(255, 111, 141, 0.35);
 }

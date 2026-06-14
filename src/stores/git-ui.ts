@@ -45,6 +45,9 @@ interface ConflictDialogState {
 
 interface GitUiState {
   busyAction?: string;
+  /** Human-readable label for the action currently running (e.g. "Fetching origin/develop…").
+   *  Drives the spinner banner; updated mid-run for multi-phase actions like fetch→rebase. */
+  busyPhase?: string;
   lastResult?: {
     ok: boolean;
     summary: string;
@@ -160,6 +163,61 @@ function buildConfirmMessage({
   return lines.join("\n");
 }
 
+// Backstop so a git IPC that never settles (hung `git fetch` waiting on a
+// credential prompt, dead/wedged backend) can't pin `busyAction` forever and
+// permanently disable the git controls. On timeout the action rejects, the
+// banner explains it, and `finally` clears the busy flag so the UI recovers on
+// its own. Refresh is still the instant manual escape hatch.
+const GIT_ACTION_TIMEOUT_MS = 120_000;
+
+function withGitTimeout<T>(promise: Promise<T>, ms: number, action: string): Promise<T> {
+  if (!ms || ms <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new Error(
+          `Git "${action}" did not respond within ${Math.round(ms / 1000)}s. ` +
+            `It may be waiting on credentials or a stalled network. Press Refresh to recover.`,
+        ),
+      );
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+// Human label shown in the spinner banner while an action runs. Multi-phase
+// actions (rebase/merge with fetch-first) override this via setBusyPhase.
+function defaultBusyLabel(action: string): string {
+  const map: Record<string, string> = {
+    fetch: "Fetching from remote…",
+    pull: "Pulling…",
+    push: "Pushing…",
+    "force-push": "Force-pushing…",
+    rebase: "Rebasing…",
+    merge: "Merging…",
+    "merge-into-base": "Merging into base…",
+    refresh: "Refreshing…",
+    checkout: "Switching branch…",
+    "create-branch": "Creating branch…",
+    "cherry-pick": "Cherry-picking…",
+    squash: "Squashing commits…",
+    commit: "Committing…",
+    "stash-pop": "Restoring stash…",
+    abort: "Aborting operation…",
+    "remove-worktree": "Removing worktree…",
+  };
+  return map[action] || "Working…";
+}
+
 function computeSnapshotHash(snapshot: GitSnapshot | null): string {
   if (!snapshot) return "";
   return [
@@ -227,6 +285,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
   function clearBusy(workspaceId: string): void {
     const ui = ensure(workspaceId);
     ui.busyAction = "";
+    ui.busyPhase = "";
+  }
+
+  // Update the spinner label for the action already running — lets a single
+  // runGitAction surface its phases (e.g. "Fetching…" then "Rebasing…").
+  function setBusyPhase(workspaceId: string, label: string): void {
+    ensure(workspaceId).busyPhase = label || "";
   }
 
   function cleanup(workspaceId: string): void {
@@ -258,16 +323,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
     workspaceId: string,
     busyAction: string,
     runner: () => Promise<unknown>,
+    opts: { label?: string; timeoutMs?: number } = {},
   ): Promise<unknown> {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
 
     const ui = ensure(workspaceId);
     ui.busyAction = busyAction;
+    ui.busyPhase = opts.label || defaultBusyLabel(busyAction);
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const response = (await runner()) as any;
+      const response = (await withGitTimeout(runner(), opts.timeoutMs ?? GIT_ACTION_TIMEOUT_MS, busyAction)) as any;
       if (response?.payload) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         appStore.payload = response.payload as any;
@@ -336,6 +403,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // --- Git actions ---
 
   async function refreshGit(workspaceId: string): Promise<void> {
+    // Refresh is the manual recovery hatch. If a prior action wedged (an IPC
+    // that never settled, a dismissed-but-stuck confirm), drop that state up
+    // front so this always runs and revives a frozen UI. runGitAction then
+    // overwrites busyAction with "refresh" and clears it in finally.
+    clearPendingGitAction(workspaceId);
+    clearBusy(workspaceId);
     await runGitAction(workspaceId, "refresh", async () => {
       const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
         workspaceId,
@@ -756,14 +829,17 @@ export const useGitUiStore = defineStore("git-ui", () => {
     }
     const payload = { workspaceId, baseBranch: pending.baseBranch, stashDirty: pending.stashDirty, rootPath };
     const fetchFirst = !!pending.fetchFirst;
+    const baseLabel = pending.baseBranch || "base";
     await runGitAction(workspaceId, pending.type, async () => {
       if (fetchFirst) {
         // Pull the latest remote refs first so the base is current. If the
         // fetch fails (offline / auth), surface that and don't rebase/merge
         // onto a stale base.
+        setBusyPhase(workspaceId, `Fetching ${baseLabel}…`);
         const fetchResp = (await api.gitFetch({ workspaceId, rootPath })) as { result?: { ok?: boolean } } | null;
         if (fetchResp?.result && fetchResp.result.ok === false) return fetchResp;
       }
+      setBusyPhase(workspaceId, pending.type === "merge" ? `Merging ${baseLabel} in…` : `Rebasing onto ${baseLabel}…`);
       return pending.type === "merge" ? api.gitMergeIntoCurrent(payload) : api.gitRebaseOnto(payload);
     });
   }
