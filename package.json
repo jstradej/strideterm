@@ -170,7 +170,7 @@
   "devDependencies": {
     "@effect/language-service": "0.86.2",
     "@eslint/js": "^10.0.1",
-    "@playwright/test": "^1.60.0",
+    "@playwright/test": "^1.61.0",
     "@types/node": "25.9.3",
     "@types/proper-lockfile": "4.1.4",
     "@types/qrcode": "1.5.6",
