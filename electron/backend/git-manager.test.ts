@@ -316,6 +316,123 @@ describe("GitManager", () => {
     expect((snapshot.compareWithBase as { baseBranch: string }).baseBranch).toBe("origin/main");
   });
 
+  // Regression: a PR author's managed worktree pushes the SOURCE branch, so
+  // basing the snapshot on origin/<source> is a self-comparison (0/0). That
+  // pinned the base to the branch itself → "nothing to pull" → the Update
+  // button was permanently disabled. An author must base on the PR TARGET.
+  test("inspectWorkspace bases a PR author's worktree on the target branch, not the source", async () => {
+    const { root } = await createGitFixture();
+    const branch = "pr-30742-jstradej-MSP-756000-email-watcher";
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: `${branch}\n`, stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: {
+        stdout: `# branch.head ${branch}\n# branch.upstream origin/jstradej/MSP-756000-email-watcher\n`,
+        stderr: "",
+      },
+      [`${root}::status --short`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/${branch}\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: `${branch}\ndevelop\norigin/develop\norigin/jstradej/MSP-756000-email-watcher\n`,
+        stderr: "",
+      },
+      // Base comparison runs against origin/develop (the PR target) — 2 ahead, 11 behind.
+      [`${root}::rev-list --left-right --count HEAD...origin/develop`]: { stdout: "2\t11\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 origin/develop..HEAD`]: {
+        stdout: "",
+        stderr: "",
+      },
+      [`${root}::diff --name-status origin/develop...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat origin/develop...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({
+      id: "review-author",
+      cwd: root,
+      kind: "terminal",
+      review: {
+        role: "author",
+        pullRequest: {
+          sourceRefName: "refs/heads/jstradej/MSP-756000-email-watcher",
+          targetRefName: "refs/heads/develop",
+        },
+      },
+    });
+
+    expect(snapshot.baseBranch).toBe("origin/develop");
+    const cmp = snapshot.compareWithBase as { baseBranch: string; behindCount: number };
+    expect(cmp.baseBranch).toBe("origin/develop");
+    expect(cmp.behindCount).toBe(11);
+  });
+
+  // Reviewers (non-author) keep basing on origin/<source>: their checkout is
+  // measured against the pushed source branch. Guards the author fix above
+  // from regressing the reviewer path.
+  test("inspectWorkspace keeps a reviewer's worktree based on the PR source branch", async () => {
+    const { root } = await createGitFixture();
+    const branch = "pr-29806-jveselka-feature";
+    const src = "jveselka/feature";
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: `${branch}\n`, stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: {
+        stdout: `# branch.head ${branch}\n# branch.upstream origin/${src}\n`,
+        stderr: "",
+      },
+      [`${root}::status --short`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/${branch}\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: `${branch}\norigin/develop\norigin/${src}\n`,
+        stderr: "",
+      },
+      [`${root}::rev-list --left-right --count HEAD...origin/${src}`]: { stdout: "0\t0\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 origin/${src}..HEAD`]: {
+        stdout: "",
+        stderr: "",
+      },
+      [`${root}::diff --name-status origin/${src}...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat origin/${src}...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({
+      id: "review-reviewer",
+      cwd: root,
+      kind: "terminal",
+      review: {
+        role: "reviewer",
+        pullRequest: { sourceRefName: `refs/heads/${src}`, targetRefName: "refs/heads/develop" },
+      },
+    });
+
+    expect(snapshot.baseBranch).toBe(`origin/${src}`);
+  });
+
   test("mergeIntoCurrent refuses dirty workspace without explicit stash flow", async () => {
     const { root } = await createGitFixture();
     const manager = new GitManager({ execGitImpl: vi.fn() });

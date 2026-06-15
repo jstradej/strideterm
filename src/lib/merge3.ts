@@ -5,8 +5,12 @@
  * Chunks that describe the merged result. No DOM/Monaco dependency — fully
  * unit-testable.
  *
- * Algorithm: line-based LCS diff (Myers) of base→ours and base→theirs,
- * then zip the two diff streams into a three-way merge.
+ * Algorithm: line-based LCS diff (Myers) of base→ours and base→theirs, reduce
+ * each to base-anchored hunks, then zip the two hunk lists over base line
+ * positions. Anchoring to base indices keeps ours and theirs aligned — the
+ * earlier token-cursor zip let the two streams drift out of sync, which both
+ * produced wrong merges and (for some inputs) looped forever, OOM-crashing the
+ * renderer when the merge editor opened a conflict.
  */
 
 export type ChunkKind = "unchanged" | "ours" | "theirs" | "conflict";
@@ -78,37 +82,67 @@ function diff(base: string[], changed: string[]): DiffOp[] {
 }
 
 // ---------------------------------------------------------------------------
-// Diff stream iterator
+// Base-anchored hunks
 // ---------------------------------------------------------------------------
+//
+// Each diff (base→ours, base→theirs) is reduced to a list of hunks: a base
+// line range [baseStart, baseEnd) that the side REPLACES with `lines`. Equal
+// runs are implicit (base unchanged). A pure insertion is a zero-width range
+// (baseStart === baseEnd) with the inserted lines.
 
-interface DiffCursor {
-  ops: DiffOp[];
-  opIdx: number;
-  lineIdx: number;
+interface Hunk {
+  baseStart: number;
+  baseEnd: number; // exclusive
+  lines: string[]; // replacement lines for [baseStart, baseEnd)
 }
 
-function makeCursor(ops: DiffOp[]): DiffCursor {
-  return { ops, opIdx: 0, lineIdx: 0 };
-}
-
-type DiffToken = { op: "equal" | "insert" | "delete"; line: string } | null;
-
-function peek(c: DiffCursor): DiffToken {
-  if (c.opIdx >= c.ops.length) return null;
-  const op = c.ops[c.opIdx];
-  return { op: op.op, line: op.lines[c.lineIdx] };
-}
-
-function advance(c: DiffCursor): DiffToken {
-  const t = peek(c);
-  if (!t) return null;
-  const op = c.ops[c.opIdx];
-  c.lineIdx++;
-  if (c.lineIdx >= op.lines.length) {
-    c.opIdx++;
-    c.lineIdx = 0;
+function diffToHunks(ops: DiffOp[]): Hunk[] {
+  const hunks: Hunk[] = [];
+  let base = 0;
+  let cur: Hunk | null = null;
+  for (const op of ops) {
+    if (op.op === "equal") {
+      if (cur) {
+        hunks.push(cur);
+        cur = null;
+      }
+      base += op.lines.length;
+    } else {
+      if (!cur) cur = { baseStart: base, baseEnd: base, lines: [] };
+      if (op.op === "delete") {
+        base += op.lines.length;
+        cur.baseEnd = base;
+      } else {
+        // insert — adds lines without consuming a base line
+        cur.lines.push(...op.lines);
+      }
+    }
   }
-  return t;
+  if (cur) hunks.push(cur);
+  return hunks;
+}
+
+// Reconstruct one side's text over base range [from, to) given that side's
+// hunks indexed [hunkStart, hunkEnd). Base lines outside any hunk are kept
+// verbatim (that side left them unchanged); each hunk replaces its base range.
+function reconstructSide(
+  hunks: Hunk[],
+  hunkStart: number,
+  hunkEnd: number,
+  from: number,
+  to: number,
+  baseLines: string[],
+): string[] {
+  const out: string[] = [];
+  let b = from;
+  for (let i = hunkStart; i < hunkEnd; i++) {
+    const h = hunks[i];
+    if (h.baseStart > b) out.push(...baseLines.slice(b, h.baseStart));
+    out.push(...h.lines);
+    b = h.baseEnd;
+  }
+  if (b < to) out.push(...baseLines.slice(b, to));
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,105 +160,106 @@ export function merge3(base: string, ours: string, theirs: string): Merge3Result
   const oursLines = splitLines(ours);
   const theirsLines = splitLines(theirs);
 
-  const diffO = diff(baseLines, oursLines);
-  const diffT = diff(baseLines, theirsLines);
-
-  const co = makeCursor(diffO);
-  const ct = makeCursor(diffT);
+  const oursHunks = diffToHunks(diff(baseLines, oursLines));
+  const theirsHunks = diffToHunks(diff(baseLines, theirsLines));
 
   const chunks: Chunk[] = [];
+  const pushUnchanged = (lines: string[]): void => {
+    if (lines.length === 0) return;
+    chunks.push({ kind: "unchanged", baseLines: lines, oursLines: lines, theirsLines: lines, resultLines: lines });
+  };
 
-  while (peek(co) !== null || peek(ct) !== null) {
-    const to = peek(co);
-    const tt = peek(ct);
+  let basePos = 0; // current base line index
+  let oi = 0; // next ours hunk
+  let ti = 0; // next theirs hunk
 
-    // Both equal — advance together (unchanged region)
-    if (to?.op === "equal" && tt?.op === "equal") {
-      const equalLines: string[] = [];
-      while (peek(co)?.op === "equal" && peek(ct)?.op === "equal") {
-        const o = advance(co)!;
-        const t = advance(ct)!;
-        // Both should be same line (from base)
-        equalLines.push(o.line);
-      }
-      if (equalLines.length > 0) {
-        chunks.push({
-          kind: "unchanged",
-          baseLines: equalLines,
-          oursLines: equalLines,
-          theirsLines: equalLines,
-          resultLines: equalLines,
-        });
-      }
+  while (basePos < baseLines.length || oi < oursHunks.length || ti < theirsHunks.length) {
+    const oStart = oi < oursHunks.length ? oursHunks[oi].baseStart : Infinity;
+    const tStart = ti < theirsHunks.length ? theirsHunks[ti].baseStart : Infinity;
+    const nextChange = Math.min(oStart, tStart);
+
+    // Stable (unchanged-by-both) base lines before the next change.
+    if (basePos < nextChange && nextChange !== Infinity) {
+      const end = Math.min(nextChange, baseLines.length);
+      pushUnchanged(baseLines.slice(basePos, end));
+      basePos = end;
       continue;
     }
 
-    // Only ours changed (theirs is equal or absent)
-    if ((to?.op === "insert" || to?.op === "delete") && (tt === null || tt.op === "equal")) {
-      const oLines: string[] = [];
-      const bLines: string[] = [];
-      // Consume ours changes: eat insert/delete ops until we hit equal again
-      while (peek(co) !== null && peek(co)!.op !== "equal") {
-        const o = advance(co)!;
-        if (o.op === "insert") oLines.push(o.line);
-        else bLines.push(o.line); // delete from base
-      }
-      // Advance theirs past the deleted base lines
-      for (let k = 0; k < bLines.length; k++) {
-        if (peek(ct)?.op === "equal") advance(ct);
-      }
-      chunks.push({ kind: "ours", baseLines: bLines, oursLines: oLines, theirsLines: bLines, resultLines: oLines });
+    // No remaining hunks → emit any trailing unchanged base lines and finish.
+    if (oStart === Infinity && tStart === Infinity) {
+      pushUnchanged(baseLines.slice(basePos));
+      basePos = baseLines.length;
       continue;
     }
 
-    // Only theirs changed
-    if ((tt?.op === "insert" || tt?.op === "delete") && (to === null || to.op === "equal")) {
-      const tLines: string[] = [];
-      const bLines: string[] = [];
-      while (peek(ct) !== null && peek(ct)!.op !== "equal") {
-        const t = advance(ct)!;
-        if (t.op === "insert") tLines.push(t.line);
-        else bLines.push(t.line);
+    // A change region starts at basePos. Expand it to cover every ours/theirs
+    // hunk that overlaps or abuts the growing region, so both sides span the
+    // SAME base range (the diff3 "unstable" region between two stable points).
+    const regionStart = basePos;
+    let regionEnd = basePos;
+    const ourFirst = oi;
+    const theirFirst = ti;
+    // A hunk joins the region if it OVERLAPS it (starts before the current
+    // end, sharing a base line) or it is the region's anchor (starts exactly
+    // at regionStart — covers the first hunk and zero-width inserts there).
+    // Merely adjacent changes (one ends where the other begins, on different
+    // base lines) stay in SEPARATE regions so they merge cleanly instead of
+    // being reported as a conflict — matching git merge-file.
+    const joins = (h: Hunk): boolean => h.baseStart < regionEnd || h.baseStart === regionStart;
+    let grew = true;
+    while (grew) {
+      grew = false;
+      if (oi < oursHunks.length && joins(oursHunks[oi])) {
+        regionEnd = Math.max(regionEnd, oursHunks[oi].baseEnd);
+        oi++;
+        grew = true;
       }
-      for (let k = 0; k < bLines.length; k++) {
-        if (peek(co)?.op === "equal") advance(co);
+      if (ti < theirsHunks.length && joins(theirsHunks[ti])) {
+        regionEnd = Math.max(regionEnd, theirsHunks[ti].baseEnd);
+        ti++;
+        grew = true;
       }
-      chunks.push({ kind: "theirs", baseLines: bLines, oursLines: bLines, theirsLines: tLines, resultLines: tLines });
-      continue;
     }
 
-    // Both changed — potential conflict
-    const conflictOurs: string[] = [];
-    const conflictTheirs: string[] = [];
-    const conflictBase: string[] = [];
+    const oursTouched = oi > ourFirst;
+    const theirsTouched = ti > theirFirst;
+    const regionBase = baseLines.slice(regionStart, regionEnd);
+    const ourSide = reconstructSide(oursHunks, ourFirst, oi, regionStart, regionEnd, baseLines);
+    const theirSide = reconstructSide(theirsHunks, theirFirst, ti, regionStart, regionEnd, baseLines);
+    basePos = regionEnd;
 
-    // Drain both non-equal sides
-    while (peek(co) !== null && peek(co)!.op !== "equal") {
-      const o = advance(co)!;
-      if (o.op === "insert") conflictOurs.push(o.line);
-      else conflictBase.push(o.line);
-    }
-    while (peek(ct) !== null && peek(ct)!.op !== "equal") {
-      const t = advance(ct)!;
-      if (t.op === "insert") conflictTheirs.push(t.line);
-      // deletes from theirs already accounted in base
-    }
-
-    // Same change on both sides = non-conflicting (diff3 rule: if ours==theirs use that)
-    if (arraysEqual(conflictOurs, conflictTheirs)) {
+    if (oursTouched && !theirsTouched) {
       chunks.push({
         kind: "ours",
-        baseLines: conflictBase,
-        oursLines: conflictOurs,
-        theirsLines: conflictOurs,
-        resultLines: conflictOurs,
+        baseLines: regionBase,
+        oursLines: ourSide,
+        theirsLines: regionBase,
+        resultLines: ourSide,
+      });
+    } else if (theirsTouched && !oursTouched) {
+      chunks.push({
+        kind: "theirs",
+        baseLines: regionBase,
+        oursLines: regionBase,
+        theirsLines: theirSide,
+        resultLines: theirSide,
+      });
+    } else if (arraysEqual(ourSide, theirSide)) {
+      // Both sides made the identical change — not a conflict (diff3 rule).
+      chunks.push({
+        kind: "ours",
+        baseLines: regionBase,
+        oursLines: ourSide,
+        theirsLines: theirSide,
+        resultLines: ourSide,
       });
     } else {
       chunks.push({
         kind: "conflict",
-        baseLines: conflictBase,
-        oursLines: conflictOurs,
-        theirsLines: conflictTheirs,
+        baseLines: regionBase,
+        oursLines: ourSide,
+        theirsLines: theirSide,
         resultLines: [],
         resolved: false,
       });

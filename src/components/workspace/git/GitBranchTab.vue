@@ -338,6 +338,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
+import { rlog } from "../../../lib/renderer-log.js";
 import { useAppStore } from "../../../stores/app.js";
 import GitOperationCard from "./GitOperationCard.vue";
 import GitMergeBackCard from "./GitMergeBackCard.vue";
@@ -544,7 +545,21 @@ const updateTitle = computed(() => {
 });
 
 function onUpdateFromBase() {
-  if (!opRef.value) return;
+  rlog("info", "[GitBranchTab] onUpdateFromBase clicked", {
+    workspaceId: props.workspaceId,
+    opRef: opRef.value,
+    updateStrategy: updateStrategy.value,
+    opIsRemote: opIsRemote.value,
+    updateDisabled: updateDisabled.value,
+    nothingToPull: nothingToPull.value,
+    busyAction: props.gitUi.busyAction || "",
+    pendingAction: !!props.gitUi.pendingAction,
+    operationInProgress: !!props.operation.inProgress,
+  });
+  if (!opRef.value) {
+    rlog("warn", "[GitBranchTab] onUpdateFromBase aborted — empty opRef", { workspaceId: props.workspaceId });
+    return;
+  }
   const fetchFirst = opIsRemote.value;
   if (updateStrategy.value === "merge") {
     gitUiStore.gitMergeBase(props.workspaceId, opRef.value, { fetchFirst });
@@ -552,6 +567,29 @@ function onUpdateFromBase() {
     gitUiStore.gitRebaseBase(props.workspaceId, opRef.value, { fetchFirst });
   }
 }
+
+// Diagnostic: log the Update button's enabled/disabled state with the reason
+// only when it FLIPS — a disabled button swallows the click without firing
+// onUpdateFromBase, so this surfaces why "nothing happens" without spamming the
+// log on every background poll.
+watch(
+  () => updateDisabled.value,
+  (disabled) => {
+    rlog("info", "[GitBranchTab] update-button disabled changed", {
+      workspaceId: props.workspaceId,
+      disabled,
+      opRef: opRef.value,
+      nothingToPull: nothingToPull.value,
+      behindCount: baseCompare.value.behindCount,
+      baseLoading: baseCompare.value.loading,
+      baseError: baseCompare.value.error,
+      busyAction: props.gitUi.busyAction || "",
+      pendingAction: !!props.gitUi.pendingAction,
+      operationInProgress: !!props.operation.inProgress,
+    });
+  },
+  { immediate: true },
+);
 
 // Split-button dropdown picks the default strategy (updates the main button
 // label); the user then clicks the main button to run it — one deliberate

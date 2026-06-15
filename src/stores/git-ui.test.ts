@@ -142,6 +142,59 @@ describe("git-ui store", () => {
     });
   });
 
+  describe("dismissStalePending — volatile counts must not nuke a fresh confirm", () => {
+    // Regression: the screenshot bug. A pending rebase confirm was set, then a
+    // background snapshot poll (ahead/behind + auto-detected compareWithBase
+    // counts flapping) silently dismissed it via dismissStalePending — so the
+    // confirm dialog vanished the instant a poll landed and the Update button
+    // "did nothing". The staleness hash must ignore those volatile counts.
+    const snap = (over: Record<string, unknown> = {}) => ({
+      available: true,
+      branch: "feature/x",
+      baseBranch: "develop",
+      dirty: false,
+      dirtyCount: 0,
+      aheadCount: 2,
+      behindCount: 11,
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+      compareWithBase: { baseBranch: "origin/develop", aheadCount: 2, behindCount: 11 },
+      ...over,
+    });
+
+    test("keeps the pending confirm when only ahead/behind + compareWithBase counts change", () => {
+      const store = useGitUiStore();
+      store.setPendingGitAction("ws1", { type: "rebase", baseBranch: "origin/develop", snapshot: snap() });
+      expect(store.get("ws1").pendingAction).toBeTruthy();
+
+      // A poll lands: counts flap (base re-detected / fetch happened) but no
+      // operation started and the tree is still clean.
+      store.dismissStalePending(
+        "ws1",
+        snap({
+          aheadCount: 0,
+          behindCount: 0,
+          compareWithBase: { baseBranch: "origin/jstradej/feature-x", aheadCount: 0, behindCount: 0 },
+        }),
+      );
+
+      expect(store.get("ws1").pendingAction).toBeTruthy();
+    });
+
+    test("dismisses the pending confirm when an operation starts", () => {
+      const store = useGitUiStore();
+      store.setPendingGitAction("ws1", { type: "rebase", baseBranch: "origin/develop", snapshot: snap() });
+      store.dismissStalePending("ws1", snap({ operationState: { kind: "rebase", inProgress: true, conflicts: [] } }));
+      expect(store.get("ws1").pendingAction).toBeNull();
+    });
+
+    test("dismisses the pending confirm when the working tree dirty state changes", () => {
+      const store = useGitUiStore();
+      store.setPendingGitAction("ws1", { type: "merge", baseBranch: "origin/develop", snapshot: snap() });
+      store.dismissStalePending("ws1", snap({ dirty: true, dirtyCount: 3 }));
+      expect(store.get("ws1").pendingAction).toBeNull();
+    });
+  });
+
   describe("Conflict Center — listConflicts contract", () => {
     // Regression: git-manager.listConflicts returns the list under `entries`.
     // loadConflicts previously read `result.conflicts`, which never exists, so

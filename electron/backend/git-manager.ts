@@ -148,8 +148,10 @@ interface WorkspaceRef {
   kind?: string;
   gitRoots?: string[];
   review?: {
+    role?: string;
     pullRequest?: {
       sourceRefName?: string;
+      targetRefName?: string;
     } | null;
   } | null;
   branchMerged?: boolean;
@@ -583,6 +585,17 @@ export class GitManager extends EventEmitter {
       const reviewSourceRef = String(workspace.review?.pullRequest?.sourceRefName || "")
         .replace(/^refs\/heads\//, "")
         .trim();
+      const reviewTargetRef = String(workspace.review?.pullRequest?.targetRefName || "")
+        .replace(/^refs\/heads\//, "")
+        .trim();
+      // A PR author's own worktree pushes the SOURCE branch, so basing on
+      // origin/<source> is a self-comparison (0 ahead / 0 behind) — it pinned
+      // the base to the branch itself and left the Update button permanently
+      // disabled ("nothing to pull"). An author wants to integrate the PR
+      // TARGET, so use origin/<target> for them. Reviewers keep origin/<source>
+      // (their checkout measured against the pushed source branch).
+      const isReviewAuthor = workspace.review?.role === "author";
+      const reviewBaseRef = isReviewAuthor ? reviewTargetRef || reviewSourceRef : reviewSourceRef;
       const parsedRemotes = parseGitRemotes(remoteResult.stdout);
       // Surface the symbolic default branch on the snapshot — every consumer
       // (History, MergeBack, Compare picker on every tab) should be able to
@@ -604,8 +617,8 @@ export class GitManager extends EventEmitter {
           }
         }
       }
-      const baseBranch = reviewSourceRef
-        ? `origin/${reviewSourceRef}`
+      const baseBranch = reviewBaseRef
+        ? `origin/${reviewBaseRef}`
         : await this.detectBestBaseBranch(
             rootPath,
             branch,

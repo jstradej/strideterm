@@ -8,6 +8,7 @@ import { useAppStore } from "./stores/app.js";
 import { useTerminalStore } from "./stores/terminal.js";
 import { useGitUiStore } from "./stores/git-ui.js";
 import { useAzurePipelinesStore } from "./stores/azure-pipelines.js";
+import { rlog } from "./lib/renderer-log.js";
 
 // crypto.randomUUID is gated to secure contexts (HTTPS / localhost / file://).
 // The remote web client served over LAN HTTP is not a secure context, so it
@@ -117,6 +118,27 @@ if (typeof window !== "undefined") {
     if (reason?.name === "Canceled" || msg === "Canceled" || msg === "Canceled: Canceled") {
       event.preventDefault();
     }
+  });
+
+  // Global crash diagnostics — forward uncaught errors and unhandled rejections
+  // into the main-process log (strideterm.log, tagged [renderer]) WITH a stack.
+  // A renderer crash preceded by a JS error otherwise only surfaces in DevTools;
+  // this makes it diagnosable from the dev log. Logging only — does not
+  // preventDefault, so existing handlers and console output are unaffected.
+  window.addEventListener("error", (event) => {
+    rlog("error", "[renderer] uncaught error", {
+      message: event.message,
+      source: event.filename,
+      line: event.lineno,
+      col: event.colno,
+      stack: (event.error as Error | undefined)?.stack || "",
+    });
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason as { message?: string; stack?: string } | undefined;
+    const msg = reason?.message || String(event.reason ?? "");
+    if (msg === "Canceled" || msg === "Canceled: Canceled") return; // benign Monaco churn
+    rlog("error", "[renderer] unhandled rejection", { message: msg, stack: reason?.stack || "" });
   });
 }
 

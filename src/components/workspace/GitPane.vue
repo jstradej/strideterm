@@ -353,7 +353,12 @@
     <!-- Git action confirm — a blocking yes/no decision surfaces as a modal,
       not an inline banner that can sit outside the viewport. -->
     <Teleport to="body">
-      <div v-if="pendingAction" class="dialog-overlay" @click.self="gitUiStore.clearPendingGitAction(workspaceId)">
+      <!-- Use the global `.overlay` class (fixed, full-screen, centered, z-index
+        above the workspace grid). The previous `dialog-overlay` class was only
+        defined as a *scoped* style inside the Docker components, so here it had
+        no CSS at all — the confirm mounted unstyled at the end of <body> and was
+        invisible ("press button, nothing happens"). -->
+      <div v-if="pendingAction" class="overlay" @click.self="gitUiStore.clearPendingGitAction(workspaceId)">
         <ConfirmDialog
           eyebrow="Confirm action"
           :title="pendingConfirmTitle"

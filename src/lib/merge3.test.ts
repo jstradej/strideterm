@@ -114,6 +114,23 @@ describe("merge3", () => {
     const result = merge3(base, ours, theirs);
     expect(result.conflictCount).toBe(0);
   });
+
+  // Regression: a cursor desync left ours sitting on a trailing `equal` run
+  // while theirs was exhausted. That state matched none of the both-present
+  // cases, fell into the conflict branch (which drains only NON-equal ops),
+  // advanced neither cursor, and looped forever — OOM-crashing the renderer
+  // when the merge editor opened a real conflict. Must terminate.
+  test("terminates when one diff stream ends on an equal run (was infinite-loop OOM)", () => {
+    const base = "A\nB\nC\nD";
+    const ours = "A\nB2\nC\nD";
+    const theirs = "A\nD";
+    const result = merge3(base, ours, theirs);
+    expect(Array.isArray(result.chunks)).toBe(true);
+    expect(result.chunks.length).toBeGreaterThan(0);
+    for (const c of result.chunks) {
+      expect(Array.isArray(c.resultLines)).toBe(true);
+    }
+  }, 3000);
 });
 
 describe("applyNonConflicting", () => {

@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { Transport } from "../transport.js";
+import { rlog } from "../lib/renderer-log.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GitSnapshot = Record<string, any>;
@@ -135,32 +136,48 @@ function buildConfirmMessage({
   fetchFirst?: boolean;
 }): string {
   const target = baseBranch || snapshot?.baseBranch || "base";
-  const lines: string[] = [];
+  const branch = snapshot?.branch || "current branch";
+
+  // The FIRST line becomes the dialog <h2> title — keep it short so it renders
+  // as a normal heading, not a giant wall of text. Everything after explains,
+  // in plain language, exactly what the action will do (the body renders at
+  // normal size). GitPane splits line[0] as the title and the rest as the body.
+  // Branch/ref names are wrapped in `backticks` — ConfirmDialog renders those
+  // spans as monospace chips so the refs stand out from the prose.
+  let title = "";
+  const body: string[] = [];
 
   if (type === "merge") {
-    lines.push(`Merge ${target} into ${snapshot!.branch}?`);
+    title = `Merge \`${target}\` into your branch?`;
+    body.push(
+      `Brings new commits from \`${target}\` into \`${branch}\` and adds a merge commit. Your existing commit history is kept.`,
+    );
   } else if (type === "rebase") {
-    lines.push(
-      `Rebase ${snapshot!.branch} onto ${target}? Your commits will be replayed on top of ${target} (commit hashes will change, content is preserved).`,
+    title = `Rebase onto \`${target}\`?`;
+    body.push(
+      `Re-applies your \`${branch}\` commits on top of the latest \`${target}\`. The file contents are preserved, but commit hashes change — if you already pushed, the next push needs a force-push.`,
     );
   } else if (type === "merge-into-base") {
-    lines.push(`Merge ${snapshot?.branch || "current branch"} into ${target}?`);
-    lines.push("This runs git merge in the base worktree.");
+    title = `Merge \`${branch}\` into \`${target}\`?`;
+    body.push(`Runs git merge in the \`${target}\` worktree, bringing your \`${branch}\` commits into \`${target}\`.`);
   } else if (type === "abort") {
-    lines.push("Abort the current Git operation?");
+    title = "Abort the current Git operation?";
+    body.push("Stops the in-progress operation and restores the working tree to the state before it started.");
   }
 
   if (fetchFirst && (type === "merge" || type === "rebase")) {
-    lines.push(`Fetches the latest ${target} from the remote first, then ${type === "merge" ? "merges" : "rebases"}.`);
+    body.push(
+      `First fetches the latest \`${target}\` from the remote, so you integrate current work and not a stale copy.`,
+    );
   }
   if (snapshot?.dirty && type !== "abort") {
-    lines.push("This workspace has uncommitted changes. Local changes will be stashed and restored afterwards.");
+    body.push("You have uncommitted changes — they will be stashed before the action and restored afterwards.");
   }
   if (snapshot?.upstream && type !== "abort") {
-    lines.push(`Upstream: ${snapshot.upstream}.`);
+    body.push(`Upstream: \`${snapshot.upstream}\`.`);
   }
 
-  return lines.join("\n");
+  return [title, ...body].join("\n");
 }
 
 // Backstop so a git IPC that never settles (hung `git fetch` waiting on a
@@ -218,16 +235,19 @@ function defaultBusyLabel(action: string): string {
   return map[action] || "Working…";
 }
 
+// Identity hash for the auto-dismiss-stale-confirm guard (UC-12). Only include
+// fields whose change actually invalidates a queued rebase/merge/abort confirm:
+// an operation now in progress (can't start another) or a changed dirty state
+// (alters stash behaviour). The ahead/behind and compareWithBase counts are
+// deliberately EXCLUDED — they flap on every background fetch and every time
+// base auto-detection re-resolves, and dismissStalePending runs on every
+// snapshot poll. Hashing them meant a poll landing right after the click wiped
+// the just-opened confirm, so the dialog never appeared ("press button, nothing
+// happens"). Those counts changing never makes the action unsafe (at worst it's
+// a no-op the backend handles), so they don't belong in the staleness check.
 function computeSnapshotHash(snapshot: GitSnapshot | null): string {
   if (!snapshot) return "";
-  return [
-    snapshot.operationState?.kind,
-    snapshot.aheadCount,
-    snapshot.behindCount,
-    snapshot.compareWithBase?.aheadCount,
-    snapshot.compareWithBase?.behindCount,
-    snapshot.dirtyCount,
-  ].join("|");
+  return [snapshot.operationState?.kind, snapshot.dirtyCount].join("|");
 }
 
 function buildDestructiveConfirm({
@@ -759,6 +779,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const stored = ui.pendingAction.snapshotHash;
     if (!stored) return;
     if (stored !== computeSnapshotHash(currentSnapshot)) {
+      rlog("warn", "[git-ui] dismissStalePending CLEARED a pending confirm", {
+        workspaceId,
+        storedHash: stored,
+        currentHash: computeSnapshotHash(currentSnapshot),
+      });
       const ws = ensure(workspaceId);
       ws.pendingAction = null;
       ws.lastResult = {
@@ -984,12 +1009,29 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const appStore = useAppStore();
     const rootPath = getActiveRoot(workspaceId);
     const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
-    if (!snapshot?.available) return;
+    rlog("info", "[git-ui] gitRebaseBase called", {
+      workspaceId,
+      baseBranch,
+      fetchFirst,
+      rootPath,
+      hasSnapshot: !!snapshot,
+      available: snapshot?.available ?? null,
+      snapshotBase: snapshot?.baseBranch ?? null,
+      existingPending: !!ensure(workspaceId).pendingAction,
+    });
+    if (!snapshot?.available) {
+      rlog("warn", "[git-ui] gitRebaseBase aborted — snapshot unavailable", { workspaceId, rootPath });
+      return;
+    }
     setPendingGitAction(workspaceId, {
       type: "rebase",
       snapshot,
       baseBranch: baseBranch || snapshot.baseBranch,
       fetchFirst,
+    });
+    rlog("info", "[git-ui] gitRebaseBase set pendingAction", {
+      workspaceId,
+      pendingSet: !!ensure(workspaceId).pendingAction,
     });
   }
 
@@ -1418,8 +1460,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
         return a.path.localeCompare(b.path);
       });
       dlg.conflicts = merged;
+      rlog("info", "[git-ui] loadConflicts", {
+        workspaceId,
+        count: merged.length,
+        binary: merged.filter((c) => c.binary).length,
+        paths: merged.slice(0, 40).map((c) => c.path),
+      });
     } catch (err) {
       dlg.error = (err as Error)?.message || "Failed to load conflicts.";
+      rlog("error", "[git-ui] loadConflicts failed", { workspaceId, error: dlg.error });
     } finally {
       dlg.loading = false;
     }
