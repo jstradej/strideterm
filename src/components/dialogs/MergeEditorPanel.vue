@@ -40,18 +40,18 @@
           <button
             type="button"
             class="button button--ghost button--small"
-            :title="`Resolve the current conflict with ${oursLabel}'s version (left pane)`"
+            :title="`Insert ${oursLabel}'s version (left pane) into the Result`"
             @click="applyOurs"
           >
-            ◀ {{ oursLabel }}
+            {{ oursLabel }} ▶
           </button>
           <button
             type="button"
             class="button button--ghost button--small"
-            :title="`Resolve the current conflict with ${theirsLabel}'s version (right pane)`"
+            :title="`Insert ${theirsLabel}'s version (right pane) into the Result`"
             @click="applyTheirs"
           >
-            {{ theirsLabel }} ▶
+            ◀ {{ theirsLabel }}
           </button>
         </template>
       </div>
@@ -108,6 +108,7 @@
     <div class="mep__footer">
       <span class="mep__conflict-count">
         <template v-if="totalConflicts > 0">⚠ {{ totalConflicts }} remaining</template>
+        <template v-else-if="markerCount > 0">⚠ conflict markers remain</template>
         <template v-else>✓ All resolved</template>
       </span>
       <div class="mep__footer-actions">
@@ -122,10 +123,10 @@
         <button
           type="button"
           class="button"
-          :disabled="totalConflicts > 0 || busy"
+          :disabled="markerCount > 0 || busy"
           :title="
-            totalConflicts > 0
-              ? 'Resolve all conflicts before applying'
+            markerCount > 0
+              ? 'Remove all conflict markers (<<<<<<< ======= >>>>>>>) before applying'
               : 'Save the Result as the file content and mark the conflict resolved'
           "
           @click="onApply"
@@ -219,252 +220,347 @@ let resultEditor: monaco.editor.IStandaloneCodeEditor | null = null;
 let theirsEditor: monaco.editor.IStandaloneCodeEditor | null = null;
 let resizeObs: ResizeObserver | null = null;
 
-// ---- Chunk tracking with sticky Monaco decorations (IntelliJ-style, no git markers) ----
-// Conflict chunks are represented as a single placeholder line in the Result editor.
-// Their positions are tracked via Monaco model decorations with range stickiness,
-// so navigation and apply arrows keep working after the user edits adjacent text.
+// CodeLens ("✓ Ours | ✓ Theirs | Both" above each conflict block) lifecycle
+let lensProvider: monaco.IDisposable | null = null;
+let lensProviderObj: monaco.languages.CodeLensProvider | null = null;
+// Monaco types onDidChange as IEvent<CodeLensProvider> (it re-emits the provider);
+// the payload is ignored, so we just fire the provider object back.
+let lensEmitter: monaco.Emitter<monaco.languages.CodeLensProvider> | null = null;
+let acceptCommandId = "";
 
-const CONFLICT_PLACEHOLDER = "⚠ conflict";
+// ---- Conflict model: inline git-style markers (<<<<<<< ======= >>>>>>>) ----
+// The Result editor holds the auto-merged text with each remaining conflict
+// written inline using standard git conflict markers. Resolution = remove the
+// markers (keep whichever side(s) you want), exactly like `git mergetool` or
+// VS Code. Conflict positions are derived by re-scanning the buffer on every
+// edit — no sticky decorations to keep in sync, so any manual edit (delete a
+// side, accept via CodeLens, free-type) stays consistent automatically.
 
-interface ConflictTracker {
-  chunkIdx: number; // index into allChunksData
+const MARK_OURS = "<<<<<<<";
+const MARK_SEP = "=======";
+const MARK_THEIRS = ">>>>>>>";
+
+interface ConflictBlock {
+  startLine: number; // line of <<<<<<<  (1-based)
+  sepLine: number; // line of =======
+  endLine: number; // line of >>>>>>>
   oursLines: string[];
   theirsLines: string[];
-  decorationId: string; // Monaco model decoration ID (range stickiness)
-  resolved: boolean;
+}
+
+// Where each conflict lives in the FULL ours/theirs files (1-based, inclusive).
+// Derived once from the merge3 chunks at load — the side files never change, so
+// these stay valid for the whole session and drive the read-only side highlights.
+interface SideRegion {
+  oursStart: number;
+  oursEnd: number; // < oursStart means the ours side is empty here
+  theirsStart: number;
+  theirsEnd: number;
+  key: string; // ours+theirs content — maps a live Result block back to its region
 }
 
 // Module-level mutable state — Monaco operations are synchronous
 let allChunksData: Chunk[] = [];
-let conflictTrackersMut: ConflictTracker[] = [];
+let resultDecColl: monaco.editor.IEditorDecorationsCollection | null = null;
+let oursDecColl: monaco.editor.IEditorDecorationsCollection | null = null;
+let theirsDecColl: monaco.editor.IEditorDecorationsCollection | null = null;
+let conflictRegions: SideRegion[] = [];
+const regionByKey = new Map<string, SideRegion>();
 
-// Reactive mirrors for template
-const conflictTrackersRef = ref<ConflictTracker[]>([]);
-const currentConflictIdx = ref(0); // index into unresolvedTrackers
+const blocks = ref<ConflictBlock[]>([]);
+// Count of <<<<<<< / >>>>>>> lines remaining anywhere in the buffer. These two
+// sentinels are vanishingly unlikely in real content (unlike a bare =======,
+// which markdown setext headings use), so they gate Apply: zero left = clean.
+const markerCount = ref(0);
+const currentConflictIdx = ref(0);
 
-const unresolvedTrackers = computed(() => conflictTrackersRef.value.filter((t) => !t.resolved));
-const totalConflicts = computed(() => unresolvedTrackers.value.length);
-const currentConflict = computed(() => unresolvedTrackers.value[currentConflictIdx.value] ?? null);
+const totalConflicts = computed(() => blocks.value.length);
+const currentConflict = computed(() => blocks.value[currentConflictIdx.value] ?? null);
 // Non-conflicting = ours/theirs chunks where only one side changed
 const hasNonConflicting = computed(() => allChunksData.some((c) => c.kind === "ours" || c.kind === "theirs"));
 
-// ---- Build initial result text (no git markers) ----
-interface ConflictPosition {
-  chunkIdx: number;
-  line: number; // 1-based
+// ---- Map each conflict to its line range in the full ours/theirs files ----
+// Concatenating every chunk's oursLines reconstructs the full ours file (same
+// for theirs), so accumulating line counts gives each conflict's position.
+function regionKey(oursLines: string[], theirsLines: string[]): string {
+  return oursLines.join("\n") + " " + theirsLines.join("\n");
 }
 
-function buildInitialResult(appliedChunks: Chunk[]): { text: string; conflictPositions: ConflictPosition[] } {
-  const lines: string[] = [];
-  const conflictPositions: ConflictPosition[] = [];
+function computeConflictRegions(chunks: Chunk[]): SideRegion[] {
+  const regions: SideRegion[] = [];
+  let oursOff = 0;
+  let theirsOff = 0;
+  for (const c of chunks) {
+    if (c.kind === "conflict") {
+      regions.push({
+        oursStart: oursOff + 1,
+        oursEnd: oursOff + c.oursLines.length,
+        theirsStart: theirsOff + 1,
+        theirsEnd: theirsOff + c.theirsLines.length,
+        key: regionKey(c.oursLines, c.theirsLines),
+      });
+    }
+    oursOff += c.oursLines.length;
+    theirsOff += c.theirsLines.length;
+  }
+  return regions;
+}
 
-  for (let i = 0; i < appliedChunks.length; i++) {
-    const chunk = appliedChunks[i];
+// The side region matching the current Result block (by content — survives
+// resolving other conflicts; only fails once the user edits this block's text).
+function currentRegion(): SideRegion | null {
+  const b = currentConflict.value;
+  if (!b) return null;
+  return regionByKey.get(regionKey(b.oursLines, b.theirsLines)) ?? null;
+}
+
+// ---- Highlight conflict regions in the read-only ours/theirs panes ----
+function renderSideDecorations() {
+  if (!oursDecColl || !theirsDecColl) return;
+  const active = currentRegion();
+  const oursDecs: monaco.editor.IModelDeltaDecoration[] = [];
+  const theirsDecs: monaco.editor.IModelDeltaDecoration[] = [];
+  for (const r of conflictRegions) {
+    const isActive = r === active;
+    if (r.oursEnd >= r.oursStart) {
+      oursDecs.push({
+        range: new monaco.Range(r.oursStart, 1, r.oursEnd, 1),
+        options: {
+          isWholeLine: true,
+          className: isActive ? "mep-sidepane-ours-active" : "mep-sidepane-ours",
+          overviewRuler: {
+            color: isActive ? "rgba(60,200,100,1)" : "rgba(60,180,90,0.7)",
+            position: monaco.editor.OverviewRulerLane.Full,
+          },
+        },
+      });
+    }
+    if (r.theirsEnd >= r.theirsStart) {
+      theirsDecs.push({
+        range: new monaco.Range(r.theirsStart, 1, r.theirsEnd, 1),
+        options: {
+          isWholeLine: true,
+          className: isActive ? "mep-sidepane-theirs-active" : "mep-sidepane-theirs",
+          overviewRuler: {
+            color: isActive ? "rgba(80,160,255,1)" : "rgba(64,140,255,0.7)",
+            position: monaco.editor.OverviewRulerLane.Full,
+          },
+        },
+      });
+    }
+  }
+  oursDecColl.set(oursDecs);
+  theirsDecColl.set(theirsDecs);
+}
+
+// ---- Build the Result buffer: auto-merged text + inline conflict markers ----
+function buildResultText(appliedChunks: Chunk[]): string {
+  const lines: string[] = [];
+  for (const chunk of appliedChunks) {
     if (chunk.kind === "conflict") {
-      const line = lines.length + 1; // 1-based
-      lines.push(CONFLICT_PLACEHOLDER);
-      conflictPositions.push({ chunkIdx: i, line });
+      lines.push(`${MARK_OURS} ${oursLabel.value}`);
+      lines.push(...chunk.oursLines);
+      lines.push(MARK_SEP);
+      lines.push(...chunk.theirsLines);
+      lines.push(`${MARK_THEIRS} ${theirsLabel.value}`);
     } else {
       lines.push(...chunk.resultLines);
     }
   }
-
-  return { text: lines.join("\n"), conflictPositions };
+  return lines.join("\n");
 }
 
-// ---- Install sticky decorations for conflict placeholder lines ----
-function installConflictDecorations(conflictPositions: ConflictPosition[]) {
-  const model = resultEditor?.getModel();
-  if (!model) return;
-
-  // Remove any existing sticky decorations
-  if (conflictTrackersMut.length) {
-    const oldIds = conflictTrackersMut.map((t) => t.decorationId).filter(Boolean);
-    if (oldIds.length) model.deltaDecorations(oldIds, []);
-    conflictTrackersMut = [];
+// ---- Parse conflict markers out of the live buffer ----
+function parseConflicts(model: monaco.editor.ITextModel): { blocks: ConflictBlock[]; markerCount: number } {
+  const total = model.getLineCount();
+  const out: ConflictBlock[] = [];
+  let markers = 0;
+  let i = 1;
+  while (i <= total) {
+    const line = model.getLineContent(i);
+    if (line.startsWith(MARK_OURS) || line.startsWith(MARK_THEIRS)) markers++;
+    if (line.startsWith(MARK_OURS)) {
+      let sep = -1;
+      let end = -1;
+      for (let j = i + 1; j <= total; j++) {
+        const lj = model.getLineContent(j);
+        if (lj.startsWith(MARK_OURS)) break; // unterminated block — bail, rescan from here
+        if (sep === -1 && lj.startsWith(MARK_SEP)) {
+          sep = j;
+        } else if (sep !== -1 && lj.startsWith(MARK_THEIRS)) {
+          end = j;
+          break;
+        }
+      }
+      if (sep !== -1 && end !== -1) {
+        const oursLines: string[] = [];
+        for (let k = i + 1; k < sep; k++) oursLines.push(model.getLineContent(k));
+        const theirsLines: string[] = [];
+        for (let k = sep + 1; k < end; k++) theirsLines.push(model.getLineContent(k));
+        out.push({ startLine: i, sepLine: sep, endLine: end, oursLines, theirsLines });
+        markers++; // the closing >>>>>>> we skip past below (opening <<< already counted)
+        i = end + 1;
+        continue;
+      }
+    }
+    i++;
   }
+  return { blocks: out, markerCount: markers };
+}
 
-  if (!conflictPositions.length) {
-    conflictTrackersRef.value = [];
-    currentConflictIdx.value = 0;
+// ---- Re-scan the buffer and refresh reactive state + decorations + lenses ----
+function reparse() {
+  const model = resultEditor?.getModel();
+  if (!model) {
+    blocks.value = [];
+    markerCount.value = 0;
     return;
   }
-
-  // Create sticky model decorations — NeverGrowsWhenTypingAtEdges keeps the placeholder
-  // range exact while still letting Monaco track the range as surrounding text is edited.
-  const decorationDefs: monaco.editor.IModelDeltaDecoration[] = conflictPositions.map((pos) => ({
-    range: new monaco.Range(pos.line, 1, pos.line, model.getLineMaxColumn(pos.line)),
-    options: {
-      stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges,
-    },
-  }));
-
-  const newIds = model.deltaDecorations([], decorationDefs);
-
-  conflictTrackersMut = conflictPositions.map((pos, i) => {
-    const chunk = allChunksData[pos.chunkIdx];
-    return {
-      chunkIdx: pos.chunkIdx,
-      oursLines: chunk.oursLines,
-      theirsLines: chunk.theirsLines,
-      decorationId: newIds[i],
-      resolved: false,
-    };
-  });
-
-  conflictTrackersRef.value = [...conflictTrackersMut];
-  currentConflictIdx.value = 0;
+  const r = parseConflicts(model);
+  blocks.value = r.blocks;
+  markerCount.value = r.markerCount;
+  if (currentConflictIdx.value >= blocks.value.length) {
+    currentConflictIdx.value = Math.max(0, blocks.value.length - 1);
+  }
+  updateDecorations();
+  renderSideDecorations();
+  if (lensProviderObj) lensEmitter?.fire(lensProviderObj);
 }
 
-// ---- Editor decoration collections (visual only — separate from sticky tracking) ----
-let resultDecColl: monaco.editor.IEditorDecorationsCollection | null = null;
-
-function updateConflictDecorations() {
+// ---- Decorations: tint ours/theirs regions, mark current block (visual only) ----
+function updateDecorations() {
   if (!resultEditor || !resultDecColl) return;
-  const model = resultEditor.getModel();
-  if (!model) return;
-
-  const unresolved = conflictTrackersMut.filter((t) => !t.resolved);
-  const current = unresolved[currentConflictIdx.value];
-
-  const decList: monaco.editor.IModelDeltaDecoration[] = [];
-  for (const tracker of unresolved) {
-    const range = model.getDecorationRange(tracker.decorationId);
-    if (!range) continue;
-    const isCurrent = tracker === current;
-    decList.push({
-      range,
+  const decs: monaco.editor.IModelDeltaDecoration[] = [];
+  blocks.value.forEach((b, i) => {
+    const isCurrent = i === currentConflictIdx.value;
+    decs.push({
+      range: new monaco.Range(b.startLine, 1, b.startLine, 1),
+      options: { isWholeLine: true, className: "mep-marker mep-marker-ours" },
+    });
+    decs.push({
+      range: new monaco.Range(b.sepLine, 1, b.sepLine, 1),
+      options: { isWholeLine: true, className: "mep-marker mep-marker-sep" },
+    });
+    decs.push({
+      range: new monaco.Range(b.endLine, 1, b.endLine, 1),
+      options: { isWholeLine: true, className: "mep-marker mep-marker-theirs" },
+    });
+    if (b.sepLine > b.startLine + 1)
+      decs.push({
+        range: new monaco.Range(b.startLine + 1, 1, b.sepLine - 1, 1),
+        options: { isWholeLine: true, className: "mep-side-ours" },
+      });
+    if (b.endLine > b.sepLine + 1)
+      decs.push({
+        range: new monaco.Range(b.sepLine + 1, 1, b.endLine - 1, 1),
+        options: { isWholeLine: true, className: "mep-side-theirs" },
+      });
+    decs.push({
+      range: new monaco.Range(b.startLine, 1, b.endLine, 1),
       options: {
         isWholeLine: true,
-        className: isCurrent ? "mep-conflict-active" : "mep-conflict-highlight",
+        className: isCurrent ? "mep-block-active" : "mep-block",
         overviewRuler: {
           color: isCurrent ? "rgba(255,165,0,1)" : "rgba(255,120,0,0.7)",
           position: monaco.editor.OverviewRulerLane.Right,
         },
       },
     });
-  }
-  resultDecColl.set(decList);
-}
-
-// ---- Detect when user manually edits a conflict placeholder ----
-function checkManualResolution() {
-  const model = resultEditor?.getModel();
-  if (!model) return;
-
-  let changed = false;
-  for (const tracker of conflictTrackersMut) {
-    if (tracker.resolved) continue;
-    const range = model.getDecorationRange(tracker.decorationId);
-    if (!range) {
-      // Decoration range is gone — user deleted it entirely
-      tracker.resolved = true;
-      changed = true;
-      continue;
-    }
-    const content = model.getValueInRange(range);
-    if (content !== CONFLICT_PLACEHOLDER) {
-      // User typed something in the conflict region — count as resolved
-      tracker.resolved = true;
-      model.deltaDecorations([tracker.decorationId], []);
-      tracker.decorationId = "";
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    conflictTrackersRef.value = [...conflictTrackersMut];
-    const n = unresolvedTrackers.value.length;
-    if (currentConflictIdx.value >= n) currentConflictIdx.value = Math.max(0, n - 1);
-    updateConflictDecorations();
-  }
+  });
+  resultDecColl.set(decs);
 }
 
 // ---- Navigation ----
+// Scrolls all three panes to the current conflict at once. The syncingScroll
+// guard stops the cross-pane scroll sync from yanking the panes back to a
+// shared top while we line them up on their own regions.
 function revealCurrentConflict() {
-  const model = resultEditor?.getModel();
-  const tracker = currentConflict.value;
-  if (!model || !tracker) return;
-  const range = model.getDecorationRange(tracker.decorationId);
-  if (range) resultEditor?.revealLineInCenter(range.startLineNumber);
+  const b = currentConflict.value;
+  if (!b) return;
+  syncingScroll = true;
+  resultEditor?.revealLineInCenter(b.startLine);
+  const r = currentRegion();
+  if (r) {
+    if (r.oursEnd >= r.oursStart) oursEditor?.revealLineInCenter(r.oursStart);
+    if (r.theirsEnd >= r.theirsStart) theirsEditor?.revealLineInCenter(r.theirsStart);
+  }
+  syncingScroll = false;
 }
 
 function nextConflict() {
-  const n = unresolvedTrackers.value.length;
+  const n = blocks.value.length;
   if (!n) return;
   currentConflictIdx.value = (currentConflictIdx.value + 1) % n;
-  updateConflictDecorations();
+  updateDecorations();
+  renderSideDecorations();
   revealCurrentConflict();
 }
 
 function prevConflict() {
-  const n = unresolvedTrackers.value.length;
+  const n = blocks.value.length;
   if (!n) return;
   currentConflictIdx.value = (currentConflictIdx.value - 1 + n) % n;
-  updateConflictDecorations();
+  updateDecorations();
+  renderSideDecorations();
   revealCurrentConflict();
 }
 
-// ---- Apply ours/theirs to a conflict chunk ----
-function applyChunk(tracker: ConflictTracker, side: "ours" | "theirs") {
+// ---- Accept a side: replace the whole marker block with the chosen content ----
+function sideText(b: ConflictBlock, side: "ours" | "theirs" | "both"): string {
+  if (side === "ours") return b.oursLines.join("\n");
+  if (side === "theirs") return b.theirsLines.join("\n");
+  return [...b.oursLines, ...b.theirsLines].join("\n");
+}
+
+function replaceBlock(b: ConflictBlock, side: "ours" | "theirs" | "both") {
   const model = resultEditor?.getModel();
   if (!model) return;
-
-  const range = model.getDecorationRange(tracker.decorationId);
-  if (!range) return;
-
-  const lines = side === "ours" ? tracker.oursLines : tracker.theirsLines;
-  const replacement = lines.join("\n");
-
-  // Remove sticky decoration before editing so it doesn't interfere
-  model.deltaDecorations([tracker.decorationId], []);
-  tracker.decorationId = "";
-
-  // Replace the placeholder range with the chosen content
-  model.pushEditOperations([], [{ range, text: replacement }], () => null);
-
-  tracker.resolved = true;
-  conflictTrackersRef.value = [...conflictTrackersMut];
-
-  const n = unresolvedTrackers.value.length;
-  if (currentConflictIdx.value >= n) currentConflictIdx.value = Math.max(0, n - 1);
-  updateConflictDecorations();
+  const text = sideText(b, side);
+  const lineCount = model.getLineCount();
+  let range: monaco.Range;
+  let editText: string;
+  if (b.endLine < lineCount) {
+    // Consume the trailing newline so an empty chosen side removes the lines cleanly.
+    range = new monaco.Range(b.startLine, 1, b.endLine + 1, 1);
+    editText = text === "" ? "" : text + "\n";
+  } else if (text === "" && b.startLine > 1) {
+    // Block ends at EOF and the chosen side is empty: also drop the preceding newline.
+    range = new monaco.Range(
+      b.startLine - 1,
+      model.getLineMaxColumn(b.startLine - 1),
+      b.endLine,
+      model.getLineMaxColumn(b.endLine),
+    );
+    editText = "";
+  } else {
+    range = new monaco.Range(b.startLine, 1, b.endLine, model.getLineMaxColumn(b.endLine));
+    editText = text;
+  }
+  model.pushEditOperations([], [{ range, text: editText }], () => null);
+  // onDidChangeModelContent → reparse() refreshes blocks / decorations / lenses
 }
 
 function applyOurs() {
-  const tracker = currentConflict.value;
-  if (!tracker) return;
-  applyChunk(tracker, "ours");
+  if (currentConflict.value) replaceBlock(currentConflict.value, "ours");
 }
 
 function applyTheirs() {
-  const tracker = currentConflict.value;
-  if (!tracker) return;
-  applyChunk(tracker, "theirs");
+  if (currentConflict.value) replaceBlock(currentConflict.value, "theirs");
 }
 
 // ---- Apply all non-conflicting changes ----
 // Rebuilds the result from the original merge3 chunks, resetting to the initial
 // auto-merged state. Non-conflicting ours/theirs changes are re-applied; conflict
-// placeholders are restored. Always works regardless of manual edits.
+// blocks (with markers) are restored. Always works regardless of manual edits.
 function applyAllNonConflicting() {
-  if (!resultEditor || !allChunksData.length) return;
-  const model = resultEditor.getModel();
-  if (!model) return;
-
-  // Remove all existing sticky decorations
-  const oldIds = conflictTrackersMut.map((t) => t.decorationId).filter(Boolean);
-  if (oldIds.length) model.deltaDecorations(oldIds, []);
-  conflictTrackersMut = [];
-
-  // Rebuild from original chunks
+  const model = resultEditor?.getModel();
+  if (!model || !allChunksData.length) return;
   const applied = applyNonConflicting(allChunksData);
-  const { text, conflictPositions } = buildInitialResult(applied);
+  const text = buildResultText(applied);
   model.setValue(text);
   initialResultText.value = text;
-
-  installConflictDecorations(conflictPositions);
-  updateConflictDecorations();
+  currentConflictIdx.value = 0;
+  reparse();
   revealCurrentConflict();
 }
 
@@ -518,14 +614,56 @@ function createEditors() {
   });
 
   resultDecColl = resultEditor.createDecorationsCollection([]);
+  oursDecColl = oursEditor.createDecorationsCollection([]);
+  theirsDecColl = theirsEditor.createDecorationsCollection([]);
+
+  // CodeLens "✓ Ours | ✓ Theirs | Both" above each conflict block. The command
+  // re-parses on click (buffer may have shifted since the lens was computed) and
+  // resolves the block by its <<<<<<< line.
+  lensEmitter = new monaco.Emitter<monaco.languages.CodeLensProvider>();
+  acceptCommandId =
+    resultEditor.addCommand(
+      0,
+      (_accessor: unknown, startLine: number, side: "ours" | "theirs" | "both") => {
+        const model = resultEditor?.getModel();
+        if (!model) return;
+        const found = parseConflicts(model).blocks.find((b) => b.startLine === startLine);
+        if (found) replaceBlock(found, side);
+      },
+      "",
+    ) ?? "";
+
+  const langId = resultEditor.getModel()?.getLanguageId() ?? "plaintext";
+  lensProviderObj = {
+    onDidChange: lensEmitter.event,
+    provideCodeLenses: (model) => {
+      // Same language id is shared with the read-only panes — only lens the Result model.
+      if (model !== resultEditor?.getModel()) return { lenses: [], dispose: () => {} };
+      const lenses: monaco.languages.CodeLens[] = [];
+      for (const b of parseConflicts(model).blocks) {
+        const range = { startLineNumber: b.startLine, startColumn: 1, endLineNumber: b.startLine, endColumn: 1 };
+        lenses.push({
+          range,
+          command: { id: acceptCommandId, title: `✓ ${oursLabel.value}`, arguments: [b.startLine, "ours"] },
+        });
+        lenses.push({
+          range,
+          command: { id: acceptCommandId, title: `✓ ${theirsLabel.value}`, arguments: [b.startLine, "theirs"] },
+        });
+        lenses.push({ range, command: { id: acceptCommandId, title: "Both", arguments: [b.startLine, "both"] } });
+      }
+      return { lenses, dispose: () => {} };
+    },
+  };
+  lensProvider = monaco.languages.registerCodeLensProvider(langId, lensProviderObj);
 
   oursEditor.onDidScrollChange(() => syncScrollFrom(oursEditor!));
   resultEditor.onDidScrollChange(() => syncScrollFrom(resultEditor!));
   theirsEditor.onDidScrollChange(() => syncScrollFrom(theirsEditor!));
 
-  // After each user edit, check if any conflict placeholder was modified
+  // After each user edit, re-scan the buffer for remaining conflict markers
   resultEditor.onDidChangeModelContent(() => {
-    checkManualResolution();
+    reparse();
   });
 
   resizeObs = new ResizeObserver(() => layoutEditors());
@@ -542,16 +680,17 @@ function layoutEditors() {
 }
 
 function disposeEditors() {
-  // Remove sticky decorations from the model before disposal
-  if (conflictTrackersMut.length) {
-    const model = resultEditor?.getModel();
-    if (model) {
-      const ids = conflictTrackersMut.map((t) => t.decorationId).filter(Boolean);
-      if (ids.length) model.deltaDecorations(ids, []);
-    }
-    conflictTrackersMut = [];
-    conflictTrackersRef.value = [];
-  }
+  // Tear down the CodeLens provider/emitter (registered globally for the language)
+  lensProvider?.dispose();
+  lensProvider = null;
+  lensProviderObj = null;
+  lensEmitter?.dispose();
+  lensEmitter = null;
+  resultDecColl?.clear();
+  oursDecColl?.clear();
+  theirsDecColl?.clear();
+  blocks.value = [];
+  markerCount.value = 0;
 
   for (const ed of [oursEditor, resultEditor, theirsEditor]) {
     if (ed) {
@@ -563,6 +702,8 @@ function disposeEditors() {
   resultEditor = null;
   theirsEditor = null;
   resultDecColl = null;
+  oursDecColl = null;
+  theirsDecColl = null;
   resizeObs?.disconnect();
   resizeObs = null;
 }
@@ -587,16 +728,20 @@ async function loadDetail() {
     const { chunks } = merge3(baseContent.value, oursContent.value, theirsContent.value);
     allChunksData = chunks;
 
+    conflictRegions = computeConflictRegions(chunks);
+    regionByKey.clear();
+    for (const r of conflictRegions) if (!regionByKey.has(r.key)) regionByKey.set(r.key, r);
+
     const applied = applyNonConflicting(chunks);
-    const { text, conflictPositions } = buildInitialResult(applied);
+    const text = buildResultText(applied);
     initialResultText.value = text;
 
     loading.value = false;
     await nextTick();
     createEditors();
     resultEditor?.getModel()?.setValue(text);
-    installConflictDecorations(conflictPositions);
-    updateConflictDecorations();
+    currentConflictIdx.value = 0;
+    reparse();
     revealCurrentConflict();
   } catch (err) {
     loadError.value = (err as Error)?.message || "Failed to load conflict detail.";
@@ -606,7 +751,7 @@ async function loadDetail() {
 
 // ---- Apply & Cancel ----
 async function onApply() {
-  if (!resultEditor || totalConflicts.value > 0) return;
+  if (!resultEditor || markerCount.value > 0) return;
   busy.value = true;
   try {
     const content = resultEditor.getModel()?.getValue() ?? "";
@@ -648,8 +793,8 @@ defineExpose({ isDirty });
 // Scoped to focus within one of the editor panes so they never clobber
 // global app/browser shortcuts when the merge editor is not in use.
 //   F7 / Shift+F7        — next / prev conflict
-//   Alt+ArrowLeft        — apply ours (◀) to current conflict
-//   Alt+ArrowRight       — apply theirs (▶) to current conflict
+//   Alt+ArrowLeft        — insert ours (left pane) into the current conflict
+//   Alt+ArrowRight       — insert theirs (right pane) into the current conflict
 //   Alt+A                — apply all non-conflicting changes
 function onKeydown(e: KeyboardEvent) {
   if (
@@ -932,14 +1077,54 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-/* Global styles for Monaco decorations (cannot be scoped) */
-.mep-conflict-highlight {
-  background: rgba(255, 120, 0, 0.1) !important;
-  border-left: 3px solid rgba(255, 120, 0, 0.6) !important;
+/* Global styles for Monaco conflict decorations (cannot be scoped).
+   Ours side = green tint, Theirs side = blue tint (VS Code convention);
+   marker lines are bold; the current block carries an orange left border. */
+.mep-marker {
+  font-weight: 700 !important;
 }
 
-.mep-conflict-active {
-  background: rgba(255, 165, 0, 0.18) !important;
-  border-left: 3px solid rgba(255, 165, 0, 0.9) !important;
+.mep-marker-ours,
+.mep-side-ours {
+  background: rgba(60, 180, 90, 0.16) !important;
+}
+
+.mep-marker-theirs,
+.mep-side-theirs {
+  background: rgba(64, 140, 255, 0.16) !important;
+}
+
+.mep-marker-sep {
+  background: rgba(160, 160, 160, 0.18) !important;
+}
+
+.mep-block {
+  border-left: 3px solid rgba(255, 120, 0, 0.5) !important;
+}
+
+.mep-block-active {
+  border-left: 3px solid rgba(255, 165, 0, 0.95) !important;
+}
+
+/* Read-only ours/theirs panes: show which lines the conflict spans, with the
+   current conflict's region emphasized. */
+.mep-sidepane-ours {
+  background: rgba(60, 180, 90, 0.12) !important;
+  border-left: 2px solid rgba(60, 180, 90, 0.45) !important;
+}
+
+.mep-sidepane-ours-active {
+  background: rgba(60, 180, 90, 0.28) !important;
+  border-left: 3px solid rgba(60, 200, 100, 0.95) !important;
+}
+
+.mep-sidepane-theirs {
+  background: rgba(64, 140, 255, 0.12) !important;
+  border-left: 2px solid rgba(64, 140, 255, 0.45) !important;
+}
+
+.mep-sidepane-theirs-active {
+  background: rgba(64, 140, 255, 0.28) !important;
+  border-left: 3px solid rgba(80, 160, 255, 0.95) !important;
 }
 </style>
