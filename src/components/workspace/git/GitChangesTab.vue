@@ -173,7 +173,7 @@
         </button>
         <button type="button" class="context-menu__item context-menu__item--danger" @click="onMenuDelete">
           <span class="context-menu__icon">&#x2715;</span>
-          <span>{{ fileMenu.kind === "dir" ? "Delete folder" : "Delete file" }}</span>
+          <span>{{ deleteMenuLabel }}</span>
         </button>
       </div>
     </Teleport>
@@ -182,8 +182,12 @@
     <Teleport to="body">
       <div v-if="deleteDialog" class="fm-dialog-backdrop" @mousedown.self="deleteDialog = null">
         <div class="fm-dialog">
-          <h3>{{ deleteDialog.kind === "dir" ? "Delete folder?" : "Delete file?" }}</h3>
-          <p class="fm-dialog__text">
+          <h3>{{ deleteDialogTitle }}</h3>
+          <p v-if="deleteDialog.paths.length > 1" class="fm-dialog__text">
+            Permanently delete <strong>{{ deleteDialog.paths.length }}</strong> selected files from disk? This cannot be
+            undone.
+          </p>
+          <p v-else class="fm-dialog__text">
             Permanently delete <strong>{{ deleteDialog.name }}</strong>
             {{ deleteDialog.kind === "dir" ? "and everything inside it" : "" }} from disk? This cannot be undone.
           </p>
@@ -454,37 +458,73 @@ async function onStashAll() {
 }
 
 // --- Right-click actions (delete / add to .gitignore) ---
-const fileMenu = ref<{ x: number; y: number; path: string; name: string; kind: "file" | "dir" } | null>(null);
+// `batch` holds the checked-file selection when the right-clicked entry is one
+// of several selected files — the delete action then targets the whole set.
+const fileMenu = ref<{
+  x: number;
+  y: number;
+  path: string;
+  name: string;
+  kind: "file" | "dir";
+  batch: string[] | null;
+} | null>(null);
 const fileMenuRef = ref<HTMLElement | null>(null);
-const deleteDialog = ref<{ path: string; name: string; kind: "file" | "dir" } | null>(null);
+const deleteDialog = ref<{ paths: string[]; name: string; kind: "file" | "dir" } | null>(null);
+
+const deleteMenuLabel = computed(() => {
+  const m = fileMenu.value;
+  if (!m) return "Delete";
+  if (m.batch && m.batch.length > 1) return `Delete ${m.batch.length} selected files`;
+  return m.kind === "dir" ? "Delete folder" : "Delete file";
+});
+
+const deleteDialogTitle = computed(() => {
+  const d = deleteDialog.value;
+  if (!d) return "";
+  if (d.paths.length > 1) return "Delete selected files?";
+  return d.kind === "dir" ? "Delete folder?" : "Delete file?";
+});
 
 function onFileContextMenu(payload: { path: string; name: string; kind: "file" | "dir"; x: number; y: number }) {
   // Review workspaces are read-only — no destructive file ops.
   if (props.isReviewWorkspace) return;
-  fileMenu.value = { ...payload };
+  // Right-clicking a checked file inside a multi-selection makes the menu act
+  // on every checked file; right-clicking elsewhere acts on the single target.
+  const inSelection = payload.kind === "file" && selectedPaths.value.has(payload.path);
+  const batch = inSelection && selectedPaths.value.size > 1 ? [...selectedPaths.value] : null;
+  fileMenu.value = { ...payload, batch };
 }
 
 function onMenuDelete() {
   const target = fileMenu.value;
   fileMenu.value = null;
-  if (target) deleteDialog.value = { path: target.path, name: target.name, kind: target.kind };
+  if (!target) return;
+  if (target.batch && target.batch.length > 1) {
+    deleteDialog.value = { paths: target.batch, name: target.name, kind: "file" };
+  } else {
+    deleteDialog.value = { paths: [target.path], name: target.name, kind: target.kind };
+  }
 }
 
 async function confirmDelete() {
   const target = deleteDialog.value;
   deleteDialog.value = null;
-  if (!target || !props.activeRootPath) return;
+  if (!target || !props.activeRootPath || !target.paths.length) return;
   const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
-  await api.fileDelete({ rootPath: props.activeRootPath, relativePath: target.path });
-  // Drop the diff preview if the deleted file (or its directory) was the one
-  // being viewed.
-  const selected = props.gitUi.selectedDiff?.path as string | undefined;
-  if (selected && (selected === target.path || (target.kind === "dir" && selected.startsWith(target.path + "/")))) {
-    gitUiStore.gitClearSelectedDiff(props.workspaceId);
+  for (const relativePath of target.paths) {
+    await api.fileDelete({ rootPath: props.activeRootPath, relativePath });
   }
+  const deleted = new Set(target.paths);
+  // Drop the diff preview if the deleted file (or, for a folder, anything
+  // inside it) was the one being viewed.
+  const selected = props.gitUi.selectedDiff?.path as string | undefined;
+  const hitSelected =
+    !!selected &&
+    (deleted.has(selected) || (target.kind === "dir" && target.paths.some((p) => selected.startsWith(p + "/"))));
+  if (hitSelected) gitUiStore.gitClearSelectedDiff(props.workspaceId);
   selectedPaths.value = new Set(
     [...selectedPaths.value].filter(
-      (p) => p !== target.path && !(target.kind === "dir" && p.startsWith(target.path + "/")),
+      (p) => !deleted.has(p) && !(target.kind === "dir" && target.paths.some((d) => p.startsWith(d + "/"))),
     ),
   );
   await gitUiStore.refreshGit(props.workspaceId);
