@@ -91,8 +91,8 @@
       </div>
     </div>
     <div class="azure-pr-row__actions">
-      <button type="button" :class="['button', busy && 'button--busy']" :disabled="busy" @click="handleOpen">
-        {{ busy ? "Opening…" : actionLabel }}
+      <button type="button" :class="['button', opening && 'button--busy']" :disabled="opening" @click="handleOpen">
+        {{ opening ? "Opening…" : actionLabel }}
       </button>
       <button type="button" class="button button--ghost" @click="$emit('browser', pullRequest.webUrl)">Browser</button>
       <button
@@ -118,8 +118,8 @@ import { computed, ref } from "vue";
 
 const props = withDefaults(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  defineProps<{ item: Record<string, any>; showSeen?: boolean }>(),
-  { showSeen: true },
+  defineProps<{ item: Record<string, any>; showSeen?: boolean; opening?: boolean }>(),
+  { showSeen: true, opening: false },
 );
 
 const emit = defineEmits<{
@@ -128,7 +128,6 @@ const emit = defineEmits<{
   (e: "seen", prKey: string): void;
 }>();
 
-const busy = ref(false);
 const expanded = ref(false);
 const pullRequest = computed(() => props.item.pullRequest || {});
 const authorName = computed(() => {
@@ -240,8 +239,6 @@ function formatDate(iso: unknown): string {
 }
 
 function handleOpen() {
-  busy.value = true;
   emit("open", { prKey: props.item.prKey as string, workspaceId: openWorkspaceId.value });
-  // busy stays true until the pane switches away — parent handles the async
 }
 </script>

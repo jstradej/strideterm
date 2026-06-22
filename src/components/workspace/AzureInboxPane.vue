@@ -307,6 +307,7 @@
                   :key="item.prKey"
                   :item="item"
                   :show-seen="true"
+                  :opening="item.prKey === openingPrKey"
                   @open="onOpenPr"
                   @browser="onOpenBrowser"
                   @seen="onMarkSeen"
@@ -324,6 +325,7 @@
                   :key="item.prKey"
                   :item="item"
                   :show-seen="activeTab !== 'all'"
+                  :opening="item.prKey === openingPrKey"
                   @open="onOpenPr"
                   @browser="onOpenBrowser"
                   @seen="onMarkSeen"
@@ -394,6 +396,10 @@ function onTabClick(id: string) {
 }
 
 const busyAction = ref<string>("");
+// prKey currently being opened — drives the per-row spinner and disables the
+// button so a slow clone/checkout can't be double-clicked. Single-flight:
+// while one PR is opening, other Review buttons are ignored too.
+const openingPrKey = ref<string>("");
 // Default to the "Needs attention" tab so the most actionable items surface
 // first — explicit reviewers, mentions, your-PR comments. Falls back to the
 // generic All tab when there's nothing actionable yet.
@@ -709,11 +715,15 @@ function onHeaderAction(action: { action: string }) {
 }
 
 async function onOpenPr({ prKey, workspaceId }: { prKey: string; workspaceId: string }) {
+  if (openingPrKey.value) return; // already opening one — ignore extra clicks
   openError.value = "";
+  openingPrKey.value = prKey;
   try {
     await appStore.openAzurePullRequest(prKey, workspaceId);
   } catch (err) {
     openError.value = (err as Error)?.message || "Failed to open review workspace.";
+  } finally {
+    openingPrKey.value = "";
   }
 }
 

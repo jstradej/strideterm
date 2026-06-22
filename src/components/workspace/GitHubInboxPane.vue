@@ -234,6 +234,7 @@
                   v-for="item in group.items"
                   :key="item.prKey"
                   :item="item"
+                  :opening="item.prKey === openingPrKey"
                   @open="onOpenPr"
                   @browser="onOpenBrowser"
                   @seen="onMarkSeen"
@@ -463,13 +464,21 @@ function onHeaderAction(action: { action: string }) {
 }
 
 const openError = ref<string>("");
+// prKey currently being opened — drives the per-row spinner and disables the
+// button so a slow clone/checkout can't be double-clicked. Single-flight:
+// while one PR is opening, other Review buttons are ignored too.
+const openingPrKey = ref<string>("");
 
 async function onOpenPr({ prKey, workspaceId }: { prKey: string; workspaceId: string }) {
+  if (openingPrKey.value) return; // already opening one — ignore extra clicks
   openError.value = "";
+  openingPrKey.value = prKey;
   try {
     await appStore.openGitHubPullRequest(prKey, workspaceId);
   } catch (err) {
     openError.value = (err as Error)?.message || "Failed to open review workspace.";
+  } finally {
+    openingPrKey.value = "";
   }
 }
 

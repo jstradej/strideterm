@@ -85,11 +85,12 @@
     <div class="azure-pr-row__actions">
       <button
         type="button"
-        class="button"
+        :class="['button', opening && 'button--busy']"
+        :disabled="opening"
         :title="actionTitle"
         @click="$emit('open', { prKey: item.prKey, workspaceId: openWorkspaceId })"
       >
-        {{ actionLabel }}
+        {{ opening ? "Opening…" : actionLabel }}
       </button>
       <button
         type="button"
@@ -122,8 +123,8 @@ import { computed, ref } from "vue";
 
 const props = withDefaults(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  defineProps<{ item: Record<string, any>; showSeen?: boolean }>(),
-  { showSeen: true },
+  defineProps<{ item: Record<string, any>; showSeen?: boolean; opening?: boolean }>(),
+  { showSeen: true, opening: false },
 );
 
 defineEmits<{
