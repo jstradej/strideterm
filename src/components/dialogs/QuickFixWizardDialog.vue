@@ -166,7 +166,7 @@
       <p v-if="errorMessage" style="margin-top: 12px; color: var(--danger)">{{ errorMessage }}</p>
     </div>
 
-    <footer class="dialog__footer">
+    <footer class="dialog__footer qf-footer">
       <button
         v-if="canGoBack"
         type="button"
@@ -535,6 +535,15 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* Separate the footer from the scrolling body (the repo/branch list caps at
+   60vh and scrolls). Without this the Back/Cancel/Create buttons glue to the
+   last list row when the list is long. */
+.qf-footer {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
 .nb-list {
   display: grid;
   gap: 4px;
