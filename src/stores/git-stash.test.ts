@@ -215,9 +215,17 @@ describe("git-stash store", () => {
     expect(store.get("ws1").selectedFile).toBe("src/foo.ts");
   });
 
-  test("setIncludeUntrackedNext persists the sticky preference", () => {
+  test("setIncludeUntrackedNext updates the per-session preference", () => {
     const store = useGitStashStore();
     store.setIncludeUntrackedNext("ws1", false);
     expect(store.get("ws1").includeUntrackedNext).toBe(false);
+  });
+
+  test("includeUntrackedNext defaults ON for a fresh workspace (not sticky)", () => {
+    const store = useGitStashStore();
+    store.setIncludeUntrackedNext("ws1", false);
+    store.cleanup("ws1");
+    // A re-ensured workspace starts ON again — the OFF choice is not persisted.
+    expect(store.ensure("ws1").includeUntrackedNext).toBe(true);
   });
 });

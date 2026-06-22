@@ -68,33 +68,16 @@ function emptyState(): WorkspaceStashState {
   };
 }
 
-const INCLUDE_UNTRACKED_KEY = "strideterm:stash-include-untracked:";
-
-function loadStickyIncludeUntracked(workspaceId: string): boolean {
-  try {
-    const v = window.localStorage.getItem(INCLUDE_UNTRACKED_KEY + workspaceId);
-    return v === null ? true : v === "1";
-  } catch {
-    return true;
-  }
-}
-
-function saveStickyIncludeUntracked(workspaceId: string, value: boolean): void {
-  try {
-    window.localStorage.setItem(INCLUDE_UNTRACKED_KEY + workspaceId, value ? "1" : "0");
-  } catch {
-    // ignore storage failures (private mode, quota)
-  }
-}
-
 export const useGitStashStore = defineStore("git-stash", () => {
   const byWorkspace = ref<Record<string, WorkspaceStashState>>({});
 
   function ensure(workspaceId: string): WorkspaceStashState {
     if (!byWorkspace.value[workspaceId]) {
-      const fresh = emptyState();
-      fresh.includeUntrackedNext = loadStickyIncludeUntracked(workspaceId);
-      byWorkspace.value = { ...byWorkspace.value, [workspaceId]: fresh };
+      // "Include untracked" starts ON every session — a "Stash all" should clear
+      // the whole working tree, new files included. Unchecking it applies only
+      // to the current session and is not persisted, so an accidental opt-out
+      // can't silently leave untracked files behind after a restart.
+      byWorkspace.value = { ...byWorkspace.value, [workspaceId]: emptyState() };
     }
     return byWorkspace.value[workspaceId];
   }
@@ -214,7 +197,6 @@ export const useGitStashStore = defineStore("git-stash", () => {
 
   function setIncludeUntrackedNext(workspaceId: string, value: boolean): void {
     ensure(workspaceId).includeUntrackedNext = value;
-    saveStickyIncludeUntracked(workspaceId, value);
   }
 
   // Shared mutation wrapper: tracks busy state, surfaces a toast, then refreshes
