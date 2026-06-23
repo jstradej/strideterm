@@ -185,8 +185,6 @@ function onMousedown(event: MouseEvent): void {
 
   if (!props.focused) {
     emit("focus");
-    // Also focus the workspace
-    if (props.workspaceId) store.activateWorkspace(props.workspaceId);
   }
   // If clicking inside terminal area, also focus terminal
   const paneEl = target?.closest(".workspace-cell__pane");
