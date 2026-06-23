@@ -187,8 +187,13 @@ export const useAppStore = defineStore("app", () => {
     const remoteClient = (sourcePayload as AnyApi)?.remoteClient;
     const workspaces = ((sourcePayload as AnyApi)?.appState?.workspaces || []) as AnyApi[];
     const profileId = resolveRemoteProfileId(sourcePayload);
-    const activeWorkspaceId =
-      remoteClient?.activeWorkspaceId || (sourcePayload as AnyApi)?.appState?.activeWorkspaceId || "";
+    // A remote client must NEVER fall back to the global appState.activeWorkspaceId:
+    // that value tracks the DESKTOP's selection, so falling back to it made the
+    // mobile view snap to whatever workspace the desktop had open — and flip-flop
+    // back and forth whenever both were active. When this client's own
+    // activeWorkspaceId is absent, resolve to the first workspace of its profile
+    // instead (the `workspaces.find(profile)` fallback at the end of this function).
+    const activeWorkspaceId = remoteClient?.activeWorkspaceId || "";
     const activeWorkspace = activeWorkspaceId ? workspaces.find((ws: AnyApi) => ws.id === activeWorkspaceId) : null;
     if (activeWorkspace && (activeWorkspace.profileId || "default") === profileId) return activeWorkspaceId;
     return workspaces.find((ws: AnyApi) => (ws.profileId || "default") === profileId)?.id || "";
@@ -772,10 +777,13 @@ export const useAppStore = defineStore("app", () => {
     // Derive the workspace ID that is active in THIS window / remote client from the incoming payload.
     const incomingSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
     const incomingSlot = myWindowId && incomingSlots ? incomingSlots.find((s: AnyApi) => s.id === myWindowId) : null;
+    // Remote: derive the active workspace exactly like myActiveWorkspaceId does
+    // (resolveRemoteWorkspaceId), so the broadcast handler and the computed view
+    // agree. Critically this no longer falls back to the global
+    // appState.activeWorkspaceId — see resolveRemoteWorkspaceId for why that
+    // desktop-global fallback caused the mobile workspace to flip-flop.
     const incomingMyWsId: string = isRemoteTransport.value
-      ? (nextPayload as AnyApi)?.remoteClient?.activeWorkspaceId ||
-        (nextPayload as AnyApi)?.appState?.activeWorkspaceId ||
-        ""
+      ? resolveRemoteWorkspaceId(nextPayload)
       : incomingSlot?.activeWorkspaceId || (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
 
     if (pendingWsId && incomingMyWsId && incomingMyWsId !== pendingWsId) {

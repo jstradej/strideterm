@@ -1850,6 +1850,16 @@ export async function startRemoteServer({
         }
         const body = await readRequestBody(request);
         try {
+          // Diagnostic for the mobile workspace flip-flop: compare this sessionRef
+          // against the one logged at "WebSocket session resolution" — if HTTP
+          // activations and the WS socket resolve to DIFFERENT sessionRefs for the
+          // same client, the active-workspace selection is split across two registry
+          // contexts (HTTP writes one, WS broadcasts read the other).
+          log.debug("remote-client activation request", {
+            method: request.method,
+            path: url.pathname,
+            sessionRef: remoteSessionRef(apiSessionId),
+          });
           // The remote client is an independent viewer: activation mutates
           // ONLY its own RemoteClientContext (profile/workspace/session) and
           // never touches a desktop windowSlot. The runtime methods spawn
@@ -2180,6 +2190,9 @@ export async function startRemoteServer({
   // Maps each WS socket to its cookie session ID so per-client payloads can
   // be composed on every state:updated event.
   const socketSession = new WeakMap<import("ws").WebSocket, string>();
+  // Sockets we've already debug-logged a raw (uncomposed) broadcast for, so the
+  // diagnostic below fires at most once per socket instead of once per broadcast.
+  const rawBroadcastLogged = new WeakSet<import("ws").WebSocket>();
 
   function broadcast(message: unknown): void {
     const payload = JSON.stringify(message);
@@ -2208,6 +2221,16 @@ export async function startRemoteServer({
       for (const socket of sockets) {
         if (socket.readyState !== socket.OPEN) continue;
         const sessionId = socketSession.get(socket);
+        if (!sessionId && !rawBroadcastLogged.has(socket)) {
+          // No session bound to this socket → it receives the RAW payload with no
+          // `remoteClient`, which forces the renderer's workspace fallback. This is
+          // the upstream cause of the mobile workspace flip-flop; log once so a
+          // repro shows whether the affected socket ever lost its session binding.
+          rawBroadcastLogged.add(socket);
+          log.debug("state:updated sent without per-client composition (socket has no session)", {
+            openSockets: sockets.size,
+          });
+        }
         const msg = sessionId
           ? JSON.stringify({ type: "state:updated", payload: registry.composePayload(sessionId, stripped) })
           : JSON.stringify({ type: "state:updated", payload: stripped });
@@ -2278,10 +2301,21 @@ export async function startRemoteServer({
       });
       // Tag the socket with its session so per-client state can be composed on broadcast.
       const wsSessionId = sessionIdForRequest(request.url || "/", request.headers);
-      if (wsSessionId && activeSessions.has(wsSessionId)) {
+      const wsComposed = Boolean(wsSessionId && activeSessions.has(wsSessionId));
+      if (wsComposed) {
         socketSession.set(ws, wsSessionId);
         registry.bumpLastSeen(wsSessionId);
       }
+      // Diagnostic for the mobile workspace flip-flop: `composed=false` means this
+      // socket will get RAW broadcasts (no remoteClient) and the renderer will fall
+      // back; `hadCookie` with a token-client sessionRef means the cookie session was
+      // present but stale (e.g. after a server restart), so HTTP and WS can resolve to
+      // different identities. sessionRef encodes cookie-vs-token-client + a digest.
+      log.debug("WebSocket session resolution", {
+        sessionRef: remoteSessionRef(wsSessionId),
+        composed: wsComposed,
+        hadCookie: Boolean(getSessionFromRequest(request.headers)),
+      });
       log.info("WebSocket client connected", {
         remoteAddress: request.socket?.remoteAddress,
         sessionRef: remoteSessionRef(wsSessionId),
