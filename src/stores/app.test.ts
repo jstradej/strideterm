@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
+import { nextTick } from "vue";
 import { useAppStore } from "./app.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -526,6 +527,82 @@ describe("useAppStore — remote mode identity", () => {
     expect(store.activeWorkspace.id).toBe("ws2");
     expect((store as AnyApi).payload.remoteClient.activeSessionId).toBe("ws2:sh");
     expect((store as AnyApi).payload.appState.activeWorkspaceId).toBe("ws1");
+  });
+
+  it("keeps remote review tab active when Azure seen returns a desktop-scoped payload", async () => {
+    const desktopWs = {
+      id: "ws-desktop",
+      name: "Desktop WS",
+      profileId: "p1",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      activePanelId: "shell",
+      kind: "terminal",
+      cwd: "/tmp/desktop",
+    };
+    const reviewWs = {
+      id: "ws-review",
+      name: "Review WS",
+      profileId: "p1",
+      panels: [{ id: "agent", title: "Agent", command: "" }],
+      activePanelId: "agent",
+      kind: "terminal",
+      cwd: "/tmp/review",
+      activeViewId: "review:ws-review",
+      review: {
+        provider: "azure-devops",
+        prKey: "ado:repo:42",
+        parentWorkspaceId: "ws-desktop",
+        pullRequest: { title: "Fix flicker" },
+      },
+    };
+    const desktopWorkspacePayload = {
+      workspace: desktopWs,
+      project: desktopWs,
+      sessions: [{ sessionId: "ws-desktop:shell", panelId: "shell", title: "Shell", command: "", status: "idle" }],
+    };
+    const initialPayload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws-review", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "ws-desktop",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [desktopWs, reviewWs],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-desktop", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+      workspace: desktopWorkspacePayload,
+    });
+    const transport = makeRemoteTransport(initialPayload);
+    transport.markAzurePullRequestSeen = vi.fn(() =>
+      Promise.resolve({
+        ...initialPayload,
+        workspace: desktopWorkspacePayload,
+      }),
+    );
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+
+    expect(store.activeWorkspace.id).toBe("ws-review");
+    expect(store.activeViewId).toBe("review:ws-review");
+
+    await store.markAzurePrSeen("ado:repo:42");
+    await nextTick();
+
+    expect(store.activeWorkspace.id).toBe("ws-review");
+    expect(store.activeViewId).toBe("review:ws-review");
+    expect(store.activeSessionId).toBeNull();
+    expect((store as AnyApi).payload.workspace.workspace.id).toBe("ws-review");
   });
 });
 

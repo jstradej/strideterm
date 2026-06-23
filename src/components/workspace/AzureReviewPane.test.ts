@@ -180,4 +180,60 @@ describe("AzureReviewPane responsive chrome", () => {
     expect(wrapper.find(".review-shell__menu-trigger").exists()).toBe(true);
     expect(wrapper.find(".review-shell__tabs-trigger").exists()).toBe(true);
   });
+
+  test("a failing auto-refresh is swallowed and never reaches the error handler", async () => {
+    // Regression: the immediate auto-refresh watch awaited refreshAzure without
+    // catching. A failed poll (5xx through the tunnel, server restarting) then
+    // rejected out of the watch → Vue's error handler → ErrorBoundary → the pane
+    // remounted → the watch re-fired → a crash-loop that churned the visible-tab
+    // set (terminal mounting/unmounting every cycle). It must be swallowed.
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+
+    const appStore = useAppStore();
+    appStore.payload = buildPayload("azure-devops");
+    const reviewStore = appStore as unknown as {
+      activeViewId: string;
+      refreshAzure: () => Promise<void>;
+      markAzurePrSeen: (prKey: string) => Promise<void>;
+    };
+    // The immediate watch only refreshes when the review view is active.
+    reviewStore.activeViewId = "review:ws-review";
+    const refreshSpy = vi
+      .spyOn(reviewStore, "refreshAzure")
+      .mockRejectedValue(new Error("Remote workspace is temporarily unavailable"));
+    vi.spyOn(reviewStore, "markAzurePrSeen").mockImplementation(() => Promise.resolve());
+
+    const handledErrors: unknown[] = [];
+    const wrapper = mount(AzureReviewPane, {
+      props: { workspaceId: "ws-review" },
+      global: {
+        // Vue routes async watcher-callback rejections here. Without the catch
+        // in the watch, the refresh rejection lands in this handler.
+        config: { errorHandler: (err: unknown) => handledErrors.push(err) },
+        stubs: {
+          PaneShell: true,
+          DiffViewer: true,
+          GitCommitLog: true,
+          MonacoDiffPanel: true,
+          ReviewSummaryTab: true,
+          ReviewCommentsTab: true,
+          ReviewAgentTab: true,
+          ReviewPipelinesTab: true,
+          CustomSelect: true,
+        },
+        provide: {
+          api: {
+            azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+          },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(refreshSpy).toHaveBeenCalled(); // the watch actually fired the refresh
+    expect(handledErrors).toHaveLength(0); // ...and the rejection was swallowed
+    expect(wrapper.exists()).toBe(true); // pane still mounted, no crash
+  });
 });

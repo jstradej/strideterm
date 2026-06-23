@@ -24,8 +24,13 @@ interface ProjectAlertBucket {
 }
 
 interface AttentionContext {
+  // Effective visible set — the UNION of visibleByViewer. Read by
+  // isSessionVisible; never assigned directly except via recomputeVisibleUnion.
   visibleSessionIds: Set<string>;
   recentlyVisibleUntil: Map<string, number>;
+  // Per-viewer visible sets keyed by windowId / remote viewer id. See
+  // createAttentionContext for why a single global set was insufficient.
+  visibleByViewer: Map<string, Set<string>>;
 }
 
 interface SessionsManager {
@@ -448,10 +453,26 @@ export function createRuntimeAttentionManager({
     );
   }
 
-  function updateVisibleSessions(nextIds: string[]): void {
+  // Bucket for callers that don't identify a viewer: tests, and the
+  // viewer-less activation "primer" (activateWorkspace with no windowId, used
+  // by a legacy remote endpoint and a few internal restore paths). The primer
+  // marks a freshly-activated workspace's panels visible so PTY startup output
+  // doesn't false-alert before a renderer reports visibility. Real desktop
+  // windows and remote clients always pass their own key — and the moment any
+  // of them syncs, this primer is dropped (see updateVisibleSessions) so a
+  // viewer-less activation can't pin its panels "visible" forever.
+  const DEFAULT_VIEWER_KEY = "__default__";
+
+  // Recompute the effective visible set (union of all viewers) and roll the
+  // grace window for any session that just dropped OUT of the union. Sessions
+  // that leave the union get ATTENTION_VISIBILITY_GRACE_MS of lingering
+  // "recently visible" so brief tab switches don't immediately re-arm alerts.
+  function recomputeVisibleUnion(): void {
     const prev = attentionContext.visibleSessionIds;
-    const next = new Set(nextIds);
-    log.trace("updateVisibleSessions", { prev: [...prev], next: [...next] });
+    const next = new Set<string>();
+    for (const ids of attentionContext.visibleByViewer.values()) {
+      for (const id of ids) next.add(id);
+    }
     const now = Date.now();
     for (const sessionId of prev) {
       if (!next.has(sessionId)) {
@@ -465,6 +486,45 @@ export function createRuntimeAttentionManager({
       if (now >= until) attentionContext.recentlyVisibleUntil.delete(sessionId);
     }
     attentionContext.visibleSessionIds = next;
+  }
+
+  // Record one viewer's currently-visible sessions. The effective visible set
+  // is the UNION across all viewers, so a panel visible in ANY viewer counts
+  // as visible — two concurrent viewers no longer overwrite each other.
+  function updateVisibleSessions(nextIds: string[], viewerKey: string = DEFAULT_VIEWER_KEY): void {
+    const next = new Set(nextIds);
+    if (next.size === 0) {
+      // Viewer is showing no tracked sessions (e.g. an Azure/GitHub review
+      // pane). Drop its bucket so it contributes nothing — but DON'T let that
+      // wipe other viewers' visible sessions from the union.
+      attentionContext.visibleByViewer.delete(viewerKey);
+    } else {
+      attentionContext.visibleByViewer.set(viewerKey, next);
+    }
+    // An identified viewer reporting its real visibility supersedes the
+    // viewer-less activation primer — drop it so a legacy/internal
+    // activateWorkspace() with no windowId can't keep its workspace's panels
+    // counted visible after a real viewer has reported otherwise.
+    if (viewerKey !== DEFAULT_VIEWER_KEY) {
+      attentionContext.visibleByViewer.delete(DEFAULT_VIEWER_KEY);
+    }
+    log.trace("updateVisibleSessions", {
+      viewerKey,
+      next: [...next],
+      union: [...attentionContext.visibleSessionIds],
+      viewers: attentionContext.visibleByViewer.size,
+    });
+    recomputeVisibleUnion();
+  }
+
+  // A viewer went away (desktop window closed, remote socket fully dropped).
+  // Remove its contribution so its sessions stop counting as visible — without
+  // this a disconnected client would suppress alerts on its panels forever.
+  function dropViewerVisibility(viewerKey: string): void {
+    if (!attentionContext.visibleByViewer.has(viewerKey)) return;
+    attentionContext.visibleByViewer.delete(viewerKey);
+    log.trace("dropViewerVisibility", { viewerKey, viewers: attentionContext.visibleByViewer.size });
+    recomputeVisibleUnion();
   }
 
   function isSessionVisible(sessionId: string): boolean {
@@ -491,6 +551,7 @@ export function createRuntimeAttentionManager({
     sessionSignals.clear();
     attentionContext.visibleSessionIds = new Set();
     attentionContext.recentlyVisibleUntil.clear();
+    attentionContext.visibleByViewer.clear();
   }
 
   return {
@@ -510,6 +571,7 @@ export function createRuntimeAttentionManager({
     syncSessionSignalsWithState,
     shouldTrackProjectAlert,
     updateVisibleSessions,
+    dropViewerVisibility,
     isSessionVisible,
     markSessionPromptInjected,
     clearAllAttention,

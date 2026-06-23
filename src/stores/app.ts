@@ -1217,6 +1217,10 @@ export const useAppStore = defineStore("app", () => {
     remoteAccessMode,
     selectedLanUrl,
     getApi,
+    adoptPayload: (nextPayload: StatePayload) => {
+      payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
+      _cacheCurrentWorkspace();
+    },
     withSuppressedBroadcast,
     confirmInApp: workspaceActions.confirmInApp,
   });

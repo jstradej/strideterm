@@ -1065,18 +1065,37 @@ function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh-github") appStore.refreshGitHub();
 }
 
-// Auto-refresh when the Review pane becomes the active view
+// Auto-refresh when the Review pane becomes the active view.
+//
+// In-flight guard: a remote refresh hits Azure DevOps / GitHub and can take
+// many seconds (a slow poll through a tunnel even times out at the gateway).
+// activeViewId can fire repeatedly — e.g. while the view briefly churns — and
+// without this guard each fire stacked another refresh, piling up requests
+// that all eventually 524'd. Skip if one is already running.
+const autoRefreshInFlight = ref(false);
 watch(
   () => appStore.activeViewId,
-  (viewId) => {
-    if (viewId === `review:${props.workspaceId}`) {
+  async (viewId) => {
+    if (viewId !== `review:${props.workspaceId}`) return;
+    if (autoRefreshInFlight.value) return;
+    autoRefreshInFlight.value = true;
+    try {
       if (isGitHub.value) {
-        appStore.refreshGitHub();
+        await appStore.refreshGitHub();
         if (prKey.value) appStore.markGitHubPrSeen(prKey.value);
       } else {
-        appStore.refreshAzure();
+        await appStore.refreshAzure();
         if (prKey.value) appStore.markAzurePrSeen(prKey.value);
       }
+    } catch {
+      // Auto-refresh is best-effort. A failed poll (offline, the desktop/local
+      // server restarting, a 5xx through the tunnel) must NOT throw out of this
+      // watch: an unhandled rejection here trips the ErrorBoundary, which
+      // remounts this pane, which re-fires this immediate watch → a crash-loop
+      // that also churns the visible-tab set (terminal mounts/unmounts on every
+      // cycle). Swallow; the toolbar refresh surfaces errors when the user asks.
+    } finally {
+      autoRefreshInFlight.value = false;
     }
   },
   { immediate: true },

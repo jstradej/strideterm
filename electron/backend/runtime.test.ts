@@ -8390,3 +8390,180 @@ describe("deleteProfile with running tasks", () => {
     expect(fixture.store.getState().profiles.some((p) => p.id === "profile-tasks")).toBe(false);
   });
 });
+
+describe("syncAttentionContext — per-viewer visibility union (mobile flip-flop regression)", () => {
+  // Two viewers (e.g. a desktop window + a mobile/web client) used to share a
+  // single global visible-session set, so whichever synced last won. A mobile
+  // client on a non-terminal Azure "Review" tab reports [] visible terminals;
+  // that [] wiped the desktop's visible terminal out of the global set, and the
+  // two viewers flip-flopped it on every sync — re-rendering the mobile and
+  // spamming terminal resizes. Visibility is now tracked per viewer and
+  // unioned: a session visible in ANY viewer counts as visible.
+  //
+  // backend:tests deliberately lives in a workspace that is NOT active in any
+  // window slot, so nothing but the explicit syncs below marks it visible.
+  // The exit alert is gated by !isSessionVisible, so "alert raised" is the
+  // observable proxy for "the runtime thinks the session is hidden".
+  async function createTwoViewerFixture() {
+    return createFixture({
+      initialState: {
+        activeProjectId: "frontend",
+        profiles: [{ id: "default", name: "Default" }],
+        projects: [
+          {
+            id: "frontend",
+            name: "Frontend",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "/tmp/frontend",
+            activePanelId: "claude",
+            panels: [{ id: "claude", title: "Claude", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "/tmp/backend",
+            activePanelId: "tests",
+            panels: [
+              {
+                id: "tests",
+                title: "Tests",
+                command: "npm test",
+                shell: true,
+                startup: "manual",
+                // Opt back in to shell-exit alerts (globally off via agentsOnly).
+                alertsForceOn: true,
+              },
+            ],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-a",
+            profileId: "default",
+            activeWorkspaceId: "frontend",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+          {
+            id: "win-b",
+            profileId: "default",
+            activeWorkspaceId: "frontend",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 2000,
+          },
+        ],
+      },
+    });
+  }
+
+  // Drive backend:tests to a non-zero exit after marking it user-interactive.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function runToFailingExit(fixture: any) {
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:tests", data: "$ " });
+    fixture.runtime.writeToSession("backend:tests", "npm test\r");
+    fixture.sessionManager.emit("terminal:exit", { sessionId: "backend:tests", exitCode: 2, intentional: false });
+  }
+
+  test("a second viewer reporting [] does not wipe the first viewer's visible session", async () => {
+    const fixture = await createTwoViewerFixture();
+    fixtures.push(fixture);
+
+    // Desktop (win-a) is looking at backend:tests; mobile (win-b) is on a
+    // non-terminal review tab and reports nothing visible.
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["backend:tests"], windowId: "win-a" });
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: [], windowId: "win-b" });
+
+    runToFailingExit(fixture);
+
+    // Still visible via win-a → no alert. Pre-fix, win-b's [] clobbered the
+    // global set and this raised an alert.
+    expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+  });
+
+  test("order does not matter: the [] viewer syncing last still does not clobber", async () => {
+    const fixture = await createTwoViewerFixture();
+    fixtures.push(fixture);
+
+    // Reverse order from the previous test: the empty sync arrives last, which
+    // under the old last-writer-wins global set was the worst case.
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: [], windowId: "win-b" });
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["backend:tests"], windowId: "win-a" });
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: [], windowId: "win-b" });
+
+    runToFailingExit(fixture);
+
+    expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+  });
+
+  test("once the only viewer that saw the session drops, it is no longer visible", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoViewerFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["backend:tests"], windowId: "win-a" });
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: [], windowId: "win-b" });
+
+      // The viewer that had it visible goes away (window closed / socket dropped).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).dropViewerVisibility("win-a");
+      // Advance past the 5s visibility grace window so the session is fully hidden.
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      runToFailingExit(fixture);
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("removeWindowSlot drops the closed window's visible-session contribution", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoViewerFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["backend:tests"], windowId: "win-a" });
+
+      // Closing the window must remove its visibility contribution, not leave
+      // backend:tests pinned "visible" forever (which would suppress its alerts).
+      await fixture.runtime.removeWindowSlot("win-a");
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      runToFailingExit(fixture);
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a real viewer sync supersedes the viewer-less activation primer", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoViewerFixture();
+      fixtures.push(fixture);
+
+      // Viewer-less path (legacy/internal activateWorkspace with no windowId)
+      // primes the default bucket with backend:tests visible.
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["backend:tests"] });
+      // A real viewer (win-a) then reports it is looking at something else.
+      // This must drop the primer so backend:tests stops counting as visible
+      // — otherwise the primer would suppress its alerts indefinitely.
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"], windowId: "win-a" });
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      runToFailingExit(fixture);
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -1842,6 +1842,42 @@ export async function startRemoteServer({
         return;
       }
 
+      // /api/azure/refresh and /api/github/refresh return the FULL state payload,
+      // which the remote client assigns straight into its store. Like every other
+      // state push to a remote viewer it MUST be composed per-client (and stripped
+      // of secrets) — otherwise the client receives the RAW desktop payload with
+      // no `remoteClient`, snaps its active view to the desktop's workspace, then
+      // snaps back on the next composed WS broadcast. Because the Review pane
+      // auto-fires a refresh whenever it becomes active, that produced a
+      // network-paced view flip-flop (and terminal-resize storm). handleApiRequest
+      // serves these routes raw and has no apiSessionId in scope, so intercept here.
+      if (
+        request.method === "POST" &&
+        (url.pathname === "/api/azure/refresh" || url.pathname === "/api/github/refresh")
+      ) {
+        const raw =
+          url.pathname === "/api/azure/refresh"
+            ? await runtime.refreshAzureState()
+            : await runtime.refreshGitHubState();
+        const basePayload = stripSecretsForRemote(raw);
+        json(response, 200, apiSessionId ? registry.composePayload(apiSessionId, basePayload) : basePayload);
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        (url.pathname === "/api/azure/pull-request/seen" || url.pathname === "/api/github/pull-request/seen")
+      ) {
+        const body = await readRequestBody(request);
+        const raw =
+          url.pathname === "/api/azure/pull-request/seen"
+            ? await runtime.markAzurePullRequestSeen(body.prKey)
+            : await runtime.markGitHubPullRequestSeen(body.prKey);
+        const basePayload = stripSecretsForRemote(raw);
+        json(response, 200, apiSessionId ? registry.composePayload(apiSessionId, basePayload) : basePayload);
+        return;
+      }
+
       // Remote-client-scoped activation endpoints — derive clientId from cookie or token client id.
       if (url.pathname.startsWith("/api/remote-client/")) {
         if (!apiSessionId || !activeSessions.has(apiSessionId)) {
@@ -2395,6 +2431,24 @@ export async function startRemoteServer({
 
       ws.on("close", (code, reason) => {
         sockets.delete(ws);
+        // If this was the LAST live socket for the session, the viewer is gone
+        // — drop its visible-session contribution so its panels stop counting
+        // as visible. A session can hold more than one socket (reconnect race,
+        // a second tab), so only drop when none remain; otherwise a transient
+        // reconnect would wrongly clear a still-watching viewer.
+        if (wsSessionId) {
+          let stillConnected = false;
+          for (const other of sockets) {
+            if (socketSession.get(other) === wsSessionId) {
+              stillConnected = true;
+              break;
+            }
+          }
+          if (!stillConnected) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (runtime as any).dropViewerVisibility?.(remoteViewerId(wsSessionId));
+          }
+        }
         const meta = {
           sessionRef: remoteSessionRef(wsSessionId),
           code,
@@ -2458,6 +2512,17 @@ export async function startRemoteServer({
       }
       resolve({ ok: false, error });
     });
+    // Keep idle keep-alive connections open longer than the upstream
+    // (cloudflared) reuses them. cloudflared pools TCP connections to the
+    // origin; with Node's 5s default the origin closes a pooled connection
+    // just as cloudflared sends the next request on it → the proxy reads a
+    // reset ("An existing connection was forcibly closed by the remote host")
+    // and returns 502 for whatever endpoint happened to land on that socket
+    // (terminal/replay, attention/sync, azure/refresh). A failed replay then
+    // surfaces as "Remote workspace is temporarily unavailable" and remounts
+    // the pane. cloudflared's default proxy keepalive is 90s, so sit above it.
+    server.keepAliveTimeout = 100_000;
+    server.headersTimeout = 101_000;
     server.listen(port, host, () => resolve({ ok: true }));
   });
 

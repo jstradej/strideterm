@@ -83,6 +83,14 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     return resolved || "";
   }
 
+  // Coalesces concurrent Azure refreshes. The desktop IPC path dedups via
+  // withOperationPromise, but the remote /api/azure/refresh route calls
+  // refreshAzureState directly — so multiple viewers (or a misbehaving
+  // auto-refresh) could stack full git+Azure polls that serialize and time
+  // out at the gateway (524). Sharing one in-flight promise means overlapping
+  // callers all await the same poll and get the same fresh payload.
+  let azureRefreshInFlight: Promise<unknown> | null = null;
+
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async verifyAzureConnection(connection: any) {
@@ -204,10 +212,18 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       return getPayload();
     },
     async refreshAzureState() {
-      const activeWsId = getState().activeWorkspaceId;
-      await refreshGit(activeWsId);
-      await refreshAzure();
-      return getPayload();
+      if (azureRefreshInFlight) return azureRefreshInFlight;
+      azureRefreshInFlight = (async () => {
+        const activeWsId = getState().activeWorkspaceId;
+        await refreshGit(activeWsId);
+        await refreshAzure();
+        return getPayload();
+      })();
+      try {
+        return await azureRefreshInFlight;
+      } finally {
+        azureRefreshInFlight = null;
+      }
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     queryAzureAuditLog(filters: any = {}) {

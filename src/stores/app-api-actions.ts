@@ -22,6 +22,7 @@ interface ApiActionsCtx {
   remoteAccessMode: Ref<string>;
   selectedLanUrl: Ref<string>;
   getApi: () => Transport;
+  adoptPayload?: (payload: StatePayload) => void;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
   /** In-app ConfirmDialog helper — replaces native window.confirm so the
    *  prompt is themed, non-blocking, and works in remote/mobile clients
@@ -47,38 +48,50 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type AnyApi = any;
 
+  function setPayload(nextPayload: StatePayload): void {
+    if (ctx.adoptPayload) {
+      ctx.adoptPayload(nextPayload);
+      return;
+    }
+    ctx.payload.value = nextPayload;
+  }
+
   // --- Azure -----------------------------------------------------------
 
   async function refreshAzure(): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).refreshAzure()) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).refreshAzure()) as StatePayload);
   }
 
   async function markAzurePrSeen(prKey: string): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).markAzurePullRequestSeen(prKey)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).markAzurePullRequestSeen(prKey)) as StatePayload);
   }
 
   async function azureVote(prKey: string, vote: string): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).voteAzurePullRequest({ prKey, vote })) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).voteAzurePullRequest({ prKey, vote })) as StatePayload);
   }
 
   async function azureResolveThread(prKey: string, threadId: string): Promise<void> {
     if (!prKey || !threadId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).updateAzureThreadStatus({
-      prKey,
-      threadId,
-      status: "fixed",
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).updateAzureThreadStatus({
+        prKey,
+        threadId,
+        status: "fixed",
+      })) as StatePayload,
+    );
   }
 
   async function azureReactivateThread(prKey: string, threadId: string): Promise<void> {
     if (!prKey || !threadId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).updateAzureThreadStatus({
-      prKey,
-      threadId,
-      status: "active",
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).updateAzureThreadStatus({
+        prKey,
+        threadId,
+        status: "active",
+      })) as StatePayload,
+    );
   }
 
   async function azureComment(
@@ -88,37 +101,43 @@ export function createApiActions(ctx: ApiActionsCtx) {
     parentCommentId = 0,
   ): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).commentAzurePullRequest({
-      prKey,
-      content,
-      threadId,
-      parentCommentId,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).commentAzurePullRequest({
+        prKey,
+        content,
+        threadId,
+        parentCommentId,
+      })) as StatePayload,
+    );
   }
 
   async function openAzurePullRequest(prKey: string, workspaceId: string): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).openAzurePullRequest({
-      prKey,
-      workspaceId: workspaceId || "",
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).openAzurePullRequest({
+        prKey,
+        workspaceId: workspaceId || "",
+      })) as StatePayload,
+    );
   }
 
   async function azureFetchReviewWorkspace(workspaceId: string): Promise<void> {
     if (!workspaceId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).fetchAzureReviewWorkspace(workspaceId)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).fetchAzureReviewWorkspace(workspaceId)) as StatePayload);
   }
 
   async function azureRebaseReviewWorkspace(workspaceId: string): Promise<void> {
     if (!workspaceId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).rebaseAzureReviewWorkspace(workspaceId)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).rebaseAzureReviewWorkspace(workspaceId)) as StatePayload);
   }
 
   async function azurePushReviewWorkspace(workspaceId: string, { force = false } = {}): Promise<void> {
     if (!workspaceId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).pushAzureReviewWorkspace(workspaceId, {
-      force,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).pushAzureReviewWorkspace(workspaceId, {
+        force,
+      })) as StatePayload,
+    );
   }
 
   async function deleteAzureConnection(connectionId: string): Promise<void> {
@@ -141,7 +160,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // --- Review bridge ---------------------------------------------------
 
   async function saveReviewBridgeDraft(params: unknown): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).saveReviewBridgeDraft(params)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).saveReviewBridgeDraft(params)) as StatePayload);
   }
 
   async function deleteReviewBridgeDraft(prKey: string, draftId: string): Promise<void> {
@@ -153,16 +172,18 @@ export function createApiActions(ctx: ApiActionsCtx) {
       danger: true,
     });
     if (!confirmed) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteReviewBridgeDraft({ prKey, draftId })) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).deleteReviewBridgeDraft({ prKey, draftId })) as StatePayload);
   }
 
   async function queueReviewBridgeDraft(prKey: string, draftId: string, commentKey: string): Promise<void> {
     if (!prKey || (!draftId && !commentKey)) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).queueReviewBridgeDraft({
-      prKey,
-      draftId,
-      commentKey,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).queueReviewBridgeDraft({
+        prKey,
+        draftId,
+        commentKey,
+      })) as StatePayload,
+    );
   }
 
   async function deleteReviewBridgeComment(prKey: string, commentKey: string): Promise<void> {
@@ -174,19 +195,21 @@ export function createApiActions(ctx: ApiActionsCtx) {
       danger: true,
     });
     if (!confirmed) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteReviewBridgeComment({
-      prKey,
-      commentKey,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).deleteReviewBridgeComment({
+        prKey,
+        commentKey,
+      })) as StatePayload,
+    );
   }
 
   async function createReviewBridgeDraftComment(params: unknown): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).createReviewBridgeDraftComment(params)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).createReviewBridgeDraftComment(params)) as StatePayload);
   }
 
   async function syncReviewBridgePullRequest(prKey: string): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).syncReviewBridgePullRequest({ prKey })) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).syncReviewBridgePullRequest({ prKey })) as StatePayload);
   }
 
   async function reviewBridgeDeleteAllDrafts(prKey: string): Promise<void> {
@@ -210,14 +233,16 @@ export function createApiActions(ctx: ApiActionsCtx) {
     if (!confirmed) return;
     const api = ctx.getApi() as AnyApi;
     for (const comment of draftComments) {
-      ctx.payload.value = (await api.deleteReviewBridgeComment({
-        prKey,
-        commentKey: comment.commentKey,
-      })) as StatePayload;
+      setPayload(
+        (await api.deleteReviewBridgeComment({
+          prKey,
+          commentKey: comment.commentKey,
+        })) as StatePayload,
+      );
     }
     for (const draft of drafts) {
       if (!draftComments.some((c: AnyApi) => c.commentKey === draft.commentKey)) {
-        ctx.payload.value = (await api.deleteReviewBridgeDraft({ prKey, draftId: draft.draftId })) as StatePayload;
+        setPayload((await api.deleteReviewBridgeDraft({ prKey, draftId: draft.draftId })) as StatePayload);
       }
     }
   }
@@ -231,7 +256,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     if (!drafts.length) return;
     const api = ctx.getApi() as AnyApi;
     for (const draft of drafts) {
-      ctx.payload.value = (await api.queueReviewBridgeDraft({ prKey, draftId: draft.draftId })) as StatePayload;
+      setPayload((await api.queueReviewBridgeDraft({ prKey, draftId: draft.draftId })) as StatePayload);
     }
   }
 
@@ -239,58 +264,64 @@ export function createApiActions(ctx: ApiActionsCtx) {
     if (!workspaceId) return null;
     const result = (await (ctx.getApi() as AnyApi).pushAndPublishReview({ workspaceId })) as AnyApi;
     const summary = result?.pushAndPublishResult || null;
-    ctx.payload.value = result as StatePayload;
+    setPayload(result as StatePayload);
     return summary;
   }
 
   // --- GitHub ------------------------------------------------------------
 
   async function refreshGitHub(): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).refreshGitHub()) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).refreshGitHub()) as StatePayload);
   }
 
   async function markGitHubPrSeen(prKey: string): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).markGitHubPullRequestSeen(prKey)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).markGitHubPullRequestSeen(prKey)) as StatePayload);
   }
 
   async function openGitHubPullRequest(prKey: string, workspaceId: string): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).openGitHubPullRequest({
-      prKey,
-      workspaceId: workspaceId || "",
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).openGitHubPullRequest({
+        prKey,
+        workspaceId: workspaceId || "",
+      })) as StatePayload,
+    );
   }
 
   async function githubComment(prKey: string, body: string): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).commentGitHubPullRequest({ prKey, body })) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).commentGitHubPullRequest({ prKey, body })) as StatePayload);
   }
 
   async function githubSubmitReview(prKey: string, event: string, body = ""): Promise<void> {
     if (!prKey) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).submitGitHubPullRequestReview({
-      prKey,
-      event,
-      body,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).submitGitHubPullRequestReview({
+        prKey,
+        event,
+        body,
+      })) as StatePayload,
+    );
   }
 
   async function githubFetchReviewWorkspace(workspaceId: string): Promise<void> {
     if (!workspaceId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).fetchGitHubReviewWorkspace(workspaceId)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).fetchGitHubReviewWorkspace(workspaceId)) as StatePayload);
   }
 
   async function githubRebaseReviewWorkspace(workspaceId: string): Promise<void> {
     if (!workspaceId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).rebaseGitHubReviewWorkspace(workspaceId)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).rebaseGitHubReviewWorkspace(workspaceId)) as StatePayload);
   }
 
   async function githubPushReviewWorkspace(workspaceId: string, { force = false } = {}): Promise<void> {
     if (!workspaceId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).pushGitHubReviewWorkspace(workspaceId, {
-      force,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).pushGitHubReviewWorkspace(workspaceId, {
+        force,
+      })) as StatePayload,
+    );
   }
 
   async function deleteGitHubConnection(connectionId: string): Promise<void> {

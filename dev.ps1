@@ -475,7 +475,12 @@ Write-Step 'Starting frontend build watcher (vite build --watch) for remote dist
 # chunks survive a rebuild and live pages don't lose dynamically-imported
 # modules, and (b) drop content hashes from filenames so chunks overwrite
 # in place instead of accumulating alongside their predecessors.
-$script:frontendBuildProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','set VITE_BUILD_WATCH=1 && npx vite build --watch' `
+# NOTE: quote the `set` assignment — `set VITE_BUILD_WATCH=1 && ...` (unquoted)
+# captures the trailing space before `&&`, so the value becomes "1 " (not "1").
+# vite.config.ts compares `=== "1"`, which then fails: dist gets content hashes
+# AND emptyOutDir wipes it on every rebuild, so open mobile/remote pages 404 on
+# their now-renamed dynamic chunks. `set "VAR=value"` assigns exactly "1".
+$script:frontendBuildProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','set "VITE_BUILD_WATCH=1" && npx vite build --watch' `
     -WorkingDirectory $PSScriptRoot `
     -PassThru -NoNewWindow
 

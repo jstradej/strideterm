@@ -328,6 +328,89 @@ describe("remote token client profile context", () => {
     }
   });
 
+  test("remote azure/github refresh return a per-client composed payload (no raw desktop payload)", async () => {
+    // Regression: /api/azure/refresh and /api/github/refresh returned the RAW
+    // global payload (no `remoteClient`), so the mobile client snapped its view
+    // to the desktop's active workspace, then snapped back on the next composed
+    // WS broadcast — a network-paced flip-flop. The responses must be composed.
+    const port = await getFreePort();
+    const auth = "test-token";
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth } },
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "WS1", profileId: "p1", panels: [] },
+          { id: "ws2", name: "WS2", profileId: "p2", panels: [] },
+        ],
+        windowSlots: [
+          { id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" },
+          { id: "win-2", profileId: "p2", activeWorkspaceId: "ws2" },
+        ],
+      },
+    };
+    const runtime = {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+      // Both return the full global payload; the server must compose per-client.
+      refreshAzureState: async () => payload,
+      refreshGitHubState: async () => payload,
+      markAzurePullRequestSeen: async () => payload,
+      markGitHubPullRequestSeen: async () => payload,
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const headers = {
+      Authorization: `Bearer ${auth}`,
+      "X-Strideterm-Client-Id": "mobile-client-a",
+      "Content-Type": "application/json",
+    };
+    try {
+      const azure = (await (
+        await fetch(`${baseUrl}/api/azure/refresh`, { method: "POST", headers, body: "{}" })
+      ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
+      // Composed → carries this client's own context, not a bare desktop payload.
+      expect(azure.remoteClient).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });
+
+      const github = (await (
+        await fetch(`${baseUrl}/api/github/refresh`, { method: "POST", headers, body: "{}" })
+      ).json()) as { remoteClient?: { profileId?: string } };
+      expect(github.remoteClient).toMatchObject({ profileId: "p1" });
+
+      const azureSeen = (await (
+        await fetch(`${baseUrl}/api/azure/pull-request/seen`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ prKey: "ado:repo:1" }),
+        })
+      ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
+      expect(azureSeen.remoteClient).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });
+
+      const githubSeen = (await (
+        await fetch(`${baseUrl}/api/github/pull-request/seen`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ prKey: "gh:repo:1" }),
+        })
+      ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
+      expect(githubSeen.remoteClient).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });
+    } finally {
+      await server.close();
+    }
+  });
+
   test("bootstraps token client from profileId query parameter when that profile is open", async () => {
     const port = await getFreePort();
     const auth = "test-token";

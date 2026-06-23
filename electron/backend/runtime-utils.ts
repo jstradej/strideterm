@@ -270,10 +270,20 @@ export function findWorkspace(
 export function createAttentionContext(): {
   visibleSessionIds: Set<string>;
   recentlyVisibleUntil: Map<string, number>;
+  visibleByViewer: Map<string, Set<string>>;
 } {
   return {
+    // Effective visible set — the UNION of every viewer's currently-visible
+    // sessions. Derived from visibleByViewer; never written directly.
     visibleSessionIds: new Set(),
     recentlyVisibleUntil: new Map(),
+    // Per-viewer visible sets keyed by windowId (desktop slot) or remote viewer
+    // id. Each viewer (desktop window, mobile/web client) reports only the
+    // sessions IT can see; the union is what counts as visible. Without this,
+    // a single global set let any two concurrent viewers clobber each other's
+    // selection — e.g. a mobile client on a non-terminal Azure "Review" tab
+    // reporting [] wiped the desktop's visible terminal, and the two flip-flopped.
+    visibleByViewer: new Map(),
   };
 }
 

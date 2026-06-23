@@ -1548,6 +1548,7 @@ export async function createRuntime({
     syncSessionSignalsWithState,
     shouldTrackProjectAlert,
     updateVisibleSessions,
+    dropViewerVisibility,
     isSessionVisible,
     markSessionPromptInjected,
   } = createRuntimeAttentionManager({
@@ -4803,6 +4804,7 @@ export async function createRuntime({
             ? []
             : // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: panel type is widened in this workspace variant
               workspace.panels.map((panel: any) => createSessionId(workspaceId, panel.id)),
+          windowId,
         );
       }
       ensureVisibleSession(workspaceId);
@@ -5150,6 +5152,7 @@ export async function createRuntime({
             ? []
             : // eslint-disable-next-line @typescript-eslint/no-explicit-any
               workspace.panels.map((panel: any) => createSessionId(workspaceId, panel.id)),
+          windowId,
         );
       }
       ensureVisibleSession(workspaceId);
@@ -5351,6 +5354,9 @@ export async function createRuntime({
         }
         draft.windowSlots = draft.windowSlots.filter((s) => s.id !== windowId);
       });
+      // The window is gone — drop its visible-session contribution so its
+      // panels stop counting as visible (otherwise their alerts stay suppressed).
+      dropViewerVisibility(windowId);
       broadcastState();
     },
 
@@ -6411,6 +6417,12 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
+    // Drop a viewer's visible-session contribution when its transport goes
+    // away (remote socket fully closed). Desktop windows are cleaned up via
+    // removeWindowSlot; the remote server calls this on WebSocket close.
+    dropViewerVisibility(viewerKey: string) {
+      dropViewerVisibility(viewerKey);
+    },
     syncAttentionContext({
       visibleSessionIds = [],
       windowFocused = true,
@@ -6444,7 +6456,12 @@ export async function createRuntime({
         .map((sessionId) => String(sessionId || "").trim())
         .filter(Boolean)
         .filter(sessionInScope);
-      updateVisibleSessions(nextIds);
+      // Key by the caller's viewer (desktop slot id or remote viewer id) so
+      // each viewer's visible set is tracked independently and unioned — two
+      // concurrent viewers no longer overwrite one another (the mobile
+      // workspace/tab flip-flop). Anonymous callers fall back to the default
+      // bucket inside updateVisibleSessions.
+      updateVisibleSessions(nextIds, windowId || undefined);
 
       // Phase 2 § 3.2.5: if the window is focused, a visible session counts
       // as active user interaction — updates lastUserInteractionAt so
