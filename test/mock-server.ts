@@ -72,6 +72,60 @@ export function loadFixture(name: string): any {
   return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+function findWorkspace(payload: any, workspaceId: string): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+  return payload.appState?.workspaces?.find((w: any) => w.id === workspaceId) || null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+function workspaceSessions(ws: any): any[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+  return (ws.panels || []).map((p: any) => ({
+    sessionId: `${ws.id}:${p.id}`,
+    panelId: p.id,
+    title: p.title,
+    command: p.command,
+    launch: p.launch,
+    startup: p.startup,
+    status: "running",
+  }));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+function setActiveWorkspace(payload: any, workspaceId: string): void {
+  const ws = findWorkspace(payload, workspaceId);
+  if (!ws) return;
+  payload.appState.activeWorkspaceId = workspaceId;
+  payload.appState.activeProjectId = workspaceId;
+  payload.workspace = {
+    workspace: ws,
+    project: ws,
+    sessions: workspaceSessions(ws),
+  };
+  if (payload.remoteClient) {
+    payload.remoteClient.activeWorkspaceId = workspaceId;
+    if (
+      payload.remoteClient.activeSessionId &&
+      !String(payload.remoteClient.activeSessionId).startsWith(`${workspaceId}:`)
+    ) {
+      payload.remoteClient.activeSessionId = "";
+    }
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+function ensureRemoteClient(payload: any): void {
+  const activeProfileId = String(payload.appState?.activeProfileId || payload.appState?.profiles?.[0]?.id || "default");
+  const activeWorkspaceId = String(payload.appState?.activeWorkspaceId || "");
+  payload.remoteClient = {
+    id: payload.remoteClient?.id || "mock-remote-client",
+    profileId: payload.remoteClient?.profileId || activeProfileId,
+    activeWorkspaceId: payload.remoteClient?.activeWorkspaceId || activeWorkspaceId,
+    activeSessionId: payload.remoteClient?.activeSessionId || "",
+  };
+}
+
 export interface MockServerHandle {
   port: number;
   token: string;
@@ -126,6 +180,7 @@ export async function startMockServer({
     );
     payload.appState.windowSlots = [{ id: "mock-window-1", profileId: activeProfileId, windowIndex: 1 }];
   }
+  ensureRemoteClient(payload);
   const TOKEN = "test-token";
   const sockets = new Set<WebSocket>();
   const terminalInputs: Array<{ sessionId: string; data: string }> = [];
@@ -171,26 +226,7 @@ export async function startMockServer({
         if (url.pathname.endsWith("/workspace/activate") || url.pathname.endsWith("/project/activate")) {
           const wsId = body.workspaceId || body.projectId;
           if (wsId) {
-            payload.appState.activeWorkspaceId = wsId;
-            payload.appState.activeProjectId = wsId;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
-            const ws = payload.appState.workspaces.find((w: any) => w.id === wsId);
-            if (ws) {
-              payload.workspace = {
-                workspace: ws,
-                project: ws,
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
-                sessions: (ws.panels || []).map((p: any) => ({
-                  sessionId: `${ws.id}:${p.id}`,
-                  panelId: p.id,
-                  title: p.title,
-                  command: p.command,
-                  launch: p.launch,
-                  startup: p.startup,
-                  status: "running",
-                })),
-              };
-            }
+            setActiveWorkspace(payload, String(wsId));
           }
           broadcast({ type: "state:updated", payload });
         }
