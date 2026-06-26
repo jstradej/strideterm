@@ -794,6 +794,32 @@ export function createTerminalController({
         });
       });
     });
+    // Copy-on-select: a constantly repainting TUI (Claude Code's spinner and
+    // status line, fzf, vim, …) makes xterm clear the visual selection on its
+    // next redraw — usually before the user can press Ctrl+C — so a classic
+    // select-then-copy flow silently loses the text. We capture the selection
+    // the instant it forms and push it to the clipboard, so the copy survives
+    // the repaint that wipes the highlight. The Ctrl+C / right-click handlers
+    // above still work for the cases where the selection is stable, and Ctrl+C
+    // with no live selection keeps sending SIGINT (correct: the copy already
+    // happened here at selection time).
+    //
+    // The 50 ms trailing debounce coalesces the rapid onSelectionChange burst
+    // during a drag into a single write of the final selection, and stays well
+    // inside Chromium's ~5 s transient-activation window from the mouse gesture
+    // so navigator.clipboard.writeText is also permitted on the remote web
+    // client. Empty changes (the repaint's own clear) are ignored so they never
+    // overwrite the clipboard or cancel a pending write.
+    let copyOnSelectTimer: number | null = null;
+    term.onSelectionChange(() => {
+      const text = term.getSelection();
+      if (!text) return;
+      if (copyOnSelectTimer !== null) window.clearTimeout(copyOnSelectTimer);
+      copyOnSelectTimer = window.setTimeout(() => {
+        copyOnSelectTimer = null;
+        navigator.clipboard.writeText(text).catch(() => {});
+      }, 50);
+    });
     // Keyboard paste (Ctrl/Cmd+V, Shift+Insert): the browser fires a
     // `paste` event on the focused xterm helper textarea. We intercept
     // during capture phase on `mount` so the inner xterm listener
