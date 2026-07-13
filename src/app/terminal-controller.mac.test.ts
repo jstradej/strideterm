@@ -24,6 +24,7 @@ vi.mock("@xterm/xterm", () => ({
     registerLinkProvider = vi.fn();
     attachCustomKeyEventHandler = vi.fn();
     attachCustomWheelEventHandler = vi.fn();
+    parser = { registerOscHandler: vi.fn() };
     hasSelection = vi.fn(() => false);
     getSelection = vi.fn(() => "");
     clearSelection = vi.fn();

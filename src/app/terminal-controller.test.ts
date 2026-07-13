@@ -21,6 +21,7 @@ vi.mock("@xterm/xterm", () => ({
     registerLinkProvider = vi.fn();
     attachCustomKeyEventHandler = vi.fn();
     attachCustomWheelEventHandler = vi.fn();
+    parser = { registerOscHandler: vi.fn() };
     hasSelection = vi.fn(() => false);
     getSelection = vi.fn(() => "");
     clearSelection = vi.fn();
@@ -412,6 +413,83 @@ function getKeyHandler(view: any): (event: Partial<KeyboardEvent>) => boolean {
   if (calls.length === 0) throw new Error("attachCustomKeyEventHandler was never called");
   return calls[0][0];
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getOscHandler(view: any, ident: number): (data: string) => boolean | Promise<boolean> {
+  const call = view.term.parser.registerOscHandler.mock.calls.find(
+    ([registeredIdent]: [number]) => registeredIdent === ident,
+  );
+  if (!call) throw new Error(`OSC ${ident} handler was never registered`);
+  return call[1];
+}
+
+describe("terminal clipboard interoperability", () => {
+  test("writes UTF-8 OSC 52 clipboard payloads", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    const previousClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    try {
+      const { controller, views } = buildAttachController();
+      const sessionId = "workspace-1:shell-1";
+      controller.ensureTerminal(sessionId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId);
+      const handler = getOscHandler(view, 52);
+      const expected = "P\u0159\u00edli\u0161 \u017elu\u0165ou\u010dk\u00fd k\u016f\u0148";
+      const bytes = new TextEncoder().encode(expected);
+      const encoded = btoa(String.fromCharCode(...bytes));
+
+      expect(handler(`c;${encoded}`)).toBe(true);
+      await Promise.resolve();
+
+      expect(writeText).toHaveBeenCalledWith(expected);
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { value: previousClipboard, configurable: true });
+    }
+  });
+
+  test("does not expose or overwrite the clipboard for OSC 52 queries and malformed payloads", () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    const previousClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    try {
+      const { controller, views } = buildAttachController();
+      const sessionId = "workspace-1:shell-1";
+      controller.ensureTerminal(sessionId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId);
+      const handler = getOscHandler(view, 52);
+
+      expect(handler("c;?")).toBe(true);
+      expect(handler("c;not-valid-base64%%%")).toBe(true);
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { value: previousClipboard, configurable: true });
+    }
+  });
+
+  test("right mousedown is not also delivered to a mouse-reporting terminal application", () => {
+    const { controller, views } = buildAttachController();
+    const sessionId = "workspace-1:shell-1";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const xtermScreen = document.createElement("div");
+    const terminalMouseHandler = vi.fn();
+    xtermScreen.addEventListener("mousedown", terminalMouseHandler);
+    view.mount.appendChild(xtermScreen);
+
+    xtermScreen.dispatchEvent(new MouseEvent("mousedown", { button: 2, bubbles: true }));
+
+    expect(terminalMouseHandler).not.toHaveBeenCalled();
+  });
+});
 
 describe("search addon wiring", () => {
   test("ensureTerminal attaches a SearchAddon and getSearchAddon returns it", () => {

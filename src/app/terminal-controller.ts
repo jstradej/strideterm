@@ -36,6 +36,21 @@ export interface TerminalView {
 type LogLevel = "info" | "warn" | "error" | "debug";
 
 const IS_MAC = typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("mac");
+const OSC52_MAX_ENCODED_CHARS = 4 * 1024 * 1024;
+
+function decodeOsc52Clipboard(data: string): string | null {
+  const separator = data.indexOf(";");
+  if (separator < 0) return null;
+  const encoded = data.slice(separator + 1);
+  if (encoded === "?" || encoded.length > OSC52_MAX_ENCODED_CHARS) return null;
+  try {
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
 
 interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
@@ -443,6 +458,7 @@ export function createTerminalController({
       cursorBlink: false,
       allowTransparency: false,
       smoothScrollDuration: 0,
+      macOptionClickForcesSelection: true,
       // SearchAddon (and its decoration manager) reads/writes APIs xterm.js
       // still marks as "proposed" in v6; the addon throws on findNext until
       // this flag is set. No actual proposed APIs are used in this file
@@ -456,6 +472,18 @@ export function createTerminalController({
       theme: resolveTerminalTheme(appConfig),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
+    term.parser.registerOscHandler(52, (data) => {
+      const text = decodeOsc52Clipboard(data);
+      if (text === null) return true;
+      const writeText = navigator.clipboard?.writeText;
+      if (!writeText) return true;
+      void writeText.call(navigator.clipboard, text).catch((err: unknown) => {
+        api.logRenderer?.("warn", "[terminal-clipboard] OSC 52 write failed", {
+          error: (err as Error)?.message || String(err),
+        });
+      });
+      return true;
+    });
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon(openTerminalLink);
     // Per-pane search. Each TerminalView owns one SearchAddon — the overlay
@@ -779,6 +807,15 @@ export function createTerminalController({
       return true;
     }
 
+    // strIDEterm owns right-click as copy/paste. Keep xterm from also reporting
+    // the same button press to mouse-aware TUIs before `contextmenu` fires.
+    mount.addEventListener(
+      "mousedown",
+      (event) => {
+        if (event.button === 2) event.stopPropagation();
+      },
+      { capture: true },
+    );
     // Right-click: copy selection, paste image if present, else paste text (PuTTY-style)
     mount.addEventListener("contextmenu", (event) => {
       event.preventDefault();
