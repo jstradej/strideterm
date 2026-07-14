@@ -197,7 +197,7 @@
     "typescript-eslint": "8.62.0",
     "vite": "^8.1.0",
     "vitest": "^4.1.9",
-    "vue-tsc": "3.3.5",
+    "vue-tsc": "3.3.7",
     "wait-on": "^9.0.10"
   },
   "overrides": {
