@@ -42,6 +42,13 @@ export interface SshAuthRequest {
   hostId: string;
   kind: "password" | "keyboard-interactive" | "passphrase";
   prompt: string;
+  // Generation token, echoed back on answers and used to scope prompt dismissals.
+  promptId?: string;
+}
+
+export interface SshAuthPromptCancel {
+  sessionId: string;
+  promptId: string;
 }
 
 export type SshConnectionStatus = "idle" | "connecting" | "connected" | "error" | "disconnected";

@@ -79,12 +79,19 @@ export const useTerminalStore = defineStore("terminal", () => {
         : undefined,
     });
 
-    api.onTerminalData!(({ sessionId, data }) => {
-      controller!.handleTerminalData({ sessionId, data });
+    api.onTerminalData!(({ sessionId, data, seq }) => {
+      controller!.handleTerminalData({ sessionId, data, seq });
     });
 
-    api.onTerminalExit!(({ sessionId, exitCode }) => {
-      controller!.handleTerminalExit({ sessionId, exitCode });
+    // Remote-only: the server pushes terminal:replay on (re)subscribe as the
+    // ordered reset point for a session. `seq`/`throughSeq` flow through so
+    // the controller can drop live frames already covered by the replay.
+    api.onTerminalReplay?.(({ sessionId, data, throughSeq }) => {
+      controller!.handleTerminalReplay({ sessionId: sessionId || "", data, throughSeq });
+    });
+
+    api.onTerminalExit!(({ sessionId, exitCode, intentional }) => {
+      controller!.handleTerminalExit({ sessionId, exitCode, intentional });
     });
 
     api.onConnectionState?.((connection) => {

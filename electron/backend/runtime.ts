@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { createStore } from "./store.js";
 import * as fm from "./file-manager.js";
 import { SessionManager } from "./session-manager.js";
+import { TerminalReplayStore } from "./terminal-replay-buffer.js";
 import {
   createAccessToken,
   createSessionId,
@@ -709,7 +710,13 @@ export async function createRuntime({
   const events = new EventEmitter();
   // Forward SSH events onto the runtime event bus so Electron IPC and the
   // remote WebSocket relay can pick them up via runtime.on("ssh:*", …).
-  for (const channel of ["ssh:auth-prompt", "ssh:host-key-change", "ssh:connection-state", "ssh:state"]) {
+  for (const channel of [
+    "ssh:auth-prompt",
+    "ssh:auth-prompt-cancel",
+    "ssh:host-key-change",
+    "ssh:connection-state",
+    "ssh:state",
+  ]) {
     sshManager.on(channel, (payload) => events.emit(channel, payload));
   }
   const terminalEnvironment = getTerminalEnvironmentImpl();
@@ -725,28 +732,29 @@ export async function createRuntime({
   let dockerPollMode: "fast" | "slow" | null = null;
   let gitPoll: ReturnType<typeof setInterval> | null = null;
   const attentionContext = createAttentionContext();
-  const terminalReplayBuffers = new Map<string, string>();
-  const terminalReplayMaxChars = Math.max(0, APP_CONFIG.session.replayMaxChars || 0);
+  const terminalReplay = new TerminalReplayStore(APP_CONFIG.session.replayMaxChars || 0);
 
-  function appendTerminalReplay(sessionId: string, data: string): void {
-    if (!terminalReplayMaxChars || !sessionId || !data) return;
-    const next = `${terminalReplayBuffers.get(sessionId) || ""}${data}`;
-    terminalReplayBuffers.set(
-      sessionId,
-      next.length > terminalReplayMaxChars ? next.slice(next.length - terminalReplayMaxChars) : next,
-    );
+  /** Record a chunk and return the sequence number assigned to it. */
+  function appendTerminalReplay(sessionId: string, data: string): number {
+    return terminalReplay.append(sessionId, data);
   }
 
+  /**
+   * Clear replay output but keep the per-session sequence counter. Used on an
+   * intentional restart so the next process generation continues the counter
+   * (an old client throughSeq can't shadow fresh output as a duplicate).
+   */
   function clearTerminalReplay(sessionId: string): void {
-    terminalReplayBuffers.delete(sessionId);
+    terminalReplay.clear(sessionId);
+  }
+
+  /** Drop replay and its sequence counter entirely (session/panel destroy). */
+  function destroyTerminalReplay(sessionId: string): void {
+    terminalReplay.delete(sessionId);
   }
 
   function clearWorkspaceTerminalReplay(workspaceId: string): void {
-    for (const sessionId of terminalReplayBuffers.keys()) {
-      if (sessionId.startsWith(`${workspaceId}:`)) {
-        terminalReplayBuffers.delete(sessionId);
-      }
-    }
+    terminalReplay.deleteWorkspace(workspaceId);
   }
 
   // --- Claude CLI availability (persisted; only re-checked when not yet found) ---
@@ -2955,6 +2963,33 @@ export async function createRuntime({
     });
   }
 
+  // New process generation under an existing sessionId (fresh spawn, implicit
+  // ensureSession respawn, or SSH reconnect). Clear the previous generation's
+  // replay so a later attach/subscribe doesn't prepend a dead process's screen
+  // to the new prompt. clearTerminalReplay keeps the sequence counter, so a
+  // client still holding the old throughSeq can't mistake new output for
+  // duplicates. Fires before the new generation's first output (data events
+  // dispatch async after the spawn).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sessions.on("terminal:spawned", (payload: any) => {
+    clearTerminalReplay(String(payload.sessionId || ""));
+  });
+
+  // A panel removed from state (e.g. saveWorkspace → sessions.syncWithState)
+  // permanently drops its session. Destroy its replay so removed panels don't
+  // leak replay memory and their stale output can't be re-served on a later
+  // subscribe. (Restart uses clearTerminalReplay above, which keeps the counter;
+  // destroy drops it entirely.)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sessions.on("terminal:removed", (payload: any) => {
+    destroyTerminalReplay(String(payload.sessionId || ""));
+    // Forward to remote clients so the remote-server can prune the id from every
+    // socket's live subscription set. Without this a socket keeps the removed id
+    // subscribed: a recreated same-id panel would stream live frames with no
+    // fresh replay handshake, and a resubscribe would skip replay entirely.
+    events.emit("terminal:removed", payload);
+  });
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:data", (payload: any) => {
     const descriptor = parseSessionId(payload.sessionId);
@@ -2964,7 +2999,11 @@ export async function createRuntime({
     const panel = (project as any)?.panels?.find((item: any) => item.id === descriptor?.panelId) || null;
     const rawText = String(payload.data || "");
     const cleanText = rawText ? stripAnsi(rawText) : "";
-    appendTerminalReplay(String(payload.sessionId || ""), rawText);
+    // Assign the monotonic per-session sequence and stamp it on the payload
+    // before re-emitting, so both the Electron IPC relay and the remote WS
+    // relay forward an ordered stream. Remote clients use it to order replay
+    // against live frames; Electron ignores it.
+    payload.seq = appendTerminalReplay(String(payload.sessionId || ""), rawText);
 
     // Rate-limit detection runs for ANY agent in ANY tab — Docker shells,
     // plugin panels, plain terminals, task workers. Hitting a provider limit
@@ -3503,7 +3542,21 @@ export async function createRuntime({
     }
     clearActivityFade(payload.sessionId);
     deleteSessionSignal(payload.sessionId);
-    clearTerminalReplay(payload.sessionId);
+    // Keep replay after an UNEXPECTED exit so a client that connects afterwards
+    // can still see why the process died. Only an intentional exit (a restart)
+    // clears it — and clearTerminalReplay keeps the sequence counter so the new
+    // generation's frames can't be mistaken for duplicates. Destroying the
+    // session/panel drops the buffer via destroyTerminalReplay elsewhere.
+    if (payload.intentional) {
+      clearTerminalReplay(payload.sessionId);
+    } else {
+      // Fold the exit notice INTO the replay so it survives a later
+      // subscribe/replay (which resets the xterm buffer). Without this the
+      // renderer's live-synthesized "[process exited]" line is wiped by the next
+      // term.reset() and a crashed background pane looks alive again. Text and
+      // format must match the renderer's handleTerminalExit banner.
+      appendTerminalReplay(String(payload.sessionId || ""), `\r\n[process exited with code ${payload.exitCode}]\r\n`);
+    }
     lastRateLimitAlertAt.delete(payload.sessionId);
     clearRateLimitSuspicion(payload.sessionId);
     events.emit("terminal:exit", payload);
@@ -4631,7 +4684,16 @@ export async function createRuntime({
       return remoteInfo;
     },
     getTerminalReplay(sessionId: string) {
-      return { data: terminalReplayBuffers.get(String(sessionId || "")) || "" };
+      return { data: terminalReplay.snapshot(String(sessionId || "")).data };
+    },
+    /**
+     * Sequence-aware snapshot for the remote subscribe handshake: returns the
+     * stored output plus the `throughSeq` a client uses to drop duplicate live
+     * frames. The plain HTTP/IPC `getTerminalReplay` above stays `{ data }` so
+     * the Electron attach path is unchanged.
+     */
+    getTerminalReplaySnapshot(sessionId: string) {
+      return terminalReplay.snapshot(String(sessionId || ""));
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     setRemoteInfo(nextRemoteInfo: any) {
@@ -5548,6 +5610,7 @@ export async function createRuntime({
         });
 
         sessionsExited = sessions.removeWorkspaceSessions(workspaceId);
+        clearWorkspaceTerminalReplay(workspaceId);
         for (const sessionId of [...sessionSignals.keys()]) {
           if (sessionId.startsWith(`${workspaceId}:`)) {
             clearActivityFade(sessionId);
@@ -6052,6 +6115,15 @@ export async function createRuntime({
       clearAlertSession(sessionId);
       clearActivityFade(sessionId);
       deleteSessionSignal(sessionId);
+      // "Disconnect SSH" keeps the panel in state — only the process/connection
+      // goes away — so CLEAR the replay (drop the dead generation's screen) but
+      // KEEP the sequence counter. destroyTerminalReplay would reset seq to 0,
+      // and a renderer/remote client still holding the pre-disconnect throughSeq
+      // would then drop every reconnect frame (seq restarts low) as a duplicate.
+      // The counter is dropped only when the panel is actually removed
+      // (terminal:removed → destroyTerminalReplay). Clear BEFORE removeSession so
+      // the "── Disconnected by user" banner it emits lands in the (kept) replay
+      // instead of re-creating a just-destroyed entry.
       clearTerminalReplay(String(sessionId || ""));
       sessions.removeSession(sessionId);
       broadcastState();

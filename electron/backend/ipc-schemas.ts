@@ -842,6 +842,15 @@ export const wsTerminalResizeSchema = z.object({
 });
 export type WsTerminalResize = z.infer<typeof wsTerminalResizeSchema>;
 
+// The complete set of terminal sessions a remote client currently renders.
+// Resending the same set is idempotent; an empty set means "render nothing".
+// Bounded generously here; the server applies its own runtime cap as well.
+export const wsTerminalSubscribeSchema = z.object({
+  type: z.literal("terminal:subscribe"),
+  sessionIds: z.array(nonEmptyString).max(256),
+});
+export type WsTerminalSubscribe = z.infer<typeof wsTerminalSubscribeSchema>;
+
 export const fileListSchema = z.object({
   rootPath: z.string().min(1),
   relativePath: z.string(),
@@ -1001,14 +1010,42 @@ export type SshCertImport = z.infer<typeof sshCertImportSchema>;
 export const sshAuthAnswerSchema = z.object({
   sessionId: z.string(),
   answers: z.array(z.string()),
+  // Generation token echoed from the prompt so a stale dialog's answer is not
+  // applied to a newer connection that reused the sessionId. Mandatory: every
+  // prompt carries a promptId, so a request without one can only be a stale or
+  // spoofed client trying to hit the current prompt by sessionId alone.
+  promptId: z.string(),
 });
 export type SshAuthAnswer = z.infer<typeof sshAuthAnswerSchema>;
 
 export const sshAcceptHostKeySchema = z.object({
   sessionId: z.string(),
   mode: z.enum(["once", "permanent"]),
+  // Mandatory generation token — see sshAuthAnswerSchema. Accepting a host key
+  // for a superseded generation could pin a different server's key to the new
+  // connection, so a request without a promptId is rejected at the boundary.
+  promptId: z.string(),
 });
 export type SshAcceptHostKey = z.infer<typeof sshAcceptHostKeySchema>;
+
+export const sshAuthCancelSchema = z.object({
+  sessionId: z.string(),
+  // Mandatory generation token — see sshAuthAnswerSchema. Cancelling by
+  // sessionId alone would let a stale/spoofed client dismiss the CURRENT
+  // prompt of a newer connection that reused the id, so the token is required
+  // at the boundary and re-checked unconditionally in the manager.
+  promptId: z.string(),
+});
+export type SshAuthCancel = z.infer<typeof sshAuthCancelSchema>;
+
+export const sshRejectHostKeySchema = z.object({
+  sessionId: z.string(),
+  // Mandatory generation token — see sshAcceptHostKeySchema. Rejecting the
+  // wrong generation would abort a newer connection's host-key decision, so a
+  // request without a promptId is rejected at the boundary.
+  promptId: z.string(),
+});
+export type SshRejectHostKey = z.infer<typeof sshRejectHostKeySchema>;
 
 export const sshConfigImportSchema = z.object({
   path: z.string().optional(),

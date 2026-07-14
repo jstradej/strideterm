@@ -58,6 +58,12 @@ type Store = {
 };
 
 interface PendingSession {
+  // Per-generation prompt token. A rapid Disconnect→reconnect (or Restart) reuses
+  // the sessionId, so an answer/dismiss must be scoped to the generation that
+  // raised the prompt — otherwise a stale dialog's answer could be delivered to a
+  // newer connection (incl. accepting a DIFFERENT host key). Echoed in every
+  // ssh:auth-prompt / ssh:host-key-change payload and required back on answers.
+  promptId: string;
   finishKeyboard: ((answers: string[]) => void) | null;
   acceptHostKeyCb: ((accept: boolean) => void) | null;
   hostKeyInfo: { fingerprint: string; keyType: string; previous: unknown } | null;
@@ -88,6 +94,8 @@ export class SshManager extends EventEmitter {
   log: Logger | Console;
   activeSessions: Map<string, SshSession>;
   pendingPrompts: Map<string, PendingSession>;
+  // Monotonic source of per-generation prompt tokens (see PendingSession.promptId).
+  promptSeq: number;
 
   constructor({ store, credentialStore, logger }: SshManagerOpts) {
     super();
@@ -97,6 +105,7 @@ export class SshManager extends EventEmitter {
     this.activeSessions = new Map();
     // Per-session pending state: { finishKeyboard, pendingHostKey, acceptHostKeyCb }
     this.pendingPrompts = new Map();
+    this.promptSeq = 0;
   }
 
   // ---- host book CRUD ----
@@ -191,26 +200,16 @@ export class SshManager extends EventEmitter {
       host = found;
     }
 
-    const auth = await buildAuth(host, this.credentialStore);
-
-    // Resolve jump chain: each hop needs its own auth built from its credential refs.
-    const jumps: {
-      host: HostRecord;
-      auth: typeof auth;
-      verify: (args: { key: Buffer }) => ReturnType<typeof verifyHostKey>;
-    }[] = [];
-    for (const jId of host.jump || []) {
-      const jHost = this.getHost(jId);
-      if (!jHost) throw new Error(`Jump host not found: ${jId}`);
-      const jAuth = await buildAuth(jHost, this.credentialStore);
-      jumps.push({
-        host: jHost,
-        auth: jAuth,
-        verify: ({ key }) => verifyHostKey(this.store as KnownHostsStore, jHost, { key }),
-      });
-    }
-
+    // Register the pending record BEFORE the first await. ssh2 auth and
+    // jump-host credential resolution below are async, and a teardown (stop() /
+    // Disconnect / workspace prune) can land in that window. Without an entry in
+    // the map here, stop() would find neither an active session nor a pending
+    // record and no-op — the connect would then sail past the teardown and park
+    // on a prompt/handshake nothing can reach. The abort check after the awaits
+    // detects a teardown that removed this record and rejects the connect. The
+    // record identity also drives the generation guard (isSupersededGeneration).
     const pending: PendingSession = {
+      promptId: `${sessionId}#${++this.promptSeq}`,
       finishKeyboard: null,
       acceptHostKeyCb: null,
       hostKeyInfo: null,
@@ -218,6 +217,40 @@ export class SshManager extends EventEmitter {
       rejectPreAuth: null,
     };
     this.pendingPrompts.set(sessionId, pending);
+
+    let auth: Awaited<ReturnType<typeof buildAuth>>;
+    // Resolve jump chain: each hop needs its own auth built from its credential refs.
+    const jumps: {
+      host: HostRecord;
+      auth: typeof auth;
+      verify: (args: { key: Buffer }) => ReturnType<typeof verifyHostKey>;
+    }[] = [];
+    try {
+      auth = await buildAuth(host, this.credentialStore);
+      for (const jId of host.jump || []) {
+        const jHost = this.getHost(jId);
+        if (!jHost) throw new Error(`Jump host not found: ${jId}`);
+        const jAuth = await buildAuth(jHost, this.credentialStore);
+        jumps.push({
+          host: jHost,
+          auth: jAuth,
+          verify: ({ key }) => verifyHostKey(this.store as KnownHostsStore, jHost, { key }),
+        });
+      }
+    } catch (err) {
+      // Auth/jump resolution failed → drop the up-front pending record so it
+      // doesn't leak, then rethrow to the caller. Guard the delete: a concurrent
+      // teardown may already have removed or replaced it.
+      if (this.pendingPrompts.get(sessionId) === pending) this.pendingPrompts.delete(sessionId);
+      throw err;
+    }
+
+    // A teardown that landed while buildAuth/jump-auth was resolving removed our
+    // record from the map (or a newer generation replaced it). Abort now instead
+    // of connecting into a session the caller already tore down.
+    if (this.pendingPrompts.get(sessionId) !== pending) {
+      throw new Error("SSH connect cancelled");
+    }
 
     // ANSI-colored status banner so the user always sees *something* in the
     // terminal, even while connecting / after a failure. ssh2's `connect()`
@@ -247,6 +280,7 @@ export class SshManager extends EventEmitter {
           pending.rejectPreAuth = reject;
           this.emit("ssh:auth-prompt", {
             sessionId,
+            promptId: pending.promptId,
             prompt: {
               name: "SSH Authentication",
               instructions: `Enter password for ${hostLabel}`,
@@ -258,7 +292,11 @@ export class SshManager extends EventEmitter {
         auth.tryKeyboard = true;
       } catch (err) {
         banner(`✗ Authentication cancelled`, "31");
-        this.pendingPrompts.delete(sessionId);
+        // Identity-guard the delete: an immediate reconnect may already have
+        // registered a NEW generation's pending record under this id. Deleting it
+        // unconditionally would erase the reconnect's record and make it fail its
+        // own abort check. Only drop the entry if it is still ours.
+        if (this.pendingPrompts.get(sessionId) === pending) this.pendingPrompts.delete(sessionId);
         throw err;
       }
     }
@@ -283,6 +321,13 @@ export class SshManager extends EventEmitter {
       verify: ({ key }) => verifyHostKey(this.store as KnownHostsStore, host, { key }),
       onData,
       onExit: (exit) => {
+        // Generation guard: a late stream/client close from a SUPERSEDED
+        // generation (a rapid Restart or Disconnect→Reconnect reuses this
+        // sessionId) must not tear down the CURRENT generation. If a newer
+        // generation now owns the id, drop this exit — otherwise it would
+        // delete the live session/prompt and (via terminal:exit) clear the new
+        // generation's replay.
+        if (this.isSupersededGeneration(sessionId, pending)) return;
         this.activeSessions.delete(sessionId);
         this.pendingPrompts.delete(sessionId);
         this.emit("ssh:connection-state", { sessionId, state: "disconnected" });
@@ -305,6 +350,7 @@ export class SshManager extends EventEmitter {
         pending.finishKeyboard = finish;
         this.emit("ssh:auth-prompt", {
           sessionId,
+          promptId: pending.promptId,
           prompt: { name, instructions, prompts: prompts.map((p) => ({ prompt: p.prompt, echo: !!p.echo })) },
         });
       },
@@ -313,6 +359,7 @@ export class SshManager extends EventEmitter {
         pending.hostKeyInfo = { fingerprint, keyType, previous };
         this.emit("ssh:host-key-change", {
           sessionId,
+          promptId: pending.promptId,
           host: { name: host.name, host: host.host, port: host.port || 22 },
           fingerprint,
           keyType,
@@ -342,13 +389,75 @@ export class SshManager extends EventEmitter {
 
     try {
       await session.start();
+      // Ownership guard: a teardown (stop) removed us from activeSessions while
+      // start() was completing, or a newer generation replaced us. Returning this
+      // now-orphaned connection would leave a live-but-untracked ssh2 client
+      // emitting under the shared id (racing the current owner). Tear it down
+      // quietly instead — the current owner drives the UI.
+      if (this.activeSessions.get(sessionId) !== session) {
+        await session.stop().catch(() => {});
+        throw new Error("SSH connect superseded");
+      }
       return session;
     } catch (err) {
-      this.activeSessions.delete(sessionId);
-      this.pendingPrompts.delete(sessionId);
-      this.emit("ssh:connection-state", { sessionId, state: "disconnected", error: (err as Error).message });
-      banner(`✗ Connection failed: ${(err as Error).message}`, "31");
+      // Skip the failure cleanup/UI when we no longer own this id (a rapid Restart
+      // or Disconnect→Reconnect installed a newer generation, including the
+      // superseded case above) — otherwise we'd clobber the successor's state or
+      // emit a spurious "Connection failed" banner for a superseded connect.
+      if (this.activeSessions.get(sessionId) === session && !this.isSupersededGeneration(sessionId, pending)) {
+        this.activeSessions.delete(sessionId);
+        this.pendingPrompts.delete(sessionId);
+        this.emit("ssh:connection-state", { sessionId, state: "disconnected", error: (err as Error).message });
+        banner(`✗ Connection failed: ${(err as Error).message}`, "31");
+      }
       throw err;
+    }
+  }
+
+  /**
+   * True when a NEWER generation has taken over this sessionId (a rapid Restart
+   * or Disconnect→Reconnect reuses the id). Every generation installs its own
+   * `pending` record before it creates its SshSession, so a pending entry that
+   * is no longer *this* generation's proves a successor now owns the id — and a
+   * late callback from the old generation must leave the current one alone.
+   */
+  private isSupersededGeneration(sessionId: string, pending: PendingSession): boolean {
+    const current = this.pendingPrompts.get(sessionId);
+    return !!current && current !== pending;
+  }
+
+  /**
+   * Reject / dismiss every outstanding user-decision on a pending connect so a
+   * teardown mid-prompt can't leave the connect hanging. Rejecting the pre-auth
+   * promise makes the awaiting createSession reject; answering a keyboard prompt
+   * with `[]` or rejecting the host key makes ssh2 close the pre-ready
+   * connection, which rejects start(). Safe on a session with no open prompt.
+   */
+  private cancelPendingDecision(pending: PendingSession): void {
+    if (pending.rejectPreAuth) {
+      try {
+        pending.rejectPreAuth(new Error("SSH connection cancelled"));
+      } catch {
+        // already settled
+      }
+      pending.resolvePreAuth = null;
+      pending.rejectPreAuth = null;
+    }
+    if (pending.finishKeyboard) {
+      try {
+        pending.finishKeyboard([]);
+      } catch {
+        // already settled
+      }
+      pending.finishKeyboard = null;
+    }
+    if (pending.acceptHostKeyCb) {
+      try {
+        pending.acceptHostKeyCb(false);
+      } catch {
+        // already settled
+      }
+      pending.acceptHostKeyCb = null;
     }
   }
 
@@ -360,19 +469,48 @@ export class SshManager extends EventEmitter {
     this.activeSessions.get(sessionId)?.resize(cols, rows);
   }
 
+  /**
+   * Tell every connected client to dismiss any auth / host-key dialog it is
+   * showing for this generation. Scoped by promptId so a teardown of one
+   * generation never closes a newer generation's prompt (Disconnect→reconnect
+   * reuses the sessionId).
+   */
+  private emitPromptDismiss(sessionId: string, promptId: string): void {
+    this.emit("ssh:auth-prompt-cancel", { sessionId, promptId });
+  }
+
   async stop(sessionId: string): Promise<void> {
     const s = this.activeSessions.get(sessionId);
-    this.pendingPrompts.delete(sessionId);
-    if (!s) return;
-    await s.stop();
+    const pending = this.pendingPrompts.get(sessionId);
     this.activeSessions.delete(sessionId);
+    this.pendingPrompts.delete(sessionId);
+    // Unblock any connect still waiting on user input BEFORE tearing the session
+    // down. Without this a teardown that lands while the up-front password prompt
+    // (or a mid-connect keyboard-interactive / host-key decision) is open leaves
+    // the awaiting createSession promise — and its prompt — hanging forever.
+    if (pending) {
+      this.cancelPendingDecision(pending);
+      // A user-driven teardown (disconnect / workspace removal / backend cancel)
+      // all funnel through stop(); tell clients to close the now-dead dialog so a
+      // stale password/host-key prompt can't linger on another client.
+      this.emitPromptDismiss(sessionId, pending.promptId);
+    }
+    if (s) await s.stop();
   }
 
   // ---- prompts: keyboard-interactive (MFA) ----
 
-  answerAuthPrompt(sessionId: string, answers: string[]): void {
+  answerAuthPrompt(sessionId: string, answers: string[], promptId?: string): void {
     const pending = this.pendingPrompts.get(sessionId);
     if (!pending) return;
+    // Reject an answer that doesn't match the CURRENT generation's token: a
+    // Disconnect→reconnect reuses the sessionId, so a stale dialog left open on
+    // another client must not feed its answer into the new connection. promptId
+    // is mandatory (sshAuthAnswerSchema) and the guard is unconditional — an
+    // omitted or superseded token is ignored (undefined never equals a live id),
+    // closing the bypass where a client could hit the current prompt with only a
+    // sessionId.
+    if (pending.promptId !== promptId) return;
     // Up-front password prompt (collected before session.start()) takes
     // priority over mid-connect keyboard-interactive prompts.
     if (pending.resolvePreAuth) {
@@ -383,6 +521,7 @@ export class SshManager extends EventEmitter {
         pending.resolvePreAuth = null;
         pending.rejectPreAuth = null;
       }
+      this.emitPromptDismiss(sessionId, pending.promptId);
       return;
     }
     if (!pending.finishKeyboard) {
@@ -394,11 +533,17 @@ export class SshManager extends EventEmitter {
     } finally {
       pending.finishKeyboard = null;
     }
+    this.emitPromptDismiss(sessionId, pending.promptId);
   }
 
-  cancelAuthPrompt(sessionId: string): void {
+  cancelAuthPrompt(sessionId: string, promptId?: string): void {
     const pending = this.pendingPrompts.get(sessionId);
     if (!pending) return;
+    // Never cancel a superseded generation — a stale dialog could otherwise
+    // dismiss the CURRENT prompt of a newer connection that reused the id.
+    // promptId is mandatory (sshAuthCancelSchema) and the guard is unconditional:
+    // an omitted or superseded token is ignored (see answerAuthPrompt).
+    if (pending.promptId !== promptId) return;
     if (pending.rejectPreAuth) {
       try {
         pending.rejectPreAuth(new Error("Authentication cancelled"));
@@ -406,6 +551,7 @@ export class SshManager extends EventEmitter {
         pending.resolvePreAuth = null;
         pending.rejectPreAuth = null;
       }
+      this.emitPromptDismiss(sessionId, pending.promptId);
       return;
     }
     if (!pending.finishKeyboard) return;
@@ -415,16 +561,22 @@ export class SshManager extends EventEmitter {
     } finally {
       pending.finishKeyboard = null;
     }
+    this.emitPromptDismiss(sessionId, pending.promptId);
   }
 
   // ---- prompts: host key TOFU mismatch ----
 
-  async acceptHostKey(sessionId: string, mode = "once"): Promise<void> {
+  async acceptHostKey(sessionId: string, mode = "once", promptId?: string): Promise<void> {
     const pending = this.pendingPrompts.get(sessionId);
     if (!pending?.acceptHostKeyCb) {
       (this.log as Logger).warn?.("acceptHostKey called with no pending decision", { sessionId });
       return;
     }
+    // Never accept a host key for a superseded generation — a stale dialog could
+    // otherwise persist a DIFFERENT server's key against the new connection.
+    // promptId is mandatory (sshAcceptHostKeySchema) and the guard is
+    // unconditional: an omitted or superseded token is ignored.
+    if (pending.promptId !== promptId) return;
     const cb = pending.acceptHostKeyCb;
     pending.acceptHostKeyCb = null;
 
@@ -439,13 +591,19 @@ export class SshManager extends EventEmitter {
       }
     }
     cb(true);
+    this.emitPromptDismiss(sessionId, pending.promptId);
   }
 
-  rejectHostKey(sessionId: string): void {
+  rejectHostKey(sessionId: string, promptId?: string): void {
     const pending = this.pendingPrompts.get(sessionId);
     if (!pending?.acceptHostKeyCb) return;
+    // Never reject a superseded generation — a stale dialog could otherwise
+    // abort a newer connection's host-key decision. promptId is mandatory
+    // (sshRejectHostKeySchema) and the guard is unconditional (see acceptHostKey).
+    if (pending.promptId !== promptId) return;
     const cb = pending.acceptHostKeyCb;
     pending.acceptHostKeyCb = null;
     cb(false);
+    this.emitPromptDismiss(sessionId, pending.promptId);
   }
 }

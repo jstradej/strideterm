@@ -34,6 +34,7 @@ vi.mock("@xterm/xterm", () => ({
     });
     write = vi.fn();
     writeln = vi.fn();
+    reset = vi.fn();
     refresh = vi.fn();
     clearTextureAtlas = vi.fn();
     scrollLines = vi.fn();
@@ -353,11 +354,11 @@ describe("terminal pane reattach", () => {
     }
   });
 
-  test("loads backend replay on first attach when no live terminal data was received", async () => {
+  test("Electron: loads backend replay on first attach when no live terminal data was received", async () => {
     const resizeObserver = installFakeResizeObserver();
     try {
       const getTerminalReplay = vi.fn().mockResolvedValue({ data: "boot prompt\r\n" });
-      const { controller, views } = buildAttachController({ getTerminalReplay });
+      const { controller, views } = buildAttachController({ getTerminalReplay, isRemote: false });
       const sessionId = "workspace-1:shell-1";
       const paneBody = document.createElement("div");
       document.body.append(paneBody);
@@ -374,7 +375,7 @@ describe("terminal pane reattach", () => {
     }
   });
 
-  test("skips backend replay if live terminal data arrives before replay resolves", async () => {
+  test("Electron: skips backend replay if live terminal data arrives before replay resolves", async () => {
     const resizeObserver = installFakeResizeObserver();
     try {
       let resolveReplay: (value: { data: string }) => void = () => {};
@@ -384,7 +385,7 @@ describe("terminal pane reattach", () => {
             resolveReplay = resolve;
           }),
       );
-      const { controller, views } = buildAttachController({ getTerminalReplay });
+      const { controller, views } = buildAttachController({ getTerminalReplay, isRemote: false });
       const sessionId = "workspace-1:shell-1";
       const paneBody = document.createElement("div");
       document.body.append(paneBody);
@@ -398,6 +399,68 @@ describe("terminal pane reattach", () => {
       const view = (views.value as any).get(sessionId)!;
       expect(view.term.write).toHaveBeenCalledTimes(1);
       expect(view.term.write).toHaveBeenCalledWith("live\r\n");
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("remote: does NOT pull HTTP replay on attach (the server pushes terminal:replay instead)", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const getTerminalReplay = vi.fn().mockResolvedValue({ data: "should-not-be-used" });
+      const { controller } = buildAttachController({ getTerminalReplay, isRemote: true });
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+
+      controller.attachTerminalPane("workspace-1:shell-1", paneBody);
+      await Promise.resolve();
+
+      expect(getTerminalReplay).not.toHaveBeenCalled();
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("remote: handleTerminalReplay resets an open terminal and writes replay before live frames", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const { controller, views } = buildAttachController({ isRemote: true });
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+      controller.attachTerminalPane(sessionId, paneBody);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId)!;
+
+      controller.handleTerminalReplay({ sessionId, data: "REPLAY", throughSeq: 5 });
+      expect(view.term.reset).toHaveBeenCalledTimes(1);
+      expect(view.term.write).toHaveBeenCalledWith("REPLAY");
+
+      controller.handleTerminalData({ sessionId, data: "LIVE", seq: 6 });
+      expect(view.term.write).toHaveBeenCalledWith("LIVE");
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("remote: ignores a live frame with seq <= the replay throughSeq (defensive duplicate)", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const { controller, views } = buildAttachController({ isRemote: true });
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+      controller.attachTerminalPane(sessionId, paneBody);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId)!;
+
+      controller.handleTerminalReplay({ sessionId, data: "REPLAY", throughSeq: 5 });
+      view.term.write.mockClear();
+
+      controller.handleTerminalData({ sessionId, data: "dup", seq: 5 }); // <= throughSeq → dropped
+      controller.handleTerminalData({ sessionId, data: "fresh", seq: 6 }); // > throughSeq → written
+      expect(view.term.write).toHaveBeenCalledTimes(1);
+      expect(view.term.write).toHaveBeenCalledWith("fresh");
     } finally {
       resizeObserver.restore();
     }

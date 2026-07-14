@@ -7,13 +7,17 @@ const syncFontSizeMock = vi.hoisted(() => vi.fn());
 const scheduleAllVisibleResizeMock = vi.hoisted(() => vi.fn());
 
 const getSearchAddonMock = vi.hoisted(() => vi.fn());
+const handleTerminalDataMock = vi.hoisted(() => vi.fn());
+const handleTerminalReplayMock = vi.hoisted(() => vi.fn());
+const handleTerminalExitMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../app/terminal-controller.js", () => ({
   createTerminalController: () => ({
     syncFontSize: syncFontSizeMock,
     syncTheme: vi.fn(),
-    handleTerminalData: vi.fn(),
-    handleTerminalExit: vi.fn(),
+    handleTerminalData: handleTerminalDataMock,
+    handleTerminalReplay: handleTerminalReplayMock,
+    handleTerminalExit: handleTerminalExitMock,
     attachTerminalPane: vi.fn(),
     focusActiveTerminal: vi.fn(),
     scheduleActiveResize: vi.fn(),
@@ -34,15 +38,34 @@ type AnyRecord = Record<string, any>;
 
 function makeApi(isRemote: boolean) {
   const connectionHandlers: Array<(payload: AnyRecord) => void> = [];
+  const dataHandlers: Array<(payload: AnyRecord) => void> = [];
+  const replayHandlers: Array<(payload: AnyRecord) => void> = [];
+  const exitHandlers: Array<(payload: AnyRecord) => void> = [];
   return {
     isRemote,
-    onTerminalData: vi.fn(),
-    onTerminalExit: vi.fn(),
+    onTerminalData: vi.fn((handler: (payload: AnyRecord) => void) => {
+      dataHandlers.push(handler);
+    }),
+    onTerminalReplay: vi.fn((handler: (payload: AnyRecord) => void) => {
+      replayHandlers.push(handler);
+    }),
+    onTerminalExit: vi.fn((handler: (payload: AnyRecord) => void) => {
+      exitHandlers.push(handler);
+    }),
     onConnectionState: vi.fn((handler: (payload: AnyRecord) => void) => {
       connectionHandlers.push(handler);
     }),
     emitConnectionState: (payload: AnyRecord) => {
       for (const handler of connectionHandlers) handler(payload);
+    },
+    emitTerminalData: (payload: AnyRecord) => {
+      for (const handler of dataHandlers) handler(payload);
+    },
+    emitTerminalReplay: (payload: AnyRecord) => {
+      for (const handler of replayHandlers) handler(payload);
+    },
+    emitTerminalExit: (payload: AnyRecord) => {
+      for (const handler of exitHandlers) handler(payload);
     },
   };
 }
@@ -127,6 +150,67 @@ describe("useTerminalStore — font size watch", () => {
     expect(scheduleAllVisibleResizeMock).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(150);
     expect(scheduleAllVisibleResizeMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Production wiring guard: the app boots through main.ts → terminalStore.init,
+// NOT through app/runtime-bindings.ts (which has no callers). These tests pin
+// the replay/seq/intentional pass-through to the wiring that actually runs —
+// the review's most severe finding was replay handling living only in the
+// uncalled module.
+describe("useTerminalStore — terminal event wiring (production path)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyRecord).strideterm = { startupFlags: { windowId: "" } };
+    handleTerminalDataMock.mockClear();
+    handleTerminalReplayMock.mockClear();
+    handleTerminalExitMock.mockClear();
+  });
+
+  function initWithApi(isRemote: boolean) {
+    const termStore = useTerminalStore();
+    const api = makeApi(isRemote);
+    termStore.init(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      api as any,
+      {},
+      { getActiveSessionId: () => null, getOverlay: () => null, getPayload: () => null },
+    );
+    return api;
+  }
+
+  test("init registers onTerminalReplay and forwards sessionId/data/throughSeq", () => {
+    const api = initWithApi(true);
+    expect(api.onTerminalReplay).toHaveBeenCalledTimes(1);
+    api.emitTerminalReplay({ sessionId: "ws1:a", data: "REPLAY", throughSeq: 7 });
+    expect(handleTerminalReplayMock).toHaveBeenCalledWith({ sessionId: "ws1:a", data: "REPLAY", throughSeq: 7 });
+  });
+
+  test("init forwards seq on terminal data (dedup guard depends on it)", () => {
+    const api = initWithApi(true);
+    api.emitTerminalData({ sessionId: "ws1:a", data: "chunk", seq: 12 });
+    expect(handleTerminalDataMock).toHaveBeenCalledWith({ sessionId: "ws1:a", data: "chunk", seq: 12 });
+  });
+
+  test("init forwards intentional on terminal exit", () => {
+    const api = initWithApi(false);
+    api.emitTerminalExit({ sessionId: "ws1:a", exitCode: 0, intentional: true });
+    expect(handleTerminalExitMock).toHaveBeenCalledWith({ sessionId: "ws1:a", exitCode: 0, intentional: true });
+  });
+
+  test("init tolerates a transport without onTerminalReplay (Electron mock)", () => {
+    const termStore = useTerminalStore();
+    const api = makeApi(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (api as any).onTerminalReplay = undefined;
+    expect(() =>
+      termStore.init(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        api as any,
+        {},
+        { getActiveSessionId: () => null, getOverlay: () => null, getPayload: () => null },
+      ),
+    ).not.toThrow();
   });
 });
 

@@ -580,7 +580,7 @@ describe("useAppStore — remote mode identity", () => {
       workspace: desktopWorkspacePayload,
     });
     const transport = makeRemoteTransport(initialPayload);
-    transport.markAzurePullRequestSeen = vi.fn(() =>
+    (transport as AnyApi).markAzurePullRequestSeen = vi.fn(() =>
       Promise.resolve({
         ...initialPayload,
         workspace: desktopWorkspacePayload,

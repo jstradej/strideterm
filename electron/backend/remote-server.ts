@@ -50,6 +50,7 @@ import {
   workspaceGridSwapCellsSchema,
   wsTerminalInputSchema,
   wsTerminalResizeSchema,
+  wsTerminalSubscribeSchema,
 } from "./ipc-schemas.js";
 import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
@@ -128,6 +129,44 @@ const log = getLogger("remote-server");
 const WS_HEARTBEAT_INTERVAL_MS = 20_000;
 const WS_HEARTBEAT_MAX_MISSED = 3;
 
+// Per-socket outbound buffer ceiling. Beyond this we close with 1013 ("Try
+// Again Later") rather than let a slow or suspended client grow an unbounded
+// WebSocket send queue. Only live terminal frames TRIP this bound; a terminal
+// replay is exempt (a bounded one-shot payload — disconnecting on it would
+// spuriously drop an otherwise-healthy reconnect), and every other message is
+// merely GATED by the congested flag (see checkedSend). 2 MiB is a starting
+// point to validate under mobile throttling, not a user setting.
+const MAX_SOCKET_BUFFER_BYTES = 2 * 1024 * 1024;
+// Grace period after a 1013 close handshake before we terminate() the socket to
+// release its queued memory even if the client never completes the close.
+const CONGESTION_CLOSE_GRACE_MS = 5_000;
+// Upper bound on the session ids one subscribe request may carry — a defence
+// against a buggy/hostile client, sized well above any real visible grid.
+const MAX_SUBSCRIBED_SESSIONS = 64;
+
+/**
+ * Backpressure decision for an outbound frame on a filtered socket, exported for
+ * unit tests (kernel socket buffers on loopback absorb multi-MB queues, so the
+ * accounting can't be exercised deterministically over real TCP).
+ *
+ * `exemptBytes` is the count of replay bytes STILL queued on the socket. It is
+ * maintained precisely by the caller: incremented when a replay is enqueued and
+ * decremented by that replay's send-drain callback when it actually flushes — so
+ * it can never credit already-drained replay (or any live/state byte) as exempt.
+ * The live backlog is `bufferedAmount - exemptBytes` (clamped at 0 to absorb
+ * transient skew between the drain callback and the OS socket buffer); the frame
+ * trips the bound only if that live backlog plus this frame exceeds `limit`.
+ */
+export function terminalBackpressureDecision(
+  exemptBytes: number,
+  bufferedAmount: number,
+  frameBytes: number,
+  limit: number,
+): { trip: boolean } {
+  const liveBacklog = Math.max(0, bufferedAmount - exemptBytes);
+  return { trip: liveBacklog + frameBytes > limit };
+}
+
 const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -157,6 +196,8 @@ interface Runtime {
   on(channel: string, handler: AnyFn): () => void;
   writeToSession(sessionId: string, data: string, viewerId?: string): unknown;
   resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
+  // getTerminalReplaySnapshot / getTerminalReplay and all other methods are
+  // accessed dynamically via the string index signature below.
   // All other methods accessed dynamically via string keys
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
@@ -1734,12 +1775,20 @@ export async function startRemoteServer({
   runtime,
   staticRoot,
   logger: _logger = console,
+  congestionCloseGraceMs = CONGESTION_CLOSE_GRACE_MS,
 }: {
   runtime: Runtime;
   staticRoot: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   logger?: any;
-}): Promise<{ close: () => Promise<void> }> {
+  /** Grace period between a backpressure 1013 close and the terminate()
+   *  fallback. Injectable so tests can exercise the fallback without a 5s wait. */
+  congestionCloseGraceMs?: number;
+}): Promise<{
+  close: () => Promise<void>;
+  _debugRouting?: () => { congested: boolean; hasCloseTimer: boolean }[];
+  _debugCongestionTerminates?: () => number;
+}> {
   const { enabled, host, port, token } = runtime.getPayload().appState.settings.remoteAccess;
   if (!enabled) {
     runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
@@ -2230,13 +2279,149 @@ export async function startRemoteServer({
   // diagnostic below fires at most once per socket instead of once per broadcast.
   const rawBroadcastLogged = new WeakSet<import("ws").WebSocket>();
 
-  function broadcast(message: unknown): void {
-    const payload = JSON.stringify(message);
-    for (const socket of sockets) {
-      if (socket.readyState === socket.OPEN) {
-        socket.send(payload);
+  // Per-socket terminal-stream routing + backpressure state.
+  //  - mode: "legacy" until the client sends its first terminal:subscribe, then
+  //    "filtered". A legacy socket (e.g. a page loaded before this rollout)
+  //    keeps receiving the full terminal broadcast so it never blanks out.
+  //  - sessions: the filtered client's subscribed terminal session ids.
+  //  - congested: once tripped, every send to this socket is suppressed while
+  //    the 1013 close handshake drains (the "whole-socket gate").
+  type SocketRouting = {
+    mode: "legacy" | "filtered";
+    sessions: Set<string>;
+    congested: boolean;
+    closeTimer: ReturnType<typeof setTimeout> | null;
+    /**
+     * Bytes of replay frames still queued on this socket. Replay is a bounded,
+     * expected burst — it must not make the next live frame trip the bound, or a
+     * reconnect into a grid becomes a 1013 loop. Maintained precisely: bumped
+     * when a replay is enqueued and decremented by that replay's send-drain
+     * callback when it flushes, so it only ever counts replay actually in the
+     * queue — never already-drained replay or any live/state byte.
+     */
+    exemptBytes: number;
+    /**
+     * Client session id resolved at subscribe time, used to re-validate profile
+     * access on every routed frame (a profile switch must stop old-profile
+     * sessions immediately). Same identity subscribe authz used, so the two can
+     * never disagree.
+     */
+    clientSessionId: string;
+  };
+  const socketRouting = new WeakMap<import("ws").WebSocket, SocketRouting>();
+
+  // Test-only: how many times a congestion close-timer actually fired terminate().
+  // A graceful close must clearTimeout the armed timer, so this stays 0 for a
+  // client that acks the 1013 in time — lets a test prove the timer was cleared,
+  // which the routing snapshot alone cannot (routing is gone the moment it closes).
+  let congestionTerminateCount = 0;
+
+  // Cheap workspace→profile map for per-frame authz re-checks in
+  // routeTerminalFrame (rebuilt on every state:updated, not per frame — getPayload
+  // is a deep clone). A remote client that switches profile must stop receiving
+  // its old profile's sessions immediately, before the renderer resubscribes.
+  let cachedWorkspaceProfiles = new Map<string, string>();
+  function rebuildWorkspaceProfiles(): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const appState = ((runtime.getPayload() as any)?.appState || {}) as any;
+    cachedWorkspaceProfiles = new Map<string, string>(
+      ((appState.workspaces as { id?: string; profileId?: string }[]) || [])
+        .filter((ws) => ws?.id)
+        .map((ws) => [String(ws.id), String(ws.profileId || "default")]),
+    );
+  }
+  rebuildWorkspaceProfiles();
+
+  function routingFor(socket: import("ws").WebSocket): SocketRouting {
+    let routing = socketRouting.get(socket);
+    if (!routing) {
+      routing = {
+        mode: "legacy",
+        sessions: new Set(),
+        congested: false,
+        closeTimer: null,
+        exemptBytes: 0,
+        clientSessionId: "",
+      };
+      socketRouting.set(socket, routing);
+    }
+    return routing;
+  }
+
+  /**
+   * Mark a socket congested and start a bounded close→terminate sequence. Once
+   * congested, checkedSend suppresses ALL further sends to it, so queued memory
+   * can actually drain instead of being re-grown by state/docker/ssh messages.
+   */
+  function markCongested(socket: import("ws").WebSocket, bufferedBytes: number, frameBytes: number): void {
+    const routing = routingFor(socket);
+    if (routing.congested) return;
+    routing.congested = true;
+    log.warn("WebSocket backpressure limit exceeded — closing client", {
+      sessionRef: remoteSessionRef(socketSession.get(socket) || ""),
+      bufferedBytes,
+      frameBytes,
+      subscriptions: routing.sessions.size,
+    });
+    try {
+      socket.close(1013, "backpressure");
+    } catch {
+      // already closing/closed
+    }
+    routing.closeTimer = setTimeout(() => {
+      congestionTerminateCount++;
+      try {
+        socket.terminate();
+      } catch {
+        // noop
+      }
+    }, congestionCloseGraceMs);
+    routing.closeTimer.unref?.();
+  }
+
+  /**
+   * Single checked send for every outbound WS message. Respects the congestion
+   * gate and skips non-open sockets. A FILTERED socket is bounded on EVERY
+   * non-replay send (terminal, state:updated, docker, ssh) — any of them can push
+   * it into congestion, so the queue is bounded across all message types.
+   * LEGACY (pre-rollout) sockets are never tripped: they have no resubscribe/
+   * replay path to heal a 1013-induced gap, so unbounded-but-eventually-delivered
+   * is the lesser evil (dead sockets are still reaped by the heartbeat).
+   * Replay (`exempt: true`) is excluded from the bound — a bounded one-shot
+   * payload per session — and its bytes are credited as exempt only while they
+   * sit in the queue: the send-drain callback uncredits them the moment they
+   * flush, so a later live frame is measured against the real backlog.
+   */
+  function checkedSend(socket: import("ws").WebSocket, data: string, opts?: { exempt?: boolean }): void {
+    if (socket.readyState !== socket.OPEN) return;
+    const routing = socketRouting.get(socket);
+    if (routing?.congested) return;
+    const bytes = Buffer.byteLength(data);
+    if (routing?.mode === "filtered" && !opts?.exempt) {
+      const decision = terminalBackpressureDecision(
+        routing.exemptBytes || 0,
+        socket.bufferedAmount,
+        bytes,
+        MAX_SOCKET_BUFFER_BYTES,
+      );
+      if (decision.trip) {
+        markCongested(socket, socket.bufferedAmount, bytes);
+        return;
       }
     }
+    if (opts?.exempt && routing) {
+      routing.exemptBytes += bytes;
+      socket.send(data, () => {
+        routing.exemptBytes = Math.max(0, routing.exemptBytes - bytes);
+      });
+    } else {
+      socket.send(data);
+    }
+  }
+
+  function broadcast(message: unknown): void {
+    const payload = JSON.stringify(message);
+    for (const socket of sockets) checkedSend(socket, payload);
   }
 
   /** Send a per-client composed state:updated to all sockets of `sessionId`. */
@@ -2244,15 +2429,165 @@ export async function startRemoteServer({
     const composed = registry.composePayload(sessionId, basePayload);
     const msg = JSON.stringify({ type: "state:updated", payload: composed });
     for (const socket of sockets) {
-      if (socket.readyState !== socket.OPEN) continue;
       if (socketSession.get(socket) !== sessionId) continue;
-      socket.send(msg);
+      checkedSend(socket, msg);
     }
+  }
+
+  /**
+   * Route a live terminal frame (`terminal:data` or `terminal:exit`). Legacy
+   * sockets get every frame AND are never tripped by the backpressure bound — a
+   * pre-rollout page has no subscribe/replay mechanism to heal a 1013-induced
+   * gap, so for it the old unbounded-but-eventually-delivered behaviour is the
+   * lesser evil (dead sockets are still reaped by the heartbeat). Filtered
+   * sockets get only their subscribed sessions and are subject to the bound;
+   * they heal via resubscribe + replay after a 1013.
+   *
+   * `terminal:exit` is filtered exactly like data: the runtime folds the exit
+   * notice into replay for an unexpected exit (see runtime.ts), so a hidden pane
+   * still sees "[process exited]" when it later subscribes and replays. A
+   * separate broadcast would only duplicate that, and would leak exit metadata
+   * (plus grow a renderer buffer) on sockets that don't render the session.
+   */
+  function routeTerminalFrame(type: "terminal:data" | "terminal:exit", payload: unknown): void {
+    const sessionId = String((payload as { sessionId?: unknown })?.sessionId || "");
+    const serialized = JSON.stringify({ type, payload });
+    for (const socket of sockets) {
+      const routing = socketRouting.get(socket);
+      if (routing?.mode === "filtered") {
+        if (!routing.sessions.has(sessionId)) continue;
+        // Re-validate on every frame against the CURRENT profile binding: if the
+        // client switched profile, its old sessions must stop immediately even
+        // if the resubscribe is delayed, lost, or rejected. Drop the stale
+        // subscription so it can't route again until a fresh subscribe re-adds it.
+        const client = routing.clientSessionId ? registry.get(routing.clientSessionId) : undefined;
+        if (!canAccessTerminalSession(client, cachedWorkspaceProfiles, sessionId)) {
+          routing.sessions.delete(sessionId);
+          continue;
+        }
+        checkedSend(socket, serialized);
+      } else {
+        checkedSend(socket, serialized);
+      }
+    }
+  }
+
+  /**
+   * Whether a WS client may stream a terminal session, given a workspace→
+   * profile map computed ONCE per subscribe request (runtime.getPayload() is a
+   * deep state clone — never call it per session id). Mirrors the profile/
+   * workspace binding used by per-client state composition: a composed client
+   * may only reach sessions whose workspace is in its active profile; an
+   * uncomposed/token socket sees the raw (unfiltered) state and so may reach
+   * any session.
+   */
+  function canAccessTerminalSession(
+    client: { profileId: string } | undefined,
+    workspaceProfiles: Map<string, string>,
+    terminalSessionId: string,
+  ): boolean {
+    const workspaceId = terminalSessionId.split(":")[0];
+    if (!workspaceId) return false;
+    const profileId = workspaceProfiles.get(workspaceId);
+    if (profileId === undefined) return false;
+    if (!client) return true; // uncomposed socket sees raw state → all workspaces
+    return profileId === client.profileId;
+  }
+
+  /**
+   * Handle a terminal:subscribe. The client sends its COMPLETE desired set.
+   *
+   * Ordering invariant (see plan v2): after validation there is NO `await`
+   * between snapshotting a session's replay and adding it to the live set, so a
+   * live frame emitted synchronously right after can never slip in ahead of the
+   * replay or fall into a gap. Validation/authz happens BEFORE that section.
+   */
+  function handleTerminalSubscribe(
+    socket: import("ws").WebSocket,
+    clientSessionId: string,
+    requestedRaw: string[],
+  ): void {
+    // A well-formed subscribe means a capable client → filtered mode, even if
+    // the request is ultimately rejected, so it never falls back to broadcast.
+    const routing = routingFor(socket);
+    routing.mode = "filtered";
+    // Remember the resolved client identity so routeTerminalFrame can re-validate
+    // profile access per frame with the SAME identity used for subscribe authz.
+    routing.clientSessionId = clientSessionId;
+
+    const requested = Array.from(new Set(requestedRaw));
+    // Over the cap → reject the WHOLE request rather than silently subscribing to
+    // a truncated 64-id subset (a partial set is exactly what the plan forbids).
+    // The cap sits well above any real visible grid, so this only fires for a
+    // buggy/hostile client.
+    if (requested.length > MAX_SUBSCRIBED_SESSIONS) {
+      log.warn("WebSocket terminal subscribe rejected: over id cap", {
+        sessionRef: remoteSessionRef(clientSessionId),
+        requested: requested.length,
+        cap: MAX_SUBSCRIBED_SESSIONS,
+      });
+      return;
+    }
+
+    // One payload snapshot per request (deep clone — see canAccessTerminalSession).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const appState = ((runtime.getPayload() as any)?.appState || {}) as any;
+    const workspaceProfiles = new Map<string, string>(
+      ((appState.workspaces as { id?: string; profileId?: string }[]) || [])
+        .filter((ws) => ws?.id)
+        .map((ws) => [String(ws.id), String(ws.profileId || "default")]),
+    );
+    // Set of session ids that map to a currently-existing panel. A removed
+    // panel's session id must be rejected so a client can't re-request (and be
+    // re-served) the stale replay of a pane that no longer exists.
+    const validSessionIds = new Set<string>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const ws of (appState.workspaces as any[]) || []) {
+      if (!ws?.id) continue;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const panel of (ws.panels as any[]) || []) {
+        if (panel?.id) validSessionIds.add(`${ws.id}:${panel.id}`);
+      }
+    }
+    const client = clientSessionId ? registry.get(clientSessionId) : undefined;
+
+    // Reject the WHOLE request if any id is inaccessible OR names a non-existent
+    // panel; keep the prior set so a partial/ambiguous subscription is never
+    // applied.
+    for (const id of requested) {
+      if (!validSessionIds.has(id) || !canAccessTerminalSession(client, workspaceProfiles, id)) {
+        log.warn("WebSocket terminal subscribe rejected: inaccessible or unknown session", {
+          sessionRef: remoteSessionRef(clientSessionId),
+        });
+        return;
+      }
+    }
+
+    // --- critical section: no await between snapshot and set-add ---
+    const nextSet = new Set(requested);
+    for (const id of nextSet) {
+      if (routing.sessions.has(id)) continue; // already subscribed — don't re-replay
+      const snapshot = runtime.getTerminalReplaySnapshot(id);
+      checkedSend(
+        socket,
+        JSON.stringify({
+          type: "terminal:replay",
+          payload: { sessionId: id, data: snapshot.data, throughSeq: snapshot.throughSeq },
+        }),
+        // Replay bytes are excluded from the backpressure bound the next live
+        // frame is checked against — see SocketRouting.exemptBytes.
+        { exempt: true },
+      );
+    }
+    routing.sessions = nextSet;
   }
 
   const unsubscribe = [
     // state:updated — compose per-client so each browser sees its own profile context.
     runtime.on("state:updated", (payload: unknown) => {
+      // Keep the per-frame authz cache fresh: a profile switch broadcasts state,
+      // so routeTerminalFrame's re-check sees the new workspace→profile binding.
+      rebuildWorkspaceProfiles();
       const stripped = stripSecretsForRemote(payload);
       for (const socket of sockets) {
         if (socket.readyState !== socket.OPEN) continue;
@@ -2270,12 +2605,39 @@ export async function startRemoteServer({
         const msg = sessionId
           ? JSON.stringify({ type: "state:updated", payload: registry.composePayload(sessionId, stripped) })
           : JSON.stringify({ type: "state:updated", payload: stripped });
-        socket.send(msg);
+        checkedSend(socket, msg);
       }
     }),
-    runtime.on("terminal:data", (payload: unknown) => broadcast({ type: "terminal:data", payload })),
-    runtime.on("terminal:exit", (payload: unknown) => broadcast({ type: "terminal:exit", payload })),
+    runtime.on("terminal:data", (payload: unknown) => routeTerminalFrame("terminal:data", payload)),
+    // terminal:exit is filtered exactly like terminal:data — the runtime folds
+    // the exit notice into replay so an unsubscribed/hidden pane still sees it on
+    // a later subscribe. See routeTerminalFrame.
+    runtime.on("terminal:exit", (payload: unknown) => routeTerminalFrame("terminal:exit", payload)),
+    // A removed panel (destroy, or a never-created failed spawn) must be pruned
+    // from every socket's live set. Otherwise the id lingers subscribed: a
+    // recreated same-id panel would stream live with no fresh replay, and a
+    // resubscribe would skip replay because the id is still present.
+    runtime.on("terminal:removed", (payload: unknown) => {
+      const sessionId = String((payload as { sessionId?: unknown })?.sessionId || "");
+      if (!sessionId) return;
+      for (const socket of sockets) {
+        const routing = socketRouting.get(socket);
+        // Only touch (and notify) sockets that actually had it subscribed.
+        if (!routing?.sessions.delete(sessionId)) continue;
+        // Tell the client we dropped the id from its live routing set. Without
+        // this the client keeps the id in its own subscription memory, so a
+        // debounced remove+recreate of the SAME id computes an unchanged desired
+        // set and never re-subscribes — the recreated pane's stream would stay
+        // frozen. On receipt the client forgets the id and re-subscribes if it
+        // still renders it (harmless if the pane is truly gone: the resubscribe
+        // is rejected server-side and the next sync unsubscribes it).
+        if (socket.readyState === socket.OPEN) {
+          checkedSend(socket, JSON.stringify({ type: "terminal:removed", payload: { sessionId } }));
+        }
+      }
+    }),
     runtime.on("ssh:auth-prompt", (payload: unknown) => broadcast({ type: "ssh:auth-prompt", payload })),
+    runtime.on("ssh:auth-prompt-cancel", (payload: unknown) => broadcast({ type: "ssh:auth-prompt-cancel", payload })),
     runtime.on("ssh:host-key-change", (payload: unknown) => broadcast({ type: "ssh:host-key-change", payload })),
     runtime.on("ssh:state", (payload: unknown) => broadcast({ type: "ssh:state", payload })),
     runtime.on("ssh:connection-state", (payload: unknown) => broadcast({ type: "ssh:connection-state", payload })),
@@ -2327,6 +2689,9 @@ export async function startRemoteServer({
 
     wss.handleUpgrade(request, socket, head, async (ws) => {
       sockets.add(ws);
+      // Start in legacy mode: the socket receives the full terminal broadcast
+      // until it sends its first terminal:subscribe (see handleTerminalSubscribe).
+      routingFor(ws);
       // Tolerant heartbeat: count consecutive missed pongs instead of the
       // binary alive/dead flag. A pong on any tick resets the counter.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- missedPongs is the heartbeat counter attached to the ws instance
@@ -2357,15 +2722,12 @@ export async function startRemoteServer({
         sessionRef: remoteSessionRef(wsSessionId),
         total: sockets.size,
       });
-      const baseInitial = stripSecretsForRemote(await runtime.getInitialState());
-      const initialPayload = wsSessionId ? registry.composePayload(wsSessionId, baseInitial) : baseInitial;
-      ws.send(
-        JSON.stringify({
-          type: "state:updated",
-          payload: initialPayload,
-        }),
-      );
-
+      // NOTE: every ws.on(...) handler is registered BEFORE the awaited
+      // initial-state send below. getInitialState() can take hundreds of ms
+      // (git/docker refreshes); a reconnecting client sends terminal:subscribe
+      // immediately in its open handler, and `ws` emits "message" with no
+      // listener during that await — the subscribe would be silently dropped
+      // and the socket stuck in legacy mode with no replay.
       ws.on("message", (raw: Buffer) => {
         // Every incoming message counts as activity — bump TTL.
         if (wsSessionId) registry.bumpLastSeen(wsSessionId);
@@ -2385,7 +2747,8 @@ export async function startRemoteServer({
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const result = runtime.writeToSession(parsed.data.sessionId, parsed.data.data, viewerId) as any;
               if (result?.blocked) {
-                ws.send(
+                checkedSend(
+                  ws,
                   JSON.stringify({
                     type: "terminal:input-blocked",
                     sessionId: parsed.data.sessionId,
@@ -2413,6 +2776,19 @@ export async function startRemoteServer({
                 sessionRef: remoteSessionRef(wsSessionId),
               });
             }
+          } else if (message.type === "terminal:subscribe") {
+            const parsed = wsTerminalSubscribeSchema.safeParse(message);
+            if (parsed.success) {
+              log.debug("WebSocket terminal subscribe", {
+                sessionRef: remoteSessionRef(wsSessionId),
+                count: parsed.data.sessionIds.length,
+              });
+              handleTerminalSubscribe(ws, wsSessionId, parsed.data.sessionIds);
+            } else {
+              log.warn("WebSocket terminal subscribe rejected: invalid payload", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            }
           }
         } catch (err) {
           log.warn("WebSocket message ignored: malformed JSON", {
@@ -2431,6 +2807,11 @@ export async function startRemoteServer({
 
       ws.on("close", (code, reason) => {
         sockets.delete(ws);
+        // Release routing + congestion state (and any pending terminate timer)
+        // so a closed socket doesn't leak its subscription set or a live timer.
+        const routing = socketRouting.get(ws);
+        if (routing?.closeTimer) clearTimeout(routing.closeTimer);
+        socketRouting.delete(ws);
         // If this was the LAST live socket for the session, the viewer is gone
         // — drop its visible-session contribution so its panels stop counting
         // as visible. A session can hold more than one socket (reconnect race,
@@ -2461,6 +2842,16 @@ export async function startRemoteServer({
           log.warn("WebSocket client disconnected unexpectedly", meta);
         }
       });
+
+      // Initial composed state — deliberately LAST (see the NOTE above the
+      // message handler): the await must not open a window where incoming
+      // messages have no listener. A subscribe processed before this send is
+      // fine; the client handles replay frames arriving ahead of state.
+      const baseInitial = stripSecretsForRemote(await runtime.getInitialState());
+      if (ws.readyState === ws.OPEN) {
+        const initialPayload = wsSessionId ? registry.composePayload(wsSessionId, baseInitial) : baseInitial;
+        checkedSend(ws, JSON.stringify({ type: "state:updated", payload: initialPayload }));
+      }
     });
   });
 
@@ -2559,5 +2950,21 @@ export async function startRemoteServer({
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
+    // Test-only: snapshot each live socket's congestion + close-timer state so
+    // tests can assert the backpressure close→terminate handshake and its cleanup
+    // without reaching into module internals. Iterates `sockets` because routing
+    // is a WeakMap; a socket drops from `sockets` (and its routing) on close.
+    _debugRouting: () => {
+      const out: { congested: boolean; hasCloseTimer: boolean }[] = [];
+      for (const s of sockets) {
+        const r = socketRouting.get(s);
+        if (r) out.push({ congested: r.congested, hasCloseTimer: r.closeTimer !== null });
+      }
+      return out;
+    },
+    // Test-only: total congestion close-timers that fired terminate() over this
+    // server's lifetime. Stays 0 when every congested client acks its 1013 in
+    // time (the close handler clears the armed timer).
+    _debugCongestionTerminates: () => congestionTerminateCount,
   };
 }

@@ -75,6 +75,14 @@ interface SshSession extends SessionBase {
   processHandle: null;
   sshHostId: string | null;
   sshInline: boolean;
+  // Set by an intentional teardown (restart / disconnect / removal / prune /
+  // canceled-start discard) so this session's own onExit reports intentional.
+  // A per-object flag — NOT the shared suppressedExits counter used for PTYs:
+  // sshManager.stop() may fire no onExit at all for an already-dead session, so
+  // an armed counter would go stale and wrongly swallow a LATER unexpected exit
+  // under the same id. A fresh reconnect gets a new object that never inherits
+  // this flag, so it cannot leak across generations.
+  intentionalExit?: boolean;
 }
 
 type RuntimeSession = PtySession | SshSession;
@@ -300,10 +308,42 @@ async function buildSystemSshArgs(
 
 // ------ SessionManager -------
 
+/** Why an in-flight start was invalidated by a teardown that raced its connect. */
+type StartCancelReason = "removed" | "disconnected";
+
+/**
+ * One generation of an in-flight session start. The cancel reason lives on the
+ * record — NOT a shared per-id map — so when several generations of one id exist
+ * transiently (an aborted connect being discarded while its reconnect is already
+ * chained behind it), each carries its OWN teardown intent. A sibling
+ * generation's discard can no longer consume a "removed"/"disconnected" reason
+ * that a later teardown recorded against the CURRENT generation.
+ *
+ * `canceledReason` is consulted when the start resolves (see beginSessionStart):
+ * - `"removed"` (panel/workspace deleted, syncWithState prune, shutdown): the
+ *   pane is gone → emit terminal:removed so the runtime drops the replay AND the
+ *   remote server unsubscribes the id.
+ * - `"disconnected"` (removeSession / closeSession — "Disconnect SSH"): the
+ *   panel STAYS → must NOT emit terminal:removed, or the remote server would
+ *   unsubscribe the still-visible id and a reconnect would never stream.
+ */
+interface StartRecord {
+  promise: Promise<RuntimeSession | null>;
+  canceledReason: StartCancelReason | null;
+}
+
 export class SessionManager extends EventEmitter {
   sessions: Map<string, RuntimeSession>;
-  startingSessions: Map<string, Promise<RuntimeSession | null>>;
+  startingSessions: Map<string, StartRecord>;
   suppressedExits: Map<string, number>;
+  /**
+   * Session ids whose PTY spawn FAILED (surfaced as terminal:data + null, never
+   * inserted into `sessions`). The runtime still records the failure message in
+   * its replay store, so these ids must participate in syncWithState's
+   * terminal:removed cleanup or their replay leaks once the panel is removed —
+   * `sessions` alone would never know they existed.
+   */
+  failedSpawns: Set<string>;
   getSessionEnv: ((ctx: SessionEnvContext) => Record<string, string>) | null;
   getSessionLaunch: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
   sshManager: SshManager | null;
@@ -313,6 +353,7 @@ export class SessionManager extends EventEmitter {
     this.sessions = new Map();
     this.startingSessions = new Map();
     this.suppressedExits = new Map();
+    this.failedSpawns = new Set();
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
     this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
     this.sshManager = sshManager || null;
@@ -324,17 +365,129 @@ export class SessionManager extends EventEmitter {
   ): Promise<RuntimeSession | null> {
     const pending = this.startingSessions.get(sessionId);
     if (pending) {
-      return pending;
+      // A genuine reconnect coalescing into a LIVE (non-aborted) start: share it
+      // so two concurrent activations don't open two connections for one id.
+      if (pending.canceledReason !== "disconnected") {
+        return pending.promise;
+      }
+      // The in-flight start was aborted by a Disconnect and is being torn down.
+      // Do NOT coalesce into the dying connect (the panel would end up
+      // disconnected despite the reconnect) and do NOT race a second concurrent
+      // connect (for system-ssh / WSL, whose PTYs sshManager.stop() cannot
+      // cancel, that would orphan a duplicate PTY and a stale start could later
+      // overwrite the live session). Instead SERIALIZE: chain a fresh start after
+      // the aborted one has fully settled and been discarded. This chained
+      // generation gets its OWN record, so a teardown that lands during the wait
+      // is recorded against IT (not consumed by the aborted start's discard —
+      // the finding-2 fix). We wait on the aborted start's WRAPPED promise
+      // (`pending.promise`), which only resolves after its discard runs.
+      const record: StartRecord = {
+        canceledReason: null,
+        promise: undefined as unknown as Promise<RuntimeSession | null>,
+      };
+      record.promise = pending.promise
+        .catch(() => null)
+        .then(() => {
+          // A newer teardown/reconnect replaced us in the map → let it own the id.
+          if (this.startingSessions.get(sessionId) !== record) return null;
+          // A teardown landed on the QUEUED reconnect while it waited for the
+          // aborted start to settle → cancel it. Either reason means the user no
+          // longer wants THIS reconnect: "removed" (panel/workspace gone) OR
+          // "disconnected" (a second Disconnect on the queued reconnect). A
+          // restart racing the queue also sets "disconnected" but chains its OWN
+          // fresh start, which REPLACES us in the map — already caught above — so
+          // reaching here with a non-null reason is always a cancellation, never a
+          // live reconnect. Drop the record so a future reconnect is a brand-new
+          // start rather than chaining behind this settled one.
+          if (record.canceledReason !== null) {
+            this.startingSessions.delete(sessionId);
+            return null;
+          }
+          // No teardown landed (reason still null) → this IS the reconnect; start
+          // fresh. beginSessionStart overwrites the record with the new generation.
+          return this.beginSessionStart(sessionId, start);
+        });
+      this.startingSessions.set(sessionId, record);
+      return record.promise;
     }
 
+    // A brand-new start: there is no in-flight generation (concurrent starts are
+    // coalesced above), so there is no prior cancel reason to worry about — each
+    // reason lives on its own record, which is gone once its start settled.
+    return this.beginSessionStart(sessionId, start);
+  }
+
+  private beginSessionStart(
+    sessionId: string,
+    start: () => Promise<RuntimeSession | null>,
+  ): Promise<RuntimeSession | null> {
     const started = start();
-    this.startingSessions.set(sessionId, started);
-    try {
-      return await started;
-    } finally {
-      if (this.startingSessions.get(sessionId) === started) {
-        this.startingSessions.delete(sessionId);
+    const record: StartRecord = {
+      canceledReason: null,
+      promise: undefined as unknown as Promise<RuntimeSession | null>,
+    };
+    record.promise = (async () => {
+      try {
+        const session = await started;
+        // If a teardown landed while this connect was in flight, its reason is
+        // recorded on THIS record (a sibling generation's discard can't consume
+        // it). The resolved start just re-registered state cleanup already
+        // removed (an orphan session, or failedSpawns + error replay) — undo it
+        // rather than leak a session/replay for a pane that is gone or was
+        // disconnected.
+        if (record.canceledReason) {
+          this.discardCanceledStart(sessionId, session, record.canceledReason);
+          return null;
+        }
+        return session;
+      } finally {
+        if (this.startingSessions.get(sessionId) === record) {
+          this.startingSessions.delete(sessionId);
+        }
       }
+    })();
+    this.startingSessions.set(sessionId, record);
+    return record.promise;
+  }
+
+  /**
+   * Tear down a session/replay that a start produced after a teardown landed.
+   * Always stops any live process/connection and drops the session. Replay and
+   * subscription cleanup depends on `reason` (see the StartRecord docs). The
+   * reason is owned by the resolving start's own record, so nothing to clear
+   * here — a chained successor keeps its own, independent record.
+   */
+  private discardCanceledStart(sessionId: string, session: RuntimeSession | null, reason: StartCancelReason): void {
+    const live = session ?? this.sessions.get(sessionId) ?? null;
+    if (live) {
+      if (live.kind === "ssh") {
+        // Discarding a start we asked to tear down → its onExit is intentional,
+        // same as any other user-driven stop (see stopSshIntentional).
+        (live as SshSession).intentionalExit = true;
+        this.sshManager?.stop(sessionId).catch(() => {});
+      } else {
+        const ptySession = live as PtySession;
+        if (ptySession.processHandle) {
+          this.suppressNextExit(sessionId);
+          ptySession.processHandle.kill();
+        }
+      }
+      this.sessions.delete(sessionId);
+    }
+    if (reason === "removed") {
+      // Panel is gone: drop any failed-spawn marker and tell the runtime to
+      // destroy the replay — which also unsubscribes the id on the remote
+      // server, correct since the pane no longer exists.
+      this.failedSpawns.delete(sessionId);
+      this.emit("terminal:removed", { sessionId });
+    } else {
+      // "disconnected": the panel stays (closeSession/removeSession keeps it and
+      // never emits terminal:removed). Emitting it here would unsubscribe the
+      // still-visible id on the remote server, freezing a reconnect. Instead
+      // keep it subscribed and track the late connect's orphan replay via
+      // failedSpawns, so a later panel removal still cleans it and a reconnect
+      // clears it via terminal:spawned.
+      this.failedSpawns.add(sessionId);
     }
   }
 
@@ -355,6 +508,22 @@ export class SessionManager extends EventEmitter {
     }
 
     return true;
+  }
+
+  /**
+   * Stop a pure ssh2 session (`kind: "ssh"`) as an INTENTIONAL teardown so its
+   * onExit reports `intentional: true` — the runtime then clears the replay
+   * instead of appending a spurious `[process exited]` line and possibly
+   * raising an unexpected-exit alert. Centralizes the marking the PTY path gets
+   * from suppressNextExit(): the flag lives on the session object, so it can't
+   * go stale if stop() fires no onExit, and never bleeds into a later reconnect
+   * (which is a fresh object). Returns the stop() promise for callers that await
+   * teardown (restart, workspace removal).
+   */
+  private stopSshIntentional(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (session?.kind === "ssh") (session as SshSession).intentionalExit = true;
+    return this.sshManager?.stop(sessionId).catch(() => {}) ?? Promise.resolve();
   }
 
   // NOTE (multi-window audit): the state.activeWorkspaceId default below is
@@ -560,6 +729,10 @@ export class SessionManager extends EventEmitter {
       // with an empty terminal viewport — visible to the user, so they deserve
       // to see it in the log even when the level is set to "error".
       log.error("PTY spawn failed", { sessionId: key, file: launcher.file, err: message });
+      // Remember the failed id: the error text below is recorded in the runtime's
+      // replay store, but the session is never inserted into `sessions`, so only
+      // failedSpawns can drive its terminal:removed cleanup when the panel goes.
+      this.failedSpawns.add(key);
       this.emit("terminal:data", {
         sessionId: key,
         data: `\r\n\x1b[31mFailed to launch terminal: ${message}\x1b[0m\r\n`,
@@ -596,6 +769,15 @@ export class SessionManager extends EventEmitter {
     });
 
     this.sessions.set(key, session);
+    // A live session now owns this id → it is no longer a failed-spawn orphan
+    // (a retry succeeded); syncWithState will clean it up via `sessions`.
+    this.failedSpawns.delete(key);
+    // New process generation under this sessionId (fresh spawn OR implicit
+    // respawn of an exited session, e.g. via ensureSession on workspace
+    // activation). The runtime clears the previous generation's replay on
+    // this event — data events dispatch async, so this always precedes the
+    // first output of the new process.
+    this.emit("terminal:spawned", { sessionId: key });
 
     if (cwdMissing) {
       // Surface the fallback in the terminal viewport so the user sees why
@@ -697,6 +879,12 @@ export class SessionManager extends EventEmitter {
     });
 
     this.sessions.set(sessionId, session);
+    // A live session now owns this id → it is no longer a failed-spawn orphan
+    // (a retry succeeded), same as the local PTY path.
+    this.failedSpawns.delete(sessionId);
+    // New process generation registered under this sessionId — same replay
+    // boundary as the PTY spawn path above.
+    this.emit("terminal:spawned", { sessionId });
     return session;
   }
 
@@ -757,6 +945,10 @@ export class SessionManager extends EventEmitter {
     ).catch(async (err: unknown) => {
       const msg = (err as { cause?: Error })?.cause?.message ?? String(err);
       await cleanupFn();
+      // No session is ever inserted for a failed spawn, but the error banner
+      // below is recorded in the runtime's replay store — only failedSpawns can
+      // drive its terminal:removed cleanup once the panel is gone.
+      this.failedSpawns.add(sessionId);
       this.emit("terminal:data", {
         sessionId,
         data:
@@ -785,6 +977,9 @@ export class SessionManager extends EventEmitter {
     if (existing && existing.status === "running") return existing;
 
     if (process.platform !== "win32") {
+      // Surfaced as replay-recorded output with no session — mark it so the
+      // panel's removal can still reach its replay via failedSpawns cleanup.
+      this.failedSpawns.add(sessionId);
       this.emit("terminal:data", {
         sessionId,
         data: "\r\n\x1b[31m✗ WSL launch mode is Windows-only\x1b[0m\r\n",
@@ -836,6 +1031,8 @@ export class SessionManager extends EventEmitter {
     ).catch(async (err: unknown) => {
       const msg = (err as { cause?: Error })?.cause?.message ?? String(err);
       await cleanupFn();
+      // Same as system-ssh: no session, but a replay entry for the banner below.
+      this.failedSpawns.add(sessionId);
       this.emit("terminal:data", {
         sessionId,
         data:
@@ -891,7 +1088,11 @@ export class SessionManager extends EventEmitter {
       onData: (data: string) => this.emit("terminal:data", { sessionId, data }),
       onExit: ({ exitCode }: { exitCode: number }) => {
         session.status = "exited";
-        const intentional = this.consumeSuppressedExit(sessionId);
+        // Pure ssh2 sessions have no PTY handle and are torn down via
+        // sshManager.stop(), so they never arm the PTY suppressNextExit counter.
+        // The teardown marks this session object directly instead (see
+        // stopSshIntentional); anything else is a genuine unexpected exit.
+        const intentional = session.intentionalExit === true;
         this.emit("terminal:exit", { sessionId, exitCode, intentional });
       },
     };
@@ -900,6 +1101,11 @@ export class SessionManager extends EventEmitter {
     } else {
       createArgs.hostId = panel.launch?.sshHostId;
     }
+
+    // New generation boundary — emitted BEFORE createSession because the
+    // onData callback can fire during the await (connection banners) and that
+    // output already belongs to the new generation's replay.
+    this.emit("terminal:spawned", { sessionId });
 
     try {
       await this.sshManager!.createSession(createArgs);
@@ -910,6 +1116,10 @@ export class SessionManager extends EventEmitter {
       // workspace activation). Swallow the rejection here to prevent
       // UnhandledPromiseRejectionWarning while still logging for diagnostics.
       log.warn("SSH session start failed", { sessionId, error: (err as Error)?.message || String(err) });
+      // terminal:spawned was emitted above and SshManager surfaces the failure
+      // as an inline red banner (terminal:data) — both leave a replay entry with
+      // no session, so mark it for failedSpawns-driven cleanup on panel removal.
+      this.failedSpawns.add(sessionId);
       return null;
     }
     // Quiet the unused-var lint — host is pre-resolved by ensureSession for
@@ -918,6 +1128,8 @@ export class SessionManager extends EventEmitter {
     void host;
 
     this.sessions.set(sessionId, session);
+    // A live session now owns this id → clear any prior failed-spawn marker.
+    this.failedSpawns.delete(sessionId);
     return session;
   }
 
@@ -974,10 +1186,10 @@ export class SessionManager extends EventEmitter {
   async restartSession(state: AppState, sessionId: string): Promise<RuntimeSession | null> {
     const current = this.sessions.get(sessionId);
     if (current?.kind === "ssh") {
-      await this.sshManager?.stop(sessionId);
-    } else {
-      const ptySession = current as PtySession | undefined;
-      if (ptySession?.processHandle) {
+      await this.stopSshIntentional(sessionId);
+    } else if (current) {
+      const ptySession = current as PtySession;
+      if (ptySession.processHandle) {
         const processHandle = ptySession.processHandle;
         this.suppressNextExit(sessionId);
         // IPty does not extend EventEmitter so we can't use `once()`.
@@ -991,6 +1203,20 @@ export class SessionManager extends EventEmitter {
           processHandle.kill();
         }).catch(() => {});
       }
+    } else {
+      // No live session yet — the connect is still in flight (an SSH handshake,
+      // or a connect parked on a password / MFA / host-key prompt), so it lives
+      // in startingSessions, not `sessions`. Without aborting it the ensureSession
+      // below merely coalesces into the SAME pending connect and the restart is a
+      // silent no-op. Mark the in-flight record "disconnected" (the panel stays)
+      // and stop() so a hung prompt is released; trackSessionStart then serializes
+      // a FRESH connect behind the aborted one. Never downgrade a "removed"
+      // record — a restart racing a panel/workspace prune must not resurrect it.
+      const record = this.startingSessions.get(sessionId);
+      if (record && record.canceledReason !== "removed") {
+        record.canceledReason = "disconnected";
+        await (this.sshManager?.stop(sessionId).catch(() => {}) ?? Promise.resolve());
+      }
     }
 
     this.sessions.delete(sessionId);
@@ -998,13 +1224,34 @@ export class SessionManager extends EventEmitter {
   }
 
   removeSession(sessionId: string): void {
+    // A start still in flight has not inserted its session yet; tombstone its
+    // record so the connect is torn down when it resolves instead of resurrecting
+    // a session the user just asked to disconnect. "disconnected", not "removed":
+    // the panel stays, so the discard must keep the id subscribed for reconnect.
+    // Never downgrade an existing "removed" reason (panel/workspace gone): a stale
+    // Disconnect racing a prune must NOT turn a removed pane back into a
+    // merely-disconnected one, or the late connect would keep the id subscribed
+    // and leak its replay for a pane that no longer exists.
+    const startRecord = this.startingSessions.get(sessionId);
+    if (startRecord && startRecord.canceledReason !== "removed") {
+      startRecord.canceledReason = "disconnected";
+      // Actively abort the in-flight connect. The tombstone alone only takes
+      // effect when the start RESOLVES, but a connect parked on an SSH
+      // password / MFA / host-key prompt never resolves on its own — without
+      // stop() it (and its open prompt) would leak past the user's Disconnect.
+      // Matches removeWorkspaceSessions / syncWithState. The start STAYS in
+      // startingSessions so a racing reconnect chains a fresh start after this
+      // aborted one is discarded (see trackSessionStart) rather than running a
+      // second connect concurrently.
+      this.sshManager?.stop(sessionId).catch(() => {});
+    }
     const session = this.sessions.get(sessionId);
     if (!session) {
       return;
     }
 
     if (session.kind === "ssh") {
-      this.sshManager?.stop(sessionId).catch(() => {});
+      this.stopSshIntentional(sessionId);
       // Banner so Disconnect-SSH has visible feedback — otherwise the tab
       // just looks the same as before.
       this.emit("terminal:data", {
@@ -1029,8 +1276,7 @@ export class SessionManager extends EventEmitter {
       }
 
       if (session.kind === "ssh") {
-        const p = this.sshManager?.stop(sessionId).catch(() => {});
-        if (p) exitPromises.push(p);
+        exitPromises.push(this.stopSshIntentional(sessionId));
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {
@@ -1050,6 +1296,32 @@ export class SessionManager extends EventEmitter {
       }
       this.sessions.delete(sessionId);
     }
+
+    // Failed-spawn ids never entered `sessions`, so the loop above can't reach
+    // them. deleteWorkspace/pruneOrphanedWorkspaces clear this workspace's replay
+    // wholesale but never call syncWithState, so without this prune a failed
+    // spawn's id would linger in the set until some unrelated future
+    // syncWithState — a small unbounded leak. No terminal:removed is emitted:
+    // the caller drops the workspace's replay wholesale, matching how the live
+    // sessions above are removed silently.
+    const prefix = `${workspaceId}:`;
+    for (const sessionId of this.failedSpawns) {
+      if (sessionId.startsWith(prefix)) this.failedSpawns.delete(sessionId);
+    }
+
+    // A slow SSH connect for this workspace may still be in flight (not yet in
+    // `sessions`, so the loop above missed it). Tombstone it as "removed" so a
+    // late resolve is discarded instead of inserting an orphan session / replay
+    // for a workspace that has just been deleted, AND actively cancel it: the
+    // tombstone alone only fires on resolve, but a connect parked on an SSH
+    // password / host-key prompt never resolves on its own, so without the
+    // stop() it (and its prompt) would leak past the workspace's deletion.
+    for (const [sessionId, record] of this.startingSessions) {
+      if (!sessionId.startsWith(prefix)) continue;
+      record.canceledReason = "removed";
+      this.sshManager?.stop(sessionId).catch(() => {});
+    }
+
     return exitPromises.length ? Promise.all(exitPromises).then(() => {}) : Promise.resolve();
   }
 
@@ -1067,7 +1339,7 @@ export class SessionManager extends EventEmitter {
       }
 
       if (session.kind === "ssh") {
-        this.sshManager?.stop(sessionId).catch(() => {});
+        this.stopSshIntentional(sessionId);
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {
@@ -1076,13 +1348,38 @@ export class SessionManager extends EventEmitter {
         }
       }
       this.sessions.delete(sessionId);
+      // The panel is gone from state entirely (not a restart) → let the runtime
+      // drop its replay so removed panels don't leak replay memory and their
+      // stale replay can't be re-served on a later subscribe.
+      this.emit("terminal:removed", { sessionId });
+    }
+
+    // Failed-spawn ids never entered `sessions`, so the loop above can't reach
+    // them. Prune the ones whose panel is gone here too, or the runtime's replay
+    // entry for the surfaced error message leaks for a pane that no longer exists.
+    for (const sessionId of this.failedSpawns) {
+      if (validSessionIds.has(sessionId)) continue;
+      this.failedSpawns.delete(sessionId);
+      this.emit("terminal:removed", { sessionId });
+    }
+
+    // In-flight starts whose panel is gone from state: tombstone them as
+    // "removed" so a late connect resolving after this prune does not re-insert
+    // a session or replay for a panel that no longer exists (the loops above
+    // only see `sessions` and `failedSpawns`, never a still-pending start), AND
+    // actively cancel them — a connect hung on an SSH prompt never resolves to
+    // trigger the tombstone discard, so it would otherwise leak past the prune.
+    for (const [sessionId, record] of this.startingSessions) {
+      if (validSessionIds.has(sessionId)) continue;
+      record.canceledReason = "removed";
+      this.sshManager?.stop(sessionId).catch(() => {});
     }
   }
 
   stopAll(): void {
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.kind === "ssh") {
-        this.sshManager?.stop(sessionId).catch(() => {});
+        this.stopSshIntentional(sessionId);
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {
@@ -1090,6 +1387,15 @@ export class SessionManager extends EventEmitter {
           ptySession.processHandle.kill();
         }
       }
+    }
+    // In-flight SSH connects live in startingSessions, not yet in `sessions`, so
+    // the loop above misses them. At shutdown an unfinished handshake / open
+    // socket would otherwise survive and hold the Node process open (or emit a
+    // late event). Abort each, and tombstone it "removed" so a connect that
+    // resolves after this can't re-insert a session into the cleared map.
+    for (const [sessionId, record] of this.startingSessions) {
+      record.canceledReason = "removed";
+      this.sshManager?.stop(sessionId).catch(() => {});
     }
     this.sessions.clear();
     this.suppressedExits.clear();

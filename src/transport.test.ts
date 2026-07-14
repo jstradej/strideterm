@@ -155,4 +155,97 @@ describe("remote transport endpoint routing", () => {
 
     expect(second.sent.map((raw) => JSON.parse(raw).type)).toEqual(["terminal:resize", "terminal:input"]);
   });
+
+  it("subscribeTerminals sends the complete set over the socket when open", () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    transport.subscribeTerminals(["ws1:a", "ws1:b"]);
+    const sub = first.sent.map((raw) => JSON.parse(raw)).find((m) => m.type === "terminal:subscribe");
+    expect(sub).toEqual({ type: "terminal:subscribe", sessionIds: ["ws1:a", "ws1:b"] });
+  });
+
+  it("defers a subscription sent before open, then delivers it once on open", () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    // Socket is still CONNECTING here.
+    transport.subscribeTerminals(["ws1:a"]);
+    expect(first.sent.filter((raw) => JSON.parse(raw).type === "terminal:subscribe")).toHaveLength(0);
+    first.open();
+    const subs = first.sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "terminal:subscribe");
+    expect(subs).toEqual([{ type: "terminal:subscribe", sessionIds: ["ws1:a"] }]);
+  });
+
+  it("re-sends the terminal subscription verbatim after a reconnect", () => {
+    vi.useFakeTimers();
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    transport.subscribeTerminals(["ws1:a"]);
+    first.close(1006);
+    vi.advanceTimersByTime(500);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    const subs = second.sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "terminal:subscribe");
+    expect(subs).toContainEqual({ type: "terminal:subscribe", sessionIds: ["ws1:a"] });
+  });
+
+  it("does not send any subscription on connect until the client subscribes (legacy mode)", () => {
+    const transport = createRemoteTransport();
+    void transport;
+    const first = MockWebSocket.instances[0];
+    first.open();
+    expect(first.sent.filter((raw) => JSON.parse(raw).type === "terminal:subscribe")).toHaveLength(0);
+  });
+
+  it("skips re-sending an identical subscription (review F10 — attention-sync noise)", () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    transport.subscribeTerminals(["ws1:a", "ws1:b"]);
+    transport.subscribeTerminals(["ws1:a", "ws1:b"]); // identical → no wire traffic
+    transport.subscribeTerminals(["ws1:a", "ws1:b"]);
+    const subs = first.sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "terminal:subscribe");
+    expect(subs).toHaveLength(1);
+    // A genuinely different set still goes out.
+    transport.subscribeTerminals(["ws1:a"]);
+    const after = first.sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "terminal:subscribe");
+    expect(after).toHaveLength(2);
+    expect(after[1]).toEqual({ type: "terminal:subscribe", sessionIds: ["ws1:a"] });
+  });
+
+  it("terminal:removed forgets the id so an otherwise-identical re-subscribe is re-sent (finding 4)", () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    transport.subscribeTerminals(["ws1:a", "ws1:b"]);
+
+    const removed: unknown[] = [];
+    transport.onTerminalRemoved?.((payload) => removed.push(payload));
+
+    // Server prunes ws1:a from this socket's routing and notifies. The client
+    // must forget it AND fire the listener so the attention-sync layer resyncs.
+    first.message({ type: "terminal:removed", payload: { sessionId: "ws1:a" } });
+    expect(removed).toContainEqual({ sessionId: "ws1:a" });
+
+    // Re-subscribing the SAME rendered set is no longer suppressed as identical:
+    // the id was forgotten, so a recreated same-id pane streams again instead of
+    // staying frozen behind the idempotence guard.
+    transport.subscribeTerminals(["ws1:a", "ws1:b"]);
+    const subs = first.sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "terminal:subscribe");
+    expect(subs).toEqual([
+      { type: "terminal:subscribe", sessionIds: ["ws1:a", "ws1:b"] },
+      { type: "terminal:subscribe", sessionIds: ["ws1:a", "ws1:b"] },
+    ]);
+  });
+
+  it("dispatches terminal:replay messages to onTerminalReplay listeners", () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    const replays: unknown[] = [];
+    transport.onTerminalReplay((payload) => replays.push(payload));
+    first.message({ type: "terminal:replay", payload: { sessionId: "ws1:a", data: "R", throughSeq: 3 } });
+    expect(replays).toContainEqual({ sessionId: "ws1:a", data: "R", throughSeq: 3 });
+  });
 });

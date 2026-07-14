@@ -288,6 +288,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   onSwitchProject: (handler) => ipcRenderer.on("shortcut:switch-project", (_event, index) => handler(index)),
   onSwitchTab: (handler) => ipcRenderer.on("shortcut:switch-tab", (_event, direction) => handler(direction)),
   onSshAuthPrompt: (handler) => ipcRenderer.on("ssh:auth-prompt", (_event, payload) => handler(payload)),
+  onSshAuthPromptCancel: (handler) => ipcRenderer.on("ssh:auth-prompt-cancel", (_event, payload) => handler(payload)),
   onSshHostKeyChange: (handler) => ipcRenderer.on("ssh:host-key-change", (_event, payload) => handler(payload)),
   onSshState: (handler) => ipcRenderer.on("ssh:state", (_event, payload) => handler(payload)),
   onSshConnectionState: (handler) => ipcRenderer.on("ssh:connection-state", (_event, payload) => handler(payload)),

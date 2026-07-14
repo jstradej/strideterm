@@ -7,7 +7,7 @@ import type {
   TerminalExitPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
-import type { SshAuthRequest, SshConnectionState } from "../electron/shared/types/ssh.js";
+import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "../electron/shared/types/ssh.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,9 +27,12 @@ interface ConnectionStatePayload {
 interface EventHub {
   stateUpdated: Set<Handler<StatePayload>>;
   terminalData: Set<Handler<TerminalDataPayload>>;
+  terminalReplay: Set<Handler<TerminalReplayPayload>>;
   terminalExit: Set<Handler<TerminalExitPayload>>;
+  terminalRemoved: Set<Handler<{ sessionId: string }>>;
   connectionState: Set<Handler<ConnectionStatePayload>>;
   sshAuthPrompt: Set<Handler<SshAuthRequest>>;
+  sshAuthPromptCancel: Set<Handler<SshAuthPromptCancel>>;
   sshHostKeyChange: Set<Handler<Record<string, unknown>>>;
   sshState: Set<Handler<Record<string, unknown>>>;
   sshConnectionState: Set<Handler<SshConnectionState>>;
@@ -61,7 +64,17 @@ export interface Transport extends Partial<
   getState: () => Promise<StatePayload>;
   onStateUpdated: (handler: (payload: StatePayload) => void) => void;
   onTerminalData: (handler: (payload: TerminalDataPayload) => void) => void;
+  /** Server-pushed replay for a newly subscribed session (remote only). */
+  onTerminalReplay: (handler: (payload: TerminalReplayPayload) => void) => void;
   onTerminalExit: (handler: (payload: TerminalExitPayload) => void) => void;
+  /** Server-pushed notice that an id was dropped from this socket's live routing
+   *  set (panel removed). Remote-only; lets the client forget the id and
+   *  re-subscribe if a same-id panel is recreated. Absent on the Electron
+   *  transport (IPC streams everything). */
+  onTerminalRemoved?: (handler: (payload: { sessionId: string }) => void) => void;
+  /** Declare the complete set of terminal sessions this client renders.
+   *  Idempotent; remote-only (a no-op on the Electron transport). */
+  subscribeTerminals: (sessionIds: string[]) => void;
   resizeTerminal: (sessionId: string, size: TerminalSize) => void;
   writeTerminal: (sessionId: string, data: string) => void;
   /** Take over the per-session input lease ("Take control?" confirmation). */
@@ -83,9 +96,12 @@ function createEventHub(): EventHub {
   return {
     stateUpdated: new Set(),
     terminalData: new Set(),
+    terminalReplay: new Set(),
     terminalExit: new Set(),
+    terminalRemoved: new Set(),
     connectionState: new Set(),
     sshAuthPrompt: new Set(),
+    sshAuthPromptCancel: new Set(),
     sshHostKeyChange: new Set(),
     sshState: new Set(),
     sshConnectionState: new Set(),
@@ -123,6 +139,10 @@ function bindElectronTransport(): Transport {
       window.strideterm.deleteProfile(profileId, options),
     activateProfile: (profileId: string) => window.strideterm.activateProfile(profileId),
     onConnectionState: () => {},
+    // Electron streams every session over IPC and repaints on attach via the
+    // IPC getTerminalReplay; the WS subscribe/replay handshake is remote-only.
+    onTerminalReplay: () => {},
+    subscribeTerminals: () => {},
   };
 }
 
@@ -207,10 +227,11 @@ export function createRemoteTransport(): Transport {
 
   interface WsMessage {
     type: string;
-    sessionId: string;
+    sessionId?: string;
     cols?: number;
     rows?: number;
     data?: string;
+    sessionIds?: string[];
   }
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -221,6 +242,13 @@ export function createRemoteTransport(): Transport {
   let reconnectTimer = 0;
   let reconnectAttempt = 0;
   let openedOnce = false;
+  // The complete set of terminal sessions this client currently renders. We
+  // remember it so the subscription can be re-sent verbatim after every
+  // reconnect (the server drops per-socket subscriptions on close). Empty until
+  // the visibility owner sends the first set, so the socket stays in the
+  // server's legacy (full-broadcast) mode until then.
+  let lastTerminalSubscription: string[] = [];
+  let hasSubscribedTerminals = false;
 
   function buildWsUrl(): string {
     // After the share-URL bootstrap, the token is gone from the URL and a
@@ -281,14 +309,30 @@ export function createRemoteTransport(): Transport {
       emitConnectionState({ connected: true, message: "" });
       listeners.stateUpdated.forEach((handler) => handler(message.payload as StatePayload));
     }
+    if (message.type === "terminal:replay") {
+      listeners.terminalReplay.forEach((handler) => handler(message.payload as TerminalReplayPayload));
+    }
     if (message.type === "terminal:data") {
       listeners.terminalData.forEach((handler) => handler(message.payload as TerminalDataPayload));
     }
     if (message.type === "terminal:exit") {
       listeners.terminalExit.forEach((handler) => handler(message.payload as TerminalExitPayload));
     }
+    if (message.type === "terminal:removed") {
+      const removedId = (message.payload as { sessionId?: string })?.sessionId || "";
+      if (removedId) {
+        // Forget it from our subscription memory BEFORE notifying listeners, so
+        // the resync they trigger isn't suppressed by subscribeTerminals' own
+        // idempotence guard (which compares against lastTerminalSubscription).
+        lastTerminalSubscription = lastTerminalSubscription.filter((id) => id !== removedId);
+        listeners.terminalRemoved.forEach((handler) => handler({ sessionId: removedId }));
+      }
+    }
     if (message.type === "ssh:auth-prompt") {
       listeners.sshAuthPrompt.forEach((handler) => handler(message.payload as SshAuthRequest));
+    }
+    if (message.type === "ssh:auth-prompt-cancel") {
+      listeners.sshAuthPromptCancel.forEach((handler) => handler(message.payload as SshAuthPromptCancel));
     }
     if (message.type === "ssh:host-key-change") {
       listeners.sshHostKeyChange.forEach((handler) => handler(message.payload as Record<string, unknown>));
@@ -327,6 +371,13 @@ export function createRemoteTransport(): Transport {
       reconnectAttempt = 0;
       emitConnectionState({ connected: true, message: "", reconnected });
       flushPendingWsMessages();
+      // Re-send the full terminal subscription so the server rebuilds this
+      // socket's filtered routing + replays each session. Only after the
+      // visibility owner has subscribed at least once, so a fresh connection
+      // stays in legacy mode until the app knows what's visible.
+      if (hasSubscribedTerminals && nextWs.readyState === WebSocket.OPEN) {
+        nextWs.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: lastTerminalSubscription }));
+      }
       if (reconnected) {
         refreshStateAfterReconnect();
       }
@@ -834,9 +885,33 @@ export function createRemoteTransport(): Transport {
     },
     onStateUpdated: (handler: Handler<StatePayload>) => listeners.stateUpdated.add(handler),
     onTerminalData: (handler: Handler<TerminalDataPayload>) => listeners.terminalData.add(handler),
+    onTerminalReplay: (handler: Handler<TerminalReplayPayload>) => listeners.terminalReplay.add(handler),
     onTerminalExit: (handler: Handler<TerminalExitPayload>) => listeners.terminalExit.add(handler),
+    onTerminalRemoved: (handler: Handler<{ sessionId: string }>) => listeners.terminalRemoved.add(handler),
+    subscribeTerminals: (sessionIds: string[]) => {
+      // Idempotence at the source: the caller (attention sync) re-runs on
+      // every bell/focus change, so an unchanged set would otherwise be
+      // re-sent every few seconds — each triggering the server's full authz
+      // pass. Reconnects still re-send via the open handler.
+      if (
+        hasSubscribedTerminals &&
+        sessionIds.length === lastTerminalSubscription.length &&
+        sessionIds.every((id, i) => id === lastTerminalSubscription[i])
+      ) {
+        return;
+      }
+      lastTerminalSubscription = [...sessionIds];
+      hasSubscribedTerminals = true;
+      const current = ws;
+      if (current?.readyState === WebSocket.OPEN) {
+        current.send(JSON.stringify({ type: "terminal:subscribe", sessionIds }));
+      }
+      // If not open, the connectWebSocket open handler re-sends the remembered
+      // set — no need to queue it (and re-queuing would double-send).
+    },
     onConnectionState: (handler: Handler<ConnectionStatePayload>) => listeners.connectionState.add(handler),
     onSshAuthPrompt: (handler: Handler<SshAuthRequest>) => listeners.sshAuthPrompt.add(handler),
+    onSshAuthPromptCancel: (handler: Handler<SshAuthPromptCancel>) => listeners.sshAuthPromptCancel.add(handler),
     onSshHostKeyChange: (handler: Handler<Record<string, unknown>>) => listeners.sshHostKeyChange.add(handler),
     onSshState: (handler: Handler<Record<string, unknown>>) => listeners.sshState.add(handler),
     onSshConnectionState: (handler: Handler<SshConnectionState>) => listeners.sshConnectionState.add(handler),

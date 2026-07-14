@@ -338,6 +338,11 @@ export function createTerminalController({
   // ---------------------------------------------------------------------------
 
   const sessionsWithRendererData = new Set<string>();
+  // Per-session `throughSeq` from the most recent remote replay. A live
+  // terminal:data frame whose seq <= this is a defensive duplicate (already
+  // covered by the replay snapshot) and is dropped. Only ever set on the remote
+  // transport; on Electron no replay arrives so the guard never engages.
+  const throughSeqBySession = new Map<string, number>();
 
   function focusActiveTerminal(): void {
     if (getOverlay()) return;
@@ -365,6 +370,7 @@ export function createTerminalController({
       views.value.delete(sessionId);
       buffers.value.delete(sessionId);
       sessionsWithRendererData.delete(sessionId);
+      throughSeqBySession.delete(sessionId);
     }
   }
 
@@ -1144,7 +1150,10 @@ export function createTerminalController({
         view.term.write(queued);
         buffers.value.delete(sessionId);
         sessionsWithRendererData.add(sessionId);
-      } else if (api.getTerminalReplay && !sessionsWithRendererData.has(sessionId)) {
+      } else if (!api.isRemote && api.getTerminalReplay && !sessionsWithRendererData.has(sessionId)) {
+        // Electron only: pull replay over IPC to repaint a re-created view. On
+        // the remote transport the server pushes terminal:replay on subscribe
+        // (see handleTerminalReplay), so we must not also race an HTTP fetch.
         const expectedView = view;
         void api
           .getTerminalReplay(sessionId)
@@ -1276,7 +1285,13 @@ export function createTerminalController({
     );
   }
 
-  function handleTerminalData({ sessionId, data }: { sessionId: string; data: string }): void {
+  function handleTerminalData({ sessionId, data, seq }: { sessionId: string; data: string; seq?: number }): void {
+    // Defensive duplicate guard: a live frame at or below the last replay's
+    // throughSeq is already contained in the replay we wrote, so drop it.
+    const through = throughSeqBySession.get(sessionId);
+    if (typeof seq === "number" && typeof through === "number" && seq <= through) {
+      return;
+    }
     sessionsWithRendererData.add(sessionId);
     const view = views.value.get(sessionId);
     if (!view || !view.opened) {
@@ -1284,6 +1299,37 @@ export function createTerminalController({
       return;
     }
     view.term.write(data);
+  }
+
+  function handleTerminalReplay({
+    sessionId,
+    data,
+    throughSeq,
+  }: {
+    sessionId: string;
+    data?: string;
+    throughSeq?: number;
+  }): void {
+    // Server-pushed on (re)subscribe. This is the ordered reset point for a
+    // remote session: record throughSeq, then reset + rewrite so the replay is
+    // the authoritative starting screen and later live frames append cleanly.
+    if (typeof throughSeq === "number") throughSeqBySession.set(sessionId, throughSeq);
+    const payload = data || "";
+    const view = views.value.get(sessionId);
+    if (view?.opened) {
+      view.term.reset();
+      if (payload) view.term.write(payload);
+      sessionsWithRendererData.add(sessionId);
+    } else {
+      // Pane not opened yet — stage the replay as the pending buffer so attach
+      // writes it onto the fresh terminal (replacing any queued live data).
+      if (payload) {
+        buffers.value.set(sessionId, payload);
+      } else {
+        buffers.value.delete(sessionId);
+      }
+      sessionsWithRendererData.delete(sessionId);
+    }
   }
 
   function handleTerminalExit({
@@ -1321,6 +1367,7 @@ export function createTerminalController({
     focusActiveTerminal,
     getSearchAddon,
     handleTerminalData,
+    handleTerminalReplay,
     handleTerminalExit,
     pruneTerminalViews,
     scheduleActiveResize,

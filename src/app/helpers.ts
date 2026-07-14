@@ -209,6 +209,40 @@ export function isUrlCommand(value: unknown): boolean {
   return /^https?:\/\//i.test(cmd);
 }
 
+/**
+ * Classify a workspace view id into the pane type a cell renders — the single
+ * source of truth shared by WorkspaceCell.vue (which pane to mount) and
+ * useAttentionSync.ts (which terminals the remote client actually streams).
+ * Mirrors WorkspaceCell's `activeViewType` fallthrough exactly: the special
+ * pane kinds are matched by id prefix, a headless-copilot judge panel resolves
+ * to "headless-judge" (needs the workspace's live task-runner state, so it is
+ * NOT a streaming terminal), and everything else is a live terminal session.
+ */
+export function classifyViewType(
+  viewId: string | null | undefined,
+  workspaceId: string | null | undefined,
+  payload: StatePayload | null | undefined,
+): string {
+  if (!viewId) return "";
+  if (isGitViewId(viewId)) return "git";
+  if (isDockerViewId(viewId)) return "docker";
+  if (isAzureViewId(viewId)) return "azure";
+  if (isGitHubViewId(viewId)) return "github";
+  if (isReviewViewId(viewId)) return "review";
+  if (isFilesViewId(viewId)) return "files";
+  if (isTaskDashboardViewId(viewId)) return "task-dashboard";
+  if (isBrowserViewId(viewId)) return "browser";
+  if (workspaceId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const taskState = (payload as any)?.taskRunner?.[workspaceId];
+    if (taskState?.judgeExecutionMode === "headless-copilot") {
+      const panelId = viewId.includes(":") ? viewId.split(":").pop() : viewId;
+      if (panelId === taskState.judgePanelId) return "headless-judge";
+    }
+  }
+  return "terminal";
+}
+
 export function attentionTitle(attention: AttentionLike | null | undefined): string {
   if (!attention?.count) {
     return "";

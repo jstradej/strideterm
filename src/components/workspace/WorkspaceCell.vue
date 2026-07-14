@@ -82,16 +82,7 @@
 import { computed, ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
-import {
-  isGitViewId,
-  isDockerViewId,
-  isAzureViewId,
-  isGitHubViewId,
-  isReviewViewId,
-  isFilesViewId,
-  isTaskDashboardViewId,
-  isBrowserViewId,
-} from "../../app/helpers.js";
+import { classifyViewType } from "../../app/helpers.js";
 import { resolvePaneComponent, resolvePaneProps } from "../../app/pane-resolver.js";
 import WorkspaceCellHeader from "./WorkspaceCellHeader.vue";
 import WorkspacePickerPopover from "./WorkspacePickerPopover.vue";
@@ -146,28 +137,9 @@ const activeViewId = computed<string | null>(() => {
   return workspaceEntry.value?.activeViewId ?? null;
 });
 
-const activeViewType = computed<string>(() => {
-  const viewId = activeViewId.value;
-  if (!viewId) return "";
-  if (isGitViewId(viewId)) return "git";
-  if (isDockerViewId(viewId)) return "docker";
-  if (isAzureViewId(viewId)) return "azure";
-  if (isGitHubViewId(viewId)) return "github";
-  if (isReviewViewId(viewId)) return "review";
-  if (isFilesViewId(viewId)) return "files";
-  if (isTaskDashboardViewId(viewId)) return "task-dashboard";
-  if (isBrowserViewId(viewId)) return "browser";
-  // Check headless judge
-  const wsId = props.workspaceId;
-  if (wsId) {
-    const taskState = (store.payload as AnyApi)?.taskRunner?.[wsId];
-    if (taskState?.judgeExecutionMode === "headless-copilot") {
-      const panelId = viewId.includes(":") ? viewId.split(":").pop() : viewId;
-      if (panelId === taskState.judgePanelId) return "headless-judge";
-    }
-  }
-  return "terminal";
-});
+const activeViewType = computed<string>(() =>
+  classifyViewType(activeViewId.value, props.workspaceId, store.payload as AnyApi),
+);
 
 const paneComponent = computed(() => resolvePaneComponent(activeViewType.value));
 

@@ -62,7 +62,9 @@ import type {
   SshKeyGenerate,
   SshCertImport,
   SshAuthAnswer,
+  SshAuthCancel,
   SshAcceptHostKey,
+  SshRejectHostKey,
   SshConfigImport,
   SshKnownHostsImport,
   FileList,
@@ -82,7 +84,7 @@ import type {
   AzureAuditLogStats,
   WorkspacePushOptions,
 } from "../backend/ipc-schemas.js";
-import type { SshAuthRequest, SshConnectionState } from "./types/ssh.js";
+import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "./types/ssh.js";
 
 export type { StatePayload };
 
@@ -94,15 +96,28 @@ export interface TerminalSize {
 export interface TerminalDataPayload {
   sessionId: string;
   data: string;
+  /**
+   * Monotonic per-session sequence assigned by the runtime. Present on the
+   * remote WS stream so a client can order a replay snapshot against the live
+   * frames that follow it. Absent/ignored on the Electron IPC path.
+   */
+  seq?: number;
 }
 
 export interface TerminalReplayPayload {
   data: string;
+  /** Present on the pushed WS `terminal:replay`; absent on the HTTP snapshot. */
+  sessionId?: string;
+  /** Newest sequence covered by this replay; live frames with seq <= this are duplicates. */
+  throughSeq?: number;
 }
 
 export interface TerminalExitPayload {
   sessionId: string;
   exitCode: number;
+  /** True when the exit was deliberate (a restart), so consumers can skip
+   *  crash-only handling such as exit alerts. */
+  intentional?: boolean;
 }
 
 export interface StridetermAPI {
@@ -558,9 +573,9 @@ export interface StridetermAPI {
   sshCertsImport: (payload: SshCertImport) => Promise<unknown>;
   sshCertsDelete: (payload: SshHostDelete) => Promise<unknown>;
   sshAuthAnswer: (payload: SshAuthAnswer) => Promise<unknown>;
-  sshAuthCancel: (payload: SshAuthAnswer) => Promise<unknown>;
+  sshAuthCancel: (payload: SshAuthCancel) => Promise<unknown>;
   sshHostKeyAccept: (payload: SshAcceptHostKey) => Promise<unknown>;
-  sshHostKeyReject: (payload: SshAcceptHostKey) => Promise<unknown>;
+  sshHostKeyReject: (payload: SshRejectHostKey) => Promise<unknown>;
   sshConfigPreview: (payload: SshConfigImport) => Promise<unknown>;
   sshConfigImport: (payload: SshConfigImport) => Promise<unknown>;
   sshKnownHostsImport: (payload: SshKnownHostsImport) => Promise<unknown>;
@@ -587,6 +602,7 @@ export interface StridetermAPI {
   onSwitchProject: (handler: (index: number) => void) => void;
   onSwitchTab: (handler: (direction: string) => void) => void;
   onSshAuthPrompt: (handler: (payload: SshAuthRequest) => void) => void;
+  onSshAuthPromptCancel: (handler: (payload: SshAuthPromptCancel) => void) => void;
   onSshHostKeyChange: (handler: (payload: Record<string, unknown>) => void) => void;
   onSshState: (handler: (payload: Record<string, unknown>) => void) => void;
   onSshConnectionState: (handler: (payload: SshConnectionState) => void) => void;

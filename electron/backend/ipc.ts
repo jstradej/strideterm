@@ -149,6 +149,8 @@ export function registerIpc(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("ssh:auth-prompt", (payload: any) => emitToRenderer("ssh:auth-prompt", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("ssh:auth-prompt-cancel", (payload: any) => emitToRenderer("ssh:auth-prompt-cancel", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("ssh:host-key-change", (payload: any) => emitToRenderer("ssh:host-key-change", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("ssh:connection-state", (payload: any) => emitToRenderer("ssh:connection-state", payload)),

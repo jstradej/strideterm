@@ -15,6 +15,7 @@ import { inheritShellPath } from "./backend/fix-path.js";
 import { startFreezeWatchdog } from "./backend/freeze-watchdog.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
+import { SMOKE_READY_MARKER } from "./shared/smoke-protocol.js";
 import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
 import type { TaskExecutionState } from "./shared/types/task.js";
 
@@ -129,7 +130,8 @@ process.on("unhandledRejection", (reason: unknown) => {
 
 const isDev = !app.isPackaged;
 const rendererUrl = getRendererDevUrl();
-const forceDist = process.env.STRIDETERM_FORCE_DIST === "1" || process.env.STRIDETERM_SMOKE_TEST === "1";
+const isSmokeTest = process.env.STRIDETERM_SMOKE_TEST === "1";
+const forceDist = process.env.STRIDETERM_FORCE_DIST === "1" || isSmokeTest;
 
 // --- Window registry ---
 // Maps stable windowId (UUID) → BrowserWindow
@@ -887,8 +889,12 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   });
 
   win.webContents.once("dom-ready", () => {
-    log.info("createWindow: dom-ready, showing window", { windowId: id });
-    win.show();
+    if (isSmokeTest) {
+      log.info("createWindow: dom-ready, keeping smoke window hidden", { windowId: id });
+    } else {
+      log.info("createWindow: dom-ready, showing window", { windowId: id });
+      win.show();
+    }
   });
 
   // Intercept Ctrl+1-9 / Ctrl+Shift+N before Chromium/xterm can eat them
@@ -928,11 +934,16 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
 
   updateNativeAttention(runtimeState.runtime?.getPayload?.() as Record<string, unknown> | undefined);
 
-  if (process.env.STRIDETERM_SMOKE_TEST === "1") {
+  if (isSmokeTest) {
+    const hardExit = setTimeout(() => {
+      process.stderr.write("Smoke failed: renderer did not finish loading.\n");
+      app.exit(1);
+    }, APP_CONFIG.electron.smokeHardExitMs);
     win.webContents.once("did-finish-load", () => {
+      clearTimeout(hardExit);
+      process.stdout.write(`${SMOKE_READY_MARKER}\n`);
       setTimeout(() => app.exit(0), APP_CONFIG.electron.smokeReadyExitMs);
     });
-    setTimeout(() => app.exit(0), APP_CONFIG.electron.smokeHardExitMs);
   }
 
   const distIndexPath = path.join(app.getAppPath(), "dist", "index.html");

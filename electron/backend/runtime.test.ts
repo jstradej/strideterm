@@ -803,6 +803,128 @@ describe("runtime integration", () => {
     expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({ data: "" });
   });
 
+  test("keeps terminal replay after an UNEXPECTED exit so a later client sees the failure output", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "boom\r\n" });
+    fixture.sessionManager.emit("terminal:exit", { sessionId: "backend:shell", exitCode: 1, intentional: false });
+
+    // Unexpected exit must NOT drop the buffer — the crash output is still
+    // replayable, and the exit notice is folded into the replay so it survives a
+    // later subscribe/replay reset (review F6 follow-up).
+    expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({
+      data: "boom\r\n\r\n[process exited with code 1]\r\n",
+    });
+  });
+
+  test("clears terminal replay on an INTENTIONAL exit (restart boundary)", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "old-gen\r\n" });
+    fixture.sessionManager.emit("terminal:exit", { sessionId: "backend:shell", exitCode: 0, intentional: true });
+
+    expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({ data: "" });
+  });
+
+  test("implicit respawn (terminal:spawned) clears the dead generation's replay but keeps seq", async () => {
+    // Review F6: ensureSession respawns an exited session under the SAME id
+    // without going through restartSession — the spawn event is the clear
+    // boundary, otherwise the crashed generation's screen would be prepended
+    // to the new prompt in a later attach/subscribe replay.
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "old-gen crash\r\n" });
+    fixture.sessionManager.emit("terminal:exit", { sessionId: "backend:shell", exitCode: 1, intentional: false });
+    // Crash output (plus the folded-in exit notice) stays replayable while the
+    // session sits exited...
+    expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({
+      data: "old-gen crash\r\n\r\n[process exited with code 1]\r\n",
+    });
+
+    // ...until a new generation spawns under the same id.
+    fixture.sessionManager.emit("terminal:spawned", { sessionId: "backend:shell" });
+    expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({ data: "" });
+
+    // Sequence continues across the generation boundary (old throughSeq can
+    // never shadow new output as a duplicate). seq 1 = crash output, seq 2 = the
+    // folded exit notice, seq 3 = the new generation's first output.
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "new-gen\r\n" });
+    expect(fixture.runtime.getTerminalReplaySnapshot("backend:shell")).toEqual({
+      data: "new-gen\r\n",
+      throughSeq: 3,
+    });
+  });
+
+  test("closeSession (Disconnect SSH) clears replay content but keeps the seq counter", async () => {
+    // Finding 1: "Disconnect SSH" keeps the panel in state, so closeSession must
+    // CLEAR the replay (drop the dead screen) while KEEPING the sequence counter.
+    // Destroying it (seq → 0) would let a renderer/remote client still holding
+    // the pre-disconnect throughSeq drop every reconnect frame as a duplicate.
+    // The removeSession path synchronously emits a "── Disconnected by user"
+    // banner; clearing BEFORE removeSession lands that banner in the kept replay.
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:ssh", data: "ssh output\r\n" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.sessionManager as any).removeSession = (sessionId: string) => {
+      fixture.sessionManager.emit("terminal:data", { sessionId, data: "\r\n── Disconnected by user\r\n" });
+      fixture.sessionManager.sessions.delete(sessionId);
+    };
+
+    await fixture.runtime.closeSession("backend:ssh");
+
+    // Content is reduced to the disconnect banner, but the counter is preserved
+    // (seq 1 = "ssh output", seq 2 = the banner) — NOT reset to 0.
+    expect(fixture.runtime.getTerminalReplaySnapshot("backend:ssh")).toEqual({
+      data: "\r\n── Disconnected by user\r\n",
+      throughSeq: 2,
+    });
+
+    // A reconnect (terminal:spawned clears content, keeps seq) then streams: the
+    // seq keeps climbing past the old throughSeq instead of restarting at 1, so
+    // the fresh frame is never shadowed as a duplicate.
+    fixture.sessionManager.emit("terminal:spawned", { sessionId: "backend:ssh" });
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:ssh", data: "reconnected\r\n" });
+    expect(fixture.runtime.getTerminalReplaySnapshot("backend:ssh")).toEqual({
+      data: "reconnected\r\n",
+      throughSeq: 3,
+    });
+  });
+
+  test("terminal:removed (panel gone from state) destroys the session's replay", async () => {
+    // Review F4: syncWithState emits terminal:removed for an orphaned panel; the
+    // runtime must drop its replay so removed panels don't leak replay memory and
+    // a stale snapshot can't be re-served on a later subscribe. Unlike restart
+    // (clear keeps the seq counter), removal resets it.
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "some output" });
+    expect(fixture.runtime.getTerminalReplaySnapshot("backend:shell")).toEqual({ data: "some output", throughSeq: 1 });
+
+    fixture.sessionManager.emit("terminal:removed", { sessionId: "backend:shell" });
+    expect(fixture.runtime.getTerminalReplaySnapshot("backend:shell")).toEqual({ data: "", throughSeq: 0 });
+  });
+
+  test("stamps a monotonic per-session seq on terminal:data matching the replay snapshot", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    const seqs: number[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fixture.runtime.on("terminal:data", (p: any) => seqs.push(p.seq));
+
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "a" });
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "b" });
+
+    expect(seqs).toEqual([1, 2]);
+    expect(fixture.runtime.getTerminalReplaySnapshot("backend:shell")).toEqual({ data: "ab", throughSeq: 2 });
+  });
+
   test("closes the review bridge store on shutdown", async () => {
     const fixture = await createFixture();
     await fixture.runtime.stop();

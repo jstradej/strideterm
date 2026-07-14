@@ -8,7 +8,9 @@ import {
   sshKeyGenerateSchema,
   sshCertImportSchema,
   sshAuthAnswerSchema,
+  sshAuthCancelSchema,
   sshAcceptHostKeySchema,
+  sshRejectHostKeySchema,
   sshConfigImportSchema,
   sshKnownHostsImportSchema,
 } from "../ipc-schemas.js";
@@ -262,30 +264,28 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:auth:answer"(payload: any) {
       const parsed = sshAuthAnswerSchema.parse(payload);
-      sshManager.answerAuthPrompt(parsed.sessionId, parsed.answers);
+      sshManager.answerAuthPrompt(parsed.sessionId, parsed.answers, parsed.promptId);
       return { ok: true };
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:auth:cancel"(payload: any) {
-      const sessionId = payload?.sessionId;
-      if (!sessionId) throw new Error("Missing sessionId");
-      sshManager.cancelAuthPrompt(sessionId);
+      const parsed = sshAuthCancelSchema.parse(payload);
+      sshManager.cancelAuthPrompt(parsed.sessionId, parsed.promptId);
       return { ok: true };
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:host-key:accept"(payload: any) {
       const parsed = sshAcceptHostKeySchema.parse(payload);
-      await sshManager.acceptHostKey(parsed.sessionId, parsed.mode);
+      await sshManager.acceptHostKey(parsed.sessionId, parsed.mode, parsed.promptId);
       return { ok: true };
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:host-key:reject"(payload: any) {
-      const sessionId = payload?.sessionId;
-      if (!sessionId) throw new Error("Missing sessionId");
-      sshManager.rejectHostKey(sessionId);
+      const parsed = sshRejectHostKeySchema.parse(payload);
+      sshManager.rejectHostKey(parsed.sessionId, parsed.promptId);
       return { ok: true };
     },
 

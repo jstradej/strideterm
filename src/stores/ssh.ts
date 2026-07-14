@@ -10,6 +10,7 @@ interface SshAuthPrompt {
   sessionId: string;
   name: string;
   prompts: unknown[];
+  promptId?: string;
   [key: string]: unknown;
 }
 
@@ -18,6 +19,7 @@ interface SshHostKeyWarning {
   host: string;
   oldFp: string;
   newFp: string;
+  promptId?: string;
   [key: string]: unknown;
 }
 
@@ -87,32 +89,37 @@ export const useSshStore = defineStore("ssh", {
     },
 
     async answerAuthPrompt(sessionId: string, answers: unknown[]): Promise<void> {
+      // Echo the prompt's generation token so a stale dialog (this id was reused by
+      // a reconnect) can't feed its answer into the newer connection.
+      const promptId = this.authPrompt?.promptId;
       // Strip Vue reactive proxies — IPC structuredClone cannot clone them and
       // silently rejects, leaving the prompt dialog stuck open.
       const plainAnswers = JSON.parse(JSON.stringify(Array.from(answers || []))) as unknown[];
       try {
-        await t.sshAuthAnswer({ sessionId, answers: plainAnswers });
+        await t.sshAuthAnswer({ sessionId, answers: plainAnswers, promptId });
       } finally {
         this.authPrompt = null;
       }
     },
 
     async cancelAuthPrompt(sessionId: string): Promise<void> {
+      const promptId = this.authPrompt?.promptId;
       try {
-        await t.sshAuthCancel({ sessionId });
+        await t.sshAuthCancel({ sessionId, promptId });
       } finally {
         this.authPrompt = null;
       }
     },
 
     async acceptHostKey(sessionId: string, mode = "permanent"): Promise<void> {
-      await t.sshHostKeyAccept({ sessionId, mode });
+      await t.sshHostKeyAccept({ sessionId, mode, promptId: this.hostKeyWarning?.promptId });
       this.hostKeyWarning = null;
     },
 
     async rejectHostKey(sessionId: string): Promise<void> {
+      const promptId = this.hostKeyWarning?.promptId;
       try {
-        await t.sshHostKeyReject({ sessionId });
+        await t.sshHostKeyReject({ sessionId, promptId });
       } finally {
         this.hostKeyWarning = null;
       }
@@ -121,6 +128,14 @@ export const useSshStore = defineStore("ssh", {
     bindEvents(): void {
       t.onSshAuthPrompt((payload: unknown) => {
         this.authPrompt = payload as SshAuthPrompt;
+      });
+
+      t.onSshAuthPromptCancel((payload: { sessionId: string; promptId: string }) => {
+        // The backend tore down (or another client answered/cancelled) the prompt
+        // for THIS generation → close the matching dialog. Scoped by promptId so a
+        // stale teardown can't dismiss a newer connection's prompt on this client.
+        if (this.authPrompt?.promptId === payload.promptId) this.authPrompt = null;
+        if (this.hostKeyWarning?.promptId === payload.promptId) this.hostKeyWarning = null;
       });
 
       t.onSshHostKeyChange((payload: unknown) => {
