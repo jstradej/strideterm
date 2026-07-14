@@ -183,7 +183,7 @@
     "concurrently": "^10.0.3",
     "electron": "^42.5.0",
     "electron-builder": "^26.15.3",
-    "eslint": "^10.5.0",
+    "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-security": "4.0.1",
     "eslint-plugin-vue": "^10.9.2",
