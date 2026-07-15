@@ -49,6 +49,7 @@ import {
   workspaceGridSetCellSchema,
   workspaceGridSetLayoutSchema,
   workspaceGridSwapCellsSchema,
+  wsResourceInterestSchema,
   wsTerminalInputSchema,
   wsTerminalResizeSchema,
   wsTerminalSubscribeSchema,
@@ -56,6 +57,15 @@ import {
 import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { remoteViewerId } from "./viewer-id.js";
+import {
+  REMOTE_STATE_PROTOCOL,
+  buildRemoteCore,
+  buildResourceDetail,
+  isKnownResourceKey,
+  looksLikeStatePayload,
+  resourceProfileAuthorized,
+  resourceRevision,
+} from "./remote-core.js";
 
 /**
  * Cookie carrying a per-session ID. Once the user has bootstrapped via the
@@ -565,9 +575,66 @@ export function stripSecretsForRemote(body: unknown): unknown {
   };
 }
 
+/**
+ * Per-request remote-response context. Attached to the `ServerResponse` once, at
+ * the top of the API branch, so the single `json()` writer can compose+slim
+ * EVERY outbound body without threading arguments through ~150 call sites and
+ * without a growing list of route intercepts.
+ */
+interface RemoteAdaptContext {
+  protocol: number;
+  sessionId: string;
+  registry: RemoteClientRegistry;
+}
+
+/**
+ * The one remote response adapter. Given any runtime result, it:
+ *  - strips the master token (stripSecretsForRemote);
+ *  - if the body IS a full desktop state payload → composes it per-client and,
+ *    for a protocol-2 client, replaces it with the slim `RemoteStateV2` core;
+ *  - if the body has a NESTED `payload` (mutation/verification results) → does
+ *    the same to that nested payload, leaving the envelope intact;
+ *  - otherwise passes the (stripped) small result through untouched.
+ *
+ * A remote HTTP/WS response therefore can never accidentally ship a raw desktop
+ * `StatePayload`, even when the runtime method returns `getPayload()`. Legacy
+ * (protocol < 2) clients still get the full composed payload — no silent slim.
+ */
+function adaptRemoteResponse(body: unknown, ctx: RemoteAdaptContext): unknown {
+  const stripped = stripSecretsForRemote(body);
+  if (looksLikeStatePayload(stripped)) return composeAndSlim(stripped as Record<string, unknown>, ctx);
+  if (stripped && typeof stripped === "object") {
+    const nested = (stripped as Record<string, unknown>).payload;
+    if (looksLikeStatePayload(nested)) {
+      return { ...(stripped as Record<string, unknown>), payload: composeAndSlim(nested as Record<string, unknown>, ctx) };
+    }
+  }
+  return stripped;
+}
+
+function composeAndSlim(payload: Record<string, unknown>, ctx: RemoteAdaptContext): unknown {
+  const composed =
+    ctx.sessionId && ctx.registry.get(ctx.sessionId) ? ctx.registry.composePayload(ctx.sessionId, payload) : payload;
+  return ctx.protocol >= REMOTE_STATE_PROTOCOL ? buildRemoteCore(composed as Record<string, unknown>) : composed;
+}
+
+/** Protocol version a request advertises (header wins, then `?sp=`, else 1). */
+function requestProtocol(requestUrl: string, headers: IncomingMessage["headers"]): number {
+  const raw = headers["x-strideterm-state-protocol"];
+  const fromHeader = Array.isArray(raw) ? raw[0] : raw;
+  if (fromHeader) return Number(fromHeader) || 1;
+  const sp = new URL(requestUrl || "/", "http://localhost").searchParams.get("sp");
+  return sp ? Number(sp) || 1 : 1;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ResponseWithCtx = ServerResponse & { __remoteCtx?: RemoteAdaptContext };
+
 function json(response: ServerResponse, statusCode: number, body: unknown): void {
   writeHead(response, statusCode, { "Content-Type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(stripSecretsForRemote(body)));
+  const ctx = (response as ResponseWithCtx).__remoteCtx;
+  const adapted = ctx ? adaptRemoteResponse(body, ctx) : stripSecretsForRemote(body);
+  response.end(JSON.stringify(adapted));
 }
 
 const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -2038,46 +2105,63 @@ export async function startRemoteServer({
       const apiSessionId = sessionIdForRequest(requestUrl, request.headers);
       if (apiSessionId && activeSessions.has(apiSessionId)) registry.bumpLastSeen(apiSessionId);
 
-      // /api/state — return per-client composed payload when a session is known.
-      if (request.method === "GET" && url.pathname === "/api/state") {
-        const basePayload = stripSecretsForRemote(await runtime.getInitialState());
-        json(response, 200, apiSessionId ? registry.composePayload(apiSessionId, basePayload) : basePayload);
-        return;
-      }
+      // Attach the remote-response context ONCE. From here every json() writer —
+      // in the intercepts below AND in handleApiRequest — composes the response
+      // per-client and (for a protocol-2 client) slims it to the RemoteStateV2
+      // core. This is the single adapter the plan requires: no per-route
+      // compose calls, and no runtime method can leak a raw desktop StatePayload.
+      // The old /api/state, azure|github/refresh and pull-request/seen intercepts
+      // existed only to compose those payloads; the adapter now does it uniformly,
+      // so they are gone.
+      (response as ResponseWithCtx).__remoteCtx = {
+        protocol: requestProtocol(requestUrl, request.headers),
+        sessionId: apiSessionId,
+        registry,
+      };
 
-      // /api/azure/refresh and /api/github/refresh return the FULL state payload,
-      // which the remote client assigns straight into its store. Like every other
-      // state push to a remote viewer it MUST be composed per-client (and stripped
-      // of secrets) — otherwise the client receives the RAW desktop payload with
-      // no `remoteClient`, snaps its active view to the desktop's workspace, then
-      // snaps back on the next composed WS broadcast. Because the Review pane
-      // auto-fires a refresh whenever it becomes active, that produced a
-      // network-paced view flip-flop (and terminal-resize storm). handleApiRequest
-      // serves these routes raw and has no apiSessionId in scope, so intercept here.
-      if (
-        request.method === "POST" &&
-        (url.pathname === "/api/azure/refresh" || url.pathname === "/api/github/refresh")
-      ) {
-        const raw =
-          url.pathname === "/api/azure/refresh"
-            ? await runtime.refreshAzureState()
-            : await runtime.refreshGitHubState();
-        const basePayload = stripSecretsForRemote(raw);
-        json(response, 200, apiSessionId ? registry.composePayload(apiSessionId, basePayload) : basePayload);
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        (url.pathname === "/api/azure/pull-request/seen" || url.pathname === "/api/github/pull-request/seen")
-      ) {
-        const body = await readRequestBody(request);
-        const raw =
-          url.pathname === "/api/azure/pull-request/seen"
-            ? await runtime.markAzurePullRequestSeen(body.prKey)
-            : await runtime.markGitHubPullRequestSeen(body.prKey);
-        const basePayload = stripSecretsForRemote(raw);
-        json(response, 200, apiSessionId ? registry.composePayload(apiSessionId, basePayload) : basePayload);
+      // Slim-core detail resources — on demand, profile-authorized. Each maps a
+      // domain-specific GET to a resource key; the response is
+      // `{ resource, revision, data }` and is NOT slimmed (it IS the detail).
+      const DETAIL_ROUTES: Record<string, (u: URL) => string | null> = {
+        "/api/git/workspace-detail": (u) => {
+          const id = u.searchParams.get("workspaceId");
+          return id ? `git:${id}` : null;
+        },
+        "/api/docker/detail": () => "docker",
+        "/api/azure/inbox": () => "azure-inbox",
+        "/api/github/inbox": () => "github-inbox",
+        "/api/azure/pull-request-detail": (u) => {
+          const k = u.searchParams.get("prKey");
+          return k ? `azure-pr:${k}` : null;
+        },
+        "/api/github/pull-request-detail": (u) => {
+          const k = u.searchParams.get("prKey");
+          return k ? `github-pr:${k}` : null;
+        },
+        "/api/review-bridge/pull-request": (u) => {
+          const k = u.searchParams.get("prKey");
+          return k ? `review-bridge:${k}` : null;
+        },
+      };
+      const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
+      if (detailRoute) {
+        const resourceKey = detailRoute(url);
+        if (!resourceKey || !isKnownResourceKey(resourceKey)) {
+          json(response, 400, { error: "Missing or invalid resource id" });
+          return;
+        }
+        const profileId = (apiSessionId && registry.get(apiSessionId)?.profileId) || null;
+        const rawPayload = runtime.getPayload() as Record<string, unknown>;
+        if (!resourceProfileAuthorized(rawPayload, profileId, resourceKey)) {
+          json(response, 403, { error: "Resource is not in your active profile" });
+          return;
+        }
+        const detail = buildResourceDetail(rawPayload, profileId, resourceKey);
+        if (!detail) {
+          json(response, 404, { error: "Resource not available yet" });
+          return;
+        }
+        json(response, 200, detail);
         return;
       }
 
@@ -2118,7 +2202,9 @@ export async function startRemoteServer({
             json(response, 404, { error: "Not found" });
             return;
           }
-          json(response, 200, registry.composePayload(apiSessionId, stripSecretsForRemote(runtime.getPayload())));
+          // The central adapter (attached __remoteCtx) composes per-client and
+          // slims to the v2 core; just hand it the raw payload.
+          json(response, 200, runtime.getPayload());
         } catch (err) {
           json(response, 400, { error: (err as Error).message || "Activation failed" });
         }
@@ -2477,8 +2563,27 @@ export async function startRemoteServer({
     backlogSince: number | null;
     /** Previous live-backlog sample, so the sweep can detect drain progress. */
     lastLiveBacklog: number;
+    /**
+     * Detail resources this socket has declared interest in (mounted panes /
+     * visible grid cells), analogous to the terminal subscription set. Only
+     * known + profile-authorized keys are stored; recomputed on every
+     * resource:interest message and resent by the client on reconnect.
+     */
+    interests: Set<string>;
+    /**
+     * Last revision token pushed to this socket per interested resource, so a
+     * state:updated only emits a resource:invalidate when the resource actually
+     * changed (no pointless refetch of an unchanged detail).
+     */
+    sentRevisions: Map<string, string>;
   };
   const socketRouting = new WeakMap<import("ws").WebSocket, SocketRouting>();
+  // Maps each WS socket to its advertised state-protocol version (2 for a slim
+  // client, 1/absent for a legacy tab that must keep receiving full payloads).
+  const socketProtocol = new WeakMap<import("ws").WebSocket, number>();
+  // Upper bound on resource-interest keys one message may carry — a defence
+  // against a buggy/hostile client, sized well above any real visible grid.
+  const MAX_INTERESTS = 128;
 
   // Test-only: how many times a congestion close-timer actually fired terminate().
   // A graceful close must clearTimeout the armed timer, so this stays 0 for a
@@ -2520,6 +2625,8 @@ export async function startRemoteServer({
         stateCoalescer: null,
         backlogSince: null,
         lastLiveBacklog: 0,
+        interests: new Set(),
+        sentRevisions: new Map(),
       };
       socketRouting.set(socket, routing);
     }
@@ -2799,30 +2906,98 @@ export async function startRemoteServer({
     routing.sessions = nextSet;
   }
 
+  /**
+   * Handle a resource:interest message. The client sends its COMPLETE set of
+   * mounted/visible detail-resource keys (git panes, docker pane, inbox/review
+   * panes across every visible grid cell). We keep only the keys that are known
+   * AND authorized for the client's profile, then push an immediate
+   * resource:invalidate for each NEWLY-interested key so the client fetches it.
+   * Ongoing changes are pushed from the state:updated loop. Dropped resources
+   * stop receiving invalidations. Mirrors terminal:subscribe (idempotent,
+   * client resends on reconnect).
+   */
+  function handleResourceInterest(socket: import("ws").WebSocket, clientSessionId: string, requestedRaw: string[]): void {
+    const routing = routingFor(socket);
+    const requested = Array.from(new Set(requestedRaw));
+    if (requested.length > MAX_INTERESTS) {
+      log.warn("WebSocket resource interest rejected: over cap", {
+        sessionRef: remoteSessionRef(clientSessionId),
+        requested: requested.length,
+        cap: MAX_INTERESTS,
+      });
+      return;
+    }
+    const raw = runtime.getPayload() as Record<string, unknown>;
+    const profileId = clientSessionId ? (registry.get(clientSessionId)?.profileId ?? null) : null;
+    const next = new Set<string>();
+    for (const key of requested) {
+      if (!isKnownResourceKey(key)) continue;
+      if (!resourceProfileAuthorized(raw, profileId, key)) continue;
+      next.add(key);
+    }
+    // Forget revisions for resources no longer of interest.
+    for (const key of [...routing.sentRevisions.keys()]) {
+      if (!next.has(key)) routing.sentRevisions.delete(key);
+    }
+    // For newly-interested resources, prime the revision and push an immediate
+    // invalidate so the client fetches the current detail once.
+    for (const key of next) {
+      if (routing.interests.has(key)) continue;
+      const rev = resourceRevision(raw, key);
+      routing.sentRevisions.set(key, rev);
+      checkedSend(socket, JSON.stringify({ type: "resource:invalidate", payload: { resource: key, revision: rev } }));
+    }
+    routing.interests = next;
+  }
+
+  /**
+   * After a state change, tell each socket which of its interested resources
+   * actually changed (revision differs from the last one we sent it). The client
+   * refetches only those — hidden resources get nothing, unchanged resources get
+   * nothing. `rawPayload` is the full (unslimmed) payload so revisions read the
+   * real git/provider/docker fields.
+   */
+  function pushResourceInvalidations(socket: import("ws").WebSocket, rawPayload: Record<string, unknown>): void {
+    const routing = socketRouting.get(socket);
+    if (!routing || routing.interests.size === 0) return;
+    for (const key of routing.interests) {
+      const rev = resourceRevision(rawPayload, key);
+      if (routing.sentRevisions.get(key) === rev) continue;
+      routing.sentRevisions.set(key, rev);
+      checkedSend(socket, JSON.stringify({ type: "resource:invalidate", payload: { resource: key, revision: rev } }));
+    }
+  }
+
   const unsubscribe = [
-    // state:updated — compose per-client so each browser sees its own profile context.
+    // state:updated — compose per-client (and slim to the v2 core for protocol-2
+    // sockets) so each browser sees only its own profile context and no heavy
+    // detail. Then push targeted resource invalidations for interested details.
     runtime.on("state:updated", (payload: unknown) => {
       // Keep the per-frame authz cache fresh: a profile switch broadcasts state,
       // so routeTerminalFrame's re-check sees the new workspace→profile binding.
       rebuildWorkspaceProfiles();
-      const stripped = stripSecretsForRemote(payload);
+      const rawPayload = payload as Record<string, unknown>;
       for (const socket of sockets) {
         if (socket.readyState !== socket.OPEN) continue;
         const sessionId = socketSession.get(socket);
         if (!sessionId && !rawBroadcastLogged.has(socket)) {
-          // No session bound to this socket → it receives the RAW payload with no
-          // `remoteClient`, which forces the renderer's workspace fallback. This is
-          // the upstream cause of the mobile workspace flip-flop; log once so a
+          // No session bound to this socket → it receives the RAW (uncomposed)
+          // payload, which forces the renderer's workspace fallback. Log once so a
           // repro shows whether the affected socket ever lost its session binding.
           rawBroadcastLogged.add(socket);
           log.debug("state:updated sent without per-client composition (socket has no session)", {
             openSockets: sockets.size,
           });
         }
-        const msg = sessionId
-          ? JSON.stringify({ type: "state:updated", payload: registry.composePayload(sessionId, stripped) })
-          : JSON.stringify({ type: "state:updated", payload: stripped });
-        sendStateFrame(socket, msg);
+        const adapted = adaptRemoteResponse(payload, {
+          protocol: socketProtocol.get(socket) || 1,
+          sessionId: sessionId || "",
+          registry,
+        });
+        sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload: adapted }));
+        // Only protocol-2 sockets fetch details; a legacy socket carries the full
+        // payload and never registers interests, so this is a no-op for it.
+        pushResourceInvalidations(socket, rawPayload);
       }
     }),
     runtime.on("terminal:data", (payload: unknown) => routeTerminalFrame("terminal:data", payload)),
@@ -2909,6 +3084,10 @@ export async function startRemoteServer({
       // Start in legacy mode: the socket receives the full terminal broadcast
       // until it sends its first terminal:subscribe (see handleTerminalSubscribe).
       routingFor(ws);
+      // Record the state-protocol the client advertised (?sp=2). Absent → 1
+      // (legacy tab): it keeps receiving the full composed payload and never
+      // gets slimmed, so an old open page never silently consumes the v2 shape.
+      socketProtocol.set(ws, requestProtocol(request.url || "/", request.headers));
       // Tolerant heartbeat: count consecutive missed pongs instead of the
       // binary alive/dead flag. A pong on any tick resets the counter.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- missedPongs is the heartbeat counter attached to the ws instance
@@ -3006,6 +3185,19 @@ export async function startRemoteServer({
                 sessionRef: remoteSessionRef(wsSessionId),
               });
             }
+          } else if (message.type === "resource:interest") {
+            const parsed = wsResourceInterestSchema.safeParse(message);
+            if (parsed.success) {
+              log.debug("WebSocket resource interest", {
+                sessionRef: remoteSessionRef(wsSessionId),
+                count: parsed.data.resources.length,
+              });
+              handleResourceInterest(ws, wsSessionId, parsed.data.resources);
+            } else {
+              log.warn("WebSocket resource interest rejected: invalid payload", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            }
           }
         } catch (err) {
           log.warn("WebSocket message ignored: malformed JSON", {
@@ -3060,14 +3252,24 @@ export async function startRemoteServer({
         }
       });
 
-      // Initial composed state — deliberately LAST (see the NOTE above the
-      // message handler): the await must not open a window where incoming
-      // messages have no listener. A subscribe processed before this send is
-      // fine; the client handles replay frames arriving ahead of state.
-      const baseInitial = stripSecretsForRemote(await runtime.getInitialState());
-      if (ws.readyState === ws.OPEN) {
-        const initialPayload = wsSessionId ? registry.composePayload(wsSessionId, baseInitial) : baseInitial;
-        sendStateFrame(ws, JSON.stringify({ type: "state:updated", payload: initialPayload }));
+      // Bootstrap-once (plan §11): a protocol-2 client bootstraps over HTTP
+      // `GET /api/state` (cacheable, compressible) and uses the WS only for
+      // newer changes — so we do NOT push an initial state frame to it, which
+      // would be a redundant second full transfer. A legacy socket has no HTTP
+      // bootstrap guarantee in its old renderer, so it still gets the initial
+      // composed payload here. Registered LAST (see the NOTE above the message
+      // handler) so the await never opens a window with no message listener.
+      const wsProtocol = socketProtocol.get(ws) || 1;
+      if (wsProtocol < REMOTE_STATE_PROTOCOL) {
+        const baseInitial = await runtime.getInitialState();
+        if (ws.readyState === ws.OPEN) {
+          const initialPayload = adaptRemoteResponse(baseInitial, {
+            protocol: wsProtocol,
+            sessionId: wsSessionId || "",
+            registry,
+          });
+          sendStateFrame(ws, JSON.stringify({ type: "state:updated", payload: initialPayload }));
+        }
       }
     });
   });

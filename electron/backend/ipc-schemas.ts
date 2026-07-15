@@ -859,6 +859,16 @@ export const wsTerminalSubscribeSchema = z.object({
 });
 export type WsTerminalSubscribe = z.infer<typeof wsTerminalSubscribeSchema>;
 
+// The complete set of slim-core DETAIL resources a remote client currently
+// renders (git panes, docker pane, provider inbox/review panes across every
+// visible grid cell). Analogous to terminal:subscribe: the client sends the
+// whole set, the server pushes resource:invalidate for changed/new ones.
+export const wsResourceInterestSchema = z.object({
+  type: z.literal("resource:interest"),
+  resources: z.array(nonEmptyString).max(256),
+});
+export type WsResourceInterest = z.infer<typeof wsResourceInterestSchema>;
+
 export const fileListSchema = z.object({
   rootPath: z.string().min(1),
   relativePath: z.string(),

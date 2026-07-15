@@ -742,6 +742,32 @@ export interface MetaState {
   recoveryCandidates: RecoveryCandidate[];
 }
 
+// ------- Remote slim-core contract -------
+
+/**
+ * The light git fields the always-on UI (sidebar cards, tab bar, hero) reads —
+ * everything the heavy GitSnapshot carries beyond these is pane-only detail
+ * fetched on demand. Pushed as `payload.gitSummaries[workspaceId]` in the slim
+ * remote core (protocol 2); absent on the desktop full payload, where the same
+ * six fields are read straight off `git.workspaces[id]`.
+ */
+export interface GitSummary {
+  available: boolean;
+  branch: string;
+  dirty: boolean;
+  dirtyCount: number;
+  branchMerged?: boolean;
+  lastChangeAt: string | null;
+}
+
+/**
+ * Per-resource revision map in the slim remote core. Keys are resource ids
+ * (`git:<workspaceId>`, `docker`, `azure-inbox`, `github-inbox`, …); values are
+ * opaque change tokens the client compares to decide whether a cached detail is
+ * stale. Purely a freshness signal — never a correctness boundary.
+ */
+export type RemoteResourceRevisions = Record<string, string>;
+
 // ------- Full payload broadcast to frontend -------
 
 export interface StatePayload {
@@ -765,4 +791,18 @@ export interface StatePayload {
     activeWorkspaceId: string;
     activeSessionId: string;
   };
+  /**
+   * Remote slim-core contract version. Present (== 2) only on payloads composed
+   * for a protocol-2 remote client; absent on the desktop full payload and on
+   * legacy remote payloads. Lets an already-open old tab detect the shape.
+   */
+  stateProtocol?: number;
+  /**
+   * Slim-core git summaries keyed by workspace id. Present only in the remote
+   * core (protocol 2). Full git snapshots are fetched on demand into a separate
+   * detail cache — never merged back under `git.workspaces`.
+   */
+  gitSummaries?: Record<string, GitSummary>;
+  /** Slim-core per-resource revision tokens. Present only in the remote core. */
+  revisions?: RemoteResourceRevisions;
 }

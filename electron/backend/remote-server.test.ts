@@ -561,6 +561,46 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           { id: "win-2", profileId: "p2", activeWorkspaceId: "ws2" },
         ],
       },
+      // Heavy domains so the slim-core contract has something to strip. A single
+      // shared object mutated in place by _bumpGit so revision changes are
+      // observable to the interest/invalidate path.
+      git: {
+        connections: [],
+        workspaces: {
+          ws1: {
+            available: true,
+            branch: "main",
+            dirty: false,
+            dirtyCount: 0,
+            lastChangeAt: "2026-07-15T10:00:00Z",
+            lastUpdatedAt: "2026-07-15T10:00:00Z",
+            log: [{ subject: "HEAVY-GIT-LOG-ENTRY".repeat(20) }],
+            roots: { "/repo": {} },
+          },
+          ws2: { available: true, branch: "dev", dirty: false, dirtyCount: 0, lastUpdatedAt: "z", log: [] },
+        },
+        activeWorkspace: null,
+      },
+      azureDevops: {
+        connections: [{ id: "az1", profileId: "p1" }],
+        inbox: { needsMyReview: [{ prKey: "azure:pr1", connectionId: "az1" }], needsAttention: [] },
+        pullRequests: { "azure:pr1": { prKey: "azure:pr1", profileId: "p1", threads: ["HEAVY-THREAD".repeat(20)] } },
+        reviewActivity: [],
+        sync: {},
+      },
+      github: { connections: [], inbox: {}, pullRequests: {}, reviewActivity: [], sync: {} },
+      reviewBridge: { agentPrompts: [], pullRequests: {} },
+      docker: {
+        available: true,
+        lastUpdatedAt: "2026-07-15T12:00:00Z",
+        containers: [{ ID: "c1", State: "running" }],
+        images: [{ ID: "HEAVY-IMAGE" }],
+        volumes: [],
+        networks: [],
+        backends: [],
+        contexts: [],
+        lazydocker: {},
+      },
     };
     const handlers: Record<string, ((p: unknown) => void)[]> = {};
     const replay = new Map<string, { data: string; throughSeq: number }>();
@@ -608,6 +648,12 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         const ws = payload.appState.workspaces.find((w) => w.id === workspaceId);
         if (ws && !ws.panels.some((p) => p.id === panelId)) ws.panels.push({ id: panelId });
       },
+      // Bump a git workspace's revision so the interest/invalidate path fires.
+      _bumpGit: (workspaceId: string, ts: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const snap = (payload as any).git.workspaces[workspaceId];
+        if (snap) snap.lastUpdatedAt = ts;
+      },
     };
     return runtime;
   }
@@ -619,9 +665,10 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     closeCode: () => number | null;
   };
 
-  function connectWs(port: number, auth: string, clientId: string, profileId?: string): WsClient {
+  function connectWs(port: number, auth: string, clientId: string, profileId?: string, sp?: number): WsClient {
     const q = new URLSearchParams({ token: auth, clientId });
     if (profileId) q.set("profileId", profileId);
+    if (sp) q.set("sp", String(sp));
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?${q.toString()}`);
     const messages: { type: string; payload?: unknown }[] = [];
     let code: number | null = null;
@@ -1356,6 +1403,132 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       ).toBe(true);
       filtered.ws.close();
       legacy.ws.close();
+    });
+  });
+
+  describe("slim remote core (protocol 2) — composition, details, interests", () => {
+    const initialState = (c: WsClient) => c.messages.find((m) => m.type === "state:updated")?.payload as AnyState;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    type AnyState = any;
+
+    async function apiGet(port: number, path: string, auth: string, clientId: string): Promise<Response> {
+      return fetch(`http://127.0.0.1:${port}${path}`, {
+        headers: { Authorization: `Bearer ${auth}`, "X-Strideterm-Client-Id": clientId, "X-Strideterm-State-Protocol": "2" },
+      });
+    }
+
+    test("GET /api/state slims to the v2 core; a v2 WS delta is also slim; a legacy socket keeps full state", async () => {
+      await withServer("tok-v2", async ({ port, runtime }) => {
+        // Bootstrap-once: a v2 client bootstraps over HTTP and gets NO initial WS
+        // frame; a legacy client still receives the full initial WS payload.
+        const v2 = connectWs(port, "tok-v2", "v2-aaaaa", "p1", 2);
+        const legacy = connectWs(port, "tok-v2", "leg-aaaa", "p1");
+        await Promise.all([v2.opened, legacy.opened]);
+        expect(await waitUntil(() => Boolean(initialState(legacy)))).toBe(true);
+        await delay(60);
+        expect(initialState(v2)).toBeUndefined(); // no redundant WS bootstrap for v2
+
+        // HTTP bootstrap for v2 is the slim core.
+        const res = await apiGet(port, "/api/state", "tok-v2", "v2-aaaaa");
+        const core = (await res.json()) as AnyState;
+        expect(core.stateProtocol).toBe(2);
+        expect(core.gitSummaries.ws1).toMatchObject({ available: true, branch: "main" });
+        expect(core.git.workspaces).toBeUndefined();
+        expect(JSON.stringify(core)).not.toContain("HEAVY-GIT-LOG-ENTRY");
+        expect(JSON.stringify(core)).not.toContain("HEAVY-THREAD");
+        expect(JSON.stringify(core)).not.toContain("HEAVY-IMAGE");
+        expect(core.azureDevops.inbox).toBeUndefined();
+        expect(core.docker.counts).toEqual({ containers: 1, running: 1 });
+        expect(Object.keys(core.gitSummaries)).toEqual(["ws1"]); // profile-scoped
+
+        // A subsequent state broadcast reaches the v2 socket as a slim delta too.
+        runtime._emit("state:updated", runtime.getPayload());
+        expect(await waitUntil(() => Boolean(initialState(v2)))).toBe(true);
+        expect(initialState(v2).stateProtocol).toBe(2);
+        expect(initialState(v2).git.workspaces).toBeUndefined();
+
+        // Legacy socket's initial WS payload is the full desktop shape.
+        const full = initialState(legacy);
+        expect(full.stateProtocol).toBeUndefined();
+        expect(full.git.workspaces.ws1.log).toBeDefined();
+        expect(full.gitSummaries).toBeUndefined();
+
+        v2.ws.close();
+        legacy.ws.close();
+      });
+    });
+
+    test("git workspace-detail returns {resource,revision,data}; cross-profile is 403", async () => {
+      await withServer("tok-det", async ({ port }) => {
+        // Bind a token-client session (profile p1) via one authorized call.
+        const ok = await apiGet(port, "/api/git/workspace-detail?workspaceId=ws1", "tok-det", "det-aaaa");
+        expect(ok.status).toBe(200);
+        const body = (await ok.json()) as { resource: string; revision: string; data: { log: unknown[] } };
+        expect(body.resource).toBe("git:ws1");
+        expect(body.revision).toBe("2026-07-15T10:00:00Z");
+        expect(body.data.log).toHaveLength(1); // full snapshot
+
+        // ws2 belongs to p2 — the p1-bound client must be refused.
+        const forbidden = await apiGet(port, "/api/git/workspace-detail?workspaceId=ws2", "tok-det", "det-aaaa");
+        expect(forbidden.status).toBe(403);
+      });
+    });
+
+    test("docker + azure inbox detail endpoints return the heavy data", async () => {
+      await withServer("tok-det2", async ({ port }) => {
+        const docker = await apiGet(port, "/api/docker/detail", "tok-det2", "det2-aaa");
+        expect(docker.status).toBe(200);
+        expect(((await docker.json()) as { data: { images: unknown[] } }).data.images).toHaveLength(1);
+
+        const inbox = await apiGet(port, "/api/azure/inbox", "tok-det2", "det2-aaa");
+        expect(inbox.status).toBe(200);
+        const inboxBody = (await inbox.json()) as { data: { inbox: { needsMyReview: unknown[] } } };
+        expect(inboxBody.data.inbox.needsMyReview).toHaveLength(1); // az1 is p1's connection
+      });
+    });
+
+    test("resource:interest triggers an immediate invalidate, and again when the resource changes", async () => {
+      await withServer("tok-int", async ({ port, runtime }) => {
+        const c = connectWs(port, "tok-int", "int-aaaa", "p1", 2);
+        await c.opened;
+        await delay(40);
+        c.ws.send(JSON.stringify({ type: "resource:interest", resources: ["git:ws1"] }));
+        // First interest → immediate invalidate so the client fetches once.
+        expect(
+          await waitUntil(() =>
+            c.messages.some(
+              (m) => m.type === "resource:invalidate" && (m.payload as AnyState)?.resource === "git:ws1",
+            ),
+          ),
+        ).toBe(true);
+        const firstCount = c.messages.filter((m) => m.type === "resource:invalidate").length;
+
+        // A state broadcast with an UNCHANGED git revision must NOT re-invalidate.
+        runtime._emit("state:updated", runtime.getPayload());
+        await delay(60);
+        expect(c.messages.filter((m) => m.type === "resource:invalidate").length).toBe(firstCount);
+
+        // Bumping the git revision → one more invalidate.
+        runtime._bumpGit("ws1", "2026-07-15T13:00:00Z");
+        runtime._emit("state:updated", runtime.getPayload());
+        expect(
+          await waitUntil(() => c.messages.filter((m) => m.type === "resource:invalidate").length > firstCount),
+        ).toBe(true);
+        c.ws.close();
+      });
+    });
+
+    test("interest for a cross-profile resource is silently ignored (no invalidate)", async () => {
+      await withServer("tok-int2", async ({ port }) => {
+        const c = connectWs(port, "tok-int2", "int2-aaa", "p1", 2);
+        await c.opened;
+        await delay(40);
+        // git:ws2 belongs to p2 — a p1 client's interest must not be honored.
+        c.ws.send(JSON.stringify({ type: "resource:interest", resources: ["git:ws2"] }));
+        await delay(80);
+        expect(c.messages.some((m) => m.type === "resource:invalidate")).toBe(false);
+        c.ws.close();
+      });
     });
   });
 });
