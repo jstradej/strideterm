@@ -106,7 +106,9 @@ const workspaceKind = computed(() => store.activeWorkspace?.kind || "terminal");
 const gitAvailable = computed(() => {
   const wsId = store.myActiveWorkspaceId;
   if (!wsId) return false;
-  return !!(store.getGitSnapshot(wsId) as { available?: boolean } | null | undefined)?.available;
+  // `available` is a summary field — read it from gitSummaries so it works on
+  // the remote slim core without fetching the full snapshot.
+  return !!(store.getGitSummary(wsId) as { available?: boolean } | null | undefined)?.available;
 });
 const layouts = LAYOUTS as Record<string, { slots: number; label: string } | undefined>;
 

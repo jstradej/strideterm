@@ -789,12 +789,15 @@ const reviewBridge = computed(() => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   agentPrompts: (appStore.payload?.reviewBridge as any)?.agentPrompts || [],
 }));
-// Fetch + keep the PR detail and review-bridge context current while this pane
-// (which handles both Azure and GitHub reviews) is mounted.
+// Fetch + keep the PR detail, review-bridge context AND the workspace's git
+// snapshot (the pane renders the branch log) current while this pane — which
+// handles both Azure and GitHub reviews — is mounted.
 useResourceInterest(() => {
+  const keys: string[] = [];
+  if (props.workspaceId) keys.push(`git:${props.workspaceId}`);
   const key = prKey.value;
-  if (!key) return [];
-  return [isGitHub.value ? `github-pr:${key}` : `azure-pr:${key}`, `review-bridge:${key}`];
+  if (key) keys.push(isGitHub.value ? `github-pr:${key}` : `azure-pr:${key}`, `review-bridge:${key}`);
+  return keys;
 });
 const reviewUi = computed(() => gitUiStore.get(props.workspaceId));
 const checks = computed(() => detail.value?.checks || {});
