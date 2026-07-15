@@ -17,11 +17,11 @@ reproduces them.
 
 ## Payload size reduction (plan §Verification 6 — "record the payload reduction")
 
-| Stage | Size | Reduction |
-|---|---|---|
-| Pre-dedup full payload (2.4.10, with `git.projects` + `appState.projects` aliases) | **2109.3 KiB** | — |
-| Post-dedup desktop payload (Phase 1 removed the byte-identical aliases) | **1300.8 KiB** | **38.3%** vs pre-dedup |
-| Slim `RemoteStateV2` core (protocol 2, one profile) | **10.6 KiB** | **99.2%** vs post-dedup desktop payload · **99.5%** vs 2.4.10 |
+| Stage                                                                              | Size           | Reduction                                                     |
+| ---------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------- |
+| Pre-dedup full payload (2.4.10, with `git.projects` + `appState.projects` aliases) | **2109.3 KiB** | —                                                             |
+| Post-dedup desktop payload (Phase 1 removed the byte-identical aliases)            | **1300.8 KiB** | **38.3%** vs pre-dedup                                        |
+| Slim `RemoteStateV2` core (protocol 2, one profile)                                | **10.6 KiB**   | **99.2%** vs post-dedup desktop payload · **99.5%** vs 2.4.10 |
 
 The Phase 1 dedup alone cuts ~38% (the projects aliases the plan flagged as
 "byte-identical duplicate"). The slim core then removes the rest of the weight —
@@ -34,10 +34,10 @@ is telemetry, **not** a correctness gate: no socket is closed for a large frame
 
 The `/api/state` bootstrap core (10.6 KiB) compresses to:
 
-| Encoding | Size | Compress time | Ratio |
-|---|---|---|---|
-| Brotli | **1.2 KiB** (1222 B) | ~16.5 ms | 88.8% |
-| gzip | **1.6 KiB** (1600 B) | ~0.35 ms | 85.3% |
+| Encoding | Size                 | Compress time | Ratio |
+| -------- | -------------------- | ------------- | ----- |
+| Brotli   | **1.2 KiB** (1222 B) | ~16.5 ms      | 88.8% |
+| gzip     | **1.6 KiB** (1600 B) | ~0.35 ms      | 85.3% |
 
 Brotli is preferred (better ratio) and is chosen when the client's
 `Accept-Encoding` advertises it; gzip is the fallback (`pickEncoding` in

@@ -120,7 +120,13 @@ function buildFullPayload() {
     environment: {},
     remoteAccess: { enabled: true, host: "h", port: 1, urls: ["u"], tunnel: { active: false } },
     git: { connections: [], workspaces: gitWorkspaces, activeWorkspace: null },
-    azureDevops: { connections: [{ id: "az1", profileId: "p1" }], inbox: {}, pullRequests, reviewActivity: [], sync: {} },
+    azureDevops: {
+      connections: [{ id: "az1", profileId: "p1" }],
+      inbox: {},
+      pullRequests,
+      reviewActivity: [],
+      sync: {},
+    },
     github: { connections: [], inbox: {}, pullRequests: {}, reviewActivity: [], sync: {} },
     reviewBridge: { agentPrompts: [], pullRequests: {} },
     docker: {
@@ -128,7 +134,10 @@ function buildFullPayload() {
       lastUpdatedAt: "2026-07-15T12:00:00Z",
       containers: Array.from({ length: 7 }, (_, i) => ({ ID: `c${i}`, State: "running", Status: "Up 2 hours" })),
       images: Array.from({ length: 186 }, (_, i) => ({ ID: `img${i}`, RepoTags: [`repo/img:${i}`], Size: 123456789 })),
-      volumes: Array.from({ length: 36 }, (_, i) => ({ Name: `vol${i}`, Mountpoint: `/var/lib/docker/volumes/vol${i}` })),
+      volumes: Array.from({ length: 36 }, (_, i) => ({
+        Name: `vol${i}`,
+        Mountpoint: `/var/lib/docker/volumes/vol${i}`,
+      })),
       networks: [{ ID: "net1" }],
       backends: [{ id: "b1" }],
       contexts: [{ Name: "default" }],
@@ -168,7 +177,10 @@ function main(): void {
   const gz = timeCompress(() => gzipSync(coreRaw));
 
   // (4) An ongoing WS resource:invalidate frame (post-bootstrap steady state).
-  const invalidate = { type: "resource:invalidate", payload: { resource: "git:ws0", revision: "2026-07-15T13:00:00Z" } };
+  const invalidate = {
+    type: "resource:invalidate",
+    payload: { resource: "git:ws0", revision: "2026-07-15T13:00:00Z" },
+  };
   const invalidateBytes = bytesOf(invalidate);
 
   const lines = [

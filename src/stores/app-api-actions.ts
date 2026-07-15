@@ -758,9 +758,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // --- Profile / settings ----------------------------------------------
 
   async function saveProfile(profile: unknown): Promise<void> {
-    setPayload(
-      (await ctx.getApi().saveProfile(profile as Parameters<Transport["saveProfile"]>[0])) as StatePayload,
-    );
+    setPayload((await ctx.getApi().saveProfile(profile as Parameters<Transport["saveProfile"]>[0])) as StatePayload);
   }
 
   async function deleteProfile(profileId: string): Promise<void> {

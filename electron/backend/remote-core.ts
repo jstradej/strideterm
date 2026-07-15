@@ -380,7 +380,9 @@ export function slimRemoteSettings(settings: AnyRecord | undefined): AnyRecord {
   const telegram = integrations.telegram as AnyRecord | undefined;
   return {
     ...s,
-    remoteAccess: s.remoteAccess ? { ...(s.remoteAccess as AnyRecord), token: "", cloudflaredPath: "" } : s.remoteAccess,
+    remoteAccess: s.remoteAccess
+      ? { ...(s.remoteAccess as AnyRecord), token: "", cloudflaredPath: "" }
+      : s.remoteAccess,
     integrations: {
       ...integrations,
       azureDevops: reduceProviderIntegrationConfig(integrations.azureDevops as AnyRecord | undefined, "pat"),
