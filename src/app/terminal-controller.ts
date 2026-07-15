@@ -406,6 +406,21 @@ export function createTerminalController({
     });
   }
 
+  // Force xterm to re-measure its character cell size. On a terminal's first
+  // open() the webfont ("JetBrainsMono NFM", declared font-display: swap in
+  // base.css) may not have loaded yet, so xterm's CharSizeService measured the
+  // *fallback* font's metrics and laid the buffer out on them — glyphs overlap
+  // and rows misalign. Neither fit() nor refresh() re-measures the cell; only a
+  // change to a font option does (which is exactly why a manual font-size tweak,
+  // or a fresh open() on a tab switch, repaints correctly). Nudge fontSize off
+  // by one and back to trigger the re-measure with the now-loaded font — both
+  // writes land before the next render, so there's no visible size change.
+  function forceCharRemeasure(view: TerminalView): void {
+    const size = view.term.options.fontSize ?? 13;
+    view.term.options.fontSize = size >= 32 ? size - 1 : size + 1;
+    view.term.options.fontSize = size;
+  }
+
   function scheduleDeferredTerminalFits(sessionId: string): void {
     window.requestAnimationFrame(() => {
       scheduleSessionResize(sessionId, { force: true });
@@ -418,13 +433,23 @@ export function createTerminalController({
       view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
     }, 120);
 
-    document.fonts?.ready
-      ?.then(() => {
-        scheduleSessionResize(sessionId, { force: true });
-        const view = views.value.get(sessionId);
-        view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
-      })
-      .catch(() => {});
+    // Wait for the real terminal font to load, then re-measure + refit so the
+    // buffer is laid out on the correct glyph geometry. We explicitly load the
+    // font rather than await document.fonts.ready: `ready` can already be
+    // resolved from page boot before open() has even triggered this font's
+    // load, in which case the callback would run against the still-unloaded
+    // fallback and the garble would persist. `.load()` resolves only once the
+    // matching FontFace is actually available.
+    const fontLoad = document.fonts?.load
+      ? document.fonts.load('16px "JetBrainsMono NFM"').catch(() => [])
+      : Promise.resolve([]);
+    void fontLoad.then(() => {
+      const view = views.value.get(sessionId);
+      if (!view) return;
+      forceCharRemeasure(view);
+      scheduleSessionResize(sessionId, { force: true });
+      view.term.refresh(0, Math.max(0, view.term.rows - 1));
+    });
   }
 
   function scheduleActiveResize(options?: { force?: boolean }): void {
