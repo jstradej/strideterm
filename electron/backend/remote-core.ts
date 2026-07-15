@@ -240,7 +240,10 @@ function reviewBridgePrRevision(ctx: AnyRecord | null | undefined): string {
 /** Core revision map: the cheap, always-included resources (git per profile
  *  workspace, docker, both inboxes). Per-PR revisions ride the invalidation
  *  push instead, so the core stays small. */
-export function buildCoreRevisions(payload: AnyRecord, profileWorkspaceIds: Set<string> | null): RemoteResourceRevisions {
+export function buildCoreRevisions(
+  payload: AnyRecord,
+  profileWorkspaceIds: Set<string> | null,
+): RemoteResourceRevisions {
   const revisions: RemoteResourceRevisions = {};
   for (const wsId of Object.keys((payload?.git?.workspaces || {}) as AnyRecord)) {
     if (profileWorkspaceIds && !profileWorkspaceIds.has(wsId)) continue;
@@ -427,10 +430,7 @@ export function buildProviderInboxDetail(snapshot: AnyRecord | null | undefined,
 }
 
 /** Full per-PR provider detail (threads, issueComments, repository, project…). */
-export function buildProviderPrDetail(
-  snapshot: AnyRecord | null | undefined,
-  prKey: string,
-): AnyRecord | null {
+export function buildProviderPrDetail(snapshot: AnyRecord | null | undefined, prKey: string): AnyRecord | null {
   return ((snapshot as AnyRecord)?.pullRequests?.[prKey] as AnyRecord) || null;
 }
 
@@ -452,7 +452,7 @@ export function buildResourceDetail(
   resourceKey: string,
 ): { resource: string; revision: string; data: unknown } | null {
   const { type, id } = parseResourceKey(resourceKey);
-  let data: unknown = null;
+  let data: unknown;
   switch (type) {
     case "git":
       data = buildGitWorkspaceDetail(payload, id || "");

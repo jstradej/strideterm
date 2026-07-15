@@ -1123,10 +1123,18 @@ export const useAppStore = defineStore("app", () => {
   function dockerCounts(): { available: boolean; total: number; running: number } {
     const d = (payload.value as AnyApi)?.docker;
     if (isRemoteTransport.value && d?.counts) {
-      return { available: !!d.available, total: Number(d.counts.containers || 0), running: Number(d.counts.running || 0) };
+      return {
+        available: !!d.available,
+        total: Number(d.counts.containers || 0),
+        running: Number(d.counts.running || 0),
+      };
     }
     const containers = (d?.containers || []) as AnyApi[];
-    return { available: !!d?.available, total: containers.length, running: containers.filter(isContainerRunning).length };
+    return {
+      available: !!d?.available,
+      total: containers.length,
+      running: containers.filter(isContainerRunning).length,
+    };
   }
 
   /** Full Docker snapshot for the Docker pane. Remote: on-demand `docker`

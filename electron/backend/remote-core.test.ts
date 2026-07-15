@@ -279,7 +279,10 @@ describe("buildResourceDetail", () => {
   test("azure inbox detail is scoped to the client profile's connections", () => {
     const p = fullPayload();
     const detail = buildResourceDetail(p, "p1", "azure-inbox");
-    const data = detail!.data as { inbox: { needsMyReview: unknown[]; needsAttention: unknown[] }; connections: unknown[] };
+    const data = detail!.data as {
+      inbox: { needsMyReview: unknown[]; needsAttention: unknown[] };
+      connections: unknown[];
+    };
     expect(data.inbox.needsMyReview).toHaveLength(1); // az1 (p1)
     expect(data.inbox.needsAttention).toHaveLength(0); // az2 belongs to p2
     expect(data.connections).toHaveLength(1);
@@ -319,7 +322,11 @@ describe("resourceRevision", () => {
   test("changes when the underlying timestamp changes", () => {
     const p = fullPayload();
     const before = resourceRevision(p, "review-bridge:azure:pr1");
-    p.reviewBridge.pullRequests["azure:pr1"].drafts.push({ draftId: "d2", status: "draft", updatedAt: "2026-07-15T12:00:00Z" });
+    p.reviewBridge.pullRequests["azure:pr1"].drafts.push({
+      draftId: "d2",
+      status: "draft",
+      updatedAt: "2026-07-15T12:00:00Z",
+    });
     const after = resourceRevision(p, "review-bridge:azure:pr1");
     expect(after).not.toBe(before);
   });

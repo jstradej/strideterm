@@ -618,7 +618,10 @@ function adaptRemoteResponse(body: unknown, ctx: RemoteAdaptContext): unknown {
   if (stripped && typeof stripped === "object") {
     const nested = (stripped as Record<string, unknown>).payload;
     if (looksLikeStatePayload(nested)) {
-      return { ...(stripped as Record<string, unknown>), payload: composeAndSlim(nested as Record<string, unknown>, ctx) };
+      return {
+        ...(stripped as Record<string, unknown>),
+        payload: composeAndSlim(nested as Record<string, unknown>, ctx),
+      };
     }
   }
   return stripped;
@@ -2972,7 +2975,11 @@ export async function startRemoteServer({
    * stop receiving invalidations. Mirrors terminal:subscribe (idempotent,
    * client resends on reconnect).
    */
-  function handleResourceInterest(socket: import("ws").WebSocket, clientSessionId: string, requestedRaw: string[]): void {
+  function handleResourceInterest(
+    socket: import("ws").WebSocket,
+    clientSessionId: string,
+    requestedRaw: string[],
+  ): void {
     const routing = routingFor(socket);
     const requested = Array.from(new Set(requestedRaw));
     if (requested.length > MAX_INTERESTS) {

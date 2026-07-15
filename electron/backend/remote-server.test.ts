@@ -625,6 +625,10 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       writeToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      // A mutation-shaped result: a runtime method that wraps the full payload
+      // under `.payload` (git ops return `{ ok, payload }`). The adapter must
+      // slim the NESTED payload, not just top-level ones.
+      refreshGitState: async () => ({ ok: true, payload }),
       getTerminalReplaySnapshot: (sessionId: string) => {
         const snap = replay.get(sessionId) || { data: "", throughSeq: 0 };
         onSnapshot?.(sessionId);
@@ -728,9 +732,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       congestionCloseGraceMs: opts.congestionCloseGraceMs,
       socketStallGraceMs: opts.socketStallGraceMs,
       socketStallSweepMs: opts.socketStallSweepMs,
-      socketBufferedAmount: opts.socketBufferedAmount as
-        | ((socket: import("ws").WebSocket) => number)
-        | undefined,
+      socketBufferedAmount: opts.socketBufferedAmount as ((socket: import("ws").WebSocket) => number) | undefined,
     });
     try {
       await run({ port, runtime, server });
@@ -1089,7 +1091,12 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         // the paused client rules out a graceful close as the cause.
         expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 6000)).toBe(true);
       },
-      { congestionCloseGraceMs: 120, socketStallGraceMs: 40, socketStallSweepMs: 20, socketBufferedAmount: STALL_BACKLOG },
+      {
+        congestionCloseGraceMs: 120,
+        socketStallGraceMs: 40,
+        socketStallSweepMs: 20,
+        socketBufferedAmount: STALL_BACKLOG,
+      },
     );
   });
 
@@ -1117,7 +1124,12 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         await delay(200);
         expect(server._debugCongestionTerminates?.()).toBe(0);
       },
-      { congestionCloseGraceMs: 120, socketStallGraceMs: 40, socketStallSweepMs: 20, socketBufferedAmount: STALL_BACKLOG },
+      {
+        congestionCloseGraceMs: 120,
+        socketStallGraceMs: 40,
+        socketStallSweepMs: 20,
+        socketBufferedAmount: STALL_BACKLOG,
+      },
     );
   });
 
@@ -1416,7 +1428,11 @@ describe("terminal streaming — subscription routing + backpressure", () => {
 
     async function apiGet(port: number, path: string, auth: string, clientId: string): Promise<Response> {
       return fetch(`http://127.0.0.1:${port}${path}`, {
-        headers: { Authorization: `Bearer ${auth}`, "X-Strideterm-Client-Id": clientId, "X-Strideterm-State-Protocol": "2" },
+        headers: {
+          Authorization: `Bearer ${auth}`,
+          "X-Strideterm-Client-Id": clientId,
+          "X-Strideterm-State-Protocol": "2",
+        },
       });
     }
 
@@ -1499,9 +1515,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         // First interest → immediate invalidate so the client fetches once.
         expect(
           await waitUntil(() =>
-            c.messages.some(
-              (m) => m.type === "resource:invalidate" && (m.payload as AnyState)?.resource === "git:ws1",
-            ),
+            c.messages.some((m) => m.type === "resource:invalidate" && (m.payload as AnyState)?.resource === "git:ws1"),
           ),
         ).toBe(true);
         const firstCount = c.messages.filter((m) => m.type === "resource:invalidate").length;
@@ -1518,6 +1532,31 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           await waitUntil(() => c.messages.filter((m) => m.type === "resource:invalidate").length > firstCount),
         ).toBe(true);
         c.ws.close();
+      });
+    });
+
+    test("a mutation result's NESTED payload is composed + slimmed for a v2 client", async () => {
+      await withServer("tok-mut", async ({ port }) => {
+        // Bind a session, then hit a route whose runtime method returns
+        // { ok, payload: <full state> } (git ops shape). The envelope survives;
+        // the nested payload must come back as the slim v2 core.
+        const res = await fetch(`http://127.0.0.1:${port}/api/git/refresh`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-mut",
+            "X-Strideterm-Client-Id": "mut-aaaa",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ projectId: null }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { ok: boolean; payload: AnyState };
+        expect(body.ok).toBe(true);
+        expect(body.payload.stateProtocol).toBe(2);
+        expect(body.payload.gitSummaries).toBeDefined();
+        expect(body.payload.git.workspaces).toBeUndefined();
+        expect(JSON.stringify(body.payload)).not.toContain("HEAVY-GIT-LOG-ENTRY");
       });
     });
 
