@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
+  REMOTE_CAPABILITIES,
   REMOTE_STATE_PROTOCOL,
+  buildProviderCoreSummary,
   buildRemoteCore,
   buildResourceDetail,
   isKnownResourceKey,
@@ -8,8 +10,14 @@ import {
   parseResourceKey,
   resourceProfileAuthorized,
   resourceRevision,
+  selectCapabilities,
+  servesRemoteCore,
+  slimRemoteSettings,
   summarizeGit,
 } from "./remote-core.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test casts over the intentionally-loose slim-core shapes
+type Rec = Record<string, any>;
 
 // A full desktop-shaped payload composed for a remote client on profile "p1".
 function fullPayload() {
@@ -22,7 +30,42 @@ function fullPayload() {
         { id: "ws2", name: "WS2", profileId: "p2", panels: [{ id: "a" }] },
       ],
       windowSlots: [{ id: "win-1", profileId: "p1" }],
-      settings: { theme: "dark" },
+      projects: [{ id: "ws1" }, { id: "ws2" }],
+      activeProjectId: "ws1",
+      tabTemplates: [{ id: "shell", title: "Shell", command: "" }],
+      profiles: [
+        { id: "p1", name: "P1", color: "#111" },
+        { id: "p2", name: "P2", color: "#222" },
+      ],
+      ssh: {
+        hosts: [{ id: "h1", host: "example.com", user: "me" }],
+        keys: [{ id: "k1", privateKeyPath: "/secret/id_rsa", fingerprint: "SHA256:secretfingerprint" }],
+        certificates: [{ id: "cert1", blob: "SECRET-CERT" }],
+        knownHosts: { "example.com": "ssh-ed25519 SECRETHOSTKEY" },
+        settings: { defaultAgentMode: "auto" },
+      },
+      settings: {
+        theme: "dark",
+        terminalFontSizeRemote: 15,
+        remoteAccess: { enabled: true, token: "SUPER-SECRET-TOKEN", cloudflaredPath: "/usr/bin/cloudflared" },
+        integrations: {
+          azureDevops: {
+            enabled: true,
+            reviewRoot: "/az",
+            connections: [{ id: "az1", label: "AZ1", orgUrl: "https://dev.azure.com/x", pat: "AZURE-PAT-SECRET" }],
+          },
+          github: {
+            enabled: true,
+            reviewRoot: "/gh",
+            connections: [{ id: "gh1", label: "GH1", token: "GITHUB-TOKEN-SECRET" }],
+          },
+          telegram: {
+            enabled: true,
+            defaultPollSeconds: 5,
+            connections: [{ id: "tg1", botTokenRef: "cred:bot", chatId: "123456789", enabled: true }],
+          },
+        },
+      },
     },
     workspace: { workspace: { id: "ws1" }, sessions: [] },
     attention: { byWorkspace: {} },
@@ -91,8 +134,11 @@ function fullPayload() {
           threads: [{ id: "t9" }],
         },
       },
-      reviewActivity: [{ id: "ev1", prKey: "azure:pr1" }],
-      trackedPullRequests: { "azure:pr1": {} },
+      reviewActivity: [
+        { id: "ev1", prKey: "azure:pr1", profileId: "p1", connectionId: "az1" },
+        { id: "ev2", prKey: "azure:pr2", profileId: "p2", connectionId: "az2" },
+      ],
+      trackedPullRequests: { "azure:pr1": { connectionId: "az1" }, "azure:pr2": { connectionId: "az2" } },
       sync: { lastCompletedAt: "2026-07-15T11:30:00Z" },
     },
     github: { connections: [], inbox: {}, pullRequests: {}, reviewActivity: [], sync: {} },
@@ -159,28 +205,44 @@ describe("buildRemoteCore", () => {
     expect(core.git.connections).toHaveLength(1);
   });
 
-  test("azure summary drops inbox and per-PR comment bodies, keeps badges", () => {
+  test("azure summary drops inbox and per-PR detail, profile-filters, keeps badges", () => {
     const core = buildRemoteCore(fullPayload());
     const az = core.azureDevops;
-    expect(az.inbox).toBeUndefined();
+    expect((az as Rec).inbox).toBeUndefined();
+    // reviewActivity + connections scoped to p1 only (p2's ev2/az2 dropped).
     expect(az.reviewActivity).toHaveLength(1);
-    expect(az.connections).toHaveLength(2);
-    const pr = az.pullRequests["azure:pr1"];
+    expect((az.reviewActivity[0] as Rec).id).toBe("ev1");
+    expect(az.connections).toHaveLength(1);
+    expect((az.connections[0] as Rec).id).toBe("az1");
+    // p2's PR is filtered out entirely.
+    expect(Object.keys(az.pullRequests)).toEqual(["azure:pr1"]);
+    const pr = az.pullRequests["azure:pr1"] as Rec;
     expect(pr.pullRequest.status).toBe("active");
     expect(pr.checks.items).toHaveLength(1);
     expect(pr.lastActivityAt).toBe("2026-07-15T11:00:00Z");
-    // Heavy comment bodies stripped.
+    // Heavy detail collections stripped.
     expect(pr.threads).toBeUndefined();
     expect(pr.issueComments).toBeUndefined();
     expect(pr.payload).toBeUndefined();
     expect(JSON.stringify(core.azureDevops)).not.toContain("aaaaa");
+    // tracked PRs scoped to p1.
+    expect(Object.keys(az.trackedPullRequests)).toEqual(["azure:pr1"]);
   });
 
-  test("review-bridge keeps only agentPrompts, drops per-PR contexts", () => {
+  test("review-bridge keeps agentPrompts + per-PR badge counts, drops heavy context", () => {
     const core = buildRemoteCore(fullPayload());
     expect(core.reviewBridge.agentPrompts).toHaveLength(1);
-    expect(core.reviewBridge.pullRequests).toEqual({});
+    const pr = core.reviewBridge.pullRequests["azure:pr1"] as Rec;
+    expect(pr).toEqual({
+      prKey: "azure:pr1",
+      commentCount: 1,
+      draftCount: 1,
+      syncQueueCount: 0,
+      lastSeenActivityAt: "2026-07-15T11:05:00Z",
+    });
+    // Heavy per-PR thread bodies + mcpServerSpec never reach the core.
     expect(JSON.stringify(core.reviewBridge)).not.toContain("zzzzz");
+    expect(JSON.stringify(core.reviewBridge)).not.toContain("mcpServerSpec");
   });
 
   test("docker summary keeps counts, drops the lists", () => {
@@ -206,6 +268,98 @@ describe("buildRemoteCore", () => {
     const core = buildRemoteCore(p);
     expect(Object.keys(core.gitSummaries).sort()).toEqual(["ws1", "ws2"]);
     expect(core.remoteClient).toBeUndefined();
+  });
+});
+
+describe("buildRemoteCore — slim appState + secrets", () => {
+  test("appState workspaces are filtered to the client profile; legacy aliases dropped", () => {
+    const core = buildRemoteCore(fullPayload());
+    const app = core.appState as Rec;
+    expect(app.workspaces.map((w: Rec) => w.id)).toEqual(["ws1"]); // ws2 is p2
+    // Legacy duplicate aliases never reach the remote core.
+    expect(app.projects).toBeUndefined();
+    expect(app.activeProjectId).toBeUndefined();
+    expect(app.profiles).toHaveLength(2); // profile list itself is not secret
+    expect(app.tabTemplates).toHaveLength(1);
+  });
+
+  test("ssh keys/certificates/knownHosts are stripped; only host metadata remains", () => {
+    const core = buildRemoteCore(fullPayload());
+    const ssh = (core.appState as Rec).ssh as Rec;
+    expect(ssh.hosts).toHaveLength(1);
+    expect(ssh.settings).toBeDefined();
+    expect(ssh.keys).toBeUndefined();
+    expect(ssh.certificates).toBeUndefined();
+    expect(ssh.knownHosts).toBeUndefined();
+    const dump = JSON.stringify(core);
+    expect(dump).not.toContain("id_rsa");
+    expect(dump).not.toContain("secretfingerprint");
+    expect(dump).not.toContain("SECRET-CERT");
+    expect(dump).not.toContain("SECRETHOSTKEY");
+  });
+
+  test("settings secrets (PAT, GitHub token, tunnel token/path, telegram) are stripped", () => {
+    const core = buildRemoteCore(fullPayload());
+    const settings = (core.appState as Rec).settings as Rec;
+    // Provider connection metadata kept, secrets removed.
+    expect(settings.integrations.azureDevops.connections[0].id).toBe("az1");
+    expect(settings.integrations.azureDevops.connections[0].pat).toBeUndefined();
+    expect(settings.integrations.github.connections[0].token).toBeUndefined();
+    // Telegram connections dropped entirely (desktop-managed integration).
+    expect(settings.integrations.telegram.connections).toEqual([]);
+    // Tunnel token + binary path blanked.
+    expect(settings.remoteAccess.token).toBe("");
+    expect(settings.remoteAccess.cloudflaredPath).toBe("");
+    const dump = JSON.stringify(core);
+    for (const secret of ["AZURE-PAT-SECRET", "GITHUB-TOKEN-SECRET", "SUPER-SECRET-TOKEN", "cred:bot", "123456789"]) {
+      expect(dump).not.toContain(secret);
+    }
+    // Non-secret settings still present so the remote Settings dialog works.
+    expect(settings.theme).toBe("dark");
+    expect(settings.terminalFontSizeRemote).toBe(15);
+  });
+
+  test("stamps the negotiated capabilities + core revision", () => {
+    const core = buildRemoteCore(fullPayload(), { coreRevision: 42, capabilities: ["remote-core-v2"] });
+    expect(core.coreRevision).toBe(42);
+    expect(core.capabilities).toEqual(["remote-core-v2"]);
+  });
+});
+
+describe("buildProviderCoreSummary — null profile keeps everything", () => {
+  test("a null (raw) profile does not filter connections/PRs/activity", () => {
+    const az = buildProviderCoreSummary(fullPayload().azureDevops, null);
+    expect(az.connections).toHaveLength(2);
+    expect(Object.keys(az.pullRequests).sort()).toEqual(["azure:pr1", "azure:pr2"]);
+    expect(az.reviewActivity).toHaveLength(2);
+  });
+});
+
+describe("slimRemoteSettings", () => {
+  test("returns a fresh object and never mutates its input", () => {
+    const input = fullPayload().appState.settings as Rec;
+    const before = JSON.stringify(input);
+    slimRemoteSettings(input);
+    expect(JSON.stringify(input)).toBe(before); // pure
+  });
+});
+
+describe("capability negotiation", () => {
+  test("explicit advertisement intersects with server support", () => {
+    expect(selectCapabilities(["remote-core-v2", "bogus"], 2)).toEqual(["remote-core-v2"]);
+    expect(selectCapabilities(["resource-details-v1"], 2)).toEqual(["resource-details-v1"]);
+  });
+
+  test("a bare protocol-2 request implies the full set; legacy gets none", () => {
+    expect(selectCapabilities(null, 2)).toEqual([...REMOTE_CAPABILITIES]);
+    expect(selectCapabilities([], 2)).toEqual([...REMOTE_CAPABILITIES]);
+    expect(selectCapabilities(null, 1)).toEqual([]);
+  });
+
+  test("servesRemoteCore keys off the remote-core-v2 capability", () => {
+    expect(servesRemoteCore(["remote-core-v2"])).toBe(true);
+    expect(servesRemoteCore(["resource-details-v1"])).toBe(false);
+    expect(servesRemoteCore([])).toBe(false);
   });
 });
 

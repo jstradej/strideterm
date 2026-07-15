@@ -59,13 +59,14 @@ import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { remoteViewerId } from "./viewer-id.js";
 import {
-  REMOTE_STATE_PROTOCOL,
   buildRemoteCore,
   buildResourceDetail,
   isKnownResourceKey,
   looksLikeStatePayload,
   resourceProfileAuthorized,
   resourceRevision,
+  selectCapabilities,
+  servesRemoteCore,
 } from "./remote-core.js";
 
 /**
@@ -270,7 +271,8 @@ export function makeStateCoalescer(send: (data: string, onDrain: () => void) => 
  * (p50/p95), state broadcasts produced vs actually sent vs coalesced away, the
  * high-water live backlog and backlog drain times. Exported for unit tests.
  */
-export function createRemoteTelemetry() {
+export function createRemoteTelemetry(now: () => number = () => Date.now()) {
+  const startedAt = now();
   let stateProduced = 0;
   let stateSent = 0;
   let stateCoalesced = 0;
@@ -287,6 +289,15 @@ export function createRemoteTelemetry() {
     const sorted = [...arr].sort((a, b) => a - b);
     const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
     return sorted[idx];
+  }
+  // Frames actually delivered (post-coalescing) per minute since start — the
+  // rate the plan asks for. Cumulative so it never mutates on read; the periodic
+  // logger emits it every minute, exposing the delivery-frequency trend that the
+  // raw cumulative counts alone hide (a burst vs a steady trickle look the same
+  // in `stateSent`, but not in the rate between two log lines).
+  function sendRatePerMin(): number {
+    const elapsedMs = Math.max(1, now() - startedAt);
+    return Number(((stateSent * 60000) / elapsedMs).toFixed(2));
   }
   return {
     recordStateProduced: (): void => {
@@ -308,6 +319,7 @@ export function createRemoteTelemetry() {
       stateProduced,
       stateSent,
       stateCoalesced,
+      sendRatePerMin: sendRatePerMin(),
       frameP50: pct(frameSizes, 50),
       frameP95: pct(frameSizes, 95),
       maxBacklog,
@@ -584,6 +596,12 @@ export function stripSecretsForRemote(body: unknown): unknown {
  */
 interface RemoteAdaptContext {
   protocol: number;
+  /** Negotiated capability set (see selectCapabilities). Drives the v2-vs-legacy
+   *  response contract and is echoed back to the client in the core. */
+  capabilities: string[];
+  /** Monotonic broadcast revision stamped onto the core so the client applies
+   *  only newer snapshots (bootstrap→WS handoff). */
+  coreRevision: number;
   sessionId: string;
   registry: RemoteClientRegistry;
   /** Request method, so ETag/304 applies only to idempotent GETs. */
@@ -630,7 +648,12 @@ function adaptRemoteResponse(body: unknown, ctx: RemoteAdaptContext): unknown {
 function composeAndSlim(payload: Record<string, unknown>, ctx: RemoteAdaptContext): unknown {
   const composed =
     ctx.sessionId && ctx.registry.get(ctx.sessionId) ? ctx.registry.composePayload(ctx.sessionId, payload) : payload;
-  return ctx.protocol >= REMOTE_STATE_PROTOCOL ? buildRemoteCore(composed as Record<string, unknown>) : composed;
+  return servesRemoteCore(ctx.capabilities)
+    ? buildRemoteCore(composed as Record<string, unknown>, {
+        coreRevision: ctx.coreRevision,
+        capabilities: ctx.capabilities,
+      })
+    : composed;
 }
 
 /** Protocol version a request advertises (header wins, then `?sp=`, else 1). */
@@ -640,6 +663,28 @@ function requestProtocol(requestUrl: string, headers: IncomingMessage["headers"]
   if (fromHeader) return Number(fromHeader) || 1;
   const sp = new URL(requestUrl || "/", "http://localhost").searchParams.get("sp");
   return sp ? Number(sp) || 1 : 1;
+}
+
+/** Capabilities a request advertises (`X-Strideterm-Capabilities` header wins,
+ *  then `?caps=`; comma-separated). Empty list when none advertised — a plain
+ *  `?sp=2` client then implicitly gets the full set (see selectCapabilities). */
+function requestCapabilities(requestUrl: string, headers: IncomingMessage["headers"]): string[] {
+  const raw = headers["x-strideterm-capabilities"];
+  const fromHeader = Array.isArray(raw) ? raw[0] : raw;
+  const source = fromHeader ?? new URL(requestUrl || "/", "http://localhost").searchParams.get("caps") ?? "";
+  return source
+    .split(",")
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
+/** The bootstrap revision a WS client echoes back (`?rev=`), or null when it has
+ *  not bootstrapped yet (first connect) — see the WS open handler. */
+function requestBootstrapRevision(requestUrl: string): number | null {
+  const rev = new URL(requestUrl || "/", "http://localhost").searchParams.get("rev");
+  if (rev === null) return null;
+  const n = Number(rev);
+  return Number.isFinite(n) ? n : null;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2165,8 +2210,11 @@ export async function startRemoteServer({
       // The old /api/state, azure|github/refresh and pull-request/seen intercepts
       // existed only to compose those payloads; the adapter now does it uniformly,
       // so they are gone.
+      const httpProtocol = requestProtocol(requestUrl, request.headers);
       (response as ResponseWithCtx).__remoteCtx = {
-        protocol: requestProtocol(requestUrl, request.headers),
+        protocol: httpProtocol,
+        capabilities: selectCapabilities(requestCapabilities(requestUrl, request.headers), httpProtocol),
+        coreRevision,
         sessionId: apiSessionId,
         registry,
         method: request.method,
@@ -2640,6 +2688,13 @@ export async function startRemoteServer({
   // Maps each WS socket to its advertised state-protocol version (2 for a slim
   // client, 1/absent for a legacy tab that must keep receiving full payloads).
   const socketProtocol = new WeakMap<import("ws").WebSocket, number>();
+  // Maps each WS socket to its negotiated capability set (see selectCapabilities).
+  const socketCapabilities = new WeakMap<import("ws").WebSocket, string[]>();
+  // Monotonic revision bumped once per state:updated broadcast and stamped onto
+  // every core (HTTP bootstrap + WS). The client applies a snapshot only when its
+  // revision is newer than the last one it applied, so the post-bootstrap WS
+  // stream provably delivers only newer state (bootstrap→WS handoff).
+  let coreRevision = 0;
   // Upper bound on resource-interest keys one message may carry — a defence
   // against a buggy/hostile client, sized well above any real visible grid.
   const MAX_INTERESTS = 128;
@@ -3040,6 +3095,9 @@ export async function startRemoteServer({
       // so routeTerminalFrame's re-check sees the new workspace→profile binding.
       rebuildWorkspaceProfiles();
       const rawPayload = payload as Record<string, unknown>;
+      // One revision per broadcast — every socket's core this frame carries the
+      // same coreRevision, and the next broadcast is strictly newer.
+      coreRevision += 1;
       for (const socket of sockets) {
         if (socket.readyState !== socket.OPEN) continue;
         const sessionId = socketSession.get(socket);
@@ -3052,8 +3110,11 @@ export async function startRemoteServer({
             openSockets: sockets.size,
           });
         }
+        const socketProto = socketProtocol.get(socket) || 1;
         const adapted = adaptRemoteResponse(payload, {
-          protocol: socketProtocol.get(socket) || 1,
+          protocol: socketProto,
+          capabilities: socketCapabilities.get(socket) ?? selectCapabilities(null, socketProto),
+          coreRevision,
           sessionId: sessionId || "",
           registry,
         });
@@ -3150,7 +3211,15 @@ export async function startRemoteServer({
       // Record the state-protocol the client advertised (?sp=2). Absent → 1
       // (legacy tab): it keeps receiving the full composed payload and never
       // gets slimmed, so an old open page never silently consumes the v2 shape.
-      socketProtocol.set(ws, requestProtocol(request.url || "/", request.headers));
+      const wsAdvertisedProtocol = requestProtocol(request.url || "/", request.headers);
+      socketProtocol.set(ws, wsAdvertisedProtocol);
+      // Negotiate + record capabilities (?caps=). The intersection with what the
+      // server supports selects the response contract and is echoed to the client.
+      const wsCapabilities = selectCapabilities(
+        requestCapabilities(request.url || "/", request.headers),
+        wsAdvertisedProtocol,
+      );
+      socketCapabilities.set(ws, wsCapabilities);
       // Tolerant heartbeat: count consecutive missed pongs instead of the
       // binary alive/dead flag. A pong on any tick resets the counter.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- missedPongs is the heartbeat counter attached to the ws instance
@@ -3315,19 +3384,32 @@ export async function startRemoteServer({
         }
       });
 
-      // Bootstrap-once (plan §11): a protocol-2 client bootstraps over HTTP
-      // `GET /api/state` (cacheable, compressible) and uses the WS only for
-      // newer changes — so we do NOT push an initial state frame to it, which
-      // would be a redundant second full transfer. A legacy socket has no HTTP
-      // bootstrap guarantee in its old renderer, so it still gets the initial
-      // composed payload here. Registered LAST (see the NOTE above the message
-      // handler) so the await never opens a window with no message listener.
+      // Bootstrap→WS handoff (plan §11). A slim (remote-core-v2) client
+      // bootstraps its state over HTTP `GET /api/state` (cacheable, compressible)
+      // and passes the revision it received back on the WS as `?rev=`:
+      //   - rev absent  → first connect, still bootstrapping over HTTP → send
+      //     nothing (bootstrap-once: no redundant second full transfer);
+      //   - rev present and < the current coreRevision → the client's HTTP
+      //     snapshot is already stale (a change slipped in between bootstrap and
+      //     this connect, or during a reconnect gap) → send ONE catch-up core so
+      //     it never misses a change; the client's revision gate drops it if it
+      //     turns out not to be newer;
+      //   - rev present and current → send nothing.
+      // A legacy socket has no HTTP bootstrap guarantee in its old renderer, so it
+      // always gets the initial composed payload. Registered LAST (see the NOTE
+      // above the message handler) so the await never opens a window with no
+      // message listener.
       const wsProtocol = socketProtocol.get(ws) || 1;
-      if (wsProtocol < REMOTE_STATE_PROTOCOL) {
+      const wsServesCore = servesRemoteCore(wsCapabilities);
+      const wsBootstrapRev = requestBootstrapRevision(request.url || "/");
+      const needsCatchUp = wsServesCore ? wsBootstrapRev !== null && wsBootstrapRev < coreRevision : true;
+      if (needsCatchUp) {
         const baseInitial = await runtime.getInitialState();
         if (ws.readyState === ws.OPEN) {
           const initialPayload = adaptRemoteResponse(baseInitial, {
             protocol: wsProtocol,
+            capabilities: wsCapabilities,
+            coreRevision,
             sessionId: wsSessionId || "",
             registry,
           });

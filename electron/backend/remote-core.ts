@@ -19,37 +19,50 @@
  * reused by every outbound server path through the single response adapter.
  */
 
-import type { GitSummary, RemoteResourceRevisions } from "../shared/types/state.js";
+import type {
+  GitSummary,
+  RemoteResourceRevisions,
+  RemoteStateV2,
+  RemoteCoreAppState,
+  RemoteProviderSummary,
+} from "../shared/types/state.js";
+
+export type { RemoteStateV2 } from "../shared/types/state.js";
 
 /** Slim-core contract version advertised by protocol-2 clients. */
 export const REMOTE_STATE_PROTOCOL = 2;
 
-/** Capability tokens a protocol-2 client advertises. */
+/**
+ * Capability tokens the server supports. A protocol-2 client advertises the
+ * subset it can use (WS `?caps=` / HTTP `X-Strideterm-Capabilities`); the server
+ * intersects that with this list and serves the response contract accordingly.
+ * `remote-core-v2` selects the slim core shape; `resource-details-v1` enables the
+ * on-demand detail endpoints. Advertising a numeric protocol >= 2 without an
+ * explicit `caps` list implies the full set (back-compat), so an explicit list
+ * only ever NARROWS — e.g. a future terminal-only shell can advertise neither.
+ */
 export const REMOTE_CAPABILITIES = ["remote-core-v2", "resource-details-v1"] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
 
-/** The shape buildRemoteCore returns — intentionally a superset the renderer
- *  consumes as a `StatePayload` (unused heavy fields are simply absent). */
-export interface RemoteStateV2 {
-  stateProtocol: number;
-  meta: unknown;
-  appState: unknown;
-  workspace: unknown;
-  attention: unknown;
-  taskRunner: unknown;
-  plugins: unknown;
-  environment: unknown;
-  remoteAccess: unknown;
-  gitSummaries: Record<string, GitSummary>;
-  git: { connections: unknown[] };
-  azureDevops: AnyRecord;
-  github: AnyRecord;
-  reviewBridge: AnyRecord;
-  docker: AnyRecord;
-  revisions: RemoteResourceRevisions;
-  remoteClient?: unknown;
+/**
+ * Resolve the capabilities a client gets. Explicit advertised tokens are
+ * intersected with what the server supports; an empty/absent advertisement on a
+ * protocol-2 request implies the full supported set (a plain `?sp=2` client),
+ * while a legacy (protocol < 2) request gets none.
+ */
+export function selectCapabilities(advertised: string[] | null | undefined, protocol: number): string[] {
+  if (advertised && advertised.length) {
+    const supported = new Set<string>(REMOTE_CAPABILITIES);
+    return advertised.filter((c) => supported.has(c));
+  }
+  return protocol >= REMOTE_STATE_PROTOCOL ? [...REMOTE_CAPABILITIES] : [];
+}
+
+/** Whether a selected capability set means "serve the slim v2 core". */
+export function servesRemoteCore(capabilities: string[]): boolean {
+  return capabilities.includes("remote-core-v2");
 }
 
 // ---------------------------------------------------------------------------
@@ -85,24 +98,75 @@ export function buildGitSummaries(
 }
 
 /**
- * Reduce an Azure/GitHub provider snapshot to the badge + notification surface:
- * drop the heavy `inbox` lists and, from each per-PR entry, the comment bodies
- * (`threads`, `issueComments`, raw `payload`). Everything the sidebar badges,
- * review notifications and pipeline notifications read stays.
+ * Heavy per-PR detail collections that never belong in the core badge summary —
+ * they are megabytes (review threads with nested comments, issue comments, the
+ * reviews list, changed-file diffs) and are fetched on demand via the PR detail
+ * endpoint. Everything else on a PR entry is light scalar/metadata the always-on
+ * sidebar badges, tab-strip counts, pipeline/review notifications and the review
+ * pane header read directly off the core.
  */
-export function buildProviderCoreSummary(snapshot: AnyRecord | null | undefined): AnyRecord {
+const HEAVY_PR_FIELDS = [
+  "threads",
+  "issueComments",
+  "reviews",
+  "changedFiles",
+  "localChangedFiles",
+  "comments",
+  "payload",
+] as const;
+
+function reducePrEntry(entry: AnyRecord): AnyRecord {
+  const light: AnyRecord = {};
+  for (const [k, v] of Object.entries(entry)) {
+    if ((HEAVY_PR_FIELDS as readonly string[]).includes(k)) continue;
+    light[k] = v;
+  }
+  return light;
+}
+
+function matchesProfile(value: AnyRecord, profileId: string | null): boolean {
+  if (!profileId) return true;
+  return String(value?.profileId || "default") === profileId;
+}
+
+/**
+ * Reduce an Azure/GitHub provider snapshot to the badge + notification surface,
+ * scoped to the client's profile. Drops the heavy `inbox` lists (fetched via the
+ * inbox detail endpoint) and, from each per-PR entry, the heavy detail
+ * collections (`HEAVY_PR_FIELDS`). Connections, pull requests, review activity
+ * and tracked PRs are filtered to the client's profile so one browser never sees
+ * another profile's PRs/connections (a null profileId — the uncomposed token
+ * socket that already sees raw state — keeps everything).
+ */
+export function buildProviderCoreSummary(
+  snapshot: AnyRecord | null | undefined,
+  profileId: string | null = null,
+): RemoteProviderSummary {
   const snap = (snapshot || {}) as AnyRecord;
-  const reducedPullRequests: AnyRecord = {};
+  const connIds = profileConnectionIds(snap, profileId);
+  const reducedPullRequests: Record<string, unknown> = {};
   for (const [prKey, pr] of Object.entries((snap.pullRequests || {}) as AnyRecord)) {
     const entry = pr as AnyRecord;
-    const { threads: _threads, issueComments: _issueComments, payload: _payload, ...light } = entry;
-    reducedPullRequests[prKey] = light;
+    if (!matchesProfile(entry, profileId)) continue;
+    reducedPullRequests[prKey] = reducePrEntry(entry);
   }
+  const reviewActivity = ((snap.reviewActivity || []) as AnyRecord[]).filter((ev) => matchesProfile(ev, profileId));
+  const trackedPullRequests: Record<string, unknown> = {};
+  for (const [prKey, tracked] of Object.entries((snap.trackedPullRequests || {}) as AnyRecord)) {
+    const t = tracked as AnyRecord;
+    // Tracked entries carry connectionId (not profileId); scope by the profile's
+    // connection set, or keep when the PR itself survived the profile filter.
+    const inScope = connIds ? connIds.has(String(t?.connectionId)) : true;
+    if (inScope || prKey in reducedPullRequests) trackedPullRequests[prKey] = t;
+  }
+  const connections = connIds
+    ? ((snap.connections || []) as AnyRecord[]).filter((c) => connIds.has(String(c.id)))
+    : (snap.connections as unknown[]) || [];
   return {
-    connections: snap.connections || [],
+    connections,
     pullRequests: reducedPullRequests,
-    reviewActivity: snap.reviewActivity || [],
-    trackedPullRequests: snap.trackedPullRequests || {},
+    reviewActivity,
+    trackedPullRequests,
     sync: snap.sync,
     lastUpdatedAt: snap.lastUpdatedAt ?? null,
     error: snap.error ?? "",
@@ -111,15 +175,37 @@ export function buildProviderCoreSummary(snapshot: AnyRecord | null | undefined)
 }
 
 /**
- * Reduce the review-bridge snapshot: keep only the global `agentPrompts` list
- * (small, read by the review pane's Agent tab); drop every per-PR context
- * (threads/drafts/syncQueue), fetched via the review-bridge detail endpoint.
+ * Reduce the review-bridge snapshot: keep the global `agentPrompts` list (small,
+ * read by the review pane's Agent tab) plus a per-PR BADGE summary — ids, the
+ * draft/comment/syncQueue counts and the last-seen activity — for the PRs in the
+ * client's profile. The heavy per-PR context (full comment/draft bodies,
+ * syncQueue payloads, mcpServerSpec) is dropped and fetched on demand via the
+ * review-bridge detail endpoint. `composed` is the full payload so profile
+ * ownership resolves through the provider PR the review-bridge key mirrors.
  */
-export function buildReviewBridgeCoreSummary(snapshot: AnyRecord | null | undefined): AnyRecord {
+export function buildReviewBridgeCoreSummary(
+  snapshot: AnyRecord | null | undefined,
+  composed: AnyRecord,
+  profileId: string | null = null,
+): { agentPrompts: unknown[]; pullRequests: Record<string, unknown> } {
   const snap = (snapshot || {}) as AnyRecord;
+  const size = (arr: unknown): number => (Array.isArray(arr) ? arr.length : 0);
+  const pullRequests: Record<string, unknown> = {};
+  for (const [prKey, ctx] of Object.entries((snap.pullRequests || {}) as AnyRecord)) {
+    if (profileId && !prBelongsToProfile(composed, prKey, profileId)) continue;
+    const c = ctx as AnyRecord;
+    const drafts = (c.drafts || []) as AnyRecord[];
+    pullRequests[prKey] = {
+      prKey,
+      commentCount: size(c.comments),
+      draftCount: drafts.filter((d) => d?.status === "draft").length,
+      syncQueueCount: size(c.syncQueue),
+      lastSeenActivityAt: c.lastSeenActivityAt ?? null,
+    };
+  }
   return {
     agentPrompts: snap.agentPrompts || [],
-    pullRequests: {},
+    pullRequests,
   };
 }
 
@@ -267,19 +353,93 @@ function profileWorkspaceIdSet(appState: AnyRecord, profileId: string | undefine
   );
 }
 
+/** Strip the credential secret from each provider connection (`pat` for Azure,
+ *  `token` for GitHub). The secret lives in the credentials store keyed by id;
+ *  a remote browser only ever needs the connection metadata. */
+function reduceProviderIntegrationConfig(cfg: AnyRecord | undefined, secretField: string): AnyRecord | undefined {
+  if (!cfg) return cfg;
+  const connections = ((cfg.connections || []) as AnyRecord[]).map((c) => {
+    const copy = { ...c };
+    delete copy[secretField];
+    return copy;
+  });
+  return { ...cfg, connections };
+}
+
+/**
+ * Slim the persisted `settings` for the remote core: keep the shape the remote
+ * Settings dialog reads, but strip everything a browser must not receive — the
+ * tunnel token + cloudflared binary path, provider PATs / GitHub tokens, and the
+ * Telegram connections (bot-token refs + chat ids; Telegram is a desktop-managed
+ * integration). Structural keys are preserved (empty arrays, blanked strings) so
+ * the dialog's form initializer never reads `undefined`.
+ */
+export function slimRemoteSettings(settings: AnyRecord | undefined): AnyRecord {
+  const s = (settings || {}) as AnyRecord;
+  const integrations = (s.integrations || {}) as AnyRecord;
+  const telegram = integrations.telegram as AnyRecord | undefined;
+  return {
+    ...s,
+    remoteAccess: s.remoteAccess ? { ...(s.remoteAccess as AnyRecord), token: "", cloudflaredPath: "" } : s.remoteAccess,
+    integrations: {
+      ...integrations,
+      azureDevops: reduceProviderIntegrationConfig(integrations.azureDevops as AnyRecord | undefined, "pat"),
+      github: reduceProviderIntegrationConfig(integrations.github as AnyRecord | undefined, "token"),
+      telegram: telegram
+        ? { enabled: Boolean(telegram.enabled), defaultPollSeconds: telegram.defaultPollSeconds, connections: [] }
+        : telegram,
+    },
+  };
+}
+
+/**
+ * Build the slim core `appState` — an ALLOWLIST, not the full persisted state.
+ * Profile-filters workspaces, reduces `ssh` to non-secret host metadata (private
+ * key material in keys/certificates/knownHosts never reaches a browser), slims
+ * `settings`, and drops the unread legacy `projects`/`activeProjectId` aliases.
+ * `windowSlots` are already reduced by the registry's composePayload.
+ */
+export function buildRemoteCoreAppState(appState: AnyRecord, inProfile: Set<string> | null): RemoteCoreAppState {
+  const ssh = (appState.ssh || undefined) as AnyRecord | undefined;
+  const workspaces = ((appState.workspaces || []) as AnyRecord[]).filter(
+    (ws) => !inProfile || inProfile.has(String(ws?.id)),
+  );
+  return {
+    activeWorkspaceId: String(appState.activeWorkspaceId || ""),
+    settings: slimRemoteSettings(appState.settings as AnyRecord | undefined) as RemoteCoreAppState["settings"],
+    tabTemplates: (appState.tabTemplates || []) as RemoteCoreAppState["tabTemplates"],
+    profiles: (appState.profiles || []) as RemoteCoreAppState["profiles"],
+    workspaces: workspaces as RemoteCoreAppState["workspaces"],
+    windowSlots: (appState.windowSlots || []) as unknown[],
+    ...(ssh ? { ssh: { hosts: ssh.hosts || [], settings: ssh.settings } as RemoteCoreAppState["ssh"] } : {}),
+    ...(appState.workspaceGrid !== undefined
+      ? { workspaceGrid: appState.workspaceGrid as RemoteCoreAppState["workspaceGrid"] }
+      : {}),
+  };
+}
+
 /**
  * Turn a per-client *composed* `StatePayload` (already carrying `remoteClient`
  * and reduced windowSlots, already secret-stripped) into a `RemoteStateV2`
  * slim core. Pure — never mutates the input.
+ *
+ * `opts.coreRevision` is the monotonic broadcast revision the client uses to
+ * apply only newer snapshots (bootstrap→WS handoff); `opts.capabilities` is the
+ * negotiated set advertised back to the client.
  */
-export function buildRemoteCore(composed: AnyRecord): RemoteStateV2 {
+export function buildRemoteCore(
+  composed: AnyRecord,
+  opts: { coreRevision?: number; capabilities?: string[] } = {},
+): RemoteStateV2 {
   const appState = (composed.appState || {}) as AnyRecord;
-  const profileId = composed.remoteClient?.profileId as string | undefined;
-  const inProfile = profileWorkspaceIdSet(appState, profileId);
+  const profileId = (composed.remoteClient?.profileId as string | undefined) ?? null;
+  const inProfile = profileWorkspaceIdSet(appState, profileId ?? undefined);
   return {
     stateProtocol: REMOTE_STATE_PROTOCOL,
+    capabilities: opts.capabilities ?? [...REMOTE_CAPABILITIES],
+    coreRevision: opts.coreRevision ?? 0,
     meta: composed.meta,
-    appState,
+    appState: buildRemoteCoreAppState(appState, inProfile),
     workspace: composed.workspace ?? null,
     attention: composed.attention,
     taskRunner: composed.taskRunner,
@@ -288,9 +448,9 @@ export function buildRemoteCore(composed: AnyRecord): RemoteStateV2 {
     remoteAccess: reduceRemoteAccess(composed.remoteAccess),
     gitSummaries: buildGitSummaries(composed.git?.workspaces, inProfile),
     git: { connections: composed.git?.connections || [] },
-    azureDevops: buildProviderCoreSummary(composed.azureDevops),
-    github: buildProviderCoreSummary(composed.github),
-    reviewBridge: buildReviewBridgeCoreSummary(composed.reviewBridge),
+    azureDevops: buildProviderCoreSummary(composed.azureDevops, profileId),
+    github: buildProviderCoreSummary(composed.github, profileId),
+    reviewBridge: buildReviewBridgeCoreSummary(composed.reviewBridge, composed, profileId),
     docker: buildDockerCoreSummary(composed.docker),
     revisions: buildCoreRevisions(composed, inProfile),
     ...(composed.remoteClient ? { remoteClient: composed.remoteClient } : {}),

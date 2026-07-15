@@ -785,24 +785,93 @@ export interface StatePayload {
   remoteAccess: RemoteAccessState;
   taskRunner: Record<string, unknown>;
   /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
-  remoteClient?: {
-    id: string;
-    profileId: string;
-    activeWorkspaceId: string;
-    activeSessionId: string;
-  };
-  /**
-   * Remote slim-core contract version. Present (== 2) only on payloads composed
-   * for a protocol-2 remote client; absent on the desktop full payload and on
-   * legacy remote payloads. Lets an already-open old tab detect the shape.
-   */
-  stateProtocol?: number;
-  /**
-   * Slim-core git summaries keyed by workspace id. Present only in the remote
-   * core (protocol 2). Full git snapshots are fetched on demand into a separate
-   * detail cache — never merged back under `git.workspaces`.
-   */
-  gitSummaries?: Record<string, GitSummary>;
-  /** Slim-core per-resource revision tokens. Present only in the remote core. */
-  revisions?: RemoteResourceRevisions;
+  remoteClient?: RemoteClientContext;
+}
+
+/** Per-remote-client view context injected by the registry when composing. */
+export interface RemoteClientContext {
+  id: string;
+  profileId: string;
+  activeWorkspaceId: string;
+  activeSessionId: string;
+  workspaceGrid?: WorkspaceGridState | null;
+}
+
+// ------- Remote slim-core payload (protocol 2) -------
+
+/**
+ * The slim `appState` the remote core carries — an explicit ALLOWLIST, not the
+ * full persisted `AppState`. Built by `buildRemoteCoreAppState`. Deliberately
+ * omits the legacy `projects`/`activeProjectId` aliases (unread by the
+ * renderer) and reduces `ssh` to non-secret host metadata (private key material
+ * in `keys`/`certificates`/`knownHosts` never reaches a browser). `settings`
+ * keeps the shape the remote Settings dialog reads but with provider PATs /
+ * GitHub tokens / Telegram connections and the tunnel token+binary path
+ * stripped (see `slimRemoteSettings`).
+ */
+export interface RemoteCoreAppState {
+  activeWorkspaceId: string;
+  settings: Settings;
+  tabTemplates: TabTemplate[];
+  profiles: Profile[];
+  /** Only the workspaces in the client's active profile. */
+  workspaces: WorkspaceState[];
+  /** Reduced per-window slots ({ id, profileId, windowIndex }). */
+  windowSlots: unknown[];
+  /** Host metadata only — keys/certificates/knownHosts are stripped. */
+  ssh?: Pick<SshAppState, "hosts" | "settings">;
+  workspaceGrid?: WorkspaceGridState | null;
+}
+
+/**
+ * Reduced provider (Azure DevOps / GitHub) snapshot in the core: badge +
+ * notification fields only, profile-filtered. Per-PR entries drop the heavy
+ * detail collections (threads / issueComments / reviews / changedFiles), which
+ * are fetched on demand via the PR detail endpoint.
+ */
+export interface RemoteProviderSummary {
+  connections: unknown[];
+  pullRequests: Record<string, unknown>;
+  reviewActivity: unknown[];
+  trackedPullRequests: Record<string, unknown>;
+  sync?: unknown;
+  lastUpdatedAt: string | null;
+  error: string;
+}
+
+/**
+ * The explicit slim remote-state contract (protocol 2). NOT a partially
+ * populated desktop `StatePayload`: the remote transport and app store treat it
+ * as its own type so a summary field is never confused with a full snapshot.
+ * Full git logs, provider PR threads, review-bridge contexts and Docker lists
+ * live behind the on-demand detail resources, never in here.
+ */
+export interface RemoteStateV2 {
+  /** Slim-core contract version (== 2). Lets an old tab detect the shape. */
+  stateProtocol: number;
+  /** Capabilities the server selected for this client (intersection of what the
+   *  client advertised and what the server supports). */
+  capabilities: string[];
+  /** Monotonic per-broadcast revision. The client applies a snapshot only when
+   *  its revision is newer than the last applied one (bootstrap→WS handoff). */
+  coreRevision: number;
+  meta: MetaState;
+  appState: RemoteCoreAppState;
+  workspace: WorkspaceState | null;
+  attention: AttentionState;
+  taskRunner: Record<string, unknown>;
+  plugins: unknown[];
+  environment: Record<string, unknown>;
+  /** Share-URL surface only (token blanked). */
+  remoteAccess: Partial<RemoteAccessState>;
+  /** Light git fields per profile workspace; full snapshots are detail. */
+  gitSummaries: Record<string, GitSummary>;
+  git: { connections: unknown[] };
+  azureDevops: RemoteProviderSummary;
+  github: RemoteProviderSummary;
+  reviewBridge: { agentPrompts: unknown[]; pullRequests: Record<string, unknown> };
+  docker: Record<string, unknown>;
+  /** Per-resource change tokens (freshness signal, never a correctness boundary). */
+  revisions: RemoteResourceRevisions;
+  remoteClient?: RemoteClientContext;
 }

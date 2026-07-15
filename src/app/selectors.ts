@@ -205,8 +205,8 @@ export function getWorkspaceTabs({
 
   if (activeWorkspace.kind === "azure") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const azureData =
-      (accessors?.providerInbox ? accessors.providerInbox("azure") : (payload?.azureDevops as any)) || {};
+    const azurePayload = payload?.azureDevops as any;
+    const azureData = (accessors?.providerInbox ? accessors.providerInbox("azure") : azurePayload) || {};
     const inbox = azureData.inbox;
     // Scope the tab's "N reviews waiting" status to PRs from this workspace's
     // own profile — the backend snapshot aggregates inbox across every open
