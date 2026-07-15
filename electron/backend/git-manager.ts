@@ -1,7 +1,9 @@
 /// <reference types="node" />
 import path from "node:path";
+import os from "node:os";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { rm as fsRm, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { execFileText, quotePosixArg } from "./process-utils.js";
@@ -168,6 +170,8 @@ export class GitManager extends EventEmitter {
   credentialStore: CredentialStore | null;
   auditLogStore: AuditLogStore | null;
   gitAuditLogStore: AuditLogStore | null;
+  // Per-repo commit serialization (keyed by working dir) — see serializeCommit.
+  private commitChains: Map<string, Promise<unknown>> = new Map();
 
   constructor({
     execGitImpl = null,
@@ -189,11 +193,12 @@ export class GitManager extends EventEmitter {
     this.gitAuditLogStore = gitAuditLogStore ?? null;
   }
 
-  async execGit(cwd: string, args: string[]): Promise<GitExecResult> {
+  async execGit(cwd: string, args: string[], opts: { extraEnv?: Record<string, string> } = {}): Promise<GitExecResult> {
     if (this.execGitImpl) {
       return this.execGitImpl(cwd, args);
     }
-    return execFileText("git", args, { cwd, env: sanitizeGitEnvironment() });
+    const env = opts.extraEnv ? { ...sanitizeGitEnvironment(), ...opts.extraEnv } : sanitizeGitEnvironment();
+    return execFileText("git", args, { cwd, env });
   }
 
   /**
@@ -1208,6 +1213,14 @@ export class GitManager extends EventEmitter {
     // - review checkout with renamed local branch: refspec to the PR source branch
     // - upstream tracks same branch name on remote: simple push
     // - upstream missing or tracks different branch: set-upstream to fix tracking
+    //
+    // NB: we intentionally do NOT remap an ordinary name-mismatched push (local
+    // `feature` tracking origin/main) onto the tracked branch — that would risk
+    // silently fast-forwarding an unrelated remote branch, and no branch-name or
+    // persisted signal reliably survives a detached workspace switching branches.
+    // Pushing to a linked PR review is served by the reliable "Enable editing"
+    // path (review stays linked, so pushToReviewSource applies) — detach makes
+    // it a plain workspace whose push publishes under the local branch name.
     const pushArgs = pushToReviewSource
       ? ["push", "-u", remote, `HEAD:refs/heads/${reviewSourceBranch}`]
       : upstreamMatchesBranch
@@ -2399,9 +2412,32 @@ export class GitManager extends EventEmitter {
     }
   }
 
+  /**
+   * Serialize commits for one working dir. A scoped commit builds its tree in a
+   * temp index snapshotted from HEAD; if another commit advances HEAD in between,
+   * `git commit` parents our now-stale tree on the new HEAD and silently reverts
+   * the other commit's files. Chaining per-key (both transports share this one
+   * GitManager) removes that interleaving. Predecessor errors are swallowed so a
+   * failed commit can't poison the queue.
+   */
+  private serializeCommit<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.commitChains.get(key) ?? Promise.resolve();
+    const run = prev.then(fn);
+    this.commitChains.set(
+      key,
+      run.catch(() => {}),
+    );
+    return run;
+  }
+
   async commitAll(
     workspace: WorkspaceRef | null,
-    { message, rootPath = "" }: { message?: string; rootPath?: string } = {},
+    {
+      message,
+      rootPath = "",
+      paths,
+      previousPaths = [],
+    }: { message?: string; rootPath?: string; paths?: string[]; previousPaths?: string[] } = {},
   ): Promise<Record<string, unknown>> {
     const commitMessage = String(message || "").trim();
     if (!commitMessage) {
@@ -2413,21 +2449,373 @@ export class GitManager extends EventEmitter {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
 
+    const clean = (list: unknown) =>
+      (Array.isArray(list) ? list : []).filter((p): p is string => typeof p === "string" && p.length > 0);
+    // `paths` present (even []) means the caller explicitly asked to scope the
+    // commit. Distinguish that from `paths` omitted (commit the whole tree) so an
+    // explicitly-scoped request with no valid paths errors instead of silently
+    // committing everything.
+    const scoped = paths !== undefined;
+    const safePaths = clean(paths);
+    const safePrev = clean(previousPaths);
+
+    return this.serializeCommit(effectiveCwd, async () => {
+      try {
+        if (scoped) {
+          if (!safePaths.length) {
+            return createStructuredResult({
+              ok: false,
+              summary: "No valid files were selected to commit.",
+            });
+          }
+          return await this.commitScopedPaths(effectiveCwd, commitMessage, safePaths, safePrev);
+        }
+        await this.execGit(effectiveCwd, ["add", "-A"]);
+        const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
+        return createStructuredResult({
+          ok: true,
+          summary: "Changes committed successfully.",
+          rawOutput: joinRawOutput(result.stdout, result.stderr),
+        });
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string };
+        return createStructuredResult({
+          ok: false,
+          summary: "Commit failed.",
+          rawOutput: joinRawOutput(err.stdout, err.stderr),
+        });
+      }
+    });
+  }
+
+  /**
+   * Commit exactly the selected paths (plus the old names of selected staged
+   * renames) without disturbing anything else — even a pre-existing staged
+   * index or a recreated rename old-name.
+   *
+   * `git commit -- <paths>` (`--only`) can't do this: it always takes the paths'
+   * WORKING-TREE content, so a staged rename whose old name was recreated commits
+   * as a copy (and leaves the staged delete dangling). Instead we build the tree
+   * in a TEMPORARY index seeded from HEAD, apply only the selected changes there,
+   * `git commit` that temp index (hooks/message/signing all run normally), then
+   * reconcile the real index for the touched paths so status is correct. Verified
+   * against a real repo for modify / staged+unstaged delete / rename / untracked /
+   * recreated-old-name / unselected-staged-leftover.
+   *
+   * `--literal-pathspecs` throughout: `--` stops option parsing but NOT pathspec
+   * magic, so a legal filename like `:(glob)*.ts` would otherwise match as a glob.
+   */
+  /**
+   * A scoped commit is UNSAFE while the repo is mid-operation or has conflicts.
+   * We build the tree in a temp index seeded purely from HEAD, so `git commit`
+   * here never sees the real index's unmerged entries: during a merge / rebase /
+   * cherry-pick / revert it would finalize the operation (clearing MERGE_HEAD
+   * etc.) with ONLY the selected paths, silently discarding every other change
+   * the operation staged. It must also refuse plain unmerged entries with no
+   * operation in progress — e.g. conflicts left by `git stash apply`.
+   *
+   * Returns a user-facing reason to refuse, or "" when a scoped commit is safe.
+   * A FAILING check is itself a refusal: if we can't confirm the index is free of
+   * conflicts / the repo isn't mid-operation, we must not proceed as if it were
+   * safe — the temp-index commit would otherwise bypass an unresolved index.
+   */
+  private async scopedCommitBlocker(cwd: string): Promise<string> {
+    let unmerged: string;
     try {
-      await this.execGit(effectiveCwd, ["add", "-A"]);
-      const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
-      return createStructuredResult({
-        ok: true,
-        summary: "Changes committed successfully.",
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      unmerged = String((await this.execGit(cwd, ["ls-files", "--unmerged"])).stdout || "").trim();
+    } catch {
+      return "Couldn't check the index for merge conflicts; commit aborted.";
+    }
+    if (unmerged) {
+      return "Can't commit selected files while the working tree has merge conflicts. Resolve them first.";
+    }
+    let gitDir: string;
+    try {
+      gitDir = String((await this.execGit(cwd, ["rev-parse", "--git-dir"])).stdout || "").trim();
+    } catch {
+      return "Couldn't locate the git directory; commit aborted.";
+    }
+    if (gitDir) {
+      const base = path.isAbsolute(gitDir) ? gitDir : path.join(cwd, gitDir);
+      const markers = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"];
+      if (markers.some((m) => existsSync(path.join(base, m)))) {
+        return "Can't commit selected files while a merge, rebase, or cherry-pick is in progress. Finish or abort it first.";
+      }
+    }
+    return "";
+  }
+
+  /**
+   * old-name → new-name for every rename Git currently reports (staged side or
+   * working tree). Used to validate the caller's `previousPaths`: only a genuine
+   * rename old-name may be removed from the commit. Throws if `git status` fails
+   * — the caller must abort rather than treat "no output" as "no renames" (which
+   * would silently downgrade a selected rename to a copy with a dangling delete).
+   */
+  private async currentRenameMap(cwd: string): Promise<Map<string, string>> {
+    const res = await this.execGit(cwd, ["status", "--porcelain=v2"]);
+    const parsed = parsePorcelainV2(String(res.stdout || ""));
+    const map = new Map<string, string>();
+    for (const entry of [...parsed.staged, ...parsed.unstaged]) {
+      if (entry.previousPath && (entry.stagedStatus === "R" || entry.unstagedStatus === "R")) {
+        map.set(entry.previousPath, entry.path);
+      }
+    }
+    return map;
+  }
+
+  /**
+   * What HEAD points at, for two jobs: choosing the temp-index base AND detecting
+   * concurrent HEAD moves. `sha` is the resolved commit ("" when unborn/unresolved);
+   * `ref` is the symbolic ref ("" when detached/unreadable).
+   *
+   * `status` is the safety-critical field:
+   *  - "born":   HEAD resolves to a commit → seed the temp index from HEAD.
+   *  - "unborn": HEAD is a valid symbolic ref whose branch has no commit yet
+   *              (fresh repo or `checkout --orphan`) → seed from the empty tree.
+   *  - "error":  HEAD could not be classified — git failed operationally. NEVER
+   *              treat as unborn: an empty base tree would commit only the selected
+   *              paths and silently drop every other tracked file.
+   *
+   * The unborn signal must be POSITIVE. An empty `sha` alone is not enough: on a
+   * normal populated branch an operational `rev-parse` failure ALSO yields no sha
+   * while `symbolic-ref` still succeeds — which would misread a real branch as
+   * unborn and wipe the tree. So we only call it unborn when `rev-parse --verify
+   * --quiet` rejected CLEANLY (process exited non-zero with nothing on stderr —
+   * exactly what `--quiet` emits for an unresolved ref) AND HEAD is a real branch
+   * ref. A `fatal:` on stderr, or a spawn error (non-numeric `code`, e.g. ENOENT),
+   * is operational → "error".
+   */
+  private async readHeadState(cwd: string): Promise<{ sha: string; ref: string; status: "born" | "unborn" | "error" }> {
+    let sha = "";
+    let cleanlyUnresolved = false;
+    try {
+      sha = String((await this.execGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout || "").trim();
+    } catch (e) {
+      const r = e as { stderr?: string; error?: { code?: unknown } };
+      // Numeric exit code + empty stderr == git ran and reported "no such ref"
+      // (what --quiet does for an unborn/unknown HEAD). A message on stderr, or a
+      // non-numeric spawn code, is an operational failure and is NOT "unborn".
+      cleanlyUnresolved = String(r?.stderr || "").trim() === "" && typeof r?.error?.code === "number";
+    }
+    const ref = await this.execGit(cwd, ["symbolic-ref", "--quiet", "HEAD"])
+      .then((r) => String(r.stdout || "").trim())
+      .catch(() => "");
+
+    let status: "born" | "unborn" | "error";
+    if (sha) status = "born";
+    else if (cleanlyUnresolved && ref) status = "unborn";
+    else status = "error";
+    return { sha, ref, status };
+  }
+
+  /**
+   * Paths the tip commit actually changed (diffed against its parent, or the empty
+   * tree for a root commit via `--root`). `-z` keeps pathological filenames intact.
+   * Used to reconcile the real index after a scoped commit: a pre-commit hook runs
+   * against the temp index and can `git add` further files that then land in the
+   * commit, so the real index must be squared with the new HEAD for those too —
+   * otherwise `git status` shows a phantom reverse-staged change for each.
+   */
+  private async commitChangedPaths(cwd: string): Promise<string[]> {
+    const r = await this.execGit(cwd, ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", "HEAD"]);
+    return String(r.stdout || "")
+      .split("\0")
+      .filter((p) => p.length > 0);
+  }
+
+  /**
+   * Post-commit safety check for the microsecond window the pre-commit re-check
+   * can't cover: `git commit` parents the new commit on HEAD as read AT COMMIT
+   * TIME, which an external git process (a terminal `git pull`, another agent)
+   * could have advanced after our re-check. If the new commit ended up parented
+   * off our base, it may have reverted concurrent changes in unselected files.
+   *
+   * We deliberately do NOT rewrite history to "fix" this. Reliably identifying the
+   * exact commit we made is impossible via `git commit`: any post-hoc read of HEAD
+   * can already be a foreign commit, and tree/message heuristics collide (an empty
+   * foreign commit even shares our tree), so any auto-rollback risks clobbering
+   * someone else's commit. Instead we SURFACE it so the user can review and reset —
+   * always safe (nothing is destroyed), and scoped commits are infrequent.
+   *
+   * Returns a user-facing warning result when the new commit looks off-base, or
+   * null when it's parented exactly where we based it (the common case).
+   */
+  private async detectHeadRace(
+    cwd: string,
+    head: { sha: string; ref: string; status: "born" | "unborn" | "error" },
+  ): Promise<Record<string, unknown> | null> {
+    const tip = await this.execGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"])
+      .then((r) => String(r.stdout || "").trim())
+      .catch(() => "");
+    if (!tip) {
+      // Couldn't read HEAD to verify — don't guess. The pre-commit re-check passed
+      // moments ago, so the commit is almost certainly sound.
+      log.warn("scoped commit: couldn't read HEAD after commit to verify its base", { cwd });
+      return null;
+    }
+    const tipParent = await this.execGit(cwd, ["rev-parse", "--verify", "--quiet", `${tip}^`])
+      .then((r) => String(r.stdout || "").trim())
+      .catch(() => "");
+    // A sound commit is parented on our snapshot (born) or is a root commit
+    // (unborn → no parent). Warn only on a POSITIVE contradiction: a parent we
+    // actually read that differs. An unreadable parent (empty) is not proof of a
+    // race — don't warn on a guess (the pre-commit re-check passed moments ago).
+    const expectedParent = head.status === "born" ? head.sha : "";
+    if (!tipParent || tipParent === expectedParent) {
+      return null;
+    }
+    log.warn("scoped commit: HEAD moved during commit — the new commit is parented off its base", {
+      cwd,
+      expectedParent,
+      tipParent,
+      tip,
+    });
+    return createStructuredResult({
+      ok: false,
+      summary:
+        "The commit was created, but HEAD moved during the operation (another git process ran at the same moment), so it may have reverted concurrent changes. Review the latest commit (git show HEAD) and reset it if needed.",
+    });
+  }
+
+  private async commitScopedPaths(
+    cwd: string,
+    message: string,
+    selected: string[],
+    previous: string[],
+  ): Promise<Record<string, unknown>> {
+    const blocker = await this.scopedCommitBlocker(cwd);
+    if (blocker) {
+      return createStructuredResult({ ok: false, summary: blocker });
+    }
+
+    const selectedSet = new Set(selected);
+    // `previous` (rename old-names to remove) arrives from the client and we
+    // delete each one from the commit — so a stale snapshot or a crafted IPC /
+    // remote request could smuggle an arbitrary tracked file in and have it
+    // committed as a deletion. Trust only paths Git STILL reports as the old side
+    // of a rename whose new side is one of the selected paths.
+    let safePrevious = previous;
+    if (previous.length) {
+      let renames: Map<string, string>;
+      try {
+        renames = await this.currentRenameMap(cwd);
+      } catch {
+        return createStructuredResult({
+          ok: false,
+          summary: "Couldn't read rename status; commit aborted so a rename isn't miscommitted as a copy.",
+        });
+      }
+      safePrevious = previous.filter((p) => {
+        const newName = renames.get(p);
+        return newName !== undefined && selectedSet.has(newName);
       });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
+    }
+
+    // `lstat`, not `existsSync`: existsSync follows the link, so a dangling
+    // symlink (target missing) reads as absent and would be committed as a
+    // deletion. We care whether the directory ENTRY exists, not its target.
+    const onDisk = (p: string) => {
+      try {
+        lstatSync(path.join(cwd, p));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const existing = selected.filter(onDisk); // stage worktree content of these
+    // Deletions to record in the temp index: selected paths gone from the working
+    // tree, plus every selected rename's old name (the delete side of the rename).
+    // A recreated old name that the user ALSO selected must be committed with its
+    // new content, not removed — so drop selected paths from the removal set.
+    const toRemove = [
+      ...new Set([...selected.filter((p) => !onDisk(p)), ...safePrevious.filter((p) => !selectedSet.has(p))]),
+    ];
+
+    // Snapshot what HEAD points at; re-checked right before committing.
+    const head = await this.readHeadState(cwd);
+    // `--empty` (build from no base tree) is ONLY for a genuinely unborn branch.
+    // A transient/operational failure to resolve HEAD must NOT be read as "empty
+    // repo" — that would commit only the selected paths and drop every other
+    // tracked file. readHeadState returns "unborn" only on a POSITIVE signal
+    // (rev-parse cleanly reported no ref AND HEAD is a real branch); anything
+    // ambiguous is "error" and aborts here.
+    if (head.status === "error") {
       return createStructuredResult({
         ok: false,
-        summary: "Commit failed.",
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
+        summary: "Couldn't resolve HEAD; commit aborted to avoid dropping tracked files.",
       });
+    }
+    const hasHead = head.status === "born";
+
+    const tmpIndex = path.join(os.tmpdir(), `strideterm-scoped-index-${process.pid}-${randomUUID()}`);
+    const env = { GIT_INDEX_FILE: tmpIndex };
+    try {
+      await this.execGit(cwd, ["read-tree", hasHead ? "HEAD" : "--empty"], { extraEnv: env });
+      if (existing.length) {
+        await this.execGit(cwd, ["--literal-pathspecs", "add", "--", ...existing], { extraEnv: env });
+      }
+      if (toRemove.length) {
+        await this.execGit(
+          cwd,
+          ["--literal-pathspecs", "rm", "-q", "--cached", "--ignore-unmatch", "--", ...toRemove],
+          {
+            extraEnv: env,
+          },
+        );
+      }
+      // Concurrency guard: if HEAD moved since we snapshotted it (another op ran
+      // despite our per-repo commit lock — e.g. a `pull --ff-only` from a
+      // terminal), our temp tree is stale. Abort rather than commit it onto the
+      // new HEAD and silently revert whatever that operation brought in.
+      const nowHead = await this.readHeadState(cwd);
+      if (nowHead.sha !== head.sha || nowHead.ref !== head.ref) {
+        return createStructuredResult({
+          ok: false,
+          summary:
+            "HEAD changed during the commit (another git operation ran); nothing was committed. Refresh and try again.",
+        });
+      }
+      const result = await this.execGit(cwd, ["commit", "-m", message], { extraEnv: env });
+      // Post-commit safety check for the microsecond window the pre-commit re-check
+      // can't cover (an external op moving HEAD before `git commit` reads it). If
+      // the new commit looks off-base, surface it for review instead of reconciling
+      // — we never rewrite history here (see detectHeadRace).
+      const raced = await this.detectHeadRace(cwd, head);
+      if (raced) {
+        return raced;
+      }
+      // Reconcile the REAL index for every path the commit touched so `git status`
+      // reflects the commit (touched paths become clean; unselected staged changes
+      // and the working tree are left untouched). Our intended set is selected ∪
+      // safePrevious, but a pre-commit hook can `git add` further files into the
+      // temp index (it inherits GIT_INDEX_FILE) that also get committed — reconcile
+      // those too, via the commit's actual diff, or they linger as phantom
+      // reverse-staged changes. Best-effort — the commit already landed and the
+      // working tree is intact — but a locked index would leave stale staged
+      // entries behind, so surface that as a warning rather than an unqualified OK.
+      let reconcileSet = [...new Set([...selected, ...safePrevious])];
+      try {
+        const committed = await this.commitChangedPaths(cwd);
+        if (committed.length) reconcileSet = [...new Set([...reconcileSet, ...committed])];
+      } catch {
+        // Couldn't read the commit's diff; fall back to the intended set.
+      }
+      const reconciled = await this.execGit(cwd, ["--literal-pathspecs", "reset", "-q", "--", ...reconcileSet])
+        .then(() => true)
+        .catch(() => false);
+      return createStructuredResult({
+        ok: true,
+        summary: "Selected changes committed successfully.",
+        warnings: reconciled
+          ? []
+          : [
+              "Commit succeeded, but the staging area couldn't be refreshed (the index may be locked). Refresh Git to clear any stale staged entries.",
+            ],
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } finally {
+      await fsRm(tmpIndex, { force: true }).catch(() => {});
     }
   }
 

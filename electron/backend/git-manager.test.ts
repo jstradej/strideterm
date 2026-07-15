@@ -2129,6 +2129,11 @@ describe("GitManager", () => {
       const calls: string[][] = [];
       const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
         calls.push(args);
+        const key = args.join(" ");
+        // A normal repo: on a branch with a resolvable HEAD. commitScopedPaths
+        // reads both to pick its temp-index base and to detect HEAD moves.
+        if (key === "rev-parse --verify --quiet HEAD") return { stdout: `${"a".repeat(40)}\n`, stderr: "" };
+        if (key === "symbolic-ref --quiet HEAD") return { stdout: "refs/heads/main\n", stderr: "" };
         return { stdout: "", stderr: "" };
       });
       const mgr = new GitManager({ execGitImpl });
@@ -2324,6 +2329,70 @@ describe("GitManager", () => {
         const result = await mgr.forcePushWithLease(reviewWorkspace);
         expect(result.ok).toBe(true);
         expect(calls).toContainEqual(["push", "--force-with-lease", "origin", "HEAD:refs/heads/feature/foo"]);
+      });
+
+      // After "Detach from PR review" (review === null) we deliberately do NOT
+      // auto-remap onto the tracked upstream: no branch-name or persisted signal
+      // reliably survives a detached workspace switching branches, so remapping
+      // risks fast-forwarding an unrelated remote branch. Push safely publishes
+      // under the local branch name; the reliable "Enable editing" path (review
+      // stays linked) is how you push to the PR source branch.
+      test("push after detach publishes the local branch name (no unsafe remap)", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "pr-12-feature-foo", upstream: "origin/feature/foo" });
+        const result = await mgr.push({ id: "ws-1", cwd: "/repo" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "--set-upstream", "origin", "pr-12-feature-foo"]);
+        expect(calls).not.toContainEqual(["push", "origin", "HEAD:refs/heads/feature/foo"]);
+      });
+
+      test("push publishes the local branch name when there is no upstream", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "feature/foo", upstream: "" });
+        const result = await mgr.push({ id: "ws-1", cwd: "/repo" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "--set-upstream", "origin", "feature/foo"]);
+      });
+
+      // Guard against remapping ORDINARY branches: `feature` tracking origin/main
+      // must NOT push HEAD onto main — only pr-N-* review aliases get that remap.
+      test("push does not remap an ordinary branch whose upstream name differs", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "feature", upstream: "origin/main" });
+        const result = await mgr.push({ id: "ws-1", cwd: "/repo" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "--set-upstream", "origin", "feature"]);
+        expect(calls).not.toContainEqual(["push", "origin", "HEAD:refs/heads/main"]);
+      });
+    });
+
+    describe("commitAll (arg wiring)", () => {
+      test("commits the whole tree with add -A when paths are omitted", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.commitAll({ id: "ws-1", cwd: "/repo" }, { message: "msg" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["add", "-A"]);
+        expect(calls).toContainEqual(["commit", "-m", "msg"]);
+      });
+
+      test("an explicitly-scoped commit with no valid paths errors instead of committing everything", async () => {
+        const { mgr, calls } = makeMgr();
+        const empty = await mgr.commitAll({ id: "ws-1", cwd: "/repo" }, { message: "msg", paths: [] });
+        expect(empty.ok).toBe(false);
+        const blank = await mgr.commitAll(
+          { id: "ws-1", cwd: "/repo" },
+          { message: "msg", paths: ["", null] as unknown as string[] },
+        );
+        expect(blank.ok).toBe(false);
+        // Must never fall through to a whole-tree commit.
+        expect(calls).not.toContainEqual(["add", "-A"]);
+        expect(calls.some((a) => a[0] === "commit")).toBe(false);
+      });
+
+      test("a scoped commit builds a temporary index, not a whole-tree add", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.commitAll({ id: "ws-1", cwd: "/does/not/exist" }, { message: "msg", paths: ["a.ts"] });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["read-tree", "HEAD"]); // temp index is seeded from HEAD
+        expect(calls).not.toContainEqual(["add", "-A"]); // never the whole tree
+        expect(calls.some((a) => a[0] === "commit")).toBe(true);
       });
     });
 
@@ -2671,6 +2740,479 @@ describe("GitManager", () => {
       const res = await mgr.resolveConflict(ws(root), { filePath: "app.txt", mode: "delete" });
       expect(res.ok).toBe(true);
       expect(unmerged(root)).toBe(""); // resolved via git rm — clean
+    });
+  });
+
+  // Reviewer's regressions for the scoped-commit failure paths: a failing safety
+  // check (HEAD resolution, conflict probe, rename probe) or a concurrent HEAD
+  // move must ABORT rather than proceed as if the repo were in a safe state.
+  // Mocked so the failure of a specific git call can be injected deterministically.
+  describe("commitAll — scoped-commit safety aborts (mocked)", () => {
+    const REPO = "/repo";
+    const ok = { stdout: "", stderr: "" };
+
+    test("aborts when HEAD can't be resolved (not a confirmed unborn branch)", async () => {
+      // git is operational (git-dir resolves) but HEAD neither resolves to a
+      // commit NOR is a valid symbolic ref → must not fall back to an empty tree.
+      const mgr = new GitManager({
+        execGitImpl: createExecMock({
+          [`${REPO}::ls-files --unmerged`]: ok,
+          [`${REPO}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+          [`${REPO}::rev-parse --verify --quiet HEAD`]: new Error("transient"),
+          [`${REPO}::symbolic-ref --quiet HEAD`]: new Error("transient"),
+        }),
+      });
+      const res = await mgr.commitAll({ id: "ws", cwd: REPO }, { message: "m", paths: ["a.txt"] });
+      expect(res.ok).toBe(false);
+      expect(String(res.summary)).toMatch(/resolve HEAD/i);
+    });
+
+    test("aborts when rev-parse HEAD fails operationally even though HEAD is a real branch", async () => {
+      // The P1 finding: an operational rev-parse failure yields no sha, but
+      // symbolic-ref still resolves on ANY normal branch. Treating that as unborn
+      // would build an empty base tree and drop every unselected tracked file. A
+      // `fatal:` on stderr is operational — not the clean "no such ref" of an
+      // unborn branch — so it must abort, not fall back to the empty tree.
+      const mgr = new GitManager({
+        execGitImpl: createExecMock({
+          [`${REPO}::ls-files --unmerged`]: ok,
+          [`${REPO}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+          [`${REPO}::rev-parse --verify --quiet HEAD`]: new Error("fatal: unable to read HEAD"),
+          [`${REPO}::symbolic-ref --quiet HEAD`]: { stdout: "refs/heads/main\n", stderr: "" },
+        }),
+      });
+      const res = await mgr.commitAll({ id: "ws", cwd: REPO }, { message: "m", paths: ["a.txt"] });
+      expect(res.ok).toBe(false);
+      expect(String(res.summary)).toMatch(/resolve HEAD/i);
+    });
+
+    test("aborts when the conflict probe (ls-files) fails", async () => {
+      const mgr = new GitManager({
+        execGitImpl: createExecMock({ [`${REPO}::ls-files --unmerged`]: new Error("io") }),
+      });
+      const res = await mgr.commitAll({ id: "ws", cwd: REPO }, { message: "m", paths: ["a.txt"] });
+      expect(res.ok).toBe(false);
+      expect(String(res.summary)).toMatch(/conflicts/i);
+    });
+
+    test("aborts when the rename probe (git status) fails", async () => {
+      const mgr = new GitManager({
+        execGitImpl: createExecMock({
+          [`${REPO}::ls-files --unmerged`]: ok,
+          [`${REPO}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+          [`${REPO}::status --porcelain=v2`]: new Error("io"),
+        }),
+      });
+      const res = await mgr.commitAll(
+        { id: "ws", cwd: REPO },
+        { message: "m", paths: ["new.txt"], previousPaths: ["old.txt"] },
+      );
+      expect(res.ok).toBe(false);
+      expect(String(res.summary)).toMatch(/rename status/i);
+    });
+
+    test("aborts when HEAD moves between the tree snapshot and the commit", async () => {
+      // rev-parse HEAD returns a different sha on the second read (a concurrent
+      // op advanced HEAD). The commit must NOT run — asserted by the mock, which
+      // has no mapping for a `commit` call and would throw if it were reached.
+      let headReads = 0;
+      const impl = vi.fn(async (_cwd: string, args: string[]) => {
+        const key = args.join(" ");
+        const sub = args[0] === "--literal-pathspecs" ? args[1] : args[0];
+        if (key === "ls-files --unmerged") return ok;
+        if (key === "rev-parse --git-dir") return { stdout: ".git\n", stderr: "" };
+        if (key === "symbolic-ref --quiet HEAD") return { stdout: "refs/heads/main\n", stderr: "" };
+        if (key === "rev-parse --verify --quiet HEAD") {
+          headReads += 1;
+          return { stdout: `${headReads === 1 ? "sha1" : "sha2"}\n`, stderr: "" };
+        }
+        if (sub === "read-tree" || sub === "rm" || sub === "add") return ok;
+        throw { stdout: "", stderr: `Unexpected git call: ${key}` };
+      });
+      const mgr = new GitManager({ execGitImpl: impl });
+      const res = await mgr.commitAll({ id: "ws", cwd: REPO }, { message: "m", paths: ["gone.txt"] });
+      expect(res.ok).toBe(false);
+      expect(String(res.summary)).toMatch(/HEAD changed/i);
+    });
+
+    // The residual race the pre-commit re-check can't cover: HEAD is stable when
+    // we snapshot it AND when we re-check, but an external op moves it in the
+    // window before `git commit` reads HEAD, so the new commit is parented on the
+    // moved HEAD (H1) instead of our base (H0). We DETECT that (the new tip's
+    // parent ≠ our base) and surface it for review — deliberately WITHOUT rewriting
+    // history (no update-ref), because reliably identifying our own commit is
+    // impossible post-hoc and any auto-rollback risks clobbering a foreign commit.
+    test("detects a HEAD move in the commit window and surfaces it for review without rewriting history", async () => {
+      const H0 = "0".repeat(40); // our snapshot base
+      const H1 = "1".repeat(40); // where an external op moved HEAD mid-commit
+      const C = "c".repeat(40); // our new (off-base) commit
+      const REF = "refs/heads/main";
+      const calls: string[][] = [];
+      let headReads = 0;
+      const impl = vi.fn(async (_cwd: string, args: string[]) => {
+        calls.push(args);
+        const key = args.join(" ");
+        const sub = args[0] === "--literal-pathspecs" ? args[1] : args[0];
+        if (key === "ls-files --unmerged") return ok;
+        if (key === "rev-parse --git-dir") return { stdout: ".git\n", stderr: "" };
+        if (key === "symbolic-ref --quiet HEAD") return { stdout: `${REF}\n`, stderr: "" };
+        // Snapshot (#1) and pre-commit re-check (#2) both see H0 — the guard
+        // passes and we commit; the post-commit read (#3) is our new commit C.
+        if (key === "rev-parse --verify --quiet HEAD") {
+          headReads += 1;
+          return { stdout: `${headReads <= 2 ? H0 : C}\n`, stderr: "" };
+        }
+        // C's real parent is H1: HEAD moved between the re-check and git commit.
+        if (key === `rev-parse --verify --quiet ${C}^`) return { stdout: `${H1}\n`, stderr: "" };
+        if (sub === "read-tree" || sub === "add" || sub === "rm") return ok;
+        if (key === "commit -m scoped") return { stdout: `[main ${C.slice(0, 7)}] scoped\n`, stderr: "" };
+        throw { stdout: "", stderr: `Unexpected git call: ${key}` };
+      });
+      const mgr = new GitManager({ execGitImpl: impl });
+      const res = await mgr.commitAll({ id: "ws", cwd: REPO }, { message: "scoped", paths: ["mod.txt"] });
+      expect(res.ok).toBe(false);
+      expect(String(res.summary)).toMatch(/HEAD moved|review the latest commit/i);
+      // Never rewrites history: no update-ref (nor write-tree) is ever attempted,
+      // so a concurrent/foreign commit can never be clobbered.
+      expect(calls.some((a) => a[0] === "update-ref")).toBe(false);
+      expect(calls.some((a) => a[0] === "write-tree")).toBe(false);
+    });
+  });
+
+  // Real-repo round-trip for the scoped (path-selected) commit. Mocked arg tests
+  // can't catch that `git add` rejects a deleted/renamed-away pathspec, so this
+  // drives modify + delete + rename + untracked through actual git and asserts
+  // the committed tree and the untouched leftovers.
+  describe.skipIf(!GIT_AVAILABLE)("commitAll — real git fixture round-trip", () => {
+    const mgr = new GitManager({}); // execGitImpl=null → real git
+    const rg = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+
+    async function initRepo(): Promise<string> {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-commit-"));
+      tempPaths.push(root);
+      rg(root, ["init", "-q"]);
+      rg(root, ["config", "user.email", "t@example.com"]);
+      rg(root, ["config", "user.name", "Test"]);
+      rg(root, ["config", "commit.gpgsign", "false"]);
+      rg(root, ["config", "core.autocrlf", "false"]);
+      for (const f of ["mod.txt", "del.txt", "ren_old.txt", "other.txt"]) {
+        await fs.writeFile(path.join(root, f), `${f}\n`, "utf8");
+      }
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "base"]);
+      return root;
+    }
+
+    const tree = (root: string) =>
+      rg(root, ["ls-tree", "-r", "--name-only", "HEAD"])
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+    test("scoped commit handles modify/delete/rename/untracked and leaves other files", async () => {
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "mod.txt"), "changed\n", "utf8");
+      await fs.rm(path.join(root, "del.txt")); // unstaged deletion
+      rg(root, ["mv", "ren_old.txt", "ren_new.txt"]); // staged rename
+      await fs.writeFile(path.join(root, "untr.txt"), "new\n", "utf8"); // untracked
+      await fs.writeFile(path.join(root, "other.txt"), "unrelated\n", "utf8"); // must stay uncommitted
+
+      // The UI passes selected new paths and the rename's previousPath SEPARATELY.
+      const res = await mgr.commitAll(
+        { id: "ws", cwd: root },
+        {
+          message: "scoped",
+          paths: ["mod.txt", "del.txt", "untr.txt", "ren_new.txt"],
+          previousPaths: ["ren_old.txt"],
+        },
+      );
+      expect(res.ok).toBe(true);
+
+      const head = tree(root);
+      expect(head).toContain("mod.txt");
+      expect(head).toContain("untr.txt");
+      expect(head).toContain("ren_new.txt");
+      expect(head).toContain("other.txt"); // present at base content, not the edit
+      expect(head).not.toContain("del.txt"); // deletion committed
+      expect(head).not.toContain("ren_old.txt"); // renamed away
+
+      expect(rg(root, ["show", "HEAD:mod.txt"])).toContain("changed");
+      expect(rg(root, ["show", "HEAD:other.txt"])).not.toContain("unrelated");
+      // The unrelated edit is still pending in the working tree (unstaged modify).
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe("M other.txt");
+    });
+
+    // Reviewer's regression: a staged rename's old name RECREATED as an unselected
+    // file must commit as a real RENAME (HEAD loses the old name) with a clean
+    // index — not a copy, and not sweeping in the recreated file.
+    test("commits a rename (not a copy) and leaves a recreated old name untracked", async () => {
+      const root = await initRepo();
+      rg(root, ["mv", "ren_old.txt", "ren_new.txt"]); // staged rename
+      await fs.writeFile(path.join(root, "ren_old.txt"), "RECREATED\n", "utf8"); // unselected, back on disk
+
+      const res = await mgr.commitAll(
+        { id: "ws", cwd: root },
+        { message: "rename only", paths: ["ren_new.txt"], previousPaths: ["ren_old.txt"] },
+      );
+      expect(res.ok).toBe(true);
+
+      const head = tree(root);
+      expect(head).toContain("ren_new.txt");
+      expect(head).not.toContain("ren_old.txt"); // a real rename — old name gone from HEAD
+      expect(rg(root, ["show", "HEAD:ren_new.txt"])).toContain("ren_old"); // renamed content preserved
+      // Clean index: the ONLY leftover is the untracked recreated file (no dangling
+      // staged deletion, no committed recreated body).
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe("?? ren_old.txt");
+      expect(await fs.readFile(path.join(root, "ren_old.txt"), "utf8")).toBe("RECREATED\n");
+    });
+
+    // Reviewer's regression: when the user checks BOTH the rename target and the
+    // recreated old name, the old name is an explicit selection and must be
+    // committed with its new content — not swept out by the rename's delete side.
+    test("commits both the rename target and an explicitly selected recreated old name", async () => {
+      const root = await initRepo();
+      rg(root, ["mv", "ren_old.txt", "ren_new.txt"]); // staged rename
+      await fs.writeFile(path.join(root, "ren_old.txt"), "RECREATED\n", "utf8"); // recreated AND selected
+
+      const res = await mgr.commitAll(
+        { id: "ws", cwd: root },
+        { message: "rename + recreated", paths: ["ren_new.txt", "ren_old.txt"], previousPaths: ["ren_old.txt"] },
+      );
+      expect(res.ok).toBe(true);
+
+      const head = tree(root);
+      expect(head).toContain("ren_new.txt");
+      expect(head).toContain("ren_old.txt"); // explicitly selected — NOT dropped
+      expect(rg(root, ["show", "HEAD:ren_new.txt"])).toContain("ren_old"); // original body under the new name
+      expect(rg(root, ["show", "HEAD:ren_old.txt"])).toContain("RECREATED"); // recreated body committed
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe(""); // clean index and tree
+    });
+
+    // Reviewer's regression: `previousPaths` is removed from the commit, so a
+    // stale snapshot or a forged request listing a normal tracked file there must
+    // NOT delete it — only paths git confirms as a rename old-name may be removed.
+    test("ignores a previousPath that isn't a current rename old-name", async () => {
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "mod.txt"), "changed\n", "utf8");
+
+      const res = await mgr.commitAll(
+        { id: "ws", cwd: root },
+        // other.txt is a plain tracked file with no rename — it must survive.
+        { message: "scoped", paths: ["mod.txt"], previousPaths: ["other.txt"] },
+      );
+      expect(res.ok).toBe(true);
+
+      const head = tree(root);
+      expect(head).toContain("mod.txt");
+      expect(head).toContain("other.txt"); // NOT dropped by the bogus previousPath
+      expect(rg(root, ["show", "HEAD:mod.txt"])).toContain("changed");
+      expect(rg(root, ["show", "HEAD:other.txt"])).toContain("other.txt"); // original content intact
+    });
+
+    // Reviewer's regression: two scoped commits building temp indexes from the
+    // same HEAD would parent the second's stale tree on the first's new HEAD and
+    // silently revert it. Per-repo serialization must keep both commits' files.
+    test("serializes concurrent scoped commits so neither reverts the other", async () => {
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "mod.txt"), "AAA\n", "utf8");
+      await fs.writeFile(path.join(root, "other.txt"), "BBB\n", "utf8");
+
+      const [r1, r2] = await Promise.all([
+        mgr.commitAll({ id: "ws", cwd: root }, { message: "c1", paths: ["mod.txt"] }),
+        mgr.commitAll({ id: "ws", cwd: root }, { message: "c2", paths: ["other.txt"] }),
+      ]);
+      expect(r1.ok).toBe(true);
+      expect(r2.ok).toBe(true);
+
+      // Both edits are in the final HEAD — neither commit reverted the other.
+      expect(rg(root, ["show", "HEAD:mod.txt"])).toContain("AAA");
+      expect(rg(root, ["show", "HEAD:other.txt"])).toContain("BBB");
+      expect(rg(root, ["rev-list", "--count", "HEAD"]).trim()).toBe("3"); // base + two commits
+    });
+
+    // Confirms the unborn-branch path still works after tightening HEAD detection
+    // (only a positive unborn signal — a symbolic ref with no commit — uses the
+    // empty base tree; operational failures abort instead).
+    test("scoped commit works on an unborn branch (first commit)", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-unborn-"));
+      tempPaths.push(root);
+      rg(root, ["init", "-q"]);
+      rg(root, ["config", "user.email", "t@example.com"]);
+      rg(root, ["config", "user.name", "Test"]);
+      rg(root, ["config", "commit.gpgsign", "false"]);
+      await fs.writeFile(path.join(root, "a.txt"), "A\n", "utf8");
+      await fs.writeFile(path.join(root, "b.txt"), "B\n", "utf8");
+
+      const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "first", paths: ["a.txt"] });
+      expect(res.ok).toBe(true);
+      expect(tree(root)).toEqual(["a.txt"]); // only the selected file is in the first commit
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe("?? b.txt"); // b.txt still untracked
+    });
+
+    // Reviewer's regression: onDisk must inspect the directory ENTRY (lstat), not
+    // follow the link (existsSync). A dangling symlink points at a missing target,
+    // so existsSync reads it as absent and would commit a deletion / skip the add.
+    // POSIX-only: creating symlinks on Windows needs elevation and mode bits differ.
+    test.skipIf(process.platform === "win32")(
+      "commits a new dangling symlink as a symlink, not a deletion",
+      async () => {
+        const root = await initRepo();
+        await fs.symlink("missing-target", path.join(root, "link")); // untracked, dangling
+
+        const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "add dangling symlink", paths: ["link"] });
+        expect(res.ok).toBe(true);
+
+        expect(tree(root)).toContain("link");
+        expect(rg(root, ["ls-tree", "HEAD", "link"])).toContain("120000"); // symlink mode, not a deletion
+        expect(rg(root, ["show", "HEAD:link"]).trim()).toBe("missing-target"); // link body = the missing target
+      },
+    );
+
+    // Reviewer's regression: a pre-commit hook inherits the temp GIT_INDEX_FILE
+    // and can `git add` files beyond the selection. They land in the commit, so
+    // the real-index reconcile must cover them too (via the commit's actual diff)
+    // — otherwise the hook-added path lingers as a phantom reverse-staged change.
+    // POSIX-only: hook execution + chmod +x differ on Windows.
+    test.skipIf(process.platform === "win32")(
+      "reconciles the real index for files a pre-commit hook adds to the commit",
+      async () => {
+        const root = await initRepo();
+        const hook = path.join(root, ".git", "hooks", "pre-commit");
+        // Stage an extra tracked file into whatever index is active (the temp
+        // index, via inherited GIT_INDEX_FILE), reproducing the finding.
+        await fs.writeFile(hook, "#!/bin/sh\nprintf 'hooked\\n' > other.txt\ngit add other.txt\n", "utf8");
+        await fs.chmod(hook, 0o755);
+
+        await fs.writeFile(path.join(root, "mod.txt"), "changed\n", "utf8");
+        const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "scoped + hook", paths: ["mod.txt"] });
+        expect(res.ok).toBe(true);
+
+        // The hook's file is in the commit...
+        expect(tree(root)).toContain("other.txt");
+        expect(rg(root, ["show", "HEAD:other.txt"])).toContain("hooked");
+        // ...and the real index was reconciled to it: no phantom reverse-staged
+        // entry for other.txt. Worktree == committed content, so it's fully clean.
+        expect(rg(root, ["status", "--porcelain"]).trim()).toBe("");
+      },
+    );
+
+    test("isolates the commit from unselected staged changes (temp index)", async () => {
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "mod.txt"), "changed\n", "utf8"); // selected, unstaged
+      await fs.writeFile(path.join(root, "other.txt"), "staged edit\n", "utf8");
+      rg(root, ["add", "other.txt"]); // UNSELECTED but pre-staged
+
+      const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "only mod", paths: ["mod.txt"] });
+      expect(res.ok).toBe(true);
+
+      expect(rg(root, ["show", "HEAD:mod.txt"])).toContain("changed");
+      expect(rg(root, ["show", "HEAD:other.txt"])).not.toContain("staged edit"); // other.txt NOT committed
+      // The unselected file's staged edit is still staged after the commit.
+      expect(rg(root, ["diff", "--cached", "--name-only"]).trim()).toBe("other.txt");
+    });
+
+    test("rejects an explicitly-scoped commit with no valid paths without touching HEAD", async () => {
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "mod.txt"), "changed\n", "utf8");
+      const before = rg(root, ["rev-parse", "HEAD"]).trim();
+      const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "scoped empty", paths: [] });
+      expect(res.ok).toBe(false);
+      expect(rg(root, ["rev-parse", "HEAD"]).trim()).toBe(before); // nothing committed
+      expect(rg(root, ["status", "--porcelain"])).toContain("mod.txt"); // change still pending
+    });
+
+    test("commits a lone deletion (empty stage list) without a pathspec error", async () => {
+      const root = await initRepo();
+      rg(root, ["rm", "-q", "del.txt"]); // staged deletion → nothing exists on disk to `git add`
+      const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "del only", paths: ["del.txt"] });
+      expect(res.ok).toBe(true);
+      expect(tree(root)).not.toContain("del.txt");
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe("");
+    });
+
+    test("commits the whole tree when no paths are given", async () => {
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "mod.txt"), "changed\n", "utf8");
+      await fs.writeFile(path.join(root, "other.txt"), "changed too\n", "utf8");
+      const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "all" });
+      expect(res.ok).toBe(true);
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe("");
+    });
+
+    // Reviewer's regression: a scoped commit builds its tree from HEAD in a temp
+    // index, so `git commit` here wouldn't see the merge state — it would create
+    // the merge commit with ONLY the selected paths and drop everything else the
+    // merge staged. Must be refused even when conflicts are already resolved and
+    // staged (unmerged index is empty; only the MERGE_HEAD marker remains).
+    test("refuses a scoped commit while a merge is in progress", async () => {
+      const root = await initRepo();
+      const main = rg(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+      rg(root, ["checkout", "-q", "-b", "feature"]);
+      await fs.writeFile(path.join(root, "mod.txt"), "feature\n", "utf8");
+      rg(root, ["commit", "-aqm", "feature edit"]);
+      rg(root, ["checkout", "-q", main]);
+      await fs.writeFile(path.join(root, "mod.txt"), "mainline\n", "utf8");
+      rg(root, ["commit", "-aqm", "main edit"]);
+      try {
+        rg(root, ["merge", "feature"]); // conflicts on mod.txt
+      } catch {
+        /* expected */
+      }
+      await fs.writeFile(path.join(root, "mod.txt"), "resolved\n", "utf8");
+      rg(root, ["add", "mod.txt"]); // conflict resolved & staged — no unmerged entries remain
+      await fs.writeFile(path.join(root, "other.txt"), "unrelated\n", "utf8"); // the file we try to sneak in
+
+      const before = rg(root, ["rev-parse", "HEAD"]).trim();
+      const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "sneak", paths: ["other.txt"] });
+      expect(res.ok).toBe(false);
+      expect(String(res.summary)).toMatch(/in progress/i);
+      expect(rg(root, ["rev-parse", "HEAD"]).trim()).toBe(before); // nothing committed
+      expect(rg(root, ["rev-parse", "--verify", "MERGE_HEAD"]).trim()).toBeTruthy(); // merge still pending
+    });
+
+    // Reviewer's regression: conflicts left by `git stash apply` leave unmerged
+    // index entries but NO operation in progress (no MERGE_HEAD), so the marker
+    // check alone wouldn't catch them — the unmerged-index check must.
+    test("refuses a scoped commit while the index has unresolved conflicts (no operation)", async () => {
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "mod.txt"), "stashed\n", "utf8");
+      rg(root, ["stash", "push", "-q", "--", "mod.txt"]); // working tree back to base, clean
+      // Commit a diverging change to the same file so the tree is clean but the
+      // stash no longer applies cleanly — `stash apply` then 3-way merges and
+      // conflicts (unmerged index) WITHOUT starting a tracked operation.
+      await fs.writeFile(path.join(root, "mod.txt"), "committed\n", "utf8");
+      rg(root, ["commit", "-aqm", "diverge mod.txt"]);
+      try {
+        rg(root, ["stash", "apply"]); // conflicts on mod.txt, no MERGE_HEAD
+      } catch {
+        /* expected */
+      }
+      await fs.writeFile(path.join(root, "other.txt"), "unrelated\n", "utf8");
+
+      const before = rg(root, ["rev-parse", "HEAD"]).trim();
+      const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "sneak", paths: ["other.txt"] });
+      expect(res.ok).toBe(false);
+      expect(String(res.summary)).toMatch(/conflicts/i);
+      expect(rg(root, ["rev-parse", "HEAD"]).trim()).toBe(before); // nothing committed
+      expect(() => rg(root, ["rev-parse", "--verify", "MERGE_HEAD"])).toThrow(); // no operation, yet refused
+    });
+
+    // Reviewer's regression: the post-commit index reconcile is best-effort. When
+    // it can't run (locked index), the commit still lands but the result must warn
+    // rather than report an unqualified clean success. The commit uses a temp
+    // index, so a stale .git/index.lock blocks only the reconcile `git reset`.
+    test("commits with a warning when the index can't be reconciled", async () => {
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "mod.txt"), "changed\n", "utf8");
+      await fs.writeFile(path.join(root, ".git", "index.lock"), "", "utf8"); // simulate a locked index
+
+      const res = await mgr.commitAll({ id: "ws", cwd: root }, { message: "locked", paths: ["mod.txt"] });
+      expect(res.ok).toBe(true); // temp-index commit still lands
+      expect(tree(root)).toContain("mod.txt");
+      expect(rg(root, ["show", "HEAD:mod.txt"])).toContain("changed");
+      expect((res.warnings as string[]).length).toBeGreaterThan(0); // caller is warned about the stale index
+
+      await fs.rm(path.join(root, ".git", "index.lock"), { force: true });
     });
   });
 });

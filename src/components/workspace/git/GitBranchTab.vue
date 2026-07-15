@@ -340,6 +340,7 @@ import { ref, computed, watch, onBeforeUnmount } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { rlog } from "../../../lib/renderer-log.js";
 import { useAppStore } from "../../../stores/app.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 import GitOperationCard from "./GitOperationCard.vue";
 import GitMergeBackCard from "./GitMergeBackCard.vue";
 import GitBaseBranchPicker from "./GitBaseBranchPicker.vue";
@@ -398,6 +399,7 @@ const props = withDefaults(
 
 const gitUiStore = useGitUiStore();
 const appStore = useAppStore();
+const notifications = useNotificationStore();
 
 const switchBranchTarget = ref("");
 const newBranchName = ref("");
@@ -433,13 +435,25 @@ async function onDetachReview() {
   if (detachingReview.value) return;
   const confirmed = await appStore.confirmInApp({
     title: "Detach from PR review?",
-    message: "Detach this workspace from its PR review? Git operations will be re-enabled.",
+    message:
+      "Detach this workspace from its PR review? Git operations get re-enabled, but pushes will then publish under this checkout's local branch name — they will NOT go to the PR source branch. To commit and push straight to the PR, use “Enable editing” instead. (Detaching does not touch the PR on the server.)",
     confirmLabel: "Detach",
   });
   if (!confirmed) return;
   detachingReview.value = true;
   try {
     await appStore.detachWorkspaceReview(props.workspaceId);
+  } catch (err) {
+    rlog("error", "[GitBranchTab] detach from PR review failed", {
+      workspaceId: props.workspaceId,
+      error: (err as Error)?.message || String(err),
+    });
+    notifications.pushEphemeralToast({
+      title: "Detach failed",
+      body: (err as Error)?.message || "Could not detach the workspace from its PR review.",
+      kind: "error",
+      durationMs: 6000,
+    });
   } finally {
     detachingReview.value = false;
   }
@@ -459,6 +473,17 @@ async function onEnableEditing() {
   enablingEditing.value = true;
   try {
     await appStore.setWorkspaceReviewWritable(props.workspaceId);
+  } catch (err) {
+    rlog("error", "[GitBranchTab] enable editing failed", {
+      workspaceId: props.workspaceId,
+      error: (err as Error)?.message || String(err),
+    });
+    notifications.pushEphemeralToast({
+      title: "Couldn’t enable editing",
+      body: (err as Error)?.message || "Could not enable editing on this review checkout.",
+      kind: "error",
+      durationMs: 6000,
+    });
   } finally {
     enablingEditing.value = false;
   }

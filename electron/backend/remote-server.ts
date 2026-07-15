@@ -27,6 +27,7 @@ import {
   gitBranchRenameSchema,
   gitCheckoutRemoteSchema,
   gitCherryPickSchema,
+  gitCommitSchema,
   gitLogGraphSchema,
   gitPayloadSchema,
   gitRemoteBranchDeleteSchema,
@@ -1270,7 +1271,7 @@ async function handleApiRequest(
     }
 
     if (request.method === "POST" && url.pathname === "/api/git/commit-all") {
-      json(response, 200, await runtime.gitCommitAll(body));
+      json(response, 200, await runtime.gitCommitAll(validateIpc(gitCommitSchema, body, "POST /api/git/commit-all")));
       return;
     }
 
@@ -2100,7 +2101,8 @@ export async function startRemoteServer({
         "/api/git/compare-branch": (body, windowId) => runtime.gitCompareBranch(body, windowId),
         "/api/git/merge-into-base": (body, windowId) => runtime.gitMergeCurrentIntoBase(body, windowId),
         "/api/git/remove-worktree": (body, windowId) => runtime.gitRemoveWorktree(body, windowId),
-        "/api/git/commit-all": (body, windowId) => runtime.gitCommitAll(body, windowId),
+        "/api/git/commit-all": (body, windowId) =>
+          runtime.gitCommitAll(validateIpc(gitCommitSchema, body, "POST /api/git/commit-all"), windowId),
         // Validate the same way the Electron IPC handlers do (ipc.ts) and the
         // branch routes below: this slot-aware map is the LIVE remote path for
         // stash ops (it intercepts before handleApiRequest), so without these

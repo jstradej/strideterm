@@ -245,6 +245,14 @@ export const gitCommitSchema = z
   .object({
     workspaceId: nonEmptyString,
     message: z.string().optional(),
+    // When present, commit only these repo-relative paths; otherwise commit the
+    // whole working tree (git add -A). An empty array is an explicitly-scoped
+    // request with no files, which the handler rejects rather than committing
+    // everything. Entries must be non-empty.
+    paths: z.array(nonEmptyString).optional(),
+    // Old names of selected staged renames — committed (never staged) so the
+    // delete side of a rename is recorded. Kept separate from `paths`.
+    previousPaths: z.array(nonEmptyString).optional(),
   })
   .passthrough();
 export type GitCommit = z.infer<typeof gitCommitSchema>;

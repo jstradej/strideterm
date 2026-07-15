@@ -204,6 +204,11 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
             "managed-worktree",
             {
               parentWorkspaceId: paths.parentWorkspaceId || "",
+              // Preserve the reviewer's "Enable editing" opt-in. buildReviewMetadata
+              // defaults writable to false, so without threading it through here a
+              // periodic refresh would silently re-gate push on a checkout the user
+              // just enabled — the workspace.review object is replaced wholesale below.
+              writable: workspace.review?.writable === true,
             },
           ),
         });
@@ -264,6 +269,9 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
             targetRefName: "",
           },
           role: "",
+          // Preserve the reviewer's "Enable editing" opt-in across this rebuild
+          // (see the buildReviewMetadata branch above for why).
+          writable: workspace.review?.writable === true,
           checkout: {
             mode: "managed-worktree",
             rootPath: workspace.cwd,

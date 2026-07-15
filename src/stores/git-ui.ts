@@ -1054,7 +1054,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
     );
   }
 
-  async function gitCommitAll(workspaceId: string, message: string): Promise<void> {
+  async function gitCommitAll(
+    workspaceId: string,
+    message: string,
+    paths?: string[],
+    previousPaths?: string[],
+  ): Promise<void> {
     if (!message) return;
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "commit", () =>
@@ -1062,6 +1067,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
         workspaceId,
         message,
         rootPath,
+        // Omit entirely when nothing is selected so the backend commits the
+        // whole tree (matches the historical "Commit all" behaviour).
+        ...(paths && paths.length ? { paths } : {}),
+        // Rename old-names, sent separately so the backend never stages them.
+        ...(previousPaths && previousPaths.length ? { previousPaths } : {}),
       }),
     );
   }

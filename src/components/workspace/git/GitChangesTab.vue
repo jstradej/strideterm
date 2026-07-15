@@ -50,10 +50,10 @@
                   :disabled="
                     !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
                   "
-                  title="Stage every modified, added, deleted, and untracked file in the working tree and create a commit with the message above. Equivalent to git add -A && git commit -m '…'."
+                  :title="commitButtonTitle"
                   @click="onCommitAll"
                 >
-                  {{ gitUi.busyAction === "commit" ? "Committing…" : "Commit all" }}
+                  {{ commitButtonLabel }}
                 </button>
               </div>
               <div v-if="snapshot.dirty && !isReviewWorkspace" class="git-stash-form" style="margin-top: 8px">
@@ -213,6 +213,7 @@ import { useGitStashStore } from "../../../stores/git-stash.js";
 import GitDiffStat from "./GitDiffStat.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
+import { buildCommitSelection } from "./commit-selection.js";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
@@ -340,10 +341,35 @@ watch(
 );
 
 const commitMessage = ref("");
+
+// Commit button mirrors the stash row: label + tooltip switch to a
+// selection-scoped commit whenever files are checked, otherwise commit all.
+const commitButtonLabel = computed(() => {
+  if (props.gitUi.busyAction === "commit") return "Committing…";
+  return selectedPaths.value.size ? `Commit selected (${selectedPaths.value.size})` : "Commit all";
+});
+const commitButtonTitle = computed(() =>
+  selectedPaths.value.size
+    ? `Stage and commit only the ${selectedPaths.value.size} checked file(s) with the message above — everything else stays in your working tree.`
+    : "Stage every modified, added, deleted, and untracked file in the working tree and create a commit with the message above. Equivalent to git add -A && git commit -m '…'.",
+);
+
+// The checked paths and, SEPARATELY, the old names of any checked renames
+// (renames only — a copy's source must survive). See commit-selection.ts.
+function commitSelection(): { paths: string[]; previousPaths: string[] } {
+  return buildCommitSelection(allChangedFiles.value, selectedPaths.value);
+}
+
 function onCommitAll() {
   const msg = commitMessage.value.trim();
   if (!msg) return;
-  gitUiStore.gitCommitAll(props.workspaceId, msg);
+  const { paths, previousPaths } = commitSelection();
+  gitUiStore.gitCommitAll(
+    props.workspaceId,
+    msg,
+    paths.length ? paths : undefined,
+    previousPaths.length ? previousPaths : undefined,
+  );
   commitMessage.value = "";
 }
 
