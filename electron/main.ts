@@ -1385,7 +1385,6 @@ async function startServices(): Promise<void> {
   runtimeState.runtime = await createRuntime({
     userDataPath,
     builtinPluginsDir: path.join(resourcesDir, "plugins"),
-    getThemeSource: () => (nativeTheme.shouldUseDarkColors ? "dark" : "light"),
     deferInitialRefresh: true,
     dependencies: {
       safeStorage,

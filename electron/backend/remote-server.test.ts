@@ -5,7 +5,10 @@ import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
   REMOTE_BLOCKED_TOP_LEVEL_FIELDS,
   buildSessionCookieAttrs,
+  createRemoteTelemetry,
+  makeStateCoalescer,
   sanitizeSettingsFromRemote,
+  socketStallDecision,
   startRemoteServer,
   stripSecretsForRemote,
   terminalBackpressureDecision,
@@ -662,7 +665,13 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       runtime: ReturnType<typeof makeStreamingRuntime>;
       server: Awaited<ReturnType<typeof startRemoteServer>>;
     }) => Promise<void>,
-    opts: { initialStateDelayMs?: number; congestionCloseGraceMs?: number } = {},
+    opts: {
+      initialStateDelayMs?: number;
+      congestionCloseGraceMs?: number;
+      socketStallGraceMs?: number;
+      socketStallSweepMs?: number;
+      socketBufferedAmount?: (socket: WebSocket) => number;
+    } = {},
   ): Promise<void> {
     const port = await getFreePort();
     const runtime = makeStreamingRuntime(auth, port, opts);
@@ -670,6 +679,11 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
       staticRoot: process.cwd(),
       congestionCloseGraceMs: opts.congestionCloseGraceMs,
+      socketStallGraceMs: opts.socketStallGraceMs,
+      socketStallSweepMs: opts.socketStallSweepMs,
+      socketBufferedAmount: opts.socketBufferedAmount as
+        | ((socket: import("ws").WebSocket) => number)
+        | undefined,
     });
     try {
       await run({ port, runtime, server });
@@ -932,18 +946,21 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
-  test("a large non-terminal message trips a filtered socket (whole-socket bound)", async () => {
-    // Review F1: only live terminal frames used to be able to trip the bound, so
-    // a slow client fed by state/ssh/docker could grow an unbounded queue. Every
-    // non-replay send on a FILTERED socket is now bounded. A single >2 MiB
-    // non-terminal message trips regardless of the loopback kernel buffer.
+  test("a large one-shot non-terminal frame no longer trips a filtered socket (2.4.11 regression fix)", async () => {
+    // The 2.4.11 loop was caused by treating one large frame as proof of
+    // congestion: a >2 MiB frame on an otherwise-idle socket tripped a 1013.
+    // The bound is now the memory ceiling on the EXISTING backlog plus a
+    // time-based stall detector — a one-shot large frame on a draining socket
+    // must pass. A single >2 MiB non-terminal message must NOT close the socket.
     await withServer("tok-nonterm", async ({ port, runtime }) => {
       const c = connectWs(port, "tok-nonterm", "nonterm1", "p1");
       await c.opened;
       c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
       await delay(50); // socket is now filtered
       runtime._emit("ssh:state", { blob: "x".repeat(2_300_000) }); // >2 MiB, non-terminal
-      expect(await waitUntil(() => c.closeCode() === 1013)).toBe(true);
+      await delay(120);
+      expect(c.closeCode()).toBeNull();
+      c.ws.close();
     });
   });
 
@@ -970,29 +987,44 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
-  test("crossing the buffered-byte limit trips a 1013 close and drops the live frame", async () => {
+  test("a single frame larger than the old watermark is delivered, not dropped", async () => {
+    // The mirror of the regression fix: a live frame far larger than the old
+    // 2 MiB bound, on an empty/draining socket, must be delivered rather than
+    // trigger a 1013. Delivery + no close is the whole point.
     await withServer("tok-bp", async ({ port, runtime }) => {
-      const c = connectWs(port, "tok-bp", "bp-aaaaa");
+      const c = connectWs(port, "tok-bp", "bp-aaaaa", "p1");
       await c.opened;
       c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
       await delay(50);
-      // A single live frame larger than the 2 MiB bound trips immediately.
       const huge = "x".repeat(2_300_000);
       runtime._emit("terminal:data", { sessionId: "ws1:a", data: huge, seq: 1 });
-      expect(await waitUntil(() => c.closeCode() === 1013)).toBe(true);
-      expect(terminalFrames(c).some((m) => m.type === "terminal:data")).toBe(false);
+      expect(
+        await waitUntil(() =>
+          terminalFrames(c).some((m) => m.type === "terminal:data" && framePayload(m).data?.length === huge.length),
+        ),
+      ).toBe(true);
+      expect(c.closeCode()).toBeNull();
+      c.ws.close();
     });
   });
 
+  // The backlog/stall path can't be exercised over real loopback (the kernel
+  // absorbs multi-MB queues, so bufferedAmount never reflects a real backlog),
+  // so these two feed an injected buffered-amount reader that reports a
+  // persistent 10 MiB backlog. That is above the 2 MiB stall watermark and below
+  // the 48 MiB hard ceiling, so only the TIME-BASED stall detector fires — which
+  // is exactly the machinery under test (close→terminate handshake + cleanup).
+  const STALL_BACKLOG = () => 10 * 1024 * 1024;
+
   test("a stuck close handshake is force-closed by the terminate() fallback", async () => {
-    // markCongested sends a 1013 close, then arms a terminate() timer. If the
-    // client never completes the closing handshake (dead/wedged socket), the
-    // fallback must forcibly drop the connection rather than leak it forever.
-    // Only tested here at a tiny injected grace so it doesn't wait the real 5s.
+    // The stall sweep marks a non-draining socket congested: a 1013 close plus an
+    // armed terminate() timer. If the client never completes the closing
+    // handshake (dead/wedged socket), the fallback must forcibly drop it rather
+    // than leak it forever. Tiny injected graces so it doesn't wait the real 5s.
     await withServer(
       "tok-term",
-      async ({ port, runtime, server }) => {
-        const c = connectWs(port, "tok-term", "term-aaa");
+      async ({ port, server }) => {
+        const c = connectWs(port, "tok-term", "term-aaa", "p1");
         await c.opened;
         c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
         await delay(50); // socket is now filtered
@@ -1001,14 +1033,14 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         // the routing entry can only be released by the terminate() fallback.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (c.ws as any)._socket.pause();
-        runtime._emit("terminal:data", { sessionId: "ws1:a", data: "x".repeat(2_300_000), seq: 1 });
-        // Congested, with a pending terminate timer, before it can (never) ack.
+        // The injected backlog + stall grace trip congestion from the sweep.
+        expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 2000)).toBe(true);
         expect(server._debugRouting?.()).toEqual([{ congested: true, hasCloseTimer: true }]);
         // The socket is dropped ONLY because terminate() fired after the grace —
         // the paused client rules out a graceful close as the cause.
         expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 2000)).toBe(true);
       },
-      { congestionCloseGraceMs: 120 },
+      { congestionCloseGraceMs: 120, socketStallGraceMs: 40, socketStallSweepMs: 20, socketBufferedAmount: STALL_BACKLOG },
     );
   });
 
@@ -1019,28 +1051,23 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     // the test outlast it and prove the timer never fired.
     await withServer(
       "tok-clean",
-      async ({ port, runtime, server }) => {
-        const c = connectWs(port, "tok-clean", "clean-aa");
+      async ({ port, server }) => {
+        const c = connectWs(port, "tok-clean", "clean-aa", "p1");
         await c.opened;
         c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
         await delay(50);
-        // Trip congestion. markCongested runs synchronously inside _emit, so right
-        // after it the socket is congested with a pending terminate timer — before
-        // it can complete the 1013 handshake.
-        runtime._emit("terminal:data", { sessionId: "ws1:a", data: "x".repeat(2_300_000), seq: 1 });
-        expect(server._debugRouting?.()).toEqual([{ congested: true, hasCloseTimer: true }]);
-        // The client acks the 1013 and closes → the server's close handler releases
-        // the routing entry (and with it the cleared terminate timer).
+        // Stall sweep trips congestion (injected persistent backlog).
+        expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 2000)).toBe(true);
+        // The client (not paused) acks the 1013 and closes → the server's close
+        // handler releases the routing entry (and with it the cleared timer).
         expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0)).toBe(true);
         // The graceful close won the race against the 120 ms grace, so the armed
         // terminate() timer must have been cleared. Wait well past the grace and
-        // assert it never fired — the routing snapshot can't show this because the
-        // entry is already gone. Without the close handler's clearTimeout, the
-        // orphaned timer would fire here and make this 1.
+        // assert it never fired.
         await delay(200);
         expect(server._debugCongestionTerminates?.()).toBe(0);
       },
-      { congestionCloseGraceMs: 120 },
+      { congestionCloseGraceMs: 120, socketStallGraceMs: 40, socketStallSweepMs: 20, socketBufferedAmount: STALL_BACKLOG },
     );
   });
 
@@ -1136,45 +1163,162 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
-  describe("terminalBackpressureDecision — replay-exempt accounting (review F4)", () => {
+  describe("terminalBackpressureDecision — memory-safety ceiling on existing backlog", () => {
     const MiB = 1024 * 1024;
-    const LIMIT = 2 * MiB;
+    const CEILING = 48 * MiB;
 
-    test("replay backlog alone does not trip the next small live frame", () => {
+    test("a large one-shot frame does not trip: the decision ignores frame size", () => {
+      // Empty socket, nothing queued → live backlog 0 → never trips no matter how
+      // big the frame about to be sent is. This is the whole 2.4.11 fix.
+      expect(terminalBackpressureDecision(0, 0, CEILING).trip).toBe(false);
+      // Even a backlog just under the ceiling passes — the frame's size is not
+      // added in.
+      expect(terminalBackpressureDecision(0, CEILING, CEILING).trip).toBe(false);
+    });
+
+    test("replay backlog alone is exempt and never trips", () => {
       // 12 MB of replay queued, nothing else: live backlog is 0.
-      expect(terminalBackpressureDecision(12 * MiB, 12 * MiB, 1024, LIMIT).trip).toBe(false);
+      expect(terminalBackpressureDecision(12 * MiB, 12 * MiB, CEILING).trip).toBe(false);
     });
 
-    test("a live frame larger than the limit trips regardless of exempt bytes", () => {
-      expect(terminalBackpressureDecision(12 * MiB, 12 * MiB, LIMIT + 1, LIMIT).trip).toBe(true);
-    });
-
-    test("non-replay backlog above the limit trips even with some replay queued", () => {
-      // 3 MB buffered of which only 0.5 MB is replay → 2.5 MB live backlog.
-      expect(terminalBackpressureDecision(0.5 * MiB, 3 * MiB, 1024, LIMIT).trip).toBe(true);
+    test("an existing live backlog above the ceiling trips (hard memory bound)", () => {
+      // 60 MB buffered of which only 0.5 MB is replay → ~59.5 MB live backlog.
+      expect(terminalBackpressureDecision(0.5 * MiB, 60 * MiB, CEILING).trip).toBe(true);
     });
 
     test("live bytes are never credited as exempt: only queued replay counts", () => {
-      // exemptBytes tracks ONLY replay still in the queue (the send-drain callback
-      // decrements it as replay flushes). So once replay has drained, the exempt
-      // input is already low and the full live backlog is measured. Here 4 MB is
-      // buffered with just 1 MB of replay still queued → 3 MB live backlog trips.
-      expect(terminalBackpressureDecision(1 * MiB, 4 * MiB, 1024, LIMIT).trip).toBe(true);
+      // 50 MB buffered with just 1 MB of replay still queued → 49 MB live backlog,
+      // over the 48 MB ceiling → trips.
+      expect(terminalBackpressureDecision(1 * MiB, 50 * MiB, CEILING).trip).toBe(true);
     });
 
     test("exempt exceeding buffered (callback/OS skew) clamps to zero, never negative", () => {
-      // If the drain callback lags the OS socket, exempt can momentarily exceed
-      // bufferedAmount. Live backlog clamps at 0 rather than going negative and
-      // masking a real backlog on the next frame.
-      const d = terminalBackpressureDecision(5 * MiB, 1 * MiB, 1024, LIMIT);
+      const d = terminalBackpressureDecision(5 * MiB, 1 * MiB, CEILING);
       expect(d.trip).toBe(false);
-      // A genuinely over-limit live frame still trips despite the skew.
-      expect(terminalBackpressureDecision(5 * MiB, 1 * MiB, LIMIT + 1, LIMIT).trip).toBe(true);
+    });
+  });
+
+  describe("socketStallDecision — time-based slow-consumer detection", () => {
+    const MiB = 1024 * 1024;
+    const THRESHOLD = 2 * MiB;
+    const GRACE = 10_000;
+
+    test("a backlog below the watermark is healthy and clears the clock", () => {
+      const d = socketStallDecision({
+        liveBacklog: MiB,
+        prevLiveBacklog: MiB,
+        backlogSince: 5_000,
+        now: 20_000,
+        thresholdBytes: THRESHOLD,
+        graceMs: GRACE,
+      });
+      expect(d).toEqual({ backlogSince: null, trip: false });
     });
 
-    test("zero state: small frame passes, buffered live bytes count fully", () => {
-      expect(terminalBackpressureDecision(0, 0, 1024, LIMIT).trip).toBe(false);
-      expect(terminalBackpressureDecision(0, LIMIT, 1, LIMIT).trip).toBe(true);
+    test("first crossing above the watermark starts the clock, does not trip", () => {
+      const d = socketStallDecision({
+        liveBacklog: 5 * MiB,
+        prevLiveBacklog: 0,
+        backlogSince: null,
+        now: 1_000,
+        thresholdBytes: THRESHOLD,
+        graceMs: GRACE,
+      });
+      expect(d).toEqual({ backlogSince: 1_000, trip: false });
+    });
+
+    test("a shrinking backlog is draining — the clock resets, no trip", () => {
+      const d = socketStallDecision({
+        liveBacklog: 3 * MiB,
+        prevLiveBacklog: 5 * MiB,
+        backlogSince: 1_000,
+        now: 30_000, // well past grace, but progress resets it
+        thresholdBytes: THRESHOLD,
+        graceMs: GRACE,
+      });
+      expect(d).toEqual({ backlogSince: 30_000, trip: false });
+    });
+
+    test("a non-draining backlog trips once the grace window elapses", () => {
+      const before = socketStallDecision({
+        liveBacklog: 5 * MiB,
+        prevLiveBacklog: 5 * MiB,
+        backlogSince: 1_000,
+        now: 1_000 + GRACE - 1,
+        thresholdBytes: THRESHOLD,
+        graceMs: GRACE,
+      });
+      expect(before.trip).toBe(false);
+      const after = socketStallDecision({
+        liveBacklog: 5 * MiB,
+        prevLiveBacklog: 5 * MiB,
+        backlogSince: 1_000,
+        now: 1_000 + GRACE,
+        thresholdBytes: THRESHOLD,
+        graceMs: GRACE,
+      });
+      expect(after).toEqual({ backlogSince: 1_000, trip: true });
+    });
+  });
+
+  describe("makeStateCoalescer — latest-wins state delivery", () => {
+    test("a burst while one send is in flight delivers only the newest follow-up", () => {
+      const sent: string[] = [];
+      let release: (() => void) | null = null;
+      const coalescer = makeStateCoalescer((data, onDrain) => {
+        sent.push(data);
+        release = onDrain; // hold the drain open to simulate a slow send
+      });
+      // First enqueue dispatches immediately (nothing in flight).
+      expect(coalescer.enqueue("rev1")).toBe("dispatched");
+      // While rev1 is "sending", a burst arrives: rev2 is queued, rev3..rev5
+      // coalesce over it — none are sent, only the newest is retained.
+      expect(coalescer.enqueue("rev2")).toBe("queued");
+      expect(coalescer.enqueue("rev3")).toBe("coalesced");
+      expect(coalescer.enqueue("rev4")).toBe("coalesced");
+      expect(coalescer.enqueue("rev5")).toBe("coalesced");
+      expect(sent).toEqual(["rev1"]); // still only the first frame on the wire
+      // rev1 drains → the single newest pending (rev5) goes next; rev2..rev4 are
+      // discarded, never serialized onto the socket.
+      release!();
+      expect(sent).toEqual(["rev1", "rev5"]);
+      expect(coalescer.hasPending()).toBe(false);
+    });
+
+    test("sends made when idle each dispatch immediately", () => {
+      const sent: string[] = [];
+      const coalescer = makeStateCoalescer((data, onDrain) => {
+        sent.push(data);
+        onDrain(); // synchronous drain — never in flight
+      });
+      coalescer.enqueue("a");
+      coalescer.enqueue("b");
+      coalescer.enqueue("c");
+      expect(sent).toEqual(["a", "b", "c"]);
+    });
+  });
+
+  describe("createRemoteTelemetry", () => {
+    test("tracks produced/sent/coalesced counts and frame percentiles", () => {
+      const t = createRemoteTelemetry();
+      expect(t.hasActivity()).toBe(false);
+      t.recordStateProduced();
+      t.recordStateProduced();
+      t.recordStateSent();
+      t.recordStateCoalesced();
+      for (const n of [10, 20, 30, 40, 100]) t.recordFrame(n);
+      t.recordBacklog(4096);
+      t.recordBacklog(1024);
+      t.recordDrainMs(50);
+      const snap = t.snapshot();
+      expect(snap.stateProduced).toBe(2);
+      expect(snap.stateSent).toBe(1);
+      expect(snap.stateCoalesced).toBe(1);
+      expect(snap.maxBacklog).toBe(4096);
+      expect(snap.frameP50).toBeGreaterThan(0);
+      expect(snap.frameP95).toBeGreaterThanOrEqual(snap.frameP50);
+      expect(snap.frameSamples).toBe(5);
+      expect(t.hasActivity()).toBe(true);
     });
   });
 

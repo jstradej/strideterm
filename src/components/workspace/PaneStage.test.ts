@@ -85,9 +85,7 @@ function makePayload(overrides: AnyApi = {}): AnyApi {
     reviewBridge: { sessions: {}, enabled: false },
     plugins: [],
     environment: {},
-    themeSource: "light",
     remoteAccess: { enabled: false, host: "", port: 0, tunnel: { active: false, url: null, error: null } },
-    agentNotifyHook: { enabled: false, port: 0 },
     taskRunner: {},
     ...overrides,
   };

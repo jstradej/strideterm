@@ -756,9 +756,7 @@ export interface StatePayload {
   reviewBridge: ReviewBridgeState;
   plugins: unknown[];
   environment: Record<string, unknown>;
-  themeSource: string;
   remoteAccess: RemoteAccessState;
-  agentNotifyHook: { enabled: boolean; port: number };
   taskRunner: Record<string, unknown>;
   /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
   remoteClient?: {

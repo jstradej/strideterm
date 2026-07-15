@@ -309,13 +309,11 @@ interface RuntimeDependencies {
 export async function createRuntime({
   userDataPath,
   builtinPluginsDir,
-  getThemeSource,
   deferInitialRefresh = false,
   dependencies = {},
 }: {
   userDataPath: string;
   builtinPluginsDir?: string;
-  getThemeSource?: () => string;
   deferInitialRefresh?: boolean;
   dependencies?: RuntimeDependencies;
 }) {
@@ -1697,6 +1695,12 @@ export async function createRuntime({
         if (cloned.settings?.integrations?.github) {
           cloned.settings.integrations.github.connections = getGitHubConnections(state);
         }
+        // Drop the legacy `projects` alias — it duplicates the entire
+        // `workspaces` array in every broadcast (≈131 KB in a 59-workspace
+        // install) and no renderer reads it. `workspaces` is the single source
+        // of truth; the persisted-state alias (default-state) stays for
+        // downgrade compatibility, this only strips it from the payload.
+        delete cloned.projects;
         return cloned;
       })(),
       workspace: (() => {
@@ -1719,10 +1723,13 @@ export async function createRuntime({
       attention: getAttentionSnapshot(),
       docker: docker.getSnapshot(),
       git: {
+        // `projects` (alias of `workspaces`, ≈2.2 MB in a 59-workspace install)
+        // and `activeProject` (alias of `activeWorkspace`) were byte-identical
+        // duplicates that no renderer reads — renderer fallbacks like
+        // `git?.projects?.[id]` simply fall through to `workspaces`. Dropped to
+        // shrink every broadcast; the desktop UI is unchanged.
         workspaces: git.getProjectMap(),
-        projects: git.getProjectMap(),
         activeWorkspace: git.getSnapshot(state.activeWorkspaceId),
-        activeProject: git.getSnapshot(state.activeProjectId),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         connections: getAllProviderConnections(state).map((c: any) => ({
           id: c.id,
@@ -1742,7 +1749,6 @@ export async function createRuntime({
       reviewBridge: getReviewBridgeSnapshot(state),
       plugins: pluginManager ? pluginManager.getPlugins() : [],
       environment: { ...terminalEnvironment, claudeAvailable: claudeAvailableCache },
-      themeSource: getThemeSource?.() || "dark",
       remoteAccess: {
         ...(remoteInfo || {
           enabled: false,
@@ -1751,10 +1757,6 @@ export async function createRuntime({
           urls: [],
         }),
         tunnel: tunnel.getSnapshot(),
-      },
-      agentNotifyHook: {
-        enabled: notifyServerHandle != null,
-        port: notifyServerHandle?.port || null,
       },
       taskRunner: taskRunner.getTaskSnapshot(),
       // Surface OS-keychain availability so Settings can show a banner when
@@ -4806,6 +4808,15 @@ export async function createRuntime({
     composeStatePayloadForRemoteClient(clientId: string): unknown {
       if (!_remoteClientRegistry) return getPayload();
       return _remoteClientRegistry.composePayload(clientId, getPayload());
+    },
+    /**
+     * Agent-notify HTTP hook status. Previously surfaced as
+     * `payload.agentNotifyHook`, which no renderer consumed — dropped from the
+     * broadcast to save bytes. Kept as an explicit accessor so the notify-server
+     * lifecycle stays observable (used by tests and any future diagnostics).
+     */
+    getNotifyServerInfo(): { enabled: boolean; port: number | null } {
+      return { enabled: notifyServerHandle != null, port: notifyServerHandle?.port || null };
     },
     async getInitialState() {
       try {

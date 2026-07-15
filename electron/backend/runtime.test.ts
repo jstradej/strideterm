@@ -635,7 +635,6 @@ async function createFixture({
   const runtime = await createRuntime({
     userDataPath,
     builtinPluginsDir: null as unknown as string,
-    getThemeSource: () => "light",
     dependencies: {
       createStore: async () => store,
 
@@ -1653,14 +1652,14 @@ describe("runtime integration", () => {
     expect(state.settings.notifications.debug).toBe(false);
   });
 
-  test("agentNotifyHook info is included in payload", async () => {
+  test("notify server info is exposed via getNotifyServerInfo()", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
 
-    const payload = fixture.runtime.getPayload();
-    expect(payload.agentNotifyHook).toBeDefined();
-    expect(payload.agentNotifyHook.enabled).toBe(true);
-    expect(payload.agentNotifyHook.port).toBeGreaterThan(0);
+    const info = fixture.runtime.getNotifyServerInfo();
+    expect(info).toBeDefined();
+    expect(info.enabled).toBe(true);
+    expect(info.port).toBeGreaterThan(0);
   });
 
   test("notify server is not started when agentHook is disabled", async () => {
@@ -1673,9 +1672,9 @@ describe("runtime integration", () => {
     });
     fixtures.push(fixture);
 
-    const payload = fixture.runtime.getPayload();
-    expect(payload.agentNotifyHook.enabled).toBe(false);
-    expect(payload.agentNotifyHook.port).toBeNull();
+    const info = fixture.runtime.getNotifyServerInfo();
+    expect(info.enabled).toBe(false);
+    expect(info.port).toBeNull();
   });
 
   test("UserPromptSubmit marks agent session activity in attention snapshot", async () => {
@@ -2166,23 +2165,23 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     // Initially enabled
-    expect(fixture.runtime.getPayload().agentNotifyHook.enabled).toBe(true);
-    const initialPort = fixture.runtime.getPayload().agentNotifyHook.port;
+    expect(fixture.runtime.getNotifyServerInfo().enabled).toBe(true);
+    const initialPort = fixture.runtime.getNotifyServerInfo().port;
     expect(initialPort).toBeGreaterThan(0);
 
     // Disable
     await fixture.runtime.updateSettings({
       notifications: { agentHook: false },
     });
-    expect(fixture.runtime.getPayload().agentNotifyHook.enabled).toBe(false);
-    expect(fixture.runtime.getPayload().agentNotifyHook.port).toBeNull();
+    expect(fixture.runtime.getNotifyServerInfo().enabled).toBe(false);
+    expect(fixture.runtime.getNotifyServerInfo().port).toBeNull();
 
     // Re-enable
     await fixture.runtime.updateSettings({
       notifications: { agentHook: true },
     });
-    expect(fixture.runtime.getPayload().agentNotifyHook.enabled).toBe(true);
-    expect(fixture.runtime.getPayload().agentNotifyHook.port).toBeGreaterThan(0);
+    expect(fixture.runtime.getNotifyServerInfo().enabled).toBe(true);
+    expect(fixture.runtime.getNotifyServerInfo().port).toBeGreaterThan(0);
   });
 
   test("STRIDETERM_NOTIFY_URL is injected into session env when notify server is running", async () => {
@@ -2204,8 +2203,7 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     // Notify server should be running
-    const payload = fixture.runtime.getPayload();
-    expect(payload.agentNotifyHook.enabled).toBe(true);
+    expect(fixture.runtime.getNotifyServerInfo().enabled).toBe(true);
 
     // getSessionEnv callback should be captured by FakeSessionManager
     expect(fixture.sessionManager.getSessionEnv).toBeTypeOf("function");
@@ -2239,7 +2237,7 @@ describe("runtime integration", () => {
     });
     fixtures.push(fixture);
 
-    expect(fixture.runtime.getPayload().agentNotifyHook.enabled).toBe(false);
+    expect(fixture.runtime.getNotifyServerInfo().enabled).toBe(false);
     expect(fixture.sessionManager.getSessionEnv).toBeTypeOf("function");
 
     const env = fixture.sessionManager.getSessionEnv({
@@ -2379,7 +2377,7 @@ describe("runtime integration", () => {
     );
     const gitignore = await fs.readFile(path.join(projectRoot, ".gitignore"), "utf8");
     expect(gitignore).toContain(".strideterm/");
-    const projectWorkspaces = payload.appState.projects!.filter((project) => project.kind !== "azure");
+    const projectWorkspaces = payload.appState.workspaces.filter((project) => project.kind !== "azure");
     expect(projectWorkspaces).toHaveLength(2);
     expect(payload.appState.activeProjectId).toBe(projectWorkspaces[1].id);
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
@@ -2422,7 +2420,7 @@ describe("runtime integration", () => {
 
     const payload = await fixture.runtime.createWorktree({ projectId: "frontend", name: "feature-slot" }, "win-1");
 
-    const child = payload.appState.projects!.find((p) => p.name === "Frontend / feature-slot");
+    const child = payload.appState.workspaces.find((p) => p.name === "Frontend / feature-slot");
     expect(child).toBeDefined();
     expect(payload.appState.activeProjectId).toBe(child!.id);
     expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe(child!.id);
@@ -2464,7 +2462,7 @@ describe("runtime integration", () => {
 
     const payload = await fixture.runtime.createWorktree({ projectId: "frontend", name: "feature-noslot" });
 
-    const child = payload.appState.projects!.find((p) => p.name === "Frontend / feature-noslot");
+    const child = payload.appState.workspaces.find((p) => p.name === "Frontend / feature-noslot");
     expect(child).toBeDefined();
     expect(payload.appState.activeProjectId).toBe(child!.id);
     // Slot was NOT updated — this matches the legacy behavior the bug
@@ -2522,7 +2520,7 @@ describe("runtime integration", () => {
 
     const matchingWorktrees = fixture.runtime
       .getPayload()
-      .appState.projects!.filter((project) => project.cwd === worktreePath);
+      .appState.workspaces.filter((project) => project.cwd === worktreePath);
 
     expect(matchingWorktrees.map((project) => project.profileId).sort()).toEqual(["default", "profile-b"]);
   });
@@ -2603,7 +2601,7 @@ describe("runtime integration", () => {
     expect(removed).toBe(1);
 
     const state = fixture.runtime.getPayload().appState;
-    expect(state.projects!.map((p) => p.id).sort()).toEqual(["ws-b-keep", "ws-default-keep"]);
+    expect(state.workspaces.map((p) => p.id).sort()).toEqual(["ws-b-keep", "ws-default-keep"]);
 
     const slotDefault = state.windowSlots!.find((s) => s.id === "win-default")!;
     const slotB = state.windowSlots!.find((s) => s.id === "win-b")!;
@@ -2877,7 +2875,7 @@ describe("runtime integration", () => {
     // createFixture's runtime init calls syncWorktrees, which detects both
     // worktrees as missing on disk and removes them.
     const state = fixture.runtime.getPayload().appState;
-    expect(state.projects!.map((p) => p.id).sort()).toEqual(["parent-b", "parent-default"]);
+    expect(state.workspaces.map((p) => p.id).sort()).toEqual(["parent-b", "parent-default"]);
 
     const slotDefault = state.windowSlots!.find((s) => s.id === "win-default")!;
     const slotB = state.windowSlots!.find((s) => s.id === "win-b")!;
@@ -3058,7 +3056,7 @@ describe("runtime integration", () => {
     // Profile-b client sends only profile-b IDs in swapped order.
     await fixture.runtime.reorderWorkspaces(["ws-b2", "ws-b1"], "win-b");
 
-    const ids = fixture.runtime.getPayload().appState.projects!.map((p) => p.id);
+    const ids = fixture.runtime.getPayload().appState.workspaces.map((p) => p.id);
     // Profile-default workspaces remain in their original positions; only
     // profile-b workspaces are reordered (swapped) within their slots.
     expect(ids).toEqual(["ws-default-1", "ws-b2", "ws-b1", "ws-default-2"]);
@@ -3120,7 +3118,7 @@ describe("runtime integration", () => {
     // No worktree workspace was inserted, no git command was issued.
     const wsAfter = fixture.runtime
       .getPayload()
-      .appState.projects!.map((p) => p.id)
+      .appState.workspaces.map((p) => p.id)
       .sort();
     expect(wsAfter).toEqual(["ws-a", "ws-b"]);
     expect(
@@ -3179,7 +3177,7 @@ describe("runtime integration", () => {
 
     const matchingWorktrees = fixture.runtime
       .getPayload()
-      .appState.projects!.filter((project) => project.cwd === worktreePath);
+      .appState.workspaces.filter((project) => project.cwd === worktreePath);
 
     expect(matchingWorktrees.map((project) => project.profileId).sort()).toEqual(["default", "profile-b"]);
   });
@@ -3219,7 +3217,7 @@ describe("runtime integration", () => {
     });
     fixtures.push(fixture);
 
-    const allProjects = fixture.runtime.getPayload().appState.projects!;
+    const allProjects = fixture.runtime.getPayload().appState.workspaces;
     // No plain "Worktree of" duplicate should exist at the task workspace directory
     const duplicates = allProjects.filter((p) => p.cwd === treePath && (p.notes || "").startsWith("Worktree of"));
     expect(duplicates).toHaveLength(0);
@@ -3262,7 +3260,7 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     // The plain "Worktree of" entry is present before the task workspace is created
-    expect(fixture.runtime.getPayload().appState.projects!.find((p) => p.id === "plain-wt")).toBeDefined();
+    expect(fixture.runtime.getPayload().appState.workspaces.find((p) => p.id === "plain-wt")).toBeDefined();
 
     await fixture.runtime.createTaskWorkspace({
       cwd: parentRoot,
@@ -3273,7 +3271,7 @@ describe("runtime integration", () => {
       activate: false,
     });
 
-    const after = fixture.runtime.getPayload().appState.projects!;
+    const after = fixture.runtime.getPayload().appState.workspaces;
     // The plain "Worktree of" duplicate must be gone
     expect(after.find((p) => p.id === "plain-wt")).toBeUndefined();
     // A task workspace at the same cwd must exist
@@ -5207,7 +5205,7 @@ describe("runtime integration", () => {
     );
     const gitignore = await fs.readFile(path.join(repoA, ".gitignore"), "utf8");
     expect(gitignore).toContain(".strideterm/");
-    const child = payload.appState.projects!.find((p) => p.name === "Stack / feature-x");
+    const child = payload.appState.workspaces.find((p) => p.name === "Stack / feature-x");
     expect(child?.cwd).toBe(path.join(repoA, ".strideterm", "tree", "feature-x"));
     // Child inherits nothing from multi-repo — it's a single-repo worktree
     expect(child?.gitRoots || []).toHaveLength(0);

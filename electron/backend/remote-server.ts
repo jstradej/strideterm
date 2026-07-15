@@ -130,14 +130,27 @@ const log = getLogger("remote-server");
 const WS_HEARTBEAT_INTERVAL_MS = 20_000;
 const WS_HEARTBEAT_MAX_MISSED = 3;
 
-// Per-socket outbound buffer ceiling. Beyond this we close with 1013 ("Try
-// Again Later") rather than let a slow or suspended client grow an unbounded
-// WebSocket send queue. Only live terminal frames TRIP this bound; a terminal
-// replay is exempt (a bounded one-shot payload — disconnecting on it would
-// spuriously drop an otherwise-healthy reconnect), and every other message is
-// merely GATED by the congested flag (see checkedSend). 2 MiB is a starting
-// point to validate under mobile throttling, not a user setting.
-const MAX_SOCKET_BUFFER_BYTES = 2 * 1024 * 1024;
+// Live-backlog watermark above which a filtered socket is considered
+// "backlogged" and the stall clock starts. This is deliberately NOT a hard cap
+// on any single frame: a one-shot frame (the bootstrap state, a replay burst)
+// on an empty/draining socket is always allowed to queue. Only a backlog that
+// FAILS TO DRAIN past this line for SOCKET_STALL_GRACE_MS trips a close — the
+// 2.4.11 regression was caused by treating one large frame as proof of
+// congestion. See socketStallDecision.
+const SOCKET_STALL_THRESHOLD_BYTES = 2 * 1024 * 1024;
+// A backlogged socket that makes no drain progress for this long is a genuinely
+// stalled consumer and is closed (1013) so it can reconnect and recover via
+// bounded replay. Any shrinking of the backlog resets the clock. Injectable so
+// tests don't wait the full window.
+const SOCKET_STALL_GRACE_MS = 15_000;
+// How often the stall sweep samples each filtered socket's live backlog.
+const SOCKET_STALL_SWEEP_MS = 1_000;
+// Last-resort absolute memory ceiling. An already-queued live backlog above
+// this is closed immediately, independent of drain timing — pure memory safety
+// if a socket wedges hard between stall samples. Sized far above any legitimate
+// frame (bootstrap state, replay) so it can never recreate the single-frame
+// disconnect loop.
+const SOCKET_HARD_CEILING_BYTES = 48 * 1024 * 1024;
 // Grace period after a 1013 close handshake before we terminate() the socket to
 // release its queued memory even if the client never completes the close.
 const CONGESTION_CLOSE_GRACE_MS = 5_000;
@@ -146,26 +159,151 @@ const CONGESTION_CLOSE_GRACE_MS = 5_000;
 const MAX_SUBSCRIBED_SESSIONS = 64;
 
 /**
- * Backpressure decision for an outbound frame on a filtered socket, exported for
- * unit tests (kernel socket buffers on loopback absorb multi-MB queues, so the
+ * Last-resort memory-safety decision for a filtered socket, exported for unit
+ * tests (kernel socket buffers on loopback absorb multi-MB queues, so the
  * accounting can't be exercised deterministically over real TCP).
+ *
+ * The decision is made on the EXISTING live backlog only — never on the size of
+ * the frame about to be sent. A large one-shot frame on an empty/draining
+ * socket must pass (that was the 2.4.11 regression). `trip` means the
+ * already-queued live backlog alone exceeds `limit`, i.e. the socket has wedged
+ * hard; normal slow-consumer detection is the time-based socketStallDecision,
+ * this is only the absolute ceiling.
  *
  * `exemptBytes` is the count of replay bytes STILL queued on the socket. It is
  * maintained precisely by the caller: incremented when a replay is enqueued and
  * decremented by that replay's send-drain callback when it actually flushes — so
  * it can never credit already-drained replay (or any live/state byte) as exempt.
  * The live backlog is `bufferedAmount - exemptBytes` (clamped at 0 to absorb
- * transient skew between the drain callback and the OS socket buffer); the frame
- * trips the bound only if that live backlog plus this frame exceeds `limit`.
+ * transient skew between the drain callback and the OS socket buffer).
  */
 export function terminalBackpressureDecision(
   exemptBytes: number,
   bufferedAmount: number,
-  frameBytes: number,
   limit: number,
 ): { trip: boolean } {
   const liveBacklog = Math.max(0, bufferedAmount - exemptBytes);
-  return { trip: liveBacklog + frameBytes > limit };
+  return { trip: liveBacklog > limit };
+}
+
+/**
+ * Time-based stall decision for a filtered socket, exported for unit tests.
+ * Replaces "one big frame closes the socket" with "a backlog that never drains
+ * closes the socket". A socket below the watermark is healthy and clears its
+ * stall clock; a backlogged socket that keeps shrinking is making progress and
+ * also resets the clock; only a backlog that sits above the watermark WITHOUT
+ * progress for `graceMs` trips.
+ */
+export function socketStallDecision(args: {
+  liveBacklog: number;
+  prevLiveBacklog: number;
+  backlogSince: number | null;
+  now: number;
+  thresholdBytes: number;
+  graceMs: number;
+}): { backlogSince: number | null; trip: boolean } {
+  const { liveBacklog, prevLiveBacklog, backlogSince, now, thresholdBytes, graceMs } = args;
+  if (liveBacklog <= thresholdBytes) return { backlogSince: null, trip: false };
+  // Backlogged: start the clock on first entry, and restart it whenever the
+  // backlog shrinks (the consumer IS draining, just slowly).
+  if (backlogSince === null || liveBacklog < prevLiveBacklog) return { backlogSince: now, trip: false };
+  return { backlogSince, trip: now - backlogSince >= graceMs };
+}
+
+/**
+ * Latest-wins state-send coalescer for one socket. At most one state frame is
+ * in flight; a state produced while a send is in flight replaces the single
+ * pending frame, so a burst of mutations delivers only the newest follow-up
+ * rather than N queued historical snapshots. `send` must invoke its callback
+ * once the frame has drained to the OS. Terminal / docker / ssh streams do NOT
+ * use this — they keep strict ordering via checkedSend.
+ *
+ * `enqueue` returns what happened so the caller can drive telemetry:
+ *   "dispatched" — sent immediately (nothing was in flight);
+ *   "queued"     — held as the single pending frame (a send is in flight);
+ *   "coalesced"  — replaced a previously-pending frame that was never sent.
+ */
+export function makeStateCoalescer(send: (data: string, onDrain: () => void) => void): {
+  enqueue: (data: string) => "dispatched" | "queued" | "coalesced";
+  hasPending: () => boolean;
+} {
+  let sending = false;
+  let pending: string | null = null;
+  function dispatch(data: string): void {
+    sending = true;
+    send(data, onDrain);
+  }
+  function onDrain(): void {
+    sending = false;
+    if (pending !== null) {
+      const next = pending;
+      pending = null;
+      dispatch(next);
+    }
+  }
+  function enqueue(data: string): "dispatched" | "queued" | "coalesced" {
+    if (sending) {
+      const replaced = pending !== null;
+      pending = data;
+      return replaced ? "coalesced" : "queued";
+    }
+    dispatch(data);
+    return "dispatched";
+  }
+  return { enqueue, hasPending: () => pending !== null };
+}
+
+/**
+ * Diagnostic aggregator for remote state delivery. Everything here is
+ * telemetry — never a hard pass/fail limit. Tracks serialized frame sizes
+ * (p50/p95), state broadcasts produced vs actually sent vs coalesced away, the
+ * high-water live backlog and backlog drain times. Exported for unit tests.
+ */
+export function createRemoteTelemetry() {
+  let stateProduced = 0;
+  let stateSent = 0;
+  let stateCoalesced = 0;
+  let maxBacklog = 0;
+  const frameSizes: number[] = [];
+  const drainMs: number[] = [];
+  const MAX_SAMPLES = 512;
+  function sample(arr: number[], v: number): void {
+    arr.push(v);
+    if (arr.length > MAX_SAMPLES) arr.shift();
+  }
+  function pct(arr: number[], p: number): number {
+    if (arr.length === 0) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+    return sorted[idx];
+  }
+  return {
+    recordStateProduced: (): void => {
+      stateProduced++;
+    },
+    recordStateSent: (): void => {
+      stateSent++;
+    },
+    recordStateCoalesced: (): void => {
+      stateCoalesced++;
+    },
+    recordFrame: (bytes: number): void => sample(frameSizes, bytes),
+    recordBacklog: (bytes: number): void => {
+      if (bytes > maxBacklog) maxBacklog = bytes;
+    },
+    recordDrainMs: (ms: number): void => sample(drainMs, ms),
+    hasActivity: (): boolean => stateProduced > 0 || frameSizes.length > 0,
+    snapshot: () => ({
+      stateProduced,
+      stateSent,
+      stateCoalesced,
+      frameP50: pct(frameSizes, 50),
+      frameP95: pct(frameSizes, 95),
+      maxBacklog,
+      drainP95Ms: pct(drainMs, 95),
+      frameSamples: frameSizes.length,
+    }),
+  };
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -1777,6 +1915,9 @@ export async function startRemoteServer({
   staticRoot,
   logger: _logger = console,
   congestionCloseGraceMs = CONGESTION_CLOSE_GRACE_MS,
+  socketStallGraceMs = SOCKET_STALL_GRACE_MS,
+  socketStallSweepMs = SOCKET_STALL_SWEEP_MS,
+  socketBufferedAmount = (socket) => socket.bufferedAmount,
 }: {
   runtime: Runtime;
   staticRoot: string;
@@ -1785,10 +1926,22 @@ export async function startRemoteServer({
   /** Grace period between a backpressure 1013 close and the terminate()
    *  fallback. Injectable so tests can exercise the fallback without a 5s wait. */
   congestionCloseGraceMs?: number;
+  /** No-drain-progress window before a backlogged socket is closed. Injectable
+   *  so tests don't wait the full 15s. */
+  socketStallGraceMs?: number;
+  /** Stall-sweep sample interval. Injectable so tests can drive it fast. */
+  socketStallSweepMs?: number;
+  /** Reader for a socket's outbound buffered bytes. Defaults to the real
+   *  `socket.bufferedAmount`. Injectable ONLY for tests: loopback kernel buffers
+   *  absorb multi-MB queues so `bufferedAmount` never reflects a real backlog
+   *  over 127.0.0.1, making the backlog/stall path impossible to exercise
+   *  deterministically otherwise. Never overridden in production. */
+  socketBufferedAmount?: (socket: import("ws").WebSocket) => number;
 }): Promise<{
   close: () => Promise<void>;
   _debugRouting?: () => { congested: boolean; hasCloseTimer: boolean }[];
   _debugCongestionTerminates?: () => number;
+  _debugTelemetry?: () => ReturnType<ReturnType<typeof createRemoteTelemetry>["snapshot"]>;
 }> {
   const { enabled, host, port, token } = runtime.getPayload().appState.settings.remoteAccess;
   if (!enabled) {
@@ -2309,6 +2462,21 @@ export async function startRemoteServer({
      * never disagree.
      */
     clientSessionId: string;
+    /**
+     * Latest-wins coalescer for this socket's state:updated frames. Created on
+     * the first state send. Keeps at most one state frame in flight and one
+     * newest pending, so a mutation burst never queues N historical snapshots.
+     */
+    stateCoalescer: ReturnType<typeof makeStateCoalescer> | null;
+    /**
+     * When the live backlog first crossed SOCKET_STALL_THRESHOLD_BYTES without
+     * since draining below it, or null while healthy. Drives socketStallDecision
+     * in the periodic sweep — the socket is closed only if this timestamp ages
+     * past the grace window with no drain progress.
+     */
+    backlogSince: number | null;
+    /** Previous live-backlog sample, so the sweep can detect drain progress. */
+    lastLiveBacklog: number;
   };
   const socketRouting = new WeakMap<import("ws").WebSocket, SocketRouting>();
 
@@ -2317,6 +2485,11 @@ export async function startRemoteServer({
   // client that acks the 1013 in time — lets a test prove the timer was cleared,
   // which the routing snapshot alone cannot (routing is gone the moment it closes).
   let congestionTerminateCount = 0;
+
+  // Diagnostics only — frame sizes, coalescing counts, backlog high-water and
+  // drain times. Never a hard pass/fail limit (see the backpressure policy in
+  // plan-remote-payload-slim.md). Logged periodically and on close.
+  const telemetry = createRemoteTelemetry();
 
   // Cheap workspace→profile map for per-frame authz re-checks in
   // routeTerminalFrame (rebuilt on every state:updated, not per frame — getPayload
@@ -2344,6 +2517,9 @@ export async function startRemoteServer({
         closeTimer: null,
         exemptBytes: 0,
         clientSessionId: "",
+        stateCoalescer: null,
+        backlogSince: null,
+        lastLiveBacklog: 0,
       };
       socketRouting.set(socket, routing);
     }
@@ -2400,14 +2576,15 @@ export async function startRemoteServer({
     if (routing?.congested) return;
     const bytes = Buffer.byteLength(data);
     if (routing?.mode === "filtered" && !opts?.exempt) {
-      const decision = terminalBackpressureDecision(
-        routing.exemptBytes || 0,
-        socket.bufferedAmount,
-        bytes,
-        MAX_SOCKET_BUFFER_BYTES,
-      );
+      const buffered = socketBufferedAmount(socket);
+      telemetry.recordFrame(bytes);
+      telemetry.recordBacklog(Math.max(0, buffered - (routing.exemptBytes || 0)));
+      // Memory-safety ceiling ONLY, evaluated on the existing backlog — a single
+      // large frame is never treated as congestion (that was the 2.4.11 loop).
+      // A genuinely stalled socket is caught by the time-based stall sweep.
+      const decision = terminalBackpressureDecision(routing.exemptBytes || 0, buffered, SOCKET_HARD_CEILING_BYTES);
       if (decision.trip) {
-        markCongested(socket, socket.bufferedAmount, bytes);
+        markCongested(socket, buffered, bytes);
         return;
       }
     }
@@ -2419,6 +2596,44 @@ export async function startRemoteServer({
     } else {
       socket.send(data);
     }
+  }
+
+  /**
+   * Send a state:updated frame through the socket's latest-wins coalescer:
+   * exactly one state frame in flight per socket, and if more state arrives
+   * while it is sending, only the newest is kept and sent next. This is the
+   * primary protection against a mutation burst queuing obsolete snapshots.
+   * Unlike ordered streams (terminal/docker/ssh) state has no ordering to
+   * preserve — only the latest revision matters.
+   */
+  function sendStateFrame(socket: import("ws").WebSocket, msg: string): void {
+    if (socket.readyState !== socket.OPEN) return;
+    const routing = routingFor(socket);
+    if (routing.congested) return;
+    if (!routing.stateCoalescer) {
+      routing.stateCoalescer = makeStateCoalescer((data, onDrain) => {
+        // The socket may have congested/closed between enqueue and this
+        // dispatch; drop silently (the coalescer dies with the socket).
+        if (socket.readyState !== socket.OPEN || routing.congested) return;
+        const frameBytes = Buffer.byteLength(data);
+        const buffered = socketBufferedAmount(socket);
+        telemetry.recordFrame(frameBytes);
+        telemetry.recordBacklog(Math.max(0, buffered - (routing.exemptBytes || 0)));
+        if (routing.mode === "filtered") {
+          const decision = terminalBackpressureDecision(routing.exemptBytes || 0, buffered, SOCKET_HARD_CEILING_BYTES);
+          if (decision.trip) {
+            markCongested(socket, buffered, frameBytes);
+            return;
+          }
+        }
+        socket.send(data, () => {
+          telemetry.recordStateSent();
+          onDrain();
+        });
+      });
+    }
+    telemetry.recordStateProduced();
+    if (routing.stateCoalescer.enqueue(msg) === "coalesced") telemetry.recordStateCoalesced();
   }
 
   function broadcast(message: unknown): void {
@@ -2607,7 +2822,7 @@ export async function startRemoteServer({
         const msg = sessionId
           ? JSON.stringify({ type: "state:updated", payload: registry.composePayload(sessionId, stripped) })
           : JSON.stringify({ type: "state:updated", payload: stripped });
-        checkedSend(socket, msg);
+        sendStateFrame(socket, msg);
       }
     }),
     runtime.on("terminal:data", (payload: unknown) => routeTerminalFrame("terminal:data", payload)),
@@ -2852,7 +3067,7 @@ export async function startRemoteServer({
       const baseInitial = stripSecretsForRemote(await runtime.getInitialState());
       if (ws.readyState === ws.OPEN) {
         const initialPayload = wsSessionId ? registry.composePayload(wsSessionId, baseInitial) : baseInitial;
-        checkedSend(ws, JSON.stringify({ type: "state:updated", payload: initialPayload }));
+        sendStateFrame(ws, JSON.stringify({ type: "state:updated", payload: initialPayload }));
       }
     });
   });
@@ -2891,6 +3106,55 @@ export async function startRemoteServer({
   // Ensure the heartbeat doesn't keep the event loop alive on shutdown.
   heartbeat.unref?.();
 
+  // Stall sweep: the ONLY place a healthy socket's backlog is turned into a
+  // close. A filtered socket whose live backlog sits above the watermark
+  // without draining for the grace window is a genuinely stalled consumer —
+  // close it (1013) so it reconnects and recovers via bounded replay. Any
+  // shrinking backlog resets the clock. A single large frame never lands here:
+  // it drains and the backlog returns below the watermark. Drain times are
+  // recorded as telemetry when a backlogged socket clears.
+  const stallSweep = setInterval(() => {
+    const now = Date.now();
+    for (const ws of sockets) {
+      const routing = socketRouting.get(ws);
+      if (!routing || routing.mode !== "filtered" || routing.congested) continue;
+      const liveBacklog = Math.max(0, socketBufferedAmount(ws) - (routing.exemptBytes || 0));
+      telemetry.recordBacklog(liveBacklog);
+      const wasBackloggedSince = routing.backlogSince;
+      const decision = socketStallDecision({
+        liveBacklog,
+        prevLiveBacklog: routing.lastLiveBacklog,
+        backlogSince: routing.backlogSince,
+        now,
+        thresholdBytes: SOCKET_STALL_THRESHOLD_BYTES,
+        graceMs: socketStallGraceMs,
+      });
+      if (wasBackloggedSince !== null && decision.backlogSince === null) {
+        // Backlog cleared this tick — record how long it took to drain.
+        telemetry.recordDrainMs(now - wasBackloggedSince);
+      }
+      routing.backlogSince = decision.backlogSince;
+      routing.lastLiveBacklog = liveBacklog;
+      if (decision.trip) {
+        log.warn("WebSocket stalled — no drain progress over grace window", {
+          sessionRef: remoteSessionRef(socketSession.get(ws) || ""),
+          liveBacklog,
+          graceMs: socketStallGraceMs,
+        });
+        markCongested(ws, liveBacklog, 0);
+      }
+    }
+  }, socketStallSweepMs);
+  stallSweep.unref?.();
+
+  // Periodic telemetry summary — trends, never a gate. Emitted only when there
+  // has been state-delivery activity so an idle server stays quiet.
+  const telemetryLog = setInterval(() => {
+    if (!telemetry.hasActivity()) return;
+    log.debug("remote state delivery telemetry", telemetry.snapshot());
+  }, 60_000);
+  telemetryLog.unref?.();
+
   const listenResult = await new Promise<{ ok: boolean; error?: Error }>((resolve) => {
     server.once("error", (error: Error) => {
       const isPortBusy = (error as NodeJS.ErrnoException).code === "EADDRINUSE" || /EADDRINUSE/.test(error.message);
@@ -2921,6 +3185,8 @@ export async function startRemoteServer({
 
   if (!listenResult.ok) {
     clearInterval(heartbeat);
+    clearInterval(stallSweep);
+    clearInterval(telemetryLog);
     audit.close();
     unsubscribe.forEach((dispose) => dispose());
     wss.close();
@@ -2943,6 +3209,9 @@ export async function startRemoteServer({
   return {
     async close() {
       clearInterval(heartbeat);
+      clearInterval(stallSweep);
+      clearInterval(telemetryLog);
+      if (telemetry.hasActivity()) log.debug("remote state delivery telemetry (final)", telemetry.snapshot());
       registry.stopCleanupSweep();
       audit.close();
       unsubscribe.forEach((dispose) => dispose());
@@ -2968,5 +3237,8 @@ export async function startRemoteServer({
     // server's lifetime. Stays 0 when every congested client acks its 1013 in
     // time (the close handler clears the armed timer).
     _debugCongestionTerminates: () => congestionTerminateCount,
+    // Test-only: current telemetry snapshot (frame sizes, coalescing counts,
+    // backlog high-water, drain times).
+    _debugTelemetry: () => telemetry.snapshot(),
   };
 }
