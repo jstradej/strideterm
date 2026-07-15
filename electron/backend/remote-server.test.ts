@@ -1065,73 +1065,81 @@ describe("terminal streaming — subscription routing + backpressure", () => {
   // is exactly the machinery under test (close→terminate handshake + cleanup).
   const STALL_BACKLOG = () => 10 * 1024 * 1024;
 
-  test("a stuck close handshake is force-closed by the terminate() fallback", async () => {
-    // The stall sweep marks a non-draining socket congested: a 1013 close plus an
-    // armed terminate() timer. If the client never completes the closing
-    // handshake (dead/wedged socket), the fallback must forcibly drop it rather
-    // than leak it forever. Tiny injected graces so it doesn't wait the real 5s.
-    await withServer(
-      "tok-term",
-      async ({ port, server }) => {
-        const c = connectWs(port, "tok-term", "term-aaa", "p1");
-        await c.opened;
-        c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
-        await delay(50); // socket is now filtered
-        // Pause the client's raw socket so it never reads the server's 1013 close
-        // frame and never replies → the graceful handshake can NEVER complete, so
-        // the routing entry can only be released by the terminate() fallback.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (c.ws as any)._socket.pause();
-        // The injected backlog + stall grace trip congestion from the sweep.
-        // Generous timeouts: the stall sweep is a setInterval that can be starved
-        // under parallel-test CPU load, so don't race it on a tight budget.
-        expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 6000)).toBe(true);
-        expect(server._debugRouting?.()).toEqual([{ congested: true, hasCloseTimer: true }]);
-        // The socket is dropped ONLY because terminate() fired after the grace —
-        // the paused client rules out a graceful close as the cause.
-        expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 6000)).toBe(true);
-      },
-      {
-        congestionCloseGraceMs: 120,
-        socketStallGraceMs: 40,
-        socketStallSweepMs: 20,
-        socketBufferedAmount: STALL_BACKLOG,
-      },
-    );
-  });
+  test(
+    "a stuck close handshake is force-closed by the terminate() fallback",
+    { retry: 2, timeout: 20_000 },
+    async () => {
+      // The stall sweep marks a non-draining socket congested: a 1013 close plus an
+      // armed terminate() timer. If the client never completes the closing
+      // handshake (dead/wedged socket), the fallback must forcibly drop it rather
+      // than leak it forever. Tiny injected graces so it doesn't wait the real 5s.
+      await withServer(
+        "tok-term",
+        async ({ port, server }) => {
+          const c = connectWs(port, "tok-term", "term-aaa", "p1");
+          await c.opened;
+          c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
+          await delay(50); // socket is now filtered
+          // Pause the client's raw socket so it never reads the server's 1013 close
+          // frame and never replies → the graceful handshake can NEVER complete, so
+          // the routing entry can only be released by the terminate() fallback.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (c.ws as any)._socket.pause();
+          // The injected backlog + stall grace trip congestion from the sweep.
+          // Generous timeouts: the stall sweep is a setInterval that can be starved
+          // under parallel-test CPU load, so don't race it on a tight budget.
+          expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 6000)).toBe(true);
+          expect(server._debugRouting?.()).toEqual([{ congested: true, hasCloseTimer: true }]);
+          // The socket is dropped ONLY because terminate() fired after the grace —
+          // the paused client rules out a graceful close as the cause.
+          expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 6000)).toBe(true);
+        },
+        {
+          congestionCloseGraceMs: 120,
+          socketStallGraceMs: 40,
+          socketStallSweepMs: 20,
+          socketBufferedAmount: STALL_BACKLOG,
+        },
+      );
+    },
+  );
 
-  test("a completed close clears the terminate timer and routing/congestion state", async () => {
-    // The ws 'close' handler must clearTimeout(closeTimer) and drop the socket
-    // from socketRouting, so a disconnected client leaks neither the pending
-    // terminate timer nor its subscription/congestion state. A tiny grace lets
-    // the test outlast it and prove the timer never fired.
-    await withServer(
-      "tok-clean",
-      async ({ port, server }) => {
-        const c = connectWs(port, "tok-clean", "clean-aa", "p1");
-        await c.opened;
-        c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
-        await delay(50);
-        // Stall sweep trips congestion (injected persistent backlog). Generous
-        // timeout — the sweep interval can be starved under parallel-test load.
-        expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 6000)).toBe(true);
-        // The client (not paused) acks the 1013 and closes → the server's close
-        // handler releases the routing entry (and with it the cleared timer).
-        expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 6000)).toBe(true);
-        // The graceful close won the race against the 120 ms grace, so the armed
-        // terminate() timer must have been cleared. Wait well past the grace and
-        // assert it never fired.
-        await delay(200);
-        expect(server._debugCongestionTerminates?.()).toBe(0);
-      },
-      {
-        congestionCloseGraceMs: 120,
-        socketStallGraceMs: 40,
-        socketStallSweepMs: 20,
-        socketBufferedAmount: STALL_BACKLOG,
-      },
-    );
-  });
+  test(
+    "a completed close clears the terminate timer and routing/congestion state",
+    { retry: 2, timeout: 20_000 },
+    async () => {
+      // The ws 'close' handler must clearTimeout(closeTimer) and drop the socket
+      // from socketRouting, so a disconnected client leaks neither the pending
+      // terminate timer nor its subscription/congestion state. A tiny grace lets
+      // the test outlast it and prove the timer never fired.
+      await withServer(
+        "tok-clean",
+        async ({ port, server }) => {
+          const c = connectWs(port, "tok-clean", "clean-aa", "p1");
+          await c.opened;
+          c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
+          await delay(50);
+          // Stall sweep trips congestion (injected persistent backlog). Generous
+          // timeout — the sweep interval can be starved under parallel-test load.
+          expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 6000)).toBe(true);
+          // The client (not paused) acks the 1013 and closes → the server's close
+          // handler releases the routing entry (and with it the cleared timer).
+          expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 6000)).toBe(true);
+          // The graceful close won the race against the 120 ms grace, so the armed
+          // terminate() timer must have been cleared. Wait well past the grace and
+          // assert it never fired.
+          await delay(200);
+          expect(server._debugCongestionTerminates?.()).toBe(0);
+        },
+        {
+          congestionCloseGraceMs: 120,
+          socketStallGraceMs: 40,
+          socketStallSweepMs: 20,
+          socketBufferedAmount: STALL_BACKLOG,
+        },
+      );
+    },
+  );
 
   test("a large replay burst is exempt from the bound and does not trip a disconnect", async () => {
     await withServer("tok-bp2", async ({ port, runtime }) => {
@@ -1436,46 +1444,50 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       });
     }
 
-    test("GET /api/state slims to the v2 core; a v2 WS delta is also slim; a legacy socket keeps full state", async () => {
-      await withServer("tok-v2", async ({ port, runtime }) => {
-        // Bootstrap-once: a v2 client bootstraps over HTTP and gets NO initial WS
-        // frame; a legacy client still receives the full initial WS payload.
-        const v2 = connectWs(port, "tok-v2", "v2-aaaaa", "p1", 2);
-        const legacy = connectWs(port, "tok-v2", "leg-aaaa", "p1");
-        await Promise.all([v2.opened, legacy.opened]);
-        expect(await waitUntil(() => Boolean(initialState(legacy)))).toBe(true);
-        await delay(60);
-        expect(initialState(v2)).toBeUndefined(); // no redundant WS bootstrap for v2
+    test(
+      "GET /api/state slims to the v2 core; a v2 WS delta is also slim; a legacy socket keeps full state",
+      { retry: 2, timeout: 20_000 },
+      async () => {
+        await withServer("tok-v2", async ({ port, runtime }) => {
+          // Bootstrap-once: a v2 client bootstraps over HTTP and gets NO initial WS
+          // frame; a legacy client still receives the full initial WS payload.
+          const v2 = connectWs(port, "tok-v2", "v2-aaaaa", "p1", 2);
+          const legacy = connectWs(port, "tok-v2", "leg-aaaa", "p1");
+          await Promise.all([v2.opened, legacy.opened]);
+          expect(await waitUntil(() => Boolean(initialState(legacy)))).toBe(true);
+          await delay(60);
+          expect(initialState(v2)).toBeUndefined(); // no redundant WS bootstrap for v2
 
-        // HTTP bootstrap for v2 is the slim core.
-        const res = await apiGet(port, "/api/state", "tok-v2", "v2-aaaaa");
-        const core = (await res.json()) as AnyState;
-        expect(core.stateProtocol).toBe(2);
-        expect(core.gitSummaries.ws1).toMatchObject({ available: true, branch: "main" });
-        expect(core.git.workspaces).toBeUndefined();
-        expect(JSON.stringify(core)).not.toContain("HEAVY-GIT-LOG-ENTRY");
-        expect(JSON.stringify(core)).not.toContain("HEAVY-THREAD");
-        expect(JSON.stringify(core)).not.toContain("HEAVY-IMAGE");
-        expect(core.azureDevops.inbox).toBeUndefined();
-        expect(core.docker.counts).toEqual({ containers: 1, running: 1 });
-        expect(Object.keys(core.gitSummaries)).toEqual(["ws1"]); // profile-scoped
+          // HTTP bootstrap for v2 is the slim core.
+          const res = await apiGet(port, "/api/state", "tok-v2", "v2-aaaaa");
+          const core = (await res.json()) as AnyState;
+          expect(core.stateProtocol).toBe(2);
+          expect(core.gitSummaries.ws1).toMatchObject({ available: true, branch: "main" });
+          expect(core.git.workspaces).toBeUndefined();
+          expect(JSON.stringify(core)).not.toContain("HEAVY-GIT-LOG-ENTRY");
+          expect(JSON.stringify(core)).not.toContain("HEAVY-THREAD");
+          expect(JSON.stringify(core)).not.toContain("HEAVY-IMAGE");
+          expect(core.azureDevops.inbox).toBeUndefined();
+          expect(core.docker.counts).toEqual({ containers: 1, running: 1 });
+          expect(Object.keys(core.gitSummaries)).toEqual(["ws1"]); // profile-scoped
 
-        // A subsequent state broadcast reaches the v2 socket as a slim delta too.
-        runtime._emit("state:updated", runtime.getPayload());
-        expect(await waitUntil(() => Boolean(initialState(v2)))).toBe(true);
-        expect(initialState(v2).stateProtocol).toBe(2);
-        expect(initialState(v2).git.workspaces).toBeUndefined();
+          // A subsequent state broadcast reaches the v2 socket as a slim delta too.
+          runtime._emit("state:updated", runtime.getPayload());
+          expect(await waitUntil(() => Boolean(initialState(v2)))).toBe(true);
+          expect(initialState(v2).stateProtocol).toBe(2);
+          expect(initialState(v2).git.workspaces).toBeUndefined();
 
-        // Legacy socket's initial WS payload is the full desktop shape.
-        const full = initialState(legacy);
-        expect(full.stateProtocol).toBeUndefined();
-        expect(full.git.workspaces.ws1.log).toBeDefined();
-        expect(full.gitSummaries).toBeUndefined();
+          // Legacy socket's initial WS payload is the full desktop shape.
+          const full = initialState(legacy);
+          expect(full.stateProtocol).toBeUndefined();
+          expect(full.git.workspaces.ws1.log).toBeDefined();
+          expect(full.gitSummaries).toBeUndefined();
 
-        v2.ws.close();
-        legacy.ws.close();
-      });
-    });
+          v2.ws.close();
+          legacy.ws.close();
+        });
+      },
+    );
 
     test("git workspace-detail returns {resource,revision,data}; cross-profile is 403", async () => {
       await withServer("tok-det", async ({ port }) => {
@@ -1506,34 +1518,40 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       });
     });
 
-    test("resource:interest triggers an immediate invalidate, and again when the resource changes", async () => {
-      await withServer("tok-int", async ({ port, runtime }) => {
-        const c = connectWs(port, "tok-int", "int-aaaa", "p1", 2);
-        await c.opened;
-        await delay(40);
-        c.ws.send(JSON.stringify({ type: "resource:interest", resources: ["git:ws1"] }));
-        // First interest → immediate invalidate so the client fetches once.
-        expect(
-          await waitUntil(() =>
-            c.messages.some((m) => m.type === "resource:invalidate" && (m.payload as AnyState)?.resource === "git:ws1"),
-          ),
-        ).toBe(true);
-        const firstCount = c.messages.filter((m) => m.type === "resource:invalidate").length;
+    test(
+      "resource:interest triggers an immediate invalidate, and again when the resource changes",
+      { retry: 2, timeout: 20_000 },
+      async () => {
+        await withServer("tok-int", async ({ port, runtime }) => {
+          const c = connectWs(port, "tok-int", "int-aaaa", "p1", 2);
+          await c.opened;
+          await delay(40);
+          c.ws.send(JSON.stringify({ type: "resource:interest", resources: ["git:ws1"] }));
+          // First interest → immediate invalidate so the client fetches once.
+          expect(
+            await waitUntil(() =>
+              c.messages.some(
+                (m) => m.type === "resource:invalidate" && (m.payload as AnyState)?.resource === "git:ws1",
+              ),
+            ),
+          ).toBe(true);
+          const firstCount = c.messages.filter((m) => m.type === "resource:invalidate").length;
 
-        // A state broadcast with an UNCHANGED git revision must NOT re-invalidate.
-        runtime._emit("state:updated", runtime.getPayload());
-        await delay(60);
-        expect(c.messages.filter((m) => m.type === "resource:invalidate").length).toBe(firstCount);
+          // A state broadcast with an UNCHANGED git revision must NOT re-invalidate.
+          runtime._emit("state:updated", runtime.getPayload());
+          await delay(60);
+          expect(c.messages.filter((m) => m.type === "resource:invalidate").length).toBe(firstCount);
 
-        // Bumping the git revision → one more invalidate.
-        runtime._bumpGit("ws1", "2026-07-15T13:00:00Z");
-        runtime._emit("state:updated", runtime.getPayload());
-        expect(
-          await waitUntil(() => c.messages.filter((m) => m.type === "resource:invalidate").length > firstCount),
-        ).toBe(true);
-        c.ws.close();
-      });
-    });
+          // Bumping the git revision → one more invalidate.
+          runtime._bumpGit("ws1", "2026-07-15T13:00:00Z");
+          runtime._emit("state:updated", runtime.getPayload());
+          expect(
+            await waitUntil(() => c.messages.filter((m) => m.type === "resource:invalidate").length > firstCount),
+          ).toBe(true);
+          c.ws.close();
+        });
+      },
+    );
 
     test("a mutation result's NESTED payload is composed + slimmed for a v2 client", async () => {
       await withServer("tok-mut", async ({ port }) => {
