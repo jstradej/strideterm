@@ -13,18 +13,22 @@ type AnyApi = any;
  */
 function makeRemoteTransport(initialPayload: AnyApi) {
   let stateHandler: ((payload: AnyApi) => void) | null = null;
+  let connHandler: ((c: AnyApi) => void) | null = null;
   return {
     isRemote: true,
     getState: vi.fn(() => Promise.resolve(initialPayload)),
     onStateUpdated: (fn: (payload: AnyApi) => void) => {
       stateHandler = fn;
     },
-    onConnectionState: vi.fn(),
+    onConnectionState: (fn: (c: AnyApi) => void) => {
+      connHandler = fn;
+    },
     activateWorkspace: vi.fn(() => Promise.resolve(initialPayload)),
     activateProfile: vi.fn(() => Promise.resolve(initialPayload)),
     activateSession: vi.fn(() => Promise.resolve(initialPayload)),
     // expose for tests that need to push a new payload
     _push: (p: AnyApi) => stateHandler?.(p),
+    _connectionState: (c: AnyApi) => connHandler?.(c),
   };
 }
 
@@ -1038,5 +1042,24 @@ describe("handleBroadcastPayload — remote revision gate (bootstrap→WS handof
     transport._push(remotePayload(6, "v6"));
     await Promise.resolve();
     expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v6");
+  });
+
+  it("resets the baseline on disconnect so a restarted server's low revision is accepted", async () => {
+    const initial = remotePayload(9, "v9");
+    const transport = makeRemoteTransport(initial);
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v9");
+
+    // Connection drops (server about to restart) → the gate baseline resets.
+    transport._connectionState({ connected: false, reconnecting: true });
+
+    // The server restarted: its coreRevision counter is back near 0. Without the
+    // reset this rev-1 snapshot would be dropped as "older" and wedge the client.
+    transport._push(remotePayload(1, "v-after-restart"));
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v-after-restart");
   });
 });

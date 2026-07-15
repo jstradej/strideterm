@@ -1281,6 +1281,12 @@ export const useAppStore = defineStore("app", () => {
         clearRemoteConnectionIssue();
         return;
       }
+      // Connection dropped → forget the revision baseline. The server's
+      // coreRevision counter resets to 0 on restart, so the post-reconnect
+      // bootstrap/stream can carry a LOWER revision than what we last applied;
+      // without this reset the gate would wrongly drop every fresh snapshot and
+      // wedge the client on stale state. A fresh connection starts a new baseline.
+      lastAppliedCoreRevision = -1;
       if ((connection as AnyApi)?.message) setRemoteConnectionIssue((connection as AnyApi).message);
     });
 
