@@ -669,10 +669,19 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     closeCode: () => number | null;
   };
 
-  function connectWs(port: number, auth: string, clientId: string, profileId?: string, sp?: number): WsClient {
+  function connectWs(
+    port: number,
+    auth: string,
+    clientId: string,
+    profileId?: string,
+    sp?: number,
+    opts?: { caps?: string; rev?: number },
+  ): WsClient {
     const q = new URLSearchParams({ token: auth, clientId });
     if (profileId) q.set("profileId", profileId);
     if (sp) q.set("sp", String(sp));
+    if (opts?.caps !== undefined) q.set("caps", opts.caps);
+    if (opts?.rev !== undefined) q.set("rev", String(opts.rev));
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?${q.toString()}`);
     const messages: { type: string; payload?: unknown }[] = [];
     let code: number | null = null;
@@ -1390,6 +1399,17 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       expect(snap.frameSamples).toBe(5);
       expect(t.hasActivity()).toBe(true);
     });
+
+    test("reports the state send rate per minute over elapsed time (injected clock)", () => {
+      let clock = 1_000_000;
+      const t = createRemoteTelemetry(() => clock);
+      // 6 frames actually sent, then 30s elapse → 12 frames/min.
+      for (let i = 0; i < 6; i += 1) t.recordStateSent();
+      clock += 30_000;
+      expect(t.snapshot().sendRatePerMin).toBe(12);
+      // Snapshot is non-mutating: reading it again at the same clock is stable.
+      expect(t.snapshot().sendRatePerMin).toBe(12);
+    });
   });
 
   test("terminal:exit is filtered like data — subscribed sockets only, legacy still broadcast", async () => {
@@ -1590,5 +1610,67 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         c.ws.close();
       });
     });
+
+    test("the v2 core is profile-filtered and secret-stripped, echoing the negotiated caps", async () => {
+      await withServer("tok-core", async ({ port }) => {
+        const res = await apiGet(port, "/api/state", "tok-core", "core-aaa");
+        const core = (await res.json()) as AnyState;
+        // Bare sp=2 (no explicit caps) implies the full supported capability set.
+        expect(core.capabilities).toEqual(["remote-core-v2", "resource-details-v1"]);
+        // appState workspaces filtered to the client's profile (p1); legacy alias gone.
+        expect(core.appState.workspaces.map((w: AnyState) => w.id)).toEqual(["ws1"]);
+        expect(core.appState.projects).toBeUndefined();
+        // The tunnel token that lives in settings.remoteAccess is blanked.
+        expect(core.appState.settings.remoteAccess.token).toBe("");
+        // A per-broadcast revision is present for the bootstrap→WS handoff.
+        expect(typeof core.coreRevision).toBe("number");
+      });
+    });
+
+    test("explicit caps narrow the contract: without remote-core-v2 the client is NOT slimmed", async () => {
+      await withServer("tok-cap", async ({ port }) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/state`, {
+          headers: {
+            Authorization: "Bearer tok-cap",
+            "X-Strideterm-Client-Id": "cap-aaaa",
+            "X-Strideterm-State-Protocol": "2",
+            "X-Strideterm-Capabilities": "resource-details-v1",
+          },
+        });
+        const body = (await res.json()) as AnyState;
+        // No remote-core-v2 → full composed desktop payload, not the slim core.
+        expect(body.stateProtocol).toBeUndefined();
+        expect(body.git.workspaces).toBeDefined();
+        expect(body.gitSummaries).toBeUndefined();
+      });
+    });
+
+    test(
+      "a v2 socket echoing a STALE bootstrap rev gets one catch-up; a current rev gets none",
+      { retry: 2, timeout: 20_000 },
+      async () => {
+        await withServer("tok-rev", async ({ port }) => {
+          // Read the current coreRevision from the HTTP bootstrap.
+          const boot = await apiGet(port, "/api/state", "tok-rev", "rev-boot");
+          const rev = ((await boot.json()) as AnyState).coreRevision as number;
+
+          // Stale client (rev < current) → server sends ONE catch-up state frame
+          // so it never misses a change that landed between bootstrap and connect.
+          const stale = connectWs(port, "tok-rev", "rev-stale", "p1", 2, { rev: rev - 1 });
+          await stale.opened;
+          expect(await waitUntil(() => Boolean(initialState(stale)))).toBe(true);
+          expect(initialState(stale).stateProtocol).toBe(2);
+
+          // Current client (rev == current) → no catch-up (bootstrap-once holds).
+          const current = connectWs(port, "tok-rev", "rev-curr", "p1", 2, { rev });
+          await current.opened;
+          await delay(80);
+          expect(initialState(current)).toBeUndefined();
+
+          stale.ws.close();
+          current.ws.close();
+        });
+      },
+    );
   });
 });

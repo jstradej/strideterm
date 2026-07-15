@@ -141,6 +141,39 @@ describe("remote transport endpoint routing", () => {
     expect(states.length).toBeGreaterThan(0);
   });
 
+  it("revalidates GETs with If-None-Match and reuses the cached body on 304", async () => {
+    let call = 0;
+    const sentIfNoneMatch: (string | null)[] = [];
+    globalThis.fetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const headers = (init?.headers || {}) as Record<string, string>;
+      sentIfNoneMatch.push(headers["If-None-Match"] ?? null);
+      call += 1;
+      if (call === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ hello: "world", coreRevision: 1 }),
+          headers: { get: (k: string) => (k.toLowerCase() === "etag" ? '"v1"' : null) },
+        } as unknown as Response;
+      }
+      // Second GET carries If-None-Match — respond 304 (no body).
+      return {
+        ok: false,
+        status: 304,
+        json: async () => ({}),
+        headers: { get: () => null },
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const transport = createRemoteTransport();
+    const first = await transport.getState();
+    const second = await transport.getState();
+
+    expect(sentIfNoneMatch[0]).toBeNull(); // first request has nothing to revalidate
+    expect(sentIfNoneMatch[1]).toBe('"v1"'); // second request offers the stored ETag
+    expect(second).toEqual(first); // 304 → the cached body is reused
+  });
+
   it("queues terminal messages while reconnecting and flushes them on open", () => {
     vi.useFakeTimers();
     const transport = createRemoteTransport();

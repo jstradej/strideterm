@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { effectScope, ref } from "vue";
 import { useRemoteDetailsStore } from "./remote-details.js";
@@ -126,6 +126,75 @@ describe("remote-details store", () => {
     // docker stays cached (interested); the map is bounded.
     expect(store.get("docker")).not.toBeNull();
     expect((store._cache as unknown as Map<string, unknown>).size).toBeLessThanOrEqual(48);
+  });
+
+  it("evicts a cached resource once it ages past the lifetime bound", async () => {
+    const t = fakeTransport();
+    const store = useRemoteDetailsStore();
+    let clock = 0;
+    store._resetForTest(() => clock);
+    store.init(t.api);
+    await store.fetchDetail("git:a"); // cached at t=0, never interested
+    expect(store.get("git:a")).not.toBeNull();
+    clock = 5 * 60_000 + 1; // advance past CACHE_MAX_AGE_MS
+    await store.fetchDetail("git:b"); // any fetch runs eviction → aged git:a pruned
+    expect(store.get("git:a")).toBeNull();
+    expect(store.get("git:b")).not.toBeNull();
+  });
+
+  it("retries a failed fetch of a still-interested resource with backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const api = {
+        isRemote: true,
+        onResourceInvalidate: () => {},
+        subscribeResources: () => {},
+        fetchResourceDetail: async (resource: string) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("transient");
+          return { resource, revision: "r1", data: { ok: true } };
+        },
+      } as unknown as Transport;
+      const store = useRemoteDetailsStore();
+      store._resetForTest();
+      store.init(api);
+      store.addInterest("docker"); // first fetch fails → schedules a retry
+      await vi.advanceTimersByTimeAsync(0); // let the initial fetch reject
+      expect(store.get("docker")).toBeNull();
+      await vi.advanceTimersByTimeAsync(600); // 500ms retry timer fires → succeeds
+      expect(attempts).toBeGreaterThanOrEqual(2);
+      expect(store.get("docker")).toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops retrying once a resource is no longer interested", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const api = {
+        isRemote: true,
+        onResourceInvalidate: () => {},
+        subscribeResources: () => {},
+        fetchResourceDetail: async () => {
+          attempts += 1;
+          throw new Error("always fails");
+        },
+      } as unknown as Transport;
+      const store = useRemoteDetailsStore();
+      store._resetForTest();
+      store.init(api);
+      store.addInterest("docker");
+      await vi.advanceTimersByTimeAsync(0); // initial fetch fails → retry scheduled
+      const afterFirst = attempts;
+      store.removeInterest("docker"); // pane unmounts → pending retry is cleared
+      await vi.advanceTimersByTimeAsync(10_000); // no further attempts
+      expect(attempts).toBe(afterFirst);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

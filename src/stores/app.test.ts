@@ -998,3 +998,45 @@ describe("useAppStore — cross-profile notification jump confirmation logic", (
     expect(result.activateWorkspaceCalled).toBe(false);
   });
 });
+
+describe("handleBroadcastPayload — remote revision gate (bootstrap→WS handoff)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    // No Electron global — the remote transport drives isRemoteTransport.
+    (window as AnyApi).strideterm = undefined;
+  });
+
+  function remotePayload(coreRevision: number, appVersion: string): AnyApi {
+    return makeBasePayload({
+      meta: { appVersion, platform: "test", repositoryUrl: "", versionCheck: {}, recoveryCandidates: [] },
+      coreRevision,
+      remoteClient: { id: "c1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },
+    });
+  }
+
+  it("applies only strictly-newer coreRevisions; drops stale/out-of-order snapshots", async () => {
+    const initial = remotePayload(5, "v5");
+    const transport = makeRemoteTransport(initial);
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    // Bootstrap applied revision 5.
+    expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v5");
+
+    // A stale broadcast (rev 4, e.g. one that raced the bootstrap) is dropped.
+    transport._push(remotePayload(4, "v4"));
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v5");
+
+    // A broadcast at the same revision is also dropped (idempotent).
+    transport._push(remotePayload(5, "v5-dupe"));
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v5");
+
+    // A strictly-newer broadcast (rev 6) is applied.
+    transport._push(remotePayload(6, "v6"));
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v6");
+  });
+});
