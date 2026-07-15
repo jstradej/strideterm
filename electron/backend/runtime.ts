@@ -4825,13 +4825,29 @@ export async function createRuntime({
         // panes sit empty for the seconds it takes those refreshes to finish
         // — or forever if one of them hangs (network, broken git repo).
         ensureVisibleSession();
-        if (findWorkspace(getState(), getState().activeWorkspaceId)?.kind === "docker") {
-          await refreshDocker();
-        }
-        await refreshGit(getState().activeWorkspaceId);
-        await syncWorktrees();
+        // Return the current core IMMEDIATELY (plan §11 / Phase 4): a bootstrap
+        // or reconnect must not block on git/docker/worktree refreshes. Fire
+        // them in the background — git and docker emit "updated" → broadcastState
+        // on their own, and we broadcast once more after worktrees settle — so
+        // the client receives the fresher revisions as WS deltas / resource
+        // invalidations rather than waiting for them here.
+        const activeWorkspaceId = getState().activeWorkspaceId;
+        void (async () => {
+          try {
+            if (findWorkspace(getState(), activeWorkspaceId)?.kind === "docker") {
+              await refreshDocker();
+            }
+            await refreshGit(activeWorkspaceId);
+            await syncWorktrees();
+            broadcastState();
+          } catch (err) {
+            log.warn("getInitialState: background refresh failed", { err: (err as Error)?.message });
+          }
+        })();
         const payload = getPayload();
-        log.info("initial state ready", { workspaceCount: payload.appState?.workspaces?.length ?? 0 });
+        log.info("initial state ready (core immediate, refreshes async)", {
+          workspaceCount: payload.appState?.workspaces?.length ?? 0,
+        });
         return payload;
       } catch (error) {
         log.error("getInitialState failed", { err: (error as Error).message });

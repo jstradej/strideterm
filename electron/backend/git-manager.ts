@@ -160,6 +160,34 @@ interface WorkspaceRef {
   [key: string]: unknown;
 }
 
+/**
+ * Heavy per-root git snapshot fields that a multi-root workspace map must NOT
+ * duplicate at the entry top level — they are always read through the resolved
+ * root (`roots[activeRoot]`), never off the top level of a multi-root entry.
+ * Stripping them here avoids carrying the primary root's log/diffs/worktree
+ * lists twice.
+ */
+const HEAVY_SNAPSHOT_FIELDS = [
+  "log",
+  "compareWithBase",
+  "status",
+  "staged",
+  "unstaged",
+  "untracked",
+  "changes",
+  "siblingWorktrees",
+  "branchNames",
+] as const;
+
+function omitHeavySnapshotFields(snapshot: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(snapshot)) {
+    if ((HEAVY_SNAPSHOT_FIELDS as readonly string[]).includes(key)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 export class GitManager extends EventEmitter {
   snapshots: Map<string, Record<string, unknown>>;
   execGitImpl: ExecGitImpl | null;
@@ -316,8 +344,14 @@ export class GitManager extends EventEmitter {
             if (!primaryRoot) primaryRoot = rp;
           }
         }
+        // Back-compat: expose the primary root's fields at the top level, but
+        // NOT its heavy per-root arrays (log, diffs, worktree lists…). Those are
+        // only ever read through the resolved root (`roots[activeRoot]`), so
+        // duplicating them here doubled the primary snapshot's size for every
+        // multi-root workspace. Keep the scalar/summary fields for any incidental
+        // top-level access; the heavy data lives once, in `roots[primaryRoot]`.
         result[workspaceId] = {
-          ...primarySnapshot, // back-compat: duplicate primary fields at top level
+          ...omitHeavySnapshotFields(primarySnapshot),
           primaryRoot,
           roots,
         };

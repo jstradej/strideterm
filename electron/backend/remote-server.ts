@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import {
@@ -585,7 +586,18 @@ interface RemoteAdaptContext {
   protocol: number;
   sessionId: string;
   registry: RemoteClientRegistry;
+  /** Request method, so ETag/304 applies only to idempotent GETs. */
+  method?: string;
+  /** Accept-Encoding, for opportunistic Brotli/gzip of bootstrap/detail JSON. */
+  acceptEncoding?: string;
+  /** If-None-Match, for a 304 on an unchanged detail refetch. */
+  ifNoneMatch?: string;
 }
+
+// Only compress JSON above this size — below it the framing/CPU overhead of
+// gzip/brotli outweighs the win. The slim core + detail bodies that matter for
+// bandwidth are comfortably above this; a `{ ok: true }` is not.
+const JSON_COMPRESS_MIN_BYTES = 1024;
 
 /**
  * The one remote response adapter. Given any runtime result, it:
@@ -631,10 +643,47 @@ function requestProtocol(requestUrl: string, headers: IncomingMessage["headers"]
 type ResponseWithCtx = ServerResponse & { __remoteCtx?: RemoteAdaptContext };
 
 function json(response: ServerResponse, statusCode: number, body: unknown): void {
-  writeHead(response, statusCode, { "Content-Type": "application/json; charset=utf-8" });
   const ctx = (response as ResponseWithCtx).__remoteCtx;
   const adapted = ctx ? adaptRemoteResponse(body, ctx) : stripSecretsForRemote(body);
-  response.end(JSON.stringify(adapted));
+  const raw = JSON.stringify(adapted);
+  const headers: Record<string, string> = { "Content-Type": "application/json; charset=utf-8" };
+
+  // ETag/304 for idempotent GETs (bootstrap /api/state, detail refetches): a
+  // client that already holds the current body sends If-None-Match and we skip
+  // re-sending it. Supplementary — correctness never depends on it.
+  if (ctx?.method === "GET" && statusCode === 200) {
+    const etag = `"${createHash("sha1").update(raw).digest("base64")}"`;
+    headers.ETag = etag;
+    headers["Cache-Control"] = "no-cache"; // must revalidate, but 304 is allowed
+    if (ctx.ifNoneMatch && ctx.ifNoneMatch === etag) {
+      writeHead(response, 304, headers);
+      response.end();
+      return;
+    }
+  }
+
+  const bodyBuf = Buffer.from(raw, "utf8");
+  const encoding = pickEncoding(ctx?.acceptEncoding, bodyBuf.length);
+  if (encoding) {
+    const compressed = encoding === "br" ? brotliCompressSync(bodyBuf) : gzipSync(bodyBuf);
+    headers["Content-Encoding"] = encoding;
+    headers.Vary = "Accept-Encoding";
+    writeHead(response, statusCode, headers);
+    response.end(compressed);
+    return;
+  }
+  writeHead(response, statusCode, headers);
+  response.end(bodyBuf);
+}
+
+/** Choose a supported content encoding for a JSON body, or "" for none. Brotli
+ *  preferred (better ratio on JSON) when the client accepts it. */
+function pickEncoding(acceptEncoding: string | undefined, byteLength: number): "" | "br" | "gzip" {
+  if (byteLength < JSON_COMPRESS_MIN_BYTES) return "";
+  const accept = (acceptEncoding || "").toLowerCase();
+  if (accept.includes("br")) return "br";
+  if (accept.includes("gzip")) return "gzip";
+  return "";
 }
 
 const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -2117,6 +2166,13 @@ export async function startRemoteServer({
         protocol: requestProtocol(requestUrl, request.headers),
         sessionId: apiSessionId,
         registry,
+        method: request.method,
+        acceptEncoding: Array.isArray(request.headers["accept-encoding"])
+          ? request.headers["accept-encoding"][0]
+          : request.headers["accept-encoding"],
+        ifNoneMatch: Array.isArray(request.headers["if-none-match"])
+          ? request.headers["if-none-match"][0]
+          : request.headers["if-none-match"],
       };
 
       // Slim-core detail resources — on demand, profile-authorized. Each maps a

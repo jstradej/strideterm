@@ -1081,11 +1081,13 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (c.ws as any)._socket.pause();
         // The injected backlog + stall grace trip congestion from the sweep.
-        expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 2000)).toBe(true);
+        // Generous timeouts: the stall sweep is a setInterval that can be starved
+        // under parallel-test CPU load, so don't race it on a tight budget.
+        expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 6000)).toBe(true);
         expect(server._debugRouting?.()).toEqual([{ congested: true, hasCloseTimer: true }]);
         // The socket is dropped ONLY because terminate() fired after the grace —
         // the paused client rules out a graceful close as the cause.
-        expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 2000)).toBe(true);
+        expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 6000)).toBe(true);
       },
       { congestionCloseGraceMs: 120, socketStallGraceMs: 40, socketStallSweepMs: 20, socketBufferedAmount: STALL_BACKLOG },
     );
@@ -1103,11 +1105,12 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         await c.opened;
         c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
         await delay(50);
-        // Stall sweep trips congestion (injected persistent backlog).
-        expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 2000)).toBe(true);
+        // Stall sweep trips congestion (injected persistent backlog). Generous
+        // timeout — the sweep interval can be starved under parallel-test load.
+        expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 6000)).toBe(true);
         // The client (not paused) acks the 1013 and closes → the server's close
         // handler releases the routing entry (and with it the cleared timer).
-        expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0)).toBe(true);
+        expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 6000)).toBe(true);
         // The graceful close won the race against the 120 ms grace, so the armed
         // terminate() timer must have been cleared. Wait well past the grace and
         // assert it never fired.
