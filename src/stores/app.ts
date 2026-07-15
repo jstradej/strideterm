@@ -67,6 +67,22 @@ export const useAppStore = defineStore("app", () => {
   // --- Server payload (shallowRef for performance — never deeply reactive) ---
   const payload = shallowRef<StatePayload | null>(null);
 
+  // Bootstrap→WS handoff (remote slim core): apply a broadcast snapshot only when
+  // its coreRevision is newer than the last one applied. The HTTP bootstrap sets
+  // the baseline, so the post-bootstrap WS stream provably applies only newer
+  // state and a snapshot that raced the bootstrap (or arrived out of order after
+  // a reconnect) is dropped rather than stomping fresher state. Non-remote
+  // payloads and legacy cores (no coreRevision) are never gated.
+  let lastAppliedCoreRevision = -1;
+  function acceptCoreRevision(next: unknown): boolean {
+    if (!isRemoteTransport.value) return true;
+    const rev = (next as AnyApi)?.coreRevision;
+    if (typeof rev !== "number") return true;
+    if (rev <= lastAppliedCoreRevision) return false;
+    lastAppliedCoreRevision = rev;
+    return true;
+  }
+
   // --- UI state ---
   const activeViewId = ref<string | null>(null);
   const activeSessionId = ref<string | null>(null);
@@ -776,6 +792,10 @@ export const useAppStore = defineStore("app", () => {
 
   // --- Broadcast handler ---
   function handleBroadcastPayload(nextPayload: StatePayload): void {
+    // Drop a stale/out-of-order remote snapshot before any side effect — a
+    // snapshot older than what we've already applied must not drive activation
+    // completion or overwrite fresher state (bootstrap→WS handoff).
+    if (!acceptCoreRevision(nextPayload)) return;
     const pendingWsId = pendingWorkspaceActivationId.value;
     const isBootstrap = Boolean((nextPayload as AnyApi)?.meta?.bootstrap);
 
@@ -1251,7 +1271,10 @@ export const useAppStore = defineStore("app", () => {
     // run before any pane mounts so interest declarations reach the transport.
     useRemoteDetailsStore().init(api);
 
-    api.onStateUpdated((nextPayload) => handleBroadcastPayload(nextPayload));
+    // The transport hands us either a full StatePayload (desktop / legacy) or a
+    // slim RemoteStateV2 core; the store adapts both through its transport-aware
+    // accessors, so this single boundary cast is where the two shapes converge.
+    api.onStateUpdated((nextPayload) => handleBroadcastPayload(nextPayload as StatePayload));
 
     api.onConnectionState?.((connection) => {
       if ((connection as AnyApi)?.connected) {
@@ -1301,9 +1324,13 @@ export const useAppStore = defineStore("app", () => {
           }
         }
 
-        payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(p as StatePayload) as AnyApi) as StatePayload;
-        // Seed cache with the initial workspace state on bootstrap
-        _cacheCurrentWorkspace();
+        // Apply the bootstrap snapshot only if a WS frame hasn't already applied
+        // newer state (records the baseline revision for the handoff gate).
+        if (acceptCoreRevision(p)) {
+          payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(p as StatePayload) as AnyApi) as StatePayload;
+          // Seed cache with the initial workspace state on bootstrap
+          _cacheCurrentWorkspace();
+        }
         // Show recovery dialog if there are crash-recovery candidates.
         // The dialog is the only resume path — silent auto-resume was unreliable.
         const candidates: RecoveryCandidate[] = (p?.meta?.recoveryCandidates as RecoveryCandidate[]) ?? [];

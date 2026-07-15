@@ -30,6 +30,20 @@ interface CachedDetail {
 /** Max cached detail resources kept alive; currently-interested resources are
  *  never evicted. Reopening an evicted pane refetches it. */
 const MAX_CACHED = 48;
+/** Lifetime bound: a cached detail older than this that is no longer interested
+ *  is dropped so the cache never holds indefinitely-stale data. Interested
+ *  resources are revalidated by invalidations and never age out. */
+const CACHE_MAX_AGE_MS = 5 * 60_000;
+/** How often the idle sweep prunes aged-out, uninterested entries (so lifetime
+ *  is bounded even when no new fetch triggers eviction). */
+const CACHE_SWEEP_MS = 60_000;
+/** Retry schedule for a failed fetch of a still-visible resource: without it a
+ *  transient error would leave a mounted pane blank forever (no invalidation is
+ *  coming for an unchanged resource). Bounded so a persistently-failing resource
+ *  stops hammering the server. */
+const MAX_FETCH_RETRIES = 4;
+const RETRY_BASE_MS = 500;
+const RETRY_MAX_MS = 8_000;
 
 export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
   let api: Transport | null = null;
@@ -41,6 +55,11 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
   // resource; it stays interested until the last one unmounts.
   const interestCounts = new Map<string, number>();
   const interests = new Set<string>();
+  // Pending retry timers + attempt counts for resources whose fetch failed while
+  // still visible.
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const retryCounts = new Map<string, number>();
+  let sweepTimer: ReturnType<typeof setInterval> | null = null;
   // Fake clock injectable in tests (Date.now unavailable in some harnesses).
   let now = (): number => Date.now();
 
@@ -49,6 +68,10 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
     enabled = Boolean(transport.isRemote);
     if (!enabled) return;
     transport.onResourceInvalidate?.((msg) => void onInvalidate(msg));
+    if (!sweepTimer) {
+      sweepTimer = setInterval(pruneExpired, CACHE_SWEEP_MS);
+      (sweepTimer as { unref?: () => void }).unref?.();
+    }
   }
 
   /** Test seam: inject a deterministic clock + reset. */
@@ -58,7 +81,56 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
     cache.value = new Map();
     interestCounts.clear();
     interests.clear();
+    for (const t of retryTimers.values()) clearTimeout(t);
+    retryTimers.clear();
+    retryCounts.clear();
+    if (sweepTimer) {
+      clearInterval(sweepTimer);
+      sweepTimer = null;
+    }
     if (clock) now = clock;
+  }
+
+  function clearRetry(resource: string): void {
+    const t = retryTimers.get(resource);
+    if (t) clearTimeout(t);
+    retryTimers.delete(resource);
+    retryCounts.delete(resource);
+  }
+
+  /** Schedule a bounded, backing-off refetch for a still-interested resource
+   *  whose fetch just failed. Correctness never depends on it (reopening the
+   *  pane refetches too); it only fills a blank visible pane after a transient
+   *  error. */
+  function scheduleRetry(resource: string): void {
+    if (!enabled || !interests.has(resource)) return;
+    const attempt = (retryCounts.get(resource) || 0) + 1;
+    if (attempt > MAX_FETCH_RETRIES) return;
+    retryCounts.set(resource, attempt);
+    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
+    const existing = retryTimers.get(resource);
+    if (existing) clearTimeout(existing);
+    retryTimers.set(
+      resource,
+      setTimeout(() => {
+        retryTimers.delete(resource);
+        if (interests.has(resource)) void fetchDetail(resource);
+      }, delay),
+    );
+  }
+
+  /** Drop aged-out, no-longer-interested entries (lifetime bound). */
+  function pruneExpired(): void {
+    const cutoff = now() - CACHE_MAX_AGE_MS;
+    let changed = false;
+    const next = new Map(cache.value);
+    for (const [key, entry] of next) {
+      if (!interests.has(key) && entry.fetchedAt < cutoff) {
+        next.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) cache.value = next;
   }
 
   /** Cached detail data for a resource, or null when not (yet) loaded. */
@@ -97,6 +169,7 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
     if (n <= 0) {
       interestCounts.delete(resource);
       interests.delete(resource);
+      clearRetry(resource); // stop retrying a no-longer-visible resource
       sendInterest();
     } else {
       interestCounts.set(resource, n);
@@ -142,13 +215,23 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
       next.set(resource, { revision: res.revision, data: res.data, fetchedAt: now() });
       evict(next);
       cache.value = next;
+      clearRetry(resource); // succeeded — reset the retry backoff
     } catch {
-      // Transient failure — a later invalidate (or the next interest cycle)
-      // retries. Correctness never depends on this fetch succeeding.
+      // Transient failure. If the resource is still visible, retry with backoff
+      // so its pane doesn't stay blank (no invalidation is coming for an
+      // unchanged resource). Correctness never depends on this succeeding —
+      // reopening the pane refetches too.
+      scheduleRetry(resource);
     }
   }
 
   function evict(map: Map<string, CachedDetail>): void {
+    // Lifetime bound first: drop aged-out, uninterested entries regardless of
+    // count so the cache never holds indefinitely-stale data.
+    const cutoff = now() - CACHE_MAX_AGE_MS;
+    for (const [key, entry] of [...map.entries()]) {
+      if (!interests.has(key) && entry.fetchedAt < cutoff) map.delete(key);
+    }
     if (map.size <= MAX_CACHED) return;
     const evictable = [...map.entries()]
       .filter(([key]) => !interests.has(key))

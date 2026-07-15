@@ -6,8 +6,18 @@ import type {
   TerminalReplayPayload,
   TerminalExitPayload,
 } from "../electron/shared/ipc-bridge.js";
+import type { RemoteStateV2 } from "../electron/shared/types/state.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "../electron/shared/types/ssh.js";
+
+/**
+ * The state shape a client actually receives: the full desktop `StatePayload`
+ * over Electron IPC / a legacy remote page, OR the slim `RemoteStateV2` core over
+ * the protocol-2 remote transport. The remote transport is honest about this —
+ * it does NOT cast the slim core to `StatePayload`; the app store adapts either
+ * shape through its transport-aware accessors (one adaptive renderer).
+ */
+export type CoreState = StatePayload | RemoteStateV2;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,7 +49,7 @@ export interface ResourceInvalidate {
 }
 
 interface EventHub {
-  stateUpdated: Set<Handler<StatePayload>>;
+  stateUpdated: Set<Handler<CoreState>>;
   terminalData: Set<Handler<TerminalDataPayload>>;
   terminalReplay: Set<Handler<TerminalReplayPayload>>;
   terminalExit: Set<Handler<TerminalExitPayload>>;
@@ -62,7 +72,10 @@ interface EventHub {
  *  not present in the remote transport and are therefore excluded.
  */
 export interface Transport extends Partial<
-  Omit<StridetermAPI, "onConnectionState" | "onSwitchWorkspace" | "onSwitchProject" | "onSwitchTab">
+  Omit<
+    StridetermAPI,
+    "onConnectionState" | "onSwitchWorkspace" | "onSwitchProject" | "onSwitchTab" | "getState" | "onStateUpdated"
+  >
 > {
   isRemote: boolean;
   /** Manual state refresh — refetches /api/state and broadcasts the result.
@@ -76,8 +89,8 @@ export interface Transport extends Partial<
   /** Legacy reset method not yet promoted to StridetermAPI */
   resetAgentPrompts?: () => Promise<unknown>;
   // Core required methods:
-  getState: () => Promise<StatePayload>;
-  onStateUpdated: (handler: (payload: StatePayload) => void) => void;
+  getState: () => Promise<CoreState>;
+  onStateUpdated: (handler: (payload: CoreState) => void) => void;
   onTerminalData: (handler: (payload: TerminalDataPayload) => void) => void;
   /** Server-pushed replay for a newly subscribed session (remote only). */
   onTerminalReplay: (handler: (payload: TerminalReplayPayload) => void) => void;
@@ -316,6 +329,23 @@ export function createRemoteTransport(): Transport {
   // serves this tab the RemoteStateV2 core + detail resources rather than a full
   // desktop payload.
   const STATE_PROTOCOL = 2;
+  // Capabilities this client can use. Advertised alongside the protocol version
+  // (WS `?caps=`, HTTP `X-Strideterm-Capabilities`); the server intersects them
+  // with what it supports and selects the response contract accordingly.
+  const STATE_CAPABILITIES = ["remote-core-v2", "resource-details-v1"];
+  // Highest coreRevision this client has received (bootstrap or WS). Echoed back
+  // on the WS `?rev=` so a reconnecting socket only gets a catch-up when the
+  // server has newer state (bootstrap→WS handoff). -1 until the first snapshot.
+  let lastCoreRevision = -1;
+  function noteCoreRevision(state: unknown): void {
+    const rev = (state as { coreRevision?: unknown })?.coreRevision;
+    if (typeof rev === "number" && rev > lastCoreRevision) lastCoreRevision = rev;
+  }
+  // Per-path ETag cache for GET revalidation (bootstrap /api/state + detail
+  // refetches). We send If-None-Match and, on a 304, reuse the cached body — the
+  // server skips re-serializing/re-sending an unchanged resource. Supplementary:
+  // correctness never depends on it (a cache miss just refetches in full).
+  const etagCache = new Map<string, { etag: string; body: unknown }>();
 
   function buildWsUrl(): string {
     // After the share-URL bootstrap, the token is gone from the URL and a
@@ -328,6 +358,11 @@ export function createRemoteTransport(): Transport {
     if (token) wsQuery.set("token", token);
     wsQuery.set("clientId", remoteClientId);
     wsQuery.set("sp", String(STATE_PROTOCOL));
+    wsQuery.set("caps", STATE_CAPABILITIES.join(","));
+    // Only once we have a bootstrap revision — the first connect omits it so the
+    // server holds bootstrap-once (no redundant initial frame) and lets the HTTP
+    // /api/state bootstrap deliver the first snapshot.
+    if (lastCoreRevision >= 0) wsQuery.set("rev", String(lastCoreRevision));
     const wsSuffix = wsQuery.toString();
     return `${protocol}//${window.location.host}/ws${wsSuffix ? `?${wsSuffix}` : ""}`;
   }
@@ -345,7 +380,8 @@ export function createRemoteTransport(): Transport {
   function refreshStateAfterReconnect(): void {
     void fetchJson("/api/state")
       .then((payload) => {
-        listeners.stateUpdated.forEach((handler) => handler(payload as StatePayload));
+        noteCoreRevision(payload);
+        listeners.stateUpdated.forEach((handler) => handler(payload as CoreState));
       })
       .catch(() => {
         // fetchJson already emits the remote connection issue.
@@ -375,7 +411,8 @@ export function createRemoteTransport(): Transport {
     const message = JSON.parse(event.data as string) as { type: string; payload: unknown };
     if (message.type === "state:updated") {
       emitConnectionState({ connected: true, message: "" });
-      listeners.stateUpdated.forEach((handler) => handler(message.payload as StatePayload));
+      noteCoreRevision(message.payload);
+      listeners.stateUpdated.forEach((handler) => handler(message.payload as CoreState));
     }
     if (message.type === "terminal:replay") {
       listeners.terminalReplay.forEach((handler) => handler(message.payload as TerminalReplayPayload));
@@ -589,9 +626,15 @@ export function createRemoteTransport(): Transport {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     headers["X-Strideterm-Client-Id"] = remoteClientId;
     headers["X-Strideterm-State-Protocol"] = String(STATE_PROTOCOL);
+    headers["X-Strideterm-Capabilities"] = STATE_CAPABILITIES.join(",");
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
+    // GET revalidation: offer the ETag we last saw for this path so the server
+    // can answer 304 (see json()/ETag in remote-server.ts). Never for POSTs.
+    const isGet = !payload;
+    const cachedEntry = isGet ? etagCache.get(pathname) : undefined;
+    if (cachedEntry) headers["If-None-Match"] = cachedEntry.etag;
 
     let response: Response;
     try {
@@ -609,6 +652,12 @@ export function createRemoteTransport(): Transport {
       throw error;
     }
 
+    // 304 Not Modified — the resource is unchanged; reuse the cached body.
+    if (response.status === 304 && cachedEntry) {
+      emitConnectionState({ connected: true, message: "" });
+      return cachedEntry.body;
+    }
+
     if (!response.ok) {
       const error = createRemoteIssue({
         kind: "http",
@@ -620,7 +669,12 @@ export function createRemoteTransport(): Transport {
     }
 
     emitConnectionState({ connected: true, message: "" });
-    return response.json() as Promise<unknown>;
+    const body = (await response.json()) as unknown;
+    // Remember the ETag so the next GET of this path can revalidate. Optional
+    // chaining guards environments/mocks whose Response omits `headers`.
+    const etag = isGet ? (response.headers?.get?.("ETag") ?? null) : null;
+    if (etag) etagCache.set(pathname, { etag, body });
+    return body;
   }
 
   function send(message: WsMessage): void {
@@ -661,7 +715,8 @@ export function createRemoteTransport(): Transport {
         }
       }
       try {
-        const payload = (await fetchJson("/api/state")) as StatePayload;
+        const payload = (await fetchJson("/api/state")) as CoreState;
+        noteCoreRevision(payload);
         emitConnectionState({ connected: true, message: "" });
         listeners.stateUpdated.forEach((handler) => handler(payload));
       } catch {
@@ -677,7 +732,11 @@ export function createRemoteTransport(): Transport {
       window.open(nextUrl, "_blank", "noopener,noreferrer");
       return Promise.resolve();
     },
-    getState: () => fetchJson("/api/state") as Promise<StatePayload>,
+    getState: async () => {
+      const state = (await fetchJson("/api/state")) as CoreState;
+      noteCoreRevision(state);
+      return state;
+    },
     activateProject: (projectId) => fetchJson("/api/project/activate", { projectId }),
     activateSession: (sessionId) => {
       // sessionId format is "workspaceId:panelId" — derive workspaceId from it.
@@ -965,7 +1024,7 @@ export function createRemoteTransport(): Transport {
     onTerminalInputBlocked: (handler: Handler<{ sessionId: string; ownerLabel: string }>) => {
       listeners.terminalInputBlocked.add(handler);
     },
-    onStateUpdated: (handler: Handler<StatePayload>) => listeners.stateUpdated.add(handler),
+    onStateUpdated: (handler: Handler<CoreState>) => listeners.stateUpdated.add(handler),
     onTerminalData: (handler: Handler<TerminalDataPayload>) => listeners.terminalData.add(handler),
     onTerminalReplay: (handler: Handler<TerminalReplayPayload>) => listeners.terminalReplay.add(handler),
     onTerminalExit: (handler: Handler<TerminalExitPayload>) => listeners.terminalExit.add(handler),

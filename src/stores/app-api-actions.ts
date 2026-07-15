@@ -49,7 +49,19 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type AnyApi = any;
 
+  /**
+   * Adopt a mutation/refresh response into the reactive state.
+   *
+   * On the REMOTE slim core this is a deliberate no-op: a mutation must not
+   * replace the whole payload after every button click (the slim contract). The
+   * server broadcasts the new core (state:updated, newer coreRevision) and the
+   * relevant per-resource invalidations right after the mutation, and the app
+   * store applies those — so the renderer waits for the targeted update rather
+   * than swapping its entire state to a response it would immediately have
+   * overwritten. Desktop keeps adopting its full IPC payload for immediacy.
+   */
   function setPayload(nextPayload: StatePayload): void {
+    if (ctx.getApi().isRemote) return;
     if (ctx.adoptPayload) {
       ctx.adoptPayload(nextPayload);
       return;
@@ -150,12 +162,12 @@ export function createApiActions(ctx: ApiActionsCtx) {
       danger: true,
     });
     if (!confirmed) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteAzureConnection(connectionId)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).deleteAzureConnection(connectionId)) as StatePayload);
   }
 
   async function saveAzureConnection(draft: unknown): Promise<void> {
     const result = (await (ctx.getApi() as AnyApi).saveAzureConnection(draft)) as AnyApi;
-    ctx.payload.value = (result.payload || result) as StatePayload;
+    setPayload((result.payload || result) as StatePayload);
   }
 
   // --- Review bridge ---------------------------------------------------
@@ -343,22 +355,22 @@ export function createApiActions(ctx: ApiActionsCtx) {
       danger: true,
     });
     if (!confirmed) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteGitHubConnection(connectionId)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).deleteGitHubConnection(connectionId)) as StatePayload);
   }
 
   async function saveGitHubConnection(draft: unknown): Promise<void> {
     const result = (await (ctx.getApi() as AnyApi).saveGitHubConnection(draft)) as AnyApi;
-    ctx.payload.value = (result.payload || result) as StatePayload;
+    setPayload((result.payload || result) as StatePayload);
   }
 
   // --- Agent prompts ---------------------------------------------------
 
   async function saveAgentPrompt(params: unknown): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).saveAgentPrompt(params)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).saveAgentPrompt(params)) as StatePayload);
   }
 
   async function resetAgentPrompts(): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).resetAgentPrompts()) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).resetAgentPrompts()) as StatePayload);
   }
 
   async function deleteAgentPrompt(promptId: string): Promise<void> {
@@ -370,7 +382,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
       danger: true,
     });
     if (!confirmed) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteAgentPrompt({ promptId })) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).deleteAgentPrompt({ promptId })) as StatePayload);
   }
 
   // --- Remote access ---------------------------------------------------
@@ -384,37 +396,43 @@ export function createApiActions(ctx: ApiActionsCtx) {
   async function toggleRemoteAccess(): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const enabled = !(ctx.payload.value as any)?.appState?.settings?.remoteAccess?.enabled;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).updateSettings({
-      remoteAccess: { enabled },
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).updateSettings({
+        remoteAccess: { enabled },
+      })) as StatePayload,
+    );
   }
 
   async function regenerateRemoteToken(): Promise<void> {
-    ctx.payload.value = (await ctx.getApi().regenerateRemoteToken()) as StatePayload;
+    setPayload((await ctx.getApi().regenerateRemoteToken()) as StatePayload);
   }
 
   async function saveCustomPublicUrl(url: string): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).updateSettings({
-      remoteAccess: { customPublicUrl: url },
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).updateSettings({
+        remoteAccess: { customPublicUrl: url },
+      })) as StatePayload,
+    );
   }
 
   async function clearCustomPublicUrl(): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).updateSettings({
-      remoteAccess: { customPublicUrl: "" },
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).updateSettings({
+        remoteAccess: { customPublicUrl: "" },
+      })) as StatePayload,
+    );
   }
 
   async function createCloudflareTunnel(): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).createCloudflareTunnel()) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).createCloudflareTunnel()) as StatePayload);
   }
 
   async function stopCloudflareTunnel(): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).stopCloudflareTunnel()) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).stopCloudflareTunnel()) as StatePayload);
   }
 
   async function refreshTunnel(): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).refreshTunnel()) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).refreshTunnel()) as StatePayload);
   }
 
   function pickLanUrl(url: string): void {
@@ -452,7 +470,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // --- Docker ----------------------------------------------------------
 
   async function refreshDocker(): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).refreshDocker()) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).refreshDocker()) as StatePayload);
   }
 
   async function dockerShell(
@@ -462,23 +480,27 @@ export function createApiActions(ctx: ApiActionsCtx) {
     contextName?: string,
   ): Promise<void> {
     if (!workspaceId || !containerId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).openDockerSession({
-      workspaceId,
-      containerId,
-      mode: "shell",
-      backendId,
-      contextName,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).openDockerSession({
+        workspaceId,
+        containerId,
+        mode: "shell",
+        backendId,
+        contextName,
+      })) as StatePayload,
+    );
     ctx.activeViewId.value = `${workspaceId}:shell-${containerId}`;
   }
 
   async function dockerLogs(workspaceId: string, containerId: string): Promise<void> {
     if (!workspaceId || !containerId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).openDockerSession({
-      workspaceId,
-      containerId,
-      mode: "logs",
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).openDockerSession({
+        workspaceId,
+        containerId,
+        mode: "logs",
+      })) as StatePayload,
+    );
     ctx.activeViewId.value = `${workspaceId}:logs-${containerId}`;
   }
 
@@ -491,12 +513,14 @@ export function createApiActions(ctx: ApiActionsCtx) {
   ): Promise<void> {
     if (!workspaceId || !containerId) return;
     const cleanAction = action.replace("docker-", "");
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerAction({
-      action: cleanAction,
-      containerId,
-      backendId,
-      contextName,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).dockerAction({
+        action: cleanAction,
+        containerId,
+        backendId,
+        contextName,
+      })) as StatePayload,
+    );
   }
 
   async function dockerLogsOpen(
@@ -534,12 +558,14 @@ export function createApiActions(ctx: ApiActionsCtx) {
     contextName: string,
     projectName: string,
   ): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerComposeAction({
-      action,
-      backendId,
-      contextName,
-      projectName,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).dockerComposeAction({
+        action,
+        backendId,
+        contextName,
+        projectName,
+      })) as StatePayload,
+    );
   }
 
   async function dockerInspect(containerId: string, backendId: string, contextName: string): Promise<string> {
@@ -598,12 +624,14 @@ export function createApiActions(ctx: ApiActionsCtx) {
     contextName: string,
     force = false,
   ): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerImageRemove({
-      resource: imageId,
-      backendId,
-      contextName,
-      force,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).dockerImageRemove({
+        resource: imageId,
+        backendId,
+        contextName,
+        force,
+      })) as StatePayload,
+    );
   }
 
   async function dockerVolumeRemove(
@@ -612,41 +640,48 @@ export function createApiActions(ctx: ApiActionsCtx) {
     contextName: string,
     force = false,
   ): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerVolumeRemove({
-      resource: volumeName,
-      backendId,
-      contextName,
-      force,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).dockerVolumeRemove({
+        resource: volumeName,
+        backendId,
+        contextName,
+        force,
+      })) as StatePayload,
+    );
   }
 
   async function dockerNetworkRemove(networkId: string, backendId: string, contextName: string): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerNetworkRemove({
-      resource: networkId,
-      backendId,
-      contextName,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).dockerNetworkRemove({
+        resource: networkId,
+        backendId,
+        contextName,
+      })) as StatePayload,
+    );
   }
 
   async function dockerImagePull(reference: string, backendId: string, contextName: string): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerImagePull({
-      resource: reference,
-      backendId,
-      contextName,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).dockerImagePull({
+        resource: reference,
+        backendId,
+        contextName,
+      })) as StatePayload,
+    );
   }
 
   // ---------------------------------------------------------------------------
   // Prune actions. Each returns the PruneResult so the caller can show a toast
   // / dialog with the reclaimed-size and deleted-names. Payload is refreshed
-  // server-side; we replace ctx.payload here to avoid stale UI.
+  // server-side; we adopt it via setPayload (desktop only — on the remote slim
+  // core the docker resource invalidation refetches the pane's detail instead).
   // ---------------------------------------------------------------------------
   async function dockerImagePrune(backendId: string, contextName: string, all: boolean): Promise<DockerPruneResult> {
     const r = (await (ctx.getApi() as AnyApi).dockerImagePrune({ backendId, contextName, all })) as {
       payload: StatePayload;
       result: DockerPruneResult;
     };
-    ctx.payload.value = r.payload;
+    setPayload(r.payload);
     return r.result;
   }
 
@@ -655,7 +690,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
       payload: StatePayload;
       result: DockerPruneResult;
     };
-    ctx.payload.value = r.payload;
+    setPayload(r.payload);
     return r.result;
   }
 
@@ -664,7 +699,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
       payload: StatePayload;
       result: DockerPruneResult;
     };
-    ctx.payload.value = r.payload;
+    setPayload(r.payload);
     return r.result;
   }
 
@@ -673,7 +708,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
       payload: StatePayload;
       result: DockerPruneResult;
     };
-    ctx.payload.value = r.payload;
+    setPayload(r.payload);
     return r.result;
   }
 
@@ -711,23 +746,25 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function openLazydocker(workspaceId: string, backendId?: string): Promise<void> {
     if (!workspaceId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).openLazydockerSession({
-      workspaceId,
-      backendId,
-    })) as StatePayload;
+    setPayload(
+      (await (ctx.getApi() as AnyApi).openLazydockerSession({
+        workspaceId,
+        backendId,
+      })) as StatePayload,
+    );
     ctx.activeViewId.value = `${workspaceId}:lazydocker`;
   }
 
   // --- Profile / settings ----------------------------------------------
 
   async function saveProfile(profile: unknown): Promise<void> {
-    ctx.payload.value = (await ctx
-      .getApi()
-      .saveProfile(profile as Parameters<Transport["saveProfile"]>[0])) as StatePayload;
+    setPayload(
+      (await ctx.getApi().saveProfile(profile as Parameters<Transport["saveProfile"]>[0])) as StatePayload,
+    );
   }
 
   async function deleteProfile(profileId: string): Promise<void> {
-    ctx.payload.value = (await ctx.getApi().deleteProfile(profileId)) as StatePayload;
+    setPayload((await ctx.getApi().deleteProfile(profileId)) as StatePayload);
   }
 
   async function activateProfile(profileId: string): Promise<void> {
@@ -753,7 +790,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   }
 
   async function updateSettings(patch: unknown): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).updateSettings(patch)) as StatePayload;
+    setPayload((await (ctx.getApi() as AnyApi).updateSettings(patch)) as StatePayload);
   }
 
   return {
