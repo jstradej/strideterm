@@ -26,6 +26,7 @@ import { createApiActions } from "./app-api-actions.js";
 import { isMobileViewport } from "../composables/useIsNarrow.js";
 import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
+import { useRemoteDetailsStore } from "./remote-details.js";
 import type { StatePayload, RecoveryCandidate } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
 
@@ -440,6 +441,10 @@ export const useAppStore = defineStore("app", () => {
       payload: payload.value,
       hiddenViewIds: hiddenViewIds.value,
       isContainerRunning,
+      // On the remote slim core the git/docker/provider tab data lives in
+      // summaries + on-demand detail, not in `payload` — route through the
+      // transport-aware accessors. On desktop these read the full payload.
+      accessors: { gitSummary: getGitSummary, dockerCounts, providerInbox },
     });
     // Fingerprint includes all visible fields: id, title, status, tone
     const key = (result as AnyApi[]).map((t: AnyApi) => `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}`).join("|");
@@ -1046,11 +1051,27 @@ export const useAppStore = defineStore("app", () => {
   }
 
   // --- Selectors exposed for components ---
-  function getGitSnapshot(workspaceId: string, rootPath: string | null = null): unknown {
-    const entry =
+
+  /**
+   * Raw git entry (with multi-root `roots`) for a workspace. Desktop reads the
+   * full snapshot straight off the IPC payload; a remote client reads the
+   * on-demand detail cache (`git:<id>`, fetched when a Git/Review pane declares
+   * interest). Missing on remote until fetched = a loading state, never a
+   * partial object — summaries live separately in `gitSummaries`.
+   */
+  function getGitWorkspaceEntry(workspaceId: string): AnyApi {
+    if (isRemoteTransport.value) {
+      return (useRemoteDetailsStore().get(`git:${workspaceId}`) as AnyApi) || null;
+    }
+    return (
       (payload.value as AnyApi)?.git?.workspaces?.[workspaceId] ||
       (payload.value as AnyApi)?.git?.projects?.[workspaceId] ||
-      null;
+      null
+    );
+  }
+
+  function getGitSnapshot(workspaceId: string, rootPath: string | null = null): unknown {
+    const entry = getGitWorkspaceEntry(workspaceId);
     if (!entry) return null;
     if (!entry.roots) return entry; // legacy single-root payload
     const key = rootPath || entry.primaryRoot;
@@ -1063,9 +1084,7 @@ export const useAppStore = defineStore("app", () => {
     const gitUiActiveRoot = useGitUiStore().getActiveRoot(workspaceId);
     if (gitUiActiveRoot) {
       // Validate that the active root still exists; reset to primary if stale
-      const entry =
-        (payload.value as AnyApi)?.git?.workspaces?.[workspaceId] ||
-        (payload.value as AnyApi)?.git?.projects?.[workspaceId];
+      const entry = getGitWorkspaceEntry(workspaceId);
       if (!entry?.roots || entry.roots[gitUiActiveRoot]) {
         return getGitSnapshot(workspaceId, gitUiActiveRoot);
       }
@@ -1075,6 +1094,88 @@ export const useAppStore = defineStore("app", () => {
       (payload.value?.appState?.workspaces as AnyApi[] | undefined)?.find?.((w: AnyApi) => w.id === workspaceId) ||
       null;
     return getGitSnapshot(workspaceId, (ws as AnyApi)?.activeRootPath || null);
+  }
+
+  /**
+   * Six light git fields the always-on UI (sidebar cards, tab bar, hero) reads.
+   * Remote: straight from the slim core's `gitSummaries` (present for every
+   * profile workspace, no fetch needed). Desktop: derived from the full
+   * snapshot's primary root — same values, so the one renderer is agnostic.
+   */
+  function getGitSummary(workspaceId: string): AnyApi {
+    if (isRemoteTransport.value) {
+      return (payload.value as AnyApi)?.gitSummaries?.[workspaceId] || null;
+    }
+    const snap = getGitSnapshot(workspaceId) as AnyApi;
+    if (!snap) return null;
+    return {
+      available: snap.available,
+      branch: snap.branch,
+      dirty: snap.dirty,
+      dirtyCount: snap.dirtyCount,
+      branchMerged: snap.branchMerged,
+      lastChangeAt: snap.lastChangeAt,
+    };
+  }
+
+  /** Container counts for the Docker tab badge + hero. Remote reads the core
+   *  summary's `counts`; desktop computes from the full container list. */
+  function dockerCounts(): { available: boolean; total: number; running: number } {
+    const d = (payload.value as AnyApi)?.docker;
+    if (isRemoteTransport.value && d?.counts) {
+      return { available: !!d.available, total: Number(d.counts.containers || 0), running: Number(d.counts.running || 0) };
+    }
+    const containers = (d?.containers || []) as AnyApi[];
+    return { available: !!d?.available, total: containers.length, running: containers.filter(isContainerRunning).length };
+  }
+
+  /** Full Docker snapshot for the Docker pane. Remote: on-demand `docker`
+   *  detail cache, falling back to the core summary (empty lists) while
+   *  loading. Desktop: the full IPC payload. */
+  function dockerState(): AnyApi {
+    if (isRemoteTransport.value) {
+      return (useRemoteDetailsStore().get("docker") as AnyApi) || (payload.value as AnyApi)?.docker || null;
+    }
+    return (payload.value as AnyApi)?.docker || null;
+  }
+
+  /** Provider snapshot for the inbox pane: core badges/connections merged with
+   *  the on-demand inbox detail (lists + profile-scoped connections). Desktop
+   *  returns the full payload provider state unchanged. */
+  function providerState(provider: "azure" | "github"): AnyApi {
+    const core = (payload.value as AnyApi)?.[provider === "azure" ? "azureDevops" : "github"] || {};
+    if (!isRemoteTransport.value) return core;
+    const detail = useRemoteDetailsStore().get(`${provider}-inbox`) as AnyApi;
+    if (!detail) return core;
+    return { ...core, inbox: detail.inbox, connections: detail.connections || core.connections };
+  }
+
+  /** {inbox, connections} slice the tab-strip selector needs. */
+  function providerInbox(provider: "azure" | "github"): AnyApi {
+    const s = providerState(provider);
+    return { inbox: s?.inbox, connections: s?.connections };
+  }
+
+  /** Full per-PR provider detail for the review pane. Remote: on-demand
+   *  `<provider>-pr:<prKey>` cache; desktop: the full payload PR entry. */
+  function providerPrDetail(provider: "azure" | "github", prKey: string): AnyApi {
+    if (isRemoteTransport.value) {
+      return (useRemoteDetailsStore().get(`${provider}-pr:${prKey}`) as AnyApi) || null;
+    }
+    const key = provider === "azure" ? "azureDevops" : "github";
+    return (payload.value as AnyApi)?.[key]?.pullRequests?.[prKey] || null;
+  }
+
+  /** Full per-PR review-bridge context for the review pane's Agent/Comments
+   *  tabs. Remote: on-demand `review-bridge:<prKey>` cache; desktop: the full
+   *  payload context. `agentPrompts` is always in the core for both. */
+  function reviewBridgePr(prKey: string): AnyApi {
+    if (isRemoteTransport.value) {
+      const cached = useRemoteDetailsStore().get(`review-bridge:${prKey}`) as AnyApi;
+      if (cached) return cached;
+      return null;
+    }
+    return (payload.value as AnyApi)?.reviewBridge?.pullRequests?.[prKey] || null;
   }
 
   function getWorkspaceAttentionForId(workspaceId: string): unknown {
@@ -1138,6 +1239,9 @@ export const useAppStore = defineStore("app", () => {
   function init(api: Transport): void {
     _api = api;
     isRemoteTransport.value = !!api.isRemote;
+    // Wire the slim-core detail cache (remote-only; a no-op on desktop). Must
+    // run before any pane mounts so interest declarations reach the transport.
+    useRemoteDetailsStore().init(api);
 
     api.onStateUpdated((nextPayload) => handleBroadcastPayload(nextPayload));
 
@@ -1306,6 +1410,14 @@ export const useAppStore = defineStore("app", () => {
     // Selectors
     getGitSnapshot,
     getActiveGitSnapshot,
+    getGitWorkspaceEntry,
+    getGitSummary,
+    dockerCounts,
+    dockerState,
+    providerState,
+    providerInbox,
+    providerPrDetail,
+    reviewBridgePr,
     getWorkspaceAttentionForId,
     getTabAttentionForView,
     getPanelByViewId,

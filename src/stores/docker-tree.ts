@@ -300,7 +300,7 @@ export const useDockerTree = defineStore("docker-tree", () => {
 
   const dockerState = computed(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (appStore.payload as any)?.docker || null;
+    return appStore.dockerState() || null;
   });
 
   const treeNodes = computed((): TreeNode[] => {

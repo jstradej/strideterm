@@ -261,7 +261,10 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
   return buildWorkspaceCards({
     workspaces: store.filteredWorkspaces,
     activeWorkspaceId: store.myActiveWorkspaceId || "",
-    getGitSnapshot: (id) => store.getGitSnapshot(id) as GitSnapshot | null | undefined,
+    // Sidebar cards read only the six light git fields — pull from gitSummaries
+    // (present for every workspace on the remote slim core) rather than the full
+    // per-workspace snapshot, which is fetched on demand only for mounted panes.
+    getGitSnapshot: (id) => store.getGitSummary(id) as GitSnapshot | null | undefined,
     getWorkspaceAttention: (id) => store.getWorkspaceAttentionForId(id) as AttentionLike | null | undefined,
     taskRunnerSnapshot: (payload.taskRunner as Record<string, LiveTask>) || null,
     sessionActivities: (payload.attention as { sessions?: Record<string, SessionActivityLike> })?.sessions || null,

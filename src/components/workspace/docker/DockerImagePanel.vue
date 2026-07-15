@@ -69,7 +69,7 @@ const confirmRemove = ref(false);
 
 const image = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   return docker?.images?.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (i: any) =>

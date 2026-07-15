@@ -151,7 +151,7 @@ function isProtected(n: DockerNetwork): boolean {
 
 const networks = computed<DockerNetwork[]>(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.networks) return [];
   return (docker.networks as DockerNetwork[]).filter(
     (n) => n.backendId === props.tab.backendId && n.contextName === props.tab.contextName,
@@ -160,7 +160,7 @@ const networks = computed<DockerNetwork[]>(() => {
 
 const containers = computed<DockerContainer[]>(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.containers) return [];
   return (docker.containers as DockerContainer[]).filter(
     (c) => c.backendId === props.tab.backendId && c.contextName === props.tab.contextName,

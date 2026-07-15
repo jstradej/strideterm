@@ -60,7 +60,7 @@ const confirmRemove = ref(false);
 
 const network = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   return docker?.networks?.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (n: any) =>

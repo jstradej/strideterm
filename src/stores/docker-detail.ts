@@ -264,7 +264,7 @@ export const useDockerDetail = defineStore("docker-detail", () => {
   // Watch for removed containers to mark tabs as removed
   watchEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const docker = (appStore.payload as any)?.docker;
+    const docker = appStore.dockerState();
     if (!docker?.containers) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const liveIds = new Set<string>(docker.containers.map((c: any) => String(c.ID)));

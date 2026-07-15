@@ -158,7 +158,7 @@ const pendingConfirm = ref<PendingAction | null>(null);
 
 const images = computed<DockerImage[]>(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.images) return [];
   return (docker.images as DockerImage[]).filter(
     (i) => i.backendId === props.tab.backendId && i.contextName === props.tab.contextName,
@@ -167,7 +167,7 @@ const images = computed<DockerImage[]>(() => {
 
 const containers = computed<DockerContainer[]>(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.containers) return [];
   return (docker.containers as DockerContainer[]).filter(
     (c) => c.backendId === props.tab.backendId && c.contextName === props.tab.contextName,

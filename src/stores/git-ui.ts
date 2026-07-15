@@ -731,7 +731,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ws = workspace as any;
     const roots: string[] = ws?.gitRoots?.length ? ws.gitRoots : [ws?.cwd].filter(Boolean);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const entry = (appStore.payload as any)?.git?.workspaces?.[workspaceId];
+    const entry = appStore.getGitWorkspaceEntry(workspaceId) as any;
     for (const rootPath of roots) {
       // Skip dirty repos
       const snap = entry?.roots?.[rootPath] || (entry?.rootPath === rootPath ? entry : null);

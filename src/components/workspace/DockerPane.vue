@@ -188,6 +188,7 @@ import { useAppStore } from "../../stores/app.js";
 import { useDockerTree } from "../../stores/docker-tree.js";
 import { useDockerDetail } from "../../stores/docker-detail.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import DockerHeader from "./docker/DockerHeader.vue";
 import DockerTree from "./docker/DockerTree.vue";
 import DockerDetail from "./docker/DockerDetail.vue";
@@ -200,6 +201,8 @@ const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boole
 const appStore = useAppStore();
 const treeStore = useDockerTree();
 const detailStore = useDockerDetail();
+// Fetch + keep the full Docker snapshot current while this pane is mounted.
+useResourceInterest(() => "docker");
 const { isMobile, isPortrait } = useIsNarrow();
 
 // Single-pane navigation only kicks in when the device is BOTH mobile AND
@@ -208,7 +211,7 @@ const { isMobile, isPortrait } = useIsNarrow();
 const usePortraitLayout = computed(() => isMobile.value && isPortrait.value);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const dockerState = computed<Record<string, any>>(() => (appStore.payload as any)?.docker || {});
+const dockerState = computed<Record<string, any>>(() => appStore.dockerState() || {});
 const isLoading = computed(() => dockerState.value.available && !dockerState.value.lastUpdatedAt);
 
 const selectedNodeId = computed(() => {

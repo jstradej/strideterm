@@ -153,7 +153,7 @@ const MAX_REATTACH_MS = 30_000;
 
 const containerStateLower = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as AnyApi)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.containers) return "";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const found = docker.containers.find((c: AnyApi) => c.ID === props.containerId);

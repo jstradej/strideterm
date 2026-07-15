@@ -212,7 +212,7 @@ const activeTab = computed(() => detailStore.getActiveTab(props.workspaceId));
 
 const lazydockerAvailable = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.lazydocker) return false;
   const backendId = activeTab.value?.backendId;
   if (backendId && docker.lazydocker[backendId]) return docker.lazydocker[backendId].available;
@@ -223,7 +223,7 @@ const lazydockerAvailable = computed(() => {
 const projectServices = computed(() => {
   if (activeTab.value?.kind !== "project") return [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.containers) return [];
   return docker.containers.filter(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

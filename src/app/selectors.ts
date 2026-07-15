@@ -164,17 +164,33 @@ export function getTabAttention(
   return workspaceAttention.alerts.find((alert) => alert.sessionId === viewId || alert.panelId === panelId) || null;
 }
 
+/**
+ * Transport-aware accessors for the always-on tab-strip data. On desktop these
+ * are omitted and the fields are read straight off `payload` (full IPC). On the
+ * remote slim core the store passes them so the git/docker/provider tabs read
+ * `gitSummaries`, docker counts and the fetched inbox detail instead of the
+ * heavy fields the core no longer carries.
+ */
+export interface TabAccessors {
+  gitSummary?: (workspaceId: string) => { available?: boolean; dirty?: boolean; dirtyCount?: number } | null;
+  dockerCounts?: () => { available: boolean; total: number; running: number };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  providerInbox?: (provider: "azure" | "github") => { inbox?: any; connections?: any[] } | null;
+}
+
 export function getWorkspaceTabs({
   workspace,
   payload,
   hiddenViewIds,
   isContainerRunning,
+  accessors,
 }: {
   workspace: WorkspaceContainer | null | undefined;
   payload: StatePayload | null | undefined;
   hiddenViewIds: Set<string>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   isContainerRunning: (container: any) => boolean;
+  accessors?: TabAccessors;
 }): WorkspaceTab[] {
   if (!workspace) {
     return [];
@@ -189,7 +205,7 @@ export function getWorkspaceTabs({
 
   if (activeWorkspace.kind === "azure") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const azureData = (payload?.azureDevops as any) || {};
+    const azureData = (accessors?.providerInbox ? accessors.providerInbox("azure") : (payload?.azureDevops as any)) || {};
     const inbox = azureData.inbox;
     // Scope the tab's "N reviews waiting" status to PRs from this workspace's
     // own profile — the backend snapshot aggregates inbox across every open
@@ -223,7 +239,7 @@ export function getWorkspaceTabs({
 
   if (activeWorkspace.kind === "github") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const githubData = (payload?.github as any) || {};
+    const githubData = (accessors?.providerInbox ? accessors.providerInbox("github") : (payload?.github as any)) || {};
     const inbox = githubData.inbox;
     // See azure branch above for rationale.
     const workspaceProfileId = activeWorkspace.profileId || "default";
@@ -351,23 +367,31 @@ export function getWorkspaceTabs({
   }
 
   if (activeWorkspace.kind === "docker") {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dockerState = (payload?.docker as any) || {};
-
-    const containers: unknown[] = (dockerState.containers as unknown[] | undefined) || [];
-    const runningCount = containers.filter(isContainerRunning).length;
+    let total: number;
+    let runningCount: number;
+    if (accessors?.dockerCounts) {
+      const c = accessors.dockerCounts();
+      total = c.total;
+      runningCount = c.running;
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const containers: unknown[] = ((payload?.docker as any)?.containers as unknown[] | undefined) || [];
+      total = containers.length;
+      runningCount = containers.filter(isContainerRunning).length;
+    }
     tabs.push({
       id: `docker:${activeWorkspace.id}`,
       type: "docker",
       title: "Docker",
-      status: `${containers.length} containers, ${runningCount} up`,
+      status: `${total} containers, ${runningCount} up`,
       tone: runningCount > 0 ? "running" : "idle",
       closable: true,
     });
   }
 
-  const gitSnapshot =
-    payload?.git?.workspaces?.[activeWorkspace.id] || payload?.git?.projects?.[activeWorkspace.id] || null;
+  const gitSnapshot = accessors?.gitSummary
+    ? accessors.gitSummary(activeWorkspace.id)
+    : payload?.git?.workspaces?.[activeWorkspace.id] || payload?.git?.projects?.[activeWorkspace.id] || null;
   if (gitSnapshot?.available) {
     tabs.push({
       id: `git:${activeWorkspace.id}`,

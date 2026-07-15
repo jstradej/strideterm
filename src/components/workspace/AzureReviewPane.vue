@@ -673,6 +673,7 @@ import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { useReviewComments } from "../../composables/useReviewComments.js";
+import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import PaneShell from "../layout/PaneShell.vue";
 import DiffViewer from "./DiffViewer.vue";
 import GitCommitLog from "./git/GitCommitLog.vue";
@@ -738,7 +739,7 @@ const detail = computed(() => {
   if (!key) return null;
   if (isGitHub.value) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const raw = (appStore.payload?.github as any)?.pullRequests?.[key] || null;
+    const raw = (appStore.providerPrDetail("github", key) as any) || null;
     if (!raw) return null;
     // Merge issueComments into threads so useReviewComments sees them
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -766,7 +767,7 @@ const detail = computed(() => {
     return { ...raw, threads: [...(raw.threads || []), ...issueThreads] };
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (appStore.payload?.azureDevops as any)?.pullRequests?.[key] || null;
+  return (appStore.providerPrDetail("azure", key) as any) || null;
 });
 const pullRequestRaw = computed(() => detail.value?.pullRequest || {});
 const pullRequest = computed(() => {
@@ -781,12 +782,20 @@ const pullRequest = computed(() => {
   return pr;
 });
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const reviewBridgeRaw = computed(() => (appStore.payload?.reviewBridge as any)?.pullRequests?.[prKey.value] || {});
+const reviewBridgeRaw = computed(() => (appStore.reviewBridgePr(prKey.value) as any) || {});
 const reviewBridge = computed(() => ({
   ...reviewBridgeRaw.value,
+  // agentPrompts stays in the slim core (small, global) — read it there.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   agentPrompts: (appStore.payload?.reviewBridge as any)?.agentPrompts || [],
 }));
+// Fetch + keep the PR detail and review-bridge context current while this pane
+// (which handles both Azure and GitHub reviews) is mounted.
+useResourceInterest(() => {
+  const key = prKey.value;
+  if (!key) return [];
+  return [isGitHub.value ? `github-pr:${key}` : `azure-pr:${key}`, `review-bridge:${key}`];
+});
 const reviewUi = computed(() => gitUiStore.get(props.workspaceId));
 const checks = computed(() => detail.value?.checks || {});
 const refreshingChecks = ref(false);

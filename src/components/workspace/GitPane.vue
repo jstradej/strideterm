@@ -391,11 +391,15 @@ import BulkRepoTable from "./git/BulkRepoTable.vue";
 import ConfirmDialog from "../dialogs/ConfirmDialog.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import { useResourceInterest } from "../../composables/useResourceInterest.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+// Declare interest in this workspace's git detail so the remote client fetches
+// and keeps the full snapshot current while the Git pane is mounted.
+useResourceInterest(() => (props.workspaceId ? `git:${props.workspaceId}` : null));
 const { isMobile } = useIsNarrow();
 const menuOpen = ref(false);
 const tabsMenuOpen = ref(false);
@@ -471,7 +475,7 @@ const showRepoPicker = computed(() => isMultiRepo.value && !isReviewWorkspace.va
 const activeRootPath = computed(() => gitUiStore.getActiveRoot(props.workspaceId) || snapshot.value?.rootPath || "");
 const allRootsSnapshots = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const entry = appStore.payload?.git?.workspaces?.[props.workspaceId] as any;
+  const entry = appStore.getGitWorkspaceEntry(props.workspaceId) as any;
   if (!entry?.roots) return [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return Object.entries(entry.roots).map(([rootPath, snap]: [string, any]) => ({ rootPath, ...snap }));

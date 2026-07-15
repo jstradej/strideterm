@@ -24,6 +24,20 @@ interface ConnectionStatePayload {
   attempt?: number;
 }
 
+/** A slim-core detail resource fetched on demand (git snapshot, docker state,
+ *  provider inbox / PR detail, review-bridge context). */
+export interface ResourceDetail {
+  resource: string;
+  revision: string;
+  data: unknown;
+}
+
+/** Server push: an interested detail resource changed to `revision`. */
+export interface ResourceInvalidate {
+  resource: string;
+  revision: string;
+}
+
 interface EventHub {
   stateUpdated: Set<Handler<StatePayload>>;
   terminalData: Set<Handler<TerminalDataPayload>>;
@@ -39,6 +53,7 @@ interface EventHub {
   dockerLogsWrite: Set<Handler<{ sessionId: string; data: string }>>;
   dockerLogsClose: Set<Handler<{ sessionId: string; code: number | null }>>;
   terminalInputBlocked: Set<Handler<{ sessionId: string; ownerLabel: string }>>;
+  resourceInvalidate: Set<Handler<ResourceInvalidate>>;
 }
 
 /** Extended transport interface covering both Electron and remote modes.
@@ -75,6 +90,14 @@ export interface Transport extends Partial<
   /** Declare the complete set of terminal sessions this client renders.
    *  Idempotent; remote-only (a no-op on the Electron transport). */
   subscribeTerminals: (sessionIds: string[]) => void;
+  /** Declare the complete set of slim-core DETAIL resources this client renders
+   *  (mounted git/docker/inbox/review panes). Idempotent; remote-only. The
+   *  server pushes resource:invalidate for changed/new ones. */
+  subscribeResources?: (resources: string[]) => void;
+  /** Server-pushed notice that an interested detail resource changed. Remote-only. */
+  onResourceInvalidate?: (handler: Handler<ResourceInvalidate>) => void;
+  /** Fetch one detail resource on demand ({ resource, revision, data }). Remote-only. */
+  fetchResourceDetail?: (resource: string) => Promise<ResourceDetail | null>;
   resizeTerminal: (sessionId: string, size: TerminalSize) => void;
   writeTerminal: (sessionId: string, data: string) => void;
   /** Take over the per-session input lease ("Take control?" confirmation). */
@@ -108,6 +131,7 @@ function createEventHub(): EventHub {
     dockerLogsWrite: new Set(),
     dockerLogsClose: new Set(),
     terminalInputBlocked: new Set(),
+    resourceInvalidate: new Set(),
   };
 }
 
@@ -125,6 +149,36 @@ function createRemoteClientId(): string {
       .join("")}-${hex.slice(10, 16).join("")}`;
   }
   return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/**
+ * Map a slim-core resource key to the HTTP detail endpoint that serves it.
+ * Mirrors the DETAIL_ROUTES table in remote-server.ts. Returns null for an
+ * unknown key. prKeys may contain colons, so only the leading segment is the
+ * type.
+ */
+function detailEndpointFor(resource: string): string | null {
+  if (resource === "docker") return "/api/docker/detail";
+  if (resource === "azure-inbox") return "/api/azure/inbox";
+  if (resource === "github-inbox") return "/api/github/inbox";
+  const idx = resource.indexOf(":");
+  if (idx < 0) return null;
+  const type = resource.slice(0, idx);
+  const id = resource.slice(idx + 1);
+  if (!id) return null;
+  const q = encodeURIComponent(id);
+  switch (type) {
+    case "git":
+      return `/api/git/workspace-detail?workspaceId=${q}`;
+    case "azure-pr":
+      return `/api/azure/pull-request-detail?prKey=${q}`;
+    case "github-pr":
+      return `/api/github/pull-request-detail?prKey=${q}`;
+    case "review-bridge":
+      return `/api/review-bridge/pull-request?prKey=${q}`;
+    default:
+      return null;
+  }
 }
 
 function bindElectronTransport(): Transport {
@@ -232,6 +286,7 @@ export function createRemoteTransport(): Transport {
     rows?: number;
     data?: string;
     sessionIds?: string[];
+    resources?: string[];
   }
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -249,6 +304,18 @@ export function createRemoteTransport(): Transport {
   // server's legacy (full-broadcast) mode until then.
   let lastTerminalSubscription: string[] = [];
   let hasSubscribedTerminals = false;
+  // The complete set of slim-core detail resources this client currently
+  // renders — re-sent verbatim after every reconnect (the server drops
+  // per-socket interests on close), so a fresh socket re-primes its
+  // invalidations. Empty until the first pane declares interest.
+  let lastResourceInterest: string[] = [];
+  let hasDeclaredInterest = false;
+
+  // Slim-core protocol version this client speaks. Advertised on the WS upgrade
+  // (?sp=) and every HTTP request (X-Strideterm-State-Protocol), so the server
+  // serves this tab the RemoteStateV2 core + detail resources rather than a full
+  // desktop payload.
+  const STATE_PROTOCOL = 2;
 
   function buildWsUrl(): string {
     // After the share-URL bootstrap, the token is gone from the URL and a
@@ -260,6 +327,7 @@ export function createRemoteTransport(): Transport {
     const wsQuery = new URLSearchParams();
     if (token) wsQuery.set("token", token);
     wsQuery.set("clientId", remoteClientId);
+    wsQuery.set("sp", String(STATE_PROTOCOL));
     const wsSuffix = wsQuery.toString();
     return `${protocol}//${window.location.host}/ws${wsSuffix ? `?${wsSuffix}` : ""}`;
   }
@@ -358,6 +426,14 @@ export function createRemoteTransport(): Transport {
         handler({ sessionId: blocked.sessionId || "", ownerLabel: blocked.ownerLabel || "another window" }),
       );
     }
+    if (message.type === "resource:invalidate") {
+      const payload = (message.payload || {}) as { resource?: string; revision?: string };
+      if (payload.resource) {
+        listeners.resourceInvalidate.forEach((handler) =>
+          handler({ resource: payload.resource!, revision: String(payload.revision || "") }),
+        );
+      }
+    }
   }
 
   function connectWebSocket(): void {
@@ -377,6 +453,11 @@ export function createRemoteTransport(): Transport {
       // stays in legacy mode until the app knows what's visible.
       if (hasSubscribedTerminals && nextWs.readyState === WebSocket.OPEN) {
         nextWs.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: lastTerminalSubscription }));
+      }
+      // Re-declare detail-resource interest so the server re-primes invalidations
+      // for this fresh socket (interests are per-socket and dropped on close).
+      if (hasDeclaredInterest && nextWs.readyState === WebSocket.OPEN) {
+        nextWs.send(JSON.stringify({ type: "resource:interest", resources: lastResourceInterest }));
       }
       if (reconnected) {
         refreshStateAfterReconnect();
@@ -507,6 +588,7 @@ export function createRemoteTransport(): Transport {
     // 401 and the existing error path surfaces it.
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     headers["X-Strideterm-Client-Id"] = remoteClientId;
+    headers["X-Strideterm-State-Protocol"] = String(STATE_PROTOCOL);
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
@@ -908,6 +990,31 @@ export function createRemoteTransport(): Transport {
       }
       // If not open, the connectWebSocket open handler re-sends the remembered
       // set — no need to queue it (and re-queuing would double-send).
+    },
+    subscribeResources: (resources: string[]) => {
+      // Idempotence at the source (panes recompute their interest set on every
+      // mount/unmount/grid change): an unchanged set is not re-sent. Reconnects
+      // re-send via the open handler.
+      if (
+        hasDeclaredInterest &&
+        resources.length === lastResourceInterest.length &&
+        resources.every((id, i) => id === lastResourceInterest[i])
+      ) {
+        return;
+      }
+      lastResourceInterest = [...resources];
+      hasDeclaredInterest = true;
+      const current = ws;
+      if (current?.readyState === WebSocket.OPEN) {
+        current.send(JSON.stringify({ type: "resource:interest", resources }));
+      }
+      // If not open, the open handler re-sends the remembered set.
+    },
+    onResourceInvalidate: (handler: Handler<ResourceInvalidate>) => listeners.resourceInvalidate.add(handler),
+    fetchResourceDetail: async (resource: string): Promise<ResourceDetail | null> => {
+      const path = detailEndpointFor(resource);
+      if (!path) return null;
+      return (await fetchJson(path)) as ResourceDetail;
     },
     onConnectionState: (handler: Handler<ConnectionStatePayload>) => listeners.connectionState.add(handler),
     onSshAuthPrompt: (handler: Handler<SshAuthRequest>) => listeners.sshAuthPrompt.add(handler),

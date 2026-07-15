@@ -98,7 +98,7 @@
 <script setup lang="ts">
 import { computed, inject, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
-import { safeColor, attentionTitle, isFreshAttention, isContainerRunning } from "../../app/helpers.js";
+import { safeColor, attentionTitle, isFreshAttention } from "../../app/helpers.js";
 import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
 import NotificationBell from "../layout/NotificationBell.vue";
 
@@ -123,9 +123,12 @@ function copyPath() {
 const isRemote = computed(() => api?.isRemote || false);
 const workspace = computed<Record<string, any> | null>(() => (store.payload as any)?.workspace || null); // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 const activeWorkspace = computed(() => store.activeWorkspace);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: git snapshot is open-ended server JSON
+// The hero reads only light git fields (available/branch/dirty/dirtyCount), so
+// it pulls the summary — present for every workspace on the remote slim core
+// without fetching the heavy snapshot.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: git summary is open-ended server JSON
 const gitSnapshot = computed<Record<string, any> | null>(
-  () => (activeWorkspace.value ? (store.getGitSnapshot(activeWorkspace.value.id) as Record<string, any> | null) : null), // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+  () => (activeWorkspace.value ? (store.getGitSummary(activeWorkspace.value.id) as Record<string, any> | null) : null), // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 );
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: attention blob is open-ended server JSON
 const attention = computed<Record<string, any> | null>(() =>
@@ -144,13 +147,12 @@ const runningCount = computed(
       (s: any) => s.status === "running",
     ).length,
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: docker state is open-ended server JSON blob
-const dockerState = computed<Record<string, any>>(
-  () => (activeWorkspace.value?.kind === "docker" ? (store.payload as any)?.docker || {} : {}), // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+// Docker hero shows only counts — read them from the transport-aware accessor
+// (core `counts` on remote, computed from the full list on desktop).
+const dockerCounts = computed(() =>
+  activeWorkspace.value?.kind === "docker" ? store.dockerCounts() : { available: false, total: 0, running: 0 },
 );
-const dockerAvailable = computed(() => dockerState.value?.available);
-const dockerRunning = computed(
-  () => ((dockerState.value?.containers as any[]) || []).filter(isContainerRunning).length, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: docker containers array is open-ended server JSON
-);
-const dockerTotal = computed(() => ((dockerState.value?.containers as any[]) || []).length); // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: docker containers array is open-ended server JSON
+const dockerAvailable = computed(() => dockerCounts.value.available);
+const dockerRunning = computed(() => dockerCounts.value.running);
+const dockerTotal = computed(() => dockerCounts.value.total);
 </script>

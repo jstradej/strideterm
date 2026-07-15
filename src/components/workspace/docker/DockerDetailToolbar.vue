@@ -281,7 +281,7 @@ watch(
 
 const container = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.containers || !props.tab.containerId) return null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return docker.containers.find((c: any) => c.ID === props.tab.containerId) || null;

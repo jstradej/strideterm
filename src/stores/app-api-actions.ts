@@ -2,6 +2,7 @@ import { preferredRemoteUrl, withRemoteToken } from "../app/helpers.js";
 import type { Ref } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
+import { useRemoteDetailsStore } from "./remote-details.js";
 
 /**
  * Mirror of the backend `PruneResult` shape (electron/backend/docker-manager).
@@ -212,10 +213,21 @@ export function createApiActions(ctx: ApiActionsCtx) {
     setPayload((await (ctx.getApi() as AnyApi).syncReviewBridgePullRequest({ prKey })) as StatePayload);
   }
 
+  // The per-PR review-bridge context lives in `payload.reviewBridge` on desktop
+  // but in the on-demand detail cache on the remote slim core (the core drops
+  // it). Read whichever is populated so the draft actions work on both.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function readReviewBridge(prKey: string): any {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fromPayload = (ctx.payload.value as any)?.reviewBridge?.pullRequests?.[prKey];
+    if (fromPayload) return fromPayload;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (useRemoteDetailsStore().get(`review-bridge:${prKey}`) as any) || {};
+  }
+
   async function reviewBridgeDeleteAllDrafts(prKey: string): Promise<void> {
     if (!prKey) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bridge = (ctx.payload.value as any)?.reviewBridge?.pullRequests?.[prKey] || {};
+    const bridge = readReviewBridge(prKey);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const drafts = ((bridge.drafts || []) as any[]).filter((d: AnyApi) => d.status === "draft");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -250,9 +262,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   async function reviewBridgeQueueAllDrafts(prKey: string): Promise<void> {
     if (!prKey) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const drafts = (((ctx.payload.value as any)?.reviewBridge?.pullRequests?.[prKey]?.drafts || []) as any[]).filter(
-      (d: AnyApi) => d.status === "draft",
-    );
+    const drafts = ((readReviewBridge(prKey).drafts || []) as any[]).filter((d: AnyApi) => d.status === "draft");
     if (!drafts.length) return;
     const api = ctx.getApi() as AnyApi;
     for (const draft of drafts) {

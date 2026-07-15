@@ -347,6 +347,7 @@ import { computed, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import PaneShell from "../layout/PaneShell.vue";
 import AzurePrRow from "./azure/AzurePrRow.vue";
 import AzureAuditLog from "./azure/AzureAuditLog.vue";
@@ -356,6 +357,8 @@ withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { sho
 
 const appStore = useAppStore();
 const pipelinesStore = useAzurePipelinesStore();
+// Fetch + keep the Azure inbox (lists + connections) current while mounted.
+useResourceInterest(() => "azure-inbox");
 const { isMobile } = useIsNarrow();
 const menuOpen = ref(false);
 const tabsMenuOpen = ref(false);
@@ -406,8 +409,10 @@ const openingPrKey = ref<string>("");
 const activeTab = ref<string>("attention");
 const openError = ref<string>("");
 
+// Provider state = core badges/connections + the on-demand inbox detail
+// (lists, profile-scoped connections) fetched via the resource interest above.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const azureData = computed<Record<string, any>>(() => appStore.payload?.azureDevops || {});
+const azureData = computed<Record<string, any>>(() => appStore.providerState("azure") || {});
 // Backend's snapshot now ships connections for every open profile so a save
 // in a non-primary window doesn't disappear (see getAzureConnections). Each
 // window shows only its own profile's connections — without this filter,

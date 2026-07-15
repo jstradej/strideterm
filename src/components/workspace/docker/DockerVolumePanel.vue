@@ -91,7 +91,7 @@ const view = ref<VolumeView>("inspect");
 
 const volume = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   return docker?.volumes?.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (v: any) =>
@@ -101,7 +101,7 @@ const volume = computed(() => {
 
 const usedByCount = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const docker = (appStore.payload as any)?.docker;
+  const docker = appStore.dockerState();
   if (!docker?.containers || !props.tab.volumeName) return 0;
   let count = 0;
   for (const c of docker.containers as Array<{

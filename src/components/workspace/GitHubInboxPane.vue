@@ -255,6 +255,7 @@
 import { computed, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import PaneShell from "../layout/PaneShell.vue";
 import GitHubPrRow from "./github/GitHubPrRow.vue";
 import AuditLog from "./azure/AzureAuditLog.vue";
@@ -262,6 +263,8 @@ import AuditLog from "./azure/AzureAuditLog.vue";
 withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
+// Fetch + keep the GitHub inbox (lists + connections) current while mounted.
+useResourceInterest(() => "github-inbox");
 const { isMobile } = useIsNarrow();
 const menuOpen = ref(false);
 const tabsMenuOpen = ref(false);
@@ -307,8 +310,10 @@ const repoFilter = ref<string>("");
 
 const activeTabInfo = computed(() => inboxTabs.value.find((t) => t.id === activeTab.value) || inboxTabs.value[0]);
 
+// Provider state = core badges/connections + the on-demand inbox detail
+// fetched via the resource interest above.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const githubData = computed<Record<string, any>>(() => (appStore.payload?.github as any) || {});
+const githubData = computed<Record<string, any>>(() => (appStore.providerState("github") as any) || {});
 // Backend ships connections for every open profile (see getGitHubConnections).
 // Each window shows only its own profile's connections.
 const connections = computed(() => {
