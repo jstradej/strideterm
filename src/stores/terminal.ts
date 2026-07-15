@@ -184,6 +184,10 @@ export const useTerminalStore = defineStore("terminal", () => {
     return controller?.getSearchAddon(sessionId) ?? null;
   }
 
+  function getVisibleTerminalText(sessionId: string): string {
+    return controller?.getVisibleTerminalText(sessionId) ?? "";
+  }
+
   // Programmatic equivalent of pressing Ctrl/Cmd+F — used by the header
   // button and the "Find in terminal" context-menu entry. Routes through
   // the same window event so the overlay open path is single-sourced.
@@ -208,6 +212,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     syncTheme,
     syncFontSize,
     getSearchAddon,
+    getVisibleTerminalText,
     requestSearch,
   };
 });

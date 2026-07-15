@@ -1255,6 +1255,28 @@ export function createTerminalController({
     view?.term?.clear();
   }
 
+  // Text currently visible in the terminal viewport — i.e. exactly what's on
+  // screen right now, trailing blank lines trimmed. Used by the remote/mobile
+  // "copy screen" control: selecting text by hand is painful on touch, and the
+  // visible screen is almost always the agent's latest answer. Reads xterm's
+  // live buffer client-side (the remote web client runs its own xterm), so it
+  // works on both transports.
+  function getVisibleTerminalText(sessionId: string): string {
+    const view = views.value.get(sessionId);
+    const term = view?.term;
+    const buffer = term?.buffer?.active;
+    if (!term || !buffer) {
+      return "";
+    }
+    const top = buffer.viewportY;
+    const lines: string[] = [];
+    for (let row = 0; row < term.rows; row += 1) {
+      const line = buffer.getLine(top + row);
+      lines.push(line ? line.translateToString(true) : "");
+    }
+    return lines.join("\n").replace(/\s+$/, "");
+  }
+
   function exportTerminalTranscript(sessionId: string, { title = "Terminal", lineCount = 500 } = {}): boolean {
     const transcript = getTerminalTranscript(sessionId, { lineCount });
     if (!transcript) {
@@ -1366,6 +1388,7 @@ export function createTerminalController({
     exportTerminalTranscript,
     focusActiveTerminal,
     getSearchAddon,
+    getVisibleTerminalText,
     handleTerminalData,
     handleTerminalReplay,
     handleTerminalExit,

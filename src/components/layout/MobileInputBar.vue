@@ -40,6 +40,62 @@
         >
           {{ key.label }}
         </button>
+        <div class="mobile-input-bar__more">
+          <button
+            type="button"
+            class="mobile-input-bar__key mobile-input-bar__key--more"
+            :class="{ 'mobile-input-bar__key--active': menuOpen }"
+            title="More keys and actions — arrows, Home/End, Ctrl+R, Ctrl+L, insert /, and copy the visible screen."
+            aria-haspopup="true"
+            :aria-expanded="menuOpen"
+            @mousedown.prevent
+            @click="toggleMenu"
+          >
+            ⋯
+          </button>
+          <template v-if="menuOpen">
+            <div class="mobile-input-bar__menu-backdrop" @mousedown.prevent @click="menuOpen = false"></div>
+            <div class="mobile-input-bar__menu" @mousedown.prevent>
+              <button
+                type="button"
+                class="mobile-input-bar__menu-item"
+                title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎."
+                @click="insertSlash"
+              >
+                /&nbsp;&nbsp;Slash command
+              </button>
+              <button
+                v-for="cmd in slashCommands"
+                :key="cmd"
+                type="button"
+                class="mobile-input-bar__menu-item mobile-input-bar__menu-item--cmd"
+                :title="`Put ${cmd} in the field, ready to send with ⏎ (or add arguments first).`"
+                @click="setSlashCommand(cmd)"
+              >
+                {{ cmd }}
+              </button>
+              <div class="mobile-input-bar__menu-sep" role="separator"></div>
+              <button
+                type="button"
+                class="mobile-input-bar__menu-item"
+                title="Copy the text currently visible in the terminal to the clipboard — usually the agent's latest answer."
+                @click="copyScreen"
+              >
+                📄&nbsp;&nbsp;Copy screen
+              </button>
+              <button
+                v-for="key in menuKeys"
+                :key="key.label"
+                type="button"
+                class="mobile-input-bar__menu-item"
+                :title="key.title"
+                @click="sendMenuKey(key)"
+              >
+                {{ key.menuLabel || key.label }}
+              </button>
+            </div>
+          </template>
+        </div>
         <button
           type="button"
           class="mobile-input-bar__key mobile-input-bar__key--paste"
@@ -91,10 +147,18 @@
 import { computed, inject, nextTick, ref, watch } from "vue";
 import type { Transport } from "../../transport.js";
 import { useAppStore } from "../../stores/app.js";
+import { useTerminalStore } from "../../stores/terminal.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { readMobileInputBarCollapsed, writeMobileInputBarCollapsed } from "../../app/helpers.js";
 
 const api = inject<Transport>("api");
 const store = useAppStore();
+const termStore = useTerminalStore();
+const notifications = useNotificationStore();
+
+function toast(title: string, body: string, kind: "info" | "error" = "info"): void {
+  notifications.pushEphemeralToast({ title, body, kind, durationMs: 3000 });
+}
 
 // The session list is authoritative: virtual panes can use arbitrary view ID
 // formats, while every writable terminal has a matching runtime session.
@@ -139,6 +203,8 @@ watch(targetSessionId, (sessionId, previousSessionId) => {
 // accept the CSI variants too, so no DECCKM tracking is needed here.
 interface AccessoryKey {
   label: string;
+  /** Longer label used when the key is rendered inside the ⋯ menu. */
+  menuLabel?: string;
   seq: string;
   flushDraft: boolean;
   title: string;
@@ -176,24 +242,64 @@ const accessoryKeys: AccessoryKey[] = [
     title: "Send Arrow Down — next shell history entry, or move down in TUI menus.",
   },
   {
-    label: "←",
-    seq: "\x1b[D",
-    flushDraft: true,
-    title: "Send Arrow Left — move the cursor left on the command line.",
-  },
-  {
-    label: "→",
-    seq: "\x1b[C",
-    flushDraft: true,
-    title: "Send Arrow Right — move the cursor right on the command line.",
-  },
-  {
     label: "^C",
     seq: "\x03",
     flushDraft: false,
     title: "Send Ctrl+C — interrupt the running command or cancel the current input line.",
   },
 ];
+
+// Secondary keys live in the ⋯ menu — the left/right arrows moved here to free
+// space on the top row, alongside less-frequent line-editing and control keys.
+const menuKeys: AccessoryKey[] = [
+  {
+    label: "←",
+    menuLabel: "←  Left",
+    seq: "\x1b[D",
+    flushDraft: true,
+    title: "Send Arrow Left — move the cursor left on the command line.",
+  },
+  {
+    label: "→",
+    menuLabel: "→  Right",
+    seq: "\x1b[C",
+    flushDraft: true,
+    title: "Send Arrow Right — move the cursor right on the command line.",
+  },
+  {
+    label: "Home",
+    menuLabel: "⇤  Home",
+    seq: "\x1b[H",
+    flushDraft: true,
+    title: "Send Home — jump to the start of the line.",
+  },
+  {
+    label: "End",
+    menuLabel: "⇥  End",
+    seq: "\x1b[F",
+    flushDraft: true,
+    title: "Send End — jump to the end of the line.",
+  },
+  {
+    label: "^R",
+    menuLabel: "⌕  Ctrl+R  (history search)",
+    seq: "\x12",
+    flushDraft: false,
+    title: "Send Ctrl+R — reverse history search in the shell.",
+  },
+  {
+    label: "^L",
+    menuLabel: "␌  Ctrl+L  (clear)",
+    seq: "\x0c",
+    flushDraft: false,
+    title: "Send Ctrl+L — clear the screen.",
+  },
+];
+
+const menuOpen = ref(false);
+function toggleMenu(): void {
+  menuOpen.value = !menuOpen.value;
+}
 
 function sendData(data: string): void {
   if (!targetSessionId.value) return;
@@ -212,6 +318,64 @@ function sendKey(key: AccessoryKey): void {
   sendData((key.flushDraft ? currentDraft : "") + key.seq);
   draft.value = "";
   if (inputRef.value) inputRef.value.value = "";
+}
+
+function sendMenuKey(key: AccessoryKey): void {
+  menuOpen.value = false;
+  sendKey(key);
+}
+
+// Insert "/" into the draft so the user can build an agent slash command
+// (e.g. "/help") in the field and send it with ⏎. Mirrors the paste dance so
+// an in-flight IME composition can't clobber the inserted character.
+function insertSlash(): void {
+  const current = composing.value ? (inputRef.value?.value ?? draft.value) : draft.value;
+  ignoreCompositionEnd.value = composing.value;
+  composing.value = false;
+  submitAfterComposition.value = false;
+  draft.value = current + "/";
+  valueAfterIgnoredComposition = draft.value;
+  if (inputRef.value) inputRef.value.value = draft.value;
+  menuOpen.value = false;
+  inputRef.value?.focus();
+}
+
+// Quick full slash commands. Unlike the "/" insert, these REPLACE the draft with
+// the complete command, ready to send with ⏎ (or to extend first, e.g.
+// "/model opus"). Replacing avoids producing an invalid "text/clear" — a
+// deliberate command tap wins over a stray draft.
+const slashCommands = ["/clear", "/model", "/usage", "/status"];
+function setSlashCommand(cmd: string): void {
+  ignoreCompositionEnd.value = composing.value;
+  composing.value = false;
+  submitAfterComposition.value = false;
+  draft.value = cmd;
+  valueAfterIgnoredComposition = draft.value;
+  if (inputRef.value) inputRef.value.value = draft.value;
+  menuOpen.value = false;
+  inputRef.value?.focus();
+}
+
+// Copy the visible terminal screen to the clipboard. Selecting text by hand is
+// painful on touch, and what's on screen is almost always the agent's latest
+// answer. The clipboard write runs synchronously inside the click gesture so
+// the browser's transient-activation requirement is met on the remote web
+// client (same constraint as copy-on-select in terminal-controller.ts).
+async function copyScreen(): Promise<void> {
+  menuOpen.value = false;
+  const sessionId = targetSessionId.value;
+  if (!sessionId) return;
+  const text = termStore.getVisibleTerminalText(sessionId);
+  if (!text) {
+    toast("Nothing to copy", "The terminal screen is empty.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copied", "The visible terminal screen is on the clipboard.");
+  } catch {
+    toast("Copy failed", "The browser blocked clipboard access.", "error");
+  }
 }
 
 // Delay between the composed text and its Enter, matching #writeAndSubmit in

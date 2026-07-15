@@ -263,6 +263,62 @@ describe("MobileInputBar", () => {
     });
   });
 
+  describe("⋯ menu", () => {
+    // ← → moved off the top row into this menu, alongside Home/End/Ctrl+R/Ctrl+L.
+    const MENU_KEYS: Array<[glyph: string, seq: string]> = [
+      ["←", "\x1b[D"],
+      ["→", "\x1b[C"],
+      ["⇤", "\x1b[H"],
+      ["⇥", "\x1b[F"],
+      ["⌕", "\x12"],
+      ["␌", "\x0c"],
+    ];
+
+    it.each(MENU_KEYS)("sends the right sequence for menu key %s", async (glyph, seq) => {
+      const { wrapper, writeTerminal } = mountBar();
+      await wrapper.find("button.mobile-input-bar__key--more").trigger("click");
+      const item = wrapper.findAll("button.mobile-input-bar__menu-item").find((b) => b.text().startsWith(glyph));
+      expect(item, `menu key "${glyph}" should exist`).toBeTruthy();
+      await item!.trigger("click");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq);
+    });
+
+    it("inserts '/' into the draft without sending it", async () => {
+      const { wrapper, writeTerminal } = mountBar();
+      await wrapper.find("button.mobile-input-bar__key--more").trigger("click");
+      const slash = wrapper
+        .findAll("button.mobile-input-bar__menu-item")
+        .find((b) => b.text().includes("Slash command"));
+      expect(slash).toBeTruthy();
+      await slash!.trigger("click");
+      const input = wrapper.find("[data-role='mobile-input-bar-input']");
+      expect((input.element as HTMLInputElement).value).toBe("/");
+      expect(writeTerminal).not.toHaveBeenCalled();
+    });
+
+    it.each(["/clear", "/model", "/usage", "/status"])(
+      "puts the quick command %s into the draft without sending",
+      async (cmd) => {
+        const { wrapper, writeTerminal } = mountBar();
+        await wrapper.find("button.mobile-input-bar__key--more").trigger("click");
+        const item = wrapper.findAll("button.mobile-input-bar__menu-item").find((b) => b.text() === cmd);
+        expect(item, `menu item "${cmd}" should exist`).toBeTruthy();
+        await item!.trigger("click");
+        const input = wrapper.find("[data-role='mobile-input-bar-input']");
+        expect((input.element as HTMLInputElement).value).toBe(cmd);
+        expect(writeTerminal).not.toHaveBeenCalled();
+      },
+    );
+
+    it("closes the menu after choosing an item", async () => {
+      const { wrapper } = mountBar();
+      await wrapper.find("button.mobile-input-bar__key--more").trigger("click");
+      expect(wrapper.find("button.mobile-input-bar__menu-item").exists()).toBe(true);
+      await wrapper.findAll("button.mobile-input-bar__menu-item")[0].trigger("click");
+      expect(wrapper.find("button.mobile-input-bar__menu-item").exists()).toBe(false);
+    });
+  });
+
   describe("accessory keys", () => {
     const EXPECTED: Array<[label: string, seq: string]> = [
       ["Esc", "\x1b"],
@@ -270,8 +326,6 @@ describe("MobileInputBar", () => {
       ["⇧Tab", "\x1b[Z"],
       ["↑", "\x1b[A"],
       ["↓", "\x1b[B"],
-      ["←", "\x1b[D"],
-      ["→", "\x1b[C"],
       ["^C", "\x03"],
     ];
 
