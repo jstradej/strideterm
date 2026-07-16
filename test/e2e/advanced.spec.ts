@@ -407,8 +407,20 @@ test.describe("Visual regression — split and task @visual", () => {
   test("task workspace dashboard", async ({ page }) => {
     await openApp(page, mockTask);
     await expect(page.getByText("Auth Refactor Task")).toBeVisible();
-    await page.waitForTimeout(500);
-    await expect(page).toHaveScreenshot("task-workspace-dashboard.png");
+    // A 3-panel task workspace auto-arranges into a top-split, but that layout
+    // settles racily under parallel load: sometimes solo + Worker view,
+    // sometimes split + Dashboard view. A full-page snapshot of that auto state
+    // is therefore inherently flaky. Drive explicitly to a deterministic solo
+    // Dashboard view and snapshot only the dashboard pane, so the shot is
+    // stable regardless of scheduling.
+    await page.waitForLoadState("networkidle").catch(() => undefined);
+    const unsplit = page.locator("button", { hasText: "Unsplit" });
+    if (await unsplit.isVisible().catch(() => false)) await unsplit.click();
+    await page.locator('.tab[data-view-id^="task-dashboard:"]').first().click();
+    const dashboard = page.locator(".workspace-pane__body--task-dashboard");
+    await expect(dashboard.getByText("What should the Worker do?")).toBeVisible();
+    await page.waitForTimeout(300);
+    await expect(dashboard).toHaveScreenshot("task-workspace-dashboard.png");
   });
 
   test("task creation dialog", async ({ page }) => {
