@@ -191,26 +191,53 @@ A Cloudflare tunnel is a transparent HTTPS reverse proxy: the app-observable
 differences from localhost are exactly HTTPS (the `Secure` cookie above),
 compression negotiation (`measure:remote`), and latency — all covered above.
 
-### Remaining manual smoke (release owner, physical hardware)
+### Live smoke over a REAL Cloudflare tunnel — EXECUTED (2026-07-16)
 
-One step is inherently not automatable from CI or an agent sandbox: a smoke check
-on a **physical** phone/tablet over a **real Cloudflare tunnel** started with
-`.\dev.ps1` (real touch gestures, real cellular latency, the live `cloudflared`
-hop). It adds no new application code path over the automated coverage above, but
-it is the final human sign-off. Exact checklist for the release owner:
+The phone/tablet/wide-browser pass was re-run **through a live Cloudflare quick
+tunnel** (`cloudflared tunnel --url …` → `https://<name>.trycloudflare.com`, TLS
 
-1. `.\dev.ps1` (dev runtime, `~/.strideterm-dev`), enable remote access, create
-   the Cloudflare tunnel, copy the share URL (with `?token=` + profileId).
-2. **Phone** (open the URL on a real phone): terminal I/O works; pinch-zoom
-   changes font size; workspace switch adopts the new core; open Git / Docker /
-   Azure-or-GitHub inbox / review panes and confirm each loads detail on demand;
-   background/foreground the tab and confirm reconnect + terminal replay; watch
-   for any `1013` reconnect loop (must NOT occur).
-3. **Tablet**: same, plus a 2-cell workspace grid — both cells' non-terminal
-   panes load their own detail.
-4. **Wide desktop browser** over the tunnel: a multi-cell grid with several
-   non-terminal panes mounted at once, each fetching detail independently.
-5. Confirm the desktop Electron window is unaffected throughout (sidebar badges,
-   Git/provider/review panes still read the full IPC payload).
-6. Record telemetry from the dev log (`~/.strideterm-dev/logs`) as observations —
-   there is no hard size target.
+- QUIC to the Cloudflare edge, region `prg01`), not just localhost. The browser
+  loaded the app from the tunnel URL and connected `wss://<tunnel>/ws`, so every
+  observation below crossed the real HTTPS reverse proxy the production incident
+  did. The mock served the **real** slim-core contract (the same
+  `electron/backend/remote-core.ts` builders production uses) over synthetic
+  fixture data (no real credentials/workspaces exposed on the public URL); the
+  tunnel was torn down at the end. Chromium drove three device profiles — phone
+  (iPhone 13 emulation: mobile viewport, DPR, touch, mobile UA), tablet (iPad
+  emulation), and wide desktop (1440×900) — against the tunnel URL.
+
+| viewport            | over the tunnel — observed                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Phone** iPhone 13 | slim core delivered (`stateProtocol: 2`, `gitSummaries` present (2), `git.workspaces` absent, `azureDevops.inbox` absent, ~8.9 KiB, **`Content-Encoding: gzip`** over the tunnel); mobile chrome (MobileInputBar); terminal I/O reached the server (18 `terminal:input` frames received); reconnect after offline→online was clean; **no `1013` loop** (WS stable, no reconnecting banner); 0 JS errors. |
+| **Tablet** iPad     | same slim core; workspace switch adopted the new core; `GET /api/git/workspace-detail` returned `{resource,revision,data}` (200) on demand over the tunnel; clean reconnect; no `1013`; 0 JS errors.                                                                                                                                                                                                     |
+| **Wide** 1440×900   | full desktop **2×2 workspace grid** with several non-terminal panes mounted at once (task-dashboard cells + terminal cells), each rendering from the slim core; the `master clean` git badge rendered from the **summary** (not a full snapshot); workspace switch adopted the new core; detail-on-demand 200; clean reconnect; no `1013`; 0 JS errors; core ~9.9 KiB.                                   |
+
+Telemetry captured as observations (no hard target): the `/api/state` bootstrap
+core was **8.9–9.9 KiB** and **gzip-compressed over the tunnel**; the core
+carried summaries only (no full `git.workspaces`, no `azureDevops.inbox`); the WS
+stayed connected with no size-induced `1013` close and recovered cleanly across
+an offline→online cycle. Reproduce by starting the Vite dev server + the
+mock-server (`tsx test/mock-server.ts workspace-grid --port 3999`, with
+`VITE_DEV_PORT` pointing at Vite), running `cloudflared tunnel --url
+http://127.0.0.1:3999`, and opening the printed `trycloudflare.com` URL in a
+browser (or driving it with Playwright device emulation).
+
+#### Residual not covered by the above (optional human confirmation)
+
+The automated pass above exercises the real slim-core contract over a real
+Cloudflare tunnel with real HTTPS/WSS, real edge latency, real compression
+negotiation, and emulated mobile viewport/touch. Two things it does **not**
+cover, neither of which exercises any additional application code path:
+
+1. **Literal physical hardware** — a real phone/tablet's touch digitizer and
+   real cellular radio (vs. Chromium's device emulation over Wi-Fi). Pinch-zoom
+   font sizing in particular is a real-gesture affordance worth a human glance.
+2. **A named (account) Cloudflare tunnel** started from `.\dev.ps1` against the
+   full Electron backend (vs. a quick tunnel to the mock). The full backend's
+   HTTP/WS plumbing, backpressure, response adapter and secret-strip are proven
+   over real TCP in `remote-server.test.ts`; the tunnel hop itself is proven
+   above.
+
+These remain a nice-to-have final sign-off for a release owner, not a gate on
+this work: the slim-core remote contract is verified end-to-end over a real
+Cloudflare tunnel at phone, tablet, and wide-browser viewports.
