@@ -21,23 +21,28 @@ reproduces them.
 | ---------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------- |
 | Pre-dedup full payload (2.4.10, with `git.projects` + `appState.projects` aliases) | **2109.3 KiB** | —                                                             |
 | Post-dedup desktop payload (Phase 1 removed the byte-identical aliases)            | **1300.8 KiB** | **38.3%** vs pre-dedup                                        |
-| Slim `RemoteStateV2` core (protocol 2, one profile)                                | **10.6 KiB**   | **99.2%** vs post-dedup desktop payload · **99.5%** vs 2.4.10 |
+| Slim `RemoteStateV2` core (protocol 2, one profile)                                | **9.9 KiB**    | **99.2%** vs post-dedup desktop payload · **99.5%** vs 2.4.10 |
 
 The Phase 1 dedup alone cuts ~38% (the projects aliases the plan flagged as
 "byte-identical duplicate"). The slim core then removes the rest of the weight —
 full git logs, provider PR threads/issue comments, and Docker lists are fetched
-on demand — leaving a ~10 KiB core for the always-on navigation + badges. This
-is telemetry, **not** a correctness gate: no socket is closed for a large frame
-(see `terminalBackpressureDecision` / `socketStallDecision`).
+on demand — leaving a ~10 KiB core for the always-on navigation + badges (the
+core shrank further once the provider PR reducer switched from a denylist to an
+exact badge allowlist and settings dropped the tunnel/Telegram management
+blocks). This is telemetry, **not** a correctness gate: no socket is closed for
+a large frame (see `terminalBackpressureDecision` / `socketStallDecision`).
 
 ## HTTP bootstrap compression (Phase 4)
 
-The `/api/state` bootstrap core (10.6 KiB) compresses to:
+The `/api/state` bootstrap core (9.9 KiB) compresses to:
 
 | Encoding | Size                 | Compress time | Ratio |
 | -------- | -------------------- | ------------- | ----- |
-| Brotli   | **1.2 KiB** (1222 B) | ~16.5 ms      | 88.8% |
-| gzip     | **1.6 KiB** (1600 B) | ~0.35 ms      | 85.3% |
+| Brotli   | **1.1 KiB** (1148 B) | ~9.5 ms       | 88.7% |
+| gzip     | **1.5 KiB** (1504 B) | ~0.31 ms      | 85.2% |
+
+(Compress **sizes** are deterministic; the **times** are indicative and vary per
+run/machine — Brotli trades markedly more CPU for a modestly smaller body.)
 
 Brotli is preferred (better ratio) and is chosen when the client's
 `Accept-Encoding` advertises it; gzip is the fallback (`pickEncoding` in
@@ -48,30 +53,63 @@ or detail skip the body entirely.
 
 ## WS `permessage-deflate` evaluation (Phase 4 — "evaluate only after measuring")
 
-After bootstrap the WebSocket carries only **tiny** frames: a steady-state
-`resource:invalidate` is **97 B**, and state deltas are latest-wins coalesced
-slim cores. permessage-deflate would compress a ~100 B frame to roughly the same
-size — it sits below the deflate window's useful floor — while adding per-frame
-CPU and a compression context (memory) **per socket**.
+The plan requires measuring CPU **and** memory before deciding, not inferring
+them. `npm run measure:remote` compresses the two representative post-bootstrap
+frames with raw DEFLATE at the parameters `ws` uses for permessage-deflate
+(`windowBits: 15`, `memLevel: 8`, RFC 7692) and measures per-frame CPU (median of
+2000 runs) and the actual per-socket compression-context memory (RSS delta over
+200 contexts with context takeover, the default):
 
-**Recommendation: keep WS `permessage-deflate` OFF.** HTTP compression already
-covers the single large transfer (the bootstrap core over `/api/state`); the
-ongoing WS traffic is small invalidations plus coalesced core deltas, for which
-per-message deflate is net-negative (CPU/memory for no meaningful byte saving).
-The small core/invalidation protocol deliberately does not depend on it
-(plan §Phase 4). Revisit only if profiling a real deployment shows the WS delta
-stream — not the bootstrap — dominating bandwidth, which the coalescing +
-summary/detail split is designed to prevent.
+| Ongoing WS frame                     | Raw     | Deflated | Saving   | CPU / frame (median) |
+| ------------------------------------ | ------- | -------- | -------- | -------------------- |
+| `resource:invalidate` (steady state) | 97 B    | 86 B     | **11 B** | ~0.007 ms            |
+| coalesced core delta (largest)       | 9.9 KiB | 1.5 KiB  | ~85%     | ~0.033 ms            |
+
+| Cost                                      | Measured                                   |
+| ----------------------------------------- | ------------------------------------------ |
+| Per-socket compression context (takeover) | **~65 KiB / socket** (RSS delta)           |
+| → deflate state alone at scale            | ~1.5 k sockets ≈ **~100 MB** of zlib state |
+
+**Recommendation: keep WS `permessage-deflate` OFF.** The steady-state
+invalidation is below the deflate window's useful floor — it saves ~11 bytes per
+frame. The core delta compresses well (~85%), but it is a **latest-wins-coalesced,
+infrequent** frame, and its saving is dwarfed by a **~65 KiB compression context
+retained per connected socket** (context takeover) plus per-frame CPU. HTTP
+compression already covers the one large transfer (the bootstrap core over
+`/api/state`); the ongoing WS traffic is tiny invalidations plus coalesced core
+deltas, for which per-message deflate is net-negative on both CPU and memory. The
+small core/invalidation protocol deliberately does not depend on it (plan
+§Phase 4). Revisit only if profiling a real deployment shows the WS delta stream
+— not the bootstrap — dominating bandwidth, which the coalescing + summary/detail
+split is designed to prevent. (Compressed **sizes** are deterministic; CPU/RSS
+numbers are indicative and vary per run/machine.)
 
 ## Live end-to-end validation (plan §Verification 9)
 
 Automated coverage exercises the full remote path headlessly — HTTP bootstrap →
-slim core, WS state deltas, detail endpoints + profile authorization, the
-interest → invalidate → fetch pipeline, capability negotiation, the
-bootstrap→WS revision handoff, reconnect resubscription, and the v1/v2
-compatibility split (`electron/backend/remote-server.test.ts`,
-`src/stores/remote-details.test.ts`, `src/composables/useResourceInterest.test.ts`,
-`src/transport.test.ts`, `src/stores/app.test.ts`).
+slim core, WS state deltas, targeted mutation acks, detail endpoints + profile
+authorization (including cross-profile rejection and the unbound → default
+profile scoping), the interest → invalidate → fetch pipeline, capability
+negotiation, the bootstrap→WS revision handoff and the `state:sync` first-connect
+window, reconnect resubscription, the viewer-bound per-PR review mutations, and
+the v1/v2 compatibility split (`electron/backend/remote-server.test.ts`,
+`electron/backend/remote-core.test.ts`, `src/stores/remote-details.test.ts`,
+`src/composables/useResourceInterest.test.ts`, `src/transport.test.ts`,
+`src/stores/app.test.ts`).
+
+`src/composables/useResourceInterest.test.ts` drives interest through a reactive
+grid → cell → pane structure that mirrors `WorkspaceGridStage`/`WorkspaceCell`:
+it mounts a wide multi-cell grid, ref-counts an overlapping resource, follows a
+grid cell reassignment, collapses to a mobile focused cell, and asserts the
+resulting **WS interest set actually pushed to the transport** at each step —
+covering the wide-grid / mobile-focus / responsive-collapse recompute headlessly.
+
+The Playwright UI E2E suite (`npm run test:e2e`) runs against Chromium; the
+mobile/responsive review + grid scenarios there provide the real-viewport
+counterpart to the unit coverage above. (Some E2E specs that depend on the Monaco
+editor, canvas/font rendering or committed `@visual` screenshot baselines fail in
+a bare headless environment — those failures reproduce identically on the base
+commit and are unrelated to the remote-payload work.)
 
 The remaining item that genuinely cannot run in CI is a human-in-the-loop pass
 over the tunnel on a **physical phone / tablet / wide desktop browser** via

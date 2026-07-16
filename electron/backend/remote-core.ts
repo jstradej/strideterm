@@ -98,29 +98,47 @@ export function buildGitSummaries(
 }
 
 /**
- * Heavy per-PR detail collections that never belong in the core badge summary —
- * they are megabytes (review threads with nested comments, issue comments, the
- * reviews list, changed-file diffs) and are fetched on demand via the PR detail
- * endpoint. Everything else on a PR entry is light scalar/metadata the always-on
- * sidebar badges, tab-strip counts, pipeline/review notifications and the review
- * pane header read directly off the core.
+ * The ONLY per-PR fields the core carries — an explicit allowlist, not a
+ * denylist. Everything not named here (review threads, issue comments, the
+ * reviews list, changed-file diffs, the raw `payload`, and any future heavy
+ * field a provider adds) is dropped from the core and fetched on demand via the
+ * PR detail endpoint. These are the light scalar/metadata fields the always-on
+ * sidebar badges, tab-strip counts and pipeline/review notifications read:
+ *   - `prKey` — identity/key;
+ *   - `connectionId` — pipeline-notification seeding (`usePipelineNotifications`);
+ *   - `profileId` — kept for parity (server auth resolves off the raw payload);
+ *   - `lastActivityAt` — sidebar PR-status badge;
+ *   - `checks` — sidebar badge + pipeline notifications.
  */
-const HEAVY_PR_FIELDS = [
-  "threads",
-  "issueComments",
-  "reviews",
-  "changedFiles",
-  "localChangedFiles",
-  "comments",
-  "payload",
+const LIGHT_PR_KEYS = ["prKey", "connectionId", "profileId", "lastActivityAt", "checks"] as const;
+/**
+ * The `pullRequest` sub-object is itself reduced to the badge fields both
+ * providers read (`SidebarPanel.getPrStatus` + `usePipelineNotifications`):
+ * Azure reads `status`/`closedDate`; GitHub reads `state`/`mergedAt`/`closedAt`/
+ * `updatedAt`; both surface `title` in notifications. The heavy review context
+ * (description bodies, reviewers, work items…) stays behind the detail endpoint.
+ */
+const LIGHT_PULL_REQUEST_KEYS = [
+  "status",
+  "closedDate",
+  "lastActivityAt",
+  "title",
+  "state",
+  "mergedAt",
+  "closedAt",
+  "updatedAt",
 ] as const;
 
+function pickKeys(src: AnyRecord, keys: readonly string[]): AnyRecord {
+  const out: AnyRecord = {};
+  for (const k of keys) if (k in src) out[k] = src[k];
+  return out;
+}
+
 function reducePrEntry(entry: AnyRecord): AnyRecord {
-  const light: AnyRecord = {};
-  for (const [k, v] of Object.entries(entry)) {
-    if ((HEAVY_PR_FIELDS as readonly string[]).includes(k)) continue;
-    light[k] = v;
-  }
+  const light = pickKeys(entry, LIGHT_PR_KEYS);
+  const pr = entry.pullRequest;
+  if (pr && typeof pr === "object") light.pullRequest = pickKeys(pr as AnyRecord, LIGHT_PULL_REQUEST_KEYS);
   return light;
 }
 
@@ -132,11 +150,12 @@ function matchesProfile(value: AnyRecord, profileId: string | null): boolean {
 /**
  * Reduce an Azure/GitHub provider snapshot to the badge + notification surface,
  * scoped to the client's profile. Drops the heavy `inbox` lists (fetched via the
- * inbox detail endpoint) and, from each per-PR entry, the heavy detail
- * collections (`HEAVY_PR_FIELDS`). Connections, pull requests, review activity
- * and tracked PRs are filtered to the client's profile so one browser never sees
- * another profile's PRs/connections (a null profileId — the uncomposed token
- * socket that already sees raw state — keeps everything).
+ * inbox detail endpoint) and reduces each per-PR entry to the light badge
+ * allowlist (`reducePrEntry`). Connections, pull requests, review activity and
+ * tracked PRs are filtered to the client's profile so one browser never sees
+ * another profile's PRs/connections. A null profileId keeps everything — this is
+ * a pure building block; `buildRemoteCore` passes the NO_PROFILE sentinel (never
+ * null) for an unbound socket, so an unbound v2 core scopes to nothing.
  */
 export function buildProviderCoreSummary(
   snapshot: AnyRecord | null | undefined,
@@ -345,12 +364,49 @@ export function buildCoreRevisions(
 // Core composition
 // ---------------------------------------------------------------------------
 
-function profileWorkspaceIdSet(appState: AnyRecord, profileId: string | undefined): Set<string> | null {
-  if (!profileId) return null; // uncomposed socket → all workspaces (raw state)
+/**
+ * Sentinel profile id for a v2 core with no bound profile. It equals no real
+ * profile, so every profile filter (workspaces, providers, attention) yields an
+ * EMPTY (never cross-profile) scope. The server resolves a concrete profile
+ * (the session's, else the default) before composing, so in production this is a
+ * safety net rather than a normal path — a v2 core is always profile-scoped.
+ */
+const NO_PROFILE = " __no_profile__";
+
+function profileWorkspaceIdSet(appState: AnyRecord, profileId: string): Set<string> {
   const workspaces = (appState?.workspaces || []) as AnyRecord[];
   return new Set(
     workspaces.filter((ws) => String(ws?.profileId || "default") === profileId).map((ws) => String(ws.id)),
   );
+}
+
+/** Keep only the entries of a `workspaceId → value` map whose key is in the
+ *  client's profile (task badges, attention buckets). */
+function filterByWorkspaceId<T>(map: Record<string, T> | undefined, inProfile: Set<string>): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [wsId, v] of Object.entries(map || {})) if (inProfile.has(wsId)) out[wsId] = v;
+  return out;
+}
+
+/**
+ * Scope the attention snapshot to the client's profile: the two workspace-keyed
+ * maps the sidebar reads — `sessions` (keyed by `<wsId>:<panel>`, each carrying
+ * `workspaceId`) and `byWorkspace` — are filtered so a browser never sees
+ * another profile's activity/alert metadata. Aggregate fields are left intact.
+ */
+function scopeAttention(attention: AnyRecord | undefined, inProfile: Set<string>): AnyRecord | undefined {
+  if (!attention) return attention;
+  const sessions: AnyRecord = {};
+  for (const [k, v] of Object.entries((attention.sessions || {}) as AnyRecord)) {
+    if (inProfile.has(String((v as AnyRecord)?.workspaceId))) sessions[k] = v;
+  }
+  return {
+    ...attention,
+    sessions,
+    ...(attention.byWorkspace
+      ? { byWorkspace: filterByWorkspaceId(attention.byWorkspace as AnyRecord, inProfile) }
+      : {}),
+  };
 }
 
 /** Strip the credential secret from each provider connection (`pat` for Azure,
@@ -368,11 +424,18 @@ function reduceProviderIntegrationConfig(cfg: AnyRecord | undefined, secretField
 
 /**
  * Slim the persisted `settings` for the remote core: keep the shape the remote
- * Settings dialog reads, but strip everything a browser must not receive — the
- * tunnel token + cloudflared binary path, provider PATs / GitHub tokens, and the
- * Telegram connections (bot-token refs + chat ids; Telegram is a desktop-managed
- * integration). Structural keys are preserved (empty arrays, blanked strings) so
- * the dialog's form initializer never reads `undefined`.
+ * Settings dialog reads, but strip everything that is desktop-only tunnel/
+ * integration management a browser must never receive:
+ *   - `remoteAccess` reduced to just `{ enabled }` — the tunnel host/port/token,
+ *     custom public URL, cloudflared binary path and auto-tunnel flag are all
+ *     tunnel-management config; a remote browser arrived THROUGH the tunnel and
+ *     never manages it. (The connection info it does render comes from the
+ *     runtime `remoteAccess` state via reduceRemoteAccess, not settings.)
+ *   - provider PATs / GitHub tokens dropped from the connection metadata;
+ *   - Telegram reduced to an empty `{ connections: [] }` — enabled flag, poll
+ *     interval and bot-token/chat-id connections are all desktop-managed.
+ * Structural keys are preserved (empty arrays) so the dialog's form initializer
+ * never reads `undefined`.
  */
 export function slimRemoteSettings(settings: AnyRecord | undefined): AnyRecord {
   const s = (settings || {}) as AnyRecord;
@@ -380,16 +443,12 @@ export function slimRemoteSettings(settings: AnyRecord | undefined): AnyRecord {
   const telegram = integrations.telegram as AnyRecord | undefined;
   return {
     ...s,
-    remoteAccess: s.remoteAccess
-      ? { ...(s.remoteAccess as AnyRecord), token: "", cloudflaredPath: "" }
-      : s.remoteAccess,
+    remoteAccess: s.remoteAccess ? { enabled: Boolean((s.remoteAccess as AnyRecord).enabled) } : s.remoteAccess,
     integrations: {
       ...integrations,
       azureDevops: reduceProviderIntegrationConfig(integrations.azureDevops as AnyRecord | undefined, "pat"),
       github: reduceProviderIntegrationConfig(integrations.github as AnyRecord | undefined, "token"),
-      telegram: telegram
-        ? { enabled: Boolean(telegram.enabled), defaultPollSeconds: telegram.defaultPollSeconds, connections: [] }
-        : telegram,
+      telegram: telegram ? { connections: [] } : telegram,
     },
   };
 }
@@ -427,15 +486,24 @@ export function buildRemoteCoreAppState(appState: AnyRecord, inProfile: Set<stri
  *
  * `opts.coreRevision` is the monotonic broadcast revision the client uses to
  * apply only newer snapshots (bootstrap→WS handoff); `opts.capabilities` is the
- * negotiated set advertised back to the client.
+ * negotiated set advertised back to the client; `opts.profileId` overrides the
+ * profile the core is scoped to (the server passes the session's — or, for an
+ * unbound socket, the resolved default — profile so the core is NEVER unscoped).
+ *
+ * A v2 core is always profile-scoped: without a bound profile every summary is
+ * built against an EMPTY scope (no workspaces/summaries/provider entries), so an
+ * unbound client can never receive another profile's data.
  */
 export function buildRemoteCore(
   composed: AnyRecord,
-  opts: { coreRevision?: number; capabilities?: string[] } = {},
+  opts: { coreRevision?: number; capabilities?: string[]; profileId?: string | null } = {},
 ): RemoteStateV2 {
   const appState = (composed.appState || {}) as AnyRecord;
-  const profileId = (composed.remoteClient?.profileId as string | undefined) ?? null;
-  const inProfile = profileWorkspaceIdSet(appState, profileId ?? undefined);
+  const profileId = opts.profileId ?? (composed.remoteClient?.profileId as string | undefined) ?? null;
+  const bound = Boolean(profileId);
+  const inProfile = bound ? profileWorkspaceIdSet(appState, profileId as string) : new Set<string>();
+  // A real profile filters providers/attention; the sentinel matches nothing.
+  const scope = bound ? (profileId as string) : NO_PROFILE;
   return {
     stateProtocol: REMOTE_STATE_PROTOCOL,
     capabilities: opts.capabilities ?? [...REMOTE_CAPABILITIES],
@@ -443,16 +511,18 @@ export function buildRemoteCore(
     meta: composed.meta,
     appState: buildRemoteCoreAppState(appState, inProfile),
     workspace: composed.workspace ?? null,
-    attention: composed.attention,
-    taskRunner: composed.taskRunner,
+    attention: scopeAttention(composed.attention as AnyRecord | undefined, inProfile) as RemoteStateV2["attention"],
+    taskRunner: filterByWorkspaceId(composed.taskRunner as Record<string, unknown> | undefined, inProfile),
     plugins: composed.plugins || [],
     environment: composed.environment || {},
     remoteAccess: reduceRemoteAccess(composed.remoteAccess),
     gitSummaries: buildGitSummaries(composed.git?.workspaces, inProfile),
+    // git.connections is provider-availability metadata (id/label/provider/
+    // enabled) with no profileId to scope by — global, not per-workspace data.
     git: { connections: composed.git?.connections || [] },
-    azureDevops: buildProviderCoreSummary(composed.azureDevops, profileId),
-    github: buildProviderCoreSummary(composed.github, profileId),
-    reviewBridge: buildReviewBridgeCoreSummary(composed.reviewBridge, composed, profileId),
+    azureDevops: buildProviderCoreSummary(composed.azureDevops, scope),
+    github: buildProviderCoreSummary(composed.github, scope),
+    reviewBridge: buildReviewBridgeCoreSummary(composed.reviewBridge, composed, scope),
     docker: buildDockerCoreSummary(composed.docker),
     revisions: buildCoreRevisions(composed, inProfile),
     ...(composed.remoteClient ? { remoteClient: composed.remoteClient } : {}),
@@ -517,13 +587,15 @@ function prBelongsToProfile(payload: AnyRecord, prKey: string, profileId: string
 }
 
 /**
- * Whether a client bound to `profileId` may read `resourceKey`. A null profileId
- * (uncomposed token socket that already sees raw state) is allowed everything.
- * Cross-profile ids are rejected even when they exist globally.
+ * Whether a client bound to `profileId` may read `resourceKey`. A v2 detail
+ * request is always profile-scoped: without a resolved profile NOTHING is
+ * authorized (the server resolves the session's profile, or the default, before
+ * calling this — an unbound request is scoped to the default profile, never
+ * "everything"). Cross-profile ids are rejected even when they exist globally.
  */
 export function resourceProfileAuthorized(payload: AnyRecord, profileId: string | null, resourceKey: string): boolean {
   if (!isKnownResourceKey(resourceKey)) return false;
-  if (!profileId) return true;
+  if (!profileId) return false;
   const { type, id } = parseResourceKey(resourceKey);
   switch (type) {
     case "docker":

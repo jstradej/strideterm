@@ -262,12 +262,42 @@ describe("buildRemoteCore", () => {
     expect(core.revisions["azure-inbox"]).toContain("2026-07-15T11:30:00Z");
   });
 
-  test("an uncomposed payload (no remoteClient) summarizes all workspaces", () => {
+  test("an uncomposed payload (no profile) yields an EMPTY scope, never every workspace", () => {
     const p = fullPayload();
     delete (p as { remoteClient?: unknown }).remoteClient;
     const core = buildRemoteCore(p);
-    expect(Object.keys(core.gitSummaries).sort()).toEqual(["ws1", "ws2"]);
+    // A v2 core is always profile-scoped: without a bound profile it exposes NO
+    // profile-scoped data rather than leaking every profile. The server resolves
+    // a concrete profile (session or default) before composing, so this is a
+    // safety net rather than a normal path.
+    expect(Object.keys(core.gitSummaries)).toEqual([]);
+    expect((core.appState as Rec).workspaces).toEqual([]);
+    expect(Object.keys(core.azureDevops.pullRequests)).toEqual([]);
+    expect(core.azureDevops.connections).toEqual([]);
     expect(core.remoteClient).toBeUndefined();
+  });
+
+  test("an explicit opts.profileId scopes the core even without a remoteClient", () => {
+    const p = fullPayload();
+    delete (p as { remoteClient?: unknown }).remoteClient;
+    const core = buildRemoteCore(p, { profileId: "p2" });
+    expect(Object.keys(core.gitSummaries)).toEqual(["ws2"]);
+    expect((core.appState as Rec).workspaces.map((w: Rec) => w.id)).toEqual(["ws2"]);
+    expect(Object.keys(core.azureDevops.pullRequests)).toEqual(["azure:pr2"]);
+  });
+
+  test("attention + taskRunner are filtered to the client's profile workspaces", () => {
+    const p = fullPayload();
+    (p.attention as Rec).sessions = {
+      "ws1:a": { sessionId: "ws1:a", workspaceId: "ws1" },
+      "ws2:a": { sessionId: "ws2:a", workspaceId: "ws2" },
+    };
+    (p.attention as Rec).byWorkspace = { ws1: { count: 1 }, ws2: { count: 2 } };
+    p.taskRunner = { ws1: { state: "running" }, ws2: { state: "idle" } };
+    const core = buildRemoteCore(p); // profile p1 (from remoteClient)
+    expect(Object.keys((core.attention as Rec).sessions)).toEqual(["ws1:a"]);
+    expect(Object.keys((core.attention as Rec).byWorkspace)).toEqual(["ws1"]);
+    expect(Object.keys(core.taskRunner)).toEqual(["ws1"]);
   });
 });
 
@@ -298,20 +328,32 @@ describe("buildRemoteCore — slim appState + secrets", () => {
     expect(dump).not.toContain("SECRETHOSTKEY");
   });
 
-  test("settings secrets (PAT, GitHub token, tunnel token/path, telegram) are stripped", () => {
+  test("settings secrets + desktop-only tunnel/telegram config are stripped", () => {
     const core = buildRemoteCore(fullPayload());
     const settings = (core.appState as Rec).settings as Rec;
     // Provider connection metadata kept, secrets removed.
     expect(settings.integrations.azureDevops.connections[0].id).toBe("az1");
     expect(settings.integrations.azureDevops.connections[0].pat).toBeUndefined();
     expect(settings.integrations.github.connections[0].token).toBeUndefined();
-    // Telegram connections dropped entirely (desktop-managed integration).
-    expect(settings.integrations.telegram.connections).toEqual([]);
-    // Tunnel token + binary path blanked.
-    expect(settings.remoteAccess.token).toBe("");
-    expect(settings.remoteAccess.cloudflaredPath).toBe("");
+    // Telegram reduced to an empty structural stub — connections, the enabled
+    // flag and the poll interval are all desktop-managed and never leak.
+    expect(settings.integrations.telegram).toEqual({ connections: [] });
+    expect(settings.integrations.telegram.enabled).toBeUndefined();
+    expect(settings.integrations.telegram.defaultPollSeconds).toBeUndefined();
+    // remoteAccess reduced to just { enabled } — the tunnel host/port/token,
+    // custom URL, cloudflared path and auto-tunnel flag are all desktop-only.
+    expect(settings.remoteAccess).toEqual({ enabled: true });
+    expect(settings.remoteAccess.token).toBeUndefined();
+    expect(settings.remoteAccess.cloudflaredPath).toBeUndefined();
     const dump = JSON.stringify(core);
-    for (const secret of ["AZURE-PAT-SECRET", "GITHUB-TOKEN-SECRET", "SUPER-SECRET-TOKEN", "cred:bot", "123456789"]) {
+    for (const secret of [
+      "AZURE-PAT-SECRET",
+      "GITHUB-TOKEN-SECRET",
+      "SUPER-SECRET-TOKEN",
+      "/usr/bin/cloudflared",
+      "cred:bot",
+      "123456789",
+    ]) {
       expect(dump).not.toContain(secret);
     }
     // Non-secret settings still present so the remote Settings dialog works.
@@ -411,11 +453,19 @@ describe("resourceProfileAuthorized", () => {
     expect(resourceProfileAuthorized(p, "p1", "review-bridge:azure:pr2")).toBe(false);
   });
 
-  test("docker/inbox are always allowed (scoped internally); null profile allows all", () => {
+  test("docker/inbox are allowed for a bound profile (scoped internally)", () => {
     const p = fullPayload();
     expect(resourceProfileAuthorized(p, "p1", "docker")).toBe(true);
     expect(resourceProfileAuthorized(p, "p1", "azure-inbox")).toBe(true);
-    expect(resourceProfileAuthorized(p, null, "git:ws2")).toBe(true);
+  });
+
+  test("a null (unbound) profile authorizes NOTHING — the server resolves a real profile first", () => {
+    const p = fullPayload();
+    expect(resourceProfileAuthorized(p, null, "git:ws1")).toBe(false);
+    expect(resourceProfileAuthorized(p, null, "git:ws2")).toBe(false);
+    expect(resourceProfileAuthorized(p, null, "docker")).toBe(false);
+    expect(resourceProfileAuthorized(p, null, "azure-inbox")).toBe(false);
+    expect(resourceProfileAuthorized(p, null, "azure-pr:azure:pr1")).toBe(false);
   });
 });
 

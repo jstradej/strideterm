@@ -141,6 +141,35 @@ describe("remote transport endpoint routing", () => {
     expect(states.length).toBeGreaterThan(0);
   });
 
+  it("sends state:sync with the bootstrap revision on first-connect open (closes the [bootstrap, open] window)", async () => {
+    // The first WS is created synchronously at construction, before any bootstrap
+    // — so its URL carries NO ?rev=. Bootstrap then records a revision; on the
+    // first socket's open the client hands that revision off via state:sync so
+    // the server catches it up on anything that changed in between.
+    globalThis.fetch = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ coreRevision: 7 }),
+          headers: { get: () => null },
+        }) as unknown as Response,
+    ) as unknown as typeof fetch;
+
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    // First socket URL was frozen before the revision existed → no ?rev=.
+    expect(first.url).not.toContain("rev=");
+
+    await transport.getState(); // records lastCoreRevision = 7 (socket still CONNECTING)
+    // Nothing sent yet — the socket isn't open.
+    expect(first.sent.map((r) => JSON.parse(r)).some((m) => m.type === "state:sync")).toBe(false);
+
+    first.open();
+    const sync = first.sent.map((r) => JSON.parse(r)).find((m) => m.type === "state:sync");
+    expect(sync).toEqual({ type: "state:sync", rev: 7 });
+  });
+
   it("revalidates GETs with If-None-Match and reuses the cached body on 304", async () => {
     let call = 0;
     const sentIfNoneMatch: (string | null)[] = [];

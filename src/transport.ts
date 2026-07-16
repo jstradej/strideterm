@@ -337,9 +337,26 @@ export function createRemoteTransport(): Transport {
   // on the WS `?rev=` so a reconnecting socket only gets a catch-up when the
   // server has newer state (bootstrap→WS handoff). -1 until the first snapshot.
   let lastCoreRevision = -1;
+  // The FIRST WS is created synchronously at construction — before the HTTP
+  // bootstrap has recorded a revision — so its URL cannot carry `?rev=` and the
+  // server holds bootstrap-once. Once we DO have a revision we send it as a
+  // `state:sync` message so the server catches us up on anything that changed in
+  // the [bootstrap, WS-open] window (no missed-update gap). Reconnects carry
+  // `?rev=` in the URL, so this one-shot handoff only covers the first socket.
+  let firstSocketNeedsSync = true;
+  function maybeSendStateSync(): void {
+    if (!firstSocketNeedsSync || lastCoreRevision < 0) return;
+    const current = ws;
+    if (current?.readyState !== WebSocket.OPEN) return;
+    firstSocketNeedsSync = false;
+    current.send(JSON.stringify({ type: "state:sync", rev: lastCoreRevision }));
+  }
   function noteCoreRevision(state: unknown): void {
     const rev = (state as { coreRevision?: unknown })?.coreRevision;
     if (typeof rev === "number" && rev > lastCoreRevision) lastCoreRevision = rev;
+    // A freshly-recorded revision may be the one the first socket was waiting to
+    // hand off (bootstrap completed after the socket opened).
+    maybeSendStateSync();
   }
   // Per-path ETag cache for GET revalidation (bootstrap /api/state + detail
   // refetches). We send If-None-Match and, on a 304, reuse the cached body — the
@@ -496,6 +513,10 @@ export function createRemoteTransport(): Transport {
       if (hasDeclaredInterest && nextWs.readyState === WebSocket.OPEN) {
         nextWs.send(JSON.stringify({ type: "resource:interest", resources: lastResourceInterest }));
       }
+      // First-connect bootstrap handoff: if we already hold a bootstrap revision,
+      // tell the server so it catches us up on any change in the [bootstrap, open]
+      // window that the rev-less first WS URL couldn't advertise.
+      maybeSendStateSync();
       if (reconnected) {
         refreshStateAfterReconnect();
       }

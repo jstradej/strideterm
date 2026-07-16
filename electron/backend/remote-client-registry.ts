@@ -64,6 +64,15 @@ export class RemoteClientRegistry {
     return open[0] || existing[0] || "";
   }
 
+  /**
+   * Public resolver for the default profile a v2 core/detail request is scoped
+   * to when the caller has no bound session. Keeps an unbound remote client
+   * scoped to ONE profile (never every profile) instead of leaking all of them.
+   */
+  resolveFallbackProfileId(appState: AnyState): string {
+    return this.fallbackProfileId(appState);
+  }
+
   private profileWorkspaces(appState: AnyState, profileId: string): AnyState[] {
     const workspaces: AnyState[] = appState?.workspaces || [];
     return workspaces.filter((ws: AnyState) => String(ws?.profileId || "default") === profileId);

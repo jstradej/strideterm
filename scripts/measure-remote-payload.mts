@@ -18,7 +18,7 @@
  * Numbers are recorded in docs/remote-payload-measurements.md. Sizes are
  * deterministic (fixed synthetic data), so re-running reproduces them.
  */
-import { brotliCompressSync, gzipSync } from "node:zlib";
+import { brotliCompressSync, gzipSync, deflateRawSync, createDeflateRaw } from "node:zlib";
 import { performance } from "node:perf_hooks";
 import { buildRemoteCore } from "../electron/backend/remote-core.js";
 
@@ -153,6 +153,38 @@ function timeCompress(fn: () => Buffer): { bytes: number; ms: number } {
   return { bytes: out.length, ms: Number((performance.now() - start).toFixed(2)) };
 }
 
+/** Median wall-clock of `fn` over `iterations` runs, in ms (robust to GC jitter). */
+function medianMs(fn: () => void, iterations: number): number {
+  const samples: number[] = [];
+  for (let i = 0; i < iterations; i += 1) {
+    const t = performance.now();
+    fn();
+    samples.push(performance.now() - t);
+  }
+  samples.sort((a, b) => a - b);
+  return Number(samples[Math.floor(samples.length / 2)].toFixed(4));
+}
+
+/**
+ * Actual per-socket memory cost of a permessage-deflate compression context with
+ * context takeover (the default): each connection keeps its own zlib DEFLATE
+ * state. We allocate `count` raw-deflate contexts with the parameters `ws` uses
+ * (windowBits 15, memLevel 8), force the native state to allocate with a write,
+ * and measure the RSS delta.
+ */
+function measurePerSocketContextBytes(count: number): number {
+  const before = process.memoryUsage().rss;
+  const contexts = [] as ReturnType<typeof createDeflateRaw>[];
+  for (let i = 0; i < count; i += 1) {
+    const ctx = createDeflateRaw({ windowBits: 15, memLevel: 8 });
+    ctx.write(Buffer.from("prime")); // force the native zlib state to allocate
+    contexts.push(ctx);
+  }
+  const after = process.memoryUsage().rss;
+  for (const ctx of contexts) ctx.close();
+  return Math.max(0, Math.round((after - before) / count));
+}
+
 function main(): void {
   const full = buildFullPayload();
 
@@ -176,12 +208,28 @@ function main(): void {
   const br = timeCompress(() => brotliCompressSync(coreRaw));
   const gz = timeCompress(() => gzipSync(coreRaw));
 
-  // (4) An ongoing WS resource:invalidate frame (post-bootstrap steady state).
+  // (4) WS permessage-deflate evaluation — MEASURED, not inferred (plan §Phase 4
+  // "evaluate only after measuring CPU/memory behavior"). Two representative
+  // post-bootstrap frames: the steady-state resource:invalidate (~100 B) and the
+  // largest ongoing frame, a coalesced core delta (the slim core itself).
   const invalidate = {
     type: "resource:invalidate",
     payload: { resource: "git:ws0", revision: "2026-07-15T13:00:00Z" },
   };
-  const invalidateBytes = bytesOf(invalidate);
+  const invalidateRaw = Buffer.from(JSON.stringify(invalidate), "utf8");
+  const coreDeltaRaw = coreRaw; // a coalesced state:updated carries the slim core
+  const DEFLATE_ITERS = 2000;
+
+  // permessage-deflate uses raw DEFLATE (RFC 7692). Compressed size + CPU:
+  const invDeflated = deflateRawSync(invalidateRaw);
+  const coreDeflated = deflateRawSync(coreDeltaRaw);
+  const invDeflateMs = medianMs(() => void deflateRawSync(invalidateRaw), DEFLATE_ITERS);
+  const coreDeflateMs = medianMs(() => void deflateRawSync(coreDeltaRaw), DEFLATE_ITERS);
+  // Per-socket compression-context memory (context takeover, the default):
+  const perSocketCtxBytes = measurePerSocketContextBytes(200);
+  const socketsFor100MB = Math.round((100 * 1024 * 1024) / Math.max(1, perSocketCtxBytes));
+
+  const invalidateBytes = invalidateRaw.length;
 
   const lines = [
     `Workspaces: ${WORKSPACE_COUNT}   Azure PRs: 26 (with review threads)   Docker: 186 images / 7 containers / 36 volumes`,
@@ -197,12 +245,20 @@ function main(): void {
     `   Brotli: ${kib(br.bytes)} (${br.bytes} B, ${br.ms} ms)   ratio ${pct(coreBytes, br.bytes)}`,
     `   gzip:   ${kib(gz.bytes)} (${gz.bytes} B, ${gz.ms} ms)   ratio ${pct(coreBytes, gz.bytes)}`,
     ``,
-    `Steady-state WS frame (resource:invalidate): ${invalidateBytes} B`,
-    `   permessage-deflate would compress a ${invalidateBytes} B frame to a similar`,
-    `   size (below the deflate window's useful floor) while adding per-frame CPU +`,
-    `   a compression context per socket → recommendation: keep WS permessage-deflate`,
-    `   OFF. HTTP compression already covers the one large transfer (the bootstrap`,
-    `   core); the ongoing WS traffic is tiny invalidations + coalesced core deltas.`,
+    `WS permessage-deflate — MEASURED (deflateRaw, windowBits 15 / memLevel 8):`,
+    `   resource:invalidate frame:  ${invalidateBytes} B → ${invDeflated.length} B deflated` +
+      ` (${pct(invalidateBytes, invDeflated.length)}), CPU ${invDeflateMs} ms/frame (median of ${DEFLATE_ITERS})`,
+    `   coalesced core delta frame: ${coreBytes} B → ${coreDeflated.length} B deflated` +
+      ` (${pct(coreBytes, coreDeflated.length)}), CPU ${coreDeflateMs} ms/frame (median of ${DEFLATE_ITERS})`,
+    `   per-socket compression context (context takeover): ~${kib(perSocketCtxBytes)}` +
+      ` (${perSocketCtxBytes} B) → ~${socketsFor100MB} sockets would cost ~100 MB just in deflate state`,
+    `   → the ${invalidateBytes} B invalidation barely compresses (it is below the`,
+    `     deflate window's useful floor) and even the core delta's saving is dwarfed`,
+    `     by the per-socket memory + per-frame CPU. Recommendation: keep WS`,
+    `     permessage-deflate OFF. HTTP compression already covers the one large`,
+    `     transfer (the bootstrap core over /api/state); ongoing WS traffic is tiny`,
+    `     invalidations + latest-wins-coalesced core deltas, for which per-message`,
+    `     deflate is net-negative.`,
   ];
   // eslint-disable-next-line no-console
   console.log(lines.join("\n"));

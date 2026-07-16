@@ -608,8 +608,31 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     // subscribe critical section — lets a test inject a live frame at exactly
     // that point to guard the no-`await`-before-set-add ordering invariant.
     let onSnapshot: ((sessionId: string) => void) | null = null;
+    // Records the viewer id each per-PR review mutation received, so a test can
+    // prove they are now routed through the profile-bound viewer path (#62).
+    const azureMutationCalls: { method: string; prKey?: string; windowId?: string }[] = [];
     const runtime = {
       getPayload: () => payload,
+      _azureMutationCalls: azureMutationCalls,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      commentAzurePullRequest: async (p: any, windowId?: string) => {
+        azureMutationCalls.push({ method: "comment", prKey: p?.prKey, windowId });
+        return payload;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      updateAzureThreadStatus: async (p: any, windowId?: string) => {
+        azureMutationCalls.push({ method: "thread", prKey: p?.prKey, windowId });
+        return payload;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      voteAzurePullRequest: async (p: any, windowId?: string) => {
+        azureMutationCalls.push({ method: "vote", prKey: p?.prKey, windowId });
+        return payload;
+      },
+      // A NAVIGATION mutation the renderer adopts synchronously — returns the
+      // full payload, which a v2 client must receive as the slim CORE (not an ack).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      saveWorkspace: async (_ws: any, _windowId?: string) => payload,
       getInitialState: async () => {
         if (opts.initialStateDelayMs) {
           await new Promise((r) => setTimeout(r, opts.initialStateDelayMs));
@@ -1573,11 +1596,12 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       },
     );
 
-    test("a mutation result's NESTED payload is composed + slimmed for a v2 client", async () => {
+    test("a v2 mutation/refresh returns a small targeted ack, NOT a nested core", async () => {
       await withServer("tok-mut", async ({ port }) => {
-        // Bind a session, then hit a route whose runtime method returns
-        // { ok, payload: <full state> } (git ops shape). The envelope survives;
-        // the nested payload must come back as the slim v2 core.
+        // A route whose runtime method returns { ok, payload: <full state> } (git
+        // ops shape). For a v2 client this must NOT serialize+transfer a whole
+        // core after the button click — the response is a small targeted ack and
+        // the authoritative new core rides the WS state:updated broadcast instead.
         const res = await fetch(`http://127.0.0.1:${port}/api/git/refresh`, {
           method: "POST",
           headers: {
@@ -1589,14 +1613,146 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           body: JSON.stringify({ projectId: null }),
         });
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { ok: boolean; payload: AnyState };
+        const body = (await res.json()) as {
+          ok: boolean;
+          payload?: unknown;
+          revision: number;
+          changedResources: unknown[];
+        };
         expect(body.ok).toBe(true);
-        expect(body.payload.stateProtocol).toBe(2);
-        expect(body.payload.gitSummaries).toBeDefined();
-        expect(body.payload.git.workspaces).toBeUndefined();
-        expect(JSON.stringify(body.payload)).not.toContain("HEAVY-GIT-LOG-ENTRY");
+        // No core in the response — neither a nested payload nor a slim core.
+        expect(body.payload).toBeUndefined();
+        expect(typeof body.revision).toBe("number");
+        expect(Array.isArray(body.changedResources)).toBe(true);
+        expect(JSON.stringify(body)).not.toContain("HEAVY-GIT-LOG-ENTRY");
+        expect(JSON.stringify(body)).not.toContain("gitSummaries");
       });
     });
+
+    test("a v2 NAVIGATION mutation the renderer adopts still delivers the slim core", async () => {
+      await withServer("tok-nav", async ({ port }) => {
+        // /api/workspace/save is adopted synchronously by the renderer (some of
+        // it inside a suppressed-broadcast window), so it must return the slim
+        // core — NOT an ack that would wipe the client's state.
+        const res = await fetch(`http://127.0.0.1:${port}/api/workspace/save`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-nav",
+            "X-Strideterm-Client-Id": "nav-aaaa",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ workspace: { id: "ws1", name: "WS1", profileId: "p1" } }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as AnyState;
+        expect(body.stateProtocol).toBe(2); // a slim core, not an ack
+        expect(body.gitSummaries).toBeDefined();
+        expect(body.git.workspaces).toBeUndefined();
+      });
+    });
+
+    test("a legacy (v1) mutation/refresh still returns the full composed payload", async () => {
+      await withServer("tok-mut1", async ({ port }) => {
+        // Same route, but a protocol-1 client — the slim contract does not apply,
+        // so its old renderer keeps receiving the full nested payload it expects.
+        const res = await fetch(`http://127.0.0.1:${port}/api/git/refresh`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-mut1",
+            "X-Strideterm-Client-Id": "mut1-aaa",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ projectId: null }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { ok: boolean; payload: AnyState };
+        expect(body.ok).toBe(true);
+        expect(body.payload.git.workspaces).toBeDefined(); // full desktop shape
+        expect(body.payload.stateProtocol).toBeUndefined();
+      });
+    });
+
+    test("per-PR review mutations (comment/thread/vote) are viewer-bound, not global (#62)", async () => {
+      await withServer("tok-azc", async ({ port, runtime }) => {
+        // Bound request (clientId → session): routed through the slot-aware viewer
+        // path, so the runtime method receives the caller's remote viewer id and
+        // can reject a cross-profile PR. Previously these ran globally, viewerless.
+        const post = (path: string, body: unknown) =>
+          fetch(`http://127.0.0.1:${port}${path}`, {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer tok-azc",
+              "X-Strideterm-Client-Id": "azc-aaaa",
+              "X-Strideterm-State-Protocol": "2",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+          });
+        expect((await post("/api/azure/pull-request/comment", { prKey: "azure:pr1", content: "hi" })).status).toBe(200);
+        expect((await post("/api/azure/pull-request/vote", { prKey: "azure:pr1", vote: "approve" })).status).toBe(200);
+        expect(
+          (await post("/api/azure/pull-request/thread-status", { prKey: "azure:pr1", threadId: "t", status: "fixed" }))
+            .status,
+        ).toBe(200);
+        const calls = (runtime as unknown as { _azureMutationCalls: { method: string; windowId?: string }[] })
+          ._azureMutationCalls;
+        for (const method of ["comment", "vote", "thread"]) {
+          const call = calls.find((c) => c.method === method);
+          expect(call, method).toBeDefined();
+          // The runtime got a remote viewer id — the profile-scoped guard runs.
+          expect(String(call!.windowId)).toMatch(/^remote:/);
+        }
+
+        // Unbound request (no clientId, no cookie) → the slot-aware guard refuses
+        // it; there is no longer a global fallback that would run viewerless.
+        const unbound = await fetch(`http://127.0.0.1:${port}/api/azure/pull-request/vote`, {
+          method: "POST",
+          headers: { Authorization: "Bearer tok-azc", "Content-Type": "application/json" },
+          body: JSON.stringify({ prKey: "azure:pr1", vote: "approve" }),
+        });
+        expect(unbound.status).toBe(400);
+      });
+    });
+
+    test(
+      "state:sync closes the first-connect [bootstrap, open] window: a stale rev gets one catch-up",
+      { retry: 2, timeout: 20_000 },
+      async () => {
+        await withServer("tok-sync", async ({ port, runtime }) => {
+          // Simulate the real client's first socket: its URL was frozen before the
+          // HTTP bootstrap recorded a revision, so it carries NO ?rev= and the
+          // server holds bootstrap-once (no initial frame).
+          const c = connectWs(port, "tok-sync", "sync-aaa", "p1", 2);
+          await c.opened;
+          await delay(60);
+          expect(initialState(c)).toBeUndefined(); // bootstrap-once: nothing yet
+
+          // State moves while the client was mid-bootstrap.
+          runtime._bumpGit("ws1", "2026-07-15T13:30:00Z");
+          runtime._emit("state:updated", runtime.getPayload());
+          await delay(40);
+          const before = c.messages.filter((m) => m.type === "state:updated").length;
+
+          // The client now hands off its (stale) bootstrap revision. Because the
+          // server's coreRevision advanced past it, exactly one catch-up core is
+          // sent — closing the missed-update window.
+          c.ws.send(JSON.stringify({ type: "state:sync", rev: 0 }));
+          expect(await waitUntil(() => c.messages.filter((m) => m.type === "state:updated").length > before)).toBe(
+            true,
+          );
+          const synced = c.messages.filter((m) => m.type === "state:updated").pop()!.payload as AnyState;
+          expect(synced.stateProtocol).toBe(2);
+
+          // A current rev (>= server's) triggers no catch-up.
+          const after = c.messages.filter((m) => m.type === "state:updated").length;
+          c.ws.send(JSON.stringify({ type: "state:sync", rev: 999 }));
+          await delay(80);
+          expect(c.messages.filter((m) => m.type === "state:updated").length).toBe(after);
+          c.ws.close();
+        });
+      },
+    );
 
     test("interest for a cross-profile resource is silently ignored (no invalidate)", async () => {
       await withServer("tok-int2", async ({ port }) => {
@@ -1620,8 +1776,11 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         // appState workspaces filtered to the client's profile (p1); legacy alias gone.
         expect(core.appState.workspaces.map((w: AnyState) => w.id)).toEqual(["ws1"]);
         expect(core.appState.projects).toBeUndefined();
-        // The tunnel token that lives in settings.remoteAccess is blanked.
-        expect(core.appState.settings.remoteAccess.token).toBe("");
+        // settings.remoteAccess is reduced to just { enabled } — the tunnel
+        // token, host and port are all desktop-only management data and gone.
+        expect(core.appState.settings.remoteAccess).toEqual({ enabled: true });
+        expect(core.appState.settings.remoteAccess.token).toBeUndefined();
+        expect(core.appState.settings.remoteAccess.host).toBeUndefined();
         // A per-broadcast revision is present for the bootstrap→WS handoff.
         expect(typeof core.coreRevision).toBe("number");
       });

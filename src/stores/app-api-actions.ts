@@ -52,13 +52,17 @@ export function createApiActions(ctx: ApiActionsCtx) {
   /**
    * Adopt a mutation/refresh response into the reactive state.
    *
-   * On the REMOTE slim core this is a deliberate no-op: a mutation must not
-   * replace the whole payload after every button click (the slim contract). The
-   * server broadcasts the new core (state:updated, newer coreRevision) and the
-   * relevant per-resource invalidations right after the mutation, and the app
-   * store applies those — so the renderer waits for the targeted update rather
-   * than swapping its entire state to a response it would immediately have
-   * overwritten. Desktop keeps adopting its full IPC payload for immediacy.
+   * On the REMOTE slim core this is a deliberate no-op: these callers are the
+   * frequent refresh buttons + provider/review-bridge domain mutations, whose
+   * response the client must not swap into its whole state "after every button
+   * click". The server answers those with a small targeted ack
+   * (`{ ok, changedResources, revision }`, not a core) and then broadcasts the
+   * authoritative new core (state:updated, newer coreRevision) plus the relevant
+   * per-resource invalidations, which the app store applies — so the renderer
+   * waits for the targeted update. (Navigation mutations that the renderer DOES
+   * adopt synchronously — save/activate/reorder/settings — go through their own
+   * `payload.value =` assignment and receive the slim core, not this no-op.)
+   * Desktop keeps adopting its full IPC payload for immediacy.
    */
   function setPayload(nextPayload: StatePayload): void {
     if (ctx.getApi().isRemote) return;

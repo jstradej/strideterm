@@ -83,6 +83,25 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     return resolved || "";
   }
 
+  /**
+   * Refuse a per-PR mutation (comment / thread status / vote) when the PR does
+   * not belong to the calling VIEWER's profile. The remote client is a viewer:
+   * without this a mobile/browser client bound to profile B could comment on,
+   * resolve threads in, or vote on a profile-A PR it can see in the global
+   * snapshot. Desktop IPC passes no viewer id (getViewerProfileId → null) and is
+   * therefore unaffected; a cross-profile PR is rejected before any external
+   * (comment posted / vote cast) side effect runs.
+   */
+  function assertPrInViewerProfile(prKey: string, windowId?: string): void {
+    const callerProfileId = getViewerProfileId(windowId);
+    if (!callerProfileId) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pr = (getPayload() as any)?.azureDevops?.pullRequests?.[prKey] as { profileId?: string } | undefined;
+    if (pr && String(pr.profileId || "default") !== callerProfileId) {
+      throw new Error(`Cross-profile refused: pull request ${prKey} is not in profile ${callerProfileId}.`);
+    }
+  }
+
   // Coalesces concurrent Azure refreshes. The desktop IPC path dedups via
   // withOperationPromise, but the remote /api/azure/refresh route calls
   // refreshAzureState directly — so multiple viewers (or a misbehaving
@@ -301,19 +320,22 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async commentAzurePullRequest(payload: any) {
+    async commentAzurePullRequest(payload: any, windowId?: string) {
+      assertPrInViewerProfile(payload.prKey, windowId);
       await azure.addPullRequestComment(payload);
       await refreshAzure();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async updateAzureThreadStatus(payload: any) {
+    async updateAzureThreadStatus(payload: any, windowId?: string) {
+      assertPrInViewerProfile(payload.prKey, windowId);
       await azure.updateThreadStatus(payload);
       await refreshAzure();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async voteAzurePullRequest(payload: any) {
+    async voteAzurePullRequest(payload: any, windowId?: string) {
+      assertPrInViewerProfile(payload.prKey, windowId);
       await azure.setPullRequestVote(payload);
       await refreshAzure();
       return getPayload();

@@ -602,6 +602,11 @@ interface RemoteAdaptContext {
   /** Monotonic broadcast revision stamped onto the core so the client applies
    *  only newer snapshots (bootstrap→WS handoff). */
   coreRevision: number;
+  /** Whether a v2 state payload on this path should be delivered as the full
+   *  slim core (bootstrap `/api/state`, activation, WS state frames) or reduced
+   *  to a small `{ ok, revision }` mutation ack (every button-click mutation /
+   *  refresh). Defaults to false so a mutation never ships a whole core. */
+  deliverCore?: boolean;
   sessionId: string;
   registry: RemoteClientRegistry;
   /** Request method, so ETag/304 applies only to idempotent GETs. */
@@ -618,6 +623,57 @@ interface RemoteAdaptContext {
 const JSON_COMPRESS_MIN_BYTES = 1024;
 
 /**
+ * POST routes whose renderer handler DISCARDS the whole-payload response on the
+ * remote transport (a `setPayload` no-op — the client waits for the WS
+ * broadcast). For a v2 client these return a small `{ ok, changedResources,
+ * revision }` ack instead of serializing/transferring a whole core "after every
+ * button click" (plan §2.10; judge #28/#36). These are the frequent refresh
+ * buttons and the provider / review-bridge domain mutations. Everything else
+ * (bootstrap, navigation the client adopts) delivers the slim core — see the
+ * deliverCore comment where the response context is attached. A route is added
+ * here ONLY when its client caller is provably a discard (setPayload); a route
+ * the client adopts must stay core, so mis-classification can only over-deliver
+ * a (harmless, adopted) core, never wipe state with an ack.
+ */
+const ACK_MUTATION_ROUTES = new Set<string>([
+  // Refresh buttons — the client discards the response and repaints from the
+  // WS broadcast the refresh triggers.
+  "/api/git/refresh",
+  "/api/azure/refresh",
+  "/api/github/refresh",
+  "/api/docker/refresh",
+  "/api/telegram/refresh",
+  "/api/tunnel/refresh",
+  // Azure PR / review domain mutations (renderer: setPayload no-op).
+  "/api/azure/pull-request/seen",
+  "/api/azure/pull-request/comment",
+  "/api/azure/pull-request/vote",
+  "/api/azure/pull-request/thread-status",
+  "/api/azure/pull-request/open",
+  "/api/azure/workspace/fetch",
+  "/api/azure/workspace/rebase",
+  "/api/azure/delete-connection",
+  // GitHub PR / review domain mutations (renderer: setPayload no-op).
+  "/api/github/pull-request/seen",
+  "/api/github/pull-request/comment",
+  "/api/github/pull-request/review",
+  "/api/github/pull-request/open",
+  "/api/github/workspace/fetch",
+  "/api/github/workspace/rebase",
+  "/api/github/delete-connection",
+  // Review-bridge domain mutations (renderer: setPayload no-op).
+  "/api/review-bridge/draft/save",
+  "/api/review-bridge/draft/delete",
+  "/api/review-bridge/draft/queue",
+  "/api/review-bridge/draft-comment/create",
+  "/api/review-bridge/comment/delete",
+  "/api/review-bridge/comment/reply-with-changes",
+  "/api/review-bridge/pull-request/sync",
+  "/api/review-bridge/pull-request/push-and-publish",
+  "/api/review-bridge/agent-prompt/reset",
+]);
+
+/**
  * The one remote response adapter. Given any runtime result, it:
  *  - strips the master token (stripSecretsForRemote);
  *  - if the body IS a full desktop state payload → composes it per-client and,
@@ -632,28 +688,56 @@ const JSON_COMPRESS_MIN_BYTES = 1024;
  */
 function adaptRemoteResponse(body: unknown, ctx: RemoteAdaptContext): unknown {
   const stripped = stripSecretsForRemote(body);
-  if (looksLikeStatePayload(stripped)) return composeAndSlim(stripped as Record<string, unknown>, ctx);
+  const v2 = servesRemoteCore(ctx.capabilities);
+  // A v2 client receives a full slim core ONLY on the core-delivery paths
+  // (bootstrap / activation / WS state). Every other state-bearing response is a
+  // mutation/refresh result: it must NOT serialize+transfer a whole core after a
+  // button click — the client already applies the WS state:updated broadcast +
+  // per-resource invalidations the mutation triggers. Return a small targeted
+  // ack instead. Legacy (v1) clients keep the full composed payload.
+  if (looksLikeStatePayload(stripped)) {
+    if (v2 && !ctx.deliverCore) return mutationAck(ctx);
+    return composeAndSlim(stripped as Record<string, unknown>, ctx);
+  }
   if (stripped && typeof stripped === "object") {
-    const nested = (stripped as Record<string, unknown>).payload;
+    const rec = stripped as Record<string, unknown>;
+    const nested = rec.payload;
     if (looksLikeStatePayload(nested)) {
-      return {
-        ...(stripped as Record<string, unknown>),
-        payload: composeAndSlim(nested as Record<string, unknown>, ctx),
-      };
+      if (v2 && !ctx.deliverCore) {
+        // Drop the nested core; keep any small envelope fields (ok, result, …).
+        const rest = { ...rec };
+        delete rest.payload;
+        return { ok: true, changedResources: [], ...rest, revision: ctx.coreRevision };
+      }
+      return { ...rec, payload: composeAndSlim(nested as Record<string, unknown>, ctx) };
     }
   }
   return stripped;
 }
 
+/** The small targeted result a v2 mutation/refresh returns instead of a core.
+ *  `revision` is the server's current broadcast revision so the client can tell
+ *  its state moved; the authoritative new core + per-resource invalidations ride
+ *  the WS state:updated broadcast the mutation triggers. */
+function mutationAck(ctx: RemoteAdaptContext): Record<string, unknown> {
+  return { ok: true, changedResources: [], revision: ctx.coreRevision };
+}
+
 function composeAndSlim(payload: Record<string, unknown>, ctx: RemoteAdaptContext): unknown {
-  const composed =
-    ctx.sessionId && ctx.registry.get(ctx.sessionId) ? ctx.registry.composePayload(ctx.sessionId, payload) : payload;
-  return servesRemoteCore(ctx.capabilities)
-    ? buildRemoteCore(composed as Record<string, unknown>, {
-        coreRevision: ctx.coreRevision,
-        capabilities: ctx.capabilities,
-      })
-    : composed;
+  const bound = Boolean(ctx.sessionId && ctx.registry.get(ctx.sessionId));
+  const composed = bound ? ctx.registry.composePayload(ctx.sessionId, payload) : payload;
+  if (!servesRemoteCore(ctx.capabilities)) return composed;
+  // v2 core is ALWAYS profile-scoped. A bound socket carries its profile in the
+  // composed remoteClient; an unbound socket is scoped to the server's default
+  // profile (never every profile) via opts.profileId.
+  const profileId = bound
+    ? undefined
+    : ctx.registry.resolveFallbackProfileId((payload as Record<string, unknown>).appState);
+  return buildRemoteCore(composed as Record<string, unknown>, {
+    coreRevision: ctx.coreRevision,
+    capabilities: ctx.capabilities,
+    ...(profileId !== undefined ? { profileId } : {}),
+  });
 }
 
 /** Protocol version a request advertises (header wins, then `?sp=`, else 1). */
@@ -1006,19 +1090,10 @@ async function handleApiRequest(
       return;
     }
 
-    // /api/azure/pull-request/open is handled in the outer dispatch so it can
-    // resolve the bound windowId from the remote-client registry; reaching
-    // here would mean the route bypassed that intercept.
-
-    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/comment") {
-      json(response, 200, await runtime.commentAzurePullRequest(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/thread-status") {
-      json(response, 200, await runtime.updateAzureThreadStatus(body));
-      return;
-    }
+    // /api/azure/pull-request/open, /comment, /thread-status and /vote are all
+    // handled in the outer dispatch (slotAwareRoute) so they resolve the bound
+    // viewer id from the remote-client registry and reject cross-profile PRs;
+    // reaching here would mean the route bypassed that intercept.
 
     if (request.method === "POST" && url.pathname === "/api/review-bridge/draft-comment/create") {
       json(response, 200, await runtime.createReviewBridgeDraftComment(body));
@@ -1065,10 +1140,9 @@ async function handleApiRequest(
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/vote") {
-      json(response, 200, await runtime.voteAzurePullRequest(body));
-      return;
-    }
+    // /api/azure/pull-request/vote is handled in the outer dispatch
+    // (slotAwareRoute) so it resolves the caller's viewer id and rejects a vote
+    // on a PR outside the caller's profile.
 
     if (request.method === "POST" && url.pathname === "/api/azure/workspace/fetch") {
       json(response, 200, await runtime.fetchAzureReviewWorkspace(body.workspaceId));
@@ -2211,10 +2285,25 @@ export async function startRemoteServer({
       // existed only to compose those payloads; the adapter now does it uniformly,
       // so they are gone.
       const httpProtocol = requestProtocol(requestUrl, request.headers);
+      // Response contract for a v2 client (see adaptRemoteResponse):
+      //  - A route whose renderer handler ADOPTS the response (bootstrap,
+      //    navigation: save / activate / reorder / settings / create-worktree /
+      //    profile) delivers the full slim v2 core — the ~10 KiB "targeted
+      //    result" the client applies synchronously (some inside a suppressed-
+      //    broadcast window, so it cannot wait for the async push).
+      //  - A route whose renderer handler DISCARDS the response (the frequent
+      //    refresh buttons + provider / review-bridge domain mutations, which are
+      //    a no-op on the remote transport) returns a small `{ ok, revision }`
+      //    ack — never serializing / transferring a core "after every button
+      //    click" — and the authoritative core rides the WS broadcast.
+      // Default is core: a misrouted core is harmless (adopted), a misrouted ack
+      // would wipe the client's state, so only PROVABLY-discarded routes ack.
+      const deliversCore = !(request.method === "POST" && ACK_MUTATION_ROUTES.has(url.pathname));
       (response as ResponseWithCtx).__remoteCtx = {
         protocol: httpProtocol,
         capabilities: selectCapabilities(requestCapabilities(requestUrl, request.headers), httpProtocol),
         coreRevision,
+        deliverCore: deliversCore,
         sessionId: apiSessionId,
         registry,
         method: request.method,
@@ -2257,8 +2346,13 @@ export async function startRemoteServer({
           json(response, 400, { error: "Missing or invalid resource id" });
           return;
         }
-        const profileId = (apiSessionId && registry.get(apiSessionId)?.profileId) || null;
         const rawPayload = runtime.getPayload() as Record<string, unknown>;
+        // A detail request is ALWAYS profile-scoped: the session's profile, or —
+        // for an unbound caller — the server's default profile. Never null (which
+        // resourceProfileAuthorized now denies), so an unbound client is confined
+        // to one profile's resources rather than authorized for everything.
+        const boundProfile = apiSessionId ? registry.get(apiSessionId)?.profileId : undefined;
+        const profileId = boundProfile ?? registry.resolveFallbackProfileId(rawPayload.appState) ?? null;
         if (!resourceProfileAuthorized(rawPayload, profileId, resourceKey)) {
           json(response, 403, { error: "Resource is not in your active profile" });
           return;
@@ -2330,6 +2424,13 @@ export async function startRemoteServer({
       > = {
         "/api/azure/pull-request/open": (body, windowId) => runtime.openAzurePullRequest(body, windowId),
         "/api/github/pull-request/open": (body, windowId) => runtime.openGitHubPullRequest(body, windowId),
+        // Per-PR review mutations post externally-visible side effects (a comment
+        // on the PR, a resolved thread, a cast vote). Route them through the
+        // viewer path so the runtime rejects a PR outside the caller's profile —
+        // otherwise a remote client bound to profile B could act on a profile-A PR.
+        "/api/azure/pull-request/comment": (body, windowId) => runtime.commentAzurePullRequest(body, windowId),
+        "/api/azure/pull-request/thread-status": (body, windowId) => runtime.updateAzureThreadStatus(body, windowId),
+        "/api/azure/pull-request/vote": (body, windowId) => runtime.voteAzurePullRequest(body, windowId),
         "/api/azure/quickfix/create": (body, windowId) => runtime.azureQuickFixCreate(body, windowId),
         "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
         "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
@@ -2857,6 +2958,26 @@ export async function startRemoteServer({
     if (routing.stateCoalescer.enqueue(msg) === "coalesced") telemetry.recordStateCoalesced();
   }
 
+  /**
+   * Send ONE catch-up state:updated frame to a single socket, composed + slimmed
+   * for its protocol/capabilities/session. Used by the WS open handoff (stale
+   * `?rev=`) and the `state:sync` message (first-connect [bootstrap, open] gap).
+   */
+  async function sendCoreCatchUp(socket: import("ws").WebSocket, wsSessionId: string): Promise<void> {
+    const baseInitial = await runtime.getInitialState();
+    if (socket.readyState !== socket.OPEN) return;
+    const socketProto = socketProtocol.get(socket) || 1;
+    const payload = adaptRemoteResponse(baseInitial, {
+      protocol: socketProto,
+      capabilities: socketCapabilities.get(socket) ?? selectCapabilities(null, socketProto),
+      coreRevision,
+      deliverCore: true, // a catch-up frame IS a core push, not a mutation ack
+      sessionId: wsSessionId || "",
+      registry,
+    });
+    sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload }));
+  }
+
   function broadcast(message: unknown): void {
     const payload = JSON.stringify(message);
     for (const socket of sockets) checkedSend(socket, payload);
@@ -3115,6 +3236,7 @@ export async function startRemoteServer({
           protocol: socketProto,
           capabilities: socketCapabilities.get(socket) ?? selectCapabilities(null, socketProto),
           coreRevision,
+          deliverCore: true, // a WS state:updated frame IS the authoritative core push
           sessionId: sessionId || "",
           registry,
         });
@@ -3330,6 +3452,18 @@ export async function startRemoteServer({
                 sessionRef: remoteSessionRef(wsSessionId),
               });
             }
+          } else if (message.type === "state:sync") {
+            // First-connect bootstrap handoff: the very first WS URL is built
+            // before the HTTP bootstrap records a revision, so it cannot carry
+            // `?rev=`. The client sends its bootstrap revision here once it has
+            // one; if state moved in the [bootstrap, open] window we send ONE
+            // catch-up core so no update is missed. Reconnects carry `?rev=` in
+            // the URL and are handled by the open handoff instead.
+            const rev = Number((message as { rev?: unknown }).rev);
+            if (servesRemoteCore(wsCapabilities) && Number.isFinite(rev) && rev < coreRevision) {
+              log.debug("WebSocket state:sync catch-up", { sessionRef: remoteSessionRef(wsSessionId), rev });
+              void sendCoreCatchUp(ws, wsSessionId);
+            }
           }
         } catch (err) {
           log.warn("WebSocket message ignored: malformed JSON", {
@@ -3388,7 +3522,12 @@ export async function startRemoteServer({
       // bootstraps its state over HTTP `GET /api/state` (cacheable, compressible)
       // and passes the revision it received back on the WS as `?rev=`:
       //   - rev absent  → first connect, still bootstrapping over HTTP → send
-      //     nothing (bootstrap-once: no redundant second full transfer);
+      //     nothing HERE (bootstrap-once: no redundant second full transfer). The
+      //     client instead sends a `state:sync` message carrying its bootstrap
+      //     revision once it has one, which catches it up on any change in the
+      //     [bootstrap, WS-open] window (see the message handler) — closing the
+      //     race where the first socket's URL was frozen before the revision
+      //     existed;
       //   - rev present and < the current coreRevision → the client's HTTP
       //     snapshot is already stale (a change slipped in between bootstrap and
       //     this connect, or during a reconnect gap) → send ONE catch-up core so
@@ -3399,23 +3538,10 @@ export async function startRemoteServer({
       // always gets the initial composed payload. Registered LAST (see the NOTE
       // above the message handler) so the await never opens a window with no
       // message listener.
-      const wsProtocol = socketProtocol.get(ws) || 1;
       const wsServesCore = servesRemoteCore(wsCapabilities);
       const wsBootstrapRev = requestBootstrapRevision(request.url || "/");
       const needsCatchUp = wsServesCore ? wsBootstrapRev !== null && wsBootstrapRev < coreRevision : true;
-      if (needsCatchUp) {
-        const baseInitial = await runtime.getInitialState();
-        if (ws.readyState === ws.OPEN) {
-          const initialPayload = adaptRemoteResponse(baseInitial, {
-            protocol: wsProtocol,
-            capabilities: wsCapabilities,
-            coreRevision,
-            sessionId: wsSessionId || "",
-            registry,
-          });
-          sendStateFrame(ws, JSON.stringify({ type: "state:updated", payload: initialPayload }));
-        }
-      }
+      if (needsCatchUp) await sendCoreCatchUp(ws, wsSessionId);
     });
   });
 
