@@ -134,6 +134,9 @@ function ensureRemoteClient(payload: any): void {
     profileId: payload.remoteClient?.profileId || activeProfileId,
     activeWorkspaceId: payload.remoteClient?.activeWorkspaceId || activeWorkspaceId,
     activeSessionId: payload.remoteClient?.activeSessionId || "",
+    // Viewer-scoped grid (production injects it via registry.composePayload); the
+    // slim remote core reads this, not the desktop-global appState.workspaceGrid.
+    workspaceGrid: payload.remoteClient?.workspaceGrid ?? payload.appState?.workspaceGrid ?? null,
   };
 }
 
@@ -229,11 +232,26 @@ export async function startMockServer({
     const capabilities = selectCapabilities(capabilitiesArg(protocol), protocol);
     if (!servesRemoteCore(capabilities)) return body;
     const opts = { coreRevision, capabilities, profileId };
-    if (looksLikeStatePayload(body)) return buildRemoteCore(body, opts);
+    if (looksLikeStatePayload(body)) return buildRemoteCore(syncRemoteClientView(body), opts);
     if (body && typeof body === "object" && looksLikeStatePayload(body.payload)) {
-      return { ...body, payload: buildRemoteCore(body.payload, opts) };
+      return { ...body, payload: buildRemoteCore(syncRemoteClientView(body.payload), opts) };
     }
     return body;
+  }
+
+  // Mirror production's registry.composePayload: the remote core is viewer-scoped,
+  // so the per-client `remoteClient.workspaceGrid` (and active workspace) — not the
+  // desktop-global appState fields — is what buildRemoteCore reads. The mock has a
+  // single viewer whose view IS the global appState, so refresh the viewer grid
+  // from appState.workspaceGrid right before composing (grid mutations write
+  // appState.workspaceGrid). Without this the slim core would carry no grid.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+  function syncRemoteClientView(p: any): any {
+    if (p?.remoteClient) {
+      p.remoteClient.workspaceGrid = p.appState?.workspaceGrid ?? null;
+      p.remoteClient.activeWorkspaceId = p.remoteClient.activeWorkspaceId || String(p.appState?.activeWorkspaceId || "");
+    }
+    return p;
   }
 
   // The real client always advertises the full capability set alongside sp=2;

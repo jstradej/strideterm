@@ -810,6 +810,9 @@ export interface RemoteClientContext {
  * stripped (see `slimRemoteSettings`).
  */
 export interface RemoteCoreAppState {
+  /** VIEWER-scoped (from `remoteClient`), NOT the desktop-global selection — the
+   *  remote renderer reads its own `remoteClient.activeWorkspaceId`; empty for an
+   *  unbound socket. */
   activeWorkspaceId: string;
   settings: Settings;
   tabTemplates: TabTemplate[];
@@ -820,6 +823,9 @@ export interface RemoteCoreAppState {
   windowSlots: unknown[];
   /** Host metadata only — keys/certificates/knownHosts are stripped. */
   ssh?: Pick<SshAppState, "hosts" | "settings">;
+  /** VIEWER-scoped (from `remoteClient.workspaceGrid`), NOT the desktop-global
+   *  grid — the remote renderer reads its own per-client grid; absent for an
+   *  unbound socket. */
   workspaceGrid?: WorkspaceGridState | null;
 }
 

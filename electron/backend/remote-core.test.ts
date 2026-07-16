@@ -349,6 +349,47 @@ describe("buildRemoteCore", () => {
     const core = buildRemoteCore(p); // no profile → empty scope
     expect(core.workspace).toBeNull();
   });
+
+  // The explicit remote core must be consistently viewer/client-scoped: the
+  // active workspace + grid come from the per-client remoteClient context, NEVER
+  // the desktop-global appState fields the renderer ignores on remote (judge #22).
+  test("appState.activeWorkspaceId is the VIEWER's, not the desktop-global selection", () => {
+    const p = fullPayload();
+    // Desktop is on a different workspace than this client.
+    (p.appState as Rec).activeWorkspaceId = "ws2-DESKTOP-GLOBAL";
+    (p as Rec).remoteClient = { id: "sess", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" };
+    const core = buildRemoteCore(p);
+    expect((core.appState as Rec).activeWorkspaceId).toBe("ws1");
+    // The desktop-global selection must not leak into the core appState.
+    expect(JSON.stringify(core.appState)).not.toContain("ws2-DESKTOP-GLOBAL");
+  });
+
+  test("appState.workspaceGrid is the VIEWER's grid, not the desktop-global grid", () => {
+    const p = fullPayload();
+    (p.appState as Rec).workspaceGrid = { layout: "cols", cellWorkspaceIds: ["DESKTOP-GLOBAL-CELL"] };
+    const clientGrid = { layout: "grid", cellWorkspaceIds: ["ws1", null] };
+    (p as Rec).remoteClient = {
+      id: "sess",
+      profileId: "p1",
+      activeWorkspaceId: "ws1",
+      activeSessionId: "",
+      workspaceGrid: clientGrid,
+    };
+    const core = buildRemoteCore(p);
+    expect((core.appState as Rec).workspaceGrid).toEqual(clientGrid);
+    expect(JSON.stringify(core.appState)).not.toContain("DESKTOP-GLOBAL-CELL");
+  });
+
+  test("an unbound core carries no viewer active workspace / grid (never the desktop-global)", () => {
+    const p = fullPayload();
+    (p.appState as Rec).activeWorkspaceId = "ws2-DESKTOP-GLOBAL";
+    (p.appState as Rec).workspaceGrid = { layout: "cols", cellWorkspaceIds: ["DESKTOP-GLOBAL-CELL"] };
+    delete (p as Rec).remoteClient;
+    const core = buildRemoteCore(p);
+    expect((core.appState as Rec).activeWorkspaceId).toBe("");
+    expect((core.appState as Rec).workspaceGrid).toBeUndefined();
+    expect(JSON.stringify(core.appState)).not.toContain("DESKTOP-GLOBAL");
+  });
 });
 
 describe("buildRemoteCore — slim appState + secrets", () => {
@@ -608,6 +649,80 @@ describe("resourceRevision", () => {
     });
     const after = resourceRevision(p, "review-bridge:azure:pr1");
     expect(after).not.toBe(before);
+  });
+
+  // A provider PR's revision must fold EVERY detail-affecting field the review
+  // pane renders, not just lastActivityAt (judge #6/#37/#38). A CI check
+  // finishing, a reviewer voting, a new thread/comment, a changed-file push or a
+  // PR status transition must all bump the revision so an interested (mounted)
+  // review pane is invalidated and refetches — even when lastActivityAt is
+  // unchanged (a whole-provider refresh that alters checks/reviewers never
+  // touches it).
+  test("azure-pr revision folds checks (a check-state change bumps it with lastActivityAt unchanged)", () => {
+    const p = fullPayload();
+    const pr = p.azureDevops.pullRequests["azure:pr1"] as Rec;
+    const before = resourceRevision(p, "azure-pr:azure:pr1");
+    // lastActivityAt stays put; only the CI check transitions succeeded→failed.
+    pr.checks = { failedCount: 1, passedCount: 0, items: [{ id: "ck", state: "failed" }] };
+    const after = resourceRevision(p, "azure-pr:azure:pr1");
+    expect(pr.lastActivityAt).toBe("2026-07-15T11:00:00Z");
+    expect(after).not.toBe(before);
+  });
+
+  test("azure-pr revision folds reviewer votes (a vote change bumps it with lastActivityAt unchanged)", () => {
+    const p = fullPayload();
+    const pr = p.azureDevops.pullRequests["azure:pr1"] as Rec;
+    pr.reviewerSummary = { reviewers: [{ id: "r1", vote: 0 }] };
+    const before = resourceRevision(p, "azure-pr:azure:pr1");
+    pr.reviewerSummary = { reviewers: [{ id: "r1", vote: 10 }] };
+    const after = resourceRevision(p, "azure-pr:azure:pr1");
+    expect(after).not.toBe(before);
+  });
+
+  test("azure-pr revision folds threads/changed-files (a new thread or file bumps it)", () => {
+    const p = fullPayload();
+    const pr = p.azureDevops.pullRequests["azure:pr1"] as Rec;
+    const before = resourceRevision(p, "azure-pr:azure:pr1");
+    (pr.threads as Rec[]).push({ id: "t2", lastUpdatedDate: "2026-07-15T13:00:00Z" });
+    const afterThread = resourceRevision(p, "azure-pr:azure:pr1");
+    expect(afterThread).not.toBe(before);
+    pr.changedFiles = [{ path: "a.ts" }];
+    const afterFiles = resourceRevision(p, "azure-pr:azure:pr1");
+    expect(afterFiles).not.toBe(afterThread);
+  });
+
+  test("azure-pr revision folds PR status transitions (active→completed bumps it)", () => {
+    const p = fullPayload();
+    const pr = p.azureDevops.pullRequests["azure:pr1"] as Rec;
+    const before = resourceRevision(p, "azure-pr:azure:pr1");
+    pr.pullRequest.status = "completed";
+    const after = resourceRevision(p, "azure-pr:azure:pr1");
+    expect(after).not.toBe(before);
+  });
+
+  test("github-pr revision folds checks the same way (state change bumps it)", () => {
+    const p = fullPayload();
+    (p.github as Rec).pullRequests = {
+      "github:pr9": {
+        prKey: "github:pr9",
+        profileId: "p1",
+        connectionId: "gh1",
+        lastActivityAt: "2026-07-15T11:00:00Z",
+        pullRequest: { state: "open" },
+        checks: { pendingCount: 1, items: [{ id: "run:1", state: "pending" }] },
+      },
+    };
+    const before = resourceRevision(p, "github-pr:github:pr9");
+    ((p.github as Rec).pullRequests["github:pr9"] as Rec).checks = {
+      passedCount: 1,
+      items: [{ id: "run:1", state: "succeeded" }],
+    };
+    const after = resourceRevision(p, "github-pr:github:pr9");
+    expect(after).not.toBe(before);
+  });
+
+  test("an absent provider PR yields an empty revision (no crash)", () => {
+    expect(resourceRevision(fullPayload(), "azure-pr:azure:missing")).toBe("");
   });
 });
 
