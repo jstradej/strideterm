@@ -116,7 +116,7 @@ describe("remote transport endpoint routing", () => {
     expect(body?.sessionId).toBe("ws1:panel1");
   });
 
-  it("reconnects websocket and refreshes state without restarting terminals", async () => {
+  it("reconnect resync is single-path: WS ?rev= catch-up, never a duplicate /api/state fetch", async () => {
     vi.useFakeTimers();
     const states: unknown[] = [];
     const connections: unknown[] = [];
@@ -124,21 +124,36 @@ describe("remote transport endpoint routing", () => {
     transport.onStateUpdated((payload) => states.push(payload));
     transport.onConnectionState((payload) => connections.push(payload));
 
+    // First connect + a bootstrap revision handed over the WS (records rev=5).
     const first = MockWebSocket.instances[0];
     first.open();
+    first.message({ type: "state:updated", payload: { coreRevision: 5 } });
+    expect(states).toHaveLength(1);
+
+    // Drop the socket → schedule a reconnect.
     first.close(1006);
     expect(connections).toContainEqual(expect.objectContaining({ connected: false, reconnecting: true, attempt: 1 }));
 
     vi.advanceTimersByTime(500);
     const second = MockWebSocket.instances[1];
+    // The reconnect URL carries our last known revision — this is the ONE channel
+    // the server uses to decide whether we still need a catch-up core.
+    expect(second.url).toContain("rev=5");
     second.open();
+    // Let any (unwanted) async HTTP settle.
     for (let i = 0; i < 5; i += 1) {
       await Promise.resolve();
     }
 
     expect(connections).toContainEqual(expect.objectContaining({ connected: true, reconnected: true }));
-    expect(capturedUrls).toContain("/api/state");
-    expect(states.length).toBeGreaterThan(0);
+    // Single-path: the reconnect must NOT ALSO fetch state over HTTP. The old
+    // behaviour issued GET /api/state on every reconnect, so a stale reconnect
+    // transferred the core twice (WS catch-up + HTTP). That path is gone.
+    expect(capturedUrls).not.toContain("/api/state");
+    // The server pushes exactly one catch-up core over the WS — that single body
+    // is the only state transfer on resync.
+    second.message({ type: "state:updated", payload: { coreRevision: 6 } });
+    expect(states).toHaveLength(2);
   });
 
   it("sends state:sync with the bootstrap revision on first-connect open (closes the [bootstrap, open] window)", async () => {

@@ -2151,6 +2151,12 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           await stale.opened;
           expect(await waitUntil(() => Boolean(initialState(stale)))).toBe(true);
           expect(initialState(stale).stateProtocol).toBe(2);
+          // Deterministic single-transfer: the stale reconnect resyncs with
+          // EXACTLY one catch-up core over the WS, never a duplicate frame — and
+          // since the client no longer re-fetches /api/state on reconnect, this
+          // WS body is the ONLY state transfer of the resync.
+          await delay(80);
+          expect(stale.messages.filter((m) => m.type === "state:updated").length).toBe(1);
 
           // Current client (rev == current) → no catch-up (bootstrap-once holds).
           const current = connectWs(port, "tok-rev", "rev-curr", "p1", 2, { rev });
@@ -2160,6 +2166,28 @@ describe("terminal streaming — subscription routing + backpressure", () => {
 
           stale.ws.close();
           current.ws.close();
+        });
+      },
+    );
+
+    test(
+      "server-restart recovery: a v2 socket whose rev is AHEAD of coreRevision still gets exactly one catch-up",
+      { retry: 2, timeout: 20_000 },
+      async () => {
+        await withServer("tok-restart", async ({ port }) => {
+          // After a server restart the monotonic coreRevision resets low, but a
+          // reconnecting client still advertises the (higher) rev it cached from
+          // the dead process. A `rev < coreRevision` gate would send nothing and
+          // strand that client on state from the dead process; the `!==` gate
+          // resyncs it with exactly one fresh core so it always recovers.
+          const c = connectWs(port, "tok-restart", "restart-aaa", "p1", 2, { rev: 999_999 });
+          await c.opened;
+          expect(await waitUntil(() => c.messages.filter((m) => m.type === "state:updated").length === 1)).toBe(true);
+          await delay(80);
+          // Exactly one catch-up — a resync, not a broadcast loop.
+          expect(c.messages.filter((m) => m.type === "state:updated").length).toBe(1);
+          expect(initialState(c).stateProtocol).toBe(2);
+          c.ws.close();
         });
       },
     );

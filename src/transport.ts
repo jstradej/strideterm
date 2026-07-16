@@ -395,17 +395,6 @@ export function createRemoteTransport(): Transport {
     }
   }
 
-  function refreshStateAfterReconnect(): void {
-    void fetchJson("/api/state")
-      .then((payload) => {
-        noteCoreRevision(payload);
-        listeners.stateUpdated.forEach((handler) => handler(payload as CoreState));
-      })
-      .catch(() => {
-        // fetchJson already emits the remote connection issue.
-      });
-  }
-
   function scheduleReconnect(error: RemoteError, code = 0): void {
     if (reconnectTimer) {
       return;
@@ -517,10 +506,16 @@ export function createRemoteTransport(): Transport {
       // First-connect bootstrap handoff: if we already hold a bootstrap revision,
       // tell the server so it catches us up on any change in the [bootstrap, open]
       // window that the rev-less first WS URL couldn't advertise.
+      //
+      // Reconnect resync is SINGLE-PATH: the fresh socket's URL already carries
+      // `?rev=lastCoreRevision` (buildWsUrl, since we've bootstrapped), so the
+      // server sends exactly one catch-up core when — and only when — its
+      // revision differs from ours (newer state, OR a lower revision after a
+      // server restart). We deliberately do NOT also `GET /api/state` here: that
+      // would transfer the core a second time over HTTP on a stale reconnect
+      // (plan success-criterion: "transferred once, not through both paths").
+      // A no-change reconnect therefore transfers zero state bytes.
       maybeSendStateSync();
-      if (reconnected) {
-        refreshStateAfterReconnect();
-      }
     });
 
     nextWs.addEventListener("message", (event) => {

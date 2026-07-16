@@ -91,11 +91,39 @@ slim core, WS state deltas, targeted mutation acks, detail endpoints + profile
 authorization (including cross-profile rejection and the unbound → default
 profile scoping), the interest → invalidate → fetch pipeline, capability
 negotiation, the bootstrap→WS revision handoff and the `state:sync` first-connect
-window, reconnect resubscription, the viewer-bound per-PR review mutations, and
-the v1/v2 compatibility split (`electron/backend/remote-server.test.ts`,
-`electron/backend/remote-core.test.ts`, `src/stores/remote-details.test.ts`,
-`src/composables/useResourceInterest.test.ts`, `src/transport.test.ts`,
-`src/stores/app.test.ts`).
+window, single-path reconnect resync, reconnect resubscription, the viewer-bound
+per-PR review mutations, and the v1/v2 compatibility split
+(`electron/backend/remote-server.test.ts`, `electron/backend/remote-core.test.ts`,
+`src/stores/remote-details.test.ts`, `src/composables/useResourceInterest.test.ts`,
+`src/transport.test.ts`, `src/stores/app.test.ts`).
+
+### Bootstrap & reconnect are single-path (plan §11 / success-criterion "transferred once")
+
+State is transferred over exactly one channel per event, never both HTTP and WS:
+
+- **First connect** — the HTTP `GET /api/state` bootstrap delivers the core; the
+  first WS URL is frozen before a revision exists so it carries no `?rev=` and the
+  server holds bootstrap-once (no redundant initial frame). The client then hands
+  its bootstrap revision off via a one-shot `state:sync`, which the server answers
+  with a catch-up only if state moved in the `[bootstrap, WS-open]` window.
+- **Reconnect** — the fresh socket's URL carries `?rev=lastCoreRevision`, and that
+  is the **only** resync channel. The server sends exactly one catch-up core when —
+  and only when — its `coreRevision` differs from the advertised rev. The client no
+  longer also issues `GET /api/state` on reconnect, so a stale reconnect can never
+  transfer the core twice (the earlier dual path). A no-change reconnect transfers
+  zero state bytes.
+- **Server restart** — `coreRevision` is a per-process monotonic counter, so after a
+  restart it resets below the value a reconnecting client still holds. The catch-up
+  gate is `rev !== coreRevision` (not `rev < coreRevision`) precisely so a
+  client-ahead rev still resyncs with one fresh core instead of being stranded on
+  state from the dead process.
+
+Coverage: `src/transport.test.ts` ("reconnect resync is single-path: WS `?rev=`
+catch-up, never a duplicate `/api/state` fetch") proves the client issues no
+reconnect HTTP fetch and carries the rev on the socket; `remote-server.test.ts`
+proves, over real TCP, that a stale reconnect gets exactly one catch-up frame, a
+current rev gets none, and a rev ahead of the server (post-restart) still gets
+exactly one ("server-restart recovery").
 
 `src/composables/useResourceInterest.test.ts` mounts the **real**
 `WorkspaceGridStage.vue` (its `WorkspaceCell` stubbed to a pane that declares a

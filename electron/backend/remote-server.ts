@@ -3691,19 +3691,25 @@ export async function startRemoteServer({
       //     [bootstrap, WS-open] window (see the message handler) — closing the
       //     race where the first socket's URL was frozen before the revision
       //     existed;
-      //   - rev present and < the current coreRevision → the client's HTTP
-      //     snapshot is already stale (a change slipped in between bootstrap and
-      //     this connect, or during a reconnect gap) → send ONE catch-up core so
-      //     it never misses a change; the client's revision gate drops it if it
-      //     turns out not to be newer;
-      //   - rev present and current → send nothing.
+      //   - rev present and DIFFERENT from the current coreRevision → resync with
+      //     ONE catch-up core. This is the single authoritative reconnect path
+      //     (the client no longer also re-fetches `/api/state`). It covers two
+      //     cases: (a) rev < coreRevision — a change slipped in between bootstrap
+      //     and this connect, or during a reconnect gap; (b) rev > coreRevision —
+      //     the server RESTARTED and its monotonic coreRevision reset below the
+      //     value this client still holds, so a `<` test would wrongly send
+      //     nothing and strand the client on state from the dead process. Either
+      //     way the client's revision gate drops the frame if it is not newer, and
+      //     after a restart the fresh core always parses as authoritative;
+      //   - rev present and equal → send nothing (a no-change reconnect transfers
+      //     zero state bytes).
       // A legacy socket has no HTTP bootstrap guarantee in its old renderer, so it
       // always gets the initial composed payload. Registered LAST (see the NOTE
       // above the message handler) so the await never opens a window with no
       // message listener.
       const wsServesCore = servesRemoteCore(wsCapabilities);
       const wsBootstrapRev = requestBootstrapRevision(request.url || "/");
-      const needsCatchUp = wsServesCore ? wsBootstrapRev !== null && wsBootstrapRev < coreRevision : true;
+      const needsCatchUp = wsServesCore ? wsBootstrapRev !== null && wsBootstrapRev !== coreRevision : true;
       if (needsCatchUp) await sendCoreCatchUp(ws, wsSessionId);
     });
   });
