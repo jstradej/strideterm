@@ -34,6 +34,7 @@
     "smoke": "npm run build && tsx scripts/smoke.mts",
     "perf": "node --expose-gc scripts/perf-test.mjs",
     "measure:remote": "tsx scripts/measure-remote-payload.mts",
+    "smoke:remote-tunnel": "tsx scripts/remote-tunnel-smoke.mts",
     "test": "npm run test:ui && npm run test:backend",
     "test:ui": "vitest run --config vite.config.ts",
     "test:backend": "vitest run --config vitest.backend.config.ts",

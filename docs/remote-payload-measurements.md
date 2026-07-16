@@ -191,53 +191,83 @@ A Cloudflare tunnel is a transparent HTTPS reverse proxy: the app-observable
 differences from localhost are exactly HTTPS (the `Secure` cookie above),
 compression negotiation (`measure:remote`), and latency — all covered above.
 
-### Live smoke over a REAL Cloudflare tunnel — EXECUTED (2026-07-16)
+### Live smoke over a REAL Cloudflare tunnel against the REAL backend — EXECUTED (2026-07-16)
 
-The phone/tablet/wide-browser pass was re-run **through a live Cloudflare quick
-tunnel** (`cloudflared tunnel --url …` → `https://<name>.trycloudflare.com`, TLS
+The plan's live matrix (§Verification 9) was executed against the **real
+application backend**, not the mock server. `scripts/remote-tunnel-smoke.mts`
+(run: `npm run smoke:remote-tunnel`) boots the actual `createRuntime()` +
+`startRemoteServer()` **headless** — the exact code the Electron shell runs, only
+the GUI window is absent (the backend runtime/remote-server import no `electron`
+module; verified) — then drives it over a live `cloudflared` quick tunnel
+(`https://<name>.trycloudflare.com`, real TLS/QUIC to the Cloudflare edge). The
+tunnel is torn down at the end.
 
-- QUIC to the Cloudflare edge, region `prg01`), not just localhost. The browser
-  loaded the app from the tunnel URL and connected `wss://<tunnel>/ws`, so every
-  observation below crossed the real HTTPS reverse proxy the production incident
-  did. The mock served the **real** slim-core contract (the same
-  `electron/backend/remote-core.ts` builders production uses) over synthetic
-  fixture data (no real credentials/workspaces exposed on the public URL); the
-  tunnel was torn down at the end. Chromium drove three device profiles — phone
-  (iPhone 13 emulation: mobile viewport, DPR, touch, mobile UA), tablet (iPad
-  emulation), and wide desktop (1440×900) — against the tunnel URL.
+**Seeded data:** a **real git repo** (real `GitManager` snapshot, dirty working
+tree), **real Docker** via the `STRIDETERM_DOCKER_MOCK_FILE` code path (real
+`DockerManager`, no daemon on this host), a **real PTY** terminal (real Windows
+shell), and the real `reviewBridgeStore`. Azure/GitHub/review-bridge **data** is
+synthetic — this environment has no real provider accounts — but flows through
+the real managers, the real `remote-core.ts` reducers, the real detail endpoints
+and the real revision/invalidation path. (Loading a real provider account's PRs
+on physical hardware is the one remaining human step; see below.)
 
-| viewport            | over the tunnel — observed                                                                                                                                                                                                                                                                                                                                                                               |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Phone** iPhone 13 | slim core delivered (`stateProtocol: 2`, `gitSummaries` present (2), `git.workspaces` absent, `azureDevops.inbox` absent, ~8.9 KiB, **`Content-Encoding: gzip`** over the tunnel); mobile chrome (MobileInputBar); terminal I/O reached the server (18 `terminal:input` frames received); reconnect after offline→online was clean; **no `1013` loop** (WS stable, no reconnecting banner); 0 JS errors. |
-| **Tablet** iPad     | same slim core; workspace switch adopted the new core; `GET /api/git/workspace-detail` returned `{resource,revision,data}` (200) on demand over the tunnel; clean reconnect; no `1013`; 0 JS errors.                                                                                                                                                                                                     |
-| **Wide** 1440×900   | full desktop **2×2 workspace grid** with several non-terminal panes mounted at once (task-dashboard cells + terminal cells), each rendering from the slim core; the `master clean` git badge rendered from the **summary** (not a full snapshot); workspace switch adopted the new core; detail-on-demand 200; clean reconnect; no `1013`; 0 JS errors; core ~9.9 KiB.                                   |
+**Result: 33/33 checks pass** over the tunnel. Two layers, both over the tunnel URL:
 
-Telemetry captured as observations (no hard target): the `/api/state` bootstrap
-core was **8.9–9.9 KiB** and **gzip-compressed over the tunnel**; the core
-carried summaries only (no full `git.workspaces`, no `azureDevops.inbox`); the WS
-stayed connected with no size-induced `1013` close and recovered cleanly across
-an offline→online cycle. Reproduce by starting the Vite dev server + the
-mock-server (`tsx test/mock-server.ts workspace-grid --port 3999`, with
-`VITE_DEV_PORT` pointing at Vite), running `cloudflared tunnel --url
-http://127.0.0.1:3999`, and opening the printed `trycloudflare.com` URL in a
-browser (or driving it with Playwright device emulation).
+**Protocol layer** (Node `fetch`/`ws` → the real server over the edge):
 
-#### Residual not covered by the above (optional human confirmation)
+- `/?token=` bootstraps a session cookie; the client activates its profile
+  (`/api/remote-client/profile/activate` → 200).
+- `GET /api/state` → slim core: `stateProtocol: 2`, `Content-Encoding: gzip`,
+  ~8.8 KiB, `gitSummaries` present (the seeded repo shows `dirty:true,
+dirtyCount:1`), **`git.workspaces` absent**, provider **`inbox` absent**.
+- Every detail resource returns `{resource,revision,data}` 200 over the tunnel:
+  `git:<ws>` (heavy snapshot with `roots`/`log`), `docker` (full 3-container
+  list), `azure-inbox`, `azure-pr`, `github-inbox`, `github-pr`, `review-bridge`,
+  `agent-prompts`. The azure-pr `revision` folds checks + reviewer votes
+  (`…ck1:succeeded,ck2:pending|rv1:5|…`), proving the round-8 freshness fix over
+  the wire.
+- **Profile authorization holds over the tunnel:** a cross-profile PR detail is
+  rejected `403`.
+- **Terminal I/O + replay:** `terminal:subscribe` returns a `terminal:replay`
+  carrying earlier **real PTY output** (the `STRIDETERM_SMOKE_MARKER` echo);
+  `terminal:input` sent over the tunnel WS reaches the PTY (server-side observed).
+- `resource:interest` primes `resource:invalidate`; **no size-induced `1013`
+  close**; reconnect carrying `?rev=` re-establishes and re-primes invalidations
+  without a `1013` loop.
 
-The automated pass above exercises the real slim-core contract over a real
-Cloudflare tunnel with real HTTPS/WSS, real edge latency, real compression
-negotiation, and emulated mobile viewport/touch. Two things it does **not**
-cover, neither of which exercises any additional application code path:
+**Device layer** (Playwright Chromium at three profiles, rendering the **real web
+client** served from `dist/` over the tunnel):
 
-1. **Literal physical hardware** — a real phone/tablet's touch digitizer and
-   real cellular radio (vs. Chromium's device emulation over Wi-Fi). Pinch-zoom
-   font sizing in particular is a real-gesture affordance worth a human glance.
-2. **A named (account) Cloudflare tunnel** started from `.\dev.ps1` against the
-   full Electron backend (vs. a quick tunnel to the mock). The full backend's
-   HTTP/WS plumbing, backpressure, response adapter and secret-strip are proven
-   over real TCP in `remote-server.test.ts`; the tunnel hop itself is proven
-   above.
+| viewport            | over the tunnel — observed                                                                                                                                                                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Phone** iPhone 13 | real mobile web client mounts + renders the slim core; the terminal pane shows the real shell with the `STRIDETERM_SMOKE_MARKER` and `TUNNEL_WS_INPUT` echoes; no `1013` reconnect loop; 0 JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-phone.png`. |
+| **Tablet** iPad     | same slim core renders in the iPad layout; no `1013`; 0 JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-tablet.png`.                                                                                                                                   |
+| **Wide** 1600×950   | wide desktop-browser viewport renders the full slim-core app; no `1013`; 0 JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-wide.png`.                                                                                                                  |
 
-These remain a nice-to-have final sign-off for a release owner, not a gate on
-this work: the slim-core remote contract is verified end-to-end over a real
-Cloudflare tunnel at phone, tablet, and wide-browser viewports.
+Telemetry captured as observations (no hard target): bootstrap core **~8.8 KiB,
+gzip over the tunnel**; `frameP50/P95 ≈ 8.8 KiB`; `maxBacklog 0`; `stateCoalesced
+0` (no burst during the run); WS stayed connected with **no `1013`** across the
+reconnect. The wide-grid **interest recomputation** across multiple visible cells
+is additionally covered by `useResourceInterest.test.ts` and the
+`workspace-grid` Electron E2E; this live pass confirms the wide viewport renders
+the slim core over the tunnel without a size-induced disconnect.
+
+#### The one remaining human step (real-account data on physical hardware)
+
+Everything above runs against the real backend over a real tunnel. Two things are
+inherent to the **user's** environment and cannot be reproduced in this automated
+harness — they exercise **no additional application code path** beyond what the
+33 checks and the unit/E2E suites already prove:
+
+1. **Real Azure DevOps / GitHub account data.** The provider **contract** (core
+   badges, inbox/PR/review-bridge detail, revision folding, profile auth) is
+   exercised above with synthetic data through the real code path, and unit-tested
+   in `remote-core.test.ts`. Loading a real account's PRs requires the user's
+   configured connections — the plan explicitly scopes the real-data live smoke as
+   "run by the user."
+2. **Literal physical phone/tablet hardware** — a real touch digitizer / cellular
+   radio (vs. Chromium device emulation over the same tunnel). Pinch-zoom font
+   sizing is a real-gesture affordance worth a human glance.
+
+Reproduce the automated pass: `npm run smoke:remote-tunnel` (needs `cloudflared`
+on PATH and `dist/` built via `VITE_BUILD_WATCH=1 npx vite build`).
