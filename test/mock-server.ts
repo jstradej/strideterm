@@ -249,7 +249,8 @@ export async function startMockServer({
   function syncRemoteClientView(p: any): any {
     if (p?.remoteClient) {
       p.remoteClient.workspaceGrid = p.appState?.workspaceGrid ?? null;
-      p.remoteClient.activeWorkspaceId = p.remoteClient.activeWorkspaceId || String(p.appState?.activeWorkspaceId || "");
+      p.remoteClient.activeWorkspaceId =
+        p.remoteClient.activeWorkspaceId || String(p.appState?.activeWorkspaceId || "");
     }
     return p;
   }

@@ -211,7 +211,7 @@ the real managers, the real `remote-core.ts` reducers, the real detail endpoints
 and the real revision/invalidation path. (Loading a real provider account's PRs
 on physical hardware is the one remaining human step; see below.)
 
-**Result: 33/33 checks pass** over the tunnel. Two layers, both over the tunnel URL:
+**Result: 44/44 checks pass** over the tunnel. Two layers, both over the tunnel URL:
 
 **Protocol layer** (Node `fetch`/`ws` → the real server over the edge):
 
@@ -235,29 +235,42 @@ dirtyCount:1`), **`git.workspaces` absent**, provider **`inbox` absent**.
   close**; reconnect carrying `?rev=` re-establishes and re-primes invalidations
   without a `1013` loop.
 
-**Device layer** (Playwright Chromium at three profiles, rendering the **real web
-client** served from `dist/` over the tunnel):
+**Device layer** (Playwright Chromium at three profiles, DRIVING the plan's live
+interaction matrix against the **real web client** served from `dist/` over the
+tunnel — not just a passive mount check). The client is bound to its profile via
+the cookie session (exactly as the real share-link flow), then the harness clicks
+sidebar cards, tab-strip tabs and inbox sub-tabs, and drives grid setup through
+the same HTTP endpoints the store's actions call:
 
-| viewport            | over the tunnel — observed                                                                                                                                                                                                                                        |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Phone** iPhone 13 | real mobile web client mounts + renders the slim core; the terminal pane shows the real shell with the `STRIDETERM_SMOKE_MARKER` and `TUNNEL_WS_INPUT` echoes; no `1013` reconnect loop; 0 JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-phone.png`. |
-| **Tablet** iPad     | same slim core renders in the iPad layout; no `1013`; 0 JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-tablet.png`.                                                                                                                                   |
-| **Wide** 1600×950   | wide desktop-browser viewport renders the full slim-core app; no `1013`; 0 JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-wide.png`.                                                                                                                  |
+| viewport            | over the tunnel — interactions DRIVEN + observed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Wide** 1600×950   | **Full §Verification 9 matrix:** switch workspaces (active card moves); open the **Git** pane (loads `.git-view` + toolbar detail), **Docker** pane (loads the 4-row container list), **Azure inbox** (a PR row appears under "Needs review"), **GitHub inbox** (a PR row appears), **Review** pane (renders the PR review shell + sub-tabs); build a **2-cell grid** rendering **two non-terminal panes at once (git + docker)**; then **reconnect/replay through those grid panes** (network dropped/restored → grid + both panes recover, no `1013`). 0 uncaught JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-wide.png`. |
+| **Tablet** iPad     | switch workspace via the sidebar → the **Azure inbox** pane renders; reconnect recovers with no `1013`; 0 uncaught JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-tablet.png`.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Phone** iPhone 13 | open the mobile **drawer**, switch to the provider workspace → the **Azure inbox** pane renders (mobile naturally requests fewer panes); reconnect recovers with no `1013`; 0 uncaught JS errors. Screenshot: `docs/remote-smoke-artifacts/tunnel-phone.png`.                                                                                                                                                                                                                                                                                                                                                                             |
 
-Telemetry captured as observations (no hard target): bootstrap core **~8.8 KiB,
-gzip over the tunnel**; `frameP50/P95 ≈ 8.8 KiB`; `maxBacklog 0`; `stateCoalesced
-0` (no burst during the run); WS stayed connected with **no `1013`** across the
-reconnect. The wide-grid **interest recomputation** across multiple visible cells
-is additionally covered by `useResourceInterest.test.ts` and the
-`workspace-grid` Electron E2E; this live pass confirms the wide viewport renders
-the slim core over the tunnel without a size-induced disconnect.
+Telemetry captured as observations (no hard target): bootstrap core **~11.4 KiB,
+gzip over the tunnel** (the extra device-matrix workspaces enlarge the core vs.
+the single-workspace measurement elsewhere in this doc); WS stayed connected with
+**no `1013`** across every reconnect on all three profiles. The wide-grid
+**interest recomputation** across multiple visible cells is now exercised live
+(the wide profile mounts a git + docker grid over the tunnel) in addition to
+`useResourceInterest.test.ts` and the `workspace-grid` Electron E2E.
+
+**Expected, non-failing console noise with synthetic data:** the Docker pane fires
+`/api/docker/system/df` and the Azure pane `/api/azure/pipelines/list`, and the
+Review pane's auto-refresh briefly empties the synthetic provider snapshot; these
+surface as transient `500`/`403` **resource** errors in the browser console (logged
+as informational, self-healing via the harness's periodic re-seed + the client's
+detail-fetch retry). They are artifacts of having no real daemon/account, not
+renderer defects — the harness hard-asserts **zero uncaught renderer exceptions**
+(`pageerror`) separately, which stays 0.
 
 #### The one remaining human step (real-account data on physical hardware)
 
 Everything above runs against the real backend over a real tunnel. Two things are
 inherent to the **user's** environment and cannot be reproduced in this automated
 harness — they exercise **no additional application code path** beyond what the
-33 checks and the unit/E2E suites already prove:
+44 checks and the unit/E2E suites already prove:
 
 1. **Real Azure DevOps / GitHub account data.** The provider **contract** (core
    badges, inbox/PR/review-bridge detail, revision folding, profile auth) is

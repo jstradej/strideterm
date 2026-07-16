@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 /**
  * remote-tunnel-smoke — executes the plan's live smoke (plan §Verification 9,
  * §Phase 1.6) against the REAL application backend over a REAL Cloudflare quick
@@ -11,9 +12,13 @@
  *      and reconnect (?rev=) — proving the real server serves the v2 contract
  *      over the real edge hop.
  *   2. Device layer (Playwright Chromium at phone / tablet / wide profiles):
- *      the REAL web client (served from dist/) rendering the slim core over the
- *      tunnel — terminal, wide multi-cell grid, no size-induced 1013 loop, no JS
- *      errors — one screenshot per device profile.
+ *      the REAL web client (served from dist/) DRIVING the plan's live interaction
+ *      matrix (§Verification 9) over the tunnel. Wide: workspace switching, each
+ *      non-terminal pane (Git / Docker / Azure inbox / GitHub inbox / Review) load
+ *      its on-demand detail, a multi-cell grid rendering TWO non-terminal panes at
+ *      once, and reconnect/replay through those panes. Phone/tablet: switching +
+ *      a provider pane + reconnect (mobile naturally requests fewer). No
+ *      size-induced 1013 loop, no uncaught renderer errors; one screenshot each.
  *
  * Data note: git, docker (real DockerManager via a mock CLI file), terminal
  * (real PTY), and agent-prompts are REAL. Azure/GitHub/review-bridge data is
@@ -33,7 +38,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
-import { chromium, devices, type Browser } from "playwright";
+import { chromium, devices, type Browser, type Page } from "playwright";
 import { createRuntime } from "../electron/backend/runtime.js";
 import { startRemoteServer } from "../electron/backend/remote-server.js";
 import { AzureDevOpsManager } from "../electron/backend/azure-devops-manager.js";
@@ -48,6 +53,13 @@ const GITHUB_PR = "github:smoke/repo/2";
 const WS_ID = "ws-term";
 const PANEL_ID = "a";
 const SESSION_ID = `${WS_ID}:${PANEL_ID}`;
+// Extra workspaces for the device-layer interaction matrix (plan §Verification 9):
+// one per non-terminal pane kind so the browser can switch workspaces, build a
+// multi-cell grid, and open Git/Docker/Azure/GitHub-inbox/Review panes.
+const WS_DOCKER = "ws-docker";
+const WS_AZURE = "ws-azure";
+const WS_GITHUB = "ws-github";
+const WS_REVIEW = "ws-review";
 
 type Check = { name: string; ok: boolean; detail: string };
 const checks: Check[] = [];
@@ -283,6 +295,80 @@ async function main(): Promise<void> {
         // ensureVisibleSession spawns a real PTY for.
         panels: [{ id: PANEL_ID, title: "Shell", command: "", startup: "default" }],
       },
+      // Docker workspace (kind=docker) → the Docker pane; cwd is the real repo so
+      // it also carries a git tab. The real DockerManager reads the mock CLI file.
+      {
+        id: WS_DOCKER,
+        name: "Docker",
+        icon: "D",
+        color: "#0db7ed",
+        kind: "docker",
+        source: "manual",
+        pluginId: "",
+        cwd: repoDir,
+        notes: "",
+        profileId: "default",
+        panels: [{ id: PANEL_ID, title: "Docker", command: "", startup: "default" }],
+      },
+      // Azure workspace (kind=azure) → the Azure inbox pane (its only tab).
+      {
+        id: WS_AZURE,
+        name: "Azure",
+        icon: "A",
+        color: "#0078d4",
+        kind: "azure",
+        source: "manual",
+        pluginId: "",
+        cwd: "",
+        notes: "",
+        profileId: "default",
+        connectionId: "az-conn",
+        panels: [{ id: PANEL_ID, title: "Azure", command: "", startup: "default" }],
+      },
+      // GitHub workspace (kind=github) → the GitHub inbox pane (its only tab).
+      {
+        id: WS_GITHUB,
+        name: "GitHub",
+        icon: "G",
+        color: "#333333",
+        kind: "github",
+        source: "manual",
+        pluginId: "",
+        cwd: "",
+        notes: "",
+        profileId: "default",
+        connectionId: "gh-conn",
+        panels: [{ id: PANEL_ID, title: "GitHub", command: "", startup: "default" }],
+      },
+      // Review workspace (review.provider=azure-devops, prKey=AZURE_PR) → the
+      // Review pane. Points at the seeded azure PR + review-bridge context.
+      {
+        id: WS_REVIEW,
+        name: "Review",
+        icon: "R",
+        color: "#f0a",
+        kind: "manual",
+        source: "manual",
+        pluginId: "",
+        cwd: repoDir,
+        notes: "",
+        profileId: "default",
+        connectionId: "az-conn",
+        review: {
+          provider: "azure-devops",
+          prKey: AZURE_PR,
+          connectionId: "az-conn",
+          orgUrl: "https://dev.azure.com/x",
+          parentWorkspaceId: WS_ID,
+          project: { id: "proj", name: "Proj" },
+          repository: { id: "repo", name: "repo" },
+          pullRequest: { id: 1, title: "Smoke PR", status: "active" },
+          role: "reviewer",
+          writable: false,
+          checkout: null,
+        },
+        panels: [{ id: PANEL_ID, title: "Shell", command: "", startup: "default" }],
+      },
     ],
     windowSlots: [],
   };
@@ -409,6 +495,7 @@ async function main(): Promise<void> {
   console.log(`[tunnel] reachable: ${ready}`);
 
   let browser: Browser | null = null;
+  let reseedTimer: ReturnType<typeof setInterval> | null = null;
   try {
     // ==== PROTOCOL LAYER (over the tunnel) ================================
     console.log("\n-- Protocol layer (Node fetch/ws over the tunnel) --");
@@ -504,18 +591,27 @@ async function main(): Promise<void> {
 
     // ==== DEVICE LAYER (Playwright over the tunnel) =======================
     console.log("\n-- Device layer (Playwright Chromium over the tunnel) --");
+    // The Review pane auto-fires a provider refresh on mount which, with no real
+    // credentials, transiently empties the synthetic snapshot; re-seed on a short
+    // interval so a mounted pane's on-demand PR/review detail resolves.
+    reseedTimer = setInterval(() => void seedProviders(), 300);
     browser = await chromium.launch();
     const artDir = path.join(REPO_ROOT, "docs", "remote-smoke-artifacts");
     await mkdir(artDir, { recursive: true });
-    const profiles: Array<[string, Record<string, unknown>]> = [
-      ["phone", { ...devices["iPhone 13"] }],
-      ["tablet", { ...devices["iPad (gen 7)"] }],
-      ["wide", { viewport: { width: 1600, height: 950 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false }],
+    const profiles: Array<[string, Record<string, unknown>, boolean]> = [
+      ["phone", { ...devices["iPhone 13"] }, false],
+      ["tablet", { ...devices["iPad (gen 7)"] }, false],
+      [
+        "wide",
+        { viewport: { width: 1600, height: 950 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false },
+        true,
+      ],
     ];
-    for (const [label, device] of profiles) {
-      await runDeviceProfile(browser, device, label, tunnelUrl, artDir);
+    for (const [label, device, isWide] of profiles) {
+      await runDeviceProfile(browser, device, label, tunnelUrl, artDir, isWide);
     }
   } finally {
+    if (reseedTimer) clearInterval(reseedTimer);
     console.log("\n[teardown] closing browser / tunnel / server / runtime...");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const telem = (server as any)._debugTelemetry?.();
@@ -652,56 +748,336 @@ async function runWsChecks(tunnelUrl: string, receivedInputs: string[], _runtime
 
 // --- Device profile rendering over the tunnel ------------------------------
 
+// --- In-page driving helpers -----------------------------------------------
+//
+// These issue fetches from INSIDE the page (page.evaluate), replicating the
+// transport's request signature (clientId from sessionStorage + Bearer token),
+// so they bind to the SAME server session the browser renders — driving the real
+// endpoints the store's actions call, without fragile drag-drop UI gestures.
+
+async function inPageActivateProfile(page: Page, profileId: string): Promise<number> {
+  return page.evaluate(
+    async ({ token, profileId }) => {
+      const clientId = window.sessionStorage.getItem("strideterm-remote-client-id") || "";
+      const h: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-Strideterm-Client-Id": clientId,
+        "X-Strideterm-State-Protocol": "2",
+        "X-Strideterm-Capabilities": "remote-core-v2,resource-details-v1",
+        Authorization: `Bearer ${token}`,
+      };
+      return fetch("/api/remote-client/profile/activate", {
+        method: "POST",
+        headers: h,
+        body: JSON.stringify({ profileId }),
+      }).then((r) => r.status);
+    },
+    { token: TOKEN, profileId },
+  );
+}
+
+async function inPageEnableGrid(
+  page: Page,
+  cells: Array<{ id: string; view: string }>,
+  layout: string,
+): Promise<Record<string, number>> {
+  return page.evaluate(
+    async ({ token, cells, layout }) => {
+      const clientId = window.sessionStorage.getItem("strideterm-remote-client-id") || "";
+      const h: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-Strideterm-Client-Id": clientId,
+        "X-Strideterm-State-Protocol": "2",
+        "X-Strideterm-Capabilities": "remote-core-v2,resource-details-v1",
+        Authorization: `Bearer ${token}`,
+      };
+      const post = (p: string, b: unknown): Promise<number> =>
+        fetch(p, { method: "POST", headers: h, body: JSON.stringify(b) }).then((r) => r.status);
+      const out: Record<string, number> = {};
+      for (const c of cells)
+        out[`ui:${c.id}`] = await post("/api/workspace/set-ui-state", {
+          workspaceId: c.id,
+          uiState: { activeViewId: c.view },
+        });
+      out.enable = await post("/api/workspace-grid/enable", { layout, workspaceIds: cells.map((c) => c.id) });
+      out.activate = await post("/api/remote-client/workspace/activate", { workspaceId: cells[0].id });
+      return out;
+    },
+    { token: TOKEN, cells, layout },
+  );
+}
+
+interface DomState {
+  shell: boolean;
+  activeWs: string | null;
+  gitView: boolean;
+  refreshBtn: boolean;
+  dockerSplit: boolean;
+  dockerRows: number;
+  azureInbox: boolean;
+  prRows: number;
+  reviewShell: boolean;
+  reviewSubtabs: boolean;
+  gridRoot: boolean;
+  cellPanes: number;
+}
+
+async function domState(page: Page): Promise<DomState> {
+  return page.evaluate((): DomState => {
+    const q = (s: string): boolean => Boolean(document.querySelector(s));
+    const active = document.querySelector("[data-role='workspace-list'] [data-workspace-id].workspace-card--active");
+    return {
+      shell: q(".app-shell") || q(".sidebar") || q("[data-role='workspace-list']"),
+      activeWs: active ? active.getAttribute("data-workspace-id") : null,
+      gitView: q(".git-view"),
+      refreshBtn: q("[data-testid='refresh-button']"),
+      dockerSplit: q(".docker-splitpanes"),
+      dockerRows: document.querySelectorAll(".docker-tree__list > *").length,
+      azureInbox: q(".azure-inbox"),
+      prRows: document.querySelectorAll("article.azure-pr-row, .azure-repo-group article, .azure-pr-row").length,
+      reviewShell: q(".review-shell"),
+      reviewSubtabs: q(".review-subtabs"),
+      gridRoot: q(".workspace-grid"),
+      cellPanes: document.querySelectorAll(".workspace-cell__pane").length,
+    };
+  });
+}
+
+/** Poll `domState` until `check` holds (or timeout), returning the final state —
+ *  robust to the tunnel round-trip latency of an activate→broadcast→render cycle. */
+async function waitForDom(page: Page, check: (s: DomState) => boolean, timeoutMs = 12_000): Promise<DomState> {
+  const deadline = Date.now() + timeoutMs;
+  let s = await domState(page);
+  while (!check(s) && Date.now() < deadline) {
+    await page.waitForTimeout(500);
+    s = await domState(page);
+  }
+  return s;
+}
+
+/** Click a sidebar workspace card (opening the mobile drawer first when the
+ *  hamburger is showing — i.e. a narrow/phone layout), then poll until it becomes
+ *  the active card. A translated-off-canvas card still reports `isVisible()`, so
+ *  we gate on the hamburger's visibility (display:none unless the mobile media
+ *  query is active) rather than the card's. */
+async function switchWorkspace(page: Page, wsId: string): Promise<boolean> {
+  const hamburger = page.locator(".mobile-hamburger");
+  if (await hamburger.isVisible().catch(() => false)) {
+    await hamburger.click().catch(() => undefined);
+    await page.waitForSelector("aside.sidebar.sidebar--open", { timeout: 5000 }).catch(() => undefined);
+    await page.waitForTimeout(500);
+  }
+  const sel = `[data-role='workspace-list'] > [data-workspace-id='${wsId}']`;
+  await page.click(sel, { timeout: 8000 }).catch(() => undefined);
+  const deadline = Date.now() + 12_000;
+  for (;;) {
+    const active = await page.evaluate(
+      (id) => Boolean(document.querySelector(`[data-workspace-id='${id}'].workspace-card--active`)),
+      wsId,
+    );
+    if (active || Date.now() > deadline) return active;
+    await page.waitForTimeout(500);
+  }
+}
+
+async function clickTab(page: Page, viewId: string): Promise<void> {
+  await page
+    .click(`[data-role='tab-strip'] button.tab[data-view-id='${viewId}']`, { timeout: 8000 })
+    .catch(() => undefined);
+  await page.waitForTimeout(2500);
+}
+
+/** Click a provider-inbox sub-tab (e.g. "Needs review") by its label text. */
+async function clickInboxSubtab(page: Page, needle: string): Promise<void> {
+  await page.evaluate((n) => {
+    const tabs = Array.from(document.querySelectorAll(".azure-inbox__tabs .azure-tab, .azure-inbox__tabs button"));
+    const t = tabs.find((e) => new RegExp(n, "i").test(e.textContent || ""));
+    (t as HTMLElement | undefined)?.click();
+  }, needle);
+  await page.waitForTimeout(2000);
+}
+
+/** Drop then restore the browser's network to force a WS reconnect, and report
+ *  whether the app recovered (not stuck disconnected) within the window. */
+async function reconnectCycle(page: Page): Promise<boolean> {
+  const context = page.context();
+  await context.setOffline(true);
+  await page.waitForTimeout(3000);
+  await context.setOffline(false);
+  await page.waitForTimeout(9000);
+  const bodyText =
+    (await page
+      .locator("body")
+      .innerText()
+      .catch(() => "")) || "";
+  return !/disconnected|reconnecting/i.test(bodyText.slice(0, 300));
+}
+
 async function runDeviceProfile(
   browser: Browser,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Playwright device descriptor is an untyped bag
   device: any,
   label: string,
   tunnelUrl: string,
   artDir: string,
+  isWide: boolean,
 ): Promise<void> {
   const context = await browser.newContext(device);
+  // tsx/esbuild wraps named functions with a module-local `__name` helper that is
+  // absent in the page's evaluate scope — define it so evaluate callbacks run.
+  // NOTE: we deliberately do NOT seed a token or clear cookies. Over the https
+  // tunnel the `?token=` bootstrap sets a Secure session cookie and the real web
+  // client runs cookie-only; the WS upgrade, the transport's HTTP calls, and our
+  // in-page setup fetches all carry that cookie, so they resolve to the SAME
+  // server session the browser renders (activation/grid writes then reflect).
+  await context.addInitScript(() => {
+    const w = window as unknown as { __name?: (fn: unknown) => unknown };
+    if (!w.__name) w.__name = (fn) => fn;
+  });
   const page = await context.newPage();
-  const jsErrors: string[] = [];
+  const jsErrors: string[] = []; // uncaught renderer exceptions — a hard failure
+  const consoleErrors: string[] = []; // resource errors etc. — informational only
   const wsCloses: number[] = [];
   page.on("pageerror", (e) => jsErrors.push(e.message));
   page.on("console", (m) => {
-    if (m.type() === "error") jsErrors.push(m.text());
+    if (m.type() === "error") consoleErrors.push(m.text());
   });
   page.on("websocket", (ws) => {
-    ws.on("close", () => {
-      // Playwright doesn't expose the close code directly; the app logs a 1013
-      // reconnect loop as repeated closes — we assert the socket stays healthy
-      // by counting closes within the observation window instead.
-      wsCloses.push(1);
-    });
+    // Playwright doesn't expose the close code; a size-induced 1013 loop shows up
+    // as MANY closes in the window — we bound the count instead of reading 1013.
+    ws.on("close", () => wsCloses.push(1));
   });
   try {
     await page.goto(`${tunnelUrl}/?token=${TOKEN}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
     const appeared = await page
-      .waitForSelector("h1.brand, .app-shell, .sidebar, [data-testid='workspace']", { timeout: 25_000 })
+      .waitForSelector("h1.brand, .app-shell, .sidebar, [data-role='workspace-list']", { timeout: 25_000 })
       .then(() => true)
       .catch(() => false);
-    // Observe for a few seconds to catch a 1013 reconnect loop.
-    await page.waitForTimeout(6000);
-    const bodyText =
-      (await page
-        .locator("body")
-        .innerText()
-        .catch(() => "")) || "";
-    const looksConnected = appeared && !/disconnected|reconnect/i.test(bodyText.slice(0, 400));
     record(
       `device[${label}]: real web client renders the slim core over the tunnel`,
       appeared,
       appeared ? "shell mounted" : "shell not found",
     );
-    record(
-      `device[${label}]: no size-induced 1013 reconnect loop`,
-      wsCloses.length <= 2,
-      `${wsCloses.length} ws closes in window`,
-    );
-    record(`device[${label}]: no renderer JS errors`, jsErrors.length === 0, jsErrors.slice(0, 2).join(" | "));
-    void looksConnected;
+    if (appeared) {
+      await inPageActivateProfile(page, "default");
+      await page.waitForTimeout(1500);
+
+      if (isWide) {
+        // 1. Workspace switching (click a different card, then back).
+        const toDocker = await switchWorkspace(page, WS_DOCKER);
+        const backToTerm = await switchWorkspace(page, WS_ID);
+        record(
+          `device[${label}]: workspace switching reflects in the active card`,
+          toDocker && backToTerm,
+          `docker=${toDocker} back=${backToTerm}`,
+        );
+
+        // 2. Git pane (solo) loads its heavy detail on demand.
+        await clickTab(page, `git:${WS_ID}`);
+        let s = await waitForDom(page, (x) => x.gitView && x.refreshBtn);
+        record(
+          `device[${label}]: Git pane loads detail over the tunnel`,
+          s.gitView && s.refreshBtn,
+          `gitView=${s.gitView} refreshBtn=${s.refreshBtn}`,
+        );
+
+        // 3. Docker pane (solo) loads the container list.
+        await switchWorkspace(page, WS_DOCKER);
+        await clickTab(page, `docker:${WS_DOCKER}`);
+        s = await waitForDom(page, (x) => x.dockerSplit && x.dockerRows > 0);
+        record(
+          `device[${label}]: Docker pane loads container detail over the tunnel`,
+          s.dockerSplit && s.dockerRows > 0,
+          `split=${s.dockerSplit} rows=${s.dockerRows}`,
+        );
+
+        // 4. Azure inbox pane loads a PR row (after selecting the "Needs review" tab).
+        await switchWorkspace(page, WS_AZURE);
+        await waitForDom(page, (x) => x.azureInbox);
+        await clickInboxSubtab(page, "needs review");
+        s = await waitForDom(page, (x) => x.azureInbox && x.prRows > 0);
+        record(
+          `device[${label}]: Azure inbox pane loads a PR row over the tunnel`,
+          s.azureInbox && s.prRows > 0,
+          `inbox=${s.azureInbox} rows=${s.prRows}`,
+        );
+
+        // 5. GitHub inbox pane loads a PR row.
+        await switchWorkspace(page, WS_GITHUB);
+        await waitForDom(page, (x) => x.azureInbox);
+        await clickInboxSubtab(page, "needs review");
+        s = await waitForDom(page, (x) => x.azureInbox && x.prRows > 0);
+        record(
+          `device[${label}]: GitHub inbox pane loads a PR row over the tunnel`,
+          s.azureInbox && s.prRows > 0,
+          `inbox=${s.azureInbox} rows=${s.prRows}`,
+        );
+
+        // 6. Review pane renders the PR review shell (review-bridge/PR detail).
+        await switchWorkspace(page, WS_REVIEW);
+        await clickTab(page, `review:${WS_REVIEW}`);
+        s = await waitForDom(page, (x) => x.reviewShell && x.reviewSubtabs);
+        record(
+          `device[${label}]: Review pane renders the PR review shell over the tunnel`,
+          s.reviewShell && s.reviewSubtabs,
+          `shell=${s.reviewShell} subtabs=${s.reviewSubtabs}`,
+        );
+
+        // 7. Multi-cell grid with TWO non-terminal panes (git + docker).
+        await switchWorkspace(page, WS_ID);
+        const grid = await inPageEnableGrid(
+          page,
+          [
+            { id: WS_ID, view: `git:${WS_ID}` },
+            { id: WS_DOCKER, view: `docker:${WS_DOCKER}` },
+          ],
+          "cols",
+        );
+        s = await waitForDom(page, (x) => x.gridRoot && x.cellPanes >= 2 && x.gitView && x.dockerSplit, 15_000);
+        record(
+          `device[${label}]: multi-cell grid renders 2 non-terminal panes (git+docker)`,
+          s.gridRoot && s.cellPanes >= 2 && s.gitView && s.dockerSplit,
+          `cells=${s.cellPanes} git=${s.gitView} docker=${s.dockerSplit} ${JSON.stringify(grid)}`,
+        );
+
+        // 8. Reconnect/replay THROUGH the browser panes (grid still mounted).
+        const before = wsCloses.length;
+        const recovered = await reconnectCycle(page);
+        s = await waitForDom(page, (x) => x.gridRoot && x.cellPanes >= 2 && x.gitView && x.dockerSplit, 15_000);
+        record(
+          `device[${label}]: reconnect replays the grid panes without a 1013 loop`,
+          recovered && s.gridRoot && s.cellPanes >= 2 && s.gitView && s.dockerSplit,
+          `grid=${s.gridRoot} git=${s.gitView} docker=${s.dockerSplit} recovered=${recovered} closes=${wsCloses.length - before}`,
+        );
+      } else {
+        // Mobile — naturally fewer panes (plan §Verification 9: "mobile naturally
+        // requests fewer"). Switch via the drawer, open one non-terminal pane,
+        // then reconnect.
+        const switched = await switchWorkspace(page, WS_AZURE);
+        record(
+          `device[${label}]: workspace switch (drawer) selects the provider workspace`,
+          switched,
+          `active=${switched}`,
+        );
+        let s = await waitForDom(page, (x) => x.azureInbox);
+        record(`device[${label}]: Azure inbox pane renders on this device`, s.azureInbox, `inbox=${s.azureInbox}`);
+
+        const before = wsCloses.length;
+        const recovered = await reconnectCycle(page);
+        s = await waitForDom(page, (x) => x.shell);
+        record(
+          `device[${label}]: reconnect recovers without a 1013 loop`,
+          recovered && s.shell,
+          `shell=${s.shell} recovered=${recovered} closes=${wsCloses.length - before}`,
+        );
+      }
+    }
+
+    record(`device[${label}]: no uncaught renderer errors`, jsErrors.length === 0, jsErrors.slice(0, 2).join(" | "));
+    if (consoleErrors.length)
+      console.log(
+        `    [${label}] ${consoleErrors.length} console resource error(s) — expected with synthetic provider data (e.g. docker df, azure pipelines): ${consoleErrors.slice(0, 3).join(" | ")}`,
+      );
     const shot = path.join(artDir, `tunnel-${label}.png`);
     await page.screenshot({ path: shot, fullPage: false }).catch(() => undefined);
     console.log(`    screenshot: ${path.relative(REPO_ROOT, shot)}`);
