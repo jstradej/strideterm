@@ -615,6 +615,11 @@ interface RemoteAdaptContext {
   acceptEncoding?: string;
   /** If-None-Match, for a 304 on an unchanged detail refetch. */
   ifNoneMatch?: string;
+  /** Request path — so a mutation ack can report the resources it changed. */
+  route?: string;
+  /** Parsed request body — set once the dispatch reads it; lets the ack pin the
+   *  changed resource key(s) from prKey/workspaceId/projectId. */
+  body?: Record<string, unknown>;
 }
 
 // Only compress JSON above this size — below it the framing/CPU overhead of
@@ -671,7 +676,91 @@ const ACK_MUTATION_ROUTES = new Set<string>([
   "/api/review-bridge/pull-request/sync",
   "/api/review-bridge/pull-request/push-and-publish",
   "/api/review-bridge/agent-prompt/reset",
+  // Docker domain mutations (renderer: setPayload no-op — the Docker pane
+  // repaints from its `docker` detail resource, refetched via the ack's
+  // changedResources / the WS invalidation). Prune routes return { payload,
+  // result }: the ack keeps `result` (the reclaimed-size report) and drops only
+  // the nested core, so the pane's toast still renders. Read-only docker ops
+  // (inspect/top/stats/system-df/volume-read) return strings, not payloads, so
+  // they pass through the adapter untouched even though they are not listed.
+  "/api/docker/action",
+  "/api/docker/compose-action",
+  "/api/docker/open-session",
+  "/api/docker/image/remove",
+  "/api/docker/volume/remove",
+  "/api/docker/network/remove",
+  "/api/docker/image/pull",
+  "/api/docker/image/prune",
+  "/api/docker/volume/prune",
+  "/api/docker/network/prune",
+  "/api/docker/builder/prune",
 ]);
+
+/**
+ * The detail resource keys a mutation/refresh changed, so the ack can name them
+ * and the client refetches exactly those interested panes without waiting for
+ * the WS invalidation round-trip (the broadcast still covers it — this is a
+ * latency optimization, not the correctness path). Derived from the route + the
+ * request body's ids; returns [] when the affected resource can't be pinned to a
+ * single key (e.g. a whole-provider refresh, where the client relies on the WS
+ * invalidations for each changed PR/inbox instead).
+ */
+function changedResourcesForRoute(route: string, body: Record<string, unknown> | undefined): string[] {
+  const b = (body || {}) as Record<string, unknown>;
+  const prKey = String(b.prKey || "");
+  const wsId = String(b.workspaceId || "");
+  const azurePr = (): string[] => (prKey ? [`azure-pr:${prKey}`, `review-bridge:${prKey}`] : []);
+  const githubPr = (): string[] => (prKey ? [`github-pr:${prKey}`, `review-bridge:${prKey}`] : []);
+  switch (route) {
+    case "/api/docker/refresh":
+    case "/api/docker/action":
+    case "/api/docker/compose-action":
+    case "/api/docker/image/remove":
+    case "/api/docker/volume/remove":
+    case "/api/docker/network/remove":
+    case "/api/docker/image/pull":
+    case "/api/docker/image/prune":
+    case "/api/docker/volume/prune":
+    case "/api/docker/network/prune":
+    case "/api/docker/builder/prune":
+      return ["docker"];
+    case "/api/azure/refresh":
+    case "/api/azure/delete-connection":
+      return ["azure-inbox"];
+    case "/api/github/refresh":
+    case "/api/github/delete-connection":
+      return ["github-inbox"];
+    case "/api/git/refresh":
+      return b.projectId ? [`git:${String(b.projectId)}`] : [];
+    case "/api/azure/pull-request/seen":
+    case "/api/azure/pull-request/comment":
+    case "/api/azure/pull-request/vote":
+    case "/api/azure/pull-request/thread-status":
+    case "/api/azure/pull-request/open":
+      return azurePr();
+    case "/api/github/pull-request/seen":
+    case "/api/github/pull-request/comment":
+    case "/api/github/pull-request/review":
+    case "/api/github/pull-request/open":
+      return githubPr();
+    case "/api/azure/workspace/fetch":
+    case "/api/azure/workspace/rebase":
+    case "/api/github/workspace/fetch":
+    case "/api/github/workspace/rebase":
+      return wsId ? [`git:${wsId}`] : [];
+    case "/api/review-bridge/draft/save":
+    case "/api/review-bridge/draft/delete":
+    case "/api/review-bridge/draft/queue":
+    case "/api/review-bridge/draft-comment/create":
+    case "/api/review-bridge/comment/delete":
+    case "/api/review-bridge/comment/reply-with-changes":
+    case "/api/review-bridge/pull-request/sync":
+    case "/api/review-bridge/pull-request/push-and-publish":
+      return prKey ? [`review-bridge:${prKey}`] : [];
+    default:
+      return [];
+  }
+}
 
 /**
  * The one remote response adapter. Given any runtime result, it:
@@ -707,7 +796,8 @@ function adaptRemoteResponse(body: unknown, ctx: RemoteAdaptContext): unknown {
         // Drop the nested core; keep any small envelope fields (ok, result, …).
         const rest = { ...rec };
         delete rest.payload;
-        return { ok: true, changedResources: [], ...rest, revision: ctx.coreRevision };
+        const changedResources = ctx.route ? changedResourcesForRoute(ctx.route, ctx.body) : [];
+        return { ok: true, changedResources, ...rest, revision: ctx.coreRevision };
       }
       return { ...rec, payload: composeAndSlim(nested as Record<string, unknown>, ctx) };
     }
@@ -717,10 +807,14 @@ function adaptRemoteResponse(body: unknown, ctx: RemoteAdaptContext): unknown {
 
 /** The small targeted result a v2 mutation/refresh returns instead of a core.
  *  `revision` is the server's current broadcast revision so the client can tell
- *  its state moved; the authoritative new core + per-resource invalidations ride
- *  the WS state:updated broadcast the mutation triggers. */
+ *  its state moved; `changedResources` names the detail keys the mutation
+ *  touched so the client refetches exactly those interested panes (the
+ *  authoritative new core + per-resource invalidations also ride the WS
+ *  state:updated broadcast the mutation triggers — the ack just skips the
+ *  round-trip). */
 function mutationAck(ctx: RemoteAdaptContext): Record<string, unknown> {
-  return { ok: true, changedResources: [], revision: ctx.coreRevision };
+  const changedResources = ctx.route ? changedResourcesForRoute(ctx.route, ctx.body) : [];
+  return { ok: true, changedResources, revision: ctx.coreRevision };
 }
 
 function composeAndSlim(payload: Record<string, unknown>, ctx: RemoteAdaptContext): unknown {
@@ -989,6 +1083,11 @@ async function handleApiRequest(
     }
 
     const body = await readRequestBody(request);
+    // Let the response adapter's mutation ack name the resources this route
+    // changed (from prKey/workspaceId/projectId in the body). No-op for routes
+    // that deliver a core rather than an ack.
+    const ackCtx = (response as ResponseWithCtx).__remoteCtx;
+    if (ackCtx) ackCtx.body = body as Record<string, unknown>;
 
     if (
       request.method === "POST" &&
@@ -1606,30 +1705,15 @@ async function handleApiRequest(
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/git/skip") {
-      json(response, 200, await runtime.gitSkipCommit(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/list-conflicts") {
-      json(response, 200, await runtime.gitListConflicts(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/conflict-detail") {
-      json(response, 200, await runtime.gitConflictDetail(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/resolve-conflict") {
-      json(response, 200, await runtime.gitResolveConflict(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/unresolve-conflict") {
-      json(response, 200, await runtime.gitUnresolveConflict(body));
-      return;
-    }
+    // /api/git/skip, /list-conflicts, /conflict-detail, /resolve-conflict and
+    // /unresolve-conflict are handled in the outer dispatch (slotAwareRoute) so
+    // they resolve the caller's bound windowId and refuse a cross-profile
+    // workspace. They are intentionally NOT handled here: the previous inline
+    // handlers passed no windowId, so resolveGitWorkspace fell back to
+    // windowSlots[0]'s profile and let a remote client on profile B drive
+    // conflict resolution on a workspace in profile A. Removing the inline
+    // fallback also fails safe — an accidental drop of the slot-aware entry
+    // 404s rather than silently re-opening the cross-profile hole.
 
     if (request.method === "POST" && url.pathname === "/api/git/diff-preview") {
       json(response, 200, await runtime.gitDiffPreview(body));
@@ -2306,6 +2390,7 @@ export async function startRemoteServer({
         deliverCore: deliversCore,
         sessionId: apiSessionId,
         registry,
+        route: url.pathname,
         method: request.method,
         acceptEncoding: Array.isArray(request.headers["accept-encoding"])
           ? request.headers["accept-encoding"][0]
@@ -2609,6 +2694,27 @@ export async function startRemoteServer({
           ),
         "/api/git/log-graph": (body, windowId) =>
           runtime.gitLogGraph(validateIpc(gitLogGraphSchema, body, "POST /api/git/log-graph"), windowId),
+        // Conflict-resolution ops mutate / read a workspace's working tree
+        // (skip a commit, list/read conflicted files, stage/unstage a
+        // resolution), so — like every other git op above — they must be pinned
+        // to the caller's bound profile. Without slot-aware routing they fell
+        // through to handleApiRequest with no windowId, and resolveGitWorkspace
+        // then fell back to windowSlots[0]'s profile, letting a remote client on
+        // profile B drive conflict resolution on a workspace in profile A. Same
+        // gitPayloadSchema the IPC handlers validate with (ipc.ts).
+        "/api/git/skip": (body, windowId) =>
+          runtime.gitSkipCommit(validateIpc(gitPayloadSchema, body, "POST /api/git/skip"), windowId),
+        "/api/git/list-conflicts": (body, windowId) =>
+          runtime.gitListConflicts(validateIpc(gitPayloadSchema, body, "POST /api/git/list-conflicts"), windowId),
+        "/api/git/conflict-detail": (body, windowId) =>
+          runtime.gitConflictDetail(validateIpc(gitPayloadSchema, body, "POST /api/git/conflict-detail"), windowId),
+        "/api/git/resolve-conflict": (body, windowId) =>
+          runtime.gitResolveConflict(validateIpc(gitPayloadSchema, body, "POST /api/git/resolve-conflict"), windowId),
+        "/api/git/unresolve-conflict": (body, windowId) =>
+          runtime.gitUnresolveConflict(
+            validateIpc(gitPayloadSchema, body, "POST /api/git/unresolve-conflict"),
+            windowId,
+          ),
         // Grid mutations resolve their target profile from windowId. Without
         // the slot-aware path a mobile client bound to profile B would mutate
         // profile A's grid (runtime falls back to windowSlots[0] when no
@@ -2661,6 +2767,10 @@ export async function startRemoteServer({
       const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
       if (slotAwareHandler) {
         const body = await readRequestBody(request);
+        // Let the response adapter's mutation ack name the resources this route
+        // changed (from prKey/workspaceId in the body).
+        const slotAckCtx = (response as ResponseWithCtx).__remoteCtx;
+        if (slotAckCtx) slotAckCtx.body = body as Record<string, unknown>;
         // Viewer-aware routes mutate state in the context of the caller's
         // profile. The remote client IS the viewer: pass its viewer id
         // (`remote:<sessionId>`) — the runtime resolves the profile through

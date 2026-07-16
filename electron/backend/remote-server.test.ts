@@ -611,9 +611,31 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     // Records the viewer id each per-PR review mutation received, so a test can
     // prove they are now routed through the profile-bound viewer path (#62).
     const azureMutationCalls: { method: string; prKey?: string; windowId?: string }[] = [];
+    // Same, for git conflict-resolution ops now routed through slotAwareRoute.
+    const gitConflictCalls: { method: string; workspaceId?: string; windowId?: string }[] = [];
     const runtime = {
       getPayload: () => payload,
       _azureMutationCalls: azureMutationCalls,
+      _gitConflictCalls: gitConflictCalls,
+      // Docker refresh — a full-payload result a v2 client must receive as an ack.
+      refreshDockerState: async () => payload,
+      // Conflict-resolution ops record the viewer id (windowId) they received so a
+      // test can prove they are now profile-bound (was a viewerless global path).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      gitSkipCommit: async (p: any, windowId?: string) => {
+        gitConflictCalls.push({ method: "skip", workspaceId: p?.workspaceId, windowId });
+        return { ok: true, payload };
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      gitResolveConflict: async (p: any, windowId?: string) => {
+        gitConflictCalls.push({ method: "resolve", workspaceId: p?.workspaceId, windowId });
+        return { ok: true, payload };
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      gitListConflicts: async (p: any, windowId?: string) => {
+        gitConflictCalls.push({ method: "list", workspaceId: p?.workspaceId, windowId });
+        return { ok: true, conflicts: [] };
+      },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       commentAzurePullRequest: async (p: any, windowId?: string) => {
         azureMutationCalls.push({ method: "comment", prKey: p?.prKey, windowId });
@@ -1711,6 +1733,101 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           headers: { Authorization: "Bearer tok-azc", "Content-Type": "application/json" },
           body: JSON.stringify({ prKey: "azure:pr1", vote: "approve" }),
         });
+        expect(unbound.status).toBe(400);
+      });
+    });
+
+    test("a v2 mutation ack NAMES the resources it changed (not an empty list) (#28/#36)", async () => {
+      await withServer("tok-chg", async ({ port }) => {
+        const post = (path: string, body: unknown) =>
+          fetch(`http://127.0.0.1:${port}${path}`, {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer tok-chg",
+              "X-Strideterm-Client-Id": "chg-aaaa",
+              "X-Strideterm-State-Protocol": "2",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+          });
+
+        // A per-PR review mutation names both the PR detail and its review-bridge context.
+        const comment = (await (
+          await post("/api/azure/pull-request/comment", { prKey: "azure:pr1", content: "x" })
+        ).json()) as {
+          ok: boolean;
+          changedResources: string[];
+          payload?: unknown;
+        };
+        expect(comment.ok).toBe(true);
+        expect(comment.payload).toBeUndefined(); // ack, not a core
+        expect(comment.changedResources).toEqual(
+          expect.arrayContaining(["azure-pr:azure:pr1", "review-bridge:azure:pr1"]),
+        );
+
+        // A scoped git refresh names the exact workspace resource.
+        const gitRefresh = (await (await post("/api/git/refresh", { projectId: "ws1" })).json()) as {
+          changedResources: string[];
+        };
+        expect(gitRefresh.changedResources).toEqual(["git:ws1"]);
+      });
+    });
+
+    test("Docker mutations return a targeted ack (docker), never a whole core (#28/#36)", async () => {
+      await withServer("tok-dck", async ({ port }) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/docker/refresh`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-dck",
+            "X-Strideterm-Client-Id": "dck-aaaa",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({}),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { ok: boolean; changedResources: string[]; payload?: unknown };
+        expect(body.ok).toBe(true);
+        expect(body.payload).toBeUndefined(); // no whole core after a docker action
+        expect(body.changedResources).toEqual(["docker"]);
+        // The heavy docker lists must not have been serialized into the ack.
+        expect(JSON.stringify(body)).not.toContain("HEAVY-IMAGE");
+      });
+    });
+
+    test("git conflict-resolution routes are viewer-bound, not viewerless global (#57/#62)", async () => {
+      await withServer("tok-cfl", async ({ port, runtime }) => {
+        const post = (path: string, body: unknown, bound: boolean) =>
+          fetch(`http://127.0.0.1:${port}${path}`, {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer tok-cfl",
+              "Content-Type": "application/json",
+              ...(bound ? { "X-Strideterm-Client-Id": "cfl-aaaa", "X-Strideterm-State-Protocol": "2" } : {}),
+            },
+            body: JSON.stringify(body),
+          });
+
+        // Bound → slot-aware viewer path: the runtime receives a remote viewer id
+        // so the profile-scoped guard runs.
+        expect(
+          (await post("/api/git/resolve-conflict", { workspaceId: "ws1", filePath: "a", mode: "ours" }, true)).status,
+        ).toBe(200);
+        expect((await post("/api/git/skip", { workspaceId: "ws1" }, true)).status).toBe(200);
+        const calls = (runtime as unknown as { _gitConflictCalls: { method: string; windowId?: string }[] })
+          ._gitConflictCalls;
+        for (const method of ["resolve", "skip"]) {
+          const call = calls.find((c) => c.method === method);
+          expect(call, method).toBeDefined();
+          expect(String(call!.windowId)).toMatch(/^remote:/);
+        }
+
+        // Unbound → refused (no viewerless global fallback remains).
+        const unbound = await post(
+          "/api/git/resolve-conflict",
+          { workspaceId: "ws1", filePath: "a", mode: "ours" },
+          false,
+        );
         expect(unbound.status).toBe(400);
       });
     });

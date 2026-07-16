@@ -59,13 +59,22 @@ export function createApiActions(ctx: ApiActionsCtx) {
    * (`{ ok, changedResources, revision }`, not a core) and then broadcasts the
    * authoritative new core (state:updated, newer coreRevision) plus the relevant
    * per-resource invalidations, which the app store applies — so the renderer
-   * waits for the targeted update. (Navigation mutations that the renderer DOES
+   * waits for the targeted update. As a latency optimization the ack also names
+   * the resources it changed; we proactively refetch the interested ones here so
+   * a visible pane repaints on the mutation's own response instead of waiting for
+   * the WS invalidation round-trip. (Navigation mutations that the renderer DOES
    * adopt synchronously — save/activate/reorder/settings — go through their own
    * `payload.value =` assignment and receive the slim core, not this no-op.)
    * Desktop keeps adopting its full IPC payload for immediacy.
    */
   function setPayload(nextPayload: StatePayload): void {
-    if (ctx.getApi().isRemote) return;
+    if (ctx.getApi().isRemote) {
+      const changed = (nextPayload as unknown as { changedResources?: unknown })?.changedResources;
+      if (Array.isArray(changed) && changed.length) {
+        useRemoteDetailsStore().invalidateResources(changed.filter((r): r is string => typeof r === "string"));
+      }
+      return;
+    }
     if (ctx.adoptPayload) {
       ctx.adoptPayload(nextPayload);
       return;

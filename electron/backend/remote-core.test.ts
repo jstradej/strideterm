@@ -229,9 +229,11 @@ describe("buildRemoteCore", () => {
     expect(Object.keys(az.trackedPullRequests)).toEqual(["azure:pr1"]);
   });
 
-  test("review-bridge keeps agentPrompts + per-PR badge counts, drops heavy context", () => {
+  test("review-bridge core is per-PR badge counts ONLY — no agentPrompts, no heavy context", () => {
     const core = buildRemoteCore(fullPayload());
-    expect(core.reviewBridge.agentPrompts).toHaveLength(1);
+    // agentPrompts are pane-only (Agent tab) — they ride the review-bridge
+    // detail resource, never the always-pushed core (judge #2/#23).
+    expect((core.reviewBridge as Rec).agentPrompts).toBeUndefined();
     const pr = core.reviewBridge.pullRequests["azure:pr1"] as Rec;
     expect(pr).toEqual({
       prKey: "azure:pr1",
@@ -240,9 +242,10 @@ describe("buildRemoteCore", () => {
       syncQueueCount: 0,
       lastSeenActivityAt: "2026-07-15T11:05:00Z",
     });
-    // Heavy per-PR thread bodies + mcpServerSpec never reach the core.
+    // Heavy per-PR thread bodies + mcpServerSpec + prompt bodies never reach the core.
     expect(JSON.stringify(core.reviewBridge)).not.toContain("zzzzz");
     expect(JSON.stringify(core.reviewBridge)).not.toContain("mcpServerSpec");
+    expect(JSON.stringify(core.reviewBridge)).not.toContain("promptId");
   });
 
   test("docker summary keeps counts, drops the lists", () => {

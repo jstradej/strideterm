@@ -59,6 +59,11 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
   // still visible.
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const retryCounts = new Map<string, number>();
+  // Monotonic per-resource fetch sequence. Every fetchDetail bumps it; only the
+  // LATEST-issued fetch is allowed to write the cache, so a slower older request
+  // completing after a newer one can never clobber the fresher cached data
+  // (concurrent invalidations, ack-driven refetch and retries all race here).
+  const fetchSeq = new Map<string, number>();
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
   // Fake clock injectable in tests (Date.now unavailable in some harnesses).
   let now = (): number => Date.now();
@@ -84,6 +89,7 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
     for (const t of retryTimers.values()) clearTimeout(t);
     retryTimers.clear();
     retryCounts.clear();
+    fetchSeq.clear();
     if (sweepTimer) {
       clearInterval(sweepTimer);
       sweepTimer = null;
@@ -196,6 +202,19 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
     api?.subscribeResources?.([...interests]);
   }
 
+  /**
+   * Force a refetch of the given resources if we're still interested in them —
+   * the client's response to a mutation ack that names its `changedResources`.
+   * The WS `resource:invalidate` push also covers this, but the ack arrives on
+   * the mutation's own HTTP response, so acting on it closes the request→repaint
+   * latency without waiting for the broadcast round-trip. The ordering guard in
+   * fetchDetail keeps this safe against the concurrent broadcast-driven fetch.
+   */
+  function invalidateResources(resources: string[]): void {
+    if (!enabled) return;
+    for (const r of resources) if (r && interests.has(r)) void fetchDetail(r);
+  }
+
   async function onInvalidate(msg: ResourceInvalidate): Promise<void> {
     // Ignore resources we no longer render; skip a refetch when we already hold
     // the current revision (revalidation without change → keep cached data).
@@ -206,9 +225,16 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
 
   async function fetchDetail(resource: string): Promise<void> {
     if (!enabled || !api?.fetchResourceDetail) return;
+    // Ordering guard: stamp this fetch and only let the latest-issued one write.
+    const seq = (fetchSeq.get(resource) || 0) + 1;
+    fetchSeq.set(resource, seq);
     try {
       const res = await api.fetchResourceDetail(resource);
       if (!res || res.resource !== resource) return;
+      // A newer fetch for this resource started after us (a fresh invalidation,
+      // an ack-driven refetch, a retry). Its response is authoritative — drop
+      // ours so an out-of-order completion can't overwrite the newer cache.
+      if (fetchSeq.get(resource) !== seq) return;
       // The pane may have unmounted mid-flight; still cache (cheap) but it will
       // be eligible for eviction since it's no longer interested.
       const next = new Map(cache.value);
@@ -251,6 +277,7 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
     addInterest,
     removeInterest,
     setInterestForOwner,
+    invalidateResources,
     // exposed for tests
     _resetForTest,
     _interests: interests,

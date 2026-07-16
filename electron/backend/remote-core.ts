@@ -194,19 +194,22 @@ export function buildProviderCoreSummary(
 }
 
 /**
- * Reduce the review-bridge snapshot: keep the global `agentPrompts` list (small,
- * read by the review pane's Agent tab) plus a per-PR BADGE summary — ids, the
+ * Reduce the review-bridge snapshot to a per-PR BADGE summary ONLY — ids, the
  * draft/comment/syncQueue counts and the last-seen activity — for the PRs in the
- * client's profile. The heavy per-PR context (full comment/draft bodies,
- * syncQueue payloads, mcpServerSpec) is dropped and fetched on demand via the
- * review-bridge detail endpoint. `composed` is the full payload so profile
- * ownership resolves through the provider PR the review-bridge key mirrors.
+ * client's profile. Everything heavy is dropped and fetched on demand via the
+ * review-bridge detail endpoint: the per-PR context (full comment/draft bodies,
+ * syncQueue payloads, mcpServerSpec) AND the global `agentPrompts` list (the
+ * Agent tab reads it, but only a mounted review pane renders that tab, so it
+ * belongs to the pane's detail resource — not the always-pushed core). Keeping
+ * the core to ids/counts/status is the Phase-2 contract. `composed` is the full
+ * payload so profile ownership resolves through the provider PR the review-bridge
+ * key mirrors.
  */
 export function buildReviewBridgeCoreSummary(
   snapshot: AnyRecord | null | undefined,
   composed: AnyRecord,
   profileId: string | null = null,
-): { agentPrompts: unknown[]; pullRequests: Record<string, unknown> } {
+): { pullRequests: Record<string, unknown> } {
   const snap = (snapshot || {}) as AnyRecord;
   const size = (arr: unknown): number => (Array.isArray(arr) ? arr.length : 0);
   const pullRequests: Record<string, unknown> = {};
@@ -222,10 +225,7 @@ export function buildReviewBridgeCoreSummary(
       lastSeenActivityAt: c.lastSeenActivityAt ?? null,
     };
   }
-  return {
-    agentPrompts: snap.agentPrompts || [],
-    pullRequests,
-  };
+  return { pullRequests };
 }
 
 /**
@@ -370,8 +370,13 @@ export function buildCoreRevisions(
  * EMPTY (never cross-profile) scope. The server resolves a concrete profile
  * (the session's, else the default) before composing, so in production this is a
  * safety net rather than a normal path — a v2 core is always profile-scoped.
+ *
+ * The leading space guarantees it can never equal a real profile id (those are
+ * non-empty, space-free strings), so every profile filter yields an empty scope.
+ * A printable space — not a control byte — so source-search tools never treat
+ * this file as binary.
  */
-const NO_PROFILE = " __no_profile__";
+const NO_PROFILE = " __no_profile__";
 
 function profileWorkspaceIdSet(appState: AnyRecord, profileId: string): Set<string> {
   const workspaces = (appState?.workspaces || []) as AnyRecord[];

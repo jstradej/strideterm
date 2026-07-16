@@ -869,7 +869,8 @@ export interface RemoteStateV2 {
   git: { connections: unknown[] };
   azureDevops: RemoteProviderSummary;
   github: RemoteProviderSummary;
-  reviewBridge: { agentPrompts: unknown[]; pullRequests: Record<string, unknown> };
+  /** Per-PR badge counts/status only. agentPrompts + full contexts are detail. */
+  reviewBridge: { pullRequests: Record<string, unknown> };
   docker: Record<string, unknown>;
   /** Per-resource change tokens (freshness signal, never a correctness boundary). */
   revisions: RemoteResourceRevisions;

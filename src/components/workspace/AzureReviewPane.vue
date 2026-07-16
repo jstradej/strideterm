@@ -782,13 +782,7 @@ const pullRequest = computed(() => {
   return pr;
 });
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const reviewBridgeRaw = computed(() => (appStore.reviewBridgePr(prKey.value) as any) || {});
-const reviewBridge = computed(() => ({
-  ...reviewBridgeRaw.value,
-  // agentPrompts stays in the slim core (small, global) — read it there.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  agentPrompts: (appStore.payload?.reviewBridge as any)?.agentPrompts || [],
-}));
+const reviewBridge = computed(() => (appStore.reviewBridgePr(prKey.value) as any) || {});
 // Fetch + keep the PR detail, review-bridge context AND the workspace's git
 // snapshot (the pane renders the branch log) current while this pane — which
 // handles both Azure and GitHub reviews — is mounted.
@@ -819,7 +813,10 @@ const changedFiles = computed(() => {
   const files = detail.value?.changedFiles || [];
   return files.length ? files : detail.value?.localChangedFiles || [];
 });
-const agentPrompts = computed(() => reviewBridge.value.agentPrompts || []);
+// agentPrompts are NOT in the slim core (Phase 2) — on remote they arrive with
+// the review-bridge detail resource; on desktop from the full payload. The store
+// accessor reads whichever applies for this transport.
+const agentPrompts = computed(() => appStore.reviewAgentPrompts(prKey.value));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId) as Record<string, any> | null);
 const aheadCount = computed(() => gitSnapshot.value?.aheadCount || 0);

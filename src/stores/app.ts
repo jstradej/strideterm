@@ -1194,9 +1194,9 @@ export const useAppStore = defineStore("app", () => {
     return (payload.value as AnyApi)?.[key]?.pullRequests?.[prKey] || null;
   }
 
-  /** Full per-PR review-bridge context for the review pane's Agent/Comments
-   *  tabs. Remote: on-demand `review-bridge:<prKey>` cache; desktop: the full
-   *  payload context. `agentPrompts` is always in the core for both. */
+  /** Full per-PR review-bridge context for the review pane's Comments tab.
+   *  Remote: on-demand `review-bridge:<prKey>` cache; desktop: the full payload
+   *  context. */
   function reviewBridgePr(prKey: string): AnyApi {
     if (isRemoteTransport.value) {
       const cached = useRemoteDetailsStore().get(`review-bridge:${prKey}`) as AnyApi;
@@ -1204,6 +1204,18 @@ export const useAppStore = defineStore("app", () => {
       return null;
     }
     return (payload.value as AnyApi)?.reviewBridge?.pullRequests?.[prKey] || null;
+  }
+
+  /** Agent prompts for the review pane's Agent tab. NOT in the slim core (only a
+   *  mounted review pane renders them). Remote: they ride the review-bridge
+   *  detail resource, fetched when a review pane declares interest in
+   *  `review-bridge:<prKey>`. Desktop: the global `reviewBridge.agentPrompts`. */
+  function reviewAgentPrompts(prKey: string): AnyApi {
+    if (isRemoteTransport.value) {
+      const cached = useRemoteDetailsStore().get(`review-bridge:${prKey}`) as AnyApi;
+      return cached?.agentPrompts || [];
+    }
+    return (payload.value as AnyApi)?.reviewBridge?.agentPrompts || [];
   }
 
   function getWorkspaceAttentionForId(workspaceId: string): unknown {
@@ -1459,6 +1471,7 @@ export const useAppStore = defineStore("app", () => {
     providerInbox,
     providerPrDetail,
     reviewBridgePr,
+    reviewAgentPrompts,
     getWorkspaceAttentionForId,
     getTabAttentionForView,
     getPanelByViewId,

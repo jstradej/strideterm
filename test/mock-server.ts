@@ -17,6 +17,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "node:url";
+import {
+  buildRemoteCore,
+  buildResourceDetail,
+  resourceRevision,
+  isKnownResourceKey,
+  resourceProfileAuthorized,
+  selectCapabilities,
+  servesRemoteCore,
+  looksLikeStatePayload,
+  REMOTE_STATE_PROTOCOL,
+} from "../electron/backend/remote-core.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // VITE_DEV_PORT lets test runners point the mock server at a vite instance on
@@ -184,9 +195,98 @@ export async function startMockServer({
   const TOKEN = "test-token";
   const sockets = new Set<WebSocket>();
   const terminalInputs: Array<{ sessionId: string; data: string }> = [];
+  // Per-socket detail interests (resource keys the client's mounted panes render)
+  // so state broadcasts can push resource:invalidate the same way remote-server
+  // does. Keyed by the WebSocket instance.
+  const socketInterests = new Map<WebSocket, Set<string>>();
+  // Per-socket negotiated protocol (2 = slim v2 core, 1 = legacy full payload).
+  const socketProtocol = new Map<WebSocket, number>();
+  const profileId = String(payload.remoteClient?.profileId || "default");
+
+  // Monotonic broadcast revision. The app store's acceptCoreRevision gate applies
+  // a remote snapshot only when its coreRevision is strictly newer than the last
+  // applied one, so every state broadcast must bump this or the client drops it.
+  let coreRevision = 1;
+
+  /** Read the advertised state protocol from a request (header wins, then ?sp=). */
+  function protocolFrom(u: URL, headers: http.IncomingHttpHeaders): number {
+    const raw = headers["x-strideterm-state-protocol"];
+    const fromHeader = Array.isArray(raw) ? raw[0] : raw;
+    if (fromHeader) return Number(fromHeader) || 1;
+    const sp = u.searchParams.get("sp");
+    return sp ? Number(sp) || 1 : 1;
+  }
+
+  /** Read the advertised capability list (header wins, then ?caps=). */
+  function capabilitiesFrom(u: URL, headers: http.IncomingHttpHeaders): string[] {
+    const raw = headers["x-strideterm-capabilities"];
+    const fromHeader = Array.isArray(raw) ? raw[0] : raw;
+    const source = fromHeader ?? u.searchParams.get("caps") ?? "";
+    return source
+      .split(",")
+      .map((c) => c.trim())
+      .filter(Boolean);
+  }
+
+  /**
+   * The one response adapter — mirrors remote-server.ts adaptRemoteResponse so
+   * the E2E client exercises the REAL slim-core contract, not a full desktop
+   * payload. A v2 client receives the slim RemoteStateV2 core (or, for a nested
+   * `{ payload, result }`, a core-in-envelope); a legacy client gets the full
+   * payload unchanged. Small results (no state payload) pass through.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+  function adaptForClient(body: any, protocol: number): any {
+    const capabilities = selectCapabilities(capabilitiesArg(protocol), protocol);
+    if (!servesRemoteCore(capabilities)) return body;
+    const opts = { coreRevision, capabilities, profileId };
+    if (looksLikeStatePayload(body)) return buildRemoteCore(body, opts);
+    if (body && typeof body === "object" && looksLikeStatePayload(body.payload)) {
+      return { ...body, payload: buildRemoteCore(body.payload, opts) };
+    }
+    return body;
+  }
+
+  // The real client always advertises the full capability set alongside sp=2;
+  // an empty caps arg makes selectCapabilities imply the full set for protocol 2.
+  function capabilitiesArg(protocol: number): string[] {
+    return protocol >= REMOTE_STATE_PROTOCOL ? ["remote-core-v2", "resource-details-v1"] : [];
+  }
+
+  /** Map a detail GET route (+ query) to a resource key, mirroring the
+   *  DETAIL_ROUTES table + detailEndpointFor client mapping. */
+  function detailResourceKey(u: URL): string | null {
+    switch (u.pathname) {
+      case "/api/docker/detail":
+        return "docker";
+      case "/api/azure/inbox":
+        return "azure-inbox";
+      case "/api/github/inbox":
+        return "github-inbox";
+      case "/api/git/workspace-detail": {
+        const id = u.searchParams.get("workspaceId");
+        return id ? `git:${id}` : null;
+      }
+      case "/api/azure/pull-request-detail": {
+        const k = u.searchParams.get("prKey");
+        return k ? `azure-pr:${k}` : null;
+      }
+      case "/api/github/pull-request-detail": {
+        const k = u.searchParams.get("prKey");
+        return k ? `github-pr:${k}` : null;
+      }
+      case "/api/review-bridge/pull-request": {
+        const k = u.searchParams.get("prKey");
+        return k ? `review-bridge:${k}` : null;
+      }
+      default:
+        return null;
+    }
+  }
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://localhost");
+    const reqProtocol = protocolFrom(url, req.headers);
 
     // CORS for Vite dev server
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -202,11 +302,34 @@ export async function startMockServer({
     if (url.pathname === "/api/state" && req.method === "GET") {
       const send = () => {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(payload));
+        res.end(JSON.stringify(adaptForClient(payload, reqProtocol)));
       };
       if (delayApiStateMs > 0) setTimeout(send, delayApiStateMs);
       else send();
       return;
+    }
+
+    // Slim-core detail resources — on-demand, profile-authorized. Mirrors the
+    // DETAIL_ROUTES table in remote-server.ts so a mounted pane's fetch resolves
+    // against the real builders instead of falling through to the Vite proxy.
+    if (req.method === "GET" && url.pathname.startsWith("/api/")) {
+      const resourceKey = detailResourceKey(url);
+      if (resourceKey) {
+        if (!isKnownResourceKey(resourceKey)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Missing or invalid resource id" }));
+          return;
+        }
+        if (!resourceProfileAuthorized(payload, profileId, resourceKey)) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Resource is not in your active profile" }));
+          return;
+        }
+        const detail = buildResourceDetail(payload, profileId, resourceKey);
+        res.writeHead(detail ? 200 : 404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(detail ?? { error: "Resource not available yet" }));
+        return;
+      }
     }
 
     // Stateful POST handler — apply basic mutations and broadcast via WS
@@ -228,13 +351,13 @@ export async function startMockServer({
           if (wsId) {
             setActiveWorkspace(payload, String(wsId));
           }
-          broadcast({ type: "state:updated", payload });
+          broadcastState();
         }
 
         // Settings update — merge into settings
         if (url.pathname.endsWith("/settings/update") && body.settings) {
           Object.assign(payload.appState.settings, body.settings);
-          broadcast({ type: "state:updated", payload });
+          broadcastState();
         }
 
         if (url.pathname.endsWith("/workspace-grid/enable")) {
@@ -242,13 +365,13 @@ export async function startMockServer({
           const cellWorkspaceIds = normalizeWorkspaceGridIds(layout, body.workspaceIds);
           if (cellWorkspaceIds) {
             payload.appState.workspaceGrid = { layout, cellWorkspaceIds };
-            broadcast({ type: "state:updated", payload });
+            broadcastState();
           }
         }
 
         if (url.pathname.endsWith("/workspace-grid/disable")) {
           payload.appState.workspaceGrid = null;
-          broadcast({ type: "state:updated", payload });
+          broadcastState();
         }
 
         if (url.pathname.endsWith("/workspace-grid/set-layout")) {
@@ -257,7 +380,7 @@ export async function startMockServer({
           if (payload.appState.workspaceGrid && cellWorkspaceIds) {
             payload.appState.workspaceGrid.layout = layout;
             payload.appState.workspaceGrid.cellWorkspaceIds = cellWorkspaceIds;
-            broadcast({ type: "state:updated", payload });
+            broadcastState();
           }
         }
 
@@ -272,7 +395,7 @@ export async function startMockServer({
             }
             grid.cellWorkspaceIds[cellIndex] = workspaceId;
             if (grid.cellWorkspaceIds.every((id: string | null) => id === null)) payload.appState.workspaceGrid = null;
-            broadcast({ type: "state:updated", payload });
+            broadcastState();
           }
         }
 
@@ -294,7 +417,7 @@ export async function startMockServer({
             const tmp = ids[a];
             ids[a] = ids[b];
             ids[b] = tmp;
-            broadcast({ type: "state:updated", payload });
+            broadcastState();
           }
         }
 
@@ -376,7 +499,7 @@ export async function startMockServer({
             ws.dirtyCount = 0;
             ws.stashCount = stash.list.length;
           }
-          broadcast({ type: "state:updated", payload });
+          broadcastState();
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
@@ -390,7 +513,7 @@ export async function startMockServer({
           const ws = payload.git?.workspaces?.[body.workspaceId];
           prependStash(String(body.message || "Imported stash"), String(ws?.branch || "master"));
           if (ws) ws.stashCount = stash.list.length;
-          broadcast({ type: "state:updated", payload });
+          broadcastState();
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ payload, result: { ok: true, summary: "Imported.", warnings: [], conflicts: [] } }));
           return;
@@ -402,7 +525,7 @@ export async function startMockServer({
             ws.dirty = true;
             ws.dirtyCount = (ws.dirtyCount || 0) + 1;
           }
-          broadcast({ type: "state:updated", payload });
+          broadcastState();
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ payload, result: { ok: true, summary: "Applied.", warnings: [], conflicts: [] } }));
           return;
@@ -422,7 +545,11 @@ export async function startMockServer({
         }
 
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(payload));
+        // Navigation mutations (activate/save/reorder/grid/settings) fall through
+        // here and the client ADOPTS the response — so a v2 client must receive
+        // the slim core, never the full desktop payload (matches remote-server's
+        // adaptRemoteResponse). Refresh/domain mutations are discarded client-side.
+        res.end(JSON.stringify(adaptForClient(payload, reqProtocol)));
       });
       return;
     }
@@ -456,6 +583,36 @@ export async function startMockServer({
     }
   }
 
+  /** Push a fresh state snapshot to every socket in its negotiated shape (slim
+   *  v2 core or full legacy payload), bumping the broadcast revision so the
+   *  client's acceptCoreRevision gate applies it. Then re-invalidate each
+   *  socket's interested detail resources so mounted panes stay current. */
+  function broadcastState(): void {
+    coreRevision += 1;
+    for (const ws of sockets) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      const proto = socketProtocol.get(ws) ?? REMOTE_STATE_PROTOCOL;
+      ws.send(JSON.stringify({ type: "state:updated", payload: adaptForClient(payload, proto) }));
+      pushInvalidations(ws);
+    }
+  }
+
+  /** Tell one socket that each of its interested detail resources may have
+   *  changed (revision derived from the payload). The client refetches only when
+   *  its cached revision is stale — mirrors remote-server's invalidation push. */
+  function pushInvalidations(ws: WebSocket): void {
+    const interests = socketInterests.get(ws);
+    if (!interests || ws.readyState !== WebSocket.OPEN) return;
+    for (const resource of interests) {
+      ws.send(
+        JSON.stringify({
+          type: "resource:invalidate",
+          payload: { resource, revision: resourceRevision(payload, resource) },
+        }),
+      );
+    }
+  }
+
   function sendTerminalOutput(ws: WebSocket): void {
     for (const [sessionId, data] of Object.entries(terminalOutput)) {
       ws.send(JSON.stringify({ type: "terminal:data", payload: { sessionId, data } }));
@@ -465,22 +622,44 @@ export async function startMockServer({
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", "http://localhost");
     if (url.pathname === "/ws") {
+      const wsProtocol = protocolFrom(url, req.headers);
       wss.handleUpgrade(req, socket as import("node:net").Socket, head, (ws) => {
         sockets.add(ws);
-        ws.on("close", () => sockets.delete(ws));
+        socketProtocol.set(ws, wsProtocol);
+        ws.on("close", () => {
+          sockets.delete(ws);
+          socketProtocol.delete(ws);
+          socketInterests.delete(ws);
+        });
         // Record terminal input so tests can assert what the frontend wrote
-        // to a PTY (real remote-server forwards these to the runtime).
+        // to a PTY (real remote-server forwards these to the runtime), and track
+        // detail-resource interests so we can push resource:invalidate.
         ws.on("message", (raw) => {
           try {
             const msg = JSON.parse(String(raw));
             if (msg?.type === "terminal:input" && typeof msg.sessionId === "string") {
               terminalInputs.push({ sessionId: msg.sessionId, data: String(msg.data ?? "") });
+            } else if (msg?.type === "resource:interest" && Array.isArray(msg.resources)) {
+              const interests = new Set<string>(
+                msg.resources.filter((r: unknown): r is string => typeof r === "string"),
+              );
+              socketInterests.set(ws, interests);
+              // Immediately invalidate the newly-interested resources so the
+              // client fetches their detail (matches remote-server behaviour).
+              pushInvalidations(ws);
+            } else if (msg?.type === "state:sync") {
+              // Bootstrap→WS handoff: if the client's revision is behind, send it
+              // the current core. In tests state rarely moves in that window, so
+              // this is usually a no-op.
+              if (typeof msg.rev === "number" && msg.rev < coreRevision && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "state:updated", payload: adaptForClient(payload, wsProtocol) }));
+              }
             }
           } catch {
             // Non-JSON frames are not part of the app protocol — ignore.
           }
         });
-        ws.send(JSON.stringify({ type: "state:updated", payload }));
+        ws.send(JSON.stringify({ type: "state:updated", payload: adaptForClient(payload, wsProtocol) }));
         sendTerminalOutput(ws);
       });
       return;

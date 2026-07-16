@@ -38,8 +38,8 @@ The `/api/state` bootstrap core (9.9 KiB) compresses to:
 
 | Encoding | Size                 | Compress time | Ratio |
 | -------- | -------------------- | ------------- | ----- |
-| Brotli   | **1.1 KiB** (1148 B) | ~9.5 ms       | 88.7% |
-| gzip     | **1.5 KiB** (1504 B) | ~0.31 ms      | 85.2% |
+| Brotli   | **1.1 KiB** (1136 B) | ~9.4 ms       | 88.8% |
+| gzip     | **1.5 KiB** (1497 B) | ~0.37 ms      | 85.2% |
 
 (Compress **sizes** are deterministic; the **times** are indicative and vary per
 run/machine — Brotli trades markedly more CPU for a modestly smaller body.)
@@ -97,22 +97,48 @@ the v1/v2 compatibility split (`electron/backend/remote-server.test.ts`,
 `src/composables/useResourceInterest.test.ts`, `src/transport.test.ts`,
 `src/stores/app.test.ts`).
 
-`src/composables/useResourceInterest.test.ts` drives interest through a reactive
-grid → cell → pane structure that mirrors `WorkspaceGridStage`/`WorkspaceCell`:
-it mounts a wide multi-cell grid, ref-counts an overlapping resource, follows a
-grid cell reassignment, collapses to a mobile focused cell, and asserts the
-resulting **WS interest set actually pushed to the transport** at each step —
-covering the wide-grid / mobile-focus / responsive-collapse recompute headlessly.
+`src/composables/useResourceInterest.test.ts` mounts the **real**
+`WorkspaceGridStage.vue` (its `WorkspaceCell` stubbed to a pane that declares a
+git interest) and asserts the WS interest set actually pushed to the transport as
+the layout changes: a wide grid mounts every cell (all interested); a narrow /
+mobile layout mounts ONLY the focused cell, so hidden cells' interests are
+released; moving the focused cell moves the interest; and wide→narrow→wide
+restores the full set. This exercises the production `renderedCells` logic — the
+narrow layout unmounts hidden cells rather than hiding them with `v-show`, so a
+phone no longer keeps fetching detail for panes it cannot see.
 
-The Playwright UI E2E suite (`npm run test:e2e`) runs against Chromium; the
-mobile/responsive review + grid scenarios there provide the real-viewport
-counterpart to the unit coverage above. (Some E2E specs that depend on the Monaco
-editor, canvas/font rendering or committed `@visual` screenshot baselines fail in
-a bare headless environment — those failures reproduce identically on the base
-commit and are unrelated to the remote-payload work.)
+### E2E (real Chromium) — `npm run test:e2e`
 
-The remaining item that genuinely cannot run in CI is a human-in-the-loop pass
-over the tunnel on a **physical phone / tablet / wide desktop browser** via
-`.\dev.ps1` (touch gestures, real viewport reflow, real cellular/tunnel
-latency). That is a manual sign-off step for the release owner; everything it
-would verify functionally is covered by the automated suites above.
+The Playwright UI E2E suite runs the whole remote client against Chromium,
+connecting through `test/mock-server.ts`, which now serves the **real slim-core
+contract** (it composes the v2 core and the `{resource,revision,data}` detail
+resources via the same `remote-core.ts` builders the production server uses, and
+pushes `resource:invalidate` on interest). So the review / inbox / git / docker
+panes fetch their detail on demand exactly as they do in production. Result:
+**120 passed, 5 skipped, 0 failed**. The 5 skips are the Task-dashboard specs
+that require the Monaco editor (unavailable in the bare headless env — skipped,
+not failed).
+
+### Live browser pass — phone / tablet / wide (plan §Verification 9)
+
+A scripted real-browser pass (Chromium via `agent-browser`) was run against the
+running app (`test/mock-server.ts` serving the `multi-workspace` fixture over the
+slim-core protocol, proxying to the Vite dev server) at three viewport classes:
+
+| viewport        | result                                                                                                                                                                                |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wide 1440×900   | full desktop layout renders from the slim core; switching workspace (Frontend → Backend) adopts the new slim core (tab strip updates); no JS errors; clean WS connect (no 1013 loop). |
+| Phone 390×844   | mobile layout (MobileInputBar “Show keyboard”, “▤ Tabs” picker); workspace tap switches; no JS errors.                                                                                |
+| Tablet 820×1180 | sidebar + workspace layout renders from the slim core; no JS errors.                                                                                                                  |
+
+At every viewport `GET /api/state` returned the slim `RemoteStateV2` core
+(`stateProtocol: 2`, `gitSummaries` present, `git.workspaces`/
+`reviewBridge.agentPrompts` absent) and the `/api/git/workspace-detail` endpoint
+returned `{resource,revision,data}` on demand — confirming the contract end to end
+in a real browser, not just headless unit mounts.
+
+The one thing that still cannot be automated is a smoke check on a **physical**
+phone/tablet over a **real Cloudflare tunnel** via `.\dev.ps1` (real touch
+gestures, real cellular latency). The plan assigns that to the release owner;
+everything it verifies functionally is now covered by the automated E2E suite and
+the scripted multi-viewport browser pass above.

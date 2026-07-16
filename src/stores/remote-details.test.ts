@@ -196,6 +196,58 @@ describe("remote-details store", () => {
       vi.useRealTimers();
     }
   });
+
+  it("drops an out-of-order stale fetch response so it cannot overwrite fresher cache", async () => {
+    // Two concurrent fetches for one resource; the LATER-issued one completes
+    // FIRST with fresh data, then the earlier one completes late with stale data.
+    // The ordering guard must keep the fresh data.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deferreds: Array<(resp: any) => void> = [];
+    const api = {
+      isRemote: true,
+      onResourceInvalidate: () => {},
+      subscribeResources: () => {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      fetchResourceDetail: (_resource: string) => new Promise<any>((resolve) => deferreds.push(resolve)),
+    } as unknown as Transport;
+    const store = useRemoteDetailsStore();
+    store._resetForTest();
+    store.init(api);
+    store.addInterest("docker"); // fetch #1 (proactive on first interest)
+    store.invalidateResources(["docker"]); // fetch #2 (ack-driven, newer)
+    expect(deferreds.length).toBe(2);
+
+    // Newer fetch #2 completes first with fresh data.
+    deferreds[1]({ resource: "docker", revision: "new", data: { v: "new" } });
+    await flush();
+    expect(store.get("docker")).toEqual({ v: "new" });
+
+    // Older fetch #1 completes late with stale data — the guard drops it.
+    deferreds[0]({ resource: "docker", revision: "old", data: { v: "old" } });
+    await flush();
+    expect(store.get("docker")).toEqual({ v: "new" });
+    expect(store.revisionOf("docker")).toBe("new");
+  });
+
+  it("invalidateResources refetches interested resources and ignores the rest (ack-driven)", async () => {
+    const t = fakeTransport();
+    const store = useRemoteDetailsStore();
+    store._resetForTest();
+    store.init(t.api);
+    store.addInterest("docker");
+    await flush();
+    const before = t.fetched.length;
+
+    // A resource we don't render is ignored (no wasted fetch).
+    store.invalidateResources(["git:not-mounted"]);
+    await flush();
+    expect(t.fetched.length).toBe(before);
+
+    // An interested resource refetches immediately (the mutation ack path).
+    store.invalidateResources(["docker"]);
+    await flush();
+    expect(t.fetched.length).toBe(before + 1);
+  });
 });
 
 describe("useResourceInterest composable", () => {
