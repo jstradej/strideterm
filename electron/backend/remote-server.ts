@@ -800,12 +800,11 @@ function changedResourcesForRoute(route: string, body: Record<string, unknown> |
     case "/api/review-bridge/pull-request/sync":
     case "/api/review-bridge/pull-request/push-and-publish":
       return prKey ? [`review-bridge:${prKey}`] : [];
-    // Prompt reset/edit changes the global agent-prompts list — the ack names
-    // that single resource so an interested (mounted) review pane refetches it
-    // immediately instead of waiting for the WS invalidation round-trip.
+    // Prompt reset changes the global agent-prompts list — the ack names that
+    // single resource so an interested (mounted) review pane refetches it
+    // immediately instead of waiting for the WS invalidation round-trip. (Reset
+    // is the only remote-reachable prompt mutation; save/delete are desktop IPC.)
     case "/api/review-bridge/agent-prompt/reset":
-    case "/api/review-bridge/agent-prompt/save":
-    case "/api/review-bridge/agent-prompt/delete":
       return ["agent-prompts"];
     default:
       return [];
