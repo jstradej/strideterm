@@ -252,7 +252,8 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     getAzureAuditStats(filters: any = {}) {
       return auditLogStore.getStats(filters);
     },
-    async markAzurePullRequestSeen(prKey: string) {
+    async markAzurePullRequestSeen(prKey: string, windowId?: string) {
+      assertPrInViewerProfile(prKey, windowId);
       await azure.markPullRequestSeen(prKey);
       return getPayload();
     },
@@ -341,7 +342,8 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async rerunAzureCheck(prKey: string, checkItem: any) {
+    async rerunAzureCheck(prKey: string, checkItem: any, windowId?: string) {
+      assertPrInViewerProfile(prKey, windowId);
       await azure.rerunCheck(prKey, checkItem);
       broadcastState();
       return getPayload();

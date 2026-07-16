@@ -72,3 +72,34 @@ describe("refreshAzureState — concurrent refresh coalescing", () => {
     expect(refreshAzure).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("markAzurePullRequestSeen — cross-profile viewer guard (#32/#63)", () => {
+  function makeHandlers(callerProfileId: string | null) {
+    const markPullRequestSeen = vi.fn(async () => {});
+    const handlers = createAzureHandlers({
+      azure: { markPullRequestSeen },
+      getPayload: () => ({ azureDevops: { pullRequests: { "azure:pr1": { prKey: "azure:pr1", profileId: "p1" } } } }),
+      getViewerProfileId: () => callerProfileId,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    return { handlers, markPullRequestSeen };
+  }
+
+  test("refuses to mark a PR seen from a window bound to a different profile", async () => {
+    const { handlers, markPullRequestSeen } = makeHandlers("p2");
+    await expect(handlers.markAzurePullRequestSeen("azure:pr1", "remote:sess-b")).rejects.toThrow(/Cross-profile/);
+    expect(markPullRequestSeen).not.toHaveBeenCalled();
+  });
+
+  test("allows marking a PR in the caller's own profile", async () => {
+    const { handlers, markPullRequestSeen } = makeHandlers("p1");
+    await handlers.markAzurePullRequestSeen("azure:pr1", "remote:sess-a");
+    expect(markPullRequestSeen).toHaveBeenCalledWith("azure:pr1");
+  });
+
+  test("desktop IPC (no viewer id → null profile) is unaffected", async () => {
+    const { handlers, markPullRequestSeen } = makeHandlers(null);
+    await handlers.markAzurePullRequestSeen("azure:pr1");
+    expect(markPullRequestSeen).toHaveBeenCalledWith("azure:pr1");
+  });
+});

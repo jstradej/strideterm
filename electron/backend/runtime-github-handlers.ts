@@ -82,6 +82,24 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     return resolved || "";
   }
 
+  /**
+   * Refuse a per-PR mutation (mark-seen / comment / review) when the PR does not
+   * belong to the calling VIEWER's profile. Mirrors the Azure handler's guard:
+   * without it a remote client bound to profile B could clear the "new activity"
+   * badge on, comment on, or submit a review to a profile-A PR it sees in the
+   * global snapshot. Desktop IPC passes no viewer id (getViewerProfileId → null)
+   * and is unaffected; the check runs before any external side effect.
+   */
+  function assertPrInViewerProfile(prKey: string, windowId?: string): void {
+    const callerProfileId = getViewerProfileId(windowId);
+    if (!callerProfileId) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pr = (getPayload() as any)?.github?.pullRequests?.[prKey] as { profileId?: string } | undefined;
+    if (pr && String(pr.profileId || "default") !== callerProfileId) {
+      throw new Error(`Cross-profile refused: pull request ${prKey} is not in profile ${callerProfileId}.`);
+    }
+  }
+
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async verifyGitHubConnection(connection: any) {
@@ -200,7 +218,8 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     getGitHubAuditStats(filters: any = {}) {
       return githubAuditLogStore.getStats(filters);
     },
-    async markGitHubPullRequestSeen(prKey: string) {
+    async markGitHubPullRequestSeen(prKey: string, windowId?: string) {
+      assertPrInViewerProfile(prKey, windowId);
       await github.markPullRequestSeen(prKey);
       return getPayload();
     },
@@ -262,19 +281,22 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async commentGitHubPullRequest(payload: any) {
+    async commentGitHubPullRequest(payload: any, windowId?: string) {
+      assertPrInViewerProfile(payload?.prKey, windowId);
       await github.addPullRequestComment(payload);
       await refreshGitHub();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async submitGitHubPullRequestReview(payload: any) {
+    async submitGitHubPullRequestReview(payload: any, windowId?: string) {
+      assertPrInViewerProfile(payload?.prKey, windowId);
       await github.submitPullRequestReview(payload);
       await refreshGitHub();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async rerunGitHubCheck(prKey: string, checkItem: any) {
+    async rerunGitHubCheck(prKey: string, checkItem: any, windowId?: string) {
+      assertPrInViewerProfile(prKey, windowId);
       await github.rerunCheck(prKey, checkItem);
       broadcastState();
       return getPayload();

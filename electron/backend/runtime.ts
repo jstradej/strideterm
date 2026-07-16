@@ -4379,6 +4379,7 @@ export async function createRuntime({
     getGitHubSettings,
     getGitHubConnections,
     assertWorkspaceInViewerProfile,
+    assertPrInViewerProfile,
     getViewerProfileId: getWindowProfileId,
     getViewerActiveWorkspaceId,
     mirrorRemoteViewerWorkspace,
@@ -4505,6 +4506,25 @@ export async function createRuntime({
       throw new Error(
         `Cross-profile refused: workspace ${workspaceId} is in profile ${wsProfileId}, window ${windowId} is bound to ${slotProfileId}.`,
       );
+    }
+  }
+
+  /**
+   * Provider-agnostic version of the Azure/GitHub handlers' PR guard, for
+   * review-bridge sync (which mutates a PR by key without knowing its provider).
+   * The prKey maps to exactly one provider PR; refuse when that PR is not in the
+   * calling viewer's profile. No-op for desktop IPC (no viewer id).
+   */
+  function assertPrInViewerProfile(prKey: string, windowId: string | undefined): void {
+    const callerProfileId = getWindowProfileId(windowId);
+    if (!callerProfileId) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const payload = getPayload() as any;
+    const pr = (payload?.azureDevops?.pullRequests?.[prKey] || payload?.github?.pullRequests?.[prKey]) as
+      | { profileId?: string }
+      | undefined;
+    if (pr && String(pr.profileId || "default") !== callerProfileId) {
+      throw new Error(`Cross-profile refused: pull request ${prKey} is not in profile ${callerProfileId}.`);
     }
   }
 

@@ -6,6 +6,7 @@ import {
   REMOTE_BLOCKED_TOP_LEVEL_FIELDS,
   buildSessionCookieAttrs,
   createRemoteTelemetry,
+  drainTelemetryTransition,
   makeStateCoalescer,
   sanitizeSettingsFromRemote,
   socketStallDecision,
@@ -218,6 +219,28 @@ describe("stripSecretsForRemote", () => {
   test("passes through partial payload shapes", () => {
     const partial = { appState: { settings: { logLevel: "info" } } };
     expect(stripSecretsForRemote(partial)).toEqual(partial);
+  });
+
+  test("zeros the master token in a NESTED result envelope (mutation/verification results)", () => {
+    // Git/docker ops return `{ ok, payload: <full state> }`. Top-level-only
+    // stripping missed the nested state, so a v1 nested mutation response leaked
+    // the master token (#7/#29/#67). It must be stripped here too.
+    const envelope = {
+      ok: true,
+      result: { reclaimed: "1MB" },
+      payload: {
+        appState: { settings: { remoteAccess: { enabled: true, token: "super-secret-master-token" } } },
+      },
+    };
+    const stripped = stripSecretsForRemote(envelope) as typeof envelope;
+    expect(stripped.payload.appState.settings.remoteAccess.token).toBe("");
+    // Envelope fields are preserved.
+    expect(stripped.ok).toBe(true);
+    expect(stripped.result).toEqual({ reclaimed: "1MB" });
+    // Original untouched (immutable strip).
+    expect(envelope.payload.appState.settings.remoteAccess.token).toBe("super-secret-master-token");
+    // No stray copy of the token survives anywhere in the serialized result.
+    expect(JSON.stringify(stripped)).not.toContain("super-secret-master-token");
   });
 });
 
@@ -588,8 +611,17 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         reviewActivity: [],
         sync: {},
       },
-      github: { connections: [], inbox: {}, pullRequests: {}, reviewActivity: [], sync: {} },
-      reviewBridge: { agentPrompts: [], pullRequests: {} },
+      github: {
+        connections: [],
+        inbox: {},
+        pullRequests: { "gh:pr1": { prKey: "gh:pr1", profileId: "p1" } },
+        reviewActivity: [],
+        sync: {},
+      },
+      reviewBridge: {
+        agentPrompts: [{ promptId: "ap1", title: "Prompt", updatedAt: "2026-07-15T10:00:00Z" }],
+        pullRequests: {},
+      },
       docker: {
         available: true,
         lastUpdatedAt: "2026-07-15T12:00:00Z",
@@ -613,10 +645,55 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     const azureMutationCalls: { method: string; prKey?: string; windowId?: string }[] = [];
     // Same, for git conflict-resolution ops now routed through slotAwareRoute.
     const gitConflictCalls: { method: string; workspaceId?: string; windowId?: string }[] = [];
+    // Same, for the PR mutations moved into slotAwareRoute this round: azure/github
+    // mark-seen, github comment/review and review-bridge sync (#32/#58/#63).
+    const prMutationCalls: { method: string; prKey?: string; windowId?: string }[] = [];
     const runtime = {
       getPayload: () => payload,
       _azureMutationCalls: azureMutationCalls,
       _gitConflictCalls: gitConflictCalls,
+      _prMutationCalls: prMutationCalls,
+      // Mark-seen / github comment+review / review-bridge sync are now viewer-bound:
+      // each records the windowId it received so a test can assert it is a
+      // `remote:` viewer id (was a viewerless global path).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      markAzurePullRequestSeen: async (prKey: any, windowId?: string) => {
+        prMutationCalls.push({ method: "azure-seen", prKey, windowId });
+        return payload;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      markGitHubPullRequestSeen: async (prKey: any, windowId?: string) => {
+        prMutationCalls.push({ method: "github-seen", prKey, windowId });
+        return payload;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      commentGitHubPullRequest: async (p: any, windowId?: string) => {
+        prMutationCalls.push({ method: "github-comment", prKey: p?.prKey, windowId });
+        return payload;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      submitGitHubPullRequestReview: async (p: any, windowId?: string) => {
+        prMutationCalls.push({ method: "github-review", prKey: p?.prKey, windowId });
+        return payload;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      syncReviewBridgePullRequest: async (p: any, windowId?: string) => {
+        prMutationCalls.push({ method: "review-sync", prKey: p?.prKey, windowId });
+        return payload;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rerunAzureCheck: async (prKey: any, _checkItem: any, windowId?: string) => {
+        prMutationCalls.push({ method: "azure-rerun", prKey, windowId });
+        return payload;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rerunGitHubCheck: async (prKey: any, _checkItem: any, windowId?: string) => {
+        prMutationCalls.push({ method: "github-rerun", prKey, windowId });
+        return payload;
+      },
+      // Agent-prompt reset returns the full payload (a v2 client gets an ack that
+      // NAMES the agent-prompts resource so the mounted review pane refetches it).
+      resetAgentPrompts: async () => payload,
       // Docker refresh — a full-payload result a v2 client must receive as an ack.
       refreshDockerState: async () => payload,
       // Conflict-resolution ops record the viewer id (windowId) they received so a
@@ -1385,6 +1462,48 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
+  describe("drainTelemetryTransition — total time-to-drain, not just the final step", () => {
+    test("first crossing stamps the entry time and records nothing yet", () => {
+      const d = drainTelemetryTransition({ backlogEnteredAt: null, backloggedNow: true, now: 1_000 });
+      expect(d).toEqual({ backlogEnteredAt: 1_000, drainMs: null });
+    });
+
+    test("still-backlogged ticks keep the ORIGINAL entry time (a shrink must not reset it)", () => {
+      // This is the whole point of the fix: backlogSince resets on every shrink,
+      // but the drain-time anchor must NOT — otherwise a stepwise drain reports
+      // only the last step, not the end-to-end time (#16/#51).
+      const d = drainTelemetryTransition({ backlogEnteredAt: 1_000, backloggedNow: true, now: 9_000 });
+      expect(d).toEqual({ backlogEnteredAt: 1_000, drainMs: null });
+    });
+
+    test("clearing records the FULL first-crossing→cleared span and resets the anchor", () => {
+      const d = drainTelemetryTransition({ backlogEnteredAt: 1_000, backloggedNow: false, now: 12_000 });
+      expect(d).toEqual({ backlogEnteredAt: null, drainMs: 11_000 });
+    });
+
+    test("a stepwise drain reports total time, not the final step", () => {
+      // Simulate the sweep across ticks: enters backlog at t=1000, shrinks (but
+      // stays backlogged) at t=4000 and t=7000, clears at t=10000. The recorded
+      // drain must be 9000 (10000-1000), NOT 3000 (the last shrink→clear step
+      // that the old backlogSince-based code would have reported).
+      let anchor: number | null = null;
+      const ticks: { backloggedNow: boolean; now: number }[] = [
+        { backloggedNow: true, now: 1_000 },
+        { backloggedNow: true, now: 4_000 },
+        { backloggedNow: true, now: 7_000 },
+        { backloggedNow: false, now: 10_000 },
+      ];
+      let recorded: number | null = null;
+      for (const t of ticks) {
+        const d = drainTelemetryTransition({ backlogEnteredAt: anchor, ...t });
+        anchor = d.backlogEnteredAt;
+        if (d.drainMs !== null) recorded = d.drainMs;
+      }
+      expect(recorded).toBe(9_000);
+      expect(anchor).toBeNull();
+    });
+  });
+
   describe("makeStateCoalescer — latest-wins state delivery", () => {
     test("a burst while one send is in flight delivers only the newest follow-up", () => {
       const sent: string[] = [];
@@ -1583,6 +1702,19 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       });
     });
 
+    test("agent-prompts detail endpoint returns the global prompt list (#6/#37)", async () => {
+      await withServer("tok-ap", async ({ port }) => {
+        const res = await apiGet(port, "/api/review-bridge/agent-prompts", "tok-ap", "ap-aaaaa");
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { resource: string; revision: string; data: { agentPrompts: unknown[] } };
+        expect(body.resource).toBe("agent-prompts");
+        expect(body.data.agentPrompts).toHaveLength(1);
+        // Revision folds the prompt list so a reset/edit bumps it — the WS
+        // invalidation then refetches the mounted review pane's prompts.
+        expect(body.revision).not.toBe("0");
+      });
+    });
+
     test(
       "resource:interest triggers an immediate invalidate, and again when the resource changes",
       { retry: 2, timeout: 20_000 },
@@ -1692,6 +1824,89 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         expect(body.ok).toBe(true);
         expect(body.payload.git.workspaces).toBeDefined(); // full desktop shape
         expect(body.payload.stateProtocol).toBeUndefined();
+        // The nested state payload must STILL be token-stripped. Top-level-only
+        // stripping missed a `{ ok, payload: <state> }` envelope, so a v1 nested
+        // mutation response could ship the master token (#7/#29/#67). It is a
+        // legacy full payload, but the master token is never allowed out.
+        expect(body.payload.appState.settings.remoteAccess.token).toBe("");
+        expect(JSON.stringify(body)).not.toContain("tok-mut1");
+      });
+    });
+
+    test("mark-seen (azure + github) is viewer-bound, not viewerless global (#32/#63)", async () => {
+      await withServer("tok-seen", async ({ port, runtime }) => {
+        const post = (path: string, bound: boolean) =>
+          fetch(`http://127.0.0.1:${port}${path}`, {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer tok-seen",
+              "Content-Type": "application/json",
+              ...(bound ? { "X-Strideterm-Client-Id": "seen-aaa", "X-Strideterm-State-Protocol": "2" } : {}),
+            },
+            body: JSON.stringify({ prKey: "azure:pr1" }),
+          });
+        expect((await post("/api/azure/pull-request/seen", true)).status).toBe(200);
+        expect((await post("/api/github/pull-request/seen", true)).status).toBe(200);
+        const calls = (runtime as unknown as { _prMutationCalls: { method: string; windowId?: string }[] })
+          ._prMutationCalls;
+        for (const method of ["azure-seen", "github-seen"]) {
+          const call = calls.find((c) => c.method === method);
+          expect(call, method).toBeDefined();
+          expect(String(call!.windowId)).toMatch(/^remote:/);
+        }
+        // Unbound → refused (no viewerless fallback that would silence another
+        // profile's PR badge).
+        expect((await post("/api/azure/pull-request/seen", false)).status).toBe(400);
+      });
+    });
+
+    test("github comment/review + review-bridge sync are viewer-bound (#32/#58/#63)", async () => {
+      await withServer("tok-ghv", async ({ port, runtime }) => {
+        const post = (path: string, body: unknown, bound = true) =>
+          fetch(`http://127.0.0.1:${port}${path}`, {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer tok-ghv",
+              "Content-Type": "application/json",
+              ...(bound ? { "X-Strideterm-Client-Id": "ghv-aaaa", "X-Strideterm-State-Protocol": "2" } : {}),
+            },
+            body: JSON.stringify(body),
+          });
+        expect((await post("/api/github/pull-request/comment", { prKey: "gh:pr1", body: "hi" })).status).toBe(200);
+        expect((await post("/api/github/pull-request/review", { prKey: "gh:pr1", event: "APPROVE" })).status).toBe(200);
+        expect((await post("/api/review-bridge/pull-request/sync", { prKey: "azure:pr1" })).status).toBe(200);
+        // rerun-check (both providers) is the same class of PR mutation.
+        expect((await post("/api/azure/rerun-check", { prKey: "azure:pr1", checkItem: {} })).status).toBe(200);
+        expect((await post("/api/github/rerun-check", { prKey: "gh:pr1", checkItem: {} })).status).toBe(200);
+        const calls = (runtime as unknown as { _prMutationCalls: { method: string; windowId?: string }[] })
+          ._prMutationCalls;
+        for (const method of ["github-comment", "github-review", "review-sync", "azure-rerun", "github-rerun"]) {
+          const call = calls.find((c) => c.method === method);
+          expect(call, method).toBeDefined();
+          expect(String(call!.windowId)).toMatch(/^remote:/);
+        }
+        // Unbound sync → refused before publishing a comment to the PR provider.
+        expect((await post("/api/review-bridge/pull-request/sync", { prKey: "azure:pr1" }, false)).status).toBe(400);
+      });
+    });
+
+    test("agent-prompt reset ack NAMES the agent-prompts resource so the review pane refetches (#6/#30/#38)", async () => {
+      await withServer("tok-apr", async ({ port }) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/review-bridge/agent-prompt/reset`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-apr",
+            "X-Strideterm-Client-Id": "apr-aaaa",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({}),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { ok: boolean; changedResources: string[]; payload?: unknown };
+        expect(body.ok).toBe(true);
+        expect(body.payload).toBeUndefined(); // ack, not a core
+        expect(body.changedResources).toEqual(["agent-prompts"]);
       });
     });
 

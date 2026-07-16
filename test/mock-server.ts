@@ -217,17 +217,6 @@ export async function startMockServer({
     return sp ? Number(sp) || 1 : 1;
   }
 
-  /** Read the advertised capability list (header wins, then ?caps=). */
-  function capabilitiesFrom(u: URL, headers: http.IncomingHttpHeaders): string[] {
-    const raw = headers["x-strideterm-capabilities"];
-    const fromHeader = Array.isArray(raw) ? raw[0] : raw;
-    const source = fromHeader ?? u.searchParams.get("caps") ?? "";
-    return source
-      .split(",")
-      .map((c) => c.trim())
-      .filter(Boolean);
-  }
-
   /**
    * The one response adapter — mirrors remote-server.ts adaptRemoteResponse so
    * the E2E client exercises the REAL slim-core contract, not a full desktop
@@ -279,6 +268,8 @@ export async function startMockServer({
         const k = u.searchParams.get("prKey");
         return k ? `review-bridge:${k}` : null;
       }
+      case "/api/review-bridge/agent-prompts":
+        return "agent-prompts";
       default:
         return null;
     }
@@ -575,13 +566,6 @@ export async function startMockServer({
 
   // WebSocket — send initial state on connection
   const wss = new WebSocketServer({ noServer: true });
-
-  function broadcast(message: unknown): void {
-    const data = JSON.stringify(message);
-    for (const ws of sockets) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(data);
-    }
-  }
 
   /** Push a fresh state snapshot to every socket in its negotiated shape (slim
    *  v2 core or full legacy payload), bumping the broadcast revision so the

@@ -174,6 +174,7 @@ function detailEndpointFor(resource: string): string | null {
   if (resource === "docker") return "/api/docker/detail";
   if (resource === "azure-inbox") return "/api/azure/inbox";
   if (resource === "github-inbox") return "/api/github/inbox";
+  if (resource === "agent-prompts") return "/api/review-bridge/agent-prompts";
   const idx = resource.indexOf(":");
   if (idx < 0) return null;
   const type = resource.slice(0, idx);

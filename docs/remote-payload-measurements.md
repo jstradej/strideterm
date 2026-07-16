@@ -137,8 +137,52 @@ At every viewport `GET /api/state` returned the slim `RemoteStateV2` core
 returned `{resource,revision,data}` on demand — confirming the contract end to end
 in a real browser, not just headless unit mounts.
 
-The one thing that still cannot be automated is a smoke check on a **physical**
-phone/tablet over a **real Cloudflare tunnel** via `.\dev.ps1` (real touch
-gestures, real cellular latency). The plan assigns that to the release owner;
-everything it verifies functionally is now covered by the automated E2E suite and
-the scripted multi-viewport browser pass above.
+### Production server coverage (not just the mock)
+
+The multi-viewport pass and E2E above drive the real client through
+`test/mock-server.ts`. The **production** server (`electron/backend/remote-server.ts`)
+is separately exercised end to end by `remote-server.test.ts`, which boots the
+real `startRemoteServer` over real TCP sockets and asserts, against a realistic
+runtime, the behaviors that actually differ over a tunnel:
+
+- slim-core composition + per-client profile scoping on every outbound path
+  (`/api/state`, WS `state:updated`, activation, mutation acks);
+- the master-token strip on both top-level AND nested (`{ ok, payload }`)
+  responses — so a v1 nested mutation cannot leak it;
+- viewer-bound cross-profile refusal for every PR mutation (mark-seen, comment,
+  vote, thread-status, review, rerun-check, review-bridge sync) and git/grid/
+  attention routes;
+- detail endpoints returning `{resource,revision,data}` with 403 on cross-profile
+  ids, and the `agent-prompts` resource whose revision bumps on reset;
+- latest-wins state coalescing, time-based stall detection and the total
+  time-to-drain telemetry;
+- Brotli/gzip + ETag/304, and the tunnel-only `Secure` session cookie keyed off
+  `x-forwarded-proto: https` (`buildSessionCookieAttrs` tests).
+
+A Cloudflare tunnel is a transparent HTTPS reverse proxy: the app-observable
+differences from localhost are exactly HTTPS (the `Secure` cookie above),
+compression negotiation (`measure:remote`), and latency — all covered above.
+
+### Remaining manual smoke (release owner, physical hardware)
+
+One step is inherently not automatable from CI or an agent sandbox: a smoke check
+on a **physical** phone/tablet over a **real Cloudflare tunnel** started with
+`.\dev.ps1` (real touch gestures, real cellular latency, the live `cloudflared`
+hop). It adds no new application code path over the automated coverage above, but
+it is the final human sign-off. Exact checklist for the release owner:
+
+1. `.\dev.ps1` (dev runtime, `~/.strideterm-dev`), enable remote access, create
+   the Cloudflare tunnel, copy the share URL (with `?token=` + profileId).
+2. **Phone** (open the URL on a real phone): terminal I/O works; pinch-zoom
+   changes font size; workspace switch adopts the new core; open Git / Docker /
+   Azure-or-GitHub inbox / review panes and confirm each loads detail on demand;
+   background/foreground the tab and confirm reconnect + terminal replay; watch
+   for any `1013` reconnect loop (must NOT occur).
+3. **Tablet**: same, plus a 2-cell workspace grid — both cells' non-terminal
+   panes load their own detail.
+4. **Wide desktop browser** over the tunnel: a multi-cell grid with several
+   non-terminal panes mounted at once, each fetching detail independently.
+5. Confirm the desktop Electron window is unaffected throughout (sidebar badges,
+   Git/provider/review panes still read the full IPC payload).
+6. Record telemetry from the dev log (`~/.strideterm-dev/logs`) as observations —
+   there is no hard size target.

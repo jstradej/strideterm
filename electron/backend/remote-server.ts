@@ -223,6 +223,27 @@ export function socketStallDecision(args: {
 }
 
 /**
+ * Total time-to-drain accounting for the stall sweep, exported for unit tests.
+ * DISTINCT from the stall-grace clock (socketStallDecision.backlogSince, which
+ * must reset on every shrink so a slowly-but-steadily draining socket is never
+ * closed): `backlogEnteredAt` is stamped ONCE on the first crossing above the
+ * watermark and NOT reset when the backlog merely shrinks, so a backlog that
+ * drains in steps reports the full first-crossing→cleared span rather than only
+ * its final step. Returns the next `backlogEnteredAt` and, on the tick the
+ * backlog clears, the total drain duration to record (else null).
+ */
+export function drainTelemetryTransition(args: {
+  backlogEnteredAt: number | null;
+  backloggedNow: boolean;
+  now: number;
+}): { backlogEnteredAt: number | null; drainMs: number | null } {
+  const { backlogEnteredAt, backloggedNow, now } = args;
+  if (backlogEnteredAt === null && backloggedNow) return { backlogEnteredAt: now, drainMs: null };
+  if (backlogEnteredAt !== null && !backloggedNow) return { backlogEnteredAt: null, drainMs: now - backlogEnteredAt };
+  return { backlogEnteredAt, drainMs: null };
+}
+
+/**
  * Latest-wins state-send coalescer for one socket. At most one state frame is
  * in flight; a state produced while a send is in flight replaces the single
  * pending frame, so a burst of mutations delivers only the newest follow-up
@@ -572,12 +593,29 @@ export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): s
 export function stripSecretsForRemote(body: unknown): unknown {
   if (!body || typeof body !== "object") return body;
   const payload = body as Record<string, unknown>;
-  const appState = payload.appState as Record<string, unknown> | undefined;
+  // A top-level state payload (a getPayload() result) — strip its master token.
+  if (payload.appState) return stripStateToken(payload);
+  // A result envelope that WRAPS a state payload under `.payload` (git/docker
+  // ops, verification results: `{ ok, payload: <full state> }`). Top-level-only
+  // stripping missed these — a v1 nested mutation response could ship the master
+  // token in `payload.appState.settings.remoteAccess.token`. Strip the nested
+  // state too, leaving the envelope's small fields intact.
+  const nested = payload.payload;
+  if (nested && typeof nested === "object" && (nested as Record<string, unknown>).appState) {
+    return { ...payload, payload: stripStateToken(nested as Record<string, unknown>) };
+  }
+  return body;
+}
+
+/** Zero the master remote-access token in one state-payload object. Returns the
+ *  input unchanged when it carries no `settings.remoteAccess` object. */
+function stripStateToken(state: Record<string, unknown>): Record<string, unknown> {
+  const appState = state.appState as Record<string, unknown> | undefined;
   const settings = appState?.settings as Record<string, unknown> | undefined;
   const remoteAccess = settings?.remoteAccess as Record<string, unknown> | undefined;
-  if (!remoteAccess || typeof remoteAccess !== "object") return body;
+  if (!remoteAccess || typeof remoteAccess !== "object") return state;
   return {
-    ...payload,
+    ...state,
     appState: {
       ...appState,
       settings: {
@@ -658,6 +696,9 @@ const ACK_MUTATION_ROUTES = new Set<string>([
   "/api/azure/workspace/fetch",
   "/api/azure/workspace/rebase",
   "/api/azure/delete-connection",
+  // Re-run a CI check (renderer awaits + discards, then emits refresh).
+  "/api/azure/rerun-check",
+  "/api/github/rerun-check",
   // GitHub PR / review domain mutations (renderer: setPayload no-op).
   "/api/github/pull-request/seen",
   "/api/github/pull-request/comment",
@@ -737,11 +778,13 @@ function changedResourcesForRoute(route: string, body: Record<string, unknown> |
     case "/api/azure/pull-request/vote":
     case "/api/azure/pull-request/thread-status":
     case "/api/azure/pull-request/open":
+    case "/api/azure/rerun-check":
       return azurePr();
     case "/api/github/pull-request/seen":
     case "/api/github/pull-request/comment":
     case "/api/github/pull-request/review":
     case "/api/github/pull-request/open":
+    case "/api/github/rerun-check":
       return githubPr();
     case "/api/azure/workspace/fetch":
     case "/api/azure/workspace/rebase":
@@ -757,6 +800,13 @@ function changedResourcesForRoute(route: string, body: Record<string, unknown> |
     case "/api/review-bridge/pull-request/sync":
     case "/api/review-bridge/pull-request/push-and-publish":
       return prKey ? [`review-bridge:${prKey}`] : [];
+    // Prompt reset/edit changes the global agent-prompts list — the ack names
+    // that single resource so an interested (mounted) review pane refetches it
+    // immediately instead of waiting for the WS invalidation round-trip.
+    case "/api/review-bridge/agent-prompt/reset":
+    case "/api/review-bridge/agent-prompt/save":
+    case "/api/review-bridge/agent-prompt/delete":
+      return ["agent-prompts"];
     default:
       return [];
   }
@@ -1184,15 +1234,10 @@ async function handleApiRequest(
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/seen") {
-      json(response, 200, await runtime.markAzurePullRequestSeen(body.prKey));
-      return;
-    }
-
-    // /api/azure/pull-request/open, /comment, /thread-status and /vote are all
-    // handled in the outer dispatch (slotAwareRoute) so they resolve the bound
-    // viewer id from the remote-client registry and reject cross-profile PRs;
-    // reaching here would mean the route bypassed that intercept.
+    // /api/azure/pull-request/open, /seen, /comment, /thread-status and /vote are
+    // all handled in the outer dispatch (slotAwareRoute) so they resolve the
+    // bound viewer id from the remote-client registry and reject cross-profile
+    // PRs; reaching here would mean the route bypassed that intercept.
 
     if (request.method === "POST" && url.pathname === "/api/review-bridge/draft-comment/create") {
       json(response, 200, await runtime.createReviewBridgeDraftComment(body));
@@ -1229,10 +1274,9 @@ async function handleApiRequest(
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/pull-request/sync") {
-      json(response, 200, await runtime.syncReviewBridgePullRequest(body));
-      return;
-    }
+    // /api/review-bridge/pull-request/sync is handled in the outer dispatch
+    // (slotAwareRoute) so it resolves the caller's viewer id and refuses to
+    // publish drafts to a PR outside the caller's profile.
 
     if (request.method === "POST" && url.pathname === "/api/review-bridge/pull-request/push-and-publish") {
       json(response, 200, await runtime.pushAndPublishReview(body));
@@ -1288,10 +1332,8 @@ async function handleApiRequest(
     }
 
     // /api/azure/quickfix/create is handled in the outer dispatch (slot-aware).
-    if (request.method === "POST" && url.pathname === "/api/azure/rerun-check") {
-      json(response, 200, await runtime.rerunAzureCheck(body.prKey, body.checkItem));
-      return;
-    }
+    // /api/azure/rerun-check is handled in the outer dispatch (slotAwareRoute) so
+    // it resolves the caller's viewer id and refuses a cross-profile prKey.
 
     // Pipelines tab — connectionId-addressed reads/actions, handled inline like
     // the quickfix reads above (they don't touch local workspace/slot state).
@@ -1366,25 +1408,12 @@ async function handleApiRequest(
       json(response, 200, runtime.getGitHubAuditStats(body));
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/github/pull-request/seen") {
-      json(response, 200, await runtime.markGitHubPullRequestSeen(body.prKey));
-      return;
-    }
-    // /api/github/pull-request/open is handled in the outer dispatch so it
-    // can resolve the bound windowId from the remote-client registry.
+    // /api/github/pull-request/open, /seen, /comment and /review are handled in
+    // the outer dispatch (slotAwareRoute) so they resolve the bound viewer id
+    // from the remote-client registry and reject cross-profile PRs.
 
-    if (request.method === "POST" && url.pathname === "/api/github/pull-request/comment") {
-      json(response, 200, await runtime.commentGitHubPullRequest(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/pull-request/review") {
-      json(response, 200, await runtime.submitGitHubPullRequestReview(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/rerun-check") {
-      json(response, 200, await runtime.rerunGitHubCheck(body.prKey, body.checkItem));
-      return;
-    }
+    // /api/github/rerun-check is handled in the outer dispatch (slotAwareRoute)
+    // so it resolves the caller's viewer id and refuses a cross-profile prKey.
     if (request.method === "POST" && url.pathname === "/api/github/workspace/fetch") {
       json(response, 200, await runtime.fetchGitHubReviewWorkspace(body.workspaceId));
       return;
@@ -2423,6 +2452,7 @@ export async function startRemoteServer({
           const k = u.searchParams.get("prKey");
           return k ? `review-bridge:${k}` : null;
         },
+        "/api/review-bridge/agent-prompts": () => "agent-prompts",
       };
       const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
       if (detailRoute) {
@@ -2516,6 +2546,21 @@ export async function startRemoteServer({
         "/api/azure/pull-request/comment": (body, windowId) => runtime.commentAzurePullRequest(body, windowId),
         "/api/azure/pull-request/thread-status": (body, windowId) => runtime.updateAzureThreadStatus(body, windowId),
         "/api/azure/pull-request/vote": (body, windowId) => runtime.voteAzurePullRequest(body, windowId),
+        // Marking a PR seen mutates the tracked-PR store (clears the "new
+        // activity" badge). Viewerless it let a client on profile B silence
+        // profile-A PR badges; route it through the viewer path so the runtime
+        // rejects a cross-profile prKey. Same for the GitHub PR mutations below.
+        "/api/azure/pull-request/seen": (body, windowId) => runtime.markAzurePullRequestSeen(body.prKey, windowId),
+        "/api/github/pull-request/seen": (body, windowId) => runtime.markGitHubPullRequestSeen(body.prKey, windowId),
+        "/api/github/pull-request/comment": (body, windowId) => runtime.commentGitHubPullRequest(body, windowId),
+        "/api/github/pull-request/review": (body, windowId) => runtime.submitGitHubPullRequestReview(body, windowId),
+        // Re-running a CI check queues an external pipeline run against the PR —
+        // another cross-profile-visible side effect, so refuse a foreign prKey.
+        "/api/azure/rerun-check": (body, windowId) => runtime.rerunAzureCheck(body.prKey, body.checkItem, windowId),
+        "/api/github/rerun-check": (body, windowId) => runtime.rerunGitHubCheck(body.prKey, body.checkItem, windowId),
+        // Sync publishes queued draft comments to the PR provider — an
+        // externally visible side effect that must refuse cross-profile prKeys.
+        "/api/review-bridge/pull-request/sync": (body, windowId) => runtime.syncReviewBridgePullRequest(body, windowId),
         "/api/azure/quickfix/create": (body, windowId) => runtime.azureQuickFixCreate(body, windowId),
         "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
         "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
@@ -2879,6 +2924,14 @@ export async function startRemoteServer({
      * past the grace window with no drain progress.
      */
     backlogSince: number | null;
+    /**
+     * When the live backlog FIRST crossed the watermark, and unlike backlogSince
+     * NOT reset when it shrinks — so the telemetry can record total end-to-end
+     * time-to-drain (first-crossing → cleared), not just the final drain step.
+     * backlogSince drives the stall/close grace (must reset on progress);
+     * backlogEnteredAt drives the drain-time metric (must not). Null while healthy.
+     */
+    backlogEnteredAt: number | null;
     /** Previous live-backlog sample, so the sweep can detect drain progress. */
     lastLiveBacklog: number;
     /**
@@ -2949,6 +3002,7 @@ export async function startRemoteServer({
         clientSessionId: "",
         stateCoalescer: null,
         backlogSince: null,
+        backlogEnteredAt: null,
         lastLiveBacklog: 0,
         interests: new Set(),
         sentRevisions: new Map(),
@@ -3703,7 +3757,6 @@ export async function startRemoteServer({
       if (!routing || routing.mode !== "filtered" || routing.congested) continue;
       const liveBacklog = Math.max(0, socketBufferedAmount(ws) - (routing.exemptBytes || 0));
       telemetry.recordBacklog(liveBacklog);
-      const wasBackloggedSince = routing.backlogSince;
       const decision = socketStallDecision({
         liveBacklog,
         prevLiveBacklog: routing.lastLiveBacklog,
@@ -3712,10 +3765,16 @@ export async function startRemoteServer({
         thresholdBytes: SOCKET_STALL_THRESHOLD_BYTES,
         graceMs: socketStallGraceMs,
       });
-      if (wasBackloggedSince !== null && decision.backlogSince === null) {
-        // Backlog cleared this tick — record how long it took to drain.
-        telemetry.recordDrainMs(now - wasBackloggedSince);
-      }
+      // Total time-to-drain telemetry rides backlogEnteredAt (see
+      // drainTelemetryTransition) — stamped once on the first crossing, never
+      // reset on a mere shrink, so a stepwise drain reports the full span.
+      const drain = drainTelemetryTransition({
+        backlogEnteredAt: routing.backlogEnteredAt,
+        backloggedNow: decision.backlogSince !== null,
+        now,
+      });
+      if (drain.drainMs !== null) telemetry.recordDrainMs(drain.drainMs);
+      routing.backlogEnteredAt = drain.backlogEnteredAt;
       routing.backlogSince = decision.backlogSince;
       routing.lastLiveBacklog = liveBacklog;
       if (decision.trip) {

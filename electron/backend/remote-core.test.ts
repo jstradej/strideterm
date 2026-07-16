@@ -296,11 +296,58 @@ describe("buildRemoteCore", () => {
       "ws2:a": { sessionId: "ws2:a", workspaceId: "ws2" },
     };
     (p.attention as Rec).byWorkspace = { ws1: { count: 1 }, ws2: { count: 2 } };
+    // byProject is the wire-compat alias the runtime keeps (byte-identical to
+    // byWorkspace). It MUST be filtered too — otherwise it leaks every profile's
+    // alert buckets even after byWorkspace is scoped.
+    (p.attention as Rec).byProject = { ws1: { count: 1 }, ws2: { count: 2 } };
     p.taskRunner = { ws1: { state: "running" }, ws2: { state: "idle" } };
     const core = buildRemoteCore(p); // profile p1 (from remoteClient)
     expect(Object.keys((core.attention as Rec).sessions)).toEqual(["ws1:a"]);
     expect(Object.keys((core.attention as Rec).byWorkspace)).toEqual(["ws1"]);
+    expect(Object.keys((core.attention as Rec).byProject)).toEqual(["ws1"]);
     expect(Object.keys(core.taskRunner)).toEqual(["ws1"]);
+  });
+
+  test("meta.recoveryCandidates span profiles by design (cross-profile triage dialog)", () => {
+    // The startup recovery dialog is a deliberate cross-profile triage UI — it
+    // lists EVERY unfinished agent task with a per-item profile badge, and each
+    // resume/skip goes through the profile-guarded task routes. Profiles are an
+    // organizational construct, not a security boundary (CLAUDE.md), so the core
+    // must carry candidates from all profiles, not just the client's own — see
+    // test/e2e/task-recovery.spec.ts, which drives both a "default" and a "work"
+    // candidate through this exact core path.
+    const p = fullPayload();
+    (p.meta as Rec).recoveryCandidates = [
+      { taskId: "t1", workspaceId: "ws1", workspaceName: "WS1", profileId: "p1" },
+      { taskId: "t2", workspaceId: "ws2", workspaceName: "WS2", profileId: "p2" },
+    ];
+    const core = buildRemoteCore(p); // profile p1
+    const cands = (core.meta as Rec).recoveryCandidates as Rec[];
+    expect(cands.map((c) => c.profileId)).toEqual(["p1", "p2"]);
+  });
+
+  test("the desktop-global active workspace is nulled when it is in another profile", () => {
+    const p = fullPayload();
+    // Desktop's active workspace is ws2 (profile p2); the client is on p1.
+    (p as Rec).workspace = { workspace: { id: "ws2", name: "WS2-ACTIVE-SECRET" }, sessions: [] };
+    const core = buildRemoteCore(p); // profile p1
+    expect(core.workspace).toBeNull();
+    expect(JSON.stringify(core)).not.toContain("WS2-ACTIVE-SECRET");
+  });
+
+  test("the desktop-global active workspace is kept when it is in the client's profile", () => {
+    const p = fullPayload();
+    (p as Rec).workspace = { workspace: { id: "ws1", name: "WS1" }, sessions: [] };
+    const core = buildRemoteCore(p); // profile p1
+    expect((core.workspace as Rec)?.workspace?.id).toBe("ws1");
+  });
+
+  test("an unbound (no-profile) core carries no active workspace descriptor", () => {
+    const p = fullPayload();
+    delete (p as Rec).remoteClient;
+    (p as Rec).workspace = { workspace: { id: "ws1" }, sessions: [] };
+    const core = buildRemoteCore(p); // no profile → empty scope
+    expect(core.workspace).toBeNull();
   });
 });
 
@@ -503,13 +550,38 @@ describe("buildResourceDetail", () => {
     expect(data.issueComments).toHaveLength(1);
   });
 
-  test("review-bridge detail returns comments/drafts + agentPrompts", () => {
+  test("review-bridge detail returns comments/drafts, NOT the global agentPrompts", () => {
     const p = fullPayload();
     const detail = buildResourceDetail(p, "p1", "review-bridge:azure:pr1");
-    const data = detail!.data as { comments: unknown[]; drafts: unknown[]; agentPrompts: unknown[] };
+    const data = detail!.data as { comments: unknown[]; drafts: unknown[]; agentPrompts?: unknown[] };
     expect(data.comments).toHaveLength(1);
     expect(data.drafts).toHaveLength(1);
+    // agentPrompts are a global install list served by their own resource — they
+    // must NOT ride the per-PR detail (whose revision never tracked them, so a
+    // reset left them stale). See the agent-prompts resource test below.
+    expect(data.agentPrompts).toBeUndefined();
+  });
+
+  test("agent-prompts detail returns the global prompt list", () => {
+    const p = fullPayload();
+    const detail = buildResourceDetail(p, "p1", "agent-prompts");
+    expect(detail!.resource).toBe("agent-prompts");
+    const data = detail!.data as { agentPrompts: unknown[] };
     expect(data.agentPrompts).toHaveLength(1);
+    // Its revision folds the prompt list — a reset/edit bumps it so an interested
+    // review pane refetches instead of rendering stale prompts.
+    const before = detail!.revision;
+    p.reviewBridge.agentPrompts = [];
+    const after = buildResourceDetail(p, "p1", "agent-prompts")!.revision;
+    expect(after).not.toBe(before);
+  });
+
+  test("agent-prompts is authorized for any resolved profile, denied when unbound", () => {
+    const p = fullPayload();
+    expect(resourceProfileAuthorized(p, "p1", "agent-prompts")).toBe(true);
+    expect(resourceProfileAuthorized(p, "p2", "agent-prompts")).toBe(true);
+    // No resolved profile → nothing authorized (matches docker/inbox).
+    expect(resourceProfileAuthorized(p, null, "agent-prompts")).toBe(false);
   });
 
   test("docker detail returns the full lists", () => {

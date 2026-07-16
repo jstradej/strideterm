@@ -17,6 +17,9 @@ interface ReviewBridgeHandlerCtx {
   /** Throws when the workspace lives in a profile other than the caller
    * window's bound slot. No-op when windowId is missing (legacy / tests). */
   assertWorkspaceInViewerProfile: (workspaceId: string, windowId: string | undefined) => void;
+  /** Throws when the PR (by key, either provider) is not in the caller viewer's
+   * profile. No-op when windowId is missing (desktop IPC / tests). */
+  assertPrInViewerProfile: (prKey: string, windowId: string | undefined) => void;
 }
 
 /**
@@ -36,6 +39,7 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
     refreshGitHub,
     refreshGit,
     assertWorkspaceInViewerProfile,
+    assertPrInViewerProfile,
   } = ctx;
 
   return {
@@ -99,11 +103,14 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async syncReviewBridgePullRequest(payload: any) {
+    async syncReviewBridgePullRequest(payload: any, windowId?: string) {
       const prKey = String(payload?.prKey || "").trim();
       if (!prKey) {
         throw new Error("Pull request key is required.");
       }
+      // Publishing queued drafts posts comments to the PR provider — refuse a
+      // prKey outside the caller viewer's profile.
+      assertPrInViewerProfile(prKey, windowId);
       const prData = reviewBridgeStore.getPullRequestContext?.(prKey);
       const isGitHub = prData?.provider === "github" || github.findSummary(prKey);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

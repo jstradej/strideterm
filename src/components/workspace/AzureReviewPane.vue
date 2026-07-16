@@ -787,7 +787,9 @@ const reviewBridge = computed(() => (appStore.reviewBridgePr(prKey.value) as any
 // snapshot (the pane renders the branch log) current while this pane — which
 // handles both Azure and GitHub reviews — is mounted.
 useResourceInterest(() => {
-  const keys: string[] = [];
+  // The Agent tab renders the global agent-prompts list — declare interest in it
+  // so a prompt reset/edit invalidates and refetches while the pane is mounted.
+  const keys: string[] = ["agent-prompts"];
   if (props.workspaceId) keys.push(`git:${props.workspaceId}`);
   const key = prKey.value;
   if (key) keys.push(isGitHub.value ? `github-pr:${key}` : `azure-pr:${key}`, `review-bridge:${key}`);

@@ -302,9 +302,25 @@ export function resourceRevision(payload: AnyRecord, resourceKey: string): strin
       return String(payload?.github?.pullRequests?.[id || ""]?.lastActivityAt || "");
     case "review-bridge":
       return reviewBridgePrRevision(payload?.reviewBridge?.pullRequests?.[id || ""]);
+    case "agent-prompts":
+      return agentPromptsRevision(payload?.reviewBridge?.agentPrompts);
     default:
       return "";
   }
+}
+
+/**
+ * Cheap change token for the global agent-prompts list. Folds count + each
+ * prompt's id/updatedAt so a save/delete/reset bumps it — that revision change
+ * is what invalidates an interested (mounted-review-pane) client so it refetches
+ * fresh prompts instead of rendering the pre-reset defaults.
+ */
+function agentPromptsRevision(prompts: unknown): string {
+  if (!Array.isArray(prompts)) return "0";
+  const parts = (prompts as AnyRecord[]).map(
+    (p) => `${String(p?.promptId || p?.id || "")}:${String(p?.updatedAt || p?.sortOrder || "")}`,
+  );
+  return `${prompts.length}|${parts.join(",")}`;
 }
 
 function providerInboxRevision(snapshot: AnyRecord | null | undefined): string {
@@ -357,6 +373,7 @@ export function buildCoreRevisions(
   revisions["docker"] = resourceRevision(payload, "docker");
   revisions["azure-inbox"] = resourceRevision(payload, "azure-inbox");
   revisions["github-inbox"] = resourceRevision(payload, "github-inbox");
+  revisions["agent-prompts"] = resourceRevision(payload, "agent-prompts");
   return revisions;
 }
 
@@ -394,10 +411,14 @@ function filterByWorkspaceId<T>(map: Record<string, T> | undefined, inProfile: S
 }
 
 /**
- * Scope the attention snapshot to the client's profile: the two workspace-keyed
- * maps the sidebar reads — `sessions` (keyed by `<wsId>:<panel>`, each carrying
- * `workspaceId`) and `byWorkspace` — are filtered so a browser never sees
- * another profile's activity/alert metadata. Aggregate fields are left intact.
+ * Scope the attention snapshot to the client's profile: the workspace-keyed maps
+ * the sidebar reads — `sessions` (keyed by `<wsId>:<panel>`, each carrying
+ * `workspaceId`), `byWorkspace`, AND its wire-compat alias `byProject` (a
+ * byte-identical copy the runtime keeps for older clients / the frontend
+ * fallback) — are all filtered so a browser never sees another profile's
+ * activity/alert metadata. Leaving `byProject` unfiltered would have leaked every
+ * profile's alert buckets even after `byWorkspace` was scoped. Aggregate scalar
+ * fields are left intact.
  */
 function scopeAttention(attention: AnyRecord | undefined, inProfile: Set<string>): AnyRecord | undefined {
   if (!attention) return attention;
@@ -411,7 +432,24 @@ function scopeAttention(attention: AnyRecord | undefined, inProfile: Set<string>
     ...(attention.byWorkspace
       ? { byWorkspace: filterByWorkspaceId(attention.byWorkspace as AnyRecord, inProfile) }
       : {}),
+    ...(attention.byProject ? { byProject: filterByWorkspaceId(attention.byProject as AnyRecord, inProfile) } : {}),
   };
+}
+
+/**
+ * Scope the desktop-global active-workspace descriptor (`payload.workspace`,
+ * shaped `{ workspace, project, sessions }`) to the client's profile. The
+ * registry injects `remoteClient` but leaves this field as the DESKTOP's active
+ * workspace, which may belong to another profile — the browser would receive its
+ * name/cwd/panels over the wire. Keep it only when it belongs to the client's
+ * profile; otherwise null it (the renderer rebuilds its own from the
+ * profile-filtered `appState.workspaces` via scopePayloadToWindow).
+ */
+function scopeWorkspace(workspace: AnyRecord | null | undefined, inProfile: Set<string>): AnyRecord | null {
+  if (!workspace) return null;
+  const inner = (workspace.workspace || workspace.project) as AnyRecord | undefined;
+  const wsId = String(inner?.id || "");
+  return wsId && inProfile.has(wsId) ? workspace : null;
 }
 
 /** Strip the credential secret from each provider connection (`pat` for Azure,
@@ -513,9 +551,19 @@ export function buildRemoteCore(
     stateProtocol: REMOTE_STATE_PROTOCOL,
     capabilities: opts.capabilities ?? [...REMOTE_CAPABILITIES],
     coreRevision: opts.coreRevision ?? 0,
+    // meta is passed through, INCLUDING recoveryCandidates. Those span profiles
+    // by design: the startup recovery dialog is a cross-profile triage UI (it
+    // renders every unfinished agent task with a per-item profile badge — see
+    // test/e2e/task-recovery.spec.ts). Profiles are an organizational construct,
+    // not a security boundary (CLAUDE.md), and each resume/skip goes through the
+    // profile-guarded task routes, so surfacing the names here is intended, not a
+    // leak. The rest of meta (appVersion/versionCheck/platform) is profile-agnostic.
     meta: composed.meta,
     appState: buildRemoteCoreAppState(appState, inProfile),
-    workspace: composed.workspace ?? null,
+    workspace: scopeWorkspace(
+      composed.workspace as AnyRecord | null | undefined,
+      inProfile,
+    ) as RemoteStateV2["workspace"],
     attention: scopeAttention(composed.attention as AnyRecord | undefined, inProfile) as RemoteStateV2["attention"],
     taskRunner: filterByWorkspaceId(composed.taskRunner as Record<string, unknown> | undefined, inProfile),
     plugins: composed.plugins || [],
@@ -550,8 +598,11 @@ export function looksLikeStatePayload(body: unknown): boolean {
 // Resource keys
 // ---------------------------------------------------------------------------
 
-/** Resource types with no id (whole-resource details). */
-const ID_LESS_RESOURCES = new Set(["docker", "azure-inbox", "github-inbox"]);
+/** Resource types with no id (whole-resource details). `agent-prompts` is the
+ *  global review-bridge prompt list — one resource for the whole install, so a
+ *  reset/edit invalidates it uniformly rather than trying to bump every per-PR
+ *  review-bridge detail's revision. */
+const ID_LESS_RESOURCES = new Set(["docker", "azure-inbox", "github-inbox", "agent-prompts"]);
 /** Resource types addressed by id. */
 const ID_RESOURCES = new Set(["git", "azure-pr", "github-pr", "review-bridge"]);
 
@@ -606,7 +657,8 @@ export function resourceProfileAuthorized(payload: AnyRecord, profileId: string 
     case "docker":
     case "azure-inbox":
     case "github-inbox":
-      return true; // profile-scoped internally by the detail builder
+    case "agent-prompts":
+      return true; // profile-scoped internally by the detail builder (agent-prompts is a global install list)
     case "git": {
       const ws = ((payload?.appState?.workspaces || []) as AnyRecord[]).find((w) => String(w?.id) === id);
       return Boolean(ws) && String(ws?.profileId || "default") === profileId;
@@ -673,11 +725,19 @@ export function buildProviderPrDetail(snapshot: AnyRecord | null | undefined, pr
   return ((snapshot as AnyRecord)?.pullRequests?.[prKey] as AnyRecord) || null;
 }
 
-/** Full per-PR review-bridge context (comments, drafts, syncQueue, mcpServerSpec). */
+/** Full per-PR review-bridge context (comments, drafts, syncQueue, mcpServerSpec).
+ *  agentPrompts are NOT bundled here — they are a global install list served by
+ *  the separate `agent-prompts` detail resource, so they stay current on
+ *  reset/edit via that resource's own revision rather than depending on a per-PR
+ *  revision that never saw them change. */
 export function buildReviewBridgePrDetail(payload: AnyRecord, prKey: string): AnyRecord | null {
-  const ctx = payload?.reviewBridge?.pullRequests?.[prKey] as AnyRecord | undefined;
-  if (!ctx) return null;
-  return { ...ctx, agentPrompts: payload?.reviewBridge?.agentPrompts || [] };
+  return (payload?.reviewBridge?.pullRequests?.[prKey] as AnyRecord) || null;
+}
+
+/** The global review-bridge agent-prompts list (Agent tab), as its own detail
+ *  resource. */
+export function buildAgentPromptsDetail(payload: AnyRecord): AnyRecord {
+  return { agentPrompts: (payload?.reviewBridge?.agentPrompts as unknown[]) || [] };
 }
 
 /**
@@ -713,6 +773,9 @@ export function buildResourceDetail(
       break;
     case "review-bridge":
       data = buildReviewBridgePrDetail(payload, id || "");
+      break;
+    case "agent-prompts":
+      data = buildAgentPromptsDetail(payload);
       break;
     default:
       return null;

@@ -1207,12 +1207,14 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /** Agent prompts for the review pane's Agent tab. NOT in the slim core (only a
-   *  mounted review pane renders them). Remote: they ride the review-bridge
-   *  detail resource, fetched when a review pane declares interest in
-   *  `review-bridge:<prKey>`. Desktop: the global `reviewBridge.agentPrompts`. */
-  function reviewAgentPrompts(prKey: string): AnyApi {
+   *  mounted review pane renders them). Remote: the global `agent-prompts` detail
+   *  resource, fetched when a review pane declares interest in `agent-prompts`;
+   *  its own revision bumps on reset/edit, so a reset repaints fresh prompts.
+   *  Desktop: the global `reviewBridge.agentPrompts`. The prKey is unused on
+   *  remote (prompts are install-global) but kept so callers stay transport-agnostic. */
+  function reviewAgentPrompts(_prKey: string): AnyApi {
     if (isRemoteTransport.value) {
-      const cached = useRemoteDetailsStore().get(`review-bridge:${prKey}`) as AnyApi;
+      const cached = useRemoteDetailsStore().get("agent-prompts") as AnyApi;
       return cached?.agentPrompts || [];
     }
     return (payload.value as AnyApi)?.reviewBridge?.agentPrompts || [];
