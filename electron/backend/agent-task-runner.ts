@@ -74,14 +74,7 @@ interface TaskWorkspaceState extends WorkspaceState {
 }
 
 type TaskStateKind =
-  | "idle"
-  | "running"
-  | "paused"
-  | "evaluating"
-  | "judge-evaluating"
-  | "refreshing"
-  | "completed"
-  | "failed";
+  "idle" | "running" | "paused" | "evaluating" | "judge-evaluating" | "refreshing" | "completed" | "failed";
 
 interface TaskRound {
   round: number;

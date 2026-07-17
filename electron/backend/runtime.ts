@@ -4521,8 +4521,7 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = getPayload() as any;
     const pr = (payload?.azureDevops?.pullRequests?.[prKey] || payload?.github?.pullRequests?.[prKey]) as
-      | { profileId?: string }
-      | undefined;
+      { profileId?: string } | undefined;
     if (pr && String(pr.profileId || "default") !== callerProfileId) {
       throw new Error(`Cross-profile refused: pull request ${prKey} is not in profile ${callerProfileId}.`);
     }
@@ -5024,8 +5023,7 @@ export async function createRuntime({
       const remoteGridSessionId = parseRemoteViewerId(windowId);
       if (remoteGridSessionId) {
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
-          | number
-          | undefined;
+          number | undefined;
         if (slots) {
           const ids: (string | null)[] = [];
           for (let i = 0; i < slots; i++) ids.push(workspaceIds?.[i] ?? null);
@@ -5036,8 +5034,7 @@ export async function createRuntime({
       }
       await store.mutate((draft: AppState) => {
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
-          | number
-          | undefined;
+          number | undefined;
         if (!slots) return;
         const ids: (string | null)[] = [];
         for (let i = 0; i < slots; i++) {
@@ -5076,8 +5073,7 @@ export async function createRuntime({
       if (remoteGridSessionId) {
         const grid = readRemoteViewerGrid(remoteGridSessionId);
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
-          | number
-          | undefined;
+          number | undefined;
         if (grid && slots) {
           const existing = grid.cellWorkspaceIds.filter((id) => id !== null);
           const ids: (string | null)[] = [];
@@ -5093,8 +5089,7 @@ export async function createRuntime({
         const grid = readSlotGrid(draft, slot);
         if (!grid) return;
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
-          | number
-          | undefined;
+          number | undefined;
         if (!slots) return;
         const existing = grid.cellWorkspaceIds.filter((id) => id !== null);
         const ids: (string | null)[] = [];

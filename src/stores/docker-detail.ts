@@ -3,14 +3,7 @@ import { ref, watchEffect } from "vue";
 import { useAppStore } from "./app.js";
 
 export type TabKind =
-  | "container"
-  | "project"
-  | "image"
-  | "volume"
-  | "network"
-  | "images-list"
-  | "volumes-list"
-  | "networks-list";
+  "container" | "project" | "image" | "volume" | "network" | "images-list" | "volumes-list" | "networks-list";
 
 export type SubTabKind = "logs" | "stats" | "shell" | "inspect" | "env" | "top";
 
@@ -263,7 +256,6 @@ export const useDockerDetail = defineStore("docker-detail", () => {
 
   // Watch for removed containers to mark tabs as removed
   watchEffect(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const docker = appStore.dockerState();
     if (!docker?.containers) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

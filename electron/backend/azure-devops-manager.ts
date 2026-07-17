@@ -1544,8 +1544,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     ]);
     const workspace: ReviewWorkspace | undefined =
       (findWorkspaceForPullRequest(workspaces as Array<{ id: string; [key: string]: unknown }>, prKey) as
-        | ReviewWorkspace
-        | undefined) ||
+        ReviewWorkspace | undefined) ||
       (current.existingWorkspaceId
         ? (workspaces as ReviewWorkspace[]).find((entry) => entry.id === current.existingWorkspaceId)
         : undefined);

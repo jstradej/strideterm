@@ -67,8 +67,7 @@ and `currentPage` in the response. Add integration tests.
 - Update TODO.md as you work (move items between sections)
 - Before finishing, complete the verification checklist above
 - Remove WORK_LOCK only when genuinely done
-- The judge will independently verify your work</pre
-    >
+- The judge will independently verify your work</pre>
 
     <h4>Example: TODO.md <button class="td__copy-btn" @click="copyExample('todo')">copy</button></h4>
     <pre ref="exampleTodo" class="td__example">
@@ -82,8 +81,7 @@ and `currentPage` in the response. Add integration tests.
 
 ## In Progress
 
-## Done</pre
-    >
+## Done</pre>
 
     <h4>
       Example: verification checklist
@@ -95,8 +93,7 @@ and `currentPage` in the response. Add integration tests.
 - [ ] Run `npm run lint` — no errors
 - [ ] Run `npx tsc --noEmit` — no type errors
 - [ ] Ensure src/controllers/users.js exists
-- [ ] Ensure tests/users-pagination.test.js exists</pre
-    >
+- [ ] Ensure tests/users-pagination.test.js exists</pre>
 
     <h4>Reset &amp; Retry</h4>
     <p class="td__help-intro">

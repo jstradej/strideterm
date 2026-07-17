@@ -393,8 +393,7 @@ async function loadProjects() {
   currentStep.value = "project";
   try {
     const result = (await api?.azureQuickFixListProjects?.({ connectionId: selected.value.connectionId })) as
-      | { projects?: ProjectEntry[] }
-      | undefined;
+      { projects?: ProjectEntry[] } | undefined;
     projects.value = result?.projects || [];
     if (projects.value.length === 1) {
       await selectProject(projects.value[0]);
@@ -426,8 +425,7 @@ async function loadRepositories() {
       })) as { repositories?: RepositoryEntry[] } | undefined;
     } else {
       result = (await api?.githubQuickFixListRepos?.({ connectionId: selected.value.connectionId })) as
-        | { repositories?: RepositoryEntry[] }
-        | undefined;
+        { repositories?: RepositoryEntry[] } | undefined;
     }
     repositories.value = result?.repositories || [];
     if (repositories.value.length === 1) {

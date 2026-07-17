@@ -238,26 +238,22 @@ export class DockerManager extends EventEmitter {
 
   async detectAllBackends(): Promise<DockerBackend[]> {
     const results = await Promise.allSettled([
-      execFileText("docker", ["version", "--format", "{{json .}}"]).then(
-        (): DockerBackend => ({
-          id: "host",
-          type: "host",
-          label: "Host",
-          available: "ok",
-          file: "docker",
-          argsPrefix: [],
-        }),
-      ),
-      execFileText("wsl.exe", ["-e", "sh", "-lc", "docker version --format '{{json .}}'"]).then(
-        (): DockerBackend => ({
-          id: "wsl",
-          type: "wsl",
-          label: "WSL",
-          available: "ok",
-          file: "wsl.exe",
-          argsPrefix: ["-e", "sh", "-lc"],
-        }),
-      ),
+      execFileText("docker", ["version", "--format", "{{json .}}"]).then((): DockerBackend => ({
+        id: "host",
+        type: "host",
+        label: "Host",
+        available: "ok",
+        file: "docker",
+        argsPrefix: [],
+      })),
+      execFileText("wsl.exe", ["-e", "sh", "-lc", "docker version --format '{{json .}}'"]).then((): DockerBackend => ({
+        id: "wsl",
+        type: "wsl",
+        label: "WSL",
+        available: "ok",
+        file: "wsl.exe",
+        argsPrefix: ["-e", "sh", "-lc"],
+      })),
     ]);
 
     return results

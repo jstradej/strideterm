@@ -432,8 +432,7 @@ export class TelegramManager extends EventEmitter {
   /** Runtime-provided getter for current workspace list — used by /status and /task commands */
   private getWorkspaces: (() => TelegramWorkspaceInfo[]) | null = null;
   private getWindowSlots:
-    | (() => { id: string; profileId: string; activeWorkspaceId?: string; lastFocusedAt?: number }[])
-    | null = null;
+    (() => { id: string; profileId: string; activeWorkspaceId?: string; lastFocusedAt?: number }[]) | null = null;
 
   /** Runtime-provided getter for the active profile id — used by /task to filter candidates */
   private getActiveProfileId: (() => string) | null = null;
