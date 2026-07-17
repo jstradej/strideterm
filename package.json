@@ -194,7 +194,7 @@
     "jsdom": "^29.1.1",
     "lint-staged": "^17.0.8",
     "prettier": "^3.8.4",
-    "tsx": "4.22.4",
+    "tsx": "4.23.1",
     "typescript": "6.0.3",
     "typescript-eslint": "8.62.0",
     "vite": "^8.1.0",
