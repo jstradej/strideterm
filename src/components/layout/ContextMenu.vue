@@ -337,14 +337,12 @@ const canAddToSplit = computed(() => {
 const adjustedX = ref(rawX.value);
 const adjustedY = ref(rawY.value);
 
-const menuStyle = computed(
-  (): CSSProperties => ({
-    position: "fixed",
-    left: `${adjustedX.value}px`,
-    top: `${adjustedY.value}px`,
-    zIndex: 9999,
-  }),
-);
+const menuStyle = computed((): CSSProperties => ({
+  position: "fixed",
+  left: `${adjustedX.value}px`,
+  top: `${adjustedY.value}px`,
+  zIndex: 9999,
+}));
 
 watch(
   () => store.contextMenu,

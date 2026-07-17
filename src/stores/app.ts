@@ -922,8 +922,7 @@ export const useAppStore = defineStore("app", () => {
     // broadcasts — reconcile our local list so this window's dialog doesn't
     // offer an already-decided task again.
     const incomingCandidates = (nextPayload as AnyApi)?.meta?.recoveryCandidates as
-      | Array<{ workspaceId: string }>
-      | undefined;
+      Array<{ workspaceId: string }> | undefined;
     if (Array.isArray(incomingCandidates) && recoveryCandidates.value.length > 0) {
       const liveIds = new Set(incomingCandidates.map((c) => c.workspaceId));
       const reconciled = recoveryCandidates.value.filter((c) => liveIds.has(c.workspaceId));

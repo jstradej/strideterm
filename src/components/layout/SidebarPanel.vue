@@ -461,8 +461,7 @@ async function handleTaskToggle(ws: any): Promise<void> {
       if (result?.payload) store.handleBroadcastPayload(result.payload);
     } else if (taskState === "paused") {
       const result = (await api.resumeTask?.({ workspaceId: ws.id })) as
-        | { ok?: boolean; payload?: StatePayload }
-        | undefined;
+        { ok?: boolean; payload?: StatePayload } | undefined;
       if (result?.payload) store.handleBroadcastPayload(result.payload);
       if (result && result.ok === false) {
         // Krok 7 — surface the failure instead of only console.error.

@@ -339,9 +339,7 @@ async function onImport() {
   // used here because it is gated to workspace roots and patches are typically
   // opened from Downloads.
   const picked = (await api.browseFile?.({ filters, readContent: true })) as
-    | { path: string; content: string }
-    | string
-    | null;
+    { path: string; content: string } | string | null;
   if (!picked || typeof picked === "string") return;
   if (!picked.content) {
     await toast("Could not read the selected patch file.", "error");
