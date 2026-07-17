@@ -1237,7 +1237,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
 
   test(
     "a completed close clears the terminate timer and routing/congestion state",
-    { retry: 2, timeout: 20_000 },
+    { retry: 2, timeout: 40_000 },
     async () => {
       // The ws 'close' handler must clearTimeout(closeTimer) and drop the socket
       // from socketRouting, so a disconnected client leaks neither the pending
@@ -1251,11 +1251,13 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
           await delay(50);
           // Stall sweep trips congestion (injected persistent backlog). Generous
-          // timeout — the sweep interval can be starved under parallel-test load.
-          expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 6000)).toBe(true);
+          // timeout — the sweep interval can be starved for several seconds under
+          // parallel-test load on slow CI runners (macOS especially), so give it
+          // plenty of wall-clock; this asserts eventual congestion, not latency.
+          expect(await waitUntil(() => server._debugRouting?.()?.[0]?.congested === true, 15000)).toBe(true);
           // The client (not paused) acks the 1013 and closes → the server's close
           // handler releases the routing entry (and with it the cleared timer).
-          expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 6000)).toBe(true);
+          expect(await waitUntil(() => (server._debugRouting?.() ?? []).length === 0, 15000)).toBe(true);
           // The graceful close won the race against the 120 ms grace, so the armed
           // terminate() timer must have been cleared. Wait well past the grace and
           // assert it never fired.
