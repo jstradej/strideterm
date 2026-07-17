@@ -592,15 +592,24 @@ export function buildRemoteCoreAppState(
   viewer?: RemoteCoreViewer | null,
 ): RemoteCoreAppState {
   const ssh = (appState.ssh || undefined) as AnyRecord | undefined;
-  const workspaces = ((appState.workspaces || []) as AnyRecord[]).filter(
-    (ws) => !inProfile || inProfile.has(String(ws?.id)),
-  );
+  const allWorkspaces = (appState.workspaces || []) as AnyRecord[];
+  // Per-profile workspace count from the FULL list, BEFORE the profile filter
+  // below scopes `workspaces` to the viewer's one profile. The Profiles dialog
+  // shows every profile, so it needs each profile's count even though it never
+  // receives the other profiles' workspace rows — a bare number leaks nothing.
+  const profileWorkspaceCounts: Record<string, number> = {};
+  for (const ws of allWorkspaces) {
+    const pid = String(ws?.profileId || "default");
+    profileWorkspaceCounts[pid] = (profileWorkspaceCounts[pid] || 0) + 1;
+  }
+  const workspaces = allWorkspaces.filter((ws) => !inProfile || inProfile.has(String(ws?.id)));
   return {
     activeWorkspaceId: String(viewer?.activeWorkspaceId || ""),
     settings: slimRemoteSettings(appState.settings as AnyRecord | undefined) as RemoteCoreAppState["settings"],
     tabTemplates: (appState.tabTemplates || []) as RemoteCoreAppState["tabTemplates"],
     profiles: (appState.profiles || []) as RemoteCoreAppState["profiles"],
     workspaces: workspaces as RemoteCoreAppState["workspaces"],
+    profileWorkspaceCounts,
     windowSlots: (appState.windowSlots || []) as unknown[],
     ...(ssh ? { ssh: { hosts: ssh.hosts || [], settings: ssh.settings } as RemoteCoreAppState["ssh"] } : {}),
     ...(viewer && viewer.workspaceGrid !== undefined

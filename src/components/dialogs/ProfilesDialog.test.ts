@@ -16,6 +16,50 @@ describe("ProfilesDialog", () => {
     expect(wrapper.find(".dialog").attributes("data-no-autofocus")).toBe("");
   });
 
+  it("uses the supplied count map when workspaces is profile-scoped (remote)", () => {
+    // Remote slim-core sends every profile but scopes `workspaces` to the viewer's
+    // one profile (here empty). The count must come from the map — counting the
+    // scoped array would read 0 for every profile (the reported bug).
+    const wrapper = mount(ProfilesDialog, {
+      props: {
+        profiles: [
+          { id: "default", name: "Default 2", color: "#fff" },
+          { id: "asdf", name: "asdf", color: "#fff" },
+          { id: "xxxxx", name: "XXXXX", color: "#fff" },
+        ],
+        activeProfileId: "asdf",
+        workspaces: [],
+        windowSlots: [],
+        isRemote: true,
+        profileWorkspaceCounts: { default: 8, asdf: 15, xxxxx: 0 },
+      },
+    });
+
+    const cards = wrapper.findAll(".profile-card");
+    expect(cards[0].text()).toContain("8 workspaces");
+    expect(cards[1].text()).toContain("15 workspaces");
+    expect(cards[2].text()).toContain("0 workspaces");
+  });
+
+  it("counts the full workspaces array when no count map is supplied (desktop)", () => {
+    const wrapper = mount(ProfilesDialog, {
+      props: {
+        profiles: [
+          { id: "default", name: "Default", color: "#fff" },
+          { id: "asdf", name: "asdf", color: "#fff" },
+        ],
+        activeProfileId: "default",
+        workspaces: [{ id: "w1", profileId: "asdf" }, { id: "w2", profileId: "asdf" }, { id: "w3" }],
+        windowSlots: [],
+        isRemote: false,
+      },
+    });
+
+    const cards = wrapper.findAll(".profile-card");
+    expect(cards[0].text()).toContain("1 workspace"); // default: w3 (no profileId)
+    expect(cards[1].text()).toContain("2 workspaces"); // asdf: w1, w2
+  });
+
   it("keeps Activate enabled in Electron when profile is open in another window and shows a count badge", () => {
     // Two profiles: profile-a (this window, active) and profile-b (in win-2).
     // Profiles are NOT exclusive to a window — the Activate button for

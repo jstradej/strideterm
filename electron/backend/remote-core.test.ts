@@ -297,6 +297,25 @@ describe("buildRemoteCore", () => {
     expect(Object.keys(core.azureDevops.pullRequests)).toEqual(["azure:pr2"]);
   });
 
+  test("profileWorkspaceCounts carries EVERY profile's count though workspaces stays scoped", () => {
+    const core = buildRemoteCore(fullPayload()); // bound to p1
+    // workspaces is scoped to the viewer's profile...
+    expect((core.appState as Rec).workspaces.map((w: Rec) => w.id)).toEqual(["ws1"]);
+    // ...but the count map is built from the FULL list, so the Profiles dialog can
+    // show p2's count without ever receiving p2's workspace rows.
+    expect((core.appState as Rec).profileWorkspaceCounts).toEqual({ p1: 1, p2: 1 });
+  });
+
+  test("profileWorkspaceCounts survives an unbound (empty-scope) core", () => {
+    const p = fullPayload();
+    delete (p as { remoteClient?: unknown }).remoteClient;
+    const core = buildRemoteCore(p); // no profile → empty workspace scope
+    expect((core.appState as Rec).workspaces).toEqual([]);
+    // The reported bug: every profile read 0 on remote. Counting BEFORE the filter
+    // keeps the map correct even when no workspace rows are exposed.
+    expect((core.appState as Rec).profileWorkspaceCounts).toEqual({ p1: 1, p2: 1 });
+  });
+
   test("attention + taskRunner are filtered to the client's profile workspaces", () => {
     const p = fullPayload();
     (p.attention as Rec).sessions = {

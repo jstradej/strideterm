@@ -460,6 +460,10 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       profiles: JSON.parse(JSON.stringify(visibleProfiles)) as unknown[],
       activeProfileId: myCurrentProfileId ?? undefined,
       workspaces: (appState as AnyApi).workspaces || [],
+      // Remote slim-core scopes `workspaces` to the viewer's one profile, so the
+      // per-profile counts ride along separately; absent on desktop (which has
+      // the full workspaces array to count directly).
+      profileWorkspaceCounts: (appState as AnyApi).profileWorkspaceCounts,
       windowSlots: isRemote ? [] : (appState as AnyApi).windowSlots || [],
       isRemote,
       desktopOccupancy,

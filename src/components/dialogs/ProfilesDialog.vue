@@ -187,6 +187,10 @@ interface Props {
   isRemote?: boolean;
   /** profileId → 1-based desktop window index (used for badge in remote mode). */
   desktopOccupancy?: Map<string, number>;
+  /** profileId → workspace count, supplied by the remote slim-core whose
+   *  `workspaces` array is profile-scoped and can't be counted directly. Absent
+   *  on desktop, where the full `workspaces` array is counted instead. */
+  profileWorkspaceCounts?: Record<string, number>;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -231,6 +235,10 @@ const errorMessage = ref("");
 const activatingProfileId = ref<string | null>(null);
 
 function workspaceCount(profileId: string) {
+  // Remote: the slim-core supplies a per-profile count map because its
+  // `workspaces` array is scoped to a single profile. Desktop: no map, so count
+  // the full workspaces array directly.
+  if (props.profileWorkspaceCounts) return props.profileWorkspaceCounts[profileId] ?? 0;
   return props.workspaces.filter((ws) => (ws.profileId || "default") === profileId).length;
 }
 

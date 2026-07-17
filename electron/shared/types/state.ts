@@ -819,6 +819,11 @@ export interface RemoteCoreAppState {
   profiles: Profile[];
   /** Only the workspaces in the client's active profile. */
   workspaces: WorkspaceState[];
+  /** profileId → workspace count, computed from the FULL workspace list BEFORE
+   *  profile-filtering. Lets the remote Profiles dialog show an accurate count
+   *  for every profile even though `workspaces` above carries only the viewer's
+   *  one profile — a bare count leaks no workspace data. */
+  profileWorkspaceCounts: Record<string, number>;
   /** Reduced per-window slots ({ id, profileId, windowIndex }). */
   windowSlots: unknown[];
   /** Host metadata only — keys/certificates/knownHosts are stripped. */
