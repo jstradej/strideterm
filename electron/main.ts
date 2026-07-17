@@ -1331,9 +1331,7 @@ async function loadBootstrapPayload(): Promise<Record<string, unknown>> {
       },
       git: {
         workspaces: {},
-        projects: {},
         activeWorkspace: null,
-        activeProject: null,
       },
       azureDevops: {
         connections: [],
@@ -1349,7 +1347,6 @@ async function loadBootstrapPayload(): Promise<Record<string, unknown>> {
       },
       plugins: [],
       environment: {},
-      themeSource: nativeTheme.shouldUseDarkColors ? "dark" : "light",
       remoteAccess: {
         enabled: Boolean(appState.settings?.remoteAccess?.enabled),
         host: (appState.settings?.remoteAccess?.host as string | undefined) || "0.0.0.0",

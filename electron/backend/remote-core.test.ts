@@ -74,7 +74,12 @@ function fullPayload() {
     environment: { claudeAvailable: true },
     remoteAccess: { enabled: true, host: "h", port: 1, urls: ["u"], tunnel: { active: false }, token: "" },
     git: {
-      connections: [{ id: "c1", label: "C1", provider: "azure-devops", enabled: true }],
+      // getPayload() stamps profileId on every entry (runtime.ts) — mirror that
+      // here so the core's profile filter is exercised.
+      connections: [
+        { id: "c1", label: "C1", provider: "azure-devops", enabled: true, profileId: "p1" },
+        { id: "c2", label: "C2", provider: "github", enabled: true, profileId: "p2" },
+      ],
       workspaces: {
         ws1: {
           available: true,
@@ -202,7 +207,10 @@ describe("buildRemoteCore", () => {
     });
     // The heavy log / compareWithBase never appear anywhere in the core.
     expect(JSON.stringify(core.gitSummaries)).not.toContain("big log entry");
+    // git.connections is profile-filtered like every other summary — p2's c2
+    // never reaches a p1-bound client.
     expect(core.git.connections).toHaveLength(1);
+    expect((core.git.connections[0] as Rec).id).toBe("c1");
   });
 
   test("azure summary drops inbox and per-PR detail, profile-filters, keeps badges", () => {

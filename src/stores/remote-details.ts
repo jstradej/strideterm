@@ -182,22 +182,6 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
     }
   }
 
-  /**
-   * Replace the interest set for one owner key with `resources` — the pattern a
-   * pane/grid uses when its visible set changes. Diffs against what this owner
-   * last declared so ref-counts stay correct across grid churn.
-   */
-  const ownerSets = new Map<string, Set<string>>();
-  function setInterestForOwner(owner: string, resources: string[]): void {
-    if (!enabled) return;
-    const prev = ownerSets.get(owner) || new Set<string>();
-    const next = new Set(resources.filter(Boolean));
-    for (const r of next) if (!prev.has(r)) addInterest(r);
-    for (const r of prev) if (!next.has(r)) removeInterest(r);
-    if (next.size) ownerSets.set(owner, next);
-    else ownerSets.delete(owner);
-  }
-
   function sendInterest(): void {
     api?.subscribeResources?.([...interests]);
   }
@@ -276,7 +260,6 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
     isInterested,
     addInterest,
     removeInterest,
-    setInterestForOwner,
     invalidateResources,
     // exposed for tests
     _resetForTest,

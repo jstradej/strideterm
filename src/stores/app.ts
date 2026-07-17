@@ -43,7 +43,6 @@ interface WorkspacePayloadCache {
   docker: unknown;
   attention: unknown;
   activeWorkspaceGit: unknown;
-  activeProjectGit: unknown;
 }
 
 export const useAppStore = defineStore("app", () => {
@@ -577,7 +576,6 @@ export const useAppStore = defineStore("app", () => {
       docker: p.docker,
       attention: p.attention,
       activeWorkspaceGit: p.git?.activeWorkspace,
-      activeProjectGit: p.git?.activeProject,
     });
   }
 
@@ -779,7 +777,6 @@ export const useAppStore = defineStore("app", () => {
             git: {
               ...prevGit,
               activeWorkspace: cached.activeWorkspaceGit ?? prevGit?.activeWorkspace,
-              activeProject: cached.activeProjectGit ?? prevGit?.activeProject,
             },
           }
         : {}),

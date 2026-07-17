@@ -267,6 +267,34 @@ describe("remote transport endpoint routing", () => {
     expect(subs).toContainEqual({ type: "terminal:subscribe", sessionIds: ["ws1:a"] });
   });
 
+  it("re-sends the resource-interest set verbatim after a reconnect (server drops per-socket interests)", () => {
+    vi.useFakeTimers();
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    transport.subscribeResources!(["git:ws1", "docker"]);
+    expect(first.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "resource:interest",
+      resources: ["git:ws1", "docker"],
+    });
+    first.close(1006);
+    vi.advanceTimersByTime(500);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    // The fresh socket has no interests server-side — the open handler must
+    // re-declare the remembered set so invalidations are re-primed.
+    const interests = second.sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === "resource:interest");
+    expect(interests).toEqual([{ type: "resource:interest", resources: ["git:ws1", "docker"] }]);
+  });
+
+  it("sends no resource-interest on connect until a pane declares one", () => {
+    const transport = createRemoteTransport();
+    void transport;
+    const first = MockWebSocket.instances[0];
+    first.open();
+    expect(first.sent.filter((raw) => JSON.parse(raw).type === "resource:interest")).toHaveLength(0);
+  });
+
   it("does not send any subscription on connect until the client subscribes (legacy mode)", () => {
     const transport = createRemoteTransport();
     void transport;

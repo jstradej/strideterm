@@ -667,9 +667,13 @@ export function buildRemoteCore(
     environment: composed.environment || {},
     remoteAccess: reduceRemoteAccess(composed.remoteAccess),
     gitSummaries: buildGitSummaries(composed.git?.workspaces, inProfile),
-    // git.connections is provider-availability metadata (id/label/provider/
-    // enabled) with no profileId to scope by — global, not per-workspace data.
-    git: { connections: composed.git?.connections || [] },
+    // git.connections entries are stamped with profileId in getPayload()
+    // (runtime.ts) precisely so pickers can scope per profile — filter to the
+    // client's profile like every other summary (an unbound scope matches
+    // nothing).
+    git: {
+      connections: ((composed.git?.connections || []) as AnyRecord[]).filter((c) => matchesProfile(c, scope)),
+    },
     azureDevops: buildProviderCoreSummary(composed.azureDevops, scope),
     github: buildProviderCoreSummary(composed.github, scope),
     reviewBridge: buildReviewBridgeCoreSummary(composed.reviewBridge, composed, scope),

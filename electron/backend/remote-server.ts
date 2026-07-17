@@ -3146,16 +3146,6 @@ export async function startRemoteServer({
     for (const socket of sockets) checkedSend(socket, payload);
   }
 
-  /** Send a per-client composed state:updated to all sockets of `sessionId`. */
-  function broadcastToSession(sessionId: string, basePayload: unknown): void {
-    const composed = registry.composePayload(sessionId, basePayload);
-    const msg = JSON.stringify({ type: "state:updated", payload: composed });
-    for (const socket of sockets) {
-      if (socketSession.get(socket) !== sessionId) continue;
-      checkedSend(socket, msg);
-    }
-  }
-
   /**
    * Route a live terminal frame (`terminal:data` or `terminal:exit`). Legacy
    * sockets get every frame AND are never tripped by the backpressure bound — a
