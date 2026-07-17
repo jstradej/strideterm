@@ -285,7 +285,7 @@
     color: var(--muted);
   }
 
-  /* ⋯ menu: secondary keys + actions (slash, copy screen, arrows, Ctrl+R/L). */
+  /* ⋯ menu: secondary keys + actions (slash, copy screen, arrows, Ctrl+C/R/L). */
   .mobile-input-bar__more {
     position: relative;
     display: flex;

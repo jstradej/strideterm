@@ -264,12 +264,13 @@ describe("MobileInputBar", () => {
   });
 
   describe("⋯ menu", () => {
-    // ← → moved off the top row into this menu, alongside Home/End/Ctrl+R/Ctrl+L.
+    // ← → and ^C moved off the top row into this menu, alongside Home/End/Ctrl+R/Ctrl+L.
     const MENU_KEYS: Array<[glyph: string, seq: string]> = [
       ["←", "\x1b[D"],
       ["→", "\x1b[C"],
       ["⇤", "\x1b[H"],
       ["⇥", "\x1b[F"],
+      ["^C", "\x03"],
       ["⌕", "\x12"],
       ["␌", "\x0c"],
     ];
@@ -326,7 +327,6 @@ describe("MobileInputBar", () => {
       ["⇧Tab", "\x1b[Z"],
       ["↑", "\x1b[A"],
       ["↓", "\x1b[B"],
-      ["^C", "\x03"],
     ];
 
     it.each(EXPECTED)("sends the right sequence for %s", async (label, seq) => {
@@ -341,10 +341,7 @@ describe("MobileInputBar", () => {
       expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq);
     });
 
-    it.each([
-      ["Esc", "\x1b"],
-      ["^C", "\x03"],
-    ])("discards the local draft before sending cancel key %s", async (label, seq) => {
+    it.each([["Esc", "\x1b"]])("discards the local draft before sending cancel key %s", async (label, seq) => {
       const { wrapper, writeTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
       await input.setValue("partial command");
@@ -384,6 +381,19 @@ describe("MobileInputBar", () => {
 
       expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "git che\t");
       expect((input.element as HTMLInputElement).value).toBe("");
+    });
+  });
+
+  describe("slash key", () => {
+    it("appends '/' to the draft without sending anything", async () => {
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.find("[data-role='mobile-input-bar-input']");
+      await input.setValue("echo ");
+
+      await wrapper.find(".mobile-input-bar__key--slash").trigger("click");
+
+      expect((input.element as HTMLInputElement).value).toBe("echo /");
+      expect(writeTerminal).not.toHaveBeenCalled();
     });
   });
 

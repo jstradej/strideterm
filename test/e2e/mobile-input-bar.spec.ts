@@ -138,7 +138,9 @@ test.describe("Mobile composer input bar", () => {
     await openApp(page, mock);
 
     await page.locator(".mobile-input-bar__key", { hasText: "Esc" }).first().click();
-    await page.locator(".mobile-input-bar__key", { hasText: "^C" }).click();
+    // ^C moved off the top row into the ⋯ menu — open it and pick Ctrl+C there.
+    await page.locator(".mobile-input-bar__key--more").click();
+    await page.locator(".mobile-input-bar__menu-item", { hasText: "^C" }).click();
     await page.locator(".mobile-input-bar__key", { hasText: /^↑$/ }).click();
 
     await expect

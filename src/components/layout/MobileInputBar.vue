@@ -40,12 +40,30 @@
         >
           {{ key.label }}
         </button>
+        <button
+          type="button"
+          class="mobile-input-bar__key mobile-input-bar__key--slash"
+          title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎."
+          @mousedown.prevent
+          @click="insertSlash"
+        >
+          /
+        </button>
+        <button
+          type="button"
+          class="mobile-input-bar__key mobile-input-bar__key--paste"
+          title="Paste the clipboard into the field — review or edit the text, then send it with ⏎. If the browser blocks clipboard access, long-press the field and paste from its menu instead."
+          @mousedown.prevent
+          @click="pasteFromClipboard"
+        >
+          📋
+        </button>
         <div class="mobile-input-bar__more">
           <button
             type="button"
             class="mobile-input-bar__key mobile-input-bar__key--more"
             :class="{ 'mobile-input-bar__key--active': menuOpen }"
-            title="More keys and actions — arrows, Home/End, Ctrl+R, Ctrl+L, insert /, and copy the visible screen."
+            title="More keys and actions — arrows, Home/End, Ctrl+C, Ctrl+R, Ctrl+L, slash commands, and copy the visible screen."
             aria-haspopup="true"
             :aria-expanded="menuOpen"
             @mousedown.prevent
@@ -96,15 +114,6 @@
             </div>
           </template>
         </div>
-        <button
-          type="button"
-          class="mobile-input-bar__key mobile-input-bar__key--paste"
-          title="Paste the clipboard into the field — review or edit the text, then send it with ⏎. If the browser blocks clipboard access, long-press the field and paste from its menu instead."
-          @mousedown.prevent
-          @click="pasteFromClipboard"
-        >
-          📋
-        </button>
         <button
           type="button"
           class="mobile-input-bar__key mobile-input-bar__key--collapse"
@@ -241,12 +250,6 @@ const accessoryKeys: AccessoryKey[] = [
     flushDraft: true,
     title: "Send Arrow Down — next shell history entry, or move down in TUI menus.",
   },
-  {
-    label: "^C",
-    seq: "\x03",
-    flushDraft: false,
-    title: "Send Ctrl+C — interrupt the running command or cancel the current input line.",
-  },
 ];
 
 // Secondary keys live in the ⋯ menu — the left/right arrows moved here to free
@@ -279,6 +282,13 @@ const menuKeys: AccessoryKey[] = [
     seq: "\x1b[F",
     flushDraft: true,
     title: "Send End — jump to the end of the line.",
+  },
+  {
+    label: "^C",
+    menuLabel: "^C  Ctrl+C  (interrupt)",
+    seq: "\x03",
+    flushDraft: false,
+    title: "Send Ctrl+C — interrupt the running command or cancel the current input line.",
   },
   {
     label: "^R",
