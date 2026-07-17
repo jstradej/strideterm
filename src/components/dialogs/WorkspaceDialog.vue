@@ -423,10 +423,11 @@ const PROVIDER_CHOICES = [
     defaultSkipPermissions: true,
     models: [
       { id: "", name: "Default", suggestedRole: null },
-      { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "judge" },
-      { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: "worker" },
+      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: "judge" },
+      { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: "worker" },
+      { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: null },
+      { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
       { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
-      { id: "gpt-5.2", name: "GPT-5.2", suggestedRole: null },
     ],
   },
   {
@@ -435,7 +436,7 @@ const PROVIDER_CHOICES = [
     defaultSkipPermissions: false,
     models: [
       { id: "", name: "Default", suggestedRole: null },
-      { id: "gemini-3-pro-preview", name: "3 Pro (preview)", suggestedRole: "judge" },
+      { id: "gemini-3.1-pro-preview", name: "3.1 Pro (preview)", suggestedRole: "judge" },
       { id: "gemini-3-flash-preview", name: "3 Flash (preview)", suggestedRole: "worker" },
       { id: "gemini-2.5-pro", name: "2.5 Pro", suggestedRole: null },
       { id: "gemini-2.5-flash", name: "2.5 Flash", suggestedRole: null },
@@ -447,11 +448,11 @@ const PROVIDER_CHOICES = [
     defaultSkipPermissions: true,
     models: [
       { id: "", name: "Default", suggestedRole: null },
-      { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
-      { id: "claude-opus-4.7", name: "Claude Opus 4.7", suggestedRole: "judge" },
-      { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "worker" },
+      { id: "claude-opus-4.8", name: "Claude Opus 4.8", suggestedRole: "judge" },
+      { id: "claude-sonnet-5", name: "Claude Sonnet 5", suggestedRole: "worker" },
+      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: null },
+      { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: null },
       { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
-      { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
     ],
   },
   {
@@ -460,10 +461,10 @@ const PROVIDER_CHOICES = [
     defaultSkipPermissions: true,
     models: [
       { id: "default", name: "Default", suggestedRole: null },
-      { id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", suggestedRole: "worker" },
-      { id: "anthropic/claude-opus-4-5", name: "Claude Opus 4.5", suggestedRole: "judge" },
-      { id: "openai/gpt-4o", name: "GPT-4o", suggestedRole: null },
-      { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash", suggestedRole: null },
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7", suggestedRole: "judge" },
+      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
+      { id: "openai/gpt-5.4", name: "GPT-5.4", suggestedRole: null },
+      { id: "google/gemini-3-flash-preview", name: "Gemini 3 Flash (preview)", suggestedRole: null },
     ],
   },
 ];

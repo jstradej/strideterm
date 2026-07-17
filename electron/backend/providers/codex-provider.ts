@@ -5,10 +5,11 @@ export class CodexProvider extends BaseProvider {
   static override id = "codex";
   static override displayName = "Codex CLI";
   static override models = [
-    { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "judge" },
-    { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: "worker" },
+    { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: "judge" },
+    { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: "worker" },
+    { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: null },
+    { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
     { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
-    { id: "gpt-5.2", name: "GPT-5.2", suggestedRole: null },
   ];
 
   static defaultSkipPermissions = true;

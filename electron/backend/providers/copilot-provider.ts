@@ -8,11 +8,11 @@ export class CopilotProvider extends BaseProvider {
   // frequently as GitHub rotates model availability; keeping this short avoids
   // churn. Users can still override via --model in the command field.
   static override models = [
-    { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
-    { id: "claude-opus-4.7", name: "Claude Opus 4.7", suggestedRole: "judge" },
-    { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "worker" },
+    { id: "claude-opus-4.8", name: "Claude Opus 4.8", suggestedRole: "judge" },
+    { id: "claude-sonnet-5", name: "Claude Sonnet 5", suggestedRole: "worker" },
+    { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: null },
+    { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: null },
     { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
-    { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
   ];
 
   static defaultSkipPermissions = true;

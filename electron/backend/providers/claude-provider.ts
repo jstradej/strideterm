@@ -6,7 +6,7 @@ export class ClaudeProvider extends BaseProvider {
   static override displayName = "Claude Code";
   static override models = [
     { id: "claude-fable-5", name: "Claude Fable 5", suggestedRole: null },
-    { id: "sonnet", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
+    { id: "sonnet", name: "Claude Sonnet 5", suggestedRole: "worker" },
     { id: "opus", name: "Claude Opus 4.8", suggestedRole: "judge" },
     { id: "haiku", name: "Claude Haiku 4.5", suggestedRole: null },
   ];
