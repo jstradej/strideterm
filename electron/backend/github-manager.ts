@@ -187,6 +187,11 @@ export class GitHubManager extends BaseProviderManager {
     this.defaultGitLogin = "x-access-token";
     this.connectionNotFoundMessage = "GitHub connection was not found.";
     this.syncErrorFallbackMessage = "GitHub sync failed.";
+    this.reviewIcon = GITHUB_REVIEW_ICON;
+    this.reviewColor = GITHUB_REVIEW_COLOR;
+    this.parentWorkspaceKind = "github";
+    this.providerDisplayName = "GitHub";
+    this.getDefaultReviewRoot = getDefaultReviewRoot;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -898,100 +903,25 @@ export class GitHubManager extends BaseProviderManager {
     created: boolean;
     attached: boolean;
   }> {
-    const summary = await this.ensurePullRequestDetail(prKey, { workspaces: state.workspaces });
-    const connection = this.findConnection(summary.connectionId as string);
-    if (!connection) throw new Error("GitHub connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef || "");
-    if (!token) throw new Error("PAT is missing.");
-
-    // Scope to the connection's profile — see Azure counterpart for the
-    // bug story (review landing in wrong profile on non-primary windows).
-    const connectionProfileId = (connection as { profileId?: string }).profileId || "";
-    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
-      throw new Error(
-        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
-      );
-    }
-    const activeProfile = connectionProfileId || callerProfileId || "default";
-    const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
-    const existingWorkspace = workspaceId
-      ? profileWorkspaces.find((ws) => ws.id === workspaceId)
-      : findWorkspaceForPullRequest(profileWorkspaces as Array<{ id: string; [key: string]: unknown }>, prKey) ||
-        (summary.role === "author" && summary.existingWorkspaceId
-          ? profileWorkspaces.find((ws) => ws.id === summary.existingWorkspaceId)
-          : null);
-
-    const reviewProfileId = (existingWorkspace as SyncWorkspace | undefined)?.profileId || activeProfile;
-    const parentGitHubWorkspace =
-      state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === reviewProfileId) || null;
-    const parentWorkspaceId =
-      parentGitHubWorkspace?.id || (existingWorkspace as SyncWorkspace | undefined)?.review?.parentWorkspaceId || "";
-
-    if (existingWorkspace) {
-      const ew = existingWorkspace as SyncWorkspace;
-      if (!String(ew.cwd || "").trim()) {
-        throw new Error(`Matched workspace "${ew.name || ew.id}" does not have a working directory.`);
-      }
-      const checkout = ew.review?.checkout || {
-        mode: ew.review?.provider === "github" ? "managed-worktree" : "linked-existing-workspace",
-        rootPath: ew.cwd,
-        cacheRepoPath: ew.review?.checkout?.cacheRepoPath || "",
-      };
-      const workspace: Record<string, unknown> = {
-        ...ew,
-        review: this.buildReviewMetadata(summary, checkout as Record<string, unknown>, {
-          parentWorkspaceId: checkout.mode === "managed-worktree" ? parentWorkspaceId : "",
-          writable: (ew.review as { writable?: boolean } | undefined)?.writable === true,
-        }),
-      };
-      await this.reviewStore.upsertTrackedPullRequest(prKey, {
-        reviewWorkspaceId: workspace.id as string,
-        lastSeenActivityAt: (summary.lastRemoteActivityAt as string) || new Date(this.now()).toISOString(),
-      });
-      return { workspace, created: false, attached: checkout.mode === "linked-existing-workspace" };
-    }
-
-    const checkout = await this.prepareManagedReviewCheckout({
-      summary,
-      connection,
-      token,
-      reviewRoot:
-        parentGitHubWorkspace?.cwd ||
-        ((connection as Record<string, unknown>).reviewRoot as string) ||
-        getDefaultReviewRoot(),
-    });
-    const panels = createReviewWorkspacePanels(
-      (parentGitHubWorkspace?.panels || []) as Parameters<typeof createReviewWorkspacePanels>[0],
-      (state.tabTemplates || []) as Parameters<typeof createReviewWorkspacePanels>[1],
-    );
-    const summaryRepo = summary.repository as Record<string, unknown>;
-    const summaryPr = summary.pullRequest as Record<string, unknown>;
-    const workspace: Record<string, unknown> = {
-      id: `workspace-${randomUUID()}`,
-      name: `${summaryRepo.fullName} PR #${summaryPr.number}`,
-      icon: GITHUB_REVIEW_ICON,
-      color: GITHUB_REVIEW_COLOR,
-      kind: "terminal",
-      source: "manual",
-      pluginId: "",
-      cwd: checkout.rootPath,
-      notes: `GitHub review workspace for ${summaryRepo.fullName} PR #${summaryPr.number}`,
-      // Land the review workspace on the same profile as its GitHub parent /
-      // connection (reviewProfileId), not on whatever profile the UI happens
-      // to show right now — otherwise the review is invisible on the profile
-      // that owns the connection.
-      profileId: reviewProfileId,
-      activePanelId: panels[0]?.id || "",
-      panels,
-      review: this.buildReviewMetadata(summary, checkout as unknown as Record<string, unknown>, {
-        parentWorkspaceId: parentWorkspaceId || "",
-      }),
-    };
-    await this.reviewStore.upsertTrackedPullRequest(prKey, {
-      reviewWorkspaceId: workspace.id as string,
-      lastSeenActivityAt: (summary.lastRemoteActivityAt as string) || new Date(this.now()).toISOString(),
-    });
-    return { workspace, created: true, attached: false };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.openReviewWorkspaceCore({ state: state as any, prKey, workspaceId, callerProfileId }, {
+      ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
+      prepareManagedReviewCheckout: (opts) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this.prepareManagedReviewCheckout(opts as any),
+      buildReviewMetadata: (summary, checkout, extra) =>
+         
+        this.buildReviewMetadata(summary as Record<string, unknown>, checkout as Record<string, unknown>, extra),
+      formatPrLabel: (summary) => {
+        const repo = summary.repository as Record<string, unknown>;
+        const pr = summary.pullRequest as Record<string, unknown>;
+        return `${repo.fullName} PR #${pr.number}`;
+      },
+      findWorkspaceForPullRequest: (workspaces, key) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        findWorkspaceForPullRequest(workspaces as any, key),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
   }
 
   // ---------------------------------------------------------------------------

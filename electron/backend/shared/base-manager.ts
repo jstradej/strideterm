@@ -156,6 +156,51 @@ interface SyncHooks {
   ): Promise<PrSummaryItem | null | undefined>;
 }
 
+interface OpenReviewWorkspaceOptions {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  state: { workspaces: any[]; windowSlots?: Array<{ profileId?: string }>; tabTemplates?: unknown[] };
+  prKey: string;
+  workspaceId?: string;
+  /** Profile of the window that initiated the action — used as defensive
+   *  fallback when the connection has no profileId (legacy/pre-migration). */
+  callerProfileId?: string;
+}
+
+interface OpenReviewWorkspaceHooks {
+  /** Fetch (and cache) the full PR detail summary for `prKey`. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ensurePullRequestDetail(prKey: string, opts: { workspaces: any[] }): Promise<any>;
+  /** Create (or reuse) the managed-worktree checkout for a brand-new review workspace. */
+  prepareManagedReviewCheckout(opts: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    summary: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    connection: any;
+    token: string;
+    reviewRoot: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }): Promise<{ mode: string; rootPath: string; cacheRepoPath: string; [key: string]: any }>;
+  /** Provider-specific `review` metadata shape (Azure: project/orgUrl; GitHub: hostUrl). */
+  buildReviewMetadata(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    summary: any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    checkout: any,
+    extra: { parentWorkspaceId?: string; writable?: boolean },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ): any;
+  /** "<repo> PR #<id>" — used for both the workspace name and its notes string. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  formatPrLabel(summary: any): string;
+  /** Provider-specific lookup: find the workspace already tracking this PR, if any. */
+  findWorkspaceForPullRequest(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    workspaces: any[],
+    prKey: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ): any;
+}
+
 interface AuditLogStore {
   logEntry(entry: Record<string, unknown>): void;
 }
@@ -201,6 +246,10 @@ interface PanelTemplate {
  * Subclasses SHOULD set:
  *   - `this.providerLabel` — e.g. "azure-devops" or "github" (for log messages)
  *   - `this.defaultGitLogin` — default git auth login (e.g. "" for Azure, "x-access-token" for GitHub)
+ *   - `this.reviewIcon` / `this.reviewColor` — review workspace badge (AZURE_REVIEW_ICON/COLOR, GITHUB_REVIEW_ICON/COLOR)
+ *   - `this.parentWorkspaceKind` — workspace.kind that identifies "the provider's own workspace" (e.g. "azure", "github")
+ *   - `this.providerDisplayName` — human-readable name for workspace notes (e.g. "Azure DevOps", "GitHub")
+ *   - `this.getDefaultReviewRoot` — provider-specific default review root path function
  */
 export class BaseProviderManager extends EventEmitter {
   credentialStore: CredentialStore;
@@ -220,6 +269,11 @@ export class BaseProviderManager extends EventEmitter {
   defaultGitLogin: string;
   connectionNotFoundMessage: string;
   syncErrorFallbackMessage: string;
+  reviewIcon: string;
+  reviewColor: string;
+  parentWorkspaceKind: string;
+  providerDisplayName: string;
+  getDefaultReviewRoot: () => string;
   _log: Logger | null;
 
   constructor({
@@ -257,6 +311,11 @@ export class BaseProviderManager extends EventEmitter {
     this.defaultGitLogin = "";
     this.connectionNotFoundMessage = "Connection was not found.";
     this.syncErrorFallbackMessage = "Sync failed.";
+    this.reviewIcon = "";
+    this.reviewColor = "";
+    this.parentWorkspaceKind = "";
+    this.providerDisplayName = "";
+    this.getDefaultReviewRoot = () => "";
     this._log = null;
   }
 
@@ -858,6 +917,129 @@ export class BaseProviderManager extends EventEmitter {
       { type: force ? "force-push" : "push", connection, workspaceId: workspace.id },
       () => this.runGit(workspace.cwd || "", pushArgs, { login: connection.login, token }),
     );
+  }
+
+  /**
+   * Shared body of AzureDevOpsManager.openReviewWorkspace / GitHubManager.openReviewWorkspace:
+   * resolve the connection + cross-profile guard, find (or create) the review
+   * workspace, and track it as the PR's seen workspace. Providers supply the
+   * 3 genuinely-divergent pieces via `hooks` (PR-detail fetch, checkout
+   * creation, and the `review` metadata shape) — everything else here is the
+   * line-for-line identical construction both managers used to carry as
+   * their own copy.
+   */
+  async openReviewWorkspaceCore(
+    { state, prKey, workspaceId = "", callerProfileId = "" }: OpenReviewWorkspaceOptions,
+    hooks: OpenReviewWorkspaceHooks,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ): Promise<{ workspace: any; created: boolean; attached: boolean }> {
+    const summary = await hooks.ensurePullRequestDetail(prKey, { workspaces: state.workspaces });
+    const connection = this.findConnection(summary.connectionId);
+    if (!connection) throw new Error(this.connectionNotFoundMessage);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
+    if (!token) throw new Error("PAT is missing.");
+
+    // The review workspace belongs to the same profile as its connection.
+    // Using windowSlots[0]?.profileId as "active" silently lands the review
+    // on the wrong profile when the user clicked from a non-primary window.
+    const connectionProfileId = (connection as { profileId?: string }).profileId || "";
+    // Refuse upfront when the caller's window is bound to a different
+    // profile than the connection. Previously we just suppressed the slot
+    // mirror, but the PR review checkout (cloned repo on disk) still
+    // happened in the foreign profile.
+    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
+      );
+    }
+    const activeProfile = connectionProfileId || callerProfileId || "default";
+    const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
+    const existingWorkspace =
+       
+      (workspaceId
+        ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
+        : hooks.findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
+          (summary.role === "author" && summary.existingWorkspaceId
+            ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
+            : null)) || null;
+
+    const reviewProfileId = existingWorkspace?.profileId || activeProfile;
+    const parentWorkspace =
+      state.workspaces.find(
+        (workspace) => workspace.kind === this.parentWorkspaceKind && (workspace.profileId || "default") === reviewProfileId,
+      ) || null;
+    const parentWorkspaceId = parentWorkspace?.id || existingWorkspace?.review?.parentWorkspaceId || "";
+
+    if (existingWorkspace) {
+      if (!String(existingWorkspace.cwd || "").trim()) {
+        throw new Error(
+          `Matched workspace "${existingWorkspace.name || existingWorkspace.id}" does not have a working directory.`,
+        );
+      }
+      const checkout = existingWorkspace.review?.checkout || {
+        mode: existingWorkspace.review?.provider === this.providerLabel ? "managed-worktree" : "linked-existing-workspace",
+        rootPath: existingWorkspace.cwd || "",
+        cacheRepoPath: "",
+      };
+      const workspace = {
+        ...existingWorkspace,
+        review: hooks.buildReviewMetadata(summary, checkout, {
+          parentWorkspaceId: checkout.mode === "managed-worktree" ? parentWorkspaceId : "",
+          writable: existingWorkspace.review?.writable === true,
+        }),
+      };
+      await this.reviewStore.upsertTrackedPullRequest(prKey, {
+        reviewWorkspaceId: workspace.id,
+        lastSeenActivityAt: summary.lastRemoteActivityAt || new Date(this.now()).toISOString(),
+      });
+      return {
+        workspace,
+        created: false,
+        attached: checkout.mode === "linked-existing-workspace",
+      };
+    }
+
+    const checkout = await hooks.prepareManagedReviewCheckout({
+      summary,
+      connection,
+      token,
+      reviewRoot: parentWorkspace?.cwd || (connection as { reviewRoot?: string }).reviewRoot || this.getDefaultReviewRoot(),
+    });
+    const panels = createReviewWorkspacePanels(
+       
+      (parentWorkspace?.panels || []) as PanelTemplate[],
+      (state.tabTemplates || []) as PanelTemplate[],
+    );
+    const label = hooks.formatPrLabel(summary);
+    const workspace = {
+      id: `workspace-${randomUUID()}`,
+      name: label,
+      icon: this.reviewIcon,
+      color: this.reviewColor,
+      kind: "terminal",
+      source: "manual",
+      pluginId: "",
+      cwd: checkout.rootPath,
+      notes: `${this.providerDisplayName} review workspace for ${label}`,
+      // Land the review workspace on the same profile as its provider parent /
+      // its connection (already resolved as reviewProfileId above) — using
+      // state.activeProfileId here puts the review on whatever profile the
+      // user happens to be looking at, hiding it on the profile that owns
+      // the connection.
+      profileId: reviewProfileId,
+      activePanelId: panels[0]?.id || "",
+      panels,
+      review: hooks.buildReviewMetadata(summary, checkout, { parentWorkspaceId: parentWorkspaceId || "" }),
+    };
+    await this.reviewStore.upsertTrackedPullRequest(prKey, {
+      reviewWorkspaceId: workspace.id,
+      lastSeenActivityAt: summary.lastRemoteActivityAt || new Date(this.now()).toISOString(),
+    });
+    return {
+      workspace,
+      created: true,
+      attached: false,
+    };
   }
 }
 

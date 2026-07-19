@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { GitHubManager, createPullRequestKey } from "./github-manager.js";
 
@@ -358,6 +359,98 @@ describe("GitHubManager inbox dedup", () => {
     expect(snapshot.inbox.recentlyUpdated).toHaveLength(1);
     const combinedRoleBuckets = [...snapshot.inbox.needsMyReview, ...snapshot.inbox.myPullRequests];
     expect(combinedRoleBuckets).toHaveLength(1);
+  });
+});
+
+// openReviewWorkspace was hoisted onto BaseProviderManager.openReviewWorkspaceCore
+// (shared with AzureDevOpsManager) and had zero dedicated GitHub-side test
+// coverage beforehand — these mirror the equivalent AzureDevOpsManager tests.
+describe("GitHubManager openReviewWorkspace", () => {
+  test("creates a managed review workspace when none exists", async () => {
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const { manager } = createManager({
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: defaultPr("acme", "web", 42) } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    const result = (await manager.openReviewWorkspace({
+      state: {
+        tabTemplates: [],
+        workspaces: [
+          {
+            id: "github-root",
+            kind: "github",
+            profileId: "default",
+            cwd: "C:/reviews",
+            panels: [{ id: "shell-template", title: "Shell", command: "" }],
+          },
+        ],
+      },
+      prKey,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    expect(result.created).toBe(true);
+    expect(result.workspace.review.provider).toBe("github");
+    expect(result.workspace.review.parentWorkspaceId).toBe("github-root");
+    expect(result.workspace.cwd).toContain(path.join("reviews", "gh-main"));
+    expect(result.workspace.name).toBe("acme/web PR #42");
+    expect(result.workspace.notes).toBe("GitHub review workspace for acme/web PR #42");
+    expect(result.workspace.panels).toHaveLength(1);
+  });
+
+  test("fails clearly when a matched workspace has no cwd", async () => {
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const { manager } = createManager();
+    manager.setSnapshot({
+      connections: [connection],
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+      trackedPullRequests: {},
+      pullRequests: {
+        [prKey]: {
+          prKey,
+          connectionId: "gh-main",
+          repository: { owner: "acme", name: "web", fullName: "acme/web" },
+          pullRequest: { number: 42, sourceRefName: "refs/heads/feature", targetRefName: "refs/heads/main" },
+          role: "author",
+          existingWorkspaceId: "workspace-bad",
+        },
+      },
+      sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await expect(
+      manager.openReviewWorkspace({
+        state: { tabTemplates: [], workspaces: [{ id: "workspace-bad", name: "Broken workspace", cwd: "" }] },
+        prKey,
+      }),
+    ).rejects.toThrow('Matched workspace "Broken workspace" does not have a working directory.');
+  });
+
+  test("lands the new review on the connection's profile, not windowSlots[0]", async () => {
+    const profileBConnection = { ...connection, id: "gh-b", profileId: "profile-b", tokenRef: "cred:gh-b" };
+    const prKey = createPullRequestKey("gh-b", "acme", "web", 42);
+    const { manager } = createManager({
+      secrets: { "cred:gh-b": "ghp-b" } as unknown as Record<string, string>,
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: defaultPr("acme", "web", 42) } },
+    });
+    await manager.sync({ connections: [profileBConnection], workspaces: [], gitSnapshots: {} });
+
+    const result = (await manager.openReviewWorkspace({
+      state: {
+        tabTemplates: [],
+        windowSlots: [{ profileId: "default" }, { profileId: "profile-b" }],
+        workspaces: [
+          { id: "github-root-b", kind: "github", profileId: "profile-b", cwd: "C:/reviews-b", panels: [] },
+        ],
+      },
+      prKey,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    expect(result.workspace.profileId).toBe("profile-b");
+    expect(result.workspace.review.parentWorkspaceId).toBe("github-root-b");
   });
 });
 

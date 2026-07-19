@@ -316,6 +316,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
     this.defaultGitLogin = "";
     this.connectionNotFoundMessage = "Azure DevOps connection was not found.";
     this.syncErrorFallbackMessage = "Azure sync failed.";
+    this.reviewIcon = AZURE_REVIEW_ICON;
+    this.reviewColor = AZURE_REVIEW_COLOR;
+    this.parentWorkspaceKind = "azure";
+    this.providerDisplayName = "Azure DevOps";
+    this.getDefaultReviewRoot = getDefaultReviewRoot;
   }
 
   /**
@@ -1769,7 +1774,6 @@ export class AzureDevOpsManager extends BaseProviderManager {
   buildReviewMetadata(
     summary: AzurePrSummary,
     checkout: ReviewCheckout,
-    mode = checkout.mode,
     extra: { parentWorkspaceId?: string; writable?: boolean } = {},
   ) {
     return {
@@ -1784,7 +1788,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       role: summary.role,
       writable: extra.writable === true,
       checkout: {
-        mode,
+        mode: checkout.mode,
         rootPath: checkout.rootPath,
         cacheRepoPath: checkout.cacheRepoPath || "",
       },
@@ -1837,118 +1841,20 @@ export class AzureDevOpsManager extends BaseProviderManager {
      * fallback when the connection has no profileId (legacy/pre-migration). */
     callerProfileId?: string;
   }) {
-    const summary = await this.ensurePullRequestDetail(prKey, {
-      workspaces: state.workspaces,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.openReviewWorkspaceCore({ state: state as any, prKey, workspaceId, callerProfileId }, {
+      ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
+      prepareManagedReviewCheckout: (opts) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this.prepareManagedReviewCheckout(opts as any),
+      buildReviewMetadata: (summary, checkout, extra) =>
+         
+        this.buildReviewMetadata(summary as AzurePrSummary, checkout as ReviewCheckout, extra),
+      formatPrLabel: (summary) => `${summary.repository?.name} PR #${summary.pullRequest?.id}`,
+      findWorkspaceForPullRequest: (workspaces, key) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        findWorkspaceForPullRequest(workspaces as any, key),
     });
-    const connection = this.findAzureConnection(summary.connectionId);
-    if (!connection) {
-      throw new Error("Azure DevOps connection was not found.");
-    }
-
-    const token = this.credentialStore.getSecret(connection.tokenRef);
-    if (!token) {
-      throw new Error("PAT is missing.");
-    }
-
-    // The review workspace belongs to the same profile as its connection.
-    // Using windowSlots[0]?.profileId as "active" silently lands the review
-    // on the wrong profile when the user clicked from a non-primary window.
-    const connectionProfileId = (connection as { profileId?: string }).profileId || "";
-    // Refuse upfront when the caller's window is bound to a different
-    // profile than the connection. Previously we just suppressed the slot
-    // mirror, but the PR review checkout (cloned repo on disk) still
-    // happened in the foreign profile.
-    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
-      throw new Error(
-        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
-      );
-    }
-    const activeProfile = connectionProfileId || callerProfileId || "default";
-    const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
-    const existingWorkspace: ReviewWorkspace | null | undefined = workspaceId
-      ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
-      : (findWorkspaceForPullRequest(profileWorkspaces, prKey) as ReviewWorkspace | undefined) ||
-        (summary.role === "author" && summary.existingWorkspaceId
-          ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
-          : null);
-
-    const reviewProfileId = existingWorkspace?.profileId || activeProfile;
-    const parentAzureWorkspace =
-      state.workspaces.find(
-        (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === reviewProfileId,
-      ) || null;
-    const parentWorkspaceId = parentAzureWorkspace?.id || existingWorkspace?.review?.parentWorkspaceId || "";
-
-    if (existingWorkspace) {
-      if (!String(existingWorkspace.cwd || "").trim()) {
-        throw new Error(
-          `Matched workspace "${existingWorkspace.name || existingWorkspace.id}" does not have a working directory.`,
-        );
-      }
-      const checkout: ReviewCheckout = existingWorkspace.review?.checkout || {
-        mode: existingWorkspace.review?.provider === "azure-devops" ? "managed-worktree" : "linked-existing-workspace",
-        rootPath: existingWorkspace.cwd || "",
-        cacheRepoPath: "",
-      };
-      const workspace = {
-        ...existingWorkspace,
-        review: this.buildReviewMetadata(summary, checkout, checkout.mode, {
-          parentWorkspaceId: checkout.mode === "managed-worktree" ? parentWorkspaceId : "",
-          writable: existingWorkspace.review?.writable === true,
-        }),
-      };
-      await this.reviewStore.upsertTrackedPullRequest(prKey, {
-        reviewWorkspaceId: workspace.id,
-        lastSeenActivityAt: summary.lastRemoteActivityAt || new Date(this.now()).toISOString(),
-      });
-      return {
-        workspace,
-        created: false,
-        attached: checkout.mode === "linked-existing-workspace",
-      };
-    }
-
-    const checkout = await this.prepareManagedReviewCheckout({
-      summary,
-      connection,
-      token,
-      reviewRoot: parentAzureWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot(),
-    });
-    const panels = createReviewWorkspacePanels(
-      (parentAzureWorkspace?.panels || []) as any[], // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: panels is open-ended server JSON
-      (state.tabTemplates || []) as any[], // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: tabTemplates is open-ended server JSON
-    );
-    const workspace = {
-      id: `workspace-${randomUUID()}`,
-      name: `${summary.repository?.name} PR #${summary.pullRequest?.id}`,
-      icon: AZURE_REVIEW_ICON,
-      color: AZURE_REVIEW_COLOR,
-      kind: "terminal",
-      source: "manual",
-      pluginId: "",
-      cwd: checkout.rootPath,
-      notes: `Azure DevOps review workspace for ${summary.repository?.name} PR #${summary.pullRequest?.id}`,
-      // Land the review workspace on the same profile as its Azure parent /
-      // its connection (already resolved as reviewProfileId above) — using
-      // state.activeProfileId here puts the review on whatever profile the
-      // user happens to be looking at, hiding it on the profile that owns
-      // the connection.
-      profileId: reviewProfileId,
-      activePanelId: panels[0]?.id || "",
-      panels,
-      review: this.buildReviewMetadata(summary, checkout, checkout.mode, {
-        parentWorkspaceId: parentWorkspaceId || "",
-      }),
-    };
-    await this.reviewStore.upsertTrackedPullRequest(prKey, {
-      reviewWorkspaceId: workspace.id,
-      lastSeenActivityAt: summary.lastRemoteActivityAt || new Date(this.now()).toISOString(),
-    });
-    return {
-      workspace,
-      created: true,
-      attached: false,
-    };
   }
 
   async addPullRequestComment({
