@@ -8,6 +8,82 @@ import { AgentTaskRunner } from "./agent-task-runner.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 
+// Lets a single test capture log calls made through getLogger(label), for any
+// label, without altering real logging behavior for the other ~230 tests in
+// this file: every call is still forwarded to the real logger (so file output
+// is unaffected) — a test just also gets an array of what was logged. Needed
+// because runtime.ts calls reconfigureLogger() internally during startup
+// (settings-driven log level), which replaces the winston singleton — a naive
+// "grab the winston instance and vi.spyOn it" approach taken before this one
+// silently stopped observing calls made after that internal reconfiguration.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LogCall = { level: string; label: string; message: string; meta?: Record<string, any> };
+const logCallCapture = vi.hoisted(() => ({ current: null as LogCall[] | null }));
+vi.mock("./logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./logger.js")>();
+  const LOG_METHODS = ["error", "warn", "info", "debug", "trace"] as const;
+  return {
+    ...actual,
+    getLogger: (label: string) => {
+      const real = actual.getLogger(label);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const wrapped = {} as any;
+      for (const method of LOG_METHODS) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        wrapped[method] = (message: string, meta?: Record<string, any>) => {
+          logCallCapture.current?.push({ level: method, label, message, meta });
+          real[method](message, meta);
+        };
+      }
+      return wrapped;
+    },
+  };
+});
+
+// Lets a single test force classifyHookEvent to throw so dispatchAgentHookEvent's
+// promise genuinely rejects (used by the dispatchAgentHookEvent call-site tests
+// below) without disturbing any other test — everything else in this file goes
+// through the real classifier via `importOriginal`.
+const classifyHookEventOverride = vi.hoisted(() => ({
+  current: null as ((...args: unknown[]) => unknown) | null,
+}));
+vi.mock("./notifications/classifier.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./notifications/classifier.js")>();
+  return {
+    ...actual,
+    classifyHookEvent: (...args: unknown[]) => {
+      if (classifyHookEventOverride.current) return classifyHookEventOverride.current(...args);
+      return actual.classifyHookEvent(...(args as Parameters<typeof actual.classifyHookEvent>));
+    },
+  };
+});
+
+// Lets a single test force ensureNotifyScript to resolve { ok: false } (it
+// never rejects — see claude-hook-config.ts) so the startup call site's log.error
+// on failure can be exercised without touching any other test's real fs write.
+const ensureNotifyScriptOverride = vi.hoisted(() => ({
+  current: null as (() => Promise<{ ok: boolean; path: string; error?: string }>) | null,
+}));
+vi.mock("./claude-hook-config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./claude-hook-config.js")>();
+  return {
+    ...actual,
+    ensureNotifyScript: (...args: Parameters<typeof actual.ensureNotifyScript>) => {
+      if (ensureNotifyScriptOverride.current) return ensureNotifyScriptOverride.current();
+      return actual.ensureNotifyScript(...args);
+    },
+  };
+});
+
+// Starts capturing getLogger(...) calls (see the "./logger.js" mock above)
+// and returns the array they land in. Always pair with `logCallCapture.current
+// = null;` in a `finally` so a forgotten reset can't leak into later tests.
+function captureLogCalls(): LogCall[] {
+  const calls: LogCall[] = [];
+  logCallCapture.current = calls;
+  return calls;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createMemoryStore(initialState?: any) {
   let state = normalizeState(initialState);
@@ -8734,6 +8810,234 @@ describe("syncAttentionContext — per-viewer visibility union (mobile flip-flop
       expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests: review-code-quality-2026-07.md — fire-and-forget /
+// silently-swallowed catches in runtime.ts now log instead of vanishing.
+//
+// Several of these spy on the real winston logger rather than mocking
+// "./logger.js" wholesale (which would affect every test above). getLogger()
+// returns a proxy that dispatches to the CURRENT singleton at call time
+// (see logger.ts), so calling reconfigureLogger() here hands back a fresh
+// winston.Logger instance that every existing `log = getLogger(...)` proxy
+// (including runtime.ts's own module-level `log`) will use for its next
+// call — spying on that instance's methods captures runtime.ts's log calls
+// without touching how any other test in this file logs.
+// ---------------------------------------------------------------------------
+
+describe("ensureSessionSafe — fire-and-forget ensureSession failures are logged, not unhandled", () => {
+  test("activateSession: a rejecting ensureSession is caught and logged via log.error", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    fixture.sessionManager.ensureSession = vi.fn().mockRejectedValue(new Error("boom: ensureSession"));
+
+    const calls = captureLogCalls();
+    try {
+      // No workspace named "proj" needs to exist in state — ensureSessionSafe
+      // fires unconditionally regardless of whether the store.mutate lookup
+      // found a matching workspace.
+      await fixture.runtime.activateSession("proj:shell");
+      // Let the fire-and-forget .catch() microtask run.
+      await new Promise((r) => setImmediate(r));
+
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "error",
+          message: "ensureSession failed",
+          meta: expect.objectContaining({ sessionId: "proj:shell", err: "boom: ensureSession" }),
+        }),
+      );
+    } finally {
+      logCallCapture.current = null;
+    }
+  });
+});
+
+describe("suspectRateLimit — confirm-timer failures are caught, not unhandled", () => {
+  test("a throw from taskRunner.onAgentRateLimited inside the confirm timer is caught and logged via log.warn", async () => {
+    const onAgentRateLimitedSpy = vi
+      .spyOn(AgentTaskRunner.prototype, "onAgentRateLimited")
+      .mockImplementation(() => {
+        throw new Error("boom: onAgentRateLimited");
+      });
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeWorkspaceId: "ws",
+          workspaces: [
+            {
+              id: "ws",
+              name: "WS",
+              kind: "terminal",
+              cwd: "/tmp/ws",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      const calls = captureLogCalls();
+
+      // "HTTP 429" matches the generic-fallback rate-limit detector without
+      // any clock-parsing, keeping the trigger deterministic.
+      fixture.sessionManager.emit("terminal:data", {
+        sessionId: "ws:shell",
+        data: "Error: HTTP 429 Too Many Requests\r\n",
+      });
+
+      // Advance past the confirm window; the async IIFE body runs on this timer.
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "rate-limit confirm-timer failed",
+          meta: expect.objectContaining({ sessionId: "ws:shell", workspaceId: "ws", panelId: "shell" }),
+        }),
+      );
+    } finally {
+      logCallCapture.current = null;
+      onAgentRateLimitedSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("dispatchAgentHookEvent call sites — an async rejection is logged via log.warn, not unhandled", () => {
+  afterEach(() => {
+    classifyHookEventOverride.current = null;
+  });
+
+  test("notifyAgentHook (IPC call site): a rejecting dispatch is caught and logged, doesn't crash the caller", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    classifyHookEventOverride.current = () => {
+      throw new Error("boom: classifyHookEvent");
+    };
+
+    const calls = captureLogCalls();
+    try {
+      // notifyAgentHook is synchronous (fire-and-forget) — must not throw
+      // even though the underlying dispatch rejects.
+      expect(() => fixture.runtime.notifyAgentHook("proj:panel", "idle_prompt", "Notification")).not.toThrow();
+      await new Promise((r) => setImmediate(r));
+
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "hook dispatch failed",
+          meta: expect.objectContaining({ sessionId: "proj:panel", hook: "Notification" }),
+        }),
+      );
+    } finally {
+      logCallCapture.current = null;
+    }
+  });
+});
+
+describe("runShellGitRefresh — a rejecting refreshGit is logged via log.debug", () => {
+  test("scheduleGitRefreshFromShell → runShellGitRefresh: a rejecting git.refreshProjects is caught and logged", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "ws-a",
+        workspaces: [
+          {
+            id: "ws-a",
+            name: "Shell ws-a",
+            kind: "terminal",
+            cwd: "/repo/ws-a",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    // Drain the background init refresh before rigging the rejection.
+    await new Promise((r) => setTimeout(r, 50));
+
+    fixture.git.refreshProjects = vi.fn().mockRejectedValue(new Error("boom: refreshProjects"));
+
+    const calls = captureLogCalls();
+    vi.useFakeTimers();
+    try {
+      fixture.runtime.scheduleGitRefreshFromShell("ws-a");
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "debug",
+          message: "shell git refresh failed",
+          meta: expect.objectContaining({ workspaceId: "ws-a", err: "boom: refreshProjects" }),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+      logCallCapture.current = null;
+    }
+  });
+});
+
+describe("low-severity silent-catch batch — each now logs on failure", () => {
+  test("ensureNotifyScript resolving { ok: false } (it never rejects) is logged via log.error", async () => {
+    ensureNotifyScriptOverride.current = async () => ({
+      ok: false,
+      path: "/fake/notify.mjs",
+      error: "EACCES: permission denied",
+    });
+
+    const calls = captureLogCalls();
+    try {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "error",
+          message: "ensureNotifyScript failed — agent hooks may not work",
+          meta: expect.objectContaining({ err: "EACCES: permission denied" }),
+        }),
+      );
+    } finally {
+      ensureNotifyScriptOverride.current = null;
+      logCallCapture.current = null;
+    }
+  });
+
+  test("broadcastState microtask: a throw from getPayload() (via sessions.getWorkspace) is caught and logged via log.error", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    const calls = captureLogCalls();
+    try {
+      fixture.sessionManager.getWorkspace = () => {
+        throw new Error("boom: getWorkspace");
+      };
+      // git's "updated" listener calls broadcastState() with nothing else
+      // running synchronously afterward — a clean trigger for the queued
+      // microtask's own internal getPayload() call, isolated from any other
+      // code path that might also call getPayload().
+      fixture.git.emit("updated");
+      // Let the queued microtask run.
+      await new Promise((r) => setImmediate(r));
+
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "error",
+          message: "broadcastState tick failed",
+          meta: expect.objectContaining({ err: expect.stringContaining("boom: getWorkspace") }),
+        }),
+      );
+    } finally {
+      logCallCapture.current = null;
     }
   });
 });

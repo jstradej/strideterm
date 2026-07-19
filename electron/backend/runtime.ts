@@ -677,6 +677,20 @@ export async function createRuntime({
       });
     },
   });
+
+  // sessions.ensureSession(...) is fire-and-forget at several call sites
+  // (activating a session/workspace, opening a lazydocker/lazygit/docker-shell
+  // panel). A rejection there — bad SSH args, a launch callback throwing —
+  // otherwise only reaches the global unhandled-rejection handler with no
+  // sessionId context, and the affected panel silently shows "0 running"
+  // with no diagnostic trail. Mirrors the pattern already used by
+  // ensureVisibleSession in runtime-attention.ts.
+  function ensureSessionSafe(sessionId: string): void {
+    sessions.ensureSession(getState(), sessionId).catch((err: unknown) => {
+      log.error("ensureSession failed", { sessionId, err: (err as Error)?.message || String(err) });
+    });
+  }
+
   const auditLogDbPath = path.join(reviewBridgeRoot, "azure-audit-log.db");
   const auditLogStore = createAzureAuditLogStore(auditLogDbPath);
   const gitAuditLogDbPath = path.join(reviewBridgeRoot, "git-audit-log.db");
@@ -1230,8 +1244,21 @@ export async function createRuntime({
     void subtype;
   }
 
-  // Back-compat alias for IPC helper `notifyAgentHook`.
-  const handleAgentHookNotification = dispatchAgentHookEvent;
+  // Back-compat alias for IPC helper `notifyAgentHook`. dispatchAgentHookEvent
+  // is async, but notify-server.ts invokes onNotification synchronously
+  // (typed `(n) => void`) inside its own try/catch — that catch can only ever
+  // see a SYNCHRONOUS throw, so a rejection from the async body would
+  // otherwise become an unhandled rejection with no trace. Wrap so failures
+  // are logged instead of silently vanishing.
+  const handleAgentHookNotification = (event: Parameters<typeof dispatchAgentHookEvent>[0]): void => {
+    void dispatchAgentHookEvent(event).catch((err: unknown) => {
+      log.warn("hook dispatch failed", {
+        sessionId: event?.sessionId,
+        hook: event?.hook,
+        err: (err as Error)?.message || String(err),
+      });
+    });
+  };
 
   async function startAgentNotifyServer() {
     const state = getState();
@@ -1963,10 +1990,17 @@ export async function createRuntime({
     broadcastScheduled = true;
     queueMicrotask(() => {
       broadcastScheduled = false;
-      const payload = getPayload();
-      events.emit("state:updated", payload);
-      checkAndForwardPrNotificationsToTelegram();
-      checkAndForwardPipelineNotificationsToTelegram();
+      // A throw here (e.g. from getPayload()) has no promise/caller to reject
+      // into — it becomes an uncaughtException (worse than an unhandled
+      // rejection) and silently drops this broadcast tick. Catch and log.
+      try {
+        const payload = getPayload();
+        events.emit("state:updated", payload);
+        checkAndForwardPrNotificationsToTelegram();
+        checkAndForwardPipelineNotificationsToTelegram();
+      } catch (err) {
+        log.error("broadcastState tick failed", { err: (err as Error)?.message || String(err) });
+      }
     });
   }
 
@@ -2080,7 +2114,13 @@ export async function createRuntime({
             cmd.chatId,
             `⚠️ Could not open a window for profile *${escapeMarkdown(String(cmd.profileId))}*\\.`,
           )
-          .catch(() => {});
+          .catch((err: unknown) => {
+            log.warn("telegram: notifyChat (window unavailable) failed", {
+              chatId: cmd.chatId,
+              profileId: cmd.profileId,
+              err: (err as Error)?.message,
+            });
+          });
       }
       return { aborted: true, resolution };
     }
@@ -2093,12 +2133,31 @@ export async function createRuntime({
       if ((resolution.candidates?.length ?? 0) > 0) {
         await telegramManager
           .promptScreenshotWindowPick(cmd.chatId, String(cmd.profileId), resolution.candidates || [])
-          .catch(() => {});
+          .catch((err: unknown) => {
+            log.warn("telegram: promptScreenshotWindowPick failed", {
+              chatId: cmd.chatId,
+              profileId: cmd.profileId,
+              err: (err as Error)?.message,
+            });
+          });
       } else {
-        await telegramManager.promptNoWindowForScreenshot(cmd.chatId, String(cmd.profileId)).catch(() => {});
+        await telegramManager.promptNoWindowForScreenshot(cmd.chatId, String(cmd.profileId)).catch((err: unknown) => {
+          log.warn("telegram: promptNoWindowForScreenshot failed", {
+            chatId: cmd.chatId,
+            profileId: cmd.profileId,
+            err: (err as Error)?.message,
+          });
+        });
       }
     } else if (cmd.chatId) {
-      await telegramManager.notifyChat(cmd.chatId, "⚠️ No desktop window available for this action\\.").catch(() => {});
+      await telegramManager
+        .notifyChat(cmd.chatId, "⚠️ No desktop window available for this action\\.")
+        .catch((err: unknown) => {
+          log.warn("telegram: notifyChat (no window for action) failed", {
+            chatId: cmd.chatId,
+            err: (err as Error)?.message,
+          });
+        });
     }
     return { aborted: true, resolution };
   }
@@ -2755,7 +2814,9 @@ export async function createRuntime({
   function runShellGitRefresh(workspaceId: string) {
     gitRefreshDebounceMap.delete(workspaceId);
     lastShellRefreshAt.set(workspaceId, Date.now());
-    refreshGit(workspaceId).catch(() => {});
+    refreshGit(workspaceId).catch((err: unknown) => {
+      log.debug("shell git refresh failed", { workspaceId, err: (err as Error)?.message || String(err) });
+    });
     broadcastState();
   }
 
@@ -2891,62 +2952,75 @@ export async function createRuntime({
     const now = Date.now();
     const timer = setTimeout(() => {
       void (async () => {
-        const s = rateLimitSuspicions.get(sessionId);
-        if (!s) return;
-        rateLimitSuspicions.delete(sessionId);
-        const trailingMs = s.lastOutputAt - s.suspectedAt;
-        if (trailingMs > RATE_LIMIT_TRAILING_TOLERANCE_MS) {
-          log.debug("rate-limit suspicion dropped: agent kept working past silence window", {
+        // Whole body wrapped in try/catch (mirrors scheduleBackgroundDeleteRetry):
+        // without it, a throw from raiseRateLimitAlert/onAgentRateLimited (or
+        // anything else below) is an unhandled rejection and the rate-limit
+        // handoff silently vanishes with no diagnostic trail.
+        try {
+          const s = rateLimitSuspicions.get(sessionId);
+          if (!s) return;
+          rateLimitSuspicions.delete(sessionId);
+          const trailingMs = s.lastOutputAt - s.suspectedAt;
+          if (trailingMs > RATE_LIMIT_TRAILING_TOLERANCE_MS) {
+            log.debug("rate-limit suspicion dropped: agent kept working past silence window", {
+              sessionId,
+              trailingMs,
+              providerHint: s.match.providerHint,
+            });
+            return;
+          }
+
+          // Silence detected — but verify with WORK_LOCK before declaring it
+          // a rate-limit. If the worker has already deleted WORK_LOCK, the
+          // silence is "task finished", not "quota hit", and we must not
+          // raise an alert or set rateLimitedUntil (which would block the
+          // judge from running). Run the existing idle pipeline instead.
+          try {
+            // The WORK_LOCK-absence override only makes sense for the WORKER:
+            // for a judge session, WORK_LOCK is absent by definition (the worker
+            // finished — that's why the judge is running), so applying it there
+            // would mistake a real judge rate-limit for "task finished" (incident
+            // C). Only short-circuit for the worker panel.
+            const taskState = taskRunner.getTaskState(s.workspaceId);
+            const isWorkerPanel = !taskState || s.panelId === taskState.workerPanelId;
+            if (isWorkerPanel && (await taskRunner.isWorkerCompleted(s.workspaceId))) {
+              log.warn("rate-limit suspicion overridden by WORK_LOCK absence on confirm", {
+                sessionId,
+                providerHint: s.match.providerHint,
+              });
+              taskRunner.onAgentIdle(sessionId, "rate-limit-override-on-confirm");
+              return;
+            }
+          } catch (err) {
+            // isWorkerCompleted is best-effort; on error fall through to the
+            // original alert path so we don't silently lose a real rate-limit.
+            log.debug("isWorkerCompleted threw on confirm — proceeding with alert", {
+              sessionId,
+              err: (err as Error)?.message,
+            });
+          }
+
+          log.warn("rate-limit confirmed after silence window", {
             sessionId,
             trailingMs,
             providerHint: s.match.providerHint,
           });
-          return;
-        }
-
-        // Silence detected — but verify with WORK_LOCK before declaring it
-        // a rate-limit. If the worker has already deleted WORK_LOCK, the
-        // silence is "task finished", not "quota hit", and we must not
-        // raise an alert or set rateLimitedUntil (which would block the
-        // judge from running). Run the existing idle pipeline instead.
-        try {
-          // The WORK_LOCK-absence override only makes sense for the WORKER:
-          // for a judge session, WORK_LOCK is absent by definition (the worker
-          // finished — that's why the judge is running), so applying it there
-          // would mistake a real judge rate-limit for "task finished" (incident
-          // C). Only short-circuit for the worker panel.
-          const taskState = taskRunner.getTaskState(s.workspaceId);
-          const isWorkerPanel = !taskState || s.panelId === taskState.workerPanelId;
-          if (isWorkerPanel && (await taskRunner.isWorkerCompleted(s.workspaceId))) {
-            log.warn("rate-limit suspicion overridden by WORK_LOCK absence on confirm", {
-              sessionId,
-              providerHint: s.match.providerHint,
-            });
-            taskRunner.onAgentIdle(sessionId, "rate-limit-override-on-confirm");
-            return;
-          }
+          raiseRateLimitAlert(sessionId, s.workspaceId, s.panelId, s.panelTitle, s.match);
+          // Hand off to the task runner only AFTER confirmation. For non-task
+          // sessions this is a no-op; for task workers it sets rateLimitedUntil
+          // and schedules the auto-resume timer; for the judge it presses Enter on
+          // the dialog and sets a judge-specific hold. Deferring this is the whole
+          // point of the two-stage check — premature handoff is what blocks
+          // the judge when the original match was a false positive.
+          taskRunner.onAgentRateLimited(sessionId, s.match, "output-detect-confirmed");
         } catch (err) {
-          // isWorkerCompleted is best-effort; on error fall through to the
-          // original alert path so we don't silently lose a real rate-limit.
-          log.debug("isWorkerCompleted threw on confirm — proceeding with alert", {
+          log.warn("rate-limit confirm-timer failed", {
             sessionId,
+            workspaceId,
+            panelId,
             err: (err as Error)?.message,
           });
         }
-
-        log.warn("rate-limit confirmed after silence window", {
-          sessionId,
-          trailingMs,
-          providerHint: s.match.providerHint,
-        });
-        raiseRateLimitAlert(sessionId, s.workspaceId, s.panelId, s.panelTitle, s.match);
-        // Hand off to the task runner only AFTER confirmation. For non-task
-        // sessions this is a no-op; for task workers it sets rateLimitedUntil
-        // and schedules the auto-resume timer; for the judge it presses Enter on
-        // the dialog and sets a judge-specific hold. Deferring this is the whole
-        // point of the two-stage check — premature handoff is what blocks
-        // the judge when the original match was a false positive.
-        taskRunner.onAgentRateLimited(sessionId, s.match, "output-detect-confirmed");
       })();
     }, RATE_LIMIT_CONFIRM_WINDOW_MS);
     rateLimitSuspicions.set(sessionId, {
@@ -3606,7 +3680,14 @@ export async function createRuntime({
     writeFile(reviewBridgeSignalPath, "0").catch(() => {});
     try {
       reviewBridgeWatcher = watch(reviewBridgeSignalPath, () => onReviewBridgeChange());
-      reviewBridgeWatcher.on("error", () => {});
+      reviewBridgeWatcher.on("error", (err: unknown) => {
+        // Degrades to the PRAGMA data_version polling backstop below —
+        // silent otherwise, so log to leave a trace of the degradation.
+        log.debug("review bridge signal watcher error", {
+          reviewBridgeSignalPath,
+          err: (err as Error)?.message || String(err),
+        });
+      });
     } catch {
       // fs.watch not available
     }
@@ -4163,7 +4244,10 @@ export async function createRuntime({
           }
         }, TREE_WATCH_DEBOUNCE_MS);
       });
-      watcher.on("error", () => {
+      watcher.on("error", (err: unknown) => {
+        // Degrades to the gitPoll interval backstop — silent otherwise, so
+        // log to leave a trace of the degradation.
+        log.debug("tree dir watcher error", { treeDir, err: (err as Error)?.message || String(err) });
         treeDirWatchers.delete(treeDir);
       });
       treeDirWatchers.set(treeDir, {
@@ -4277,7 +4361,17 @@ export async function createRuntime({
     }
   }
 
-  await ensureNotifyScript(userDataPath).catch(() => {});
+  // ensureNotifyScript never rejects — it swallows its own fs errors and
+  // resolves { ok: false, error }. High blast radius: if writing notify.mjs
+  // fails, ALL agent hooks silently stop working (no idle/permission-prompt
+  // detection) with zero trace unless the resolved failure is logged.
+  const notifyScriptResult = await ensureNotifyScript(userDataPath);
+  if (!notifyScriptResult.ok) {
+    log.error("ensureNotifyScript failed — agent hooks may not work", {
+      userDataPath,
+      err: notifyScriptResult.error,
+    });
+  }
   await startAgentNotifyServer();
   ensureDockerPolling();
   ensureGitPolling();
@@ -4308,7 +4402,11 @@ export async function createRuntime({
     versionChecker
       .checkForUpdates()
       .then(() => broadcastState())
-      .catch(() => {});
+      .catch((err: unknown) => {
+        // A permanently-failing check would otherwise be invisible forever —
+        // it silently retries in the background with no diagnostic trail.
+        log.debug("startup version check failed", { err: (err as Error)?.message || String(err) });
+      });
   }, 10_000);
 
   // Deferred orphan prune — runs ~5s after startup, non-blocking. Removes
@@ -4819,7 +4917,7 @@ export async function createRuntime({
     async activateSessionForRemoteClient(clientId: string, workspaceId: any, sessionId: any): Promise<unknown> {
       if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
       _remoteClientRegistry.activateSession(clientId, workspaceId, sessionId, getState());
-      if (sessionId) sessions.ensureSession(getState(), String(sessionId));
+      if (sessionId) ensureSessionSafe(String(sessionId));
       broadcastState();
       return _remoteClientRegistry.composePayload(clientId, getPayload());
     },
@@ -4955,7 +5053,7 @@ export async function createRuntime({
         }
       });
 
-      sessions.ensureSession(getState(), sessionId);
+      ensureSessionSafe(sessionId);
       broadcastState();
       return getPayload();
     },
@@ -5315,7 +5413,7 @@ export async function createRuntime({
           // Cross-profile or stale client — already guarded above; skip.
         }
       }
-      sessions.ensureSession(getState(), sessionId);
+      ensureSessionSafe(sessionId);
       broadcastState();
       return getPayload();
     },
@@ -5548,7 +5646,9 @@ export async function createRuntime({
       ensureVisibleSession();
       broadcastState();
       syncTreeDirWatchers(); // 6b: keep watcher set consistent after workspace add/edit
-      refreshAzure().catch(() => {});
+      refreshAzure().catch((err: unknown) => {
+        log.warn("saveWorkspace: refreshAzure failed", { err: (err as Error)?.message });
+      });
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -6251,12 +6351,17 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     notifyAgentHook(sessionId: any, notificationType = "idle_prompt", hook = "Notification") {
       log.debug("notifyAgentHook called", { sessionId, hook, notificationType });
-      dispatchAgentHookEvent({
+      // dispatchAgentHookEvent is async; this IPC handler is sync (fire-and-
+      // forget), so an unguarded rejection here would be an unhandled
+      // rejection with no sessionId context.
+      void dispatchAgentHookEvent({
         sessionId,
         hook,
         subtype: notificationType,
         notificationType,
         payload: {},
+      }).catch((err: unknown) => {
+        log.warn("hook dispatch failed", { sessionId, hook, err: (err as Error)?.message || String(err) });
       });
     },
     async configureClaudeHook() {
@@ -6929,7 +7034,7 @@ export async function createRuntime({
       });
 
       sessions.syncWithState(getState());
-      sessions.ensureSession(getState(), createSessionId(targetWorkspaceId, panelId));
+      ensureSessionSafe(createSessionId(targetWorkspaceId, panelId));
       clearProjectAlerts(targetWorkspaceId, panelId);
       broadcastState();
       return getPayload();
@@ -6973,7 +7078,7 @@ export async function createRuntime({
       });
 
       sessions.syncWithState(getState());
-      sessions.ensureSession(getState(), createSessionId(targetWorkspaceId, panelId));
+      ensureSessionSafe(createSessionId(targetWorkspaceId, panelId));
       clearProjectAlerts(targetWorkspaceId, panelId);
       broadcastState();
       return getPayload();
@@ -7024,7 +7129,7 @@ export async function createRuntime({
       });
 
       sessions.syncWithState(getState());
-      sessions.ensureSession(getState(), createSessionId(targetWorkspaceId, panelId));
+      ensureSessionSafe(createSessionId(targetWorkspaceId, panelId));
       clearProjectAlerts(targetWorkspaceId, panelId);
       broadcastState();
       return getPayload();
@@ -7132,7 +7237,9 @@ export async function createRuntime({
       await refreshGit(newProject.id);
       ensureVisibleSession();
       broadcastState();
-      refreshAzure().catch(() => {});
+      refreshAzure().catch((err: unknown) => {
+        log.warn("createWorktree: refreshAzure failed", { err: (err as Error)?.message });
+      });
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

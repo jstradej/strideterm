@@ -390,6 +390,39 @@ describe("error handling", () => {
     expect(onNotification).toHaveBeenCalledOnce();
   });
 
+  // review-code-quality-2026-07.md finding §3: onNotification is invoked
+  // synchronously above (see the "throws" test right before this one) — that
+  // try/catch can only ever see a SYNCHRONOUS throw. The real onNotification
+  // (runtime.ts's handleAgentHookNotification, wrapping the async
+  // dispatchAgentHookEvent) is async under the hood, so before the fix a
+  // rejection from it would have been an unhandled rejection this
+  // synchronous catch could never observe. The fix never hands notify-server
+  // a bare async function: it wraps the call in `void asyncFn(...).catch(...)`
+  // itself so onNotification's return value is always void/undefined and any
+  // rejection is already caught before notify-server sees it. This proves
+  // that shape is safe end-to-end through the real server.
+  test("does not crash or leak an unhandled rejection when a wrapped async onNotification's promise rejects", async () => {
+    const caughtErrors: string[] = [];
+    const onNotification = vi.fn((n) => {
+      // Mirrors runtime.ts's `void dispatchAgentHookEvent(event).catch(...)`
+      // wrapper shape: onNotification itself stays synchronous/void, the
+      // async rejection is caught by the wrapper, not left dangling.
+      void Promise.reject(new Error(`boom: ${n.sessionId}`)).catch((err: Error) => {
+        caughtErrors.push(err.message);
+      });
+    });
+    const { handle, secret } = await createServer({ onNotification });
+    const url = buildNotifyUrl(handle.port, "ws1:p1", secret);
+
+    const res = await postJson(url, { notification_type: "idle_prompt" });
+
+    expect(res.status).toBe(200);
+    expect(onNotification).toHaveBeenCalledOnce();
+    // Give the wrapped promise's own .catch() a tick to run.
+    await new Promise((r) => setImmediate(r));
+    expect(caughtErrors).toEqual(["boom: ws1:p1"]);
+  });
+
   test("handles missing sessionId gracefully", async () => {
     const { handle, secret, onNotification } = await createServer();
     const url = `http://127.0.0.1:${handle.port}/notify?secret=${secret}`;
