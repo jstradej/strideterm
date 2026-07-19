@@ -48,7 +48,7 @@ class FakeDockerManager extends DockerManager {
     }
   }
 
-  override async runDocker(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  async runDocker(args: string[]): Promise<{ stdout: string; stderr: string }> {
     this.commands.push(args);
     const key = args.join(" ");
     if (this.responses[key] instanceof Error) {

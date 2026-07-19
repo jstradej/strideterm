@@ -203,8 +203,6 @@ export class DockerManager extends EventEmitter {
   private backends: DockerBackend[];
   // Lazydocker backends keyed by backendId.
   private lazydockerBackends: Map<DockerBackendId, DockerBackend>;
-  // Log sessions (populated in Phase 2).
-  logSessions: Map<string, unknown>;
   // 5a: in-flight guard — concurrent refresh() callers share one Promise.
   private refreshInFlight: Promise<DockerState> | null = null;
   // 5b: backend/lazydocker detection cache (mutable, cleared on invalidate).
@@ -220,7 +218,6 @@ export class DockerManager extends EventEmitter {
     this.snapshot = createUnavailableState();
     this.backends = [];
     this.lazydockerBackends = new Map();
-    this.logSessions = new Map();
   }
 
   /** Discard the backend/lazydocker detection cache. Next refresh() re-probes. */
@@ -309,20 +306,6 @@ export class DockerManager extends EventEmitter {
   /** Run docker with an explicit backend (overrideable for tests). */
   protected runDockerForBackend(backend: DockerBackend, args: string[]): Promise<{ stdout: string; stderr: string }> {
     return runDockerWithBackend(backend, args);
-  }
-
-  /** Run docker with an explicit backend. */
-  runDockerDefault(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    const backend = this.getPrimaryBackend();
-    if (!backend) {
-      throw new Error("Docker CLI was not found on Windows PATH or inside WSL.");
-    }
-    return this.runDockerForBackend(backend, args);
-  }
-
-  /** Backward-compat alias used by tests and legacy callers. */
-  async runDocker(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    return this.runDockerDefault(args);
   }
 
   // -----------------------------------------------------------------------
@@ -1036,35 +1019,4 @@ export class DockerManager extends EventEmitter {
     return { file: ldBackend.file, args: [...ldBackend.argsPrefix, "lazydocker"] };
   }
 
-  // Legacy helper kept for backward-compat (used internally via old API surface).
-  createLaunchArgs(args: string[]): LaunchArgs | null {
-    const backend = this.getPrimaryBackend();
-    if (!backend) return null;
-    return this.buildLaunchArgs(backend, args);
-  }
-
-  // -----------------------------------------------------------------------
-  // Legacy backward-compat: expose single backend/lazydocker properties
-  // that the existing test suite accesses via @ts-expect-error hacks.
-  // -----------------------------------------------------------------------
-
-  /** @deprecated Use backends array. */
-  get backend(): { type: "host" | "wsl"; file: string; argsPrefix: string[] } | null {
-    return this.getPrimaryBackend() ?? null;
-  }
-
-  /** @deprecated Use lazydockerBackends map. */
-  get lazydockerBackend(): { type: "host" | "wsl"; file: string; argsPrefix: string[] } | null {
-    const primary = this.getPrimaryBackend();
-    if (!primary) return null;
-    return this.lazydockerBackends.get(primary.id) ?? null;
-  }
-
-  /** @deprecated Use detectAllBackends(). */
-  async detectBackend(): Promise<{ type: "host" | "wsl"; file: string; argsPrefix: string[] } | null> {
-    if (this.backends.length > 0) return this.getPrimaryBackend();
-    const detected = await this.detectAllBackends();
-    this.backends = await this.dedupeBackendsByServerId(detected);
-    return this.getPrimaryBackend();
-  }
 }
