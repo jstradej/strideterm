@@ -29,6 +29,7 @@
 import { ref, computed, onMounted, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
 import { useAppStore } from "../../../stores/app.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 const props = defineProps<{
   containerId: string;
@@ -39,6 +40,7 @@ const props = defineProps<{
 }>();
 
 const appStore = useAppStore();
+const notifications = useNotificationStore();
 const loading = ref(false);
 const pretty = ref<string>("");
 const error = ref<string>("");
@@ -165,8 +167,8 @@ async function copyToClipboard(): Promise<void> {
     setTimeout(() => {
       copied.value = false;
     }, 1500);
-  } catch {
-    // clipboard blocked — silently ignore
+  } catch (e) {
+    notifications.showError("Copy failed", (e as Error)?.message || String(e));
   }
 }
 

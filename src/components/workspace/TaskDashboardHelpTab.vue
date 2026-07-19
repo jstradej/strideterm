@@ -49,7 +49,12 @@
       file system.
     </p>
 
-    <h4>Example: TASK.md <button class="td__copy-btn" @click="copyExample('task')">copy</button></h4>
+    <h4>
+      Example: TASK.md
+      <button class="td__copy-btn" @click="copyExample('task')">{{
+        copyFeedback?.which === "task" ? copyFeedback.text : "copy"
+      }}</button>
+    </h4>
     <pre ref="exampleTask" class="td__example">
 # Task
 
@@ -69,7 +74,12 @@ and `currentPage` in the response. Add integration tests.
 - Remove WORK_LOCK only when genuinely done
 - The judge will independently verify your work</pre>
 
-    <h4>Example: TODO.md <button class="td__copy-btn" @click="copyExample('todo')">copy</button></h4>
+    <h4>
+      Example: TODO.md
+      <button class="td__copy-btn" @click="copyExample('todo')">{{
+        copyFeedback?.which === "todo" ? copyFeedback.text : "copy"
+      }}</button>
+    </h4>
     <pre ref="exampleTodo" class="td__example">
 # TODO
 
@@ -85,7 +95,9 @@ and `currentPage` in the response. Add integration tests.
 
     <h4>
       Example: verification checklist
-      <button class="td__copy-btn" @click="copyExample('criteria')">copy</button>
+      <button class="td__copy-btn" @click="copyExample('criteria')">{{
+        copyFeedback?.which === "criteria" ? copyFeedback.text : "copy"
+      }}</button>
     </h4>
     <pre ref="exampleCriteria" class="td__example">
 ## Verification before completion
@@ -174,12 +186,21 @@ withDefaults(
 const exampleTask = ref<HTMLElement | null>(null);
 const exampleTodo = ref<HTMLElement | null>(null);
 const exampleCriteria = ref<HTMLElement | null>(null);
+const copyFeedback = ref<{ which: string; text: string } | null>(null);
 
-function copyExample(which: string): void {
+async function copyExample(which: string): Promise<void> {
   const el = which === "task" ? exampleTask.value : which === "todo" ? exampleTodo.value : exampleCriteria.value;
   if (!el) return;
   const text = el.textContent || "";
-  navigator.clipboard.writeText(text.trim()).catch(() => {});
+  try {
+    await navigator.clipboard.writeText(text.trim());
+    copyFeedback.value = { which, text: "Copied!" };
+  } catch {
+    copyFeedback.value = { which, text: "Failed" };
+  }
+  setTimeout(() => {
+    if (copyFeedback.value?.which === which) copyFeedback.value = null;
+  }, 2000);
 }
 </script>
 

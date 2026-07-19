@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import DockerResourceInspect from "./DockerResourceInspect.vue";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 const MOCK_VOLUME_JSON = JSON.stringify(
   [
@@ -70,5 +71,32 @@ describe("DockerResourceInspect — visual render with mock data", () => {
     await wrapper.find("button.button--ghost").trigger("click");
     await flushPromises();
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  // Category B (code-review batch, 2026-07): copy() used to swallow a
+  // rejected navigator.clipboard.writeText with zero user-visible feedback.
+  it("a rejected clipboard write surfaces a 'Copy failed' notification instead of failing silently", async () => {
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard blocked")) },
+      configurable: true,
+    });
+    const wrapper = mount(DockerResourceInspect, {
+      props: {
+        kind: "volume",
+        resourceKey: "abc",
+        fetcher: vi.fn(),
+        mockJson: MOCK_VOLUME_JSON,
+      },
+    });
+    await flushPromises();
+    const notifications = useNotificationStore();
+    const showErrorSpy = vi.spyOn(notifications, "showError");
+
+    const copyBtn = wrapper.findAll("button").find((b) => b.text() === "Copy")!;
+    await copyBtn.trigger("click");
+    await flushPromises();
+
+    expect(showErrorSpy).toHaveBeenCalledTimes(1);
+    expect(showErrorSpy).toHaveBeenCalledWith("Copy failed", expect.stringContaining("clipboard blocked"));
   });
 });

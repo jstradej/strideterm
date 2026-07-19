@@ -23,6 +23,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 const props = defineProps<{
   /** Display name used in the loading text. */
@@ -35,6 +36,7 @@ const props = defineProps<{
   mockJson?: string;
 }>();
 
+const notifications = useNotificationStore();
 const loading = ref(false);
 const pretty = ref("");
 const error = ref("");
@@ -142,8 +144,8 @@ async function copy(): Promise<void> {
     setTimeout(() => {
       copied.value = false;
     }, 1500);
-  } catch {
-    // ignore
+  } catch (e) {
+    notifications.showError("Copy failed", (e as Error)?.message || String(e));
   }
 }
 

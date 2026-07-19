@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import DockerDetailInspect from "./DockerDetailInspect.vue";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 const MOCK_INSPECT = JSON.stringify(
   [
@@ -72,5 +73,32 @@ describe("DockerDetailInspect — visual render with mock data", () => {
     });
     expect(wrapper.find(".inspect__toolbar").exists()).toBe(true);
     expect(wrapper.text()).toContain("Reload");
+  });
+
+  // Category B (code-review batch, 2026-07): copyToClipboard used to swallow
+  // a rejected navigator.clipboard.writeText with zero user-visible feedback.
+  it("a rejected clipboard write surfaces a 'Copy failed' notification instead of failing silently", async () => {
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard blocked")) },
+      configurable: true,
+    });
+    const wrapper = mount(DockerDetailInspect, {
+      props: {
+        containerId: "abc",
+        backendId: "host",
+        contextName: "default",
+        mockJson: MOCK_INSPECT,
+      },
+    });
+    await flushPromises();
+    const notifications = useNotificationStore();
+    const showErrorSpy = vi.spyOn(notifications, "showError");
+
+    const copyBtn = wrapper.findAll("button").find((b) => b.text() === "Copy")!;
+    await copyBtn.trigger("click");
+    await flushPromises();
+
+    expect(showErrorSpy).toHaveBeenCalledTimes(1);
+    expect(showErrorSpy).toHaveBeenCalledWith("Copy failed", expect.stringContaining("clipboard blocked"));
   });
 });

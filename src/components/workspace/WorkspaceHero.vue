@@ -20,7 +20,9 @@
             >{{
               pathCopied
                 ? "Copied!"
-                : activeWorkspace.cwd || (activeWorkspace.kind === "github" ? "GitHub inbox" : "Azure DevOps inbox")
+                : pathCopyFailed
+                  ? "Copy failed"
+                  : activeWorkspace.cwd || (activeWorkspace.kind === "github" ? "GitHub inbox" : "Azure DevOps inbox")
             }}</span
           >
         </div>
@@ -54,7 +56,9 @@
               activeWorkspace.cwd ? 'Click to copy this workspace’s working-directory path to the clipboard.' : ''
             "
             @click="copyPath"
-            >{{ pathCopied ? "Copied!" : activeWorkspace.cwd || "Not set" }}</span
+            >{{
+              pathCopied ? "Copied!" : pathCopyFailed ? "Copy failed" : activeWorkspace.cwd || "Not set"
+            }}</span
           >
         </div>
         <div class="workspace-meta__stats">
@@ -107,17 +111,28 @@ const api = inject<any>("api");
 const store = useAppStore();
 
 const pathCopied = ref(false);
+const pathCopyFailed = ref(false);
 let pathCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 function copyPath() {
   const cwd = activeWorkspace.value?.cwd;
   if (!cwd) return;
-  navigator.clipboard.writeText(cwd).then(() => {
-    pathCopied.value = true;
-    if (pathCopiedTimer != null) clearTimeout(pathCopiedTimer);
-    pathCopiedTimer = setTimeout(() => {
-      pathCopied.value = false;
-    }, 1200);
-  });
+  navigator.clipboard.writeText(cwd).then(
+    () => {
+      pathCopied.value = true;
+      pathCopyFailed.value = false;
+      if (pathCopiedTimer != null) clearTimeout(pathCopiedTimer);
+      pathCopiedTimer = setTimeout(() => {
+        pathCopied.value = false;
+      }, 1200);
+    },
+    () => {
+      pathCopyFailed.value = true;
+      if (pathCopiedTimer != null) clearTimeout(pathCopiedTimer);
+      pathCopiedTimer = setTimeout(() => {
+        pathCopyFailed.value = false;
+      }, 1200);
+    },
+  );
 }
 
 const isRemote = computed(() => api?.isRemote || false);
