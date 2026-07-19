@@ -3932,6 +3932,35 @@ export async function createRuntime({
   }
 
   /**
+   * Remove `removeIds` from `draft.workspaces` and repoint anything that
+   * referenced one of them: each window slot's `activeWorkspaceId` falls
+   * back to a sibling in that slot's OWN profile (picking from
+   * windowSlots[0]'s profile would push a wrong-profile workspace into the
+   * other window's pane), and the legacy global `draft.activeWorkspaceId`
+   * mirrors the most-recently-focused slot's pick so it tracks user
+   * activity rather than slot order. Shared by pruneOrphanedWorkspaces and
+   * syncWorktreesImpl, whose removal semantics are otherwise identical.
+   */
+  function removeWorkspacesFromDraft(draft: AppState, removeIds: Set<string>): void {
+    if (removeIds.size === 0) return;
+    draft.workspaces = draft.workspaces.filter((w) => !removeIds.has(w.id));
+    for (const slot of draft.windowSlots || []) {
+      if (removeIds.has(slot.activeWorkspaceId)) {
+        const sibling = draft.workspaces.find((w) => (w.profileId || "default") === slot.profileId);
+        slot.activeWorkspaceId = sibling?.id || "";
+      }
+    }
+    if (removeIds.has(draft.activeWorkspaceId)) {
+      const primarySlot = [...(draft.windowSlots || [])].sort(
+        (a, b) => (b.lastFocusedAt || 0) - (a.lastFocusedAt || 0),
+      )[0];
+      const fallbackProfileId = primarySlot?.profileId || "default";
+      const fallback = draft.workspaces.find((w) => (w.profileId || "default") === fallbackProfileId);
+      draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
+    }
+  }
+
+  /**
    * Drop workspaces whose `cwd` no longer exists on disk. Covers the orphan
    * case: user nuked the worktree externally (or a previous deleteFromDisk
    * left only stragglers behind), and the sidebar entry is now useless —
@@ -3965,26 +3994,7 @@ export async function createRuntime({
     if (toRemove.length === 0) return 0;
     const removeIds = new Set(toRemove.map((w) => w.id));
     await store.mutate((draft: AppState) => {
-      draft.workspaces = draft.workspaces.filter((w) => !removeIds.has(w.id));
-      // Rewire each affected slot to a sibling in that slot's OWN profile.
-      // Picking from windowSlots[0]'s profile would push a wrong-profile
-      // workspace into the other window's pane.
-      for (const slot of draft.windowSlots || []) {
-        if (removeIds.has(slot.activeWorkspaceId)) {
-          const sibling = draft.workspaces.find((w) => (w.profileId || "default") === slot.profileId);
-          slot.activeWorkspaceId = sibling?.id || "";
-        }
-      }
-      if (removeIds.has(draft.activeWorkspaceId)) {
-        // Legacy global field — mirror to the most-recently-focused slot's
-        // pick so it tracks user activity rather than slot order.
-        const primarySlot = [...(draft.windowSlots || [])].sort(
-          (a, b) => (b.lastFocusedAt || 0) - (a.lastFocusedAt || 0),
-        )[0];
-        const fallbackProfileId = primarySlot?.profileId || "default";
-        const fallback = draft.workspaces.find((w) => (w.profileId || "default") === fallbackProfileId);
-        draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
-      }
+      removeWorkspacesFromDraft(draft, removeIds);
     });
     for (const ws of toRemove) {
       if (ws.kind === "task" && ws.task?.taskId) {
@@ -4109,26 +4119,7 @@ export async function createRuntime({
     if (toAdd.length === 0 && toRemove.length === 0 && toRepair.length === 0) return false;
 
     await store.mutate((draft: AppState) => {
-      if (toRemove.length > 0) {
-        const removeSet = new Set(toRemove);
-        draft.workspaces = draft.workspaces.filter((w) => !removeSet.has(w.id));
-        // Rewire each affected slot to a sibling in that slot's OWN profile.
-        for (const slot of draft.windowSlots || []) {
-          if (removeSet.has(slot.activeWorkspaceId)) {
-            const sibling = draft.workspaces.find((w) => (w.profileId || "default") === slot.profileId);
-            slot.activeWorkspaceId = sibling?.id || "";
-          }
-        }
-        if (removeSet.has(draft.activeWorkspaceId)) {
-          // Legacy global field — mirror to the most-recently-focused slot.
-          const primarySlot = [...(draft.windowSlots || [])].sort(
-            (a, b) => (b.lastFocusedAt || 0) - (a.lastFocusedAt || 0),
-          )[0];
-          const fallbackProfileId = primarySlot?.profileId || "default";
-          const fallback = draft.workspaces.find((w) => (w.profileId || "default") === fallbackProfileId);
-          draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
-        }
-      }
+      removeWorkspacesFromDraft(draft, new Set(toRemove));
       for (const repair of toRepair) {
         const ws = draft.workspaces.find((w) => w.id === repair.id);
         if (ws) ws.profileId = repair.profileId;
