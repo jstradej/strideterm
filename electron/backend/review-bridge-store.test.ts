@@ -280,4 +280,32 @@ describe("review bridge store", () => {
 
     await store.close();
   });
+
+  test("getAgentPrompts returns identically-shaped rows from the seeded and non-seeded paths", async () => {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-prompts-"));
+    tempPaths.push(rootPath);
+    const store = await createReviewBridgeStore(rootPath);
+
+    // First call: the agent_prompts table is empty, so this exercises the
+    // self-seeding branch (seed, then re-query).
+    const seededPrompts = store.getAgentPrompts();
+    expect(seededPrompts.length).toBeGreaterThan(0);
+    for (const prompt of seededPrompts) {
+      expect(prompt).toMatchObject({
+        promptId: expect.any(String),
+        title: expect.any(String),
+        description: expect.any(String),
+        template: expect.any(String),
+        sortOrder: expect.any(Number),
+        isDefault: expect.any(Boolean),
+      });
+    }
+
+    // Second call: rows already exist, so this exercises the non-seeded
+    // branch — it must map to the exact same shape via the shared mapRow.
+    const existingPrompts = store.getAgentPrompts();
+    expect(existingPrompts).toEqual(seededPrompts);
+
+    await store.close();
+  });
 });

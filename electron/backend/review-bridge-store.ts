@@ -709,6 +709,17 @@ export async function createReviewBridgeStore(rootPath: string) {
     return null;
   }
 
+  function mapAgentPromptRow(r: SqlRow) {
+    return {
+      promptId: r.prompt_id,
+      title: r.title,
+      description: r.description,
+      template: r.template,
+      sortOrder: r.sort_order,
+      isDefault: Boolean(r.is_default),
+    };
+  }
+
   return {
     getRootPath() {
       return normalizedRoot;
@@ -1375,26 +1386,12 @@ export async function createReviewBridgeStore(rootPath: string) {
     },
     getAgentPrompts() {
       if (closed) return [];
-      const rows = statements.selectAllAgentPrompts.all() as SqlRow[];
+      let rows = statements.selectAllAgentPrompts.all() as SqlRow[];
       if (!rows.length) {
         this.seedDefaultAgentPrompts();
-        return (statements.selectAllAgentPrompts.all() as SqlRow[]).map((r) => ({
-          promptId: r.prompt_id,
-          title: r.title,
-          description: r.description,
-          template: r.template,
-          sortOrder: r.sort_order,
-          isDefault: Boolean(r.is_default),
-        }));
+        rows = statements.selectAllAgentPrompts.all() as SqlRow[];
       }
-      return rows.map((r) => ({
-        promptId: r.prompt_id,
-        title: r.title,
-        description: r.description,
-        template: r.template,
-        sortOrder: r.sort_order,
-        isDefault: Boolean(r.is_default),
-      }));
+      return rows.map(mapAgentPromptRow);
     },
     saveAgentPrompt({ promptId, title, description, template, sortOrder = 0 }: AgentPromptInput) {
       ensureOpen();
