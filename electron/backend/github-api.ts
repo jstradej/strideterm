@@ -7,6 +7,8 @@
  * Auth: Bearer token (PAT).  Works with github.com and GitHub Enterprise Server.
  */
 
+import { createEtagJsonClient } from "./shared/etag-json-client.js";
+
 const GITHUB_API_VERSION = "2022-11-28";
 
 interface Connection {
@@ -54,140 +56,28 @@ interface CreatePullRequestOptions {
   draft?: boolean;
 }
 
-interface EtagCacheEntry {
-  etag: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  data: any;
-}
-
 export function createGitHubApi(
   fetchImpl: typeof globalThis.fetch,
   { auditLogger }: { auditLogger?: (entry: AuditEntry) => void } = {},
 ) {
-  const etagCache = new Map<string, EtagCacheEntry>();
-  const ETAG_CACHE_MAX_SIZE = 200;
-
-  async function requestJson(
-    url: string,
-    {
-      token,
-      method = "GET",
-      body = null,
-      headers = {},
-      accept = "application/vnd.github+json",
-    }: RequestJsonOptions = {},
-    allowStaleRetry = true,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON, typed later
-  ): Promise<any> {
-    const startTime = Date.now();
-    let statusCode = 0;
-
-    const requestHeaders: Record<string, string> = {
-      Accept: accept,
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": GITHUB_API_VERSION,
-      ...headers,
-    };
-
-    let cached: EtagCacheEntry | undefined;
-    if (method === "GET") {
-      cached = etagCache.get(url);
-      if (cached?.etag && cached?.data) {
-        requestHeaders["If-None-Match"] = cached.etag;
-      }
-    }
-
-    try {
-      const response = await fetchImpl(url, {
-        method,
-        headers: requestHeaders,
-        body: body == null ? undefined : JSON.stringify(body),
-      });
-
-      statusCode = response.status;
-
-      if (response.status === 304 && method === "GET") {
-        if (cached?.data) {
-          if (auditLogger) {
-            try {
-              auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime });
-            } catch {}
-          }
-          return cached.data;
-        }
-
-        // The cache entry was evicted (LRU eviction under concurrent requests)
-        // between sending If-None-Match and this 304 arriving, so there's
-        // nothing to return. Re-issue the same request once without
-        // If-None-Match to force a full response with a real body.
-        if (allowStaleRetry) {
-          if (auditLogger) {
-            try {
-              auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime });
-            } catch {}
-          }
-          return requestJson(url, { token, method, body, headers, accept }, false);
-        }
-      }
-
-      if (!response.ok && response.status !== 304) {
-        const text = await response.text().catch(() => "");
-        let message = text || response.statusText;
-        try {
-          const parsed = JSON.parse(text);
-          message = parsed?.message || message;
-        } catch {}
-        throw new Error(`GitHub request failed (${response.status}): ${message}`);
-      }
-
-      // Some endpoints return 204 No Content
-      if (response.status === 204) {
-        if (auditLogger) {
-          try {
-            auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime });
-          } catch {}
-        }
-        return null;
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const data: any = await response.json();
-
-      if (method === "GET") {
-        const etag = typeof response.headers?.get === "function" ? response.headers.get("etag") : null;
-        if (etag) {
-          if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
-            const firstKey = etagCache.keys().next().value;
-            etagCache.delete(firstKey!);
-          }
-          etagCache.set(url, { etag, data });
-        }
-      }
-
-      if (auditLogger) {
-        try {
-          auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime });
-        } catch {}
-      }
-
-      return data;
-    } catch (err) {
-      if (auditLogger) {
-        try {
-          auditLogger({
-            method,
-            url,
-            statusCode,
-            success: false,
-            errorMessage: (err as Error).message,
-            durationMs: Date.now() - startTime,
-          });
-        } catch {}
-      }
-      throw err;
-    }
-  }
+  const { requestJson } = createEtagJsonClient<RequestJsonOptions>(fetchImpl, {
+    buildJsonHeaders({ token, headers = {}, accept = "application/vnd.github+json" }) {
+      return {
+        Accept: accept,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        ...headers,
+      };
+    },
+    errorPrefix: "GitHub",
+    extractErrorMessage(parsedBody, fallback) {
+      const parsed = parsedBody as { message?: string };
+      return parsed?.message || fallback;
+    },
+    treatNoContentAsNull: true,
+    auditLogger,
+  });
 
   /**
    * Follows GitHub's page-number pagination (`?page=N`) for a list endpoint,

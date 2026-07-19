@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { API_VERSION, POLICY_API_VERSION, trimTrailingSlash } from "./azure-devops-utils.js";
+import { createEtagJsonClient } from "./shared/etag-json-client.js";
 
 interface AzureConnection {
   orgUrl: string;
@@ -13,11 +14,6 @@ interface RequestOptions {
   method?: string;
   body?: unknown;
   headers?: Record<string, string>;
-}
-
-interface EtagEntry {
-  etag: string;
-  data: unknown;
 }
 
 interface AuditLogger {
@@ -35,163 +31,34 @@ interface CreateAzureApiOptions {
   auditLogger?: AuditLogger;
 }
 
+function buildBasicAuthHeader(login: string | undefined, token: string | undefined): string {
+  return `Basic ${Buffer.from(`${login}:${token}`, "utf8").toString("base64")}`;
+}
+
 export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger }: CreateAzureApiOptions = {}) {
-  const etagCache = new Map<string, EtagEntry>();
-  const ETAG_CACHE_MAX_SIZE = 200;
-
-  async function requestJson(
-    url: string,
-    { login, token, method = "GET", body = null, headers = {} }: RequestOptions = {},
-    allowStaleRetry = true,
-  ) {
-    const startTime = Date.now();
-    let statusCode = 0;
-
-    const requestHeaders: Record<string, string> = {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Authorization: `Basic ${Buffer.from(`${login}:${token}`, "utf8").toString("base64")}`,
-      ...headers,
-    };
-
-    // Add ETag/If-None-Match for GET requests (only when cached data exists to fall back to)
-    let cached: EtagEntry | undefined;
-    if (method === "GET") {
-      cached = etagCache.get(url);
-      if (cached?.etag && cached?.data) {
-        requestHeaders["If-None-Match"] = cached.etag;
-      }
-    }
-
-    try {
-      const response = await fetchImpl(url, {
-        method,
-        headers: requestHeaders,
-        body: body == null ? undefined : JSON.stringify(body),
-      });
-
-      statusCode = response.status;
-
-      // Return cached response on 304 Not Modified
-      if (response.status === 304 && method === "GET") {
-        if (cached?.data) {
-          if (auditLogger) {
-            try {
-              auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime });
-            } catch {}
-          }
-          return cached.data;
-        }
-
-        // The cache entry was evicted (LRU eviction under concurrent requests)
-        // between sending If-None-Match and this 304 arriving, so there's
-        // nothing to return. Re-issue the same request once without
-        // If-None-Match to force a full response with a real body.
-        if (allowStaleRetry) {
-          if (auditLogger) {
-            try {
-              auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime });
-            } catch {}
-          }
-          return requestJson(url, { login, token, method, body, headers }, false);
-        }
-      }
-
-      if (!response.ok && response.status !== 304) {
-        const text = await response.text().catch(() => "");
-        let message = text || response.statusText;
-        try {
-          const parsed = JSON.parse(text) as { message?: string; error?: { message?: string } };
-          message = parsed?.message || parsed?.error?.message || message;
-        } catch {}
-        throw new Error(`Azure DevOps request failed (${response.status}): ${message}`);
-      }
-
-      const data = await response.json();
-
-      // Cache ETag for GET responses
-      if (method === "GET") {
-        const etag = typeof response.headers?.get === "function" ? response.headers.get("etag") : null;
-        if (etag) {
-          // Evict oldest entries if cache grows too large
-          if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
-            const firstKey = etagCache.keys().next().value;
-
-            etagCache.delete(firstKey!);
-          }
-          etagCache.set(url, { etag, data });
-        }
-      }
-
-      if (auditLogger) {
-        try {
-          auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime });
-        } catch {}
-      }
-
-      return data;
-    } catch (err) {
-      if (auditLogger) {
-        try {
-          auditLogger({
-            method,
-            url,
-            statusCode,
-            success: false,
-            errorMessage: (err as Error).message,
-            durationMs: Date.now() - startTime,
-          });
-        } catch {}
-      }
-      throw err;
-    }
-  }
-
-  // Plain-text fetch (build logs are text, not JSON). Audited like requestJson,
-  // but no ETag cache — logs are large and fetched on explicit user action.
-  async function requestText(url: string, { login, token, headers = {} }: RequestOptions = {}): Promise<string> {
-    const startTime = Date.now();
-    let statusCode = 0;
-    const requestHeaders: Record<string, string> = {
-      Accept: "text/plain",
-      Authorization: `Basic ${Buffer.from(`${login}:${token}`, "utf8").toString("base64")}`,
-      ...headers,
-    };
-    try {
-      const response = await fetchImpl(url, { method: "GET", headers: requestHeaders });
-      statusCode = response.status;
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        let message = text || response.statusText;
-        try {
-          const parsed = JSON.parse(text) as { message?: string; error?: { message?: string } };
-          message = parsed?.message || parsed?.error?.message || message;
-        } catch {}
-        throw new Error(`Azure DevOps request failed (${response.status}): ${message}`);
-      }
-      const body = await response.text();
-      if (auditLogger) {
-        try {
-          auditLogger({ method: "GET", url, statusCode, success: true, durationMs: Date.now() - startTime });
-        } catch {}
-      }
-      return body;
-    } catch (err) {
-      if (auditLogger) {
-        try {
-          auditLogger({
-            method: "GET",
-            url,
-            statusCode,
-            success: false,
-            errorMessage: (err as Error).message,
-            durationMs: Date.now() - startTime,
-          });
-        } catch {}
-      }
-      throw err;
-    }
-  }
+  const { requestJson, requestText } = createEtagJsonClient<RequestOptions>(fetchImpl, {
+    buildJsonHeaders({ login, token, headers = {} }) {
+      return {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: buildBasicAuthHeader(login, token),
+        ...headers,
+      };
+    },
+    buildTextHeaders({ login, token, headers = {} }) {
+      return {
+        Accept: "text/plain",
+        Authorization: buildBasicAuthHeader(login, token),
+        ...headers,
+      };
+    },
+    errorPrefix: "Azure DevOps",
+    extractErrorMessage(parsedBody, fallback) {
+      const parsed = parsedBody as { message?: string; error?: { message?: string } };
+      return parsed?.message || parsed?.error?.message || fallback;
+    },
+    auditLogger,
+  });
 
   function buildProjectsUrl(connection: AzureConnection) {
     return `${trimTrailingSlash(connection.orgUrl)}/_apis/projects?api-version=${API_VERSION}&$top=200`;
