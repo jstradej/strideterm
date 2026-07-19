@@ -1121,6 +1121,318 @@ async function serveStatic(staticRoot: string, requestUrl: string, response: Ser
   }
 }
 
+type ApiRouteHandler = (runtime: Runtime, body: Record<string, unknown>) => unknown;
+
+/**
+ * Plain POST routes: `json(response, 200, await handler(runtime, body))` is
+ * the whole dispatch (handler may return a value directly or a Promise —
+ * `await` on a non-Promise just resolves to it). Routes that need something
+ * structurally different — an extra `broadcast` callback (docker/logs/open,
+ * docker/shell/open), extra request context for its audit log
+ * (/api/settings/update), or a non-200 response (the SSH administration
+ * block) — stay as explicit cases in handleApiRequest instead of appearing
+ * here.
+ */
+const API_ROUTES: Record<string, ApiRouteHandler> = {
+  "/api/azure/verify-connection": (runtime, body) => runtime.verifyAzureConnection(body.connection || {}),
+  "/api/azure/refresh": (runtime) => runtime.refreshAzureState(),
+  "/api/azure/audit-log/query": (runtime, body) => runtime.queryAzureAuditLog(body),
+  "/api/azure/audit-log/stats": (runtime, body) => runtime.getAzureAuditStats(body),
+  // /api/azure/pull-request/open, /seen, /comment, /thread-status and /vote are
+  // all handled in the outer dispatch (slotAwareRoute) so they resolve the
+  // bound viewer id from the remote-client registry and reject cross-profile
+  // PRs; reaching here would mean the route bypassed that intercept.
+  "/api/review-bridge/agent-prompt/reset": (runtime) => runtime.resetAgentPrompts(),
+  // /api/review-bridge/pull-request/sync is handled in the outer dispatch
+  // (slotAwareRoute) so it resolves the caller's viewer id and refuses to
+  // publish drafts to a PR outside the caller's profile.
+  // /api/azure/pull-request/vote is handled in the outer dispatch
+  // (slotAwareRoute) so it resolves the caller's viewer id and rejects a vote
+  // on a PR outside the caller's profile.
+  "/api/azure/workspace/fetch": (runtime, body) => runtime.fetchAzureReviewWorkspace(body.workspaceId),
+  "/api/azure/workspace/rebase": (runtime, body) => runtime.rebaseAzureReviewWorkspace(body.workspaceId),
+  "/api/azure/workspace/push": (runtime, body) =>
+    runtime.pushAzureReviewWorkspace(body.workspaceId as string, { force: Boolean(body.force) }),
+  "/api/azure/create-pull-request": (runtime, body) => runtime.azureCreatePullRequest(body),
+  "/api/azure/list-remote-branches": (runtime, body) => runtime.azureListRemoteBranches(body),
+  "/api/azure/quickfix/list-projects": (runtime, body) => runtime.azureQuickFixListProjects(body),
+  "/api/azure/quickfix/list-repositories": (runtime, body) => runtime.azureQuickFixListRepositories(body),
+  "/api/azure/quickfix/list-branches": (runtime, body) => runtime.azureQuickFixListBranches(body),
+  // /api/azure/quickfix/create is handled in the outer dispatch (slot-aware).
+  // /api/azure/rerun-check is handled in the outer dispatch (slotAwareRoute) so
+  // it resolves the caller's viewer id and refuses a cross-profile prKey.
+  // Pipelines tab — connectionId-addressed reads/actions, handled inline like
+  // the quickfix reads above (they don't touch local workspace/slot state).
+  "/api/azure/pipelines/list": (runtime, body) => runtime.listAzurePipelines(body),
+  "/api/azure/pipelines/runs": (runtime, body) => runtime.listAzurePipelineRuns(body),
+  "/api/azure/pipelines/run-seed": (runtime, body) => runtime.getAzurePipelineRunSeed(body),
+  "/api/azure/pipelines/run-parameters": (runtime, body) => runtime.getAzurePipelineRunParameters(body),
+  "/api/azure/pipelines/refs": (runtime, body) => runtime.getAzurePipelineRefs(body),
+  "/api/azure/pipelines/commits": (runtime, body) => runtime.getAzurePipelineCommits(body),
+  "/api/azure/pipelines/run": (runtime, body) => runtime.runAzurePipeline(body),
+  "/api/azure/pipelines/run-status": (runtime, body) => runtime.getAzurePipelineRunStatus(body),
+  "/api/azure/pipelines/cancel": (runtime, body) => runtime.cancelAzureBuild(body),
+  "/api/azure/pipelines/build-log": (runtime, body) => runtime.getAzureBuildLog(body),
+  "/api/azure/pipelines/run-detail": (runtime, body) => runtime.getAzurePipelineRunDetail(body),
+
+  // --- GitHub ---
+  "/api/github/verify-connection": (runtime, body) => runtime.verifyGitHubConnection(body.connection || {}),
+  "/api/github/refresh": (runtime) => runtime.refreshGitHubState(),
+  "/api/github/audit-log/query": (runtime, body) => runtime.queryGitHubAuditLog(body),
+  "/api/github/audit-log/stats": (runtime, body) => runtime.getGitHubAuditStats(body),
+  // /api/github/pull-request/open, /seen, /comment and /review are handled in
+  // the outer dispatch (slotAwareRoute) so they resolve the bound viewer id
+  // from the remote-client registry and reject cross-profile PRs.
+  // /api/github/rerun-check is handled in the outer dispatch (slotAwareRoute)
+  // so it resolves the caller's viewer id and refuses a cross-profile prKey.
+  "/api/github/workspace/fetch": (runtime, body) => runtime.fetchGitHubReviewWorkspace(body.workspaceId),
+  "/api/github/workspace/rebase": (runtime, body) => runtime.rebaseGitHubReviewWorkspace(body.workspaceId),
+  "/api/github/workspace/push": (runtime, body) => runtime.pushGitHubReviewWorkspace(body.workspaceId, body),
+  "/api/github/list-remote-branches": (runtime, body) => runtime.githubListRemoteBranches(body),
+  "/api/github/create-pull-request": (runtime, body) => runtime.githubCreatePullRequest(body),
+  "/api/github/quickfix/list-repos": (runtime, body) => runtime.githubQuickFixListRepos(body),
+  "/api/github/quickfix/list-branches": (runtime, body) => runtime.githubQuickFixListBranches(body),
+  // /api/github/quickfix/create is handled in the outer dispatch (slot-aware).
+
+  // --- Telegram ---
+  "/api/telegram/verify-connection": (runtime, body) => runtime.verifyTelegramConnection(body.connection || {}),
+  "/api/telegram/detect-chats": (runtime, body) => runtime.detectTelegramChats(body.connection || {}),
+  "/api/telegram/save-connection": async (runtime, body) => {
+    const result = await runtime.saveTelegramConnection(body.connection || {});
+    return result.payload;
+  },
+  "/api/telegram/delete-connection": (runtime, body) => runtime.deleteTelegramConnection(body.connectionId),
+  "/api/telegram/refresh": (runtime) => runtime.refreshTelegramState(),
+
+  "/api/remote/token/regenerate": (runtime) => runtime.regenerateRemoteToken(),
+  "/api/tunnel/refresh": (runtime) => runtime.refreshTunnelState(),
+  "/api/tunnel/create": (runtime) => runtime.createCloudflareTunnel(),
+  "/api/tunnel/stop": (runtime) => runtime.stopCloudflareTunnel(),
+
+  "/api/claude-hook/configure": (runtime) => runtime.configureClaudeHook(),
+  "/api/claude-hook/remove": (runtime) => runtime.removeClaudeHook(),
+  "/api/claude-hook/status": (runtime) => runtime.getClaudeHookStatus(),
+  "/api/gemini-hook/configure": (runtime) => runtime.configureGeminiHook(),
+  "/api/gemini-hook/remove": (runtime) => runtime.removeGeminiHook(),
+  "/api/gemini-hook/status": (runtime) => runtime.getGeminiHookStatus(),
+  "/api/claude-hook/test": (runtime) => runtime.testClaudeHook(),
+  "/api/gemini-hook/test": (runtime) => runtime.testGeminiHook(),
+  "/api/codex-hook/configure": (runtime) => runtime.configureCodexHook(),
+  "/api/codex-hook/remove": (runtime) => runtime.removeCodexHook(),
+  "/api/codex-hook/status": (runtime) => runtime.getCodexHookStatus(),
+  "/api/codex-hook/test": (runtime) => runtime.testCodexHook(),
+  "/api/copilot-hook/configure": (runtime) => runtime.configureCopilotHook(),
+  "/api/copilot-hook/remove": (runtime) => runtime.removeCopilotHook(),
+  "/api/copilot-hook/status": (runtime) => runtime.getCopilotHookStatus(),
+  "/api/copilot-hook/test": (runtime) => runtime.testCopilotHook(),
+  "/api/opencode-hook/configure": (runtime) => runtime.configureOpencodeHook(),
+  "/api/opencode-hook/remove": (runtime) => runtime.removeOpencodeHook(),
+  "/api/opencode-hook/status": (runtime) => runtime.getOpencodeHookStatus(),
+  "/api/opencode-hook/test": (runtime) => runtime.testOpencodeHook(),
+
+  "/api/check-command": (runtime, body) => runtime.checkCommand(body.command),
+
+  // --- Task runner ---
+  "/api/task/recheck-claude": (runtime) => runtime.recheckClaude(),
+  "/api/task/check-providers": (runtime) => runtime.checkProviders(),
+  "/api/task/check-git-repo": (runtime, body) => runtime.checkIsGitRepo(String(body?.cwd || "")),
+  "/api/fs/probe-directory": (runtime, body) => runtime.probeDirectory(String(body?.cwd || "")),
+  // /api/task/create is handled in the outer dispatch (slot-aware).
+  "/api/task/reject-verdict": (runtime, body) => runtime.rejectTaskVerdict(body.workspaceId, body.feedback),
+  "/api/task/resend-instruction": (runtime, body) => runtime.resendTaskInstruction(body.workspaceId, body.role),
+  "/api/task-recovery/resolve": (runtime, body) => runtime.resolveTaskRecovery(body.decisions),
+  "/api/task/status": (runtime, body) => runtime.getTaskStatus(body.workspaceId),
+
+  "/api/session/activate": (runtime, body) => runtime.activateSession(body.sessionId),
+
+  // /api/workspace-grid/* and /api/attention/* — handled in the slot-aware
+  // route block at the server top level so we can resolve windowId from
+  // the bound session. The previous inline handlers passed no windowId and
+  // the runtime fell back to windowSlots[0]'s profile, letting a remote
+  // client on profile B mutate profile A's state.
+
+  "/api/terminal/restart": (runtime, body) => runtime.restartSession(body.sessionId),
+  "/api/terminal/replay": (runtime, body) => {
+    const parsed = validateIpc(terminalSessionSchema, body, "/api/terminal/replay");
+    return runtime.getTerminalReplay(parsed.sessionId);
+  },
+
+  "/api/docker/refresh": (runtime) => runtime.refreshDockerState(),
+  "/api/git/refresh": (runtime, body) => runtime.refreshGitState(body.projectId || null),
+
+  // /api/git/skip, /list-conflicts, /conflict-detail, /resolve-conflict and
+  // /unresolve-conflict are handled in the outer dispatch (slotAwareRoute) so
+  // they resolve the caller's bound windowId and refuse a cross-profile
+  // workspace. They are intentionally NOT handled here: the previous inline
+  // handlers passed no windowId, so resolveGitWorkspace fell back to
+  // windowSlots[0]'s profile and let a remote client on profile B drive
+  // conflict resolution on a workspace in profile A. Removing the inline
+  // fallback also fails safe — an accidental drop of the slot-aware entry
+  // 404s rather than silently re-opening the cross-profile hole.
+
+  // Docker endpoints are validated through the same zod schemas as the
+  // Electron IPC channel so a remote/mobile client can't bypass the
+  // argv-safety guards (no leading '-', length caps, character whitelists)
+  // that the desktop path already enforces. The runtime methods themselves
+  // trust their inputs — validation lives here at the trust boundary.
+  "/api/docker/action": (runtime, body) => {
+    const v = validateIpc(dockerActionSchema, body, "POST /api/docker/action");
+    return runtime.dockerAction(v.action, v.containerId, v.backendId, v.contextName);
+  },
+  // /api/docker/logs/open and /api/docker/shell/open are handled explicitly in
+  // handleApiRequest — they wire the streamer's onData/onClose into a
+  // `broadcast` call the table has no access to.
+  "/api/docker/logs/update": (runtime, body) => {
+    const v = validateIpc(dockerLogsUpdateSchema, body, "POST /api/docker/logs/update");
+    const ok = runtime.dockerLogsUpdate(v.sessionId, { timestamps: v.timestamps, tail: v.tail });
+    return { ok };
+  },
+  "/api/docker/logs/close": (runtime, body) => {
+    const v = validateIpc(dockerLogsCloseSchema, body, "POST /api/docker/logs/close");
+    runtime.dockerLogsClose(v.sessionId);
+    return { ok: true };
+  },
+  "/api/docker/shell/close": (runtime, body) => {
+    const v = validateIpc(dockerShellCloseSchema, body, "POST /api/docker/shell/close");
+    runtime.dockerShellClose(v.sessionId);
+    return { ok: true };
+  },
+  "/api/docker/inspect": (runtime, body) => {
+    const v = validateIpc(dockerInspectSchema, body, "POST /api/docker/inspect");
+    return runtime.dockerInspect(v.containerId, v.backendId, v.contextName);
+  },
+  "/api/docker/top": (runtime, body) => {
+    const v = validateIpc(dockerTopSchema, body, "POST /api/docker/top");
+    return runtime.dockerTop(v.containerId, v.backendId, v.contextName);
+  },
+  "/api/docker/stats": (runtime, body) => {
+    const v = validateIpc(dockerStatsSchema, body, "POST /api/docker/stats");
+    return runtime.dockerStats(v.containerId, v.backendId, v.contextName);
+  },
+  "/api/docker/image/inspect": (runtime, body) => {
+    const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/image/inspect");
+    return runtime.dockerImageInspect(v.resource, v.backendId, v.contextName);
+  },
+  "/api/docker/volume/inspect": (runtime, body) => {
+    const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/volume/inspect");
+    return runtime.dockerVolumeInspect(v.resource, v.backendId, v.contextName);
+  },
+  "/api/docker/network/inspect": (runtime, body) => {
+    const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/network/inspect");
+    return runtime.dockerNetworkInspect(v.resource, v.backendId, v.contextName);
+  },
+  "/api/docker/image/remove": (runtime, body) => {
+    const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/image/remove");
+    return runtime.dockerImageRemove(v.resource, v.backendId, v.contextName, !!v.force);
+  },
+  "/api/docker/volume/remove": (runtime, body) => {
+    const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/volume/remove");
+    return runtime.dockerVolumeRemove(v.resource, v.backendId, v.contextName, !!v.force);
+  },
+  "/api/docker/network/remove": (runtime, body) => {
+    const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/network/remove");
+    return runtime.dockerNetworkRemove(v.resource, v.backendId, v.contextName);
+  },
+  "/api/docker/image/pull": (runtime, body) => {
+    const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/image/pull");
+    return runtime.dockerImagePull(v.resource, v.backendId, v.contextName);
+  },
+  "/api/docker/image/prune": (runtime, body) => {
+    const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/image/prune");
+    return runtime.dockerImagePrune(v.backendId, v.contextName, !!v.all);
+  },
+  "/api/docker/volume/prune": (runtime, body) => {
+    const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/volume/prune");
+    return runtime.dockerVolumePrune(v.backendId, v.contextName);
+  },
+  "/api/docker/network/prune": (runtime, body) => {
+    const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/network/prune");
+    return runtime.dockerNetworkPrune(v.backendId, v.contextName);
+  },
+  "/api/docker/builder/prune": (runtime, body) => {
+    const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/builder/prune");
+    return runtime.dockerBuilderPrune(v.backendId, v.contextName, !!v.all);
+  },
+  "/api/docker/system/df": (runtime, body) => {
+    const v = validateIpc(dockerSystemDfSchema, body, "POST /api/docker/system/df");
+    return runtime.dockerSystemDf(v.backendId, v.contextName);
+  },
+  "/api/docker/volume/list": (runtime, body) => {
+    const v = validateIpc(dockerVolumeBrowseSchema, body, "POST /api/docker/volume/list");
+    return runtime.dockerVolumeList(v.volumeName, v.backendId, v.contextName, v.subPath);
+  },
+  "/api/docker/volume/read": (runtime, body) => {
+    const v = validateIpc(dockerVolumeBrowseSchema, body, "POST /api/docker/volume/read");
+    return runtime.dockerVolumeReadFile(v.volumeName, v.backendId, v.contextName, v.subPath);
+  },
+  "/api/docker/compose-action": (runtime, body) => {
+    const v = validateIpc(dockerComposeActionSchema, body, "POST /api/docker/compose-action");
+    return runtime.dockerComposeAction(v.action, v.backendId, v.contextName, v.projectName);
+  },
+  "/api/docker/open-session": (runtime, body) => runtime.openDockerSession(body),
+  "/api/docker/open-lazydocker": (runtime, body) => runtime.openLazydockerSession(body),
+  "/api/git/open-lazygit": (runtime, body) => runtime.openLazygitSession(body),
+
+  // /api/git/create-worktree is handled in the outer dispatch (slot-aware).
+
+  "/api/profile/save": (runtime, body) => runtime.saveProfile(body.profile),
+  "/api/profile/delete": (runtime, body) => runtime.deleteProfile(body.profileId),
+
+  // --- File manager endpoints (read-only by default for remote) ---
+  "/api/file/list": (_runtime, body) => fm.listDirectory(body.rootPath as string, body.relativePath as string),
+  "/api/file/tree": (_runtime, body) => fm.getDirectoryTree(body.rootPath as string, body.relativePath as string),
+  "/api/file/preview": (_runtime, body) => fm.readFilePreview(body.rootPath as string, body.relativePath as string),
+  "/api/file/read": (_runtime, body) => fm.readFileContent(body.rootPath as string, body.relativePath as string),
+  "/api/file/write": (_runtime, body) =>
+    fm.writeFileContent(body.rootPath as string, body.relativePath as string, body.content as string),
+  "/api/file/create-file": (_runtime, body) =>
+    fm.createFile(body.rootPath as string, body.parentPath as string, body.name as string),
+  "/api/file/create-dir": (_runtime, body) =>
+    fm.createDirectory(body.rootPath as string, body.parentPath as string, body.name as string),
+  "/api/file/rename": (_runtime, body) =>
+    fm.renameEntry(body.rootPath as string, body.relativePath as string, body.newName as string),
+  "/api/file/delete": (_runtime, body) => fm.deleteEntry(body.rootPath as string, body.relativePath as string),
+  "/api/file/git-ignore": (_runtime, body) =>
+    fm.addToGitignore(body.rootPath as string, body.relativePath as string, body.isDirectory === true),
+  "/api/file/move": (_runtime, body) =>
+    fm.moveEntry(body.rootPath as string, body.fromPath as string, body.toPath as string),
+  "/api/file/copy": (_runtime, body) =>
+    fm.copyEntry(body.rootPath as string, body.fromPath as string, body.toPath as string),
+  // Open-in-explorer is an Electron-only feature; noop for remote.
+  "/api/file/open-in-explorer": () => ({ ok: true }),
+  // OS-clipboard "copy file" is an Electron-only feature; noop for remote.
+  // The renderer-side in-app clipboard still works for paste-within-app.
+  "/api/file/clipboard-copy": () => ({ ok: true }),
+  // Open-in-editor is an Electron-only feature; noop for remote.
+  "/api/file/open-in-editor": () => ({ ok: true }),
+  "/api/file/info": (_runtime, body) => fm.getFileInfo(body.rootPath as string, body.relativePath as string),
+  "/api/file/git-status": (_runtime, body) =>
+    fm.getGitFileStatus(body.rootPath as string, { includeIgnored: !!body.includeIgnored }),
+  "/api/file/git-refs": (_runtime, body) =>
+    fm.getGitRefs(body.rootPath as string, (body.relativePath as string) || ""),
+  "/api/file/git-diff": (_runtime, body) =>
+    fm.computeFileDiff(body.rootPath as string, body.relativePath as string, {
+      source: (body.source as string) || "head",
+      revisionRef: (body.revisionRef as string) || "",
+    }),
+  "/api/file/commit-files": (_runtime, body) => fm.getCommitFiles(body.rootPath as string, body.hash as string),
+  "/api/file/commit-diff": (_runtime, body) =>
+    fm.computeCommitFileDiff(body.rootPath as string, body.relativePath as string, body.hash as string),
+
+  // --- SSH (remote is read-only per plan §14) ---
+  "/api/ssh/hosts/list": (runtime) => runtime["ssh:hosts:list"](),
+  // Returns metadata only; private-key material never leaves the host.
+  "/api/ssh/keys/list": (runtime) => runtime["ssh:keys:list"](),
+  "/api/ssh/certs/list": (runtime) => runtime["ssh:certs:list"](),
+  // Remote sessions are allowed to respond to active prompts only — they
+  // can't create/edit credentials. This mirrors how the user is already
+  // attached to a session created locally.
+  "/api/ssh/auth/answer": (runtime, body) => runtime["ssh:auth:answer"](body),
+  "/api/ssh/auth/cancel": (runtime, body) => runtime["ssh:auth:cancel"](body),
+  "/api/ssh/host-key/accept": (runtime, body) => runtime["ssh:host-key:accept"](body),
+  "/api/ssh/host-key/reject": (runtime, body) => runtime["ssh:host-key:reject"](body),
+};
+
 async function handleApiRequest(
   runtime: Runtime,
   request: IncomingMessage,
@@ -1178,409 +1490,6 @@ async function handleApiRequest(
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/azure/verify-connection") {
-      json(response, 200, await runtime.verifyAzureConnection(body.connection || {}));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/refresh") {
-      json(response, 200, await runtime.refreshAzureState());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/audit-log/query") {
-      json(response, 200, runtime.queryAzureAuditLog(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/audit-log/stats") {
-      json(response, 200, runtime.getAzureAuditStats(body));
-      return;
-    }
-
-    // /api/azure/pull-request/open, /seen, /comment, /thread-status and /vote are
-    // all handled in the outer dispatch (slotAwareRoute) so they resolve the
-    // bound viewer id from the remote-client registry and reject cross-profile
-    // PRs; reaching here would mean the route bypassed that intercept.
-
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/agent-prompt/reset") {
-      json(response, 200, await runtime.resetAgentPrompts());
-      return;
-    }
-
-    // /api/review-bridge/pull-request/sync is handled in the outer dispatch
-    // (slotAwareRoute) so it resolves the caller's viewer id and refuses to
-    // publish drafts to a PR outside the caller's profile.
-
-    // /api/azure/pull-request/vote is handled in the outer dispatch
-    // (slotAwareRoute) so it resolves the caller's viewer id and rejects a vote
-    // on a PR outside the caller's profile.
-
-    if (request.method === "POST" && url.pathname === "/api/azure/workspace/fetch") {
-      json(response, 200, await runtime.fetchAzureReviewWorkspace(body.workspaceId));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/workspace/rebase") {
-      json(response, 200, await runtime.rebaseAzureReviewWorkspace(body.workspaceId));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/workspace/push") {
-      json(
-        response,
-        200,
-        await runtime.pushAzureReviewWorkspace(body.workspaceId as string, { force: Boolean(body.force) }),
-      );
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/create-pull-request") {
-      json(response, 200, await runtime.azureCreatePullRequest(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/list-remote-branches") {
-      json(response, 200, await runtime.azureListRemoteBranches(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/quickfix/list-projects") {
-      json(response, 200, await runtime.azureQuickFixListProjects(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/quickfix/list-repositories") {
-      json(response, 200, await runtime.azureQuickFixListRepositories(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/quickfix/list-branches") {
-      json(response, 200, await runtime.azureQuickFixListBranches(body));
-      return;
-    }
-
-    // /api/azure/quickfix/create is handled in the outer dispatch (slot-aware).
-    // /api/azure/rerun-check is handled in the outer dispatch (slotAwareRoute) so
-    // it resolves the caller's viewer id and refuses a cross-profile prKey.
-
-    // Pipelines tab — connectionId-addressed reads/actions, handled inline like
-    // the quickfix reads above (they don't touch local workspace/slot state).
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/list") {
-      json(response, 200, await runtime.listAzurePipelines(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/runs") {
-      json(response, 200, await runtime.listAzurePipelineRuns(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run-seed") {
-      json(response, 200, await runtime.getAzurePipelineRunSeed(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run-parameters") {
-      json(response, 200, await runtime.getAzurePipelineRunParameters(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/refs") {
-      json(response, 200, await runtime.getAzurePipelineRefs(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/commits") {
-      json(response, 200, await runtime.getAzurePipelineCommits(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run") {
-      json(response, 200, await runtime.runAzurePipeline(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run-status") {
-      json(response, 200, await runtime.getAzurePipelineRunStatus(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/cancel") {
-      json(response, 200, await runtime.cancelAzureBuild(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/build-log") {
-      json(response, 200, await runtime.getAzureBuildLog(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/azure/pipelines/run-detail") {
-      json(response, 200, await runtime.getAzurePipelineRunDetail(body));
-      return;
-    }
-
-    // --- GitHub ---
-    if (request.method === "POST" && url.pathname === "/api/github/verify-connection") {
-      json(response, 200, await runtime.verifyGitHubConnection(body.connection || {}));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/refresh") {
-      json(response, 200, await runtime.refreshGitHubState());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/audit-log/query") {
-      json(response, 200, runtime.queryGitHubAuditLog(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/audit-log/stats") {
-      json(response, 200, runtime.getGitHubAuditStats(body));
-      return;
-    }
-    // /api/github/pull-request/open, /seen, /comment and /review are handled in
-    // the outer dispatch (slotAwareRoute) so they resolve the bound viewer id
-    // from the remote-client registry and reject cross-profile PRs.
-
-    // /api/github/rerun-check is handled in the outer dispatch (slotAwareRoute)
-    // so it resolves the caller's viewer id and refuses a cross-profile prKey.
-    if (request.method === "POST" && url.pathname === "/api/github/workspace/fetch") {
-      json(response, 200, await runtime.fetchGitHubReviewWorkspace(body.workspaceId));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/workspace/rebase") {
-      json(response, 200, await runtime.rebaseGitHubReviewWorkspace(body.workspaceId));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/workspace/push") {
-      json(response, 200, await runtime.pushGitHubReviewWorkspace(body.workspaceId, body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/list-remote-branches") {
-      json(response, 200, await runtime.githubListRemoteBranches(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/create-pull-request") {
-      json(response, 200, await runtime.githubCreatePullRequest(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/quickfix/list-repos") {
-      json(response, 200, await runtime.githubQuickFixListRepos(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/quickfix/list-branches") {
-      json(response, 200, await runtime.githubQuickFixListBranches(body));
-      return;
-    }
-    // /api/github/quickfix/create is handled in the outer dispatch (slot-aware).
-
-    // --- Telegram ---
-    if (request.method === "POST" && url.pathname === "/api/telegram/verify-connection") {
-      json(response, 200, await runtime.verifyTelegramConnection(body.connection || {}));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/telegram/detect-chats") {
-      json(response, 200, await runtime.detectTelegramChats(body.connection || {}));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/telegram/save-connection") {
-      const result = await runtime.saveTelegramConnection(body.connection || {});
-      json(response, 200, result.payload);
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/telegram/delete-connection") {
-      json(response, 200, await runtime.deleteTelegramConnection(body.connectionId));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/telegram/refresh") {
-      json(response, 200, await runtime.refreshTelegramState());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/remote/token/regenerate") {
-      json(response, 200, await runtime.regenerateRemoteToken());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/tunnel/refresh") {
-      json(response, 200, await runtime.refreshTunnelState());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/tunnel/create") {
-      json(response, 200, await runtime.createCloudflareTunnel());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/tunnel/stop") {
-      json(response, 200, await runtime.stopCloudflareTunnel());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/claude-hook/configure") {
-      json(response, 200, await runtime.configureClaudeHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/claude-hook/remove") {
-      json(response, 200, await runtime.removeClaudeHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/claude-hook/status") {
-      json(response, 200, await runtime.getClaudeHookStatus());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/gemini-hook/configure") {
-      json(response, 200, await runtime.configureGeminiHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/gemini-hook/remove") {
-      json(response, 200, await runtime.removeGeminiHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/gemini-hook/status") {
-      json(response, 200, await runtime.getGeminiHookStatus());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/claude-hook/test") {
-      json(response, 200, await runtime.testClaudeHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/gemini-hook/test") {
-      json(response, 200, await runtime.testGeminiHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/codex-hook/configure") {
-      json(response, 200, await runtime.configureCodexHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/codex-hook/remove") {
-      json(response, 200, await runtime.removeCodexHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/codex-hook/status") {
-      json(response, 200, await runtime.getCodexHookStatus());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/codex-hook/test") {
-      json(response, 200, await runtime.testCodexHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/copilot-hook/configure") {
-      json(response, 200, await runtime.configureCopilotHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/copilot-hook/remove") {
-      json(response, 200, await runtime.removeCopilotHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/copilot-hook/status") {
-      json(response, 200, await runtime.getCopilotHookStatus());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/copilot-hook/test") {
-      json(response, 200, await runtime.testCopilotHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/opencode-hook/configure") {
-      json(response, 200, await runtime.configureOpencodeHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/opencode-hook/remove") {
-      json(response, 200, await runtime.removeOpencodeHook());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/opencode-hook/status") {
-      json(response, 200, await runtime.getOpencodeHookStatus());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/opencode-hook/test") {
-      json(response, 200, await runtime.testOpencodeHook());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/check-command") {
-      json(response, 200, await runtime.checkCommand(body.command));
-      return;
-    }
-
-    // --- Task runner ---
-    if (request.method === "POST" && url.pathname === "/api/task/recheck-claude") {
-      json(response, 200, await runtime.recheckClaude());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/check-providers") {
-      json(response, 200, await runtime.checkProviders());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/check-git-repo") {
-      json(response, 200, await runtime.checkIsGitRepo(String(body?.cwd || "")));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/fs/probe-directory") {
-      json(response, 200, await runtime.probeDirectory(String(body?.cwd || "")));
-      return;
-    }
-    // /api/task/create is handled in the outer dispatch (slot-aware).
-    if (request.method === "POST" && url.pathname === "/api/task/reject-verdict") {
-      json(response, 200, await runtime.rejectTaskVerdict(body.workspaceId, body.feedback));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/resend-instruction") {
-      json(response, 200, await runtime.resendTaskInstruction(body.workspaceId, body.role));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task-recovery/resolve") {
-      json(response, 200, await runtime.resolveTaskRecovery(body.decisions));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/status") {
-      json(response, 200, runtime.getTaskStatus(body.workspaceId));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/session/activate") {
-      json(response, 200, await runtime.activateSession(body.sessionId));
-      return;
-    }
-
-    // /api/workspace-grid/* and /api/attention/* — handled in the slot-aware
-    // route block at the server top level so we can resolve windowId from
-    // the bound session. The previous inline handlers passed no windowId and
-    // the runtime fell back to windowSlots[0]'s profile, letting a remote
-    // client on profile B mutate profile A's state.
-
-    if (request.method === "POST" && url.pathname === "/api/terminal/restart") {
-      json(response, 200, await runtime.restartSession(body.sessionId));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/terminal/replay") {
-      const parsed = validateIpc(terminalSessionSchema, body, "/api/terminal/replay");
-      json(response, 200, runtime.getTerminalReplay(parsed.sessionId));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/refresh") {
-      json(response, 200, await runtime.refreshDockerState());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/refresh") {
-      json(response, 200, await runtime.refreshGitState(body.projectId || null));
-      return;
-    }
-
-    // /api/git/skip, /list-conflicts, /conflict-detail, /resolve-conflict and
-    // /unresolve-conflict are handled in the outer dispatch (slotAwareRoute) so
-    // they resolve the caller's bound windowId and refuse a cross-profile
-    // workspace. They are intentionally NOT handled here: the previous inline
-    // handlers passed no windowId, so resolveGitWorkspace fell back to
-    // windowSlots[0]'s profile and let a remote client on profile B drive
-    // conflict resolution on a workspace in profile A. Removing the inline
-    // fallback also fails safe — an accidental drop of the slot-aware entry
-    // 404s rather than silently re-opening the cross-profile hole.
-
-    // Docker endpoints are validated through the same zod schemas as the
-    // Electron IPC channel so a remote/mobile client can't bypass the
-    // argv-safety guards (no leading '-', length caps, character whitelists)
-    // that the desktop path already enforces. The runtime methods themselves
-    // trust their inputs — validation lives here at the trust boundary.
-    if (request.method === "POST" && url.pathname === "/api/docker/action") {
-      const v = validateIpc(dockerActionSchema, body, "POST /api/docker/action");
-      json(response, 200, await runtime.dockerAction(v.action, v.containerId, v.backendId, v.contextName));
-      return;
-    }
-
     if (request.method === "POST" && url.pathname === "/api/docker/logs/open") {
       // Wire the streamer's onData/onClose callbacks to WebSocket broadcasts.
       // Buffers come over WS as utf8 strings — docker log payloads are ANSI
@@ -1603,21 +1512,6 @@ async function handleApiRequest(
       json(response, 200, { ok: true });
       return;
     }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/logs/update") {
-      const v = validateIpc(dockerLogsUpdateSchema, body, "POST /api/docker/logs/update");
-      const ok = runtime.dockerLogsUpdate(v.sessionId, { timestamps: v.timestamps, tail: v.tail });
-      json(response, 200, { ok });
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/logs/close") {
-      const v = validateIpc(dockerLogsCloseSchema, body, "POST /api/docker/logs/close");
-      runtime.dockerLogsClose(v.sessionId);
-      json(response, 200, { ok: true });
-      return;
-    }
-
     // Docker interactive shell (`docker exec -it`). Open/close are infrequent
     // (once per tab) so they're plain HTTP POSTs, same shape as the log-stream
     // routes above; per-keystroke write/resize instead ride the WS socket
@@ -1641,302 +1535,6 @@ async function handleApiRequest(
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/docker/shell/close") {
-      const v = validateIpc(dockerShellCloseSchema, body, "POST /api/docker/shell/close");
-      runtime.dockerShellClose(v.sessionId);
-      json(response, 200, { ok: true });
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/inspect") {
-      const v = validateIpc(dockerInspectSchema, body, "POST /api/docker/inspect");
-      json(response, 200, await runtime.dockerInspect(v.containerId, v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/top") {
-      const v = validateIpc(dockerTopSchema, body, "POST /api/docker/top");
-      json(response, 200, await runtime.dockerTop(v.containerId, v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/stats") {
-      const v = validateIpc(dockerStatsSchema, body, "POST /api/docker/stats");
-      json(response, 200, await runtime.dockerStats(v.containerId, v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/image/inspect") {
-      const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/image/inspect");
-      json(response, 200, await runtime.dockerImageInspect(v.resource, v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/volume/inspect") {
-      const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/volume/inspect");
-      json(response, 200, await runtime.dockerVolumeInspect(v.resource, v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/network/inspect") {
-      const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/network/inspect");
-      json(response, 200, await runtime.dockerNetworkInspect(v.resource, v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/image/remove") {
-      const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/image/remove");
-      json(response, 200, await runtime.dockerImageRemove(v.resource, v.backendId, v.contextName, !!v.force));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/volume/remove") {
-      const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/volume/remove");
-      json(response, 200, await runtime.dockerVolumeRemove(v.resource, v.backendId, v.contextName, !!v.force));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/network/remove") {
-      const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/network/remove");
-      json(response, 200, await runtime.dockerNetworkRemove(v.resource, v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/image/pull") {
-      const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/image/pull");
-      json(response, 200, await runtime.dockerImagePull(v.resource, v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/image/prune") {
-      const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/image/prune");
-      json(response, 200, await runtime.dockerImagePrune(v.backendId, v.contextName, !!v.all));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/volume/prune") {
-      const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/volume/prune");
-      json(response, 200, await runtime.dockerVolumePrune(v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/network/prune") {
-      const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/network/prune");
-      json(response, 200, await runtime.dockerNetworkPrune(v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/builder/prune") {
-      const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/builder/prune");
-      json(response, 200, await runtime.dockerBuilderPrune(v.backendId, v.contextName, !!v.all));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/system/df") {
-      const v = validateIpc(dockerSystemDfSchema, body, "POST /api/docker/system/df");
-      json(response, 200, await runtime.dockerSystemDf(v.backendId, v.contextName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/volume/list") {
-      const v = validateIpc(dockerVolumeBrowseSchema, body, "POST /api/docker/volume/list");
-      json(response, 200, await runtime.dockerVolumeList(v.volumeName, v.backendId, v.contextName, v.subPath));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/volume/read") {
-      const v = validateIpc(dockerVolumeBrowseSchema, body, "POST /api/docker/volume/read");
-      json(response, 200, await runtime.dockerVolumeReadFile(v.volumeName, v.backendId, v.contextName, v.subPath));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/compose-action") {
-      const v = validateIpc(dockerComposeActionSchema, body, "POST /api/docker/compose-action");
-      json(response, 200, await runtime.dockerComposeAction(v.action, v.backendId, v.contextName, v.projectName));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/open-session") {
-      json(response, 200, await runtime.openDockerSession(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/docker/open-lazydocker") {
-      json(response, 200, await runtime.openLazydockerSession(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/open-lazygit") {
-      json(response, 200, await runtime.openLazygitSession(body));
-      return;
-    }
-
-    // /api/git/create-worktree is handled in the outer dispatch (slot-aware).
-
-    if (request.method === "POST" && url.pathname === "/api/profile/save") {
-      json(response, 200, await runtime.saveProfile(body.profile));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/profile/delete") {
-      json(response, 200, await runtime.deleteProfile(body.profileId));
-      return;
-    }
-
-    // --- File manager endpoints (read-only by default for remote) ---
-    if (request.method === "POST" && url.pathname === "/api/file/list") {
-      json(response, 200, await fm.listDirectory(body.rootPath as string, body.relativePath as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/tree") {
-      json(response, 200, await fm.getDirectoryTree(body.rootPath as string, body.relativePath as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/preview") {
-      json(response, 200, await fm.readFilePreview(body.rootPath as string, body.relativePath as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/read") {
-      json(response, 200, await fm.readFileContent(body.rootPath as string, body.relativePath as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/write") {
-      json(
-        response,
-        200,
-        await fm.writeFileContent(body.rootPath as string, body.relativePath as string, body.content as string),
-      );
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/create-file") {
-      json(response, 200, await fm.createFile(body.rootPath as string, body.parentPath as string, body.name as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/create-dir") {
-      json(
-        response,
-        200,
-        await fm.createDirectory(body.rootPath as string, body.parentPath as string, body.name as string),
-      );
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/rename") {
-      json(
-        response,
-        200,
-        await fm.renameEntry(body.rootPath as string, body.relativePath as string, body.newName as string),
-      );
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/delete") {
-      json(response, 200, await fm.deleteEntry(body.rootPath as string, body.relativePath as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/git-ignore") {
-      json(
-        response,
-        200,
-        await fm.addToGitignore(body.rootPath as string, body.relativePath as string, body.isDirectory === true),
-      );
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/move") {
-      json(response, 200, await fm.moveEntry(body.rootPath as string, body.fromPath as string, body.toPath as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/copy") {
-      json(response, 200, await fm.copyEntry(body.rootPath as string, body.fromPath as string, body.toPath as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/open-in-explorer") {
-      // Open-in-explorer is an Electron-only feature; noop for remote.
-      json(response, 200, { ok: true });
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/clipboard-copy") {
-      // OS-clipboard "copy file" is an Electron-only feature; noop for remote.
-      // The renderer-side in-app clipboard still works for paste-within-app.
-      json(response, 200, { ok: true });
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/open-in-editor") {
-      // Open-in-editor is an Electron-only feature; noop for remote.
-      json(response, 200, { ok: true });
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/info") {
-      json(response, 200, await fm.getFileInfo(body.rootPath as string, body.relativePath as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/git-status") {
-      json(
-        response,
-        200,
-        await fm.getGitFileStatus(body.rootPath as string, { includeIgnored: !!body.includeIgnored }),
-      );
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/git-refs") {
-      json(response, 200, await fm.getGitRefs(body.rootPath as string, (body.relativePath as string) || ""));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/git-diff") {
-      json(
-        response,
-        200,
-        await fm.computeFileDiff(body.rootPath as string, body.relativePath as string, {
-          source: (body.source as string) || "head",
-          revisionRef: (body.revisionRef as string) || "",
-        }),
-      );
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/commit-files") {
-      json(response, 200, await fm.getCommitFiles(body.rootPath as string, body.hash as string));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/file/commit-diff") {
-      json(
-        response,
-        200,
-        await fm.computeCommitFileDiff(body.rootPath as string, body.relativePath as string, body.hash as string),
-      );
-      return;
-    }
-
-    // --- SSH (remote is read-only per plan §14) ---
-    if (request.method === "POST" && url.pathname === "/api/ssh/hosts/list") {
-      json(response, 200, await runtime["ssh:hosts:list"]());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/ssh/keys/list") {
-      // Returns metadata only; private-key material never leaves the host.
-      json(response, 200, await runtime["ssh:keys:list"]());
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/ssh/certs/list") {
-      json(response, 200, await runtime["ssh:certs:list"]());
-      return;
-    }
-    // Remote sessions are allowed to respond to active prompts only — they
-    // can't create/edit credentials. This mirrors how the user is already
-    // attached to a session created locally.
-    if (request.method === "POST" && url.pathname === "/api/ssh/auth/answer") {
-      json(response, 200, await runtime["ssh:auth:answer"](body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/ssh/auth/cancel") {
-      json(response, 200, await runtime["ssh:auth:cancel"](body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/ssh/host-key/accept") {
-      json(response, 200, await runtime["ssh:host-key:accept"](body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/ssh/host-key/reject") {
-      json(response, 200, await runtime["ssh:host-key:reject"](body));
-      return;
-    }
     // Explicitly forbid credential/host administration from remote clients
     // so a leaked token can't exfiltrate or plant SSH hosts/keys. See plan
     // §14 — this must never be opened up without a per-host-on-remote
@@ -1959,6 +1557,14 @@ async function handleApiRequest(
     ) {
       json(response, 403, { error: "SSH administration is not permitted on remote clients." });
       return;
+    }
+
+    if (request.method === "POST") {
+      const handler = API_ROUTES[url.pathname];
+      if (handler) {
+        json(response, 200, await handler(runtime, body));
+        return;
+      }
     }
 
     json(response, 404, { error: "Not found" });

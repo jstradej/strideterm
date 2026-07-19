@@ -718,6 +718,227 @@ describe("DETAIL_ROUTES / slotAwareRoute — built once per server instance, not
   });
 });
 
+// review-code-quality-2026-07.md finding §5.3: handleApiRequest's ~150-block
+// if-chain was replaced with an API_ROUTES lookup table (`Record<string,
+// (runtime, body) => unknown>`) + a small dispatch wrapper. These tests hit a
+// representative sample of the newly-tabled routes end-to-end (status codes,
+// response shapes, validation error messages) to confirm the table produces
+// identical behavior to the old if-chain for: a plain sync passthrough route,
+// a validateIpc-guarded route (both the reject and accept paths), a route
+// whose handler unwraps a nested `.payload` before responding, a bracket-
+// notation runtime method call, and the 404 fallback for an untabled route.
+describe("API_ROUTES table — representative route coverage", () => {
+  function makeMinimalRuntime(auth: string, port: number) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth } },
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    return {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+    };
+  }
+
+  const headers = (auth: string) => ({
+    Authorization: `Bearer ${auth}`,
+    "Content-Type": "application/json",
+  });
+
+  test("POST /api/azure/audit-log/query (sync, no validateIpc) returns 200 with the runtime's return value", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-audit-query";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      queryAzureAuditLog: (body: unknown) => unknown;
+    };
+    let receivedBody: unknown;
+    runtime.queryAzureAuditLog = (body: unknown) => {
+      receivedBody = body;
+      return { entries: ["a", "b"] };
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/azure/audit-log/query`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify({ connectionId: "az1" }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ entries: ["a", "b"] });
+      expect(receivedBody).toEqual({ connectionId: "az1" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("POST /api/docker/action with an invalid body (missing containerId) returns 400 with an IPC validation error", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-docker-action-invalid";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      dockerAction: (...args: unknown[]) => Promise<unknown>;
+    };
+    runtime.dockerAction = async () => ({ ok: true });
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/docker/action`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify({ action: "start" }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toMatch(/IPC validation failed/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("POST /api/docker/action with a valid body returns 200 and forwards the parsed fields", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-docker-action-ok";
+    const calls: unknown[] = [];
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      dockerAction: (...args: unknown[]) => Promise<unknown>;
+    };
+    runtime.dockerAction = async (...args: unknown[]) => {
+      calls.push(args);
+      return { ok: true };
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/docker/action`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify({ action: "start", containerId: "c1", backendId: "docker" }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(calls[0]).toEqual(["start", "c1", "docker", undefined]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("POST /api/telegram/save-connection returns the unwrapped result.payload, not the wrapping envelope", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-telegram-save";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      saveTelegramConnection: (connection: unknown) => Promise<unknown>;
+    };
+    runtime.saveTelegramConnection = async () => ({ ok: true, payload: { marker: "unwrapped" } });
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/telegram/save-connection`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify({ connection: { botToken: "t" } }),
+      });
+      expect(res.status).toBe(200);
+      // The response is result.payload directly — not { ok, payload } — proving
+      // the multi-statement table entry (unwrap then return) behaves like the
+      // original two-statement if-block.
+      expect(await res.json()).toEqual({ marker: "unwrapped" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('POST /api/ssh/hosts/list (bracket-notation runtime call) returns 200 with the runtime\'s value', async () => {
+    const port = await getFreePort();
+    const auth = "test-token-ssh-hosts-list";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      "ssh:hosts:list": () => Promise<unknown>;
+    };
+    runtime["ssh:hosts:list"] = async () => [{ id: "host1" }];
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/ssh/hosts/list`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([{ id: "host1" }]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("POST /api/docker/logs/close validates then returns a static { ok: true } after the void runtime call", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-docker-logs-close";
+    const calls: unknown[] = [];
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      dockerLogsClose: (sessionId: string) => void;
+    };
+    runtime.dockerLogsClose = (sessionId: string) => {
+      calls.push(sessionId);
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/docker/logs/close`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify({ sessionId: "s1" }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(calls).toEqual(["s1"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("POST to an unrecognized /api/ path still 404s (table-miss fallback matches the old if-chain's final else)", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-404-fallback";
+    const runtime = makeMinimalRuntime(auth, port);
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/this-route-does-not-exist`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toBe("Not found");
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe("malformed request body handling — must respond, never hang", () => {
   function makeMinimalRuntime(auth: string, port: number) {
     const payload = {
