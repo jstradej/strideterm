@@ -3343,6 +3343,28 @@ export async function createRuntime({
   }
 
   /**
+   * Tear down a removed workspace's live runtime state: end its PTY
+   * sessions, drop its terminal replay buffer, clear its project alerts,
+   * and cancel any pending shell-triggered git refresh for it (so the timer
+   * can't outlive the removal and so git.exe never runs inside a worktree
+   * that's about to disappear). Shared by deleteWorkspace and
+   * pruneOrphanedWorkspaces. Returns the same "sessions fully exited"
+   * promise sessions.removeWorkspaceSessions does — deleteWorkspace awaits
+   * it before releasing its pending-delete flag; pruneOrphanedWorkspaces
+   * discards it, matching its original fire-and-forget behavior.
+   */
+  function cleanupWorkspaceRuntimeState(workspaceId: string): Promise<void> {
+    const sessionsExited = sessions.removeWorkspaceSessions(workspaceId);
+    clearWorkspaceTerminalReplay(workspaceId);
+    const pendingGitRefresh = gitRefreshDebounceMap.get(workspaceId);
+    if (pendingGitRefresh) clearTimeout(pendingGitRefresh);
+    gitRefreshDebounceMap.delete(workspaceId);
+    lastShellRefreshAt.delete(workspaceId);
+    clearProjectAlerts(workspaceId);
+    return sessionsExited;
+  }
+
+  /**
    * Drop workspaces whose `cwd` no longer exists on disk. Covers the orphan
    * case: user nuked the worktree externally (or a previous deleteFromDisk
    * left only stragglers behind), and the sidebar entry is now useless —
@@ -3386,14 +3408,8 @@ export async function createRuntime({
           /* best-effort; task may already be stopped */
         }
       }
-      sessions.removeWorkspaceSessions(ws.id);
-      clearWorkspaceTerminalReplay(ws.id);
-      clearProjectAlerts(ws.id);
-      // Krok 2: same debounce cleanup as deleteWorkspace.
-      const pendingGitRefresh = gitRefreshDebounceMap.get(ws.id);
-      if (pendingGitRefresh) clearTimeout(pendingGitRefresh);
-      gitRefreshDebounceMap.delete(ws.id);
-      lastShellRefreshAt.delete(ws.id);
+      // Krok 2: same runtime-state cleanup as deleteWorkspace.
+      cleanupWorkspaceRuntimeState(ws.id);
     }
     log.info("pruneOrphanedWorkspaces removed orphans", {
       count: toRemove.length,
@@ -4378,6 +4394,160 @@ export async function createRuntime({
   }
   const typedHookProviderHandlers = hookProviderHandlers as unknown as HookProviderHandlers;
 
+  /**
+   * Delete a workspace's on-disk worktree, called from deleteWorkspace when
+   * `options.deleteFromDisk` is set. Validates `requestedPath` is actually a
+   * path this workspace manages (resolveManagedDeletePath), waits for its
+   * PTY sessions to fully exit (Windows file-handle release probe), removes
+   * the directory (rmPath, falling back to `git worktree remove --force`),
+   * and arms a background retry on failure. Returns "" on success, or a
+   * user-facing error string.
+   */
+  async function deleteWorkspaceFromDisk(
+    workspace: WorkspaceState,
+    workspaceId: string,
+    requestedPath: string,
+    sessionsExited: Promise<void> | null,
+  ): Promise<string> {
+    const diskPath = resolveManagedDeletePath(workspace, requestedPath) ?? "";
+    if (!diskPath) {
+      return `Refused to delete unmanaged workspace path: ${requestedPath || "(empty)"}`;
+    }
+    let diskDeleteError = "";
+    if (diskPath && path.isAbsolute(diskPath)) {
+      pendingWorktreeDeletions.add(diskPath);
+      // Krok 6: a fresh delete on this exact path supersedes any armed
+      // background retry — cancel it and take the synchronous path.
+      cancelBackgroundDeleteRetry(diskPath);
+      const tDelete0 = Date.now();
+      log.debug("deleteWorkspace: starting disk delete", {
+        workspaceId,
+        workspaceName: workspace.name,
+        diskPath,
+        kind: workspace.kind,
+        isReview: !!workspace.review,
+        isTask: !!workspace.task,
+        isQuickfix: !!workspace.quickfix,
+      });
+      // Resolve the git cwd up front (depends only on the workspace) so the
+      // catch branch can prune / arm a background retry after a failure.
+      const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
+      const taskWorktreeBase = workspace.task?.worktreeBase || "";
+      const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
+      const gitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
+      try {
+        const tWait0 = Date.now();
+        await sessionsExited;
+        log.debug("deleteWorkspace: PTY sessions exited", {
+          workspaceId,
+          waitMs: Date.now() - tWait0,
+        });
+        // On Windows, agent children (claude.exe, codex.exe, …) spawned by
+        // the killed PTY shell may outlive their parent for hundreds of
+        // milliseconds while still holding file handles inside the
+        // worktree. fs/rd will fail with EBUSY/EPERM until those handles
+        // are released. We don't taskkill the tree (too brutal — risks
+        // truncated agent state), instead we wait by probing: try to
+        // rename diskPath onto itself; on Windows this fails while any
+        // handle is open and succeeds once they're all released. Cap the
+        // wait at 5s; if it still locks, rmPath's own retry loop will
+        // either eventually succeed or the git fallback will run.
+        if (process.platform === "win32") {
+          const tProbe0 = Date.now();
+          // Krok 1: ENOENT short-circuits instead of spinning the full
+          // timeout on an already-gone directory.
+          const probe = await waitForHandleRelease(diskPath, { renameImpl: rename });
+          log.debug("deleteWorkspace: handle-release probe finished", {
+            workspaceId,
+            diskPath,
+            probeMs: Date.now() - tProbe0,
+            released: probe.released,
+            reason: probe.reason,
+          });
+        }
+
+        log.debug("deleteWorkspace: resolved git cwd", { workspaceId, gitCwd, cacheRepoPath, taskWorktreeBase });
+        // Fast path: nuke the directory at the filesystem level, then ask
+        // git to prune stale metadata. `git worktree remove --force` walks
+        // the tree itself with per-file stat calls — markedly slower than
+        // platform-native `rd /s /q` (Windows) or fs.rm (POSIX) when the
+        // worktree has a fat node_modules / build dir. The previous order
+        // (git first, fs fallback) made every successful delete take the
+        // slow path. Only fall back to `git worktree remove --force` if
+        // rmPath couldn't finish (e.g. locked files held by AV).
+        let rmFailed = false;
+        let rmErr: unknown = null;
+        const tRm0 = Date.now();
+        try {
+          await rmPath(diskPath);
+          log.debug("deleteWorkspace: rmPath succeeded", { workspaceId, diskPath, ms: Date.now() - tRm0 });
+        } catch (err) {
+          rmFailed = true;
+          rmErr = err;
+          log.debug("deleteWorkspace: rmPath failed, trying git worktree remove --force", {
+            workspaceId,
+            diskPath,
+            ms: Date.now() - tRm0,
+            err: (err as Error)?.message?.slice(0, 200),
+          });
+        }
+        if (gitCwd) {
+          let gitFallbackErr: unknown = null;
+          if (rmFailed) {
+            const tGit0 = Date.now();
+            try {
+              await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: gitCwd });
+              log.debug("deleteWorkspace: git worktree remove --force succeeded", {
+                workspaceId,
+                diskPath,
+                ms: Date.now() - tGit0,
+              });
+            } catch (err) {
+              gitFallbackErr = err;
+              log.warn("deleteWorkspace: git worktree remove --force also failed", {
+                workspaceId,
+                diskPath,
+                ms: Date.now() - tGit0,
+                err: (err as Error)?.message?.slice(0, 200),
+                rmErr: (rmErr as Error)?.message?.slice(0, 200),
+              });
+            }
+          }
+          // Prune the .git/worktrees admin entry. Doesn't need to block
+          // the response — it's just metadata cleanup.
+          execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
+          if (rmFailed && gitFallbackErr) {
+            const rmMsg = (rmErr as Error)?.message?.slice(0, 200) ?? String(rmErr);
+            const gitMsg = (gitFallbackErr as Error)?.message?.slice(0, 200) ?? String(gitFallbackErr);
+            throw new Error(`Failed to remove ${diskPath}: rm: ${rmMsg}; git: ${gitMsg}`);
+          }
+        } else if (rmFailed) {
+          // No git cwd to prune from — surface the rm failure.
+          throw new Error(`Failed to remove ${diskPath}`);
+        }
+        log.debug("deleteWorkspace: disk delete complete", {
+          workspaceId,
+          diskPath,
+          totalMs: Date.now() - tDelete0,
+          rmFailed,
+        });
+      } catch (err) {
+        diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: unknown catch shape
+        log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
+        // Krok 6: the foreground attempt gave up (likely a lock held by an
+        // orphaned agent child / AV). Keep the path held in
+        // pendingWorktreeDeletions and retry in the background with backoff
+        // (10s/30s/60s/120s); the retry owns the eventual release.
+        scheduleBackgroundDeleteRetry(diskPath, gitCwd);
+      } finally {
+        // On success no retry was armed → release the hold now. On failure
+        // the background retry holds it until it succeeds or exhausts.
+        if (!backgroundDeleteRetries.has(diskPath)) pendingWorktreeDeletions.delete(diskPath);
+      }
+    }
+    return diskDeleteError;
+  }
+
   const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
@@ -5165,23 +5335,13 @@ export async function createRuntime({
           }
         });
 
-        sessionsExited = sessions.removeWorkspaceSessions(workspaceId);
-        clearWorkspaceTerminalReplay(workspaceId);
+        sessionsExited = cleanupWorkspaceRuntimeState(workspaceId);
         for (const sessionId of [...sessionSignals.keys()]) {
           if (sessionId.startsWith(`${workspaceId}:`)) {
             clearActivityFade(sessionId);
             deleteSessionSignal(sessionId);
           }
         }
-        // Krok 2: cancel any pending shell-triggered git refresh so the timer
-        // can't outlive the delete (and so git.exe never runs inside the
-        // worktree we're about to remove). Today refreshGit filters the deleted
-        // workspace out, but relying on that side effect is a regression risk.
-        const pendingGitRefresh = gitRefreshDebounceMap.get(workspaceId);
-        if (pendingGitRefresh) clearTimeout(pendingGitRefresh);
-        gitRefreshDebounceMap.delete(workspaceId);
-        lastShellRefreshAt.delete(workspaceId);
-        clearProjectAlerts(workspaceId);
         ensureVisibleSession();
         broadcastState();
 
@@ -5191,141 +5351,12 @@ export async function createRuntime({
           const primaryPath =
             workspace.review?.checkout?.rootPath || workspace.cwd || workspace.quickfix?.rootPath || "";
           const requestedPath = path.resolve(String(options.diskPath || primaryPath || "").trim());
-          const diskPath = resolveManagedDeletePath(workspace, requestedPath) ?? "";
-          if (!diskPath) {
-            diskDeleteError = `Refused to delete unmanaged workspace path: ${requestedPath || "(empty)"}`;
-          }
-          if (diskPath && path.isAbsolute(diskPath)) {
-            pendingWorktreeDeletions.add(diskPath);
-            // Krok 6: a fresh delete on this exact path supersedes any armed
-            // background retry — cancel it and take the synchronous path.
-            cancelBackgroundDeleteRetry(diskPath);
-            const tDelete0 = Date.now();
-            log.debug("deleteWorkspace: starting disk delete", {
-              workspaceId,
-              workspaceName: workspace.name,
-              diskPath,
-              kind: workspace.kind,
-              isReview: !!workspace.review,
-              isTask: !!workspace.task,
-              isQuickfix: !!workspace.quickfix,
-            });
-            // Resolve the git cwd up front (depends only on the workspace) so the
-            // catch branch can prune / arm a background retry after a failure.
-            const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
-            const taskWorktreeBase = workspace.task?.worktreeBase || "";
-            const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
-            const gitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
-            try {
-              const tWait0 = Date.now();
-              await sessionsExited;
-              log.debug("deleteWorkspace: PTY sessions exited", {
-                workspaceId,
-                waitMs: Date.now() - tWait0,
-              });
-              // On Windows, agent children (claude.exe, codex.exe, …) spawned by
-              // the killed PTY shell may outlive their parent for hundreds of
-              // milliseconds while still holding file handles inside the
-              // worktree. fs/rd will fail with EBUSY/EPERM until those handles
-              // are released. We don't taskkill the tree (too brutal — risks
-              // truncated agent state), instead we wait by probing: try to
-              // rename diskPath onto itself; on Windows this fails while any
-              // handle is open and succeeds once they're all released. Cap the
-              // wait at 5s; if it still locks, rmPath's own retry loop will
-              // either eventually succeed or the git fallback will run.
-              if (process.platform === "win32") {
-                const tProbe0 = Date.now();
-                // Krok 1: ENOENT short-circuits instead of spinning the full
-                // timeout on an already-gone directory.
-                const probe = await waitForHandleRelease(diskPath, { renameImpl: rename });
-                log.debug("deleteWorkspace: handle-release probe finished", {
-                  workspaceId,
-                  diskPath,
-                  probeMs: Date.now() - tProbe0,
-                  released: probe.released,
-                  reason: probe.reason,
-                });
-              }
-
-              log.debug("deleteWorkspace: resolved git cwd", { workspaceId, gitCwd, cacheRepoPath, taskWorktreeBase });
-              // Fast path: nuke the directory at the filesystem level, then ask
-              // git to prune stale metadata. `git worktree remove --force` walks
-              // the tree itself with per-file stat calls — markedly slower than
-              // platform-native `rd /s /q` (Windows) or fs.rm (POSIX) when the
-              // worktree has a fat node_modules / build dir. The previous order
-              // (git first, fs fallback) made every successful delete take the
-              // slow path. Only fall back to `git worktree remove --force` if
-              // rmPath couldn't finish (e.g. locked files held by AV).
-              let rmFailed = false;
-              let rmErr: unknown = null;
-              const tRm0 = Date.now();
-              try {
-                await rmPath(diskPath);
-                log.debug("deleteWorkspace: rmPath succeeded", { workspaceId, diskPath, ms: Date.now() - tRm0 });
-              } catch (err) {
-                rmFailed = true;
-                rmErr = err;
-                log.debug("deleteWorkspace: rmPath failed, trying git worktree remove --force", {
-                  workspaceId,
-                  diskPath,
-                  ms: Date.now() - tRm0,
-                  err: (err as Error)?.message?.slice(0, 200),
-                });
-              }
-              if (gitCwd) {
-                let gitFallbackErr: unknown = null;
-                if (rmFailed) {
-                  const tGit0 = Date.now();
-                  try {
-                    await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: gitCwd });
-                    log.debug("deleteWorkspace: git worktree remove --force succeeded", {
-                      workspaceId,
-                      diskPath,
-                      ms: Date.now() - tGit0,
-                    });
-                  } catch (err) {
-                    gitFallbackErr = err;
-                    log.warn("deleteWorkspace: git worktree remove --force also failed", {
-                      workspaceId,
-                      diskPath,
-                      ms: Date.now() - tGit0,
-                      err: (err as Error)?.message?.slice(0, 200),
-                      rmErr: (rmErr as Error)?.message?.slice(0, 200),
-                    });
-                  }
-                }
-                // Prune the .git/worktrees admin entry. Doesn't need to block
-                // the response — it's just metadata cleanup.
-                execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
-                if (rmFailed && gitFallbackErr) {
-                  const rmMsg = (rmErr as Error)?.message?.slice(0, 200) ?? String(rmErr);
-                  const gitMsg = (gitFallbackErr as Error)?.message?.slice(0, 200) ?? String(gitFallbackErr);
-                  throw new Error(`Failed to remove ${diskPath}: rm: ${rmMsg}; git: ${gitMsg}`);
-                }
-              } else if (rmFailed) {
-                // No git cwd to prune from — surface the rm failure.
-                throw new Error(`Failed to remove ${diskPath}`);
-              }
-              log.debug("deleteWorkspace: disk delete complete", {
-                workspaceId,
-                diskPath,
-                totalMs: Date.now() - tDelete0,
-                rmFailed,
-              });
-            } catch (err) {
-              diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: unknown catch shape
-              log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
-              // Krok 6: the foreground attempt gave up (likely a lock held by an
-              // orphaned agent child / AV). Keep the path held in
-              // pendingWorktreeDeletions and retry in the background with backoff
-              // (10s/30s/60s/120s); the retry owns the eventual release.
-              scheduleBackgroundDeleteRetry(diskPath, gitCwd);
-            } finally {
-              // On success no retry was armed → release the hold now. On failure
-              // the background retry holds it until it succeeds or exhausts.
-              if (!backgroundDeleteRetries.has(diskPath)) pendingWorktreeDeletions.delete(diskPath);
-            }
-          }
+          diskDeleteError = await deleteWorkspaceFromDisk(
+            workspace,
+            String(workspaceId),
+            requestedPath,
+            sessionsExited,
+          );
         }
 
         const refreshTargets = resolveDeleteRefreshTargets(workspace, getState().workspaces);
