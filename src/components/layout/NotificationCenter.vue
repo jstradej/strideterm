@@ -362,7 +362,6 @@ const keyboardActive = ref(false);
 // them, so they're still findable on return to the app). Safety timeout
 // ensures nothing stays glowing forever if the user ignores it.
 const flashingIds = ref(new Set<string>());
-const FLASH_SAFETY_MS = 30_000;
 
 // Scroll-state tracking — when the user is scrolled down reading older
 // entries and a new alert arrives at the top, we surface a "N new ↑" pill
@@ -574,10 +573,8 @@ function triggerFlash(id: string): void {
   flashingIds.value.add(id);
   // Force reactivity on the Set (Vue doesn't track Set.add mutations).
   flashingIds.value = new Set(flashingIds.value);
-  // Safety timeout disabled for testing — flash persists until pointermove
-  // within the item clears it. Re-enable with setTimeout(clearFlash, FLASH_SAFETY_MS)
-  // if this proves too insistent when several flashes pile up unattended.
-  // Using pointermove (not pointerenter) is deliberate: Chromium dispatches
+  // No safety timeout — flash persists until pointermove within the item
+  // clears it. Using pointermove (not pointerenter) is deliberate: Chromium dispatches
   // pointerenter on layout-induced element-under-pointer changes, which would
   // wipe a flash the instant the list re-ordered under a stationary cursor.
 }
