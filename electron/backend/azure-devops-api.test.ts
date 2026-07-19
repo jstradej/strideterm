@@ -39,20 +39,19 @@ describe("Azure DevOps API - ETag caching", () => {
     ]);
 
     const api = createAzureApi(fetchImpl as unknown as typeof fetch);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const connection = { orgUrl: "https://dev.azure.com/org" } as any;
+    const url = "https://dev.azure.com/org/_apis/projects?api-version=7.1";
     const authOpts = { login: "user", token: "pat" };
 
     // First call — no etag
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped API response
-    const result1 = (await api.requestJson(api.buildProjectsUrl(connection), authOpts)) as any;
+    const result1 = (await api.requestJson(url, authOpts)) as any;
     expect(result1.value).toHaveLength(1);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on mock call args
     expect((fetchImpl.mock.calls[0][1] as any).headers["If-None-Match"]).toBeUndefined();
 
     // Second call — should send If-None-Match and return cached data on 304
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped API response
-    const result2 = (await api.requestJson(api.buildProjectsUrl(connection), authOpts)) as any;
+    const result2 = (await api.requestJson(url, authOpts)) as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on mock call args
     expect((fetchImpl.mock.calls[1][1] as any).headers["If-None-Match"]).toBe('"abc123"');
     expect(result2.value).toHaveLength(1);

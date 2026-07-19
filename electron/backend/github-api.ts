@@ -392,20 +392,8 @@ export function createGitHubApi(
   return {
     requestJson,
     paginate,
-    // URL builders (exposed for direct use if needed)
-    buildApiBase,
-    buildGetUserUrl,
-    buildSearchIssuesUrl,
-    buildPullRequestUrl,
-    buildPullRequestFilesUrl,
-    buildPullRequestReviewsUrl,
-    buildSubmitReviewUrl,
-    buildReviewCommentsUrl,
-    buildIssueCommentsUrl,
-    buildCreateIssueCommentUrl,
-    buildCheckRunsUrl,
-    buildCombinedStatusUrl,
-    buildRequestedReviewersUrl,
+    // URL builders are module-internal — every consumer goes through the
+    // high-level methods below; none of the builders have external callers.
     // High-level methods
     getAuthenticatedUser,
     searchPullRequests,
