@@ -2253,6 +2253,85 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
     }
   });
 
+  // Regression test for the worker/judge rate-limit unification: both paths now
+  // share one #rateLimitTimers map and go through the same #handleRateLimited
+  // core, keyed throughout via #rlKey(workspaceId, role). This proves the two
+  // roles still accumulate retries independently — a worker hit must not eat
+  // into the judge's retry budget (or vice versa), which is exactly the kind of
+  // bug a careless "just merge the maps" refactor could introduce.
+  test("worker and judge rate-limit retry counters stay independent under the unified per-role timer map", async () => {
+    const prevMargin = AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS;
+    AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = 20; // fire each scheduled resume fast
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-rl-independent-"));
+    const runner = new AgentTaskRunner();
+    try {
+      const ws = runner.createTaskWorkspace({
+        state: {},
+        description: "Real task",
+        cwd: tmp,
+        parentWorkspaceId: "",
+        maxRounds: 3,
+      });
+      await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true }); // verdict stays missing
+      const deps = createMockDeps([ws]);
+      runner.init(deps);
+      ws.task.state = "running";
+      ws.task.promptSent = true;
+      const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+      const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+
+      // Drive the WORKER to exactly MAX_RATE_LIMIT_RETRIES hits — right up to,
+      // but not over, its cap.
+      for (let i = 1; i <= AgentTaskRunner.MAX_RATE_LIMIT_RETRIES; i++) {
+        runner.onWorkerRateLimited(workerSessionId, {
+          resetAt: new Date(Date.now() + 10),
+          needsConfirm: true,
+          providerHint: "claude" as const,
+        });
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(ws.task.state).toBe("running");
+
+      // Now drive the JUDGE, in the SAME workspace, to exactly MAX hits too. If
+      // the unification had accidentally shared one ctx/timer key between
+      // roles, the judge's first hit here would already read the worker's
+      // exhausted retry count and trip the cap early.
+      for (let i = 1; i <= AgentTaskRunner.MAX_RATE_LIMIT_RETRIES; i++) {
+        runner.onAgentRateLimited(
+          judgeSessionId,
+          { resetAt: new Date(Date.now() + 10), needsConfirm: true, providerHint: "claude" },
+          "test",
+        );
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(ws.task.state).toBe("running");
+
+      // One more worker hit trips ONLY the worker's cap.
+      runner.onWorkerRateLimited(workerSessionId, {
+        resetAt: new Date(Date.now() + 10),
+        needsConfirm: true,
+        providerHint: "claude" as const,
+      });
+      expect(ws.task.state).toBe("paused");
+      expect(ws.task.pausedFromState).toBe("running");
+
+      // One more judge hit (its own (MAX+1)th) independently trips the judge's
+      // cap too, overwriting pausedFromState to "judge-evaluating" — proving
+      // the judge's retry count kept accumulating on its own key the whole
+      // time and was untouched by the worker's cap trip above.
+      const handled = runner.onAgentRateLimited(
+        judgeSessionId,
+        { resetAt: new Date(Date.now() + 10), needsConfirm: true, providerHint: "claude" },
+        "test",
+      );
+      expect(handled).toBe(true);
+      expect(ws.task.pausedFromState).toBe("judge-evaluating");
+    } finally {
+      AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = prevMargin;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   // Krok 9c — detection-independent backstop: a run of near-instant worker turns
   // ("Cogitated/Worked for 0s") logs a heuristic warning even without detection.
   test("worker short-turn streak logs a heuristic rate-limit warning", async () => {
