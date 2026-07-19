@@ -7218,7 +7218,6 @@ export async function createRuntime({
       // but DELETING the profile with live task agents must be an explicit
       // decision: pause them, stop them, or cancel. No silent stop, no
       // silent move to another profile.
-      const ACTIVE_TASK_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
       const activeTasks = state.workspaces.filter(
         (w) =>
           (w.profileId || "default") === profileId &&
