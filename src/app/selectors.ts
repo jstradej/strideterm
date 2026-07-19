@@ -178,6 +178,49 @@ export interface TabAccessors {
   providerInbox?: (provider: "azure" | "github") => { inbox?: any; connections?: any[] } | null;
 }
 
+/**
+ * Azure DevOps and GitHub inbox tabs are built the same way: profile-scope
+ * the connections, scope the PR lists to this workspace's own connections,
+ * then produce the fixed-shape virtual tab. Only the provider id/title differ.
+ */
+function buildProviderInboxTab(
+  provider: "azure" | "github",
+  activeWorkspace: WorkspaceState,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  providerData: { inbox?: any; connections?: any[] } | undefined,
+  hiddenViewIds: Set<string>,
+): WorkspaceTab[] {
+  const data = providerData || {};
+  const inbox = data.inbox;
+  // Scope the tab's "N reviews waiting" status to PRs from this workspace's
+  // own profile — the backend snapshot aggregates inbox across every open
+  // profile, so without scoping a Default 2 workspace tab would still show
+  // counts from an asdf-profile connection's PRs.
+  const workspaceProfileId = activeWorkspace.profileId || "default";
+  const myConnectionIds = new Set(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ((data.connections || []) as any[])
+      .filter((c) => (c.profileId || "default") === workspaceProfileId)
+      .map((c) => c.id),
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scopePrs = (prs: any) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Array.isArray(prs) ? (prs as any[]).filter((pr) => myConnectionIds.has(pr.connectionId)) : [];
+  const needsMyReview = scopePrs(inbox?.needsMyReview);
+  const needsAttention = scopePrs(inbox?.needsAttention);
+  const tab: WorkspaceTab = {
+    id: `${provider}:${activeWorkspace.id}`,
+    type: provider,
+    title: provider === "github" ? "GitHub" : "Azure DevOps",
+    status: `${needsMyReview.length} reviews waiting`,
+    tone: needsAttention.length > 0 ? "error" : "running",
+    persistent: true,
+    closable: false,
+  };
+  return hiddenViewIds.has(tab.id) ? [] : [tab];
+}
+
 export function getWorkspaceTabs({
   workspace,
   payload,
@@ -206,66 +249,14 @@ export function getWorkspaceTabs({
   if (activeWorkspace.kind === "azure") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const azurePayload = payload?.azureDevops as any;
-    const azureData = (accessors?.providerInbox ? accessors.providerInbox("azure") : azurePayload) || {};
-    const inbox = azureData.inbox;
-    // Scope the tab's "N reviews waiting" status to PRs from this workspace's
-    // own profile — the backend snapshot aggregates inbox across every open
-    // profile, so without scoping a Default 2 workspace tab would still show
-    // counts from an asdf-profile connection's PRs.
-    const workspaceProfileId = activeWorkspace.profileId || "default";
-
-    const myConnectionIds = new Set(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((azureData.connections || []) as any[])
-        .filter((c) => (c.profileId || "default") === workspaceProfileId)
-        .map((c) => c.id),
-    );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const scopePrs = (prs: any) =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      Array.isArray(prs) ? (prs as any[]).filter((pr) => myConnectionIds.has(pr.connectionId)) : [];
-    const needsMyReview = scopePrs(inbox?.needsMyReview);
-    const needsAttention = scopePrs(inbox?.needsAttention);
-    const azureTab: WorkspaceTab = {
-      id: `azure:${activeWorkspace.id}`,
-      type: "azure",
-      title: "Azure DevOps",
-      status: `${needsMyReview.length} reviews waiting`,
-      tone: needsAttention.length > 0 ? "error" : "running",
-      persistent: true,
-      closable: false,
-    };
-    return hiddenViewIds.has(azureTab.id) ? [] : [azureTab];
+    const azureData = accessors?.providerInbox ? accessors.providerInbox("azure") : azurePayload;
+    return buildProviderInboxTab("azure", activeWorkspace, azureData, hiddenViewIds);
   }
 
   if (activeWorkspace.kind === "github") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const githubData = (accessors?.providerInbox ? accessors.providerInbox("github") : (payload?.github as any)) || {};
-    const inbox = githubData.inbox;
-    // See azure branch above for rationale.
-    const workspaceProfileId = activeWorkspace.profileId || "default";
-    const myConnectionIds = new Set(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((githubData.connections || []) as any[])
-        .filter((c) => (c.profileId || "default") === workspaceProfileId)
-        .map((c) => c.id),
-    );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const scopePrs = (prs: any) =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      Array.isArray(prs) ? (prs as any[]).filter((pr) => myConnectionIds.has(pr.connectionId)) : [];
-    const needsMyReview = scopePrs(inbox?.needsMyReview);
-    const needsAttention = scopePrs(inbox?.needsAttention);
-    const githubTab: WorkspaceTab = {
-      id: `github:${activeWorkspace.id}`,
-      type: "github",
-      title: "GitHub",
-      status: `${needsMyReview.length} reviews waiting`,
-      tone: needsAttention.length > 0 ? "error" : "running",
-      persistent: true,
-      closable: false,
-    };
-    return hiddenViewIds.has(githubTab.id) ? [] : [githubTab];
+    const githubData = accessors?.providerInbox ? accessors.providerInbox("github") : (payload?.github as any);
+    return buildProviderInboxTab("github", activeWorkspace, githubData, hiddenViewIds);
   }
 
   // Identify browser panels (URL commands), files panels, and task-dashboard panels — these get virtual tabs, not terminal sessions

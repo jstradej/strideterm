@@ -15,8 +15,9 @@ describe("workspace selectors", () => {
       },
       payload: {
         azureDevops: {
+          connections: [{ id: "ado-conn-1" }],
           inbox: {
-            needsMyReview: [{ id: 1 }],
+            needsMyReview: [{ id: 1, connectionId: "ado-conn-1" }],
             needsAttention: [],
           },
         },
@@ -29,6 +30,46 @@ describe("workspace selectors", () => {
       expect.objectContaining({
         id: "azure:azure-1",
         type: "azure",
+        title: "Azure DevOps",
+        status: "1 reviews waiting",
+        tone: "running",
+      }),
+    ]);
+  });
+
+  test("returns a GitHub inbox tab for github workspaces", () => {
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace: {
+          id: "github-1",
+          kind: "github",
+          panels: [],
+        } as unknown as WorkspaceState,
+        sessions: [],
+      },
+      payload: {
+        github: {
+          connections: [{ id: "gh-conn-1" }],
+          inbox: {
+            needsMyReview: [
+              { id: 1, connectionId: "gh-conn-1" },
+              { id: 2, connectionId: "gh-conn-1" },
+            ],
+            needsAttention: [{ id: 2, connectionId: "gh-conn-1" }],
+          },
+        },
+      } as unknown as StatePayload,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+
+    expect(tabs).toEqual([
+      expect.objectContaining({
+        id: "github:github-1",
+        type: "github",
+        title: "GitHub",
+        status: "2 reviews waiting",
+        tone: "error",
       }),
     ]);
   });
