@@ -14,23 +14,9 @@ interface AttentionLike {
   latestAt?: string;
 }
 
-interface DockerContextEntry {
-  Current?: string;
-  [key: string]: unknown;
-}
-
 interface ContainerLike {
   State?: string;
   Status?: string;
-}
-
-export function escapeHtml(value: unknown): string {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 export function safeColor(value: unknown): string {
@@ -153,19 +139,6 @@ export function getWindowsPtyOptions(
   };
 }
 
-export function currentDockerContext(contexts: DockerContextEntry[] = []): DockerContextEntry | null {
-  return (
-    contexts.find((context) => {
-      const marker = String(context.Current || "")
-        .trim()
-        .toLowerCase();
-      return marker === "*" || marker === "true";
-    }) ||
-    contexts[0] ||
-    null
-  );
-}
-
 export function isContainerRunning(container: ContainerLike | null | undefined): boolean {
   const state = String(container?.State || "").toLowerCase();
   const status = String(container?.Status || "").toLowerCase();
@@ -202,11 +175,6 @@ export function isFilesViewId(value: unknown): boolean {
 
 export function isTaskDashboardViewId(value: unknown): boolean {
   return String(value || "").startsWith("task-dashboard:");
-}
-
-export function isUrlCommand(value: unknown): boolean {
-  const cmd = String(value || "").trim();
-  return /^https?:\/\//i.test(cmd);
 }
 
 /**
