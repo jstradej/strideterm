@@ -108,6 +108,94 @@ function hookApiForProvider(
   return { status: api.getClaudeHookStatus, configure: api.configureClaudeHook, displayName: "Claude Code" };
 }
 
+// Azure DevOps / GitHub connection-dialog opening is structurally identical
+// between the two providers — only the settings key, dialog component name,
+// and save-transport method differ. makeOpenConnectionDialog generates the
+// shared body once; createDialogActions below assigns the result onto
+// openAzureConnectionDialog / openGitHubConnectionDialog so every existing
+// call site keeps working unchanged.
+interface ConnectionDialogConfig {
+  settingsKey: "azureDevops" | "github";
+  dialogName: "AzureConnectionDialog" | "GitHubConnectionDialog";
+  saveConnection: (api: AnyApi, draft: unknown) => Promise<AnyApi>;
+}
+
+export function makeOpenConnectionDialog(
+  ctx: Pick<DialogActionsCtx, "payload" | "getApi">,
+  openDialog: (name: string, props?: Record<string, unknown>) => void,
+  closeDialog: () => void,
+  currentProfileId: () => string,
+  config: ConnectionDialogConfig,
+) {
+  return function openConnectionDialog(connectionId = ""): void {
+    const settings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.[config.settingsKey] || {};
+    const connection = ((settings as AnyApi).connections || []).find((c: AnyApi) => c.id === connectionId) || null;
+    openDialog(config.dialogName, {
+      connection,
+      defaultReviewRoot: (settings as AnyApi).reviewRoot || "",
+      onCancel: closeDialog,
+      onSave: async (draft: AnyApi) => {
+        draft.profileId = currentProfileId();
+        const result = (await config.saveConnection(ctx.getApi() as AnyApi, draft)) as AnyApi;
+        ctx.payload.value = (result.payload || result) as StatePayload;
+        closeDialog();
+      },
+    });
+  };
+}
+
+// Azure/GitHub Quick Fix wizard opening is likewise structurally identical,
+// with one real divergence preserved via `dialogProvider`: the GitHub wizard
+// passes `provider: "github"` in QuickFixWizardDialog's props so the dialog
+// knows which provider it's fixing for, while the Azure wizard passes no
+// `provider` prop at all (QuickFixWizardDialog defaults to Azure behavior
+// when the prop is absent). This is an existing asymmetry, not a bug to
+// normalize away.
+interface QuickFixWizardConfig {
+  settingsKey: "azureDevops" | "github";
+  dialogProvider?: string;
+  openConnectionDialog: (connectionId?: string) => void;
+}
+
+export function makeOpenQuickFixWizard(
+  ctx: Pick<DialogActionsCtx, "payload" | "activeViewId" | "splitGroup">,
+  openDialog: (name: string, props?: Record<string, unknown>) => void,
+  closeDialog: () => void,
+  currentProfileId: () => string,
+  config: QuickFixWizardConfig,
+) {
+  return function openProviderQuickFixWizard(): void {
+    const settings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.[config.settingsKey] || {};
+    // Scope to this window's profile — the raw settings list aggregates
+    // connections across every profile, and the wizard's QuickFix create
+    // path is profile-bound (the workspace lands on the connection's
+    // profile). Without scoping, the user could pick a cross-profile
+    // connection and have the resulting workspace appear in a different
+    // window's sidebar.
+    const myProfileId = currentProfileId();
+    const connections = ((settings as AnyApi).connections || [])
+      .filter((c: AnyApi) => c.enabled !== false)
+      .filter((c: AnyApi) => (c.profileId || "default") === myProfileId);
+    if (!connections.length) {
+      config.openConnectionDialog("");
+      return;
+    }
+    openDialog("QuickFixWizardDialog", {
+      ...(config.dialogProvider ? { provider: config.dialogProvider } : {}),
+      connections,
+      onCancel: closeDialog,
+      onCreate: (result: AnyApi) => {
+        closeDialog();
+        if (result) {
+          ctx.payload.value = result as StatePayload;
+          ctx.activeViewId.value = null;
+          ctx.splitGroup.value = null;
+        }
+      },
+    });
+  };
+}
+
 /**
  * Factory for dialog / overlay / context-menu / layout-picker actions.
  *
@@ -526,95 +614,32 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     });
   }
 
-  function openAzureConnectionDialog(connectionId = ""): void {
-    const azureSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
-    const connection = ((azureSettings as AnyApi).connections || []).find((c: AnyApi) => c.id === connectionId) || null;
-    openDialog("AzureConnectionDialog", {
-      connection,
-      defaultReviewRoot: (azureSettings as AnyApi).reviewRoot || "",
-      onCancel: closeDialog,
-      onSave: async (draft: AnyApi) => {
-        draft.profileId = currentProfileId();
-        const result = (await (ctx.getApi() as AnyApi).saveAzureConnection(draft)) as AnyApi;
-        ctx.payload.value = (result.payload || result) as StatePayload;
-        closeDialog();
-      },
-    });
-  }
+  const openAzureConnectionDialog = makeOpenConnectionDialog(ctx, openDialog, closeDialog, currentProfileId, {
+    settingsKey: "azureDevops",
+    dialogName: "AzureConnectionDialog",
+    saveConnection: (api, draft) => api.saveAzureConnection(draft),
+  });
 
-  function openGitHubConnectionDialog(connectionId = ""): void {
-    const ghSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
-    const connection = ((ghSettings as AnyApi).connections || []).find((c: AnyApi) => c.id === connectionId) || null;
-    openDialog("GitHubConnectionDialog", {
-      connection,
-      defaultReviewRoot: (ghSettings as AnyApi).reviewRoot || "",
-      onCancel: closeDialog,
-      onSave: async (draft: AnyApi) => {
-        draft.profileId = currentProfileId();
-        const result = (await (ctx.getApi() as AnyApi).saveGitHubConnection(draft)) as AnyApi;
-        ctx.payload.value = (result.payload || result) as StatePayload;
-        closeDialog();
-      },
-    });
-  }
+  const openGitHubConnectionDialog = makeOpenConnectionDialog(ctx, openDialog, closeDialog, currentProfileId, {
+    settingsKey: "github",
+    dialogName: "GitHubConnectionDialog",
+    saveConnection: (api, draft) => api.saveGitHubConnection(draft),
+  });
 
-  function openGitHubQuickFixWizard(): void {
-    const ghSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
-    // Scope to this window's profile — the raw settings list aggregates
-    // connections across every profile, and the wizard's QuickFix create
-    // path is profile-bound (the workspace lands on the connection's
-    // profile). Without scoping, the user could pick a cross-profile
-    // connection and have the resulting workspace appear in a different
-    // window's sidebar.
-    const myProfileId = currentProfileId();
-    const connections = ((ghSettings as AnyApi).connections || [])
-      .filter((c: AnyApi) => c.enabled !== false)
-      .filter((c: AnyApi) => (c.profileId || "default") === myProfileId);
-    if (!connections.length) {
-      openGitHubConnectionDialog("");
-      return;
-    }
-    openDialog("QuickFixWizardDialog", {
-      provider: "github",
-      connections,
-      onCancel: closeDialog,
-      onCreate: (result: AnyApi) => {
-        closeDialog();
-        if (result) {
-          ctx.payload.value = result as StatePayload;
-          ctx.activeViewId.value = null;
-          ctx.splitGroup.value = null;
-        }
-      },
-    });
-  }
+  // See makeOpenQuickFixWizard for the per-profile scoping rationale and the
+  // `dialogProvider` divergence between the Azure and GitHub wizards.
+  const openGitHubQuickFixWizard = makeOpenQuickFixWizard(ctx, openDialog, closeDialog, currentProfileId, {
+    settingsKey: "github",
+    dialogProvider: "github",
+    openConnectionDialog: openGitHubConnectionDialog,
+  });
 
   // --- Quick Fix wizard ---------------------------------------------------
 
-  function openQuickFixWizard(): void {
-    const azureSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
-    // See openGitHubQuickFixWizard for the per-profile scoping rationale.
-    const myProfileId = currentProfileId();
-    const connections = ((azureSettings as AnyApi).connections || [])
-      .filter((c: AnyApi) => c.enabled !== false)
-      .filter((c: AnyApi) => (c.profileId || "default") === myProfileId);
-    if (!connections.length) {
-      openAzureConnectionDialog("");
-      return;
-    }
-    openDialog("QuickFixWizardDialog", {
-      connections,
-      onCancel: closeDialog,
-      onCreate: (result: AnyApi) => {
-        closeDialog();
-        if (result) {
-          ctx.payload.value = result as StatePayload;
-          ctx.activeViewId.value = null;
-          ctx.splitGroup.value = null;
-        }
-      },
-    });
-  }
+  const openQuickFixWizard = makeOpenQuickFixWizard(ctx, openDialog, closeDialog, currentProfileId, {
+    settingsKey: "azureDevops",
+    openConnectionDialog: openAzureConnectionDialog,
+  });
 
   // --- Worktree dialog ---------------------------------------------------
 

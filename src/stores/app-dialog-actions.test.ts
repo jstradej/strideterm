@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ref, shallowRef } from "vue";
-import { createDialogActions } from "./app-dialog-actions.js";
+import { createDialogActions, makeOpenConnectionDialog, makeOpenQuickFixWizard } from "./app-dialog-actions.js";
 import { resolveViewerProfileId } from "./app.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -430,5 +430,179 @@ describe("createDialogActions profile-aware saves", () => {
 
     const warnCalls = logRenderer.mock.calls.filter((c) => c[0] === "warn");
     expect(warnCalls.some((c) => c[1].includes("recheckClaude"))).toBe(true);
+  });
+});
+
+// makeOpenConnectionDialog is the factory behind openAzureConnectionDialog /
+// openGitHubConnectionDialog. These tests exercise it directly (not through
+// createDialogActions) to prove "azure" vs "github" config wires the right
+// dialog name, settings key, and save-transport method.
+describe("makeOpenConnectionDialog", () => {
+  function makeDeps() {
+    const dialogCalls: Array<{ name: string; props: Record<string, unknown> }> = [];
+    const openDialog = (name: string, props: Record<string, unknown> = {}) => dialogCalls.push({ name, props });
+    const closeDialog = vi.fn();
+    const currentProfileId = () => "profile-a";
+    return { dialogCalls, openDialog, closeDialog, currentProfileId };
+  }
+
+  (
+    [
+      { provider: "azure", settingsKey: "azureDevops", dialogName: "AzureConnectionDialog" },
+      { provider: "github", settingsKey: "github", dialogName: "GitHubConnectionDialog" },
+    ] as const
+  ).forEach(({ provider, settingsKey, dialogName }) => {
+    it(`${provider}: opens ${dialogName} seeded from integrations.${settingsKey} and saves via the ${provider} transport method`, async () => {
+      const saveConnection = vi.fn(async (_api: AnyApi, draft: unknown) => ({ payload: { saved: draft } }));
+      const ctx = {
+        payload: shallowRef({
+          appState: {
+            settings: {
+              integrations: {
+                [settingsKey]: {
+                  reviewRoot: "/repos",
+                  connections: [{ id: "conn-1", name: "Existing" }],
+                },
+              },
+            },
+          },
+        }),
+        getApi: () => ({}),
+      } as AnyApi;
+      const { dialogCalls, openDialog, closeDialog, currentProfileId } = makeDeps();
+      const open = makeOpenConnectionDialog(ctx, openDialog, closeDialog, currentProfileId, {
+        settingsKey,
+        dialogName,
+        saveConnection,
+      });
+
+      open("conn-1");
+
+      expect(dialogCalls).toHaveLength(1);
+      expect(dialogCalls[0].name).toBe(dialogName);
+      expect(dialogCalls[0].props.connection).toEqual({ id: "conn-1", name: "Existing" });
+      expect(dialogCalls[0].props.defaultReviewRoot).toBe("/repos");
+
+      const onSave = dialogCalls[0].props.onSave as (draft: AnyApi) => Promise<void>;
+      await onSave({ id: "conn-1", name: "Updated" });
+
+      expect(saveConnection).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: "conn-1", name: "Updated", profileId: "profile-a" }),
+      );
+      expect(ctx.payload.value).toEqual({
+        saved: expect.objectContaining({ id: "conn-1", name: "Updated", profileId: "profile-a" }),
+      });
+      expect(closeDialog).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+// makeOpenQuickFixWizard is the factory behind openQuickFixWizard (Azure) and
+// openGitHubQuickFixWizard. The two are NOT perfectly symmetric: the GitHub
+// wizard passes `provider: "github"` in QuickFixWizardDialog's props while
+// the Azure wizard passes no `provider` prop at all — an existing divergence
+// preserved via the optional `dialogProvider` config field, not normalized
+// away. These tests lock that asymmetry in place.
+describe("makeOpenQuickFixWizard", () => {
+  function makeDeps() {
+    const dialogCalls: Array<{ name: string; props: Record<string, unknown> }> = [];
+    const openDialog = (name: string, props: Record<string, unknown> = {}) => dialogCalls.push({ name, props });
+    const closeDialog = vi.fn();
+    const currentProfileId = () => "profile-a";
+    return { dialogCalls, openDialog, closeDialog, currentProfileId };
+  }
+
+  function makeQuickFixCtx(connections: AnyApi[]) {
+    return {
+      payload: shallowRef({
+        appState: { settings: { integrations: { github: { connections }, azureDevops: { connections } } } },
+      }),
+      activeViewId: ref<string | null>("some-view"),
+      splitGroup: ref<AnyApi>({ layout: "grid", viewIds: [] }),
+    } as AnyApi;
+  }
+
+  it('github: passes provider: "github" in QuickFixWizardDialog props', () => {
+    const ctx = makeQuickFixCtx([{ id: "gh-1", enabled: true, profileId: "profile-a" }]);
+    const { dialogCalls, openDialog, closeDialog, currentProfileId } = makeDeps();
+    const openConnectionDialog = vi.fn();
+    const open = makeOpenQuickFixWizard(ctx, openDialog, closeDialog, currentProfileId, {
+      settingsKey: "github",
+      dialogProvider: "github",
+      openConnectionDialog,
+    });
+
+    open();
+
+    expect(dialogCalls).toHaveLength(1);
+    expect(dialogCalls[0].name).toBe("QuickFixWizardDialog");
+    expect(dialogCalls[0].props.provider).toBe("github");
+    expect(openConnectionDialog).not.toHaveBeenCalled();
+  });
+
+  it("azure: omits the provider prop entirely (existing asymmetry with the GitHub wizard)", () => {
+    const ctx = makeQuickFixCtx([{ id: "az-1", enabled: true, profileId: "profile-a" }]);
+    const { dialogCalls, openDialog, closeDialog, currentProfileId } = makeDeps();
+    const open = makeOpenQuickFixWizard(ctx, openDialog, closeDialog, currentProfileId, {
+      settingsKey: "azureDevops",
+      openConnectionDialog: vi.fn(),
+    });
+
+    open();
+
+    expect(dialogCalls).toHaveLength(1);
+    expect("provider" in dialogCalls[0].props).toBe(false);
+  });
+
+  it("falls back to opening the connection dialog when no connections exist for this profile", () => {
+    const ctx = makeQuickFixCtx([]);
+    const { openDialog, closeDialog, currentProfileId } = makeDeps();
+    const openConnectionDialog = vi.fn();
+    const open = makeOpenQuickFixWizard(ctx, openDialog, closeDialog, currentProfileId, {
+      settingsKey: "github",
+      dialogProvider: "github",
+      openConnectionDialog,
+    });
+
+    open();
+
+    expect(openConnectionDialog).toHaveBeenCalledWith("");
+  });
+
+  it("filters connections to the current profile before opening the wizard", () => {
+    const ctx = makeQuickFixCtx([
+      { id: "gh-a", enabled: true, profileId: "profile-a" },
+      { id: "gh-b", enabled: true, profileId: "profile-b" },
+    ]);
+    const { dialogCalls, openDialog, closeDialog, currentProfileId } = makeDeps();
+    const open = makeOpenQuickFixWizard(ctx, openDialog, closeDialog, currentProfileId, {
+      settingsKey: "github",
+      dialogProvider: "github",
+      openConnectionDialog: vi.fn(),
+    });
+
+    open();
+
+    expect((dialogCalls[0].props.connections as AnyApi[]).map((c) => c.id)).toEqual(["gh-a"]);
+  });
+
+  it("onCreate adopts the result payload and resets active view / split state", () => {
+    const ctx = makeQuickFixCtx([{ id: "gh-1", enabled: true, profileId: "profile-a" }]);
+    const { dialogCalls, openDialog, closeDialog, currentProfileId } = makeDeps();
+    const open = makeOpenQuickFixWizard(ctx, openDialog, closeDialog, currentProfileId, {
+      settingsKey: "github",
+      dialogProvider: "github",
+      openConnectionDialog: vi.fn(),
+    });
+
+    open();
+    const onCreate = dialogCalls[0].props.onCreate as (result: AnyApi) => void;
+    onCreate({ some: "payload" });
+
+    expect(ctx.payload.value).toEqual({ some: "payload" });
+    expect(ctx.activeViewId.value).toBeNull();
+    expect(ctx.splitGroup.value).toBeNull();
+    expect(closeDialog).toHaveBeenCalledTimes(1);
   });
 });
