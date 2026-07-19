@@ -203,7 +203,7 @@ import { ref, computed, watch, onMounted, reactive } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 import { downloadTextFile } from "../../../app/helpers.js";
-import { formatRelative } from "./azurePipelineFormat.js";
+import { formatRelativeUntil } from "./azurePipelineFormat.js";
 
 const filterCategoryOptions = [
   { value: "", label: "All operations" },
@@ -501,18 +501,18 @@ async function exportLog(format: "csv" | "json"): Promise<void> {
 function formatTime(iso: string) {
   if (!iso) return "\u2014";
   try {
-    const d = new Date(iso);
-    const diffMs = Date.now() - d.getTime();
     // Under 24h: same "just now / Xm ago / Xh ago" shared with the Azure
     // Pipelines views. Beyond that, this table (spanning up to 30 days of
     // audit entries) switches to an absolute date instead of "Xd ago" \u2014
     // that's specific to this view, so it stays local.
-    if (diffMs < 86_400_000) return formatRelative(iso);
-    return (
-      d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
-      " " +
-      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
-    );
+    return formatRelativeUntil(iso, 86_400_000, (dateStr) => {
+      const d = new Date(dateStr);
+      return (
+        d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+        " " +
+        d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+      );
+    });
   } catch {
     return iso;
   }

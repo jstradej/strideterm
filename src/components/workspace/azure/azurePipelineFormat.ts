@@ -107,3 +107,20 @@ export function formatFull(dateStr?: string): string {
   const d = new Date(dateStr);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString();
 }
+
+/**
+ * `formatRelative` below that switches to a view-specific fallback once the
+ * age crosses `thresholdMs` — shared by views that need "just now / Xm ago /
+ * Xh ago" up to a point, then something else (an absolute date, "Xw ago", …).
+ */
+export function formatRelativeUntil(
+  dateStr: string | undefined,
+  thresholdMs: number,
+  fallback: (dateStr: string) => string,
+): string {
+  if (!dateStr) return "";
+  const diff = Date.now() - new Date(dateStr).getTime();
+  if (Number.isNaN(diff)) return "";
+  if (diff < thresholdMs) return formatRelative(dateStr);
+  return fallback(dateStr);
+}
