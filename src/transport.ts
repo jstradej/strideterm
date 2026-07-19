@@ -75,10 +75,7 @@ interface EventHub {
  *  not present in the remote transport and are therefore excluded.
  */
 export interface Transport extends Partial<
-  Omit<
-    StridetermAPI,
-    "onConnectionState" | "onSwitchWorkspace" | "onSwitchProject" | "onSwitchTab" | "getState" | "onStateUpdated"
-  >
+  Omit<StridetermAPI, "onConnectionState" | "getState" | "onStateUpdated">
 > {
   isRemote: boolean;
   /** Manual state refresh — refetches /api/state and broadcasts the result.

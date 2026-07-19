@@ -598,9 +598,6 @@ export interface StridetermAPI {
   onStateUpdated: (handler: (payload: StatePayload) => void) => void;
   onTerminalData: (handler: (payload: TerminalDataPayload) => void) => void;
   onTerminalExit: (handler: (payload: TerminalExitPayload) => void) => void;
-  onSwitchWorkspace: (handler: (index: number) => void) => void;
-  onSwitchProject: (handler: (index: number) => void) => void;
-  onSwitchTab: (handler: (direction: string) => void) => void;
   onSshAuthPrompt: (handler: (payload: SshAuthRequest) => void) => void;
   onSshAuthPromptCancel: (handler: (payload: SshAuthPromptCancel) => void) => void;
   onSshHostKeyChange: (handler: (payload: Record<string, unknown>) => void) => void;

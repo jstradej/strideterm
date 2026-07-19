@@ -528,12 +528,6 @@ describe("remote transport API parity — no method silently missing its remote 
     // hides the edit/delete affordance when the transport is remote.
     "saveAgentPrompt",
     "deleteAgentPrompt",
-    // review-code-quality-2026-07.md §4.3: dead IPC channels — main.ts handles
-    // Ctrl+1-9 directly and nothing ever sends shortcut:switch-*. Tracked for
-    // removal from StridetermAPI entirely rather than remote mapping.
-    "onSwitchWorkspace",
-    "onSwitchProject",
-    "onSwitchTab",
   ]);
 
   function extractDesktopApiKeys(): string[] {
