@@ -403,6 +403,7 @@ import { safeColor } from "../../app/helpers.js";
 import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
 import { useAppStore } from "../../stores/app.js";
 import { pickPath } from "../../lib/pick-path.js";
+import { BADGE_ICONS } from "../../lib/badge-icons.js";
 import PanelEditor from "./PanelEditor.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
@@ -504,57 +505,6 @@ function buildProviderCommand({ providerId, model, skipPermissions }: ProviderCo
   }
   return "";
 }
-
-const BADGE_ICONS = [
-  "\u{1F4BB}",
-  "\u{2328}",
-  "\u{1F527}",
-  "\u2699",
-  "\u{1F6E0}",
-  "\u{1F4E6}",
-  "\u{1F528}",
-  "\u{1F5A5}",
-  "\u{1F4C4}",
-  "\u{1F4DD}",
-  "\u{270F}",
-  "\u{2702}",
-  "\u{1F33F}",
-  "\u{1F500}",
-  "\u{1F4CB}",
-  "\u{1F433}",
-  "\u{1F3D7}",
-  "\u{2601}",
-  "\u{1F310}",
-  "\u{1F50C}",
-  "\u{1F4E1}",
-  "\u{1F680}",
-  "\u{1F5C4}",
-  "\u{1F4BE}",
-  "\u{1F4CA}",
-  "\u{1F4C8}",
-  "\u{1F9EA}",
-  "\u2705",
-  "\u{1F50D}",
-  "\u{1F41B}",
-  "\u{1F916}",
-  "\u{1F9E0}",
-  "\u2728",
-  "\u26A1",
-  "\u{1F3AF}",
-  "\u{1F512}",
-  "\u{1F511}",
-  "\u{1F4C1}",
-  "\u{1F4A1}",
-  "\u2B50",
-  "\u{1F3A8}",
-  "\u{1F525}",
-  "\u{1F48E}",
-  "\u{2764}",
-  "\u{1F4AC}",
-  "\u{1F514}",
-  "\u{1F6A9}",
-  "\u{1F5D1}",
-];
 
 defineOptions({ inheritAttrs: false });
 
