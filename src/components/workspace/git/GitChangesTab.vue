@@ -210,6 +210,7 @@ import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useGitStashStore } from "../../../stores/git-stash.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 import GitDiffStat from "./GitDiffStat.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
@@ -236,6 +237,7 @@ const props = withDefaults(
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 const stashStore = useGitStashStore();
+const notifications = useNotificationStore();
 const { isNarrow } = useIsNarrow();
 
 const allChangedFiles = computed(() => {
@@ -537,20 +539,35 @@ async function confirmDelete() {
   deleteDialog.value = null;
   if (!target || !props.activeRootPath || !target.paths.length) return;
   const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
+  // Catch per-item so one locked/permission-denied file doesn't abort the rest
+  // of the batch — mirrors DockerImagesTable.vue's askBulkRemove.
+  const deleted = new Set<string>();
+  let failed = 0;
   for (const relativePath of target.paths) {
-    await api.fileDelete({ rootPath: props.activeRootPath, relativePath });
+    try {
+      await api.fileDelete({ rootPath: props.activeRootPath, relativePath });
+      deleted.add(relativePath);
+    } catch {
+      failed++;
+    }
   }
-  const deleted = new Set(target.paths);
+  if (failed > 0) {
+    notifications.showError(
+      "Some files could not be deleted",
+      `${failed} of ${target.paths.length} failed.`,
+      { workspaceId: props.workspaceId },
+    );
+  }
   // Drop the diff preview if the deleted file (or, for a folder, anything
   // inside it) was the one being viewed.
   const selected = props.gitUi.selectedDiff?.path as string | undefined;
   const hitSelected =
     !!selected &&
-    (deleted.has(selected) || (target.kind === "dir" && target.paths.some((p) => selected.startsWith(p + "/"))));
+    (deleted.has(selected) || (target.kind === "dir" && [...deleted].some((p) => selected.startsWith(p + "/"))));
   if (hitSelected) gitUiStore.gitClearSelectedDiff(props.workspaceId);
   selectedPaths.value = new Set(
     [...selectedPaths.value].filter(
-      (p) => !deleted.has(p) && !(target.kind === "dir" && target.paths.some((d) => p.startsWith(d + "/"))),
+      (p) => !deleted.has(p) && !(target.kind === "dir" && [...deleted].some((d) => p.startsWith(d + "/"))),
     ),
   );
   await gitUiStore.refreshGit(props.workspaceId);
@@ -561,11 +578,18 @@ async function onMenuIgnore() {
   fileMenu.value = null;
   if (!target || !props.activeRootPath) return;
   const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
-  await api.fileGitIgnore({
-    rootPath: props.activeRootPath,
-    relativePath: target.path,
-    isDirectory: target.kind === "dir",
-  });
+  try {
+    await api.fileGitIgnore({
+      rootPath: props.activeRootPath,
+      relativePath: target.path,
+      isDirectory: target.kind === "dir",
+    });
+  } catch (e) {
+    notifications.showError("Failed to update .gitignore", `${target.name}: ${(e as Error)?.message || String(e)}`, {
+      workspaceId: props.workspaceId,
+    });
+    return;
+  }
   // Newly ignored untracked entries vanish from the status; the modified
   // .gitignore itself shows up instead.
   await gitUiStore.refreshGit(props.workspaceId);
