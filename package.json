@@ -32,7 +32,6 @@
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "npm run build && electron-builder --linux",
     "smoke": "npm run build && tsx scripts/smoke.mts",
-    "perf": "node --expose-gc scripts/perf-test.mjs",
     "measure:remote": "tsx scripts/measure-remote-payload.mts",
     "smoke:remote-tunnel": "tsx scripts/remote-tunnel-smoke.mts",
     "test": "npm run test:ui && npm run test:backend",
