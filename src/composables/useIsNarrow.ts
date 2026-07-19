@@ -25,14 +25,12 @@ const sharedIsPortrait = ref(
 );
 
 /**
- * Module-level reactive flags shared across every consumer. Safe to read from
+ * Module-level reactive flag shared across every consumer. Safe to read from
  * outside a component (e.g. inside a Pinia store) — the value is updated by
  * any mounted component using `useIsNarrow`. If no component has mounted yet
  * the value defaults to `false` (desktop layout, no popovers).
  */
 export const isMobileViewport: Ref<boolean> = sharedIsMobile;
-export const isNarrowViewport: Ref<boolean> = sharedIsNarrow;
-export const isPortraitViewport: Ref<boolean> = sharedIsPortrait;
 
 export function useIsNarrow() {
   let narrowMql: MediaQueryList | null = null;
