@@ -124,6 +124,7 @@
           @keydown.enter="confirmCreate"
           @keydown.escape="createDialog = null"
         />
+        <p v-if="createDialog && store.error" class="fm-dialog__error">{{ store.error }}</p>
         <div class="fm-dialog__actions">
           <button type="button" class="button button--ghost" @click="createDialog = null">Cancel</button>
           <button type="button" class="button" :disabled="!createDialog.name.trim()" @click="confirmCreate">
@@ -144,6 +145,7 @@
           @keydown.enter="confirmRename"
           @keydown.escape="renameDialog = null"
         />
+        <p v-if="store.error" class="fm-dialog__error">{{ store.error }}</p>
         <div class="fm-dialog__actions">
           <button type="button" class="button button--ghost" @click="renameDialog = null">Cancel</button>
           <button type="button" class="button" :disabled="!renameDialog.newName.trim()" @click="confirmRename">
@@ -161,6 +163,7 @@
           Are you sure you want to delete <strong>{{ deleteDialog.entry.name }}</strong
           >?
         </p>
+        <p v-if="store.error" class="fm-dialog__error">{{ store.error }}</p>
         <div class="fm-dialog__actions">
           <button type="button" class="button button--ghost" @click="deleteDialog = null">Cancel</button>
           <button type="button" class="button" style="background: var(--danger)" @click="confirmDelete">Delete</button>
@@ -479,25 +482,31 @@ function onCreateDir() {
 
 async function confirmCreate() {
   if (!createDialog.value?.name.trim()) return;
+  store.error = null;
   if (createDialog.value.type === "file") {
     await store.createFile(createDialog.value.name.trim());
   } else {
     await store.createDirectory(createDialog.value.name.trim());
   }
+  if (store.error) return;
   createDialog.value = null;
 }
 
 async function confirmRename() {
   if (!renameDialog.value?.newName.trim()) return;
+  store.error = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await store.renameEntry(renameDialog.value.entry as any, renameDialog.value.newName.trim());
+  if (store.error) return;
   renameDialog.value = null;
 }
 
 async function confirmDelete() {
   if (!deleteDialog.value) return;
+  store.error = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await store.deleteEntry(deleteDialog.value.entry as any);
+  if (store.error) return;
   deleteDialog.value = null;
 }
 
@@ -766,6 +775,12 @@ onBeforeUnmount(() => {
   margin: 0 0 12px;
   font-size: 13px;
   color: var(--muted);
+}
+
+.fm-dialog__error {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--danger);
 }
 
 .fm-dialog__actions {

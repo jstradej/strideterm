@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useFileManagerStore } from "./file-manager.js";
+import { useNotificationStore } from "./notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyObj = Record<string, any>;
@@ -255,6 +256,110 @@ describe("file-manager store", () => {
     await Promise.resolve();
     expect(store.clipboard?.op).toBe("copy");
     expect(calls).toEqual([{ rootPath: "/repo", relativePath: "sub/f.txt" }]);
+  });
+
+  it("createFile failure sets store.error AND surfaces a notification toast (not a silent no-op)", async () => {
+    const { api } = makeFakeApi({
+      fileCreateFile: async () => {
+        throw new Error("EPERM: locked");
+      },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    await store.createFile("newfile.txt");
+    expect(store.error).toBe("EPERM: locked");
+    const notifications = useNotificationStore();
+    expect(notifications.latestToast?.category).toBe("error");
+    expect(notifications.latestToast?.title).toBe("Create file failed");
+    expect(notifications.latestToast?.body).toBe("EPERM: locked");
+  });
+
+  it("createDirectory failure sets store.error AND surfaces a notification toast", async () => {
+    const { api } = makeFakeApi({
+      fileCreateDir: async () => {
+        throw new Error("EACCES");
+      },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    await store.createDirectory("newdir");
+    expect(store.error).toBe("EACCES");
+    const notifications = useNotificationStore();
+    expect(notifications.latestToast?.title).toBe("Create folder failed");
+  });
+
+  it("renameEntry failure sets store.error AND surfaces a notification toast", async () => {
+    const { api } = makeFakeApi({
+      fileRename: async () => {
+        throw new Error("Destination already exists");
+      },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    const entry = { name: "a.txt", relativePath: "a.txt", kind: "file" as const };
+    await store.renameEntry(entry, "b.txt");
+    expect(store.error).toBe("Destination already exists");
+    const notifications = useNotificationStore();
+    expect(notifications.latestToast?.title).toBe("Rename failed");
+  });
+
+  it("deleteEntry failure sets store.error AND surfaces a notification toast", async () => {
+    const { api } = makeFakeApi({
+      fileDelete: async () => {
+        throw new Error("EBUSY: file in use");
+      },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    const entry = { name: "a.txt", relativePath: "a.txt", kind: "file" as const };
+    await store.deleteEntry(entry);
+    expect(store.error).toBe("EBUSY: file in use");
+    const notifications = useNotificationStore();
+    expect(notifications.latestToast?.title).toBe("Delete failed");
+  });
+
+  it("moveEntryTo failure sets store.error AND surfaces a notification toast", async () => {
+    const { api } = makeFakeApi({
+      fileMove: async () => {
+        throw new Error("Source and destination are the same");
+      },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    const entry = { name: "a.txt", relativePath: "a.txt", kind: "file" as const };
+    await store.moveEntryTo(entry, "dest");
+    expect(store.error).toBe("Source and destination are the same");
+    const notifications = useNotificationStore();
+    expect(notifications.latestToast?.title).toBe("Move failed");
+  });
+
+  it("saveEdit failure sets store.error AND surfaces a notification toast", async () => {
+    const { api } = makeFakeApi({
+      fileWrite: async () => {
+        throw new Error("EACCES: read-only");
+      },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    const entry = { name: "a.txt", relativePath: "a.txt", kind: "file" as const };
+    await store.selectEntry(entry);
+    await store.startEdit();
+    await store.saveEdit();
+    expect(store.error).toBe("EACCES: read-only");
+    const notifications = useNotificationStore();
+    expect(notifications.latestToast?.title).toBe("Save failed");
   });
 
   it("copyToClipboard tolerates a missing or rejecting fileClipboardCopy", async () => {

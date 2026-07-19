@@ -560,6 +560,81 @@ describe("workspace delete endpoint validation", () => {
   });
 });
 
+describe("malformed request body handling — must respond, never hang", () => {
+  function makeMinimalRuntime(auth: string, port: number) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth } },
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [{ id: "ws-1", name: "WS1", profileId: "default", panels: [] }],
+        windowSlots: [{ id: "win-1", profileId: "default", activeWorkspaceId: "ws-1" }],
+      },
+    };
+    return {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+      saveWorkspace: async () => payload,
+      activateWorkspaceForRemoteClient: async () => payload,
+    };
+  }
+
+  const clientHeaders = (auth: string) => ({
+    Authorization: `Bearer ${auth}`,
+    "Content-Type": "application/json",
+    "X-Strideterm-Client-Id": "test-client",
+  });
+
+  test("slot-aware route (POST /api/workspace/save) with malformed JSON body returns 400, not a hang", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-bad-json-slot";
+    const runtime = makeMinimalRuntime(auth, port);
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/workspace/save`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: "{not valid json",
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toBeTruthy();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("remote-client-scoped route (POST /api/remote-client/workspace/activate) with malformed JSON body returns 400, not a hang", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-bad-json-client";
+    const runtime = makeMinimalRuntime(auth, port);
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/remote-client/workspace/activate`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: "{not valid json",
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toBeTruthy();
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe("terminal streaming — subscription routing + backpressure", () => {
   // Runtime mock that captures event handlers so a test can drive terminal:data
   // / terminal:exit emissions, and serves per-session replay snapshots.

@@ -315,7 +315,9 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       await _api.fileCreateFile({ rootPath: rootPath.value, parentPath: currentPath.value, name });
       await refresh();
     } catch (err) {
-      error.value = (err as Error).message || "Failed to create file";
+      const msg = (err as Error).message || "Failed to create file";
+      error.value = msg;
+      await notifyOpError("Create file failed", msg);
     }
   }
 
@@ -325,7 +327,9 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       await _api.fileCreateDir({ rootPath: rootPath.value, parentPath: currentPath.value, name });
       await refresh();
     } catch (err) {
-      error.value = (err as Error).message || "Failed to create directory";
+      const msg = (err as Error).message || "Failed to create directory";
+      error.value = msg;
+      await notifyOpError("Create folder failed", msg);
     }
   }
 
@@ -335,7 +339,9 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       await _api.fileRename({ rootPath: rootPath.value, relativePath: entry.relativePath, newName });
       await refresh();
     } catch (err) {
-      error.value = (err as Error).message || "Failed to rename";
+      const msg = (err as Error).message || "Failed to rename";
+      error.value = msg;
+      await notifyOpError("Rename failed", msg);
     }
   }
 
@@ -349,7 +355,9 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       }
       await refresh();
     } catch (err) {
-      error.value = (err as Error).message || "Failed to delete";
+      const msg = (err as Error).message || "Failed to delete";
+      error.value = msg;
+      await notifyOpError("Delete failed", msg);
     }
   }
 
@@ -382,7 +390,9 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       // After saving, the file likely became dirty (or maybe became clean).
       await refreshGitStatus();
     } catch (err) {
-      error.value = (err as Error).message || "Failed to save file";
+      const msg = (err as Error).message || "Failed to save file";
+      error.value = msg;
+      await notifyOpError("Save failed", msg);
     }
   }
 
@@ -486,14 +496,24 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     } catch (err) {
       const msg = (err as Error).message || "Failed to paste";
       error.value = msg;
-      try {
-        const { useNotificationStore } = await import("./notifications.js");
-        useNotificationStore().showError(op === "copy" ? "Copy failed" : "Move failed", msg, {
-          profileId: await resolveOwningProfileId(),
-        });
-      } catch {
-        // notifications store optional during isolated unit tests
-      }
+      await notifyOpError(op === "copy" ? "Copy failed" : "Move failed", msg);
+    }
+  }
+
+  /**
+   * Surface a failed mutation as a toast, not just the write-only `error`
+   * ref — a destructive op (create/rename/delete/move/save) that silently
+   * sets `error` with no consumer reads back as a successful no-op to the
+   * user (locked file, permissions — common on Windows).
+   */
+  async function notifyOpError(title: string, msg: string): Promise<void> {
+    try {
+      const { useNotificationStore } = await import("./notifications.js");
+      useNotificationStore().showError(title, msg, {
+        profileId: await resolveOwningProfileId(),
+      });
+    } catch {
+      // notifications store optional during isolated unit tests
     }
   }
 
@@ -546,7 +566,9 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       await _api.fileMove({ rootPath: rootPath.value, fromPath: entry.relativePath, toPath: destPath });
       await refresh();
     } catch (err) {
-      error.value = (err as Error).message || "Failed to move";
+      const msg = (err as Error).message || "Failed to move";
+      error.value = msg;
+      await notifyOpError("Move failed", msg);
     }
   }
 

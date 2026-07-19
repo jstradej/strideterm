@@ -2486,7 +2486,13 @@ export async function startRemoteServer({
           json(response, 401, { error: "No active session" });
           return;
         }
-        const body = await readRequestBody(request);
+        let body: Record<string, unknown>;
+        try {
+          body = await readRequestBody(request);
+        } catch (err) {
+          json(response, 400, { error: (err as Error).message || "invalid request body" });
+          return;
+        }
         try {
           // Diagnostic for the mobile workspace flip-flop: compare this sessionRef
           // against the one logged at "WebSocket session resolution" — if HTTP
@@ -2810,7 +2816,13 @@ export async function startRemoteServer({
       };
       const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
       if (slotAwareHandler) {
-        const body = await readRequestBody(request);
+        let body: Record<string, unknown>;
+        try {
+          body = await readRequestBody(request);
+        } catch (err) {
+          json(response, 400, { error: (err as Error).message || "invalid request body" });
+          return;
+        }
         // Let the response adapter's mutation ack name the resources this route
         // changed (from prKey/workspaceId in the body).
         const slotAckCtx = (response as ResponseWithCtx).__remoteCtx;
