@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useSshStore } from "./ssh.js";
+import { useNotificationStore } from "./notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyObj = Record<string, any>;
@@ -132,5 +133,129 @@ describe("ssh store", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(api.sshHostsList).toHaveBeenCalled();
+  });
+
+  // Regression coverage for review-code-quality-2026-07.md finding 1: load()
+  // and the store's other mutating actions had no error handling at all —
+  // a rejected /api/ssh/* call left hosts/keys/certs permanently empty with
+  // zero explanation anywhere (load() is invoked fire-and-forget from
+  // App.vue, onSshState, and several dialog onMounted hooks). The store now
+  // catches internally, records `error`, and surfaces a notification toast.
+  describe("error handling", () => {
+    it("load() failure sets store.error and surfaces a notification toast", async () => {
+      const { api } = makeFakeApi({
+        sshHostsList: vi.fn(async () => {
+          throw new Error("ECONNREFUSED");
+        }),
+      });
+      const store = useSshStore();
+      store.init(api as never);
+
+      await store.load();
+      expect(store.error).toBe("ECONNREFUSED");
+      expect(store.hosts).toEqual([]);
+      const notifications = useNotificationStore();
+      expect(notifications.latestToast?.category).toBe("error");
+      expect(notifications.latestToast?.title).toBe("Load SSH data failed");
+      expect(notifications.latestToast?.body).toBe("ECONNREFUSED");
+    });
+
+    it("deleteHost failure sets store.error and surfaces a notification toast", async () => {
+      const { api } = makeFakeApi({
+        sshHostsDelete: vi.fn(async () => {
+          throw new Error("host not found");
+        }),
+      });
+      const store = useSshStore();
+      store.init(api as never);
+
+      await store.deleteHost("h1");
+      expect(store.error).toBe("host not found");
+      const notifications = useNotificationStore();
+      expect(notifications.latestToast?.title).toBe("Delete SSH host failed");
+    });
+
+    it("deleteCertificate failure sets store.error and surfaces a notification toast", async () => {
+      const { api } = makeFakeApi({
+        sshCertsDelete: vi.fn(async () => {
+          throw new Error("cert not found");
+        }),
+      });
+      const store = useSshStore();
+      store.init(api as never);
+
+      await store.deleteCertificate("c1");
+      expect(store.error).toBe("cert not found");
+      const notifications = useNotificationStore();
+      expect(notifications.latestToast?.title).toBe("Delete SSH certificate failed");
+    });
+
+    it("answerAuthPrompt failure sets store.error, toasts, and still clears the prompt", async () => {
+      const { api } = makeFakeApi({
+        sshAuthAnswer: vi.fn(async () => {
+          throw new Error("session closed");
+        }),
+      });
+      const store = useSshStore();
+      store.init(api as never);
+      store.authPrompt = { sessionId: "s1", name: "box", prompts: [], promptId: "p1" };
+
+      await store.answerAuthPrompt("s1", ["secret"]);
+      expect(store.error).toBe("session closed");
+      expect(store.authPrompt).toBeNull();
+      const notifications = useNotificationStore();
+      expect(notifications.latestToast?.title).toBe("SSH authentication failed");
+    });
+
+    it("cancelAuthPrompt failure sets store.error, toasts, and still clears the prompt", async () => {
+      const { api } = makeFakeApi({
+        sshAuthCancel: vi.fn(async () => {
+          throw new Error("session closed");
+        }),
+      });
+      const store = useSshStore();
+      store.init(api as never);
+      store.authPrompt = { sessionId: "s1", name: "box", prompts: [], promptId: "p1" };
+
+      await store.cancelAuthPrompt("s1");
+      expect(store.error).toBe("session closed");
+      expect(store.authPrompt).toBeNull();
+      const notifications = useNotificationStore();
+      expect(notifications.latestToast?.title).toBe("Cancel SSH authentication failed");
+    });
+
+    it("acceptHostKey failure sets store.error, toasts, and still clears the warning", async () => {
+      const { api } = makeFakeApi({
+        sshHostKeyAccept: vi.fn(async () => {
+          throw new Error("write failed");
+        }),
+      });
+      const store = useSshStore();
+      store.init(api as never);
+      store.hostKeyWarning = { sessionId: "s1", host: "box", oldFp: "a", newFp: "b", promptId: "p1" };
+
+      await store.acceptHostKey("s1", "permanent");
+      expect(store.error).toBe("write failed");
+      expect(store.hostKeyWarning).toBeNull();
+      const notifications = useNotificationStore();
+      expect(notifications.latestToast?.title).toBe("Accept SSH host key failed");
+    });
+
+    it("rejectHostKey failure sets store.error, toasts, and still clears the warning", async () => {
+      const { api } = makeFakeApi({
+        sshHostKeyReject: vi.fn(async () => {
+          throw new Error("session closed");
+        }),
+      });
+      const store = useSshStore();
+      store.init(api as never);
+      store.hostKeyWarning = { sessionId: "s1", host: "box", oldFp: "a", newFp: "b", promptId: "p1" };
+
+      await store.rejectHostKey("s1");
+      expect(store.error).toBe("session closed");
+      expect(store.hostKeyWarning).toBeNull();
+      const notifications = useNotificationStore();
+      expect(notifications.latestToast?.title).toBe("Reject SSH host key failed");
+    });
   });
 });

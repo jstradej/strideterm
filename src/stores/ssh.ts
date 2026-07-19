@@ -13,6 +13,22 @@ function t(): any {
   return _api as any;
 }
 
+/**
+ * Surface a failed store action as a toast — actions here are invoked
+ * fire-and-forget from several places (App.vue, bindEvents()'s onSshState
+ * listener, dialog onMounted hooks), so catching only inside the store (not
+ * at each call site) is the one place guaranteed to run. Mirrors
+ * file-manager.ts's notifyOpError.
+ */
+async function notifyOpError(title: string, msg: string): Promise<void> {
+  try {
+    const { useNotificationStore } = await import("./notifications.js");
+    useNotificationStore().showError(title, msg);
+  } catch {
+    // notifications store optional during isolated unit tests
+  }
+}
+
 interface SshAuthPrompt {
   sessionId: string;
   name: string;
@@ -38,6 +54,7 @@ export const useSshStore = defineStore("ssh", {
     authPrompt: null as SshAuthPrompt | null, // { sessionId, name, prompts, … }
     hostKeyWarning: null as SshHostKeyWarning | null, // { sessionId, host, oldFp, newFp }
     pendingConnections: new Map<string, string>(), // sessionId -> status
+    error: null as string | null,
   }),
 
   actions: {
@@ -47,10 +64,17 @@ export const useSshStore = defineStore("ssh", {
 
     async load(): Promise<void> {
       if (!_api) return;
-      const [hosts, keys, certs] = await Promise.all([t().sshHostsList(), t().sshKeysList(), t().sshCertsList()]);
-      this.hosts = (hosts as SshHost[]) || [];
-      this.keys = (keys as SshKey[]) || [];
-      this.certificates = (certs as SshCert[]) || [];
+      this.error = null;
+      try {
+        const [hosts, keys, certs] = await Promise.all([t().sshHostsList(), t().sshKeysList(), t().sshCertsList()]);
+        this.hosts = (hosts as SshHost[]) || [];
+        this.keys = (keys as SshKey[]) || [];
+        this.certificates = (certs as SshCert[]) || [];
+      } catch (err) {
+        const msg = (err as Error)?.message || "Failed to load SSH data";
+        this.error = msg;
+        await notifyOpError("Load SSH data failed", msg);
+      }
     },
 
     async saveHost(host: SshHost): Promise<void> {
@@ -63,8 +87,14 @@ export const useSshStore = defineStore("ssh", {
     },
 
     async deleteHost(id: string): Promise<void> {
-      await t().sshHostsDelete({ id });
-      await this.load();
+      try {
+        await t().sshHostsDelete({ id });
+        await this.load();
+      } catch (err) {
+        const msg = (err as Error)?.message || "Failed to delete SSH host";
+        this.error = msg;
+        await notifyOpError("Delete SSH host failed", msg);
+      }
     },
 
     async importKey(file: string, label: string, passphrase: string): Promise<void> {
@@ -96,8 +126,14 @@ export const useSshStore = defineStore("ssh", {
     },
 
     async deleteCertificate(id: string): Promise<void> {
-      await t().sshCertsDelete({ id });
-      await this.load();
+      try {
+        await t().sshCertsDelete({ id });
+        await this.load();
+      } catch (err) {
+        const msg = (err as Error)?.message || "Failed to delete SSH certificate";
+        this.error = msg;
+        await notifyOpError("Delete SSH certificate failed", msg);
+      }
     },
 
     async answerAuthPrompt(sessionId: string, answers: unknown[]): Promise<void> {
@@ -109,6 +145,10 @@ export const useSshStore = defineStore("ssh", {
       const plainAnswers = JSON.parse(JSON.stringify(Array.from(answers || []))) as unknown[];
       try {
         await t().sshAuthAnswer({ sessionId, answers: plainAnswers, promptId });
+      } catch (err) {
+        const msg = (err as Error)?.message || "Failed to submit SSH authentication";
+        this.error = msg;
+        await notifyOpError("SSH authentication failed", msg);
       } finally {
         this.authPrompt = null;
       }
@@ -118,20 +158,36 @@ export const useSshStore = defineStore("ssh", {
       const promptId = this.authPrompt?.promptId;
       try {
         await t().sshAuthCancel({ sessionId, promptId });
+      } catch (err) {
+        const msg = (err as Error)?.message || "Failed to cancel SSH authentication";
+        this.error = msg;
+        await notifyOpError("Cancel SSH authentication failed", msg);
       } finally {
         this.authPrompt = null;
       }
     },
 
     async acceptHostKey(sessionId: string, mode = "permanent"): Promise<void> {
-      await t().sshHostKeyAccept({ sessionId, mode, promptId: this.hostKeyWarning?.promptId });
-      this.hostKeyWarning = null;
+      const promptId = this.hostKeyWarning?.promptId;
+      try {
+        await t().sshHostKeyAccept({ sessionId, mode, promptId });
+      } catch (err) {
+        const msg = (err as Error)?.message || "Failed to accept SSH host key";
+        this.error = msg;
+        await notifyOpError("Accept SSH host key failed", msg);
+      } finally {
+        this.hostKeyWarning = null;
+      }
     },
 
     async rejectHostKey(sessionId: string): Promise<void> {
       const promptId = this.hostKeyWarning?.promptId;
       try {
         await t().sshHostKeyReject({ sessionId, promptId });
+      } catch (err) {
+        const msg = (err as Error)?.message || "Failed to reject SSH host key";
+        this.error = msg;
+        await notifyOpError("Reject SSH host key failed", msg);
       } finally {
         this.hostKeyWarning = null;
       }
