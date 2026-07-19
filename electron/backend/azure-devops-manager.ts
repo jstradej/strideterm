@@ -1221,8 +1221,21 @@ export class AzureDevOpsManager extends BaseProviderManager {
           },
         };
         detailMap[key] = resolved;
-      } catch {
-        // API failed — mark as completed so we don't retry every poll
+      } catch (error) {
+        // Azure's requestJson embeds the HTTP status in the thrown message, e.g.
+        // "Azure DevOps request failed (404): ...". Only a 404/410 means the PR
+        // is genuinely gone — any other failure (network blip, 500, timeout,
+        // unparseable status) is transient, so leave detailMap[key] untouched
+        // and let the next poll cycle retry the check instead of permanently
+        // mislabeling a still-active PR as completed.
+        const message = (error as Error).message || String(error);
+        const statusMatch = message.match(/request failed \((\d+)\)/);
+        const statusCode = statusMatch ? Number(statusMatch[1]) : undefined;
+        if (statusCode !== 404 && statusCode !== 410) {
+          this.log.warn("stale PR check failed, will retry next poll", { prKey: key, statusCode, err: message });
+          continue;
+        }
+        this.log.warn("stale PR confirmed gone, marking completed", { prKey: key, statusCode, err: message });
         detailMap[key] = {
           ...(existing || {}),
           connectionId: ws.review!.connectionId || "",

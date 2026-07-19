@@ -835,6 +835,97 @@ describe("AzureDevOpsManager", () => {
       ),
     ).toBe(true);
   });
+
+  test("stale PR resolution marks a PR completed when the detail check 404s", async () => {
+    const prKey = createPullRequestKey("ado-main", "repo-1", 999);
+    const { manager, fetchImpl } = createManager();
+    const baseImpl = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      if (String(url).includes("/repositories/repo-1/pullRequests/999")) {
+        throw new Error("Azure DevOps request failed (404): PR not found");
+      }
+      return baseImpl(url, options);
+    });
+
+    const snapshot = (await manager.sync({
+      connections: [connection],
+      workspaces: [
+        {
+          id: "workspace-stale-404",
+          cwd: "/repo",
+          review: {
+            provider: "azure-devops",
+            connectionId: "ado-main",
+            project: { id: "project-1", name: "Platform" },
+            repository: { id: "repo-1", name: "web-app" },
+            pullRequest: { id: 999, status: "active" },
+            prKey,
+          },
+        },
+      ],
+      gitSnapshots: {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    expect(snapshot.pullRequests[prKey].pullRequest.status).toBe("completed");
+  });
+
+  test("stale PR resolution leaves a PR unresolved when the detail check fails transiently", async () => {
+    const prKey = createPullRequestKey("ado-main", "repo-1", 999);
+    const { manager, fetchImpl } = createManager();
+    const baseImpl = fetchImpl.getMockImplementation()!;
+    const warnSpy = vi.spyOn(manager.log, "warn").mockImplementation(() => {});
+    fetchImpl.mockImplementation(async (url, options) => {
+      if (String(url).includes("/repositories/repo-1/pullRequests/999")) {
+        throw new Error("network error: ECONNRESET");
+      }
+      return baseImpl(url, options);
+    });
+
+    const workspaces = [
+      {
+        id: "workspace-stale-transient",
+        cwd: "/repo",
+        review: {
+          provider: "azure-devops",
+          connectionId: "ado-main",
+          project: { id: "project-1", name: "Platform" },
+          repository: { id: "repo-1", name: "web-app" },
+          pullRequest: { id: 999, status: "active" },
+          prKey,
+        },
+      },
+    ];
+
+    const snapshot = (await manager.sync({
+      connections: [connection],
+      workspaces,
+      gitSnapshots: {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    // No detail was ever resolved for this PR, so it must not be marked completed.
+    expect(snapshot.pullRequests[prKey]).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      "stale PR check failed, will retry next poll",
+      expect.objectContaining({ prKey, err: expect.stringContaining("ECONNRESET") }),
+    );
+
+    const detailCallsFor999 = () =>
+      fetchImpl.mock.calls.filter(([url]) => String(url).includes("/repositories/repo-1/pullRequests/999")).length;
+    expect(detailCallsFor999()).toBe(1);
+
+    // A second sync retries the check instead of staying permanently unresolved.
+    const secondSnapshot = (await manager.sync({
+      connections: [connection],
+      workspaces,
+      gitSnapshots: {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    expect(detailCallsFor999()).toBe(2);
+    expect(secondSnapshot.pullRequests[prKey]).toBeUndefined();
+  });
 });
 
 describe("azure manager helpers", () => {
