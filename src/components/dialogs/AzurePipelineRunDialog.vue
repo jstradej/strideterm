@@ -169,9 +169,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
 import type { AzurePipelineParameterDef, AzurePipelineCommit } from "../../../electron/shared/types/azure-pipelines.js";
+import { useDismissable } from "../../composables/useDismissable.js";
 
 /** A parameter row: free-form (editable name) unless `def` ties it to the schema. */
 interface ParamRow {
@@ -256,10 +257,14 @@ onMounted(async () => {
   // Refs load in the background so the form appears immediately; the branch
   // field shows a spinner until they arrive (and stays free-text on failure).
   void loadRefs();
-  document.addEventListener("mousedown", onDocMouseDown);
 });
 
-onBeforeUnmount(() => document.removeEventListener("mousedown", onDocMouseDown));
+useDismissable(branchOpen, branchEl, {
+  onDismiss: () => {
+    branchOpen.value = false;
+  },
+  eventName: "mousedown",
+});
 
 async function loadRefs(): Promise<void> {
   refsLoading.value = true;
@@ -343,12 +348,6 @@ function pickBranch(value: string): void {
 function pickCommit(commit: AzurePipelineCommit): void {
   branch.value = commit.id;
   branchOpen.value = false;
-}
-
-function onDocMouseDown(e: MouseEvent): void {
-  if (branchOpen.value && branchEl.value && !branchEl.value.contains(e.target as Node)) {
-    branchOpen.value = false;
-  }
 }
 
 /** Options for a choice parameter, keeping the run's current value visible if it dropped out of the list. */

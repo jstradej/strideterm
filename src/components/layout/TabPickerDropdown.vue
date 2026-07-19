@@ -21,9 +21,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, type CSSProperties } from "vue";
+import { ref, computed, watch, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
+import { useDismissable } from "../../composables/useDismissable.js";
 
 interface TabTemplate {
   title?: string;
@@ -124,19 +125,9 @@ function addSshTab() {
   store.openNewTabDialog(selectedCwd.value, "", "", { tabType: "ssh" });
 }
 
-function onDocumentClick(e: MouseEvent): void {
-  if (dropdownRef.value && !dropdownRef.value.contains(e.target as Node)) {
-    emit("close");
-  }
-}
+useDismissable(visible, dropdownRef, { onDismiss: () => emit("close"), deferAttach: true });
 
 watch(visible, (isVisible) => {
-  document.removeEventListener("click", onDocumentClick);
-  if (isVisible) {
-    selectedCwd.value = "";
-    requestAnimationFrame(() => document.addEventListener("click", onDocumentClick));
-  }
+  if (isVisible) selectedCwd.value = "";
 });
-
-onBeforeUnmount(() => document.removeEventListener("click", onDocumentClick));
 </script>

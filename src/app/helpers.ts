@@ -124,6 +124,14 @@ export function safeFilenamePart(value: unknown, fallback = "terminal"): string 
   return normalized || fallback;
 }
 
+export function shortcutTabDirection(event: KeyboardEvent): number {
+  const key = String(event?.key || "");
+  const code = String(event?.code || "");
+  if (key === "PageDown" || key === "Next" || code === "PageDown") return 1;
+  if (key === "PageUp" || key === "Prior" || code === "PageUp") return -1;
+  return 0;
+}
+
 export function getWindowsPtyOptions(
   payload: StatePayload | null | undefined,
 ): { backend: string; buildNumber: number } | null {
@@ -137,6 +145,10 @@ export function getWindowsPtyOptions(
     backend: windowsPty.backend as string,
     buildNumber: windowsPty.buildNumber as number,
   };
+}
+
+export function makeNewProfile(name: string): { id: string; name: string; color: string; workspaceIds: string[] } {
+  return { id: `profile-${crypto.randomUUID()}`, name, color: "#ffa424", workspaceIds: [] };
 }
 
 export function isContainerRunning(container: ContainerLike | null | undefined): boolean {

@@ -336,11 +336,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount } from "vue";
+import { ref, computed, watch } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { rlog } from "../../../lib/renderer-log.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { useDismissable } from "../../../composables/useDismissable.js";
 import GitOperationCard from "./GitOperationCard.vue";
 import GitMergeBackCard from "./GitMergeBackCard.vue";
 import GitBaseBranchPicker from "./GitBaseBranchPicker.vue";
@@ -624,16 +625,13 @@ function selectStrategy(strategy: "rebase" | "merge") {
   strategyMenuOpen.value = false;
 }
 
-function onSplitButtonOutsideClick(e: MouseEvent) {
-  if (splitButtonRef.value && !splitButtonRef.value.contains(e.target as Node)) {
+useDismissable(strategyMenuOpen, splitButtonRef, {
+  onDismiss: () => {
     strategyMenuOpen.value = false;
-  }
-}
-watch(strategyMenuOpen, (open) => {
-  if (open) document.addEventListener("mousedown", onSplitButtonOutsideClick, true);
-  else document.removeEventListener("mousedown", onSplitButtonOutsideClick, true);
+  },
+  eventName: "mousedown",
+  capture: true,
 });
-onBeforeUnmount(() => document.removeEventListener("mousedown", onSplitButtonOutsideClick, true));
 
 watch(
   () => [opRef.value, props.snapshot?.branch, props.snapshot?.lastFetchAt],

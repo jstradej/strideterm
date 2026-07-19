@@ -53,6 +53,7 @@
 import { computed, inject, ref } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
+import { formatSize } from "./file-format.js";
 
 const props = withDefaults(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -117,13 +118,6 @@ const gitStatus = computed(() => {
   }
   return store.getStatusFor(rel)?.status || null;
 });
-
-function formatSize(bytes: number) {
-  if (!bytes && bytes !== 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function formatDate(iso: string) {
   if (!iso) return "";

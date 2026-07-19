@@ -39,6 +39,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, nextTick } from "vue";
+import { useDismissable } from "../../../composables/useDismissable.js";
 
 interface MenuItem {
   id: string;
@@ -86,10 +87,10 @@ function run(id: string) {
   emit("pick", id);
 }
 
-function onDocumentMousedown(e: MouseEvent) {
-  if (!menuRef.value) return;
-  if (!menuRef.value.contains(e.target as Node)) emit("close");
-}
+// The parent only mounts this component while the menu is open (v-if), so
+// there's no separate open/closed state to track here — just "always open"
+// for as long as this instance is alive.
+useDismissable(() => true, menuRef, { onDismiss: () => emit("close"), eventName: "mousedown", capture: true });
 
 function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
@@ -115,12 +116,10 @@ onMounted(() => {
     if (rect.bottom > vh - 4) adjustedY.value = Math.max(4, vh - rect.height - 4);
     menuRef.value.focus({ preventScroll: true });
   });
-  document.addEventListener("mousedown", onDocumentMousedown, true);
   window.addEventListener("blur", onWindowBlur);
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener("mousedown", onDocumentMousedown, true);
   window.removeEventListener("blur", onWindowBlur);
 });
 </script>

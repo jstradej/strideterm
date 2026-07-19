@@ -127,6 +127,7 @@ import { computed } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import FileEditor from "./FileEditor.vue";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
+import { formatSize } from "./file-format.js";
 
 defineEmits<{ (e: "open-in-explorer"): void }>();
 
@@ -146,13 +147,6 @@ const gitStatus = computed(() => {
   if (!rel) return null;
   return store.getStatusFor(rel)?.status || null;
 });
-
-function formatSize(bytes: number) {
-  if (!bytes && bytes !== 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function formatDate(iso: string) {
   if (!iso) return "";

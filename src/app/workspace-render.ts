@@ -2,6 +2,7 @@ import { attentionTitle, isFreshAttention, safeColor } from "./helpers.js";
 import type { WorkspaceState, GitSnapshot } from "../../electron/shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-display.js";
 import { formatRelativeAge } from "./relative-age.js";
+import { getParentWorkspaceId } from "../workspace-state.js";
 
 // ---------------------------------------------------------------------------
 // Local structural types
@@ -82,16 +83,8 @@ function mostRecentIso(...isos: Array<string | null | undefined>): string | null
 
 // ---------------------------------------------------------------------------
 
-function getParentId(ws: WorkspaceState): string | null {
-  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
-    return ws.review.parentWorkspaceId;
-  if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
-  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId ?? null;
-  return null;
-}
-
 function computeDepth(workspace: WorkspaceState, byId: Map<string, WorkspaceState>, seen = new Set<string>()): number {
-  const parentId = getParentId(workspace);
+  const parentId = getParentWorkspaceId(workspace);
   if (parentId && !seen.has(parentId)) {
     const parent = byId.get(parentId);
     if (parent) {

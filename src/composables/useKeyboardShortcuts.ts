@@ -3,16 +3,9 @@ import { useAppStore } from "../stores/app.js";
 import { useTerminalStore } from "../stores/terminal.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { rlog } from "../lib/renderer-log.js";
+import { shortcutTabDirection } from "../app/helpers.js";
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
-
-function shortcutTabDirection(event: KeyboardEvent): number {
-  const key = String(event?.key || "");
-  const code = String(event?.code || "");
-  if (key === "PageDown" || key === "Next" || code === "PageDown") return 1;
-  if (key === "PageUp" || key === "Prior" || code === "PageUp") return -1;
-  return 0;
-}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;

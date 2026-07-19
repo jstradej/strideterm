@@ -23,10 +23,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, type CSSProperties } from "vue";
+import { ref, computed, watch, nextTick, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import LayoutThumbnail from "./LayoutThumbnail.vue";
 import { LAYOUTS } from "../../app/layout-geometry.js";
+import { useContextMenu } from "../../composables/useContextMenu.js";
 
 const store = useAppStore();
 const pickerRef = ref<HTMLElement | null>(null);
@@ -68,26 +69,12 @@ function pickLayout(key: string): void {
   store.hideLayoutPicker();
 }
 
-function onDocumentClick(e: MouseEvent): void {
-  // Ignore clicks on picker openers themselves; they trigger showLayoutPicker
-  // before this document handler sees the same click.
-  if ((e.target as Element).closest("[data-role='tab-actions'], [data-role='workspace-layout-chip']")) return;
-  if (pickerRef.value && !pickerRef.value.contains(e.target as Node)) {
-    store.hideLayoutPicker();
-  }
-}
-
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === "Escape") store.hideLayoutPicker();
-}
-
-onMounted(() => {
-  document.addEventListener("click", onDocumentClick);
-  document.addEventListener("keydown", onKeydown);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocumentClick);
-  document.removeEventListener("keydown", onKeydown);
+// Ignore clicks on picker openers themselves; they trigger showLayoutPicker
+// before the dismiss listener sees the same click.
+useContextMenu({
+  isOpen: () => !!store.layoutPickerAnchor,
+  menuRef: pickerRef,
+  onClose: () => store.hideLayoutPicker(),
+  ignoreSelector: "[data-role='tab-actions'], [data-role='workspace-layout-chip']",
 });
 </script>

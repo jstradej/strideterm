@@ -187,6 +187,7 @@ import FileTree from "./file-manager/FileTree.vue";
 import FileList from "./file-manager/FileList.vue";
 import FilePreview from "./file-manager/FilePreview.vue";
 import FileDiff from "./file-manager/FileDiff.vue";
+import { useContextMenu } from "../../composables/useContextMenu.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
@@ -338,20 +339,12 @@ watch(
   { flush: "post" },
 );
 
-// Close context menu on outside click / Escape
-function onDocClick(e: MouseEvent) {
-  if (fileMenuRef.value && !fileMenuRef.value.contains(e.target as Node)) {
-    fileContextMenu.value = null;
-  }
-}
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") fileContextMenu.value = null;
-}
-
 // Context menu actions
 function dismissMenu() {
   fileContextMenu.value = null;
 }
+
+useContextMenu({ isOpen: () => !!fileContextMenu.value, menuRef: fileMenuRef, onClose: dismissMenu });
 
 function onCtxOpen() {
   const entry = fileContextMenu.value?.entry;
@@ -674,8 +667,6 @@ async function copyText(text: string) {
 }
 
 onMounted(() => {
-  document.addEventListener("click", onDocClick);
-  document.addEventListener("keydown", onKeydown);
   const api = appStore.getApi();
   store.setApi(api);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -686,8 +677,6 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocClick);
-  document.removeEventListener("keydown", onKeydown);
   if (toastTimer) clearTimeout(toastTimer);
 });
 </script>

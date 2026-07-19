@@ -3,6 +3,7 @@ import type { Ref } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
 import { useRemoteDetailsStore } from "./remote-details.js";
+import { adoptRestoredSession } from "./app-session-restore.js";
 
 /**
  * Mirror of the backend `PruneResult` shape (electron/backend/docker-manager).
@@ -809,14 +810,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     const slots = newPayload?.appState?.windowSlots as AnyApi[] | undefined;
     const mySlot = windowId && slots ? slots.find((s: AnyApi) => s.id === windowId) : null;
     const restoredSession = mySlot?.activeSessionId || "";
-    if (restoredSession) {
-      ctx.activeSessionId.value = restoredSession;
-      ctx.activeViewId.value = restoredSession;
-    } else {
-      ctx.activeViewId.value = null;
-      ctx.activeSessionId.value = null;
-    }
-    ctx.splitGroup.value = null;
+    adoptRestoredSession(ctx, restoredSession);
   }
 
   async function updateSettings(patch: unknown): Promise<void> {

@@ -55,6 +55,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from "vue";
+import { useDismissable } from "../../composables/useDismissable.js";
 
 interface SelectOption {
   value: string | number;
@@ -233,12 +234,7 @@ function onOptionMouseenter(idx: number, opt: SelectOption) {
   activeIndex.value = idx;
 }
 
-function onDocumentMousedown(e: MouseEvent) {
-  if (!open.value) return;
-  const inRoot = rootRef.value && rootRef.value.contains(e.target as Node);
-  const inList = listRef.value && listRef.value.contains(e.target as Node);
-  if (!inRoot && !inList) closeList();
-}
+useDismissable(open, [rootRef, listRef], { onDismiss: closeList, eventName: "mousedown" });
 
 function onWindowBlur() {
   closeList();
@@ -272,14 +268,12 @@ function onReposition() {
 }
 
 onMounted(() => {
-  document.addEventListener("mousedown", onDocumentMousedown);
   window.addEventListener("blur", onWindowBlur);
   window.addEventListener("resize", onReposition);
   window.addEventListener("scroll", onReposition, true);
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener("mousedown", onDocumentMousedown);
   window.removeEventListener("blur", onWindowBlur);
   window.removeEventListener("resize", onReposition);
   window.removeEventListener("scroll", onReposition, true);

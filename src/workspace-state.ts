@@ -1,4 +1,8 @@
 import { APP_CONFIG } from "../config/app-config.js";
+import type { WorkspaceState } from "../electron/shared/types/state.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type WorkspaceWithParentRefs = WorkspaceState & { review?: any; quickfix?: any };
 
 export interface EmptyPanel {
   id: string;
@@ -49,6 +53,20 @@ export function createEmptyWorkspace(): EmptyWorkspace {
 
 export function cloneWorkspace<T>(workspace: T): T {
   return JSON.parse(JSON.stringify(workspace)) as T;
+}
+
+/**
+ * Resolves the explicit parent workspace id, if any, of a review/quickfix/task
+ * child workspace. Used to build the drag-drop reparenting rules and the
+ * workspace-tree indent depth from the same notion of "parent".
+ */
+export function getParentWorkspaceId(ws: WorkspaceWithParentRefs): string | null {
+  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId) {
+    return ws.review.parentWorkspaceId;
+  }
+  if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
+  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId ?? null;
+  return null;
 }
 
 export function statusTone(status: string): "running" | "error" | "idle" {

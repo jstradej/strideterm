@@ -299,16 +299,7 @@ function onPickTree(): void {
 }
 
 function closeTab(tabId: string): void {
-  const tab = detailTabs.value.find((t) => t.tabId === tabId);
-  if (tab?.logSessionId) {
-    appStore.dockerLogsClose(tab.logSessionId).catch(() => {});
-  }
-  if (tab?.shellSessionId) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const api = appStore.getApi() as any;
-    api?.dockerShellClose?.({ sessionId: tab.shellSessionId }).catch(() => {});
-  }
-  detailStore.closeTab(props.workspaceId, tabId);
+  detailStore.closeTabAndSessions(props.workspaceId, tabId);
 }
 
 // Auto-navigate to detail when the user picks something in the tree on mobile.

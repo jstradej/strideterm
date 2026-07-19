@@ -192,16 +192,7 @@ function makeBlankDraft() {
 }
 
 const addDraft = makeBlankDraft();
-const editDraft = reactive({
-  id: "",
-  label: "",
-  botToken: "",
-  chatId: "",
-  enabled: true,
-  pollSeconds: 5,
-  profileId: "",
-  forwardKinds: [] as string[],
-});
+const editDraft = makeBlankDraft();
 
 watch(
   () => props.telegramSettings?.connections,
@@ -244,14 +235,7 @@ function openAddForm() {
   verification.value = null;
   detectedChats.value = [];
   detectInfoMessage.value = "";
-  addDraft.id = "";
-  addDraft.label = "";
-  addDraft.botToken = "";
-  addDraft.chatId = "";
-  addDraft.enabled = true;
-  addDraft.pollSeconds = props.telegramSettings?.defaultPollSeconds ?? 5;
-  addDraft.profileId = "";
-  addDraft.forwardKinds = [];
+  Object.assign(addDraft, makeBlankDraft());
   showAddForm.value = true;
 }
 

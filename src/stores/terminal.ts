@@ -3,18 +3,16 @@ import { shallowRef, watch } from "vue";
 import type { SearchAddon } from "@xterm/addon-search";
 import { createTerminalController } from "../app/terminal-controller.js";
 import type { TerminalView } from "../app/terminal-controller.js";
-import { openTerminalLink, getWindowsPtyOptions, downloadTextFile, safeFilenamePart } from "../app/helpers.js";
+import {
+  openTerminalLink,
+  getWindowsPtyOptions,
+  downloadTextFile,
+  safeFilenamePart,
+  shortcutTabDirection,
+} from "../app/helpers.js";
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { useAppStore } from "./app.js";
-
-function shortcutTabDirection(event: KeyboardEvent): number {
-  const key = String(event?.key || "");
-  const code = String(event?.code || "");
-  if (key === "PageDown" || key === "Next" || code === "PageDown") return 1;
-  if (key === "PageUp" || key === "Prior" || code === "PageUp") return -1;
-  return 0;
-}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AppConfig = any;

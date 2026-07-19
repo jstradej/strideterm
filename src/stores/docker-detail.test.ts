@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useDockerDetail } from "./docker-detail.js";
+import { useAppStore } from "./app.js";
 
 describe("useDockerDetail — list tab openers", () => {
   beforeEach(() => {
@@ -60,5 +61,49 @@ describe("useDockerDetail — list tab openers", () => {
     store.closeTab("ws", images.tabId);
     expect(store.getTabs("ws")).toHaveLength(1);
     expect(store.getTabs("ws")[0].kind).toBe("volumes-list");
+  });
+});
+
+describe("useDockerDetail — closeTabAndSessions", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  // closeTabAndSessions used to be reimplemented byte-identically in
+  // DockerDetail.vue and DockerPane.vue. This is the shared store action
+  // both were migrated to.
+  test("tears down the tab's log + shell sessions, then removes it", () => {
+    const store = useDockerDetail();
+    const appStore = useAppStore();
+    const dockerLogsClose = vi.spyOn(appStore, "dockerLogsClose").mockResolvedValue(undefined);
+    const dockerShellClose = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(appStore, "getApi").mockReturnValue({ dockerShellClose } as unknown as ReturnType<
+      typeof appStore.getApi
+    >);
+
+    store.openContainer("ws", "c1", "host", "default", "my-container");
+    const tab = store.getTabs("ws")[0];
+    expect(tab.logSessionId).toBeTruthy();
+    expect(tab.shellSessionId).toBeTruthy();
+
+    store.closeTabAndSessions("ws", tab.tabId);
+
+    expect(dockerLogsClose).toHaveBeenCalledWith(tab.logSessionId);
+    expect(dockerShellClose).toHaveBeenCalledWith({ sessionId: tab.shellSessionId });
+    expect(store.getTabs("ws")).toHaveLength(0);
+  });
+
+  test("skips session teardown for tabs without log/shell sessions", () => {
+    const store = useDockerDetail();
+    const appStore = useAppStore();
+    const dockerLogsClose = vi.spyOn(appStore, "dockerLogsClose").mockResolvedValue(undefined);
+
+    store.openImage("ws", "img1", "host", "default", "my-image");
+    const tab = store.getTabs("ws")[0];
+
+    store.closeTabAndSessions("ws", tab.tabId);
+
+    expect(dockerLogsClose).not.toHaveBeenCalled();
+    expect(store.getTabs("ws")).toHaveLength(0);
   });
 });

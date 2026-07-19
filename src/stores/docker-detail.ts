@@ -72,6 +72,16 @@ export const useDockerDetail = defineStore("docker-detail", () => {
     return getTabs(workspaceId).find((t) => t.tabId === activeId) || null;
   }
 
+  // Shared by every open*() below: add the tab if it isn't already open, then
+  // focus it either way — a second click on an already-open node just switches to it.
+  function openTab(workspaceId: string, tabId: string, buildTab: () => OpenTab): void {
+    const tabs = getTabs(workspaceId);
+    if (!tabs.find((t) => t.tabId === tabId)) {
+      tabsByWorkspace.value.set(workspaceId, [...tabs, buildTab()]);
+    }
+    setActive(workspaceId, tabId);
+  }
+
   function openContainer(
     workspaceId: string,
     containerId: string,
@@ -80,23 +90,17 @@ export const useDockerDetail = defineStore("docker-detail", () => {
     label: string,
   ): void {
     const tabId = makeTabId("container", backendId, contextName, containerId);
-    const tabs = getTabs(workspaceId);
-    const existing = tabs.find((t) => t.tabId === tabId);
-    if (!existing) {
-      const newTab: OpenTab = {
-        tabId,
-        kind: "container",
-        label,
-        backendId,
-        contextName,
-        containerId,
-        logSessionId: crypto.randomUUID(),
-        shellSessionId: crypto.randomUUID(),
-        activeSubTab: "logs",
-      };
-      tabsByWorkspace.value.set(workspaceId, [...tabs, newTab]);
-    }
-    setActive(workspaceId, tabId);
+    openTab(workspaceId, tabId, () => ({
+      tabId,
+      kind: "container",
+      label,
+      backendId,
+      contextName,
+      containerId,
+      logSessionId: crypto.randomUUID(),
+      shellSessionId: crypto.randomUUID(),
+      activeSubTab: "logs",
+    }));
   }
 
   function setActiveSubTab(workspaceId: string, tabId: string, subTab: SubTabKind): void {
@@ -113,34 +117,28 @@ export const useDockerDetail = defineStore("docker-detail", () => {
     label: string,
   ): void {
     const tabId = makeTabId("image", backendId, contextName, imageId);
-    const tabs = getTabs(workspaceId);
-    if (!tabs.find((t) => t.tabId === tabId)) {
-      tabsByWorkspace.value.set(workspaceId, [
-        ...tabs,
-        { tabId, kind: "image", label, backendId, contextName, imageId, activeSubTab: "inspect" },
-      ]);
-    }
-    setActive(workspaceId, tabId);
+    openTab(workspaceId, tabId, () => ({
+      tabId,
+      kind: "image",
+      label,
+      backendId,
+      contextName,
+      imageId,
+      activeSubTab: "inspect",
+    }));
   }
 
   function openVolume(workspaceId: string, volumeName: string, backendId: string, contextName: string): void {
     const tabId = makeTabId("volume", backendId, contextName, volumeName);
-    const tabs = getTabs(workspaceId);
-    if (!tabs.find((t) => t.tabId === tabId)) {
-      tabsByWorkspace.value.set(workspaceId, [
-        ...tabs,
-        {
-          tabId,
-          kind: "volume",
-          label: volumeName,
-          backendId,
-          contextName,
-          volumeName,
-          activeSubTab: "inspect",
-        },
-      ]);
-    }
-    setActive(workspaceId, tabId);
+    openTab(workspaceId, tabId, () => ({
+      tabId,
+      kind: "volume",
+      label: volumeName,
+      backendId,
+      contextName,
+      volumeName,
+      activeSubTab: "inspect",
+    }));
   }
 
   function openNetwork(
@@ -151,14 +149,15 @@ export const useDockerDetail = defineStore("docker-detail", () => {
     label: string,
   ): void {
     const tabId = makeTabId("network", backendId, contextName, networkId);
-    const tabs = getTabs(workspaceId);
-    if (!tabs.find((t) => t.tabId === tabId)) {
-      tabsByWorkspace.value.set(workspaceId, [
-        ...tabs,
-        { tabId, kind: "network", label, backendId, contextName, networkId, activeSubTab: "inspect" },
-      ]);
-    }
-    setActive(workspaceId, tabId);
+    openTab(workspaceId, tabId, () => ({
+      tabId,
+      kind: "network",
+      label,
+      backendId,
+      contextName,
+      networkId,
+      activeSubTab: "inspect",
+    }));
   }
 
   /**
@@ -170,50 +169,29 @@ export const useDockerDetail = defineStore("docker-detail", () => {
    */
   function openImagesList(workspaceId: string, backendId: string, contextName: string, label: string): void {
     const tabId = makeTabId("images-list", backendId, contextName, "");
-    const tabs = getTabs(workspaceId);
-    if (!tabs.find((t) => t.tabId === tabId)) {
-      tabsByWorkspace.value.set(workspaceId, [...tabs, { tabId, kind: "images-list", label, backendId, contextName }]);
-    }
-    setActive(workspaceId, tabId);
+    openTab(workspaceId, tabId, () => ({ tabId, kind: "images-list", label, backendId, contextName }));
   }
 
   function openVolumesList(workspaceId: string, backendId: string, contextName: string, label: string): void {
     const tabId = makeTabId("volumes-list", backendId, contextName, "");
-    const tabs = getTabs(workspaceId);
-    if (!tabs.find((t) => t.tabId === tabId)) {
-      tabsByWorkspace.value.set(workspaceId, [...tabs, { tabId, kind: "volumes-list", label, backendId, contextName }]);
-    }
-    setActive(workspaceId, tabId);
+    openTab(workspaceId, tabId, () => ({ tabId, kind: "volumes-list", label, backendId, contextName }));
   }
 
   function openNetworksList(workspaceId: string, backendId: string, contextName: string, label: string): void {
     const tabId = makeTabId("networks-list", backendId, contextName, "");
-    const tabs = getTabs(workspaceId);
-    if (!tabs.find((t) => t.tabId === tabId)) {
-      tabsByWorkspace.value.set(workspaceId, [
-        ...tabs,
-        { tabId, kind: "networks-list", label, backendId, contextName },
-      ]);
-    }
-    setActive(workspaceId, tabId);
+    openTab(workspaceId, tabId, () => ({ tabId, kind: "networks-list", label, backendId, contextName }));
   }
 
   function openComposeProject(workspaceId: string, projectName: string, backendId: string, contextName: string): void {
     const tabId = makeTabId("project", backendId, contextName, projectName);
-    const tabs = getTabs(workspaceId);
-    const existing = tabs.find((t) => t.tabId === tabId);
-    if (!existing) {
-      const newTab: OpenTab = {
-        tabId,
-        kind: "project",
-        label: projectName,
-        backendId,
-        contextName,
-        projectName,
-      };
-      tabsByWorkspace.value.set(workspaceId, [...tabs, newTab]);
-    }
-    setActive(workspaceId, tabId);
+    openTab(workspaceId, tabId, () => ({
+      tabId,
+      kind: "project",
+      label: projectName,
+      backendId,
+      contextName,
+      projectName,
+    }));
   }
 
   function closeTab(workspaceId: string, tabId: string): void {
@@ -228,6 +206,21 @@ export const useDockerDetail = defineStore("docker-detail", () => {
         activeByWorkspace.value.delete(workspaceId);
       }
     }
+  }
+
+  // Closing a tab also has to tear down its backing log/shell sessions —
+  // the store owns the session ids, so it owns the teardown too.
+  function closeTabAndSessions(workspaceId: string, tabId: string): void {
+    const tab = getTabs(workspaceId).find((t) => t.tabId === tabId);
+    if (tab?.logSessionId) {
+      appStore.dockerLogsClose(tab.logSessionId).catch(() => {});
+    }
+    if (tab?.shellSessionId) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const api = appStore.getApi() as any;
+      api?.dockerShellClose?.({ sessionId: tab.shellSessionId }).catch(() => {});
+    }
+    closeTab(workspaceId, tabId);
   }
 
   function setActive(workspaceId: string, tabId: string): void {
@@ -268,6 +261,7 @@ export const useDockerDetail = defineStore("docker-detail", () => {
     openVolumesList,
     openNetworksList,
     closeTab,
+    closeTabAndSessions,
     setActive,
     setActiveSubTab,
     markRemoved,

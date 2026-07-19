@@ -283,6 +283,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationProfileScope } from "../../composables/useNotificationProfileScope.js";
+import { useDismissable } from "../../composables/useDismissable.js";
 
 interface NotificationSession {
   id: string;
@@ -880,18 +881,9 @@ function onKeydown(ev: KeyboardEvent): void {
   }
 }
 
-function onClickOutside(event: PointerEvent): void {
-  if (notifStore.pinned) return;
-  const target = event.target as Element | null;
-  if (
-    notifStore.panelOpen &&
-    !target?.closest(".notification-center") &&
-    !target?.closest("[data-role='notification-bell']")
-  ) {
-    notifStore.closePanel();
-  }
-}
-
-onMounted(() => document.addEventListener("pointerdown", onClickOutside));
-onUnmounted(() => document.removeEventListener("pointerdown", onClickOutside));
+useDismissable(() => notifStore.panelOpen && !notifStore.pinned, panelRef, {
+  onDismiss: () => notifStore.closePanel(),
+  eventName: "pointerdown",
+  ignoreSelector: "[data-role='notification-bell']",
+});
 </script>

@@ -204,13 +204,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, ref, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useGitStashStore } from "../../../stores/git-stash.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { useContextMenu } from "../../../composables/useContextMenu.js";
 import GitDiffStat from "./GitDiffStat.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
@@ -578,22 +579,12 @@ async function onMenuIgnore() {
   await gitUiStore.refreshGit(props.workspaceId);
 }
 
-function onDocClick(e: MouseEvent) {
-  if (fileMenuRef.value && !fileMenuRef.value.contains(e.target as Node)) fileMenu.value = null;
-}
-
-function onKeydownMenu(e: KeyboardEvent) {
-  if (e.key === "Escape") fileMenu.value = null;
-}
-
-onMounted(() => {
-  document.addEventListener("click", onDocClick);
-  document.addEventListener("keydown", onKeydownMenu);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocClick);
-  document.removeEventListener("keydown", onKeydownMenu);
+useContextMenu({
+  isOpen: () => !!fileMenu.value,
+  menuRef: fileMenuRef,
+  onClose: () => {
+    fileMenu.value = null;
+  },
 });
 </script>
 

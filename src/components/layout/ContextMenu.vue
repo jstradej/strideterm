@@ -154,10 +154,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, type CSSProperties } from "vue";
+import { ref, computed, watch, nextTick, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useSshStore } from "../../stores/ssh.js";
+import { useContextMenu } from "../../composables/useContextMenu.js";
 import { LAYOUTS } from "../../app/layout-geometry.js";
 import {
   isGitViewId,
@@ -453,23 +454,9 @@ function onAddToGroup() {
   store.hideContextMenu();
 }
 
-function onDocumentClick(e: MouseEvent): void {
-  if (menuRef.value && !menuRef.value.contains(e.target as Node)) {
-    store.hideContextMenu();
-  }
-}
-
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === "Escape") store.hideContextMenu();
-}
-
-onMounted(() => {
-  document.addEventListener("click", onDocumentClick);
-  document.addEventListener("keydown", onKeydown);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocumentClick);
-  document.removeEventListener("keydown", onKeydown);
+useContextMenu({
+  isOpen: () => !!store.contextMenu,
+  menuRef,
+  onClose: () => store.hideContextMenu(),
 });
 </script>

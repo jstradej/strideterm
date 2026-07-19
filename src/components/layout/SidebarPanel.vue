@@ -166,10 +166,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, inject, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { computed, ref, inject, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
+import { useContextMenu } from "../../composables/useContextMenu.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
 import type { Transport } from "../../transport.js";
 import type { GitSnapshot, StatePayload } from "../../../electron/shared/types/state.js";
@@ -693,19 +694,5 @@ watch(
   { flush: "post" },
 );
 
-function onDocClick(e: MouseEvent): void {
-  if (wsMenuRef.value && !wsMenuRef.value.contains(e.target as Node)) dismissMenu();
-}
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === "Escape") dismissMenu();
-}
-
-onMounted(() => {
-  document.addEventListener("click", onDocClick);
-  document.addEventListener("keydown", onKeydown);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocClick);
-  document.removeEventListener("keydown", onKeydown);
-});
+useContextMenu({ isOpen: () => !!wsMenu.value, menuRef: wsMenuRef, onClose: dismissMenu });
 </script>

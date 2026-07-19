@@ -3,6 +3,7 @@ import type { Ref, ShallowRef } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
 import { rlog } from "../lib/renderer-log.js";
+import { adoptRestoredSession } from "./app-session-restore.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -579,14 +580,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
               const slot = myWindowId && slots ? slots.find((s: AnyApi) => s.id === myWindowId) : null;
               return slot?.activeSessionId || "";
             })();
-        if (restoredSession) {
-          ctx.activeSessionId.value = restoredSession;
-          ctx.activeViewId.value = restoredSession;
-        } else {
-          ctx.activeViewId.value = null;
-          ctx.activeSessionId.value = null;
-        }
-        ctx.splitGroup.value = null;
+        adoptRestoredSession(ctx, restoredSession);
         closeDialog();
         setTimeout(() => {
           ctx.suppressBroadcast.value = false;

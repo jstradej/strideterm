@@ -572,7 +572,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
@@ -580,6 +580,7 @@ import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 import { useCommitContextMenu } from "../../../composables/useCommitContextMenu.js";
 import { useMonacoDiffLoader } from "../../../composables/useMonacoDiffLoader.js";
+import { useContextMenu } from "../../../composables/useContextMenu.js";
 import GitOperationCard from "./GitOperationCard.vue";
 import GitTreeGraph from "./GitTreeGraph.vue";
 import GitCommitLog from "./GitCommitLog.vue";
@@ -1757,19 +1758,12 @@ async function copyRelativePath() {
   if (target) await copyToClipboard(target.path);
 }
 
-function onFileMenuDocClick(e: MouseEvent) {
-  if (fileMenuRef.value && !fileMenuRef.value.contains(e.target as Node)) fileMenu.value = null;
-}
-function onFileMenuKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") fileMenu.value = null;
-}
-onMounted(() => {
-  document.addEventListener("click", onFileMenuDocClick);
-  document.addEventListener("keydown", onFileMenuKeydown);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("click", onFileMenuDocClick);
-  document.removeEventListener("keydown", onFileMenuKeydown);
+useContextMenu({
+  isOpen: () => !!fileMenu.value,
+  menuRef: fileMenuRef,
+  onClose: () => {
+    fileMenu.value = null;
+  },
 });
 
 // Branch-tree context menu → "Create pull request…". Routes through the same

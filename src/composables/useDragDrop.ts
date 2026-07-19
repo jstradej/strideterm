@@ -1,23 +1,10 @@
 import { useAppStore } from "../stores/app.js";
+import { getParentWorkspaceId } from "../workspace-state.js";
 import type { Ref } from "vue";
 import type { WorkspaceState } from "../../electron/shared/types/state.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type WsLike = WorkspaceState & { review?: any; quickfix?: any };
-
-function getParentWorkspaceId(ws: WsLike): string | null {
-  // Azure review or quickfix children reference their parent explicitly
-  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
-    return ws.review.parentWorkspaceId;
-  if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
-  // Task children reference their parent workspace
-  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;
-  // Legacy worktree children use notes convention
-  if ((ws.notes || "").startsWith("Worktree of ")) {
-    return null; // handled by name-based lookup below
-  }
-  return null;
-}
 
 function isChildOf(child: WsLike, parentId: string): boolean {
   const explicitParent = getParentWorkspaceId(child);

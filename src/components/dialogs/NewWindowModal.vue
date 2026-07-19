@@ -69,6 +69,7 @@
 
 <script setup lang="ts">
 import { ref, computed, useAttrs } from "vue";
+import { makeNewProfile } from "../../app/helpers.js";
 
 interface Profile {
   id: string;
@@ -173,7 +174,7 @@ async function createProfileAndOpen(): Promise<void> {
   busy.value = true;
   errorMessage.value = "";
   try {
-    const newProfile = { id: `profile-${crypto.randomUUID()}`, name, color: "#ffa424" };
+    const newProfile = makeNewProfile(name);
     // Call the parent-provided handler directly (via attrs) rather than emit
     // so we can await it and catch a rejection — emit is fire-and-forget and
     // would leave the dialog stuck with busy=true and no error shown if

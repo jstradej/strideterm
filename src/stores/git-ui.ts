@@ -251,6 +251,29 @@ function computeSnapshotHash(snapshot: GitSnapshot | null): string {
   return [snapshot.operationState?.kind, snapshot.dirtyCount].join("|");
 }
 
+// Shared by gitSelectCommit/gitSelectDiff/reviewSelectFileDiff: show an
+// optimistic "Loading…" placeholder immediately, then replace it with either
+// the real result or an error-shaped fallback carrying the same identity
+// fields (hash / path / scope) so the viewer can keep rendering something
+// sensible while (or if) the fetch fails.
+async function loadDiffPreview(
+  ui: GitUiState,
+  field: "diffPreview" | "commitDiffPreview" | "reviewFileDiffPreview",
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  identity: Record<string, any>,
+  loadingSummary: string,
+  errorFallback: string,
+  fetch: () => Promise<unknown>,
+): Promise<void> {
+  ui[field] = { ok: true, ...identity, diff: "", summary: loadingSummary };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ui[field] = (await fetch()) as any;
+  } catch (error) {
+    ui[field] = { ok: false, ...identity, diff: "", summary: (error as Error)?.message || errorFallback };
+  }
+}
+
 function buildDestructiveConfirm({
   action,
   severity,
@@ -1081,18 +1104,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!hash) return;
     const ui = ensure(workspaceId);
     ui.selectedCommit = hash;
-    ui.commitDiffPreview = { ok: true, hash, diff: "", summary: "Loading..." };
-    try {
-      ui.commitDiffPreview = await (_api as Transport & { gitCommitDiff: (p: unknown) => Promise<unknown> })
-        .gitCommitDiff!({ workspaceId, hash });
-    } catch (error) {
-      ui.commitDiffPreview = {
-        ok: false,
-        hash,
-        diff: "",
-        summary: (error as Error)?.message || "Failed to load commit diff.",
-      };
-    }
+    await loadDiffPreview(ui, "commitDiffPreview", { hash }, "Loading...", "Failed to load commit diff.", () =>
+      (_api as Transport & { gitCommitDiff: (p: unknown) => Promise<unknown> }).gitCommitDiff!({ workspaceId, hash }),
+    );
   }
 
   async function gitSelectDiff(workspaceId: string, path: string, scope: string): Promise<void> {
@@ -1103,26 +1117,21 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
     const ui = ensure(workspaceId);
     ui.selectedDiff = { path, scope };
-    ui.diffPreview = { ok: true, path, scope, diff: "", summary: "Loading diff preview..." };
-    try {
-      ui.diffPreview = await (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }).gitDiffPreview!(
-        {
+    await loadDiffPreview(
+      ui,
+      "diffPreview",
+      { path, scope },
+      "Loading diff preview...",
+      "Diff preview failed to load.",
+      () =>
+        (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }).gitDiffPreview!({
           workspaceId,
           path,
           scope,
           baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
           rootPath,
-        },
-      );
-    } catch (error) {
-      ui.diffPreview = {
-        ok: false,
-        path,
-        scope,
-        diff: "",
-        summary: (error as Error)?.message || "Diff preview failed to load.",
-      };
-    }
+        }),
+    );
   }
 
   function gitSwitchTab(workspaceId: string, tab: string): void {
@@ -1409,24 +1418,20 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const resolvedBase = baseBranch || snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "";
     const ui = ensure(workspaceId);
     ui.reviewSelectedFile = filePath;
-    ui.reviewFileDiffPreview = { ok: true, path: filePath, diff: "", summary: "Loading diff preview..." };
-    try {
-      ui.reviewFileDiffPreview = (await (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> })
-        .gitDiffPreview!({
-        workspaceId,
-        path: filePath,
-        scope: "branch",
-        baseBranch: resolvedBase.startsWith("origin/") ? resolvedBase : resolvedBase ? `origin/${resolvedBase}` : "",
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      })) as Record<string, any>;
-    } catch (error) {
-      ui.reviewFileDiffPreview = {
-        ok: false,
-        path: filePath,
-        diff: "",
-        summary: (error as Error)?.message || "Diff preview failed to load.",
-      };
-    }
+    await loadDiffPreview(
+      ui,
+      "reviewFileDiffPreview",
+      { path: filePath },
+      "Loading diff preview...",
+      "Diff preview failed to load.",
+      () =>
+        (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }).gitDiffPreview!({
+          workspaceId,
+          path: filePath,
+          scope: "branch",
+          baseBranch: resolvedBase.startsWith("origin/") ? resolvedBase : resolvedBase ? `origin/${resolvedBase}` : "",
+        }),
+    );
   }
 
   // --- Conflict resolution dialog ---

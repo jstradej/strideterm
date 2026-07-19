@@ -158,6 +158,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, useAttrs } from "vue";
+import { makeNewProfile } from "../../app/helpers.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -331,7 +332,7 @@ async function addProfile() {
   const name = newProfileName.value.trim().substring(0, 40);
   if (!name) return;
   if (localProfiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) return;
-  const newProfile = { id: `profile-${crypto.randomUUID()}`, name, color: "#ffa424", workspaceIds: [] };
+  const newProfile = makeNewProfile(name);
   errorMessage.value = "";
   try {
     await (attrs.onSave as ((profile: unknown) => Promise<void>) | undefined)?.(plainProfile(newProfile));

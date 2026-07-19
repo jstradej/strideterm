@@ -69,6 +69,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { buildBranchForest, type BranchForestNode } from "./branch-forest.js";
+import { useDismissable } from "../../../composables/useDismissable.js";
 
 interface Props {
   modelValue?: string;
@@ -491,12 +492,7 @@ function onSearchKeydown(e: KeyboardEvent): void {
   }
 }
 
-function onDocumentMousedown(e: MouseEvent): void {
-  if (!open.value) return;
-  const inRoot = rootRef.value && rootRef.value.contains(e.target as Node);
-  const inList = listRef.value && listRef.value.contains(e.target as Node);
-  if (!inRoot && !inList) closePopover();
-}
+useDismissable(open, [rootRef, listRef], { onDismiss: closePopover, eventName: "mousedown" });
 
 function onWindowBlur(): void {
   closePopover();
@@ -519,14 +515,12 @@ watch(query, () => {
 });
 
 onMounted(() => {
-  document.addEventListener("mousedown", onDocumentMousedown);
   window.addEventListener("blur", onWindowBlur);
   window.addEventListener("resize", onReposition);
   window.addEventListener("scroll", onReposition, true);
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener("mousedown", onDocumentMousedown);
   window.removeEventListener("blur", onWindowBlur);
   window.removeEventListener("resize", onReposition);
   window.removeEventListener("scroll", onReposition, true);

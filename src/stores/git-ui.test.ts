@@ -66,6 +66,69 @@ describe("git-ui store", () => {
     });
   });
 
+  // gitSelectCommit/gitSelectDiff/reviewSelectFileDiff each independently
+  // reimplemented "optimistic Loading… placeholder, then real result or
+  // error-shaped fallback carrying the same identity fields" before being
+  // migrated onto the shared loadDiffPreview() helper.
+  describe("diff preview loading (gitSelectCommit / gitSelectDiff / reviewSelectFileDiff)", () => {
+    test("gitSelectCommit replaces the loading placeholder with the fetched result", async () => {
+      const gitCommitDiff = vi.fn().mockResolvedValue({ ok: true, hash: "abc123", diff: "+line", summary: "1 file" });
+      const mockApi = { gitCommitDiff } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+
+      const pending = store.gitSelectCommit("ws1", "abc123");
+      expect(store.get("ws1").commitDiffPreview).toEqual({
+        ok: true,
+        hash: "abc123",
+        diff: "",
+        summary: "Loading...",
+      });
+
+      await pending;
+      expect(gitCommitDiff).toHaveBeenCalledWith({ workspaceId: "ws1", hash: "abc123" });
+      expect(store.get("ws1").commitDiffPreview).toEqual({ ok: true, hash: "abc123", diff: "+line", summary: "1 file" });
+    });
+
+    test("gitSelectCommit falls back to an error-shaped result carrying the hash when the fetch rejects", async () => {
+      const gitCommitDiff = vi.fn().mockRejectedValue(new Error("network down"));
+      const mockApi = { gitCommitDiff } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+
+      await store.gitSelectCommit("ws1", "abc123");
+
+      expect(store.get("ws1").commitDiffPreview).toEqual({
+        ok: false,
+        hash: "abc123",
+        diff: "",
+        summary: "network down",
+      });
+    });
+
+    test("gitSelectCommit is a no-op for an empty hash", async () => {
+      const store = useGitUiStore();
+      await store.gitSelectCommit("ws1", "");
+      expect(store.get("ws1").commitDiffPreview).toBeUndefined();
+    });
+
+    test("reviewSelectFileDiff falls back to an error-shaped result carrying only the path (no scope)", async () => {
+      const gitDiffPreview = vi.fn().mockRejectedValue(new Error("diff fetch failed"));
+      const mockApi = { gitDiffPreview } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+
+      await store.reviewSelectFileDiff("ws1", "src/foo.ts");
+
+      expect(store.get("ws1").reviewFileDiffPreview).toEqual({
+        ok: false,
+        path: "src/foo.ts",
+        diff: "",
+        summary: "diff fetch failed",
+      });
+    });
+  });
+
   describe("cleanup", () => {
     test("cleanup removes workspace state so getActiveRoot returns empty string", () => {
       const store = useGitUiStore();
