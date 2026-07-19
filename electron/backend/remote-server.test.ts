@@ -659,6 +659,65 @@ describe("remote-server.ts source shape — no route may have BOTH a slotAwareRo
   });
 });
 
+// review-code-quality-2026-07.md finding §5.3: DETAIL_ROUTES and slotAwareRoute
+// were object literals (a ~280-line one for slotAwareRoute, ~100 closures)
+// rebuilt from scratch inside the per-request HTTP callback even though both
+// only close over the constant `runtime` reference. Hoisted to be built once
+// at `startRemoteServer`'s top level instead.
+describe("DETAIL_ROUTES / slotAwareRoute — built once per server instance, not per request", () => {
+  function makeMinimalRuntime(auth: string, port: number) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth } },
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [{ id: "ws-1", name: "WS1", profileId: "default", panels: [] }],
+        windowSlots: [{ id: "win-1", profileId: "default", activeWorkspaceId: "ws-1" }],
+      },
+    };
+    return {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+    };
+  }
+
+  test("route-map references are identical across two separate API requests", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-routemap-identity";
+    const runtime = makeMinimalRuntime(auth, port);
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      expect(server._debugRouteMapsIdentity).toBeTruthy();
+      const res1 = await fetch(`http://127.0.0.1:${port}/api/state`, {
+        headers: { Authorization: `Bearer ${auth}` },
+      });
+      expect(res1.status).toBe(200);
+      const snapshot1 = server._debugRouteMapsIdentity!();
+
+      const res2 = await fetch(`http://127.0.0.1:${port}/api/state`, {
+        headers: { Authorization: `Bearer ${auth}` },
+      });
+      expect(res2.status).toBe(200);
+      const snapshot2 = server._debugRouteMapsIdentity!();
+
+      // Same object reference before/after a second request — proves the maps
+      // are built once at server start, not reconstructed on every request.
+      expect(snapshot1.detailRoutes).toBe(snapshot2.detailRoutes);
+      expect(snapshot1.slotAwareRoute).toBe(snapshot2.slotAwareRoute);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe("malformed request body handling — must respond, never hang", () => {
   function makeMinimalRuntime(auth: string, port: number) {
     const payload = {

@@ -1998,6 +1998,11 @@ export async function startRemoteServer({
   _debugRouting?: () => { congested: boolean; hasCloseTimer: boolean }[];
   _debugCongestionTerminates?: () => number;
   _debugTelemetry?: () => ReturnType<ReturnType<typeof createRemoteTelemetry>["snapshot"]>;
+  /** Test-only: reference identity of the two per-request route lookup tables
+   *  (DETAIL_ROUTES, slotAwareRoute). Both are built once per server instance,
+   *  not rebuilt inside the request handler — this hook exists only so a test
+   *  can prove that by comparing references across two live requests. */
+  _debugRouteMapsIdentity?: () => { detailRoutes: unknown; slotAwareRoute: unknown };
 }> {
   const { enabled, host, port, token } = runtime.getPayload().appState.settings.remoteAccess;
   if (!enabled) {
@@ -2059,6 +2064,317 @@ export async function startRemoteServer({
     );
     return tokenSessionId;
   }
+
+  // Slim-core detail resources — on demand, profile-authorized. Each maps a
+  // domain-specific GET to a resource key; the response is
+  // `{ resource, revision, data }` and is NOT slimmed (it IS the detail).
+  const DETAIL_ROUTES: Record<string, (u: URL) => string | null> = {
+    "/api/git/workspace-detail": (u) => {
+      const id = u.searchParams.get("workspaceId");
+      return id ? `git:${id}` : null;
+    },
+    "/api/docker/detail": () => "docker",
+    "/api/azure/inbox": () => "azure-inbox",
+    "/api/github/inbox": () => "github-inbox",
+    "/api/azure/pull-request-detail": (u) => {
+      const k = u.searchParams.get("prKey");
+      return k ? `azure-pr:${k}` : null;
+    },
+    "/api/github/pull-request-detail": (u) => {
+      const k = u.searchParams.get("prKey");
+      return k ? `github-pr:${k}` : null;
+    },
+    "/api/review-bridge/pull-request": (u) => {
+      const k = u.searchParams.get("prKey");
+      return k ? `review-bridge:${k}` : null;
+    },
+    "/api/review-bridge/agent-prompts": () => "agent-prompts",
+  };
+
+  // Slot-aware create/activate endpoints — mirror the new workspace into
+  // the bound desktop slot so the frontend selector (slot-first) follows.
+  // handleApiRequest doesn't have apiSessionId in scope, so we intercept
+  // here. See runtime-azure-handlers.openAzurePullRequest for the flicker
+  // this prevents.
+  const slotAwareRoute: Record<
+    string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (body: any, windowId: string) => Promise<unknown>
+  > = {
+    "/api/azure/pull-request/open": (body, windowId) => runtime.openAzurePullRequest(body, windowId),
+    "/api/github/pull-request/open": (body, windowId) => runtime.openGitHubPullRequest(body, windowId),
+    // Per-PR review mutations post externally-visible side effects (a comment
+    // on the PR, a resolved thread, a cast vote). Route them through the
+    // viewer path so the runtime rejects a PR outside the caller's profile —
+    // otherwise a remote client bound to profile B could act on a profile-A PR.
+    "/api/azure/pull-request/comment": (body, windowId) => runtime.commentAzurePullRequest(body, windowId),
+    "/api/azure/pull-request/thread-status": (body, windowId) => runtime.updateAzureThreadStatus(body, windowId),
+    "/api/azure/pull-request/vote": (body, windowId) => runtime.voteAzurePullRequest(body, windowId),
+    // Marking a PR seen mutates the tracked-PR store (clears the "new
+    // activity" badge). Viewerless it let a client on profile B silence
+    // profile-A PR badges; route it through the viewer path so the runtime
+    // rejects a cross-profile prKey. Same for the GitHub PR mutations below.
+    "/api/azure/pull-request/seen": (body, windowId) => runtime.markAzurePullRequestSeen(body.prKey, windowId),
+    "/api/github/pull-request/seen": (body, windowId) => runtime.markGitHubPullRequestSeen(body.prKey, windowId),
+    "/api/github/pull-request/comment": (body, windowId) => runtime.commentGitHubPullRequest(body, windowId),
+    "/api/github/pull-request/review": (body, windowId) => runtime.submitGitHubPullRequestReview(body, windowId),
+    // Re-running a CI check queues an external pipeline run against the PR —
+    // another cross-profile-visible side effect, so refuse a foreign prKey.
+    "/api/azure/rerun-check": (body, windowId) => runtime.rerunAzureCheck(body.prKey, body.checkItem, windowId),
+    "/api/github/rerun-check": (body, windowId) => runtime.rerunGitHubCheck(body.prKey, body.checkItem, windowId),
+    // Sync publishes queued draft comments to the PR provider — an
+    // externally visible side effect that must refuse cross-profile prKeys.
+    "/api/review-bridge/pull-request/sync": (body, windowId) => runtime.syncReviewBridgePullRequest(body, windowId),
+    "/api/azure/quickfix/create": (body, windowId) => runtime.azureQuickFixCreate(body, windowId),
+    "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
+    "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
+    "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
+    // saveWorkspace can change profileId or overwrite an existing
+    // workspace; without slot-aware routing a remote on profile B
+    // could create entries in profile A or hijack profile-A workspaces.
+    "/api/workspace/save": (body, windowId) => runtime.saveWorkspace(body.workspace || body.project, windowId),
+    "/api/project/save": (body, windowId) => runtime.saveWorkspace(body.workspace || body.project, windowId),
+    "/api/workspace/set-ui-state": (body, windowId) =>
+      runtime.setWorkspaceUIState(body.workspaceId, body.uiState, windowId),
+    // Task lifecycle ops drive the runner against the workspace's cwd
+    // (edits TASK.md, signals PTY, etc). Cross-profile must refuse.
+    "/api/task/start": (body, windowId) => runtime.startTask(body.workspaceId, windowId),
+    "/api/task/stop": (body, windowId) => Promise.resolve(runtime.stopTask(body.workspaceId, windowId)),
+    "/api/task/pause": (body, windowId) => Promise.resolve(runtime.pauseTask(body.workspaceId, windowId)),
+    "/api/task/resume": (body, windowId) => Promise.resolve(runtime.resumeTask(body.workspaceId, windowId)),
+    "/api/task/reset": (body, windowId) => runtime.resetTask(body.workspaceId, windowId),
+    "/api/task/update-description": (body, windowId) => {
+      const parsed = validateIpc(taskUpdateDescriptionSchema, body, "POST /api/task/update-description");
+      return runtime.updateTaskDescription(parsed.workspaceId, parsed.description, windowId);
+    },
+    // Activation also moves slot.activeWorkspaceId for the bound slot
+    // (legacy activateWorkspace mirrors to windowSlots[0]) — must be
+    // refused when the target lives in another profile.
+    "/api/workspace/activate": (body, windowId) =>
+      runtime.activateWorkspace((body.workspaceId || body.projectId) as string, windowId),
+    "/api/project/activate": (body, windowId) =>
+      runtime.activateWorkspace((body.workspaceId || body.projectId) as string, windowId),
+    // Delete is irreversible — cross-profile delete is data loss in
+    // another profile.
+    "/api/workspace/delete": (body, windowId) => {
+      const wsId = validateIpc(
+        workspaceIdSchema,
+        body.workspaceId || body.projectId,
+        "remote-slot:workspace/delete.workspaceId",
+      );
+      const opts = validateIpc(
+        workspaceDeleteOptionsSchema,
+        { deleteFromDisk: body.deleteFromDisk, diskPath: body.diskPath },
+        "remote-slot:workspace/delete.options",
+      );
+      return runtime.deleteWorkspace(wsId, opts, windowId);
+    },
+    "/api/project/delete": (body, windowId) => {
+      const wsId = validateIpc(
+        workspaceIdSchema,
+        body.workspaceId || body.projectId,
+        "remote-slot:project/delete.workspaceId",
+      );
+      const opts = validateIpc(
+        workspaceDeleteOptionsSchema,
+        { deleteFromDisk: body.deleteFromDisk, diskPath: body.diskPath },
+        "remote-slot:project/delete.options",
+      );
+      return runtime.deleteWorkspace(wsId, opts, windowId);
+    },
+    // Connection save/delete pins connection.profileId to the bound
+    // window's profile; without slot-aware routing a remote on profile
+    // B that omits profileId silently lands the connection in
+    // windowSlots[0]'s profile (typically "default").
+    "/api/azure/save-connection": (body, windowId) =>
+      runtime.saveAzureConnection(body.connection || body, windowId),
+    "/api/azure/delete-connection": (body, windowId) =>
+      runtime.deleteAzureConnection(body.connectionId || body.id || "", windowId),
+    "/api/github/save-connection": (body, windowId) =>
+      runtime.saveGitHubConnection(body.connection || body, windowId),
+    "/api/github/delete-connection": (body, windowId) =>
+      runtime.deleteGitHubConnection(body.connectionId || body.id || "", windowId),
+    // Activation in window slot — same cross-profile rules as workspace.
+    "/api/session/activate-in-window": (body, windowId) =>
+      runtime.activateSessionInWindow(body.sessionId, windowId),
+    // Take over the per-session input lease ("Take control?" confirm).
+    "/api/session/take-control": (body, windowId) =>
+      Promise.resolve(runtime.takeSessionControl(String(body.sessionId || ""), windowId)),
+    // Reorder must be slot-aware: the runtime's profile-safe branch only
+    // activates when windowId is supplied. Without it, the legacy global
+    // branch replaces the entire workspaces array with the caller's IDs
+    // and silently drops every workspace in other profiles.
+    "/api/workspace/reorder": (body, windowId) =>
+      runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[], windowId),
+    "/api/project/reorder": (body, windowId) =>
+      runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[], windowId),
+    // Review-bridge handlers can publish comments to the PR provider
+    // (pushAndPublishReview) and push to the git remote — both
+    // externally visible side effects that must refuse cross-profile.
+    "/api/review-bridge/draft-comment/create": (body, windowId) =>
+      runtime.createReviewBridgeDraftComment(body, windowId),
+    "/api/review-bridge/draft/save": (body, windowId) => runtime.saveReviewBridgeDraft(body, windowId),
+    "/api/review-bridge/draft/queue": (body, windowId) => runtime.queueReviewBridgeDraft(body, windowId),
+    "/api/review-bridge/draft/delete": (body, windowId) => runtime.deleteReviewBridgeDraft(body, windowId),
+    "/api/review-bridge/comment/delete": (body, windowId) => runtime.deleteReviewBridgeComment(body, windowId),
+    "/api/review-bridge/comment/reply-with-changes": (body, windowId) =>
+      runtime.replyWithCodeChanges(body, windowId),
+    "/api/review-bridge/pull-request/push-and-publish": (body, windowId) =>
+      runtime.pushAndPublishReview(body, windowId),
+    // Git ops all mutate state in a workspace's cwd (and gitFetch/Push/Pull
+    // touch external remotes). Routing them through slotAwareRoute pins
+    // each request to the caller's bound profile so a remote/mobile
+    // client can't drive git on a workspace they don't see.
+    "/api/git/fetch": (body, windowId) => runtime.gitFetch(body, windowId),
+    "/api/git/pull": (body, windowId) => runtime.gitPull(body, windowId),
+    "/api/git/push": (body, windowId) => runtime.gitPush(body, windowId),
+    "/api/git/checkout-branch": (body, windowId) => runtime.gitCheckoutBranch(body, windowId),
+    "/api/git/create-branch": (body, windowId) => runtime.gitCreateBranch(body, windowId),
+    "/api/git/merge-into-current": (body, windowId) => runtime.gitMergeIntoCurrent(body, windowId),
+    "/api/git/rebase-onto": (body, windowId) => runtime.gitRebaseOnto(body, windowId),
+    // Cherry-pick / squash rewrite history in the workspace's cwd —
+    // validate like the IPC path (hash regex blocks option injection).
+    "/api/git/cherry-pick": (body, windowId) =>
+      runtime.gitCherryPick(validateIpc(gitCherryPickSchema, body, "POST /api/git/cherry-pick"), windowId),
+    "/api/git/squash-commits": (body, windowId) =>
+      runtime.gitSquashCommits(validateIpc(gitSquashSchema, body, "POST /api/git/squash-commits"), windowId),
+    "/api/git/continue": (body, windowId) => runtime.gitContinueOperation(body, windowId),
+    "/api/git/abort": (body, windowId) => runtime.gitAbortOperation(body, windowId),
+    "/api/git/diff-preview": (body, windowId) => runtime.gitDiffPreview(body, windowId),
+    "/api/git/compare-branch": (body, windowId) => runtime.gitCompareBranch(body, windowId),
+    "/api/git/merge-into-base": (body, windowId) => runtime.gitMergeCurrentIntoBase(body, windowId),
+    "/api/git/remove-worktree": (body, windowId) => runtime.gitRemoveWorktree(body, windowId),
+    "/api/git/commit-all": (body, windowId) =>
+      runtime.gitCommitAll(validateIpc(gitCommitSchema, body, "POST /api/git/commit-all"), windowId),
+    // Validate the same way the Electron IPC handlers do (ipc.ts) and the
+    // branch routes below: this slot-aware map is the LIVE remote path for
+    // stash ops (it intercepts before handleApiRequest), so without these
+    // the `stash@{N}` ref regex and the 64 MiB import cap would never run
+    // on the remote/mobile transport.
+    "/api/git/stash": (body, windowId) =>
+      runtime.gitStash(validateIpc(gitPayloadSchema, body, "POST /api/git/stash"), windowId),
+    "/api/git/stash-pop": (body, windowId) =>
+      runtime.gitStashPop(validateIpc(gitPayloadSchema, body, "POST /api/git/stash-pop"), windowId),
+    // Stash detail/lifecycle ops are slot-aware too: write actions mutate
+    // the workspace's working tree, and even the read actions expose file
+    // content, so both must refuse cross-profile workspace IDs.
+    "/api/git/stash-list": (body, windowId) =>
+      runtime.gitListStashes(validateIpc(gitStashListSchema, body, "POST /api/git/stash-list"), windowId),
+    "/api/git/stash-files": (body, windowId) =>
+      runtime.gitStashFiles(validateIpc(gitStashFilesSchema, body, "POST /api/git/stash-files"), windowId),
+    "/api/git/stash-file-diff": (body, windowId) =>
+      runtime.gitStashFileDiff(
+        validateIpc(gitStashFileDiffSchema, body, "POST /api/git/stash-file-diff"),
+        windowId,
+      ),
+    "/api/git/stash-apply": (body, windowId) =>
+      runtime.gitStashApply(validateIpc(gitStashApplySchema, body, "POST /api/git/stash-apply"), windowId),
+    "/api/git/stash-drop": (body, windowId) =>
+      runtime.gitStashDrop(validateIpc(gitStashDropSchema, body, "POST /api/git/stash-drop"), windowId),
+    "/api/git/stash-branch": (body, windowId) =>
+      runtime.gitStashBranch(validateIpc(gitStashBranchSchema, body, "POST /api/git/stash-branch"), windowId),
+    "/api/git/stash-export": (body, windowId) =>
+      runtime.gitStashExport(validateIpc(gitStashExportSchema, body, "POST /api/git/stash-export"), windowId),
+    "/api/git/stash-import": (body, windowId) =>
+      runtime.gitStashImport(validateIpc(gitStashImportSchema, body, "POST /api/git/stash-import"), windowId),
+    "/api/git/commit-diff": (body, windowId) => runtime.gitCommitDiff(body, windowId),
+    "/api/git/commit-info": (body, windowId) => runtime.gitCommitInfo(body, windowId),
+    "/api/git/log-page": (body, windowId) => runtime.gitLogPage(body, windowId),
+    "/api/git/list-tags": (body, windowId) => runtime.gitListTags(body, windowId),
+    "/api/git/create-tag": (body, windowId) => runtime.gitCreateTag(body, windowId),
+    "/api/git/delete-tag": (body, windowId) => runtime.gitDeleteTag(body, windowId),
+    "/api/git/push-tag": (body, windowId) => runtime.gitPushTag(body, windowId),
+    "/api/git/push-all-tags": (body, windowId) => runtime.gitPushAllTags(body, windowId),
+    "/api/git/delete-remote-tag": (body, windowId) => runtime.gitDeleteRemoteTag(body, windowId),
+    "/api/git/force-push-with-lease": (body, windowId) => runtime.gitForcePushWithLease(body, windowId),
+    "/api/git/list-branches": (body, windowId) =>
+      runtime.gitListBranches(validateIpc(gitBranchListSchema, body, "POST /api/git/list-branches"), windowId),
+    "/api/git/delete-branch": (body, windowId) =>
+      runtime.gitDeleteBranch(validateIpc(gitBranchDeleteSchema, body, "POST /api/git/delete-branch"), windowId),
+    "/api/git/delete-remote-branch": (body, windowId) =>
+      runtime.gitDeleteRemoteBranch(
+        validateIpc(gitRemoteBranchDeleteSchema, body, "POST /api/git/delete-remote-branch"),
+        windowId,
+      ),
+    "/api/git/rename-branch": (body, windowId) =>
+      runtime.gitRenameBranch(validateIpc(gitBranchRenameSchema, body, "POST /api/git/rename-branch"), windowId),
+    "/api/git/checkout-remote-branch": (body, windowId) =>
+      runtime.gitCheckoutRemoteBranch(
+        validateIpc(gitCheckoutRemoteSchema, body, "POST /api/git/checkout-remote-branch"),
+        windowId,
+      ),
+    "/api/git/log-graph": (body, windowId) =>
+      runtime.gitLogGraph(validateIpc(gitLogGraphSchema, body, "POST /api/git/log-graph"), windowId),
+    // Conflict-resolution ops mutate / read a workspace's working tree
+    // (skip a commit, list/read conflicted files, stage/unstage a
+    // resolution), so — like every other git op above — they must be pinned
+    // to the caller's bound profile. Without slot-aware routing they fell
+    // through to handleApiRequest with no windowId, and resolveGitWorkspace
+    // then fell back to windowSlots[0]'s profile, letting a remote client on
+    // profile B drive conflict resolution on a workspace in profile A. Same
+    // gitPayloadSchema the IPC handlers validate with (ipc.ts).
+    "/api/git/skip": (body, windowId) =>
+      runtime.gitSkipCommit(validateIpc(gitPayloadSchema, body, "POST /api/git/skip"), windowId),
+    "/api/git/list-conflicts": (body, windowId) =>
+      runtime.gitListConflicts(validateIpc(gitPayloadSchema, body, "POST /api/git/list-conflicts"), windowId),
+    "/api/git/conflict-detail": (body, windowId) =>
+      runtime.gitConflictDetail(validateIpc(gitPayloadSchema, body, "POST /api/git/conflict-detail"), windowId),
+    "/api/git/resolve-conflict": (body, windowId) =>
+      runtime.gitResolveConflict(validateIpc(gitPayloadSchema, body, "POST /api/git/resolve-conflict"), windowId),
+    "/api/git/unresolve-conflict": (body, windowId) =>
+      runtime.gitUnresolveConflict(
+        validateIpc(gitPayloadSchema, body, "POST /api/git/unresolve-conflict"),
+        windowId,
+      ),
+    // Grid mutations resolve their target profile from windowId. Without
+    // the slot-aware path a mobile client bound to profile B would mutate
+    // profile A's grid (runtime falls back to windowSlots[0] when no
+    // windowId is supplied — see resolveWorkspaceGridProfile).
+    "/api/workspace-grid/enable": (body, windowId) => {
+      const parsed = validateIpc(workspaceGridEnableSchema, body, "POST /api/workspace-grid/enable");
+      return runtime.enableWorkspaceGrid(parsed.layout, parsed.workspaceIds, windowId);
+    },
+    "/api/workspace-grid/disable": (_body, windowId) => runtime.disableWorkspaceGrid(windowId),
+    "/api/workspace-grid/set-layout": (body, windowId) => {
+      const parsed = validateIpc(workspaceGridSetLayoutSchema, body, "POST /api/workspace-grid/set-layout");
+      return runtime.setGridLayout(parsed.layout, windowId);
+    },
+    "/api/workspace-grid/set-cell": (body, windowId) => {
+      const parsed = validateIpc(workspaceGridSetCellSchema, body, "POST /api/workspace-grid/set-cell");
+      return runtime.setGridCell(parsed.cellIndex, parsed.workspaceId, windowId);
+    },
+    "/api/workspace-grid/swap-cells": (body, windowId) => {
+      const parsed = validateIpc(workspaceGridSwapCellsSchema, body, "POST /api/workspace-grid/swap-cells");
+      return runtime.swapGridCells(parsed.a, parsed.b, windowId);
+    },
+    // "Clear all" must stay scoped to the caller's profile — otherwise
+    // a Clear from profile B's window would wipe attention alerts on
+    // workspaces in profile A (and silence the bell on every other
+    // open window). Slot-aware routing supplies the bound windowId,
+    // and runtime.clearAllAttention resolves the profile from it.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    "/api/attention/clear-all": (_body, windowId) => (runtime as any).clearAllAttention(windowId),
+    // Same reasoning as clear-all: clear-session deletes a workspace's
+    // alert entry by sessionId — without scoping, a remote client on
+    // profile B could clear alerts on a workspace in profile A by
+    // submitting any sessionId. The runtime cross-checks the resolved
+    // profile against the workspace's profileId and refuses mismatches.
+    "/api/attention/clear-session": (body, windowId) =>
+      runtime.clearAlertForSession(String(body?.sessionId || ""), {
+        dismissed: body?.dismissed === true,
+        windowId,
+      }),
+    // Sync surfaces "user is currently looking at these tabs" and after
+    // ATTENTION_MIN_DISPLAY_MS turns visible sessions into cleared
+    // alerts. Without scoping, profile B could mark profile A's
+    // sessions visible and silently clear their bells.
+    "/api/attention/sync": (body, windowId) =>
+      runtime.syncAttentionContext({
+        visibleSessionIds: Array.isArray(body?.visibleSessionIds) ? body.visibleSessionIds : [],
+        windowFocused: body?.windowFocused !== false,
+        windowId,
+      }),
+  };
 
   const server = http.createServer(async (request, response) => {
     const requestUrl = request.url || "/";
@@ -2134,31 +2450,6 @@ export async function startRemoteServer({
           : request.headers["if-none-match"],
       };
 
-      // Slim-core detail resources — on demand, profile-authorized. Each maps a
-      // domain-specific GET to a resource key; the response is
-      // `{ resource, revision, data }` and is NOT slimmed (it IS the detail).
-      const DETAIL_ROUTES: Record<string, (u: URL) => string | null> = {
-        "/api/git/workspace-detail": (u) => {
-          const id = u.searchParams.get("workspaceId");
-          return id ? `git:${id}` : null;
-        },
-        "/api/docker/detail": () => "docker",
-        "/api/azure/inbox": () => "azure-inbox",
-        "/api/github/inbox": () => "github-inbox",
-        "/api/azure/pull-request-detail": (u) => {
-          const k = u.searchParams.get("prKey");
-          return k ? `azure-pr:${k}` : null;
-        },
-        "/api/github/pull-request-detail": (u) => {
-          const k = u.searchParams.get("prKey");
-          return k ? `github-pr:${k}` : null;
-        },
-        "/api/review-bridge/pull-request": (u) => {
-          const k = u.searchParams.get("prKey");
-          return k ? `review-bridge:${k}` : null;
-        },
-        "/api/review-bridge/agent-prompts": () => "agent-prompts",
-      };
       const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
       if (detailRoute) {
         const resourceKey = detailRoute(url);
@@ -2238,290 +2529,6 @@ export async function startRemoteServer({
         return;
       }
 
-      // Slot-aware create/activate endpoints — mirror the new workspace into
-      // the bound desktop slot so the frontend selector (slot-first) follows.
-      // handleApiRequest doesn't have apiSessionId in scope, so we intercept
-      // here. See runtime-azure-handlers.openAzurePullRequest for the flicker
-      // this prevents.
-      const slotAwareRoute: Record<
-        string,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (body: any, windowId: string) => Promise<unknown>
-      > = {
-        "/api/azure/pull-request/open": (body, windowId) => runtime.openAzurePullRequest(body, windowId),
-        "/api/github/pull-request/open": (body, windowId) => runtime.openGitHubPullRequest(body, windowId),
-        // Per-PR review mutations post externally-visible side effects (a comment
-        // on the PR, a resolved thread, a cast vote). Route them through the
-        // viewer path so the runtime rejects a PR outside the caller's profile —
-        // otherwise a remote client bound to profile B could act on a profile-A PR.
-        "/api/azure/pull-request/comment": (body, windowId) => runtime.commentAzurePullRequest(body, windowId),
-        "/api/azure/pull-request/thread-status": (body, windowId) => runtime.updateAzureThreadStatus(body, windowId),
-        "/api/azure/pull-request/vote": (body, windowId) => runtime.voteAzurePullRequest(body, windowId),
-        // Marking a PR seen mutates the tracked-PR store (clears the "new
-        // activity" badge). Viewerless it let a client on profile B silence
-        // profile-A PR badges; route it through the viewer path so the runtime
-        // rejects a cross-profile prKey. Same for the GitHub PR mutations below.
-        "/api/azure/pull-request/seen": (body, windowId) => runtime.markAzurePullRequestSeen(body.prKey, windowId),
-        "/api/github/pull-request/seen": (body, windowId) => runtime.markGitHubPullRequestSeen(body.prKey, windowId),
-        "/api/github/pull-request/comment": (body, windowId) => runtime.commentGitHubPullRequest(body, windowId),
-        "/api/github/pull-request/review": (body, windowId) => runtime.submitGitHubPullRequestReview(body, windowId),
-        // Re-running a CI check queues an external pipeline run against the PR —
-        // another cross-profile-visible side effect, so refuse a foreign prKey.
-        "/api/azure/rerun-check": (body, windowId) => runtime.rerunAzureCheck(body.prKey, body.checkItem, windowId),
-        "/api/github/rerun-check": (body, windowId) => runtime.rerunGitHubCheck(body.prKey, body.checkItem, windowId),
-        // Sync publishes queued draft comments to the PR provider — an
-        // externally visible side effect that must refuse cross-profile prKeys.
-        "/api/review-bridge/pull-request/sync": (body, windowId) => runtime.syncReviewBridgePullRequest(body, windowId),
-        "/api/azure/quickfix/create": (body, windowId) => runtime.azureQuickFixCreate(body, windowId),
-        "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
-        "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
-        "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
-        // saveWorkspace can change profileId or overwrite an existing
-        // workspace; without slot-aware routing a remote on profile B
-        // could create entries in profile A or hijack profile-A workspaces.
-        "/api/workspace/save": (body, windowId) => runtime.saveWorkspace(body.workspace || body.project, windowId),
-        "/api/project/save": (body, windowId) => runtime.saveWorkspace(body.workspace || body.project, windowId),
-        "/api/workspace/set-ui-state": (body, windowId) =>
-          runtime.setWorkspaceUIState(body.workspaceId, body.uiState, windowId),
-        // Task lifecycle ops drive the runner against the workspace's cwd
-        // (edits TASK.md, signals PTY, etc). Cross-profile must refuse.
-        "/api/task/start": (body, windowId) => runtime.startTask(body.workspaceId, windowId),
-        "/api/task/stop": (body, windowId) => Promise.resolve(runtime.stopTask(body.workspaceId, windowId)),
-        "/api/task/pause": (body, windowId) => Promise.resolve(runtime.pauseTask(body.workspaceId, windowId)),
-        "/api/task/resume": (body, windowId) => Promise.resolve(runtime.resumeTask(body.workspaceId, windowId)),
-        "/api/task/reset": (body, windowId) => runtime.resetTask(body.workspaceId, windowId),
-        "/api/task/update-description": (body, windowId) => {
-          const parsed = validateIpc(taskUpdateDescriptionSchema, body, "POST /api/task/update-description");
-          return runtime.updateTaskDescription(parsed.workspaceId, parsed.description, windowId);
-        },
-        // Activation also moves slot.activeWorkspaceId for the bound slot
-        // (legacy activateWorkspace mirrors to windowSlots[0]) — must be
-        // refused when the target lives in another profile.
-        "/api/workspace/activate": (body, windowId) =>
-          runtime.activateWorkspace((body.workspaceId || body.projectId) as string, windowId),
-        "/api/project/activate": (body, windowId) =>
-          runtime.activateWorkspace((body.workspaceId || body.projectId) as string, windowId),
-        // Delete is irreversible — cross-profile delete is data loss in
-        // another profile.
-        "/api/workspace/delete": (body, windowId) => {
-          const wsId = validateIpc(
-            workspaceIdSchema,
-            body.workspaceId || body.projectId,
-            "remote-slot:workspace/delete.workspaceId",
-          );
-          const opts = validateIpc(
-            workspaceDeleteOptionsSchema,
-            { deleteFromDisk: body.deleteFromDisk, diskPath: body.diskPath },
-            "remote-slot:workspace/delete.options",
-          );
-          return runtime.deleteWorkspace(wsId, opts, windowId);
-        },
-        "/api/project/delete": (body, windowId) => {
-          const wsId = validateIpc(
-            workspaceIdSchema,
-            body.workspaceId || body.projectId,
-            "remote-slot:project/delete.workspaceId",
-          );
-          const opts = validateIpc(
-            workspaceDeleteOptionsSchema,
-            { deleteFromDisk: body.deleteFromDisk, diskPath: body.diskPath },
-            "remote-slot:project/delete.options",
-          );
-          return runtime.deleteWorkspace(wsId, opts, windowId);
-        },
-        // Connection save/delete pins connection.profileId to the bound
-        // window's profile; without slot-aware routing a remote on profile
-        // B that omits profileId silently lands the connection in
-        // windowSlots[0]'s profile (typically "default").
-        "/api/azure/save-connection": (body, windowId) =>
-          runtime.saveAzureConnection(body.connection || body, windowId),
-        "/api/azure/delete-connection": (body, windowId) =>
-          runtime.deleteAzureConnection(body.connectionId || body.id || "", windowId),
-        "/api/github/save-connection": (body, windowId) =>
-          runtime.saveGitHubConnection(body.connection || body, windowId),
-        "/api/github/delete-connection": (body, windowId) =>
-          runtime.deleteGitHubConnection(body.connectionId || body.id || "", windowId),
-        // Activation in window slot — same cross-profile rules as workspace.
-        "/api/session/activate-in-window": (body, windowId) =>
-          runtime.activateSessionInWindow(body.sessionId, windowId),
-        // Take over the per-session input lease ("Take control?" confirm).
-        "/api/session/take-control": (body, windowId) =>
-          Promise.resolve(runtime.takeSessionControl(String(body.sessionId || ""), windowId)),
-        // Reorder must be slot-aware: the runtime's profile-safe branch only
-        // activates when windowId is supplied. Without it, the legacy global
-        // branch replaces the entire workspaces array with the caller's IDs
-        // and silently drops every workspace in other profiles.
-        "/api/workspace/reorder": (body, windowId) =>
-          runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[], windowId),
-        "/api/project/reorder": (body, windowId) =>
-          runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[], windowId),
-        // Review-bridge handlers can publish comments to the PR provider
-        // (pushAndPublishReview) and push to the git remote — both
-        // externally visible side effects that must refuse cross-profile.
-        "/api/review-bridge/draft-comment/create": (body, windowId) =>
-          runtime.createReviewBridgeDraftComment(body, windowId),
-        "/api/review-bridge/draft/save": (body, windowId) => runtime.saveReviewBridgeDraft(body, windowId),
-        "/api/review-bridge/draft/queue": (body, windowId) => runtime.queueReviewBridgeDraft(body, windowId),
-        "/api/review-bridge/draft/delete": (body, windowId) => runtime.deleteReviewBridgeDraft(body, windowId),
-        "/api/review-bridge/comment/delete": (body, windowId) => runtime.deleteReviewBridgeComment(body, windowId),
-        "/api/review-bridge/comment/reply-with-changes": (body, windowId) =>
-          runtime.replyWithCodeChanges(body, windowId),
-        "/api/review-bridge/pull-request/push-and-publish": (body, windowId) =>
-          runtime.pushAndPublishReview(body, windowId),
-        // Git ops all mutate state in a workspace's cwd (and gitFetch/Push/Pull
-        // touch external remotes). Routing them through slotAwareRoute pins
-        // each request to the caller's bound profile so a remote/mobile
-        // client can't drive git on a workspace they don't see.
-        "/api/git/fetch": (body, windowId) => runtime.gitFetch(body, windowId),
-        "/api/git/pull": (body, windowId) => runtime.gitPull(body, windowId),
-        "/api/git/push": (body, windowId) => runtime.gitPush(body, windowId),
-        "/api/git/checkout-branch": (body, windowId) => runtime.gitCheckoutBranch(body, windowId),
-        "/api/git/create-branch": (body, windowId) => runtime.gitCreateBranch(body, windowId),
-        "/api/git/merge-into-current": (body, windowId) => runtime.gitMergeIntoCurrent(body, windowId),
-        "/api/git/rebase-onto": (body, windowId) => runtime.gitRebaseOnto(body, windowId),
-        // Cherry-pick / squash rewrite history in the workspace's cwd —
-        // validate like the IPC path (hash regex blocks option injection).
-        "/api/git/cherry-pick": (body, windowId) =>
-          runtime.gitCherryPick(validateIpc(gitCherryPickSchema, body, "POST /api/git/cherry-pick"), windowId),
-        "/api/git/squash-commits": (body, windowId) =>
-          runtime.gitSquashCommits(validateIpc(gitSquashSchema, body, "POST /api/git/squash-commits"), windowId),
-        "/api/git/continue": (body, windowId) => runtime.gitContinueOperation(body, windowId),
-        "/api/git/abort": (body, windowId) => runtime.gitAbortOperation(body, windowId),
-        "/api/git/diff-preview": (body, windowId) => runtime.gitDiffPreview(body, windowId),
-        "/api/git/compare-branch": (body, windowId) => runtime.gitCompareBranch(body, windowId),
-        "/api/git/merge-into-base": (body, windowId) => runtime.gitMergeCurrentIntoBase(body, windowId),
-        "/api/git/remove-worktree": (body, windowId) => runtime.gitRemoveWorktree(body, windowId),
-        "/api/git/commit-all": (body, windowId) =>
-          runtime.gitCommitAll(validateIpc(gitCommitSchema, body, "POST /api/git/commit-all"), windowId),
-        // Validate the same way the Electron IPC handlers do (ipc.ts) and the
-        // branch routes below: this slot-aware map is the LIVE remote path for
-        // stash ops (it intercepts before handleApiRequest), so without these
-        // the `stash@{N}` ref regex and the 64 MiB import cap would never run
-        // on the remote/mobile transport.
-        "/api/git/stash": (body, windowId) =>
-          runtime.gitStash(validateIpc(gitPayloadSchema, body, "POST /api/git/stash"), windowId),
-        "/api/git/stash-pop": (body, windowId) =>
-          runtime.gitStashPop(validateIpc(gitPayloadSchema, body, "POST /api/git/stash-pop"), windowId),
-        // Stash detail/lifecycle ops are slot-aware too: write actions mutate
-        // the workspace's working tree, and even the read actions expose file
-        // content, so both must refuse cross-profile workspace IDs.
-        "/api/git/stash-list": (body, windowId) =>
-          runtime.gitListStashes(validateIpc(gitStashListSchema, body, "POST /api/git/stash-list"), windowId),
-        "/api/git/stash-files": (body, windowId) =>
-          runtime.gitStashFiles(validateIpc(gitStashFilesSchema, body, "POST /api/git/stash-files"), windowId),
-        "/api/git/stash-file-diff": (body, windowId) =>
-          runtime.gitStashFileDiff(
-            validateIpc(gitStashFileDiffSchema, body, "POST /api/git/stash-file-diff"),
-            windowId,
-          ),
-        "/api/git/stash-apply": (body, windowId) =>
-          runtime.gitStashApply(validateIpc(gitStashApplySchema, body, "POST /api/git/stash-apply"), windowId),
-        "/api/git/stash-drop": (body, windowId) =>
-          runtime.gitStashDrop(validateIpc(gitStashDropSchema, body, "POST /api/git/stash-drop"), windowId),
-        "/api/git/stash-branch": (body, windowId) =>
-          runtime.gitStashBranch(validateIpc(gitStashBranchSchema, body, "POST /api/git/stash-branch"), windowId),
-        "/api/git/stash-export": (body, windowId) =>
-          runtime.gitStashExport(validateIpc(gitStashExportSchema, body, "POST /api/git/stash-export"), windowId),
-        "/api/git/stash-import": (body, windowId) =>
-          runtime.gitStashImport(validateIpc(gitStashImportSchema, body, "POST /api/git/stash-import"), windowId),
-        "/api/git/commit-diff": (body, windowId) => runtime.gitCommitDiff(body, windowId),
-        "/api/git/commit-info": (body, windowId) => runtime.gitCommitInfo(body, windowId),
-        "/api/git/log-page": (body, windowId) => runtime.gitLogPage(body, windowId),
-        "/api/git/list-tags": (body, windowId) => runtime.gitListTags(body, windowId),
-        "/api/git/create-tag": (body, windowId) => runtime.gitCreateTag(body, windowId),
-        "/api/git/delete-tag": (body, windowId) => runtime.gitDeleteTag(body, windowId),
-        "/api/git/push-tag": (body, windowId) => runtime.gitPushTag(body, windowId),
-        "/api/git/push-all-tags": (body, windowId) => runtime.gitPushAllTags(body, windowId),
-        "/api/git/delete-remote-tag": (body, windowId) => runtime.gitDeleteRemoteTag(body, windowId),
-        "/api/git/force-push-with-lease": (body, windowId) => runtime.gitForcePushWithLease(body, windowId),
-        "/api/git/list-branches": (body, windowId) =>
-          runtime.gitListBranches(validateIpc(gitBranchListSchema, body, "POST /api/git/list-branches"), windowId),
-        "/api/git/delete-branch": (body, windowId) =>
-          runtime.gitDeleteBranch(validateIpc(gitBranchDeleteSchema, body, "POST /api/git/delete-branch"), windowId),
-        "/api/git/delete-remote-branch": (body, windowId) =>
-          runtime.gitDeleteRemoteBranch(
-            validateIpc(gitRemoteBranchDeleteSchema, body, "POST /api/git/delete-remote-branch"),
-            windowId,
-          ),
-        "/api/git/rename-branch": (body, windowId) =>
-          runtime.gitRenameBranch(validateIpc(gitBranchRenameSchema, body, "POST /api/git/rename-branch"), windowId),
-        "/api/git/checkout-remote-branch": (body, windowId) =>
-          runtime.gitCheckoutRemoteBranch(
-            validateIpc(gitCheckoutRemoteSchema, body, "POST /api/git/checkout-remote-branch"),
-            windowId,
-          ),
-        "/api/git/log-graph": (body, windowId) =>
-          runtime.gitLogGraph(validateIpc(gitLogGraphSchema, body, "POST /api/git/log-graph"), windowId),
-        // Conflict-resolution ops mutate / read a workspace's working tree
-        // (skip a commit, list/read conflicted files, stage/unstage a
-        // resolution), so — like every other git op above — they must be pinned
-        // to the caller's bound profile. Without slot-aware routing they fell
-        // through to handleApiRequest with no windowId, and resolveGitWorkspace
-        // then fell back to windowSlots[0]'s profile, letting a remote client on
-        // profile B drive conflict resolution on a workspace in profile A. Same
-        // gitPayloadSchema the IPC handlers validate with (ipc.ts).
-        "/api/git/skip": (body, windowId) =>
-          runtime.gitSkipCommit(validateIpc(gitPayloadSchema, body, "POST /api/git/skip"), windowId),
-        "/api/git/list-conflicts": (body, windowId) =>
-          runtime.gitListConflicts(validateIpc(gitPayloadSchema, body, "POST /api/git/list-conflicts"), windowId),
-        "/api/git/conflict-detail": (body, windowId) =>
-          runtime.gitConflictDetail(validateIpc(gitPayloadSchema, body, "POST /api/git/conflict-detail"), windowId),
-        "/api/git/resolve-conflict": (body, windowId) =>
-          runtime.gitResolveConflict(validateIpc(gitPayloadSchema, body, "POST /api/git/resolve-conflict"), windowId),
-        "/api/git/unresolve-conflict": (body, windowId) =>
-          runtime.gitUnresolveConflict(
-            validateIpc(gitPayloadSchema, body, "POST /api/git/unresolve-conflict"),
-            windowId,
-          ),
-        // Grid mutations resolve their target profile from windowId. Without
-        // the slot-aware path a mobile client bound to profile B would mutate
-        // profile A's grid (runtime falls back to windowSlots[0] when no
-        // windowId is supplied — see resolveWorkspaceGridProfile).
-        "/api/workspace-grid/enable": (body, windowId) => {
-          const parsed = validateIpc(workspaceGridEnableSchema, body, "POST /api/workspace-grid/enable");
-          return runtime.enableWorkspaceGrid(parsed.layout, parsed.workspaceIds, windowId);
-        },
-        "/api/workspace-grid/disable": (_body, windowId) => runtime.disableWorkspaceGrid(windowId),
-        "/api/workspace-grid/set-layout": (body, windowId) => {
-          const parsed = validateIpc(workspaceGridSetLayoutSchema, body, "POST /api/workspace-grid/set-layout");
-          return runtime.setGridLayout(parsed.layout, windowId);
-        },
-        "/api/workspace-grid/set-cell": (body, windowId) => {
-          const parsed = validateIpc(workspaceGridSetCellSchema, body, "POST /api/workspace-grid/set-cell");
-          return runtime.setGridCell(parsed.cellIndex, parsed.workspaceId, windowId);
-        },
-        "/api/workspace-grid/swap-cells": (body, windowId) => {
-          const parsed = validateIpc(workspaceGridSwapCellsSchema, body, "POST /api/workspace-grid/swap-cells");
-          return runtime.swapGridCells(parsed.a, parsed.b, windowId);
-        },
-        // "Clear all" must stay scoped to the caller's profile — otherwise
-        // a Clear from profile B's window would wipe attention alerts on
-        // workspaces in profile A (and silence the bell on every other
-        // open window). Slot-aware routing supplies the bound windowId,
-        // and runtime.clearAllAttention resolves the profile from it.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        "/api/attention/clear-all": (_body, windowId) => (runtime as any).clearAllAttention(windowId),
-        // Same reasoning as clear-all: clear-session deletes a workspace's
-        // alert entry by sessionId — without scoping, a remote client on
-        // profile B could clear alerts on a workspace in profile A by
-        // submitting any sessionId. The runtime cross-checks the resolved
-        // profile against the workspace's profileId and refuses mismatches.
-        "/api/attention/clear-session": (body, windowId) =>
-          runtime.clearAlertForSession(String(body?.sessionId || ""), {
-            dismissed: body?.dismissed === true,
-            windowId,
-          }),
-        // Sync surfaces "user is currently looking at these tabs" and after
-        // ATTENTION_MIN_DISPLAY_MS turns visible sessions into cleared
-        // alerts. Without scoping, profile B could mark profile A's
-        // sessions visible and silently clear their bells.
-        "/api/attention/sync": (body, windowId) =>
-          runtime.syncAttentionContext({
-            visibleSessionIds: Array.isArray(body?.visibleSessionIds) ? body.visibleSessionIds : [],
-            windowFocused: body?.windowFocused !== false,
-            windowId,
-          }),
-      };
       const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
       if (slotAwareHandler) {
         let body: Record<string, unknown>;
@@ -3628,5 +3635,9 @@ export async function startRemoteServer({
     // Test-only: current telemetry snapshot (frame sizes, coalescing counts,
     // backlog high-water, drain times).
     _debugTelemetry: () => telemetry.snapshot(),
+    // Test-only: see the interface comment above — proves DETAIL_ROUTES and
+    // slotAwareRoute are built once (module/closure scope) rather than
+    // rebuilt on every request.
+    _debugRouteMapsIdentity: () => ({ detailRoutes: DETAIL_ROUTES, slotAwareRoute }),
   };
 }
