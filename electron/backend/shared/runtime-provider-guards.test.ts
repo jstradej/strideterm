@@ -5,6 +5,7 @@ import {
   mirrorActivationIntoSlot,
   assertWorktreeCleanForPush,
   filterConnectionsByOpenProfiles,
+  computeMinPollSeconds,
 } from "./runtime-provider-guards.js";
 
 describe("resolveRootPath", () => {
@@ -179,5 +180,27 @@ describe("filterConnectionsByOpenProfiles", () => {
     const connections = [{ id: "c1", profileId: "p1" }];
     const windowSlots = [{ profileId: "p1" }, { profileId: "p1" }];
     expect(filterConnectionsByOpenProfiles(connections, windowSlots).map((c) => c.id)).toEqual(["c1"]);
+  });
+});
+
+describe("computeMinPollSeconds", () => {
+  test("picks the shortest per-connection pollSeconds", () => {
+    const connections = [{ pollSeconds: 60 }, { pollSeconds: 30 }, { pollSeconds: 90 }];
+    expect(computeMinPollSeconds(connections, 120)).toBe(30);
+  });
+
+  test("falls back to defaultPollSeconds when a connection has no pollSeconds", () => {
+    const connections = [{}, { pollSeconds: 200 }];
+    expect(computeMinPollSeconds(connections, 45)).toBe(45);
+  });
+
+  test("falls back to 120 when neither pollSeconds nor defaultPollSeconds is set", () => {
+    const connections = [{}];
+    expect(computeMinPollSeconds(connections, undefined)).toBe(120);
+  });
+
+  test("floors the result at 15 seconds even if every connection asks for less", () => {
+    const connections = [{ pollSeconds: 5 }, { pollSeconds: 1 }];
+    expect(computeMinPollSeconds(connections, 120)).toBe(15);
   });
 });

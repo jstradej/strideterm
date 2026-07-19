@@ -132,3 +132,21 @@ export function filterConnectionsByOpenProfiles<T extends { profileId?: string }
   if (openProfileIds.size === 0) return connections;
   return connections.filter((c) => openProfileIds.has(String(c.profileId || "default")));
 }
+
+/**
+ * Compute the polling interval (in seconds) for a set of enabled provider
+ * connections: the shortest per-connection `pollSeconds` (falling back to
+ * the integration's `defaultPollSeconds`, then 120), floored at 15s so a
+ * misconfigured connection can't hammer the provider API. Identical formula
+ * used by both providers' `schedule*Polling` — callers remain responsible
+ * for the provider-specific `stopPolling`/`configurePolling` calls.
+ */
+export function computeMinPollSeconds(
+  enabledConnections: Array<{ pollSeconds?: number }>,
+  defaultPollSeconds: number | undefined,
+): number {
+  return Math.max(
+    15,
+    Math.min(...enabledConnections.map((c) => Number(c.pollSeconds) || Number(defaultPollSeconds) || 120)),
+  );
+}

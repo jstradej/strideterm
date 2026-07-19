@@ -10,6 +10,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { normalizeWorkspace, strideDataDir } from "./default-state.js";
 import { normalizeReviewRoot, shortPathKey } from "./azure-devops-manager.js";
+import { computeMinPollSeconds } from "./shared/runtime-provider-guards.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
@@ -317,15 +318,7 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
       return;
     }
 
-    const pollSeconds = Math.max(
-      15,
-      Math.min(
-        ...enabledConnections.map(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (connection: any) => Number(connection.pollSeconds) || Number(settings.defaultPollSeconds) || 120,
-        ),
-      ),
-    );
+    const pollSeconds = computeMinPollSeconds(enabledConnections, settings.defaultPollSeconds);
     azure.configurePolling(pollSeconds * 1000, refreshAzure);
   }
 
@@ -397,13 +390,7 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
       github.stopPolling();
       return;
     }
-    const pollSeconds = Math.max(
-      15,
-      Math.min(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ...enabledConnections.map((c: any) => Number(c.pollSeconds) || Number(settings.defaultPollSeconds) || 120),
-      ),
-    );
+    const pollSeconds = computeMinPollSeconds(enabledConnections, settings.defaultPollSeconds);
     github.configurePolling(pollSeconds * 1000, refreshGitHub);
   }
 
