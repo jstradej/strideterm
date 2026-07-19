@@ -59,18 +59,6 @@
       </tbody>
     </table>
     <p v-if="!sortedCommits.length" class="git-card__hint">No commit history available yet.</p>
-    <div v-if="hasMore" class="git-log-loadmore">
-      <button
-        type="button"
-        class="button button--ghost button--small"
-        :disabled="loadingMore"
-        :title="`Load the next ${pageSize} commits from git log.`"
-        @click="$emit('load-more')"
-      >
-        {{ loadingMore ? "Loading…" : `Load ${pageSize} more` }}
-      </button>
-      <span class="git-log-loadmore__hint">{{ sortedCommits.length }} commits shown</span>
-    </div>
   </div>
 </template>
 
@@ -83,16 +71,12 @@ const props = withDefaults(
     commits?: any[];
     selectedCommit?: string;
     aheadCount?: number;
-    hasMore?: boolean;
-    loadingMore?: boolean;
-    pageSize?: number;
   }>(),
-  { commits: () => [], selectedCommit: "", aheadCount: 0, hasMore: false, loadingMore: false, pageSize: 100 },
+  { commits: () => [], selectedCommit: "", aheadCount: 0 },
 );
 
 defineEmits<{
   (e: "select", hash: string): void;
-  (e: "load-more"): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: "show-info", entry: any): void;
 }>();
@@ -216,25 +200,6 @@ const sortedCommits = computed(() => {
 .git-log-table--unpushed {
   background: rgba(255, 164, 36, 0.06);
   border-left: 2px solid var(--accent);
-}
-
-.git-log-loadmore {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-  position: sticky;
-  bottom: 0;
-  background: rgba(var(--tint), 0.05);
-  flex: 0 0 auto;
-}
-
-.git-log-loadmore__hint {
-  font-size: 11px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
 }
 
 .git-log-unpushed-badge {

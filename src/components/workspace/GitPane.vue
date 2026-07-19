@@ -252,14 +252,11 @@
           :snapshot="snapshot"
           :git-ui="gitUi"
           :active-root-path="activeRootPath"
-          :is-review-workspace="isReviewWorkspace"
           :has-azure-connection="hasAzureConnection"
           :active-connection-id="activeConnectionId"
           :base-branch="effectiveBaseBranch"
           :compare="compare"
           :base-branch-options="baseBranchOptions"
-          :default-branch="defaultBranch"
-          :default-remote="defaultRemote"
           :remote-names="remoteNames"
         />
 

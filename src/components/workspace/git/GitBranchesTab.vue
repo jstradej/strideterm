@@ -365,9 +365,6 @@
                 :commits="commits"
                 :selected-commit="selectedShortHash"
                 :ahead-count="0"
-                :has-more="false"
-                :loading-more="false"
-                :page-size="100"
                 @select="onSelectCommitShort"
                 @show-info="onShowCommitInfoFlat"
               />
@@ -602,27 +599,21 @@ const props = withDefaults(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     gitUi: Record<string, any>;
     activeRootPath?: string;
-    isReviewWorkspace?: boolean;
     hasAzureConnection?: boolean;
     activeConnectionId?: string;
     baseBranch?: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     compare?: Record<string, any>;
     baseBranchOptions?: string[];
-    defaultBranch?: string;
-    defaultRemote?: string;
     remoteNames?: string[];
   }>(),
   {
     activeRootPath: "",
-    isReviewWorkspace: false,
     hasAzureConnection: false,
     activeConnectionId: "",
     baseBranch: "",
     compare: () => ({}),
     baseBranchOptions: () => [],
-    defaultBranch: "",
-    defaultRemote: "",
     remoteNames: () => [],
   },
 );
