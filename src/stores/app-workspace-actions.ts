@@ -1,4 +1,5 @@
 import { getWorkspaceTabs, getWorkspacePanelByViewId } from "../app/selectors.js";
+import { LAYOUTS } from "../app/layout-geometry.js";
 import { cloneWorkspace } from "../workspace-state.js";
 import {
   isContainerRunning,
@@ -29,15 +30,6 @@ const viewIdHelpers = {
   isFilesViewId,
   isBrowserViewId,
   isTaskDashboardViewId,
-};
-
-const LAYOUTS: Record<string, { slots: number }> = {
-  solo: { slots: 1 },
-  cols: { slots: 2 },
-  rows: { slots: 2 },
-  "top-split": { slots: 3 },
-  "left-split": { slots: 3 },
-  grid: { slots: 4 },
 };
 
 interface SplitGroup {

@@ -158,6 +158,7 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, type CSSPro
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useSshStore } from "../../stores/ssh.js";
+import { LAYOUTS } from "../../app/layout-geometry.js";
 import {
   isGitViewId,
   isDockerViewId,
@@ -173,14 +174,6 @@ const store = useAppStore();
 const termStore = useTerminalStore();
 const sshStore = useSshStore();
 const menuRef = ref<HTMLElement | null>(null);
-const LAYOUTS = {
-  solo: { slots: 1 },
-  cols: { slots: 2 },
-  rows: { slots: 2 },
-  "top-split": { slots: 3 },
-  "left-split": { slots: 3 },
-  grid: { slots: 4 },
-};
 
 const viewId = computed(() => store.contextMenu?.viewId || "");
 const rawX = computed(() => store.contextMenu?.x || 0);

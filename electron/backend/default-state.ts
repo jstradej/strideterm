@@ -849,7 +849,7 @@ function groupChildWorkspaces(workspaces: WorkspaceState[]): WorkspaceState[] {
   return result;
 }
 
-const GRID_LAYOUT_SLOTS: Record<string, number> = {
+export const GRID_LAYOUT_SLOTS: Record<string, number> = {
   cols: 2,
   rows: 2,
   "top-split": 3,

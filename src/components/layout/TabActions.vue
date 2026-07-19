@@ -21,7 +21,7 @@
       "
       @click="$emit('open-layout-picker', $event)"
     >
-      {{ currentLayout !== "solo" ? layouts[currentLayout]?.label || "Split" : "Split" }}
+      {{ currentLayout !== "solo" ? layouts[currentLayout]?.shortLabel || "Split" : "Split" }}
     </button>
     <button
       v-if="(store.splitGroup || store.isGridVisible) && !isMobile"
@@ -89,15 +89,7 @@
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
-
-const LAYOUTS = {
-  solo: { slots: 1, label: "Solo" },
-  cols: { slots: 2, label: "Side by side" },
-  rows: { slots: 2, label: "Stacked" },
-  "top-split": { slots: 3, label: "Top + 2 bottom" },
-  "left-split": { slots: 3, label: "Left + 2 right" },
-  grid: { slots: 4, label: "Grid" },
-};
+import { LAYOUTS } from "../../app/layout-geometry.js";
 
 const store = useAppStore();
 const { isMobile } = useIsNarrow();
@@ -110,7 +102,7 @@ const gitAvailable = computed(() => {
   // the remote slim core without fetching the full snapshot.
   return !!(store.getGitSummary(wsId) as { available?: boolean } | null | undefined)?.available;
 });
-const layouts = LAYOUTS as Record<string, { slots: number; label: string } | undefined>;
+const layouts = LAYOUTS as Record<string, { slots: number; label: string; shortLabel: string } | undefined>;
 
 const currentLayout = computed(() => {
   if (store.isGridVisible) return store.workspaceGrid?.layout || "solo";

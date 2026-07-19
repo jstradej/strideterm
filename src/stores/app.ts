@@ -8,6 +8,7 @@ import {
   getWorkspaceAttention,
   getTabAttention,
 } from "../app/selectors.js";
+import { LAYOUTS } from "../app/layout-geometry.js";
 import {
   readSidebarCollapsed,
   isContainerRunning,
@@ -339,15 +340,7 @@ export const useAppStore = defineStore("app", () => {
     const grid = workspaceGrid.value;
     const activeWsId = myActiveWorkspaceId.value;
     if (grid && activeWsId) {
-      const slotCounts: Record<string, number> = {
-        solo: 1,
-        cols: 2,
-        rows: 2,
-        "top-split": 3,
-        "left-split": 3,
-        grid: 4,
-      };
-      const newSlots = slotCounts[layout];
+      const newSlots = LAYOUTS[layout]?.slots;
       if (newSlots) {
         const nonNull = (grid.cellWorkspaceIds as (string | null)[]).filter((id): id is string => id !== null);
         const kept = nonNull.slice(0, newSlots);

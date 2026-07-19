@@ -36,13 +36,13 @@ export const SLOT_BOXES: Record<string, SlotBox[]> = {
 export const AREA_NAMES = ["a", "b", "c", "d"] as const;
 export const AREA_LAYOUTS = new Set(["top-split", "left-split"]);
 
-export const LAYOUTS: Record<string, { slots: number; label: string }> = {
-  solo: { slots: 1, label: "Solo" },
-  cols: { slots: 2, label: "Columns" },
-  rows: { slots: 2, label: "Rows" },
-  "top-split": { slots: 3, label: "Top split" },
-  "left-split": { slots: 3, label: "Left split" },
-  grid: { slots: 4, label: "Grid" },
+export const LAYOUTS: Record<string, { slots: number; label: string; shortLabel: string }> = {
+  solo: { slots: 1, label: "Solo", shortLabel: "Solo" },
+  cols: { slots: 2, label: "Columns", shortLabel: "Side by side" },
+  rows: { slots: 2, label: "Rows", shortLabel: "Stacked" },
+  "top-split": { slots: 3, label: "Top split", shortLabel: "Top + 2 bottom" },
+  "left-split": { slots: 3, label: "Left split", shortLabel: "Left + 2 right" },
+  grid: { slots: 4, label: "Grid", shortLabel: "2 × 2 grid" },
 };
 
 export function gridAreaStyle(index: number, layout: string): Record<string, string> {

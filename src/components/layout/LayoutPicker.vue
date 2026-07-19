@@ -26,15 +26,7 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import LayoutThumbnail from "./LayoutThumbnail.vue";
-
-const LAYOUTS = {
-  solo: { slots: 1, label: "Solo" },
-  cols: { slots: 2, label: "Columns" },
-  rows: { slots: 2, label: "Rows" },
-  "top-split": { slots: 3, label: "Top split" },
-  "left-split": { slots: 3, label: "Left split" },
-  grid: { slots: 4, label: "Grid" },
-};
+import { LAYOUTS } from "../../app/layout-geometry.js";
 
 const store = useAppStore();
 const pickerRef = ref<HTMLElement | null>(null);

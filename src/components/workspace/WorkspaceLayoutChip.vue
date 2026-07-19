@@ -41,15 +41,7 @@ import { computed, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import LayoutThumbnail from "../layout/LayoutThumbnail.vue";
-
-const LAYOUTS = {
-  solo: { label: "Solo" },
-  cols: { label: "Side by side" },
-  rows: { label: "Stacked" },
-  "top-split": { label: "Top + 2 bottom" },
-  "left-split": { label: "Left + 2 right" },
-  grid: { label: "2 × 2 grid" },
-} as const;
+import { LAYOUTS } from "../../app/layout-geometry.js";
 type LayoutKey = keyof typeof LAYOUTS;
 
 const store = useAppStore();
@@ -67,7 +59,7 @@ const currentLayout = computed<LayoutKey>(() => {
   return "solo";
 });
 
-const layoutLabel = computed(() => LAYOUTS[currentLayout.value]?.label || "Solo");
+const layoutLabel = computed(() => LAYOUTS[currentLayout.value]?.shortLabel || "Solo");
 
 const layoutTitle = computed(() =>
   store.isGridVisible
