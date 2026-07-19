@@ -844,7 +844,9 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     }
     // Remove slot from persistent state
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
-      runtimeState.runtime.removeWindowSlot?.(id).catch(() => {});
+      runtimeState.runtime
+        .removeWindowSlot?.(id)
+        .catch((err: unknown) => log.warn("removeWindowSlot failed", { windowId: id, err: (err as Error)?.message }));
     }
   });
 
@@ -918,7 +920,15 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
         const workspaces = (appState?.workspaces || []).filter((w) => (w.profileId || "default") === profileId);
         const workspace = workspaces[parseInt(digit, 10) - 1];
         if (workspace) {
-          runtimeState.runtime.activateWorkspaceInWindow(workspace.id, id).catch(() => {});
+          runtimeState.runtime
+            .activateWorkspaceInWindow(workspace.id, id)
+            .catch((err: unknown) =>
+              log.warn("Ctrl+digit activateWorkspaceInWindow failed", {
+                windowId: id,
+                workspaceId: workspace.id,
+                err: (err as Error)?.message,
+              }),
+            );
         }
         return;
       }
@@ -1070,7 +1080,9 @@ function persistWindowSlot(windowId: string, win: BrowserWindow): void {
   const [wx, wy] = win.getPosition();
   const display = screen.getDisplayNearestPoint({ x: wx, y: wy });
   const displayId = display?.id;
-  runtimeState.runtime.updateWindowSlotBounds?.(windowId, b, displayId).catch(() => {});
+  runtimeState.runtime
+    .updateWindowSlotBounds?.(windowId, b, displayId)
+    .catch((err: unknown) => log.debug("updateWindowSlotBounds failed", { windowId, err: (err as Error)?.message }));
 }
 
 const windowSlotPersistTimers = new Map<string, NodeJS.Timeout>();
