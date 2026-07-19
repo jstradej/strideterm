@@ -68,7 +68,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, useAttrs } from "vue";
 
 interface Profile {
   id: string;
@@ -96,10 +96,17 @@ const props = defineProps<{
   currentProfileId?: string;
 }>();
 
+defineOptions({ inheritAttrs: false });
+
+// Intentionally NOT declaring "create-and-open" in defineEmits — Vue strips
+// declared events from $attrs, which would make attrs["onCreate-and-open"]
+// undefined and silently swallow any rejection from the parent's async
+// handler. Treating it as a regular callback prop via useAttrs lets us
+// await + catch. See WorkspaceDialog.vue for the established pattern.
 const emit = defineEmits<{
   cancel: [];
-  "create-and-open": [profile: { id: string; name: string; color: string }];
 }>();
+const attrs = useAttrs();
 
 const busy = ref(false);
 const errorMessage = ref("");
@@ -167,13 +174,20 @@ async function createProfileAndOpen(): Promise<void> {
   errorMessage.value = "";
   try {
     const newProfile = { id: `profile-${crypto.randomUUID()}`, name, color: "#ffa424" };
-    emit("create-and-open", newProfile);
-    // The parent (app-dialog-actions.openNewWindowModal) is responsible for
-    // saving the profile + opening the window + closing the dialog. We stay
-    // busy until it does — but since the dialog will be unmounted, no need
-    // to clear busy on success.
+    // Call the parent-provided handler directly (via attrs) rather than emit
+    // so we can await it and catch a rejection — emit is fire-and-forget and
+    // would leave the dialog stuck with busy=true and no error shown if
+    // saving the profile or opening the window fails. The parent
+    // (app-dialog-actions.openNewWindowModal) is responsible for saving the
+    // profile + opening the window + closing the dialog on success.
+    await (
+      attrs["onCreate-and-open"] as
+        | ((profile: { id: string; name: string; color: string }) => Promise<void>)
+        | undefined
+    )?.(newProfile);
   } catch (err) {
     errorMessage.value = (err as Error)?.message || "Failed to create profile";
+  } finally {
     busy.value = false;
   }
 }

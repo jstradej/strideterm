@@ -110,9 +110,14 @@
       </div>
     </div>
 
+    <div v-if="errorMessage" class="dialog__error" role="alert">
+      <span class="dialog__error-icon" aria-hidden="true">⚠</span>
+      <span class="dialog__error-text">{{ errorMessage }}</span>
+    </div>
+
     <div class="dialog__footer ssh-host-editor__footer">
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-      <button type="button" class="button" @click="save">Save</button>
+      <button type="button" class="button button--ghost" :disabled="busy" @click="emit('cancel')">Cancel</button>
+      <button type="button" class="button" :disabled="busy" @click="save">{{ busy ? "Saving…" : "Save" }}</button>
     </div>
   </div>
 </template>
@@ -230,11 +235,24 @@ onMounted(() => {
   }
 });
 
+const busy = ref(false);
+const errorMessage = ref("");
+
 async function save() {
   const payload = JSON.parse(JSON.stringify(form));
   if (props.host) payload.id = props.host.id;
-  await sshStore.saveHost(payload);
-  emit("cancel");
+  busy.value = true;
+  errorMessage.value = "";
+  try {
+    await sshStore.saveHost(payload);
+    emit("cancel");
+  } catch (err) {
+    // Keep the dialog open and show the failure inline instead of leaving
+    // an unhandled rejection with no feedback and the Save button stuck.
+    errorMessage.value = (err as Error)?.message || "Failed to save host.";
+  } finally {
+    busy.value = false;
+  }
 }
 </script>
 

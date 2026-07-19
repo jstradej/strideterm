@@ -2174,17 +2174,16 @@ function openCreatePullRequestDialog(sourceBranchOverride = "") {
         connectionId: props.activeConnectionId || "",
       });
       const result = props.gitUi.lastResult;
-      if (result?.ok) {
-        appStore.closeDialog();
-        const id = result.pullRequestId;
-        const url = result.url || "";
-        await showToast(`PR #${id ?? ""} created.` + (url ? " Open in browser:" : ""), "success", url);
-      } else {
-        const msg = result?.summary || "Failed to create pull request.";
-        // Leave the dialog open so the user can correct title / target and
-        // retry — they don't want to retype everything after a server error.
-        await showToast(msg, "error");
+      if (!result?.ok) {
+        // Throw so CreatePullRequestDialog's own try/catch shows the error
+        // inline and leaves the dialog open for the user to correct title /
+        // target and retry — the dialog owns its busy/error lifecycle now.
+        throw new Error(result?.summary || "Failed to create pull request.");
       }
+      appStore.closeDialog();
+      const id = result.pullRequestId;
+      const url = result.url || "";
+      await showToast(`PR #${id ?? ""} created.` + (url ? " Open in browser:" : ""), "success", url);
     },
   });
 }

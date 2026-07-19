@@ -75,7 +75,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, useAttrs, watch } from "vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
 interface Props {
@@ -94,11 +94,18 @@ const props = withDefaults(defineProps<Props>(), {
   provider: "azure",
 });
 
+defineOptions({ inheritAttrs: false });
+
+// Intentionally NOT declaring "submit" in defineEmits — Vue strips declared
+// events from $attrs, which would make attrs.onSubmit undefined and silently
+// swallow any rejection from the parent's async submit handler. Treating
+// onSubmit as a regular callback prop via useAttrs lets us await + catch. See
+// WorkspaceDialog.vue for the established pattern.
 const emit = defineEmits<{
   cancel: [];
-  submit: [payload: { title: string; description: string; targetBranch: string; isDraft: boolean }];
   refreshBranches: [];
 }>();
+const attrs = useAttrs();
 
 const targetBranch = ref(props.defaultTargetBranch.replace(/^origin\//, ""));
 const title = ref("");
@@ -123,26 +130,31 @@ function loadBranches() {
   emit("refreshBranches");
 }
 
-function onSubmit() {
+async function onSubmit() {
   if (!canSubmit.value) return;
   busy.value = true;
   errorMessage.value = "";
-  emit("submit", {
-    title: title.value.trim(),
-    description: description.value.trim(),
-    targetBranch: targetBranch.value,
-    isDraft: isDraft.value,
-  });
+  try {
+    // Call the parent-provided onSubmit directly (via attrs) rather than
+    // emit so we can await the async handler and catch its rejection — emit
+    // is fire-and-forget and would swallow backend errors, leaving the
+    // dialog open with busy stuck true and no feedback about what went wrong.
+    await (
+      attrs.onSubmit as
+        | ((payload: { title: string; description: string; targetBranch: string; isDraft: boolean }) => Promise<void>)
+        | undefined
+    )?.({
+      title: title.value.trim(),
+      description: description.value.trim(),
+      targetBranch: targetBranch.value,
+      isDraft: isDraft.value,
+    });
+  } catch (err) {
+    errorMessage.value = (err as Error)?.message || "Failed to create pull request";
+  } finally {
+    busy.value = false;
+  }
 }
-
-// Parent calls setError() via expose to surface backend failures inside the
-// dialog without closing it.
-function setError(msg: string) {
-  busy.value = false;
-  errorMessage.value = msg || "";
-}
-
-defineExpose({ setError });
 
 watch(
   () => props.defaultTargetBranch,
