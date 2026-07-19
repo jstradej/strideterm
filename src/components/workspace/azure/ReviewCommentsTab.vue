@@ -364,6 +364,7 @@
 import { ref } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 import MarkdownContent from "./MarkdownContent.vue";
 
 const props = defineProps<{
@@ -397,6 +398,7 @@ const props = defineProps<{
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const notifications = useNotificationStore();
 
 const busyAction = ref<string>("");
 
@@ -474,7 +476,9 @@ function statusChipClass(status: unknown): string {
 async function handleDeleteAllDrafts() {
   busyAction.value = "deleteAll";
   try {
-    await appStore.reviewBridgeDeleteAllDrafts(props.prKey);
+    await notifications.runWithToast("Delete all drafts failed", () =>
+      appStore.reviewBridgeDeleteAllDrafts(props.prKey),
+    );
   } finally {
     busyAction.value = "";
   }
@@ -483,7 +487,9 @@ async function handleDeleteAllDrafts() {
 async function handleDeleteDraft(draftId: string) {
   busyAction.value = `delete-${draftId}`;
   try {
-    await appStore.deleteReviewBridgeDraft(props.prKey, draftId);
+    await notifications.runWithToast("Delete draft failed", () =>
+      appStore.deleteReviewBridgeDraft(props.prKey, draftId),
+    );
   } finally {
     busyAction.value = "";
   }
@@ -492,7 +498,9 @@ async function handleDeleteDraft(draftId: string) {
 async function handleResolveThread(threadId: number | string) {
   busyAction.value = `resolve-${threadId}`;
   try {
-    await appStore.azureResolveThread(props.prKey, String(threadId));
+    await notifications.runWithToast("Resolve thread failed", () =>
+      appStore.azureResolveThread(props.prKey, String(threadId)),
+    );
   } finally {
     busyAction.value = "";
   }
@@ -501,7 +509,9 @@ async function handleResolveThread(threadId: number | string) {
 async function handleReactivateThread(threadId: number | string) {
   busyAction.value = `reactivate-${threadId}`;
   try {
-    await appStore.azureReactivateThread(props.prKey, String(threadId));
+    await notifications.runWithToast("Reactivate thread failed", () =>
+      appStore.azureReactivateThread(props.prKey, String(threadId)),
+    );
   } finally {
     busyAction.value = "";
   }
@@ -510,7 +520,9 @@ async function handleReactivateThread(threadId: number | string) {
 async function handleDeleteComment(commentKey: string) {
   busyAction.value = `deleteComment-${commentKey}`;
   try {
-    await appStore.deleteReviewBridgeComment(props.prKey, commentKey);
+    await notifications.runWithToast("Delete comment failed", () =>
+      appStore.deleteReviewBridgeComment(props.prKey, commentKey),
+    );
   } finally {
     busyAction.value = "";
   }
