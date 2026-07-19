@@ -115,6 +115,8 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { stripRef } from "../azure/azurePipelineFormat.js";
+import { shortSha, formatDate } from "../prRowFormat.js";
 
 const props = withDefaults(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -222,21 +224,6 @@ const reviewerLabel = computed(() => {
   if (requested) parts.push(`${requested} requested`);
   return parts.join(" · ");
 });
-
-function stripRef(ref: unknown) {
-  return String(ref || "").replace(/^refs\/heads\//, "");
-}
-
-function shortSha(sha: unknown) {
-  return String(sha || "").slice(0, 7);
-}
-
-function formatDate(iso: unknown): string {
-  if (!iso) return "";
-  const d = new Date(iso as string);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-}
 
 function handleOpen() {
   emit("open", { prKey: props.item.prKey as string, workspaceId: openWorkspaceId.value });

@@ -120,6 +120,8 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { stripRef } from "./azurePipelineFormat.js";
+import { shortSha, formatDate } from "../prRowFormat.js";
 
 const props = withDefaults(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -239,19 +241,4 @@ const latestCommentPreview = computed(() => {
   // Truncate long previews so the row stays readable when expanded.
   return text.length > 240 ? `${text.slice(0, 237)}…` : text;
 });
-
-function stripRef(ref: unknown) {
-  return String(ref || "").replace(/^refs\/heads\//, "");
-}
-
-function shortSha(sha: unknown) {
-  return String(sha || "").slice(0, 7);
-}
-
-function formatDate(iso: unknown): string {
-  if (!iso) return "";
-  const d = new Date(iso as string);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-}
 </script>
