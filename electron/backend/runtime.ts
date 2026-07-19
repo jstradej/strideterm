@@ -2251,9 +2251,7 @@ export async function createRuntime({
           // Don't auto-start. Ask the user via Telegram whether to start
           // the task now or leave it idle so they can edit TASK.md first.
           if (cmd.chatId) {
-            const promptCwd = useWorktree
-              ? path.join(parentWorkspace.cwd, ".strideterm", "tree", worktreeBranch.replace(/\//g, "-"))
-              : taskCwd;
+            const promptCwd = useWorktree ? worktreeTreePath(parentWorkspace.cwd, worktreeBranch) : taskCwd;
             await telegramManager.promptStartAfterCreate({
               chatId: cmd.chatId,
               workspaceId: result.workspaceId,
@@ -4876,6 +4874,79 @@ export async function createRuntime({
     return getPayload();
   }
 
+  /**
+   * Compute the on-disk path a `.strideterm/tree/` worktree for
+   * `branchOrName` would live at under `repoPath`. Pure — no disk access.
+   * Shared by ensureWorktree and any caller that needs to know the path
+   * before (or without) actually creating the worktree (e.g. the Telegram
+   * start-task dispatch, which only needs it to show the user a preview).
+   */
+  function worktreeTreePath(repoPath: string, branchOrName: string): string {
+    return path.join(repoPath, ".strideterm", "tree", branchOrName.replace(/\//g, "-"));
+  }
+
+  /**
+   * Create a git worktree for `branchOrName` under `repoPath`'s
+   * `.strideterm/tree/` directory: ensure `.strideterm/` is gitignored,
+   * create the parent directory, then `git worktree add`. Returns the
+   * worktree's path.
+   *
+   * createWorktree and createTaskWorkspace had drifted on failure handling
+   * before this extraction — createTaskWorkspace retries against an
+   * existing branch and rewrites common git failures into friendlier
+   * messages, createWorktree does neither. `richErrorHandling` preserves
+   * both original behaviors verbatim rather than silently merging them.
+   */
+  async function ensureWorktree(
+    repoPath: string,
+    branchOrName: string,
+    { richErrorHandling = false }: { richErrorHandling?: boolean } = {},
+  ): Promise<string> {
+    const treePath = worktreeTreePath(repoPath, branchOrName);
+
+    // Ensure .strideterm/ in .gitignore (inside the chosen repo)
+    const gitignorePath = path.join(repoPath, ".gitignore");
+    let gitignoreContent = "";
+    try {
+      gitignoreContent = await readFile(gitignorePath, "utf-8");
+    } catch {}
+    if (!gitignoreContent.split(/\r?\n/).some((line) => line.trim() === ".strideterm/")) {
+      const separator = gitignoreContent.length && !gitignoreContent.endsWith("\n") ? "\n" : "";
+      await writeFile(gitignorePath, gitignoreContent + separator + ".strideterm/\n", "utf-8");
+    }
+
+    // Ensure directory exists for worktree
+    await mkdir(path.dirname(treePath), { recursive: true });
+
+    if (!richErrorHandling) {
+      // git worktree add — run inside the chosen repo root, not the workspace parent
+      await execFileTextImpl("git", ["worktree", "add", treePath, "-b", branchOrName], { cwd: repoPath });
+      return treePath;
+    }
+
+    try {
+      await execFileTextImpl("git", ["worktree", "add", treePath, "-b", branchOrName], { cwd: repoPath });
+    } catch (err) {
+      // execFileText rejects with { error, stdout, stderr } — the useful
+      // message lives in stderr. err.message is undefined here, so don't
+      // rely on it for either the branch-exists fallback or the user error.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || (err as Error).message || "";
+      if (stderr.includes("already exists")) {
+        await execFileTextImpl("git", ["worktree", "add", treePath, branchOrName], { cwd: repoPath });
+      } else if (stderr.includes("not a git repository")) {
+        // Most common user mistake — surface a clear, actionable message.
+        throw new Error(
+          `"${repoPath}" is not a git repository. Initialize with \`git init\` there, or disable "Use git worktree" in the task dialog.`,
+          { cause: err },
+        );
+      } else {
+        throw new Error(`Failed to create git worktree: ${stderr || "unknown error"}`, { cause: err });
+      }
+    }
+    return treePath;
+  }
+
   const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
@@ -7075,24 +7146,7 @@ export async function createRuntime({
         repoPath = project.cwd;
       }
 
-      const treePath = path.join(repoPath, ".strideterm", "tree", name);
-
-      // Ensure .strideterm/ in .gitignore (inside the chosen repo)
-      const gitignorePath = path.join(repoPath, ".gitignore");
-      let gitignoreContent = "";
-      try {
-        gitignoreContent = await readFile(gitignorePath, "utf-8");
-      } catch {}
-      if (!gitignoreContent.split(/\r?\n/).some((line) => line.trim() === ".strideterm/")) {
-        const separator = gitignoreContent.length && !gitignoreContent.endsWith("\n") ? "\n" : "";
-        await writeFile(gitignorePath, gitignoreContent + separator + ".strideterm/\n", "utf-8");
-      }
-
-      // Ensure directory exists for worktree
-      await mkdir(path.dirname(treePath), { recursive: true });
-
-      // git worktree add — run inside the chosen repo root, not the workspace parent
-      await execFileTextImpl("git", ["worktree", "add", treePath, "-b", name], { cwd: repoPath });
+      const treePath = await ensureWorktree(repoPath, name);
 
       // Create subproject cloning parent panels
       const newProject = normalizeWorkspace({
@@ -7396,9 +7450,8 @@ export async function createRuntime({
             "Worktree branch name must contain only alphanumeric characters, dots, hyphens, slashes, or underscores.",
           );
         }
-        const dirName = branch.replace(/\//g, "-");
         plannedBranch = branch;
-        plannedTreePath = path.join(config.cwd, ".strideterm", "tree", dirName);
+        plannedTreePath = worktreeTreePath(config.cwd, branch);
         effectiveCwd = plannedTreePath;
       }
 
@@ -7416,41 +7469,7 @@ export async function createRuntime({
 
       // --- Git worktree mode: actual disk operations (after guard) ---
       if (config.useWorktree) {
-        // Ensure .strideterm/ in .gitignore
-        const gitignorePath = path.join(config.cwd, ".gitignore");
-        let gitignoreContent = "";
-        try {
-          gitignoreContent = await readFile(gitignorePath, "utf-8");
-        } catch {}
-        if (!gitignoreContent.split(/\r?\n/).some((line) => line.trim() === ".strideterm/")) {
-          const separator = gitignoreContent.length && !gitignoreContent.endsWith("\n") ? "\n" : "";
-          await writeFile(gitignorePath, gitignoreContent + separator + ".strideterm/\n", "utf-8");
-        }
-
-        // Ensure parent directory exists
-        await mkdir(path.dirname(plannedTreePath), { recursive: true });
-
-        // Create the git worktree with a new branch
-        try {
-          await execFileTextImpl("git", ["worktree", "add", plannedTreePath, "-b", plannedBranch], { cwd: config.cwd });
-        } catch (err) {
-          // execFileText rejects with { error, stdout, stderr } — the useful
-          // message lives in stderr. err.message is undefined here, so don't
-          // rely on it for either the branch-exists fallback or the user error.
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || (err as Error).message || "";
-          if (stderr.includes("already exists")) {
-            await execFileTextImpl("git", ["worktree", "add", plannedTreePath, plannedBranch], { cwd: config.cwd });
-          } else if (stderr.includes("not a git repository")) {
-            // Most common user mistake — surface a clear, actionable message.
-            throw new Error(
-              `"${config.cwd}" is not a git repository. Initialize with \`git init\` there, or disable "Use git worktree" in the task dialog.`,
-              { cause: err },
-            );
-          } else {
-            throw new Error(`Failed to create git worktree: ${stderr || "unknown error"}`, { cause: err });
-          }
-        }
+        await ensureWorktree(config.cwd, plannedBranch, { richErrorHandling: true });
 
         worktreeBase = config.cwd;
         worktreeBranch = plannedBranch;
