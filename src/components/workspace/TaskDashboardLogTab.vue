@@ -53,7 +53,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, inject, watch } from "vue";
+import { inject, ref } from "vue";
+import { useTaskLog, formatTime } from "../../composables/useTaskLog.js";
+import { eventLabel, eventCategory } from "../../lib/task-log-labels.js";
+import { downloadTextFile } from "../../app/helpers.js";
 
 const props = withDefaults(
   defineProps<{
@@ -67,94 +70,12 @@ const props = withDefaults(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>("api");
-const logRaw = ref<string>("");
 const copyFeedback = ref<string>("");
 
 // ── Event log from TASK_LOG.jsonl ─────────────────────────────────
-async function loadLog() {
-  if (!api || !props.workspaceCwd || !props.taskId) return;
-  try {
-    const result = await api.fileRead({
-      rootPath: props.workspaceCwd,
-      relativePath: `.strideterm/tasks/${props.taskId}/TASK_LOG.jsonl`,
-    });
-    logRaw.value = result?.content ?? "";
-  } catch {
-    logRaw.value = "";
-  }
-}
-
-const logEntries = computed(() => {
-  if (!logRaw.value) return [];
-  return logRaw.value
-    .split("\n")
-    .filter((line) => line.trim())
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-});
-
-const EVENT_LABELS = {
-  "task-started": "Task started",
-  "task-stopped": "Task stopped",
-  "task-paused": "Task paused",
-  "task-resumed": "Task resumed",
-  "task-reset": "Task reset",
-  "task-completed": "Task completed",
-  "task-failed": "Task failed",
-  "evaluation-complete": "Checks finished",
-  "worker-reprompted": "Worker re-prompted",
-  "judge-requested": "Judge requested",
-  "judge-verdict": "Judge verdict",
-  "shower-started": "Context refresh",
-  "shower-completed": "Refresh done",
-  "shower-failed": "Refresh failed",
-  "worker-idle-detected": "Worker idle detected",
-};
-
-function eventLabel(event: string): string {
-  return (EVENT_LABELS as Record<string, string>)[event] || event;
-}
-
-function eventCategory(event: string): string {
-  if (event === "task-completed") return "success";
-  if (event === "task-failed" || event === "shower-failed") return "error";
-  if (event.startsWith("judge-")) return "judge";
-  if (event.startsWith("shower-")) return "shower";
-  if (event === "worker-reprompted") return "warn";
-  return "info";
-}
-
-watch(
-  () => props.taskState?.state,
-  () => loadLog(),
-);
-watch(
-  () => props.taskState?.currentRound,
-  () => loadLog(),
-);
-watch(
-  () => props.taskId,
-  (id) => {
-    if (id) loadLog();
-  },
-  { immediate: true },
-);
-
-// ── Helpers ───────────────────────────────────────────────────────
-function formatTime(iso: string | null | undefined): string {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleTimeString();
-  } catch {
-    return iso;
-  }
-}
+// Load/parse logic, event labels, and the refresh watch are shared with
+// TaskDashboardStatusTab.vue via useTaskLog / task-log-labels.
+const { logEntries } = useTaskLog(api, props);
 
 // ── Log export ────────────────────────────────────────────────────
 function formatLogText() {
@@ -182,16 +103,7 @@ async function copyLog() {
 }
 
 function saveLog() {
-  const text = formatLogText();
-  const blob = new Blob([text], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `task-log-${props.taskId || "export"}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadTextFile(`task-log-${props.taskId || "export"}.txt`, formatLogText(), "text/plain");
 }
 </script>
 

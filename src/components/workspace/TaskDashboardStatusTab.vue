@@ -278,6 +278,8 @@
 <script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
 import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
+import { useTaskLog, formatTime } from "../../composables/useTaskLog.js";
+import { eventLabel, eventCategory } from "../../lib/task-log-labels.js";
 
 const props = withDefaults(
   defineProps<{
@@ -338,7 +340,6 @@ function onStartNew() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>("api");
 const selectedRound = ref<number | null>(null);
-const logRaw = ref<string>("");
 
 // ── Rounds ────────────────────────────────────────────────────────
 const roundsChronological = computed(() => props.taskState?.rounds || []);
@@ -504,66 +505,9 @@ const pipelineSteps = computed(() => {
 // ── Activity log (compact view of TASK_LOG.jsonl) ─────────────────
 // The full log lives in the Log tab; Status shows a tail so the user sees
 // what's happening from the moment the task starts without switching tabs.
-const EVENT_LABELS = {
-  "task-started": "Task started",
-  "task-stopped": "Task stopped",
-  "task-paused": "Task paused",
-  "task-resumed": "Task resumed",
-  "task-reset": "Task reset",
-  "task-completed": "Task completed",
-  "task-failed": "Task failed",
-  "evaluation-complete": "Checks finished",
-  "worker-reprompted": "Worker re-prompted",
-  "judge-requested": "Judge requested",
-  "judge-verdict": "Judge verdict",
-  "judge-nudged": "Judge nudged",
-  "shower-started": "Context refresh",
-  "shower-completed": "Refresh done",
-  "shower-failed": "Refresh failed",
-  "worker-idle-detected": "Worker idle",
-  "verdict-rejected": "User rejected verdict",
-};
-
-function eventLabel(event: string): string {
-  return (EVENT_LABELS as Record<string, string>)[event] || event;
-}
-
-function eventCategory(event: string): string {
-  if (event === "task-completed") return "success";
-  if (event === "task-failed" || event === "shower-failed") return "error";
-  if (event.startsWith("judge-")) return "judge";
-  if (event.startsWith("shower-")) return "shower";
-  if (event === "worker-reprompted" || event === "verdict-rejected") return "warn";
-  return "info";
-}
-
-async function loadLog() {
-  if (!api || !props.workspaceCwd || !props.taskId) return;
-  try {
-    const result = await api.fileRead({
-      rootPath: props.workspaceCwd,
-      relativePath: `.strideterm/tasks/${props.taskId}/TASK_LOG.jsonl`,
-    });
-    logRaw.value = result?.content ?? "";
-  } catch {
-    logRaw.value = "";
-  }
-}
-
-const allLogEntries = computed(() => {
-  if (!logRaw.value) return [];
-  return logRaw.value
-    .split("\n")
-    .filter((line) => line.trim())
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-});
+// Load/parse logic, event labels, and the refresh watch are shared with
+// TaskDashboardLogTab.vue via useTaskLog / task-log-labels.
+const { logEntries: allLogEntries } = useTaskLog(api, props);
 
 // Filter log entries by the selected round's time window. The backend's
 // `round` field on each entry is `task.currentRound || 0`, which jumps at
@@ -585,36 +529,6 @@ const selectedRoundEntries = computed(() => {
     return !Number.isNaN(ts) && ts >= startMs && ts < endMs;
   });
 });
-
-watch(
-  () => props.taskState?.state,
-  () => loadLog(),
-);
-watch(
-  () => props.taskState?.currentRound,
-  () => loadLog(),
-);
-watch(
-  () => props.taskState?.rounds?.length,
-  () => loadLog(),
-);
-watch(
-  () => props.taskId,
-  (id) => {
-    if (id) loadLog();
-  },
-  { immediate: true },
-);
-
-// ── Helpers ───────────────────────────────────────────────────────
-function formatTime(iso: string | null | undefined): string {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleTimeString();
-  } catch {
-    return iso;
-  }
-}
 </script>
 
 <style scoped>
