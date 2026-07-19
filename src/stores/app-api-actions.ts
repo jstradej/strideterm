@@ -40,6 +40,131 @@ interface ApiActionsCtx {
   resolveViewerProfileId: (sourcePayload: unknown, opts: { isRemote: boolean; windowId: string }) => string | null;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyApi = any;
+
+/**
+ * Azure DevOps / GitHub review-workspace + connection actions are structurally
+ * identical between the two providers — only the transport method names and
+ * the connection-type display copy differ. `makeProviderApiActions` generates
+ * the shared bodies once; `createApiActions` below assigns the results onto
+ * the provider-specific exported names (refreshAzure/refreshGitHub, etc.) so
+ * every existing call site keeps working unchanged.
+ *
+ * NOT covered here (real behavior differs, not just naming — see callers in
+ * createApiActions): azureComment (threaded: threadId/parentCommentId) vs
+ * githubComment (flat body); azureVote/azureResolveThread/azureReactivateThread
+ * (Azure-only thread & vote model) vs githubSubmitReview (GitHub's review
+ * event/body model).
+ */
+type ProviderKind = "azure" | "github";
+
+interface ProviderApiMethods {
+  /** Human copy for the delete-connection confirm dialog, e.g. "Azure DevOps connection". */
+  displayName: string;
+  refresh: (api: AnyApi) => Promise<AnyApi>;
+  markPrSeen: (api: AnyApi, prKey: string) => Promise<AnyApi>;
+  openPullRequest: (api: AnyApi, args: { prKey: string; workspaceId: string }) => Promise<AnyApi>;
+  fetchReviewWorkspace: (api: AnyApi, workspaceId: string) => Promise<AnyApi>;
+  rebaseReviewWorkspace: (api: AnyApi, workspaceId: string) => Promise<AnyApi>;
+  pushReviewWorkspace: (api: AnyApi, workspaceId: string, opts: { force: boolean }) => Promise<AnyApi>;
+  deleteConnection: (api: AnyApi, connectionId: string) => Promise<AnyApi>;
+  saveConnection: (api: AnyApi, draft: unknown) => Promise<AnyApi>;
+}
+
+const PROVIDER_API_METHODS: Record<ProviderKind, ProviderApiMethods> = {
+  azure: {
+    displayName: "Azure DevOps connection",
+    refresh: (api) => api.refreshAzure(),
+    markPrSeen: (api, prKey) => api.markAzurePullRequestSeen(prKey),
+    openPullRequest: (api, args) => api.openAzurePullRequest(args),
+    fetchReviewWorkspace: (api, workspaceId) => api.fetchAzureReviewWorkspace(workspaceId),
+    rebaseReviewWorkspace: (api, workspaceId) => api.rebaseAzureReviewWorkspace(workspaceId),
+    pushReviewWorkspace: (api, workspaceId, opts) => api.pushAzureReviewWorkspace(workspaceId, opts),
+    deleteConnection: (api, connectionId) => api.deleteAzureConnection(connectionId),
+    saveConnection: (api, draft) => api.saveAzureConnection(draft),
+  },
+  github: {
+    displayName: "GitHub connection",
+    refresh: (api) => api.refreshGitHub(),
+    markPrSeen: (api, prKey) => api.markGitHubPullRequestSeen(prKey),
+    openPullRequest: (api, args) => api.openGitHubPullRequest(args),
+    fetchReviewWorkspace: (api, workspaceId) => api.fetchGitHubReviewWorkspace(workspaceId),
+    rebaseReviewWorkspace: (api, workspaceId) => api.rebaseGitHubReviewWorkspace(workspaceId),
+    pushReviewWorkspace: (api, workspaceId, opts) => api.pushGitHubReviewWorkspace(workspaceId, opts),
+    deleteConnection: (api, connectionId) => api.deleteGitHubConnection(connectionId),
+    saveConnection: (api, draft) => api.saveGitHubConnection(draft),
+  },
+};
+
+export function makeProviderApiActions(
+  ctx: Pick<ApiActionsCtx, "getApi" | "confirmInApp">,
+  setPayload: (p: StatePayload) => void,
+  provider: ProviderKind,
+) {
+  // eslint-disable-next-line security/detect-object-injection -- provider is the narrow "azure" | "github" union, not user input
+  const m = PROVIDER_API_METHODS[provider];
+
+  async function refresh(): Promise<void> {
+    setPayload((await m.refresh(ctx.getApi() as AnyApi)) as StatePayload);
+  }
+
+  async function markPrSeen(prKey: string): Promise<void> {
+    if (!prKey) return;
+    setPayload((await m.markPrSeen(ctx.getApi() as AnyApi, prKey)) as StatePayload);
+  }
+
+  async function openPullRequest(prKey: string, workspaceId: string): Promise<void> {
+    if (!prKey) return;
+    setPayload(
+      (await m.openPullRequest(ctx.getApi() as AnyApi, { prKey, workspaceId: workspaceId || "" })) as StatePayload,
+    );
+  }
+
+  async function fetchReviewWorkspace(workspaceId: string): Promise<void> {
+    if (!workspaceId) return;
+    setPayload((await m.fetchReviewWorkspace(ctx.getApi() as AnyApi, workspaceId)) as StatePayload);
+  }
+
+  async function rebaseReviewWorkspace(workspaceId: string): Promise<void> {
+    if (!workspaceId) return;
+    setPayload((await m.rebaseReviewWorkspace(ctx.getApi() as AnyApi, workspaceId)) as StatePayload);
+  }
+
+  async function pushReviewWorkspace(workspaceId: string, { force = false } = {}): Promise<void> {
+    if (!workspaceId) return;
+    setPayload((await m.pushReviewWorkspace(ctx.getApi() as AnyApi, workspaceId, { force })) as StatePayload);
+  }
+
+  async function deleteConnection(connectionId: string): Promise<void> {
+    if (!connectionId) return;
+    const confirmed = await ctx.confirmInApp({
+      title: `Delete ${m.displayName}?`,
+      message: `This ${m.displayName} will be removed.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
+    setPayload((await m.deleteConnection(ctx.getApi() as AnyApi, connectionId)) as StatePayload);
+  }
+
+  async function saveConnection(draft: unknown): Promise<void> {
+    const result = (await m.saveConnection(ctx.getApi() as AnyApi, draft)) as AnyApi;
+    setPayload((result.payload || result) as StatePayload);
+  }
+
+  return {
+    refresh,
+    markPrSeen,
+    openPullRequest,
+    fetchReviewWorkspace,
+    rebaseReviewWorkspace,
+    pushReviewWorkspace,
+    deleteConnection,
+    saveConnection,
+  };
+}
+
 /**
  * Domain-specific API actions (azure, review bridge, agent, remote, docker, profile/settings).
  * These are thin wrappers that call the transport API and write the result to payload.
@@ -48,9 +173,6 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // ctx = { payload, activeViewId, activeSessionId, splitGroup,
   //         remoteAccessMode, selectedLanUrl,
   //         getApi, withSuppressedBroadcast }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  type AnyApi = any;
 
   /**
    * Adopt a mutation/refresh response into the reactive state.
@@ -87,14 +209,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   // --- Azure -----------------------------------------------------------
 
-  async function refreshAzure(): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).refreshAzure()) as StatePayload);
-  }
-
-  async function markAzurePrSeen(prKey: string): Promise<void> {
-    if (!prKey) return;
-    setPayload((await (ctx.getApi() as AnyApi).markAzurePullRequestSeen(prKey)) as StatePayload);
-  }
+  const azureApi = makeProviderApiActions(ctx, setPayload, "azure");
 
   async function azureVote(prKey: string, vote: string): Promise<void> {
     if (!prKey) return;
@@ -138,52 +253,6 @@ export function createApiActions(ctx: ApiActionsCtx) {
         parentCommentId,
       })) as StatePayload,
     );
-  }
-
-  async function openAzurePullRequest(prKey: string, workspaceId: string): Promise<void> {
-    if (!prKey) return;
-    setPayload(
-      (await (ctx.getApi() as AnyApi).openAzurePullRequest({
-        prKey,
-        workspaceId: workspaceId || "",
-      })) as StatePayload,
-    );
-  }
-
-  async function azureFetchReviewWorkspace(workspaceId: string): Promise<void> {
-    if (!workspaceId) return;
-    setPayload((await (ctx.getApi() as AnyApi).fetchAzureReviewWorkspace(workspaceId)) as StatePayload);
-  }
-
-  async function azureRebaseReviewWorkspace(workspaceId: string): Promise<void> {
-    if (!workspaceId) return;
-    setPayload((await (ctx.getApi() as AnyApi).rebaseAzureReviewWorkspace(workspaceId)) as StatePayload);
-  }
-
-  async function azurePushReviewWorkspace(workspaceId: string, { force = false } = {}): Promise<void> {
-    if (!workspaceId) return;
-    setPayload(
-      (await (ctx.getApi() as AnyApi).pushAzureReviewWorkspace(workspaceId, {
-        force,
-      })) as StatePayload,
-    );
-  }
-
-  async function deleteAzureConnection(connectionId: string): Promise<void> {
-    if (!connectionId) return;
-    const confirmed = await ctx.confirmInApp({
-      title: "Delete Azure DevOps connection?",
-      message: "This Azure DevOps connection will be removed.",
-      confirmLabel: "Delete",
-      danger: true,
-    });
-    if (!confirmed) return;
-    setPayload((await (ctx.getApi() as AnyApi).deleteAzureConnection(connectionId)) as StatePayload);
-  }
-
-  async function saveAzureConnection(draft: unknown): Promise<void> {
-    const result = (await (ctx.getApi() as AnyApi).saveAzureConnection(draft)) as AnyApi;
-    setPayload((result.payload || result) as StatePayload);
   }
 
   // --- Review bridge ---------------------------------------------------
@@ -308,24 +377,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   // --- GitHub ------------------------------------------------------------
 
-  async function refreshGitHub(): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).refreshGitHub()) as StatePayload);
-  }
-
-  async function markGitHubPrSeen(prKey: string): Promise<void> {
-    if (!prKey) return;
-    setPayload((await (ctx.getApi() as AnyApi).markGitHubPullRequestSeen(prKey)) as StatePayload);
-  }
-
-  async function openGitHubPullRequest(prKey: string, workspaceId: string): Promise<void> {
-    if (!prKey) return;
-    setPayload(
-      (await (ctx.getApi() as AnyApi).openGitHubPullRequest({
-        prKey,
-        workspaceId: workspaceId || "",
-      })) as StatePayload,
-    );
-  }
+  const githubApi = makeProviderApiActions(ctx, setPayload, "github");
 
   async function githubComment(prKey: string, body: string): Promise<void> {
     if (!prKey) return;
@@ -341,42 +393,6 @@ export function createApiActions(ctx: ApiActionsCtx) {
         body,
       })) as StatePayload,
     );
-  }
-
-  async function githubFetchReviewWorkspace(workspaceId: string): Promise<void> {
-    if (!workspaceId) return;
-    setPayload((await (ctx.getApi() as AnyApi).fetchGitHubReviewWorkspace(workspaceId)) as StatePayload);
-  }
-
-  async function githubRebaseReviewWorkspace(workspaceId: string): Promise<void> {
-    if (!workspaceId) return;
-    setPayload((await (ctx.getApi() as AnyApi).rebaseGitHubReviewWorkspace(workspaceId)) as StatePayload);
-  }
-
-  async function githubPushReviewWorkspace(workspaceId: string, { force = false } = {}): Promise<void> {
-    if (!workspaceId) return;
-    setPayload(
-      (await (ctx.getApi() as AnyApi).pushGitHubReviewWorkspace(workspaceId, {
-        force,
-      })) as StatePayload,
-    );
-  }
-
-  async function deleteGitHubConnection(connectionId: string): Promise<void> {
-    if (!connectionId) return;
-    const confirmed = await ctx.confirmInApp({
-      title: "Delete GitHub connection?",
-      message: "This GitHub connection will be removed.",
-      confirmLabel: "Delete",
-      danger: true,
-    });
-    if (!confirmed) return;
-    setPayload((await (ctx.getApi() as AnyApi).deleteGitHubConnection(connectionId)) as StatePayload);
-  }
-
-  async function saveGitHubConnection(draft: unknown): Promise<void> {
-    const result = (await (ctx.getApi() as AnyApi).saveGitHubConnection(draft)) as AnyApi;
-    setPayload((result.payload || result) as StatePayload);
   }
 
   // --- Agent prompts ---------------------------------------------------
@@ -809,29 +825,29 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   return {
     // Azure
-    refreshAzure,
-    markAzurePrSeen,
+    refreshAzure: azureApi.refresh,
+    markAzurePrSeen: azureApi.markPrSeen,
     azureVote,
     azureResolveThread,
     azureReactivateThread,
     azureComment,
-    openAzurePullRequest,
-    azureFetchReviewWorkspace,
-    azureRebaseReviewWorkspace,
-    azurePushReviewWorkspace,
-    deleteAzureConnection,
-    saveAzureConnection,
+    openAzurePullRequest: azureApi.openPullRequest,
+    azureFetchReviewWorkspace: azureApi.fetchReviewWorkspace,
+    azureRebaseReviewWorkspace: azureApi.rebaseReviewWorkspace,
+    azurePushReviewWorkspace: azureApi.pushReviewWorkspace,
+    deleteAzureConnection: azureApi.deleteConnection,
+    saveAzureConnection: azureApi.saveConnection,
     // GitHub
-    refreshGitHub,
-    markGitHubPrSeen,
-    openGitHubPullRequest,
+    refreshGitHub: githubApi.refresh,
+    markGitHubPrSeen: githubApi.markPrSeen,
+    openGitHubPullRequest: githubApi.openPullRequest,
     githubComment,
     githubSubmitReview,
-    githubFetchReviewWorkspace,
-    githubRebaseReviewWorkspace,
-    githubPushReviewWorkspace,
-    deleteGitHubConnection,
-    saveGitHubConnection,
+    githubFetchReviewWorkspace: githubApi.fetchReviewWorkspace,
+    githubRebaseReviewWorkspace: githubApi.rebaseReviewWorkspace,
+    githubPushReviewWorkspace: githubApi.pushReviewWorkspace,
+    deleteGitHubConnection: githubApi.deleteConnection,
+    saveGitHubConnection: githubApi.saveConnection,
     // Review bridge
     saveReviewBridgeDraft,
     deleteReviewBridgeDraft,
