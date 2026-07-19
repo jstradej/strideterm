@@ -3,10 +3,12 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TaskRecoveryDialog from "./TaskRecoveryDialog.vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import type { RecoveryCandidate } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  window.localStorage.removeItem("strideterm-notifications-v2");
 });
 
 function makeCandidate(overrides: Partial<RecoveryCandidate> = {}): RecoveryCandidate {
@@ -200,6 +202,57 @@ describe("TaskRecoveryDialog", () => {
 
     expect(store.resolveTaskRecovery).toHaveBeenCalledWith({ "ws-a": "skip", "ws-b": "skip" });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  test("Resume failure surfaces an error toast and re-enables the buttons", async () => {
+    const store = seedStore([makeCandidate({ workspaceId: "ws-a" })]);
+    store.resolveTaskRecovery = vi.fn().mockRejectedValueOnce(new Error("agent spawn failed"));
+    const wrapper = mount(TaskRecoveryDialog);
+    await flushPromises();
+
+    const resumeBtn = wrapper.findAll("button").find((b) => b.text().startsWith("Resume") && b.text() !== "Resume all");
+    await resumeBtn!.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Task recovery decision failed");
+    expect(notifications.sessions[0].events[0].body).toBe("agent spawn failed");
+
+    // Busy state must reset so the buttons are usable again.
+    expect(wrapper.find(".button--ghost").attributes("disabled")).toBeUndefined();
+  });
+
+  test("Skip all failure surfaces an error toast", async () => {
+    const store = seedStore([makeCandidate({ workspaceId: "ws-a" }), makeCandidate({ workspaceId: "ws-b" })]);
+    store.resolveTaskRecovery = vi.fn().mockRejectedValueOnce(new Error("db locked"));
+    const wrapper = mount(TaskRecoveryDialog);
+    await flushPromises();
+
+    const skipAllBtn = wrapper.findAll("button").find((b) => b.text() === "Skip all");
+    await skipAllBtn!.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Skip all failed");
+    expect(notifications.sessions[0].events[0].body).toBe("db locked");
+  });
+
+  test("Resume all failure surfaces an error toast", async () => {
+    const store = seedStore([makeCandidate({ workspaceId: "ws-a" }), makeCandidate({ workspaceId: "ws-b" })]);
+    store.resolveTaskRecovery = vi.fn().mockRejectedValueOnce(new Error("agent pool exhausted"));
+    const wrapper = mount(TaskRecoveryDialog);
+    await flushPromises();
+
+    const resumeAllBtn = wrapper.findAll("button").find((b) => b.text() === "Resume all");
+    await resumeAllBtn!.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Resume all failed");
+    expect(notifications.sessions[0].events[0].body).toBe("agent pool exhausted");
   });
 
   test("shows profile badge for non-default profile when profile exists in store", async () => {

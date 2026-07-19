@@ -88,6 +88,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import type { RecoveryCandidate } from "../../../electron/shared/types/state.js";
 
 interface Props {
@@ -99,6 +100,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const store = useAppStore();
+const notifications = useNotificationStore();
 const busy = ref(false);
 
 // The candidate list is reactive on the store — every call to resolveTaskRecovery
@@ -167,7 +169,7 @@ async function decide(choice: "continue" | "fresh" | "skip"): Promise<void> {
   const id = current.value.workspaceId;
   busy.value = true;
   try {
-    await store.resolveTaskRecovery({ [id]: choice });
+    await notifications.runWithToast("Task recovery decision failed", () => store.resolveTaskRecovery({ [id]: choice }));
   } finally {
     busy.value = false;
   }
@@ -180,7 +182,7 @@ async function skipAll(): Promise<void> {
   try {
     const decisions: Record<string, "skip"> = {};
     for (const c of candidates.value) decisions[c.workspaceId] = "skip";
-    await store.resolveTaskRecovery(decisions);
+    await notifications.runWithToast("Skip all failed", () => store.resolveTaskRecovery(decisions));
   } finally {
     busy.value = false;
   }
@@ -192,7 +194,7 @@ async function resumeAll(): Promise<void> {
   try {
     const decisions: Record<string, "continue"> = {};
     for (const c of candidates.value) decisions[c.workspaceId] = "continue";
-    await store.resolveTaskRecovery(decisions);
+    await notifications.runWithToast("Resume all failed", () => store.resolveTaskRecovery(decisions));
   } finally {
     busy.value = false;
   }
