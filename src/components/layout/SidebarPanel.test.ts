@@ -4,6 +4,7 @@ import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import SidebarPanel from "./SidebarPanel.vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -222,6 +223,35 @@ describe("SidebarPanel — workspace activate loading overlay", () => {
     resolveActivate();
     await flushPromises();
     await nextTick();
+    expect(document.querySelector(".ws-activate-overlay")).toBeNull();
+
+    wrapper.unmount();
+  });
+});
+
+describe("SidebarPanel — workspace activate failure surfaces a toast", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+  });
+
+  it("shows an error toast and clears the loading overlay when activateWorkspace rejects", async () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    vi.spyOn(store, "activateWorkspace").mockRejectedValueOnce(new Error("workspace missing"));
+
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
+
+    await wrapper.find('[data-workspace-id="ws-B"]').trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Activate workspace failed");
+    expect(notifications.sessions[0].events[0].body).toBe("workspace missing");
+
+    // Loading overlay must clear even though activation failed.
     expect(document.querySelector(".ws-activate-overlay")).toBeNull();
 
     wrapper.unmount();

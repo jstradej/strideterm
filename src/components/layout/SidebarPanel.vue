@@ -168,6 +168,7 @@
 <script setup lang="ts">
 import { computed, ref, inject, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
 import type { Transport } from "../../transport.js";
@@ -231,6 +232,7 @@ interface PluginEntry {
 }
 
 const store = useAppStore();
+const notifications = useNotificationStore();
 const listRef = ref<HTMLElement | null>(null);
 const dragDrop = useWorkspaceDragDrop(listRef);
 const activatingWorkspaceId = ref<string | null>(null);
@@ -409,7 +411,7 @@ async function onActivate(workspaceId: string): Promise<void> {
     // Emit immediately so the mobile sidebar drawer closes without waiting for
     // the server round-trip.
     emit("activate", workspaceId);
-    await store.activateWorkspace(workspaceId);
+    await notifications.runWithToast("Activate workspace failed", () => store.activateWorkspace(workspaceId));
   } finally {
     activatingWorkspaceId.value = null;
   }
