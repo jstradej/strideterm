@@ -16,3 +16,8 @@ const child = spawn(electronPath as unknown as string, ["."], {
 child.on("exit", (code: number | null) => {
   process.exit(code ?? 0);
 });
+
+child.on("error", (error: Error) => {
+  console.error(`start-electron: could not start electron: ${error.message}`);
+  process.exit(1);
+});

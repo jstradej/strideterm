@@ -185,6 +185,7 @@ async function startTunnel(port: number): Promise<{ url: string; proc: ChildProc
     proc.stdout?.on("data", onData);
     proc.stderr?.on("data", onData);
     proc.on("exit", (code) => reject(new Error(`cloudflared exited early (code ${code})`)));
+    proc.on("error", (error) => reject(new Error(`could not start cloudflared: ${error.message}`)));
   });
   return { url, proc };
 }
