@@ -397,7 +397,11 @@ describe("createDialogActions profile-aware saves", () => {
   // => {})` — the dialog silently kept showing stale provider availability.
   // They now log via rlog; this confirms the rejection no longer escapes as
   // an unhandled promise rejection and the warning is logged.
-  it("openTaskWorkspaceDialog: a rejected recheckClaude/checkProviders logs a warning instead of throwing", async () => {
+  it("openTaskWorkspaceDialog: a rejected recheckClaude logs a warning instead of throwing", async () => {
+    // checkProviders() is no longer called from here — WorkspaceDialog.vue's
+    // own onMounted is the single call site now (the redundant polling
+    // channel through providerAvailabilityRef was dead weight; see review
+    // 2026-07 §5.4).
     const logRenderer = vi.fn();
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-b" }, logRenderer };
     const ctx = makeCtx({
@@ -411,18 +415,15 @@ describe("createDialogActions profile-aware saves", () => {
     ctx.getApi = () => ({
       isRemote: false,
       recheckClaude: () => Promise.reject(new Error("claude cli not found")),
-      checkProviders: () => Promise.reject(new Error("provider check timed out")),
     });
     const actions = createDialogActions(ctx);
 
     actions.openTaskWorkspaceDialog();
-    // Let the background recheckClaude()/checkProviders() promises settle.
+    // Let the background recheckClaude() promise settle.
     await Promise.resolve();
     await Promise.resolve();
 
     const warnCalls = logRenderer.mock.calls.filter((c) => c[0] === "warn");
-    expect(warnCalls.length).toBeGreaterThanOrEqual(2);
     expect(warnCalls.some((c) => c[1].includes("recheckClaude"))).toBe(true);
-    expect(warnCalls.some((c) => c[1].includes("checkProviders"))).toBe(true);
   });
 });

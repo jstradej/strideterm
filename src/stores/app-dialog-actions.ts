@@ -720,20 +720,6 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         });
       });
 
-    // Check all provider availabilities in the background — result is passed
-    // to the dialog via the providerAvailability prop after resolution.
-    const providerAvailabilityRef: { value: Record<string, unknown> } = { value: {} };
-    (ctx.getApi() as AnyApi)
-      .checkProviders?.()
-      .then((result: AnyApi) => {
-        providerAvailabilityRef.value = result || {};
-      })
-      .catch((err: unknown) => {
-        rlog("warn", "task dialog: checkProviders failed, provider availability may be stale", {
-          err: (err as Error)?.message || String(err),
-        });
-      });
-
     // Use per-user taskDefaults from settings for the initial provider selection
     const taskDefaults = (ctx.payload.value?.appState?.settings as AnyApi)?.taskDefaults || {};
     const defaultWorkerProvider = (taskDefaults as AnyApi).workerProvider || { providerId: "claude", model: "sonnet" };
@@ -800,7 +786,6 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       workspace: taskDraft,
       creating: true,
       tabTemplates: [],
-      providerAvailabilityRef,
       onCancel: closeDialog,
       onSubmit: async (draft: AnyApi) => {
         try {

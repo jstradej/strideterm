@@ -376,14 +376,12 @@ interface Props {
   workspace?: Record<string, unknown> | null;
   tabTemplates?: TabTemplate[];
   creating?: boolean;
-  providerAvailabilityRef?: { value: Record<string, { available?: boolean }> } | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   workspace: null,
   tabTemplates: () => [],
   creating: false,
-  providerAvailabilityRef: null,
 });
 
 // Intentionally NOT declaring "submit" in defineEmits — Vue strips declared
@@ -632,20 +630,6 @@ const includeParentAsRepo = computed({
 const providerAvailability = ref<Record<string, { available?: boolean }>>({});
 
 onMounted(async () => {
-  // If the parent passed a ref, poll it once resolved
-  if (props.providerAvailabilityRef) {
-    // Check the ref at a short interval until it has data
-    const availRef = props.providerAvailabilityRef;
-    const poll = setInterval(() => {
-      const data = availRef.value;
-      if (data && Object.keys(data).length > 0) {
-        providerAvailability.value = data;
-        clearInterval(poll);
-      }
-    }, 300);
-    setTimeout(() => clearInterval(poll), 10000); // give up after 10s
-  }
-  // Also try a direct call if api is available
   if (api?.checkProviders) {
     try {
       const result = (await api.checkProviders?.()) as Record<string, { available?: boolean }> | undefined;
