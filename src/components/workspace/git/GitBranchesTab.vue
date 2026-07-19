@@ -412,6 +412,7 @@
                 <div class="git-branches__commit-files">
                   <div v-if="!selectedHash" class="git-branches__placeholder">Select a commit to see its files.</div>
                   <div v-else-if="commitFilesLoading" class="git-branches__placeholder">Loading…</div>
+                  <div v-else-if="commitFilesError" class="git-branches__placeholder">{{ commitFilesError }}</div>
                   <GitChangeTree
                     v-else-if="selectedHash"
                     :files="commitFiles"
@@ -510,6 +511,7 @@
         </div>
         <div class="git-branches__mobile-files">
           <div v-if="commitFilesLoading" class="git-branches__placeholder">Loading…</div>
+          <div v-else-if="commitFilesError" class="git-branches__placeholder">{{ commitFilesError }}</div>
           <GitChangeTree
             v-else
             :files="commitFiles"
@@ -1594,6 +1596,7 @@ function onRebaseOnto(ref: string) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const commitFiles = ref<any[]>([]);
 const commitFilesLoading = ref(false);
+const commitFilesError = ref("");
 const selectedCommitFile = ref("");
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const commitDiffPayload = ref<Record<string, any> | null>(null);
@@ -1608,6 +1611,7 @@ async function loadCommitFiles(hash: string) {
   }
   const seq = ++commitFilesSeq;
   commitFilesLoading.value = true;
+  commitFilesError.value = "";
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = appStore.getApi() as any;
@@ -1616,9 +1620,10 @@ async function loadCommitFiles(hash: string) {
     if (seq !== commitFilesSeq) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     commitFiles.value = (result?.files || []).map((f: any) => ({ ...f, scope: "commit" }));
-  } catch {
+  } catch (err) {
     if (seq !== commitFilesSeq) return;
     commitFiles.value = [];
+    commitFilesError.value = (err as Error)?.message || "Failed to load commit files.";
   } finally {
     if (seq === commitFilesSeq) commitFilesLoading.value = false;
   }
@@ -1954,8 +1959,11 @@ async function copyToClipboard(text: string) {
   if (typeof navigator === "undefined" || !navigator.clipboard) return;
   try {
     await navigator.clipboard.writeText(text);
-  } catch {
-    // best-effort
+  } catch (err) {
+    const notifStore = (await import("../../../stores/notifications.js")).useNotificationStore();
+    notifStore.showError("Copy failed", (err as Error)?.message || "The browser blocked clipboard access.", {
+      workspaceId: props.workspaceId,
+    });
   }
 }
 
@@ -2219,7 +2227,10 @@ watch(
     selectedCommitFile.value = "";
     commitDiffPayload.value = null;
     if (hash) loadCommitFiles(hash);
-    else commitFiles.value = [];
+    else {
+      commitFiles.value = [];
+      commitFilesError.value = "";
+    }
   },
   { immediate: true },
 );
