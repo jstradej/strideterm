@@ -344,6 +344,108 @@ describe("default state", () => {
     });
   });
 
+  test("normalizeState preserves GitHub connection config", () => {
+    const state = normalizeState({
+      settings: {
+        integrations: {
+          github: {
+            reviewRoot: "C:/gh-reviews",
+            connections: [
+              {
+                id: "gh-main",
+                label: "Acme",
+                hostUrl: "https://github.example.com",
+                currentUserLogin: "me",
+                tokenRef: "cred:gh-main",
+                ownerFilters: ["acme"],
+                repositoryFilters: ["repo-1"],
+                pollSeconds: 30,
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(state.settings.integrations.github.reviewRoot).toBe("C:/gh-reviews");
+    expect(state.settings.integrations.github.connections[0]).toMatchObject({
+      id: "gh-main",
+      hostUrl: "https://github.example.com",
+      tokenRef: "cred:gh-main",
+      pollSeconds: 30,
+    });
+  });
+
+  test("normalizeState defaults GitHub connection fields when omitted", () => {
+    const state = normalizeState({
+      settings: {
+        integrations: {
+          github: {
+            connections: [{}],
+          },
+        },
+      },
+    });
+
+    expect(state.settings.integrations.github.connections[0]).toMatchObject({
+      id: "gh-1",
+      hostUrl: "https://github.com",
+      enabled: true,
+      ownerFilters: [],
+      repositoryFilters: [],
+    });
+  });
+
+  test("normalizeState preserves Telegram connection config", () => {
+    const state = normalizeState({
+      settings: {
+        integrations: {
+          telegram: {
+            connections: [
+              {
+                id: "tg-main",
+                label: "Team channel",
+                botTokenRef: "cred:tg-main",
+                chatId: "-100123",
+                pollSeconds: 20,
+                profileId: "profile-1",
+                forwardKinds: ["agent"],
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(state.settings.integrations.telegram.connections[0]).toMatchObject({
+      id: "tg-main",
+      botTokenRef: "cred:tg-main",
+      chatId: "-100123",
+      pollSeconds: 20,
+      profileId: "profile-1",
+      forwardKinds: ["agent"],
+    });
+  });
+
+  test("normalizeState defaults Telegram connection fields when omitted", () => {
+    const state = normalizeState({
+      settings: {
+        integrations: {
+          telegram: {
+            connections: [{}],
+          },
+        },
+      },
+    });
+
+    expect(state.settings.integrations.telegram.connections[0]).toMatchObject({
+      id: "tg-1",
+      enabled: true,
+      profileId: "",
+      forwardKinds: [],
+    });
+  });
+
   test("normalizeState migrates legacy docker project into docker manager mode", () => {
     const state = normalizeState({
       projects: [

@@ -1017,12 +1017,35 @@ export function normalizeState(
     "default";
 
   const VALID_LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
-  const rawLogLevel = (rawState.settings || {}).logLevel;
-  const rawNotifications = (rawState.settings || {}).notifications || {};
-  const rawExternalEditor = (rawState.settings || {}).externalEditor;
+  // Hoisted once instead of re-drilling `(rawState.settings || {})...` at each
+  // use site below (previously repeated ~30 times across this block).
+  const rawSettings = rawState.settings || {};
+  const rawIntegrations = rawSettings.integrations || {};
+  const rawAzureDevops = rawIntegrations.azureDevops || {};
+  const rawGithub = rawIntegrations.github || {};
+  const rawTelegram = rawIntegrations.telegram || {};
+  const rawRemoteAccess = rawSettings.remoteAccess || {};
+  const rawTaskDefaults = rawSettings.taskDefaults || {};
+  const rawGit = rawSettings.git || {};
+  const rawExternalPathOpener = rawSettings.externalPathOpener || {};
+  const rawLogLevel = rawSettings.logLevel;
+  const rawNotifications = rawSettings.notifications || {};
+  const rawExternalEditor = rawSettings.externalEditor;
+
+  // Shared by the three provider connection lists below — each raw connection
+  // list normalizes identically (map with a per-provider field-mapper, default
+  // to []), only the mapper itself differs per provider.
+  function normalizeConnections<T>(
+    raw: { connections?: unknown },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
+    mapFn: (connection: any, index: number) => T,
+  ): T[] {
+    return Array.isArray(raw.connections) ? raw.connections.map(mapFn) : [];
+  }
+
   const normalizedSettings = {
     ...defaults.settings,
-    ...(rawState.settings || {}),
+    ...rawSettings,
     logLevel: VALID_LOG_LEVELS.includes(rawLogLevel) ? rawLogLevel : defaults.settings.logLevel,
     externalEditor: typeof rawExternalEditor === "string" ? rawExternalEditor : defaults.settings.externalEditor,
     notifications: {
@@ -1067,128 +1090,106 @@ export function normalizeState(
     },
     remoteAccess: {
       ...defaults.settings.remoteAccess,
-      ...((rawState.settings || {}).remoteAccess || {}),
+      ...rawRemoteAccess,
       host:
-        ((rawState.settings || {}).remoteAccess || {}).host === "127.0.0.1"
-          ? "0.0.0.0"
-          : ((rawState.settings || {}).remoteAccess || {}).host || defaults.settings.remoteAccess.host,
-      token: ((rawState.settings || {}).remoteAccess || {}).token || defaults.settings.remoteAccess.token,
+        rawRemoteAccess.host === "127.0.0.1" ? "0.0.0.0" : rawRemoteAccess.host || defaults.settings.remoteAccess.host,
+      token: rawRemoteAccess.token || defaults.settings.remoteAccess.token,
     },
     integrations: {
       ...defaults.settings.integrations,
-      ...((rawState.settings || {}).integrations || {}),
+      ...rawIntegrations,
       azureDevops: {
         ...defaults.settings.integrations.azureDevops,
-        ...(((rawState.settings || {}).integrations || {}).azureDevops || {}),
-        connections: Array.isArray((((rawState.settings || {}).integrations || {}).azureDevops || {}).connections)
-          ? (((rawState.settings || {}).integrations || {}).azureDevops || {}).connections.map(
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
-              (connection: any, index: number) => ({
-                id: connection.id || `ado-${index + 1}`,
-                label: connection.label || connection.id || `Azure ${index + 1}`,
-                orgUrl: connection.orgUrl || "",
-                login: connection.login || "",
-                tokenRef: connection.tokenRef || "",
-                enabled: connection.enabled !== false,
-                profileId: connection.profileId || "",
-                projectFilters: Array.isArray(connection.projectFilters) ? [...connection.projectFilters] : [],
-                repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
-                pollSeconds:
-                  Number(connection.pollSeconds) || defaults.settings.integrations.azureDevops.defaultPollSeconds,
-                reviewRoot: connection.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot,
-              }),
-            )
-          : [],
+        ...rawAzureDevops,
+        connections: normalizeConnections(rawAzureDevops, (connection, index) => ({
+          id: connection.id || `ado-${index + 1}`,
+          label: connection.label || connection.id || `Azure ${index + 1}`,
+          orgUrl: connection.orgUrl || "",
+          login: connection.login || "",
+          tokenRef: connection.tokenRef || "",
+          enabled: connection.enabled !== false,
+          profileId: connection.profileId || "",
+          projectFilters: Array.isArray(connection.projectFilters) ? [...connection.projectFilters] : [],
+          repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
+          pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.azureDevops.defaultPollSeconds,
+          reviewRoot: connection.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot,
+        })),
       },
       github: {
         ...defaults.settings.integrations.github,
-        ...(((rawState.settings || {}).integrations || {}).github || {}),
-        connections: Array.isArray((((rawState.settings || {}).integrations || {}).github || {}).connections)
-          ? (((rawState.settings || {}).integrations || {}).github || {}).connections.map(
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
-              (connection: any, index: number) => ({
-                id: connection.id || `gh-${index + 1}`,
-                label: connection.label || connection.id || `GitHub ${index + 1}`,
-                hostUrl: connection.hostUrl || "https://github.com",
-                apiBaseUrl: connection.apiBaseUrl || "",
-                currentUserLogin: connection.currentUserLogin || "",
-                tokenRef: connection.tokenRef || "",
-                enabled: connection.enabled !== false,
-                profileId: connection.profileId || "",
-                ownerFilters: Array.isArray(connection.ownerFilters) ? [...connection.ownerFilters] : [],
-                repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
-                pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.github.defaultPollSeconds,
-                reviewRoot: connection.reviewRoot || defaults.settings.integrations.github.reviewRoot,
-              }),
-            )
-          : [],
+        ...rawGithub,
+        connections: normalizeConnections(rawGithub, (connection, index) => ({
+          id: connection.id || `gh-${index + 1}`,
+          label: connection.label || connection.id || `GitHub ${index + 1}`,
+          hostUrl: connection.hostUrl || "https://github.com",
+          apiBaseUrl: connection.apiBaseUrl || "",
+          currentUserLogin: connection.currentUserLogin || "",
+          tokenRef: connection.tokenRef || "",
+          enabled: connection.enabled !== false,
+          profileId: connection.profileId || "",
+          ownerFilters: Array.isArray(connection.ownerFilters) ? [...connection.ownerFilters] : [],
+          repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
+          pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.github.defaultPollSeconds,
+          reviewRoot: connection.reviewRoot || defaults.settings.integrations.github.reviewRoot,
+        })),
       },
       telegram: {
         ...defaults.settings.integrations.telegram,
-        ...(((rawState.settings || {}).integrations || {}).telegram || {}),
-        connections: Array.isArray((((rawState.settings || {}).integrations || {}).telegram || {}).connections)
-          ? (((rawState.settings || {}).integrations || {}).telegram || {}).connections.map(
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
-              (connection: any, index: number) => ({
-                id: connection.id || `tg-${index + 1}`,
-                label: connection.label || connection.id || `Telegram ${index + 1}`,
-                botTokenRef: connection.botTokenRef || "",
-                chatId: connection.chatId || "",
-                enabled: connection.enabled !== false,
-                pollSeconds:
-                  Number(connection.pollSeconds) || defaults.settings.integrations.telegram.defaultPollSeconds,
-                profileId: typeof connection.profileId === "string" ? connection.profileId : "",
-                forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
-              }),
-            )
-          : [],
+        ...rawTelegram,
+        connections: normalizeConnections(rawTelegram, (connection, index) => ({
+          id: connection.id || `tg-${index + 1}`,
+          label: connection.label || connection.id || `Telegram ${index + 1}`,
+          botTokenRef: connection.botTokenRef || "",
+          chatId: connection.chatId || "",
+          enabled: connection.enabled !== false,
+          pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.telegram.defaultPollSeconds,
+          profileId: typeof connection.profileId === "string" ? connection.profileId : "",
+          forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
+        })),
       },
     },
     taskDefaults: {
       ...defaults.settings.taskDefaults,
-      ...((rawState.settings || {}).taskDefaults || {}),
+      ...rawTaskDefaults,
       workerProvider: {
         ...defaults.settings.taskDefaults.workerProvider,
-        ...(((rawState.settings || {}).taskDefaults || {}).workerProvider || {}),
+        ...(rawTaskDefaults.workerProvider || {}),
       },
       judgeProvider: {
         ...defaults.settings.taskDefaults.judgeProvider,
-        ...(((rawState.settings || {}).taskDefaults || {}).judgeProvider || {}),
+        ...(rawTaskDefaults.judgeProvider || {}),
       },
     },
     git: {
       ui: {
         showAllActions:
-          typeof (rawState.settings || {}).git?.ui?.showAllActions === "boolean"
-            ? (rawState.settings || {}).git.ui.showAllActions
-            : defaults.settings.git.ui.showAllActions,
+          typeof rawGit.ui?.showAllActions === "boolean" ? rawGit.ui.showAllActions : defaults.settings.git.ui.showAllActions,
       },
     },
     externalPathOpener: {
       mode:
-        ((rawState.settings || {}).externalPathOpener || {}).mode === "command" ||
-        ((rawState.settings || {}).externalPathOpener || {}).mode === "internal"
-          ? ((rawState.settings || {}).externalPathOpener || {}).mode
+        rawExternalPathOpener.mode === "command" || rawExternalPathOpener.mode === "internal"
+          ? rawExternalPathOpener.mode
           : defaults.settings.externalPathOpener.mode,
       command:
-        typeof ((rawState.settings || {}).externalPathOpener || {}).command === "string"
-          ? ((rawState.settings || {}).externalPathOpener || {}).command
+        typeof rawExternalPathOpener.command === "string"
+          ? rawExternalPathOpener.command
           : defaults.settings.externalPathOpener.command,
     },
     terminalFontSizeLocal: (() => {
-      const raw = (rawState.settings || {}).terminalFontSizeLocal;
+      const raw = rawSettings.terminalFontSizeLocal;
       return typeof raw === "number" && isFinite(raw) ? Math.min(32, Math.max(8, Math.round(raw))) : 13;
     })(),
     terminalFontSizeRemote: (() => {
-      const raw = (rawState.settings || {}).terminalFontSizeRemote;
+      const raw = rawSettings.terminalFontSizeRemote;
       return typeof raw === "number" && isFinite(raw) ? Math.min(32, Math.max(8, Math.round(raw))) : 13;
     })(),
     clipboardImagePasteEnabled: (() => {
-      const raw = (rawState.settings || {}).clipboardImagePasteEnabled;
+      const raw = rawSettings.clipboardImagePasteEnabled;
       return typeof raw === "boolean" ? raw : true;
     })(),
     clipboardImagePasteDir: (() => {
-      const raw = (rawState.settings || {}).clipboardImagePasteDir;
+      const raw = rawSettings.clipboardImagePasteDir;
       return typeof raw === "string" ? raw : "";
     })(),
   };
