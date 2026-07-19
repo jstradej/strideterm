@@ -296,3 +296,78 @@ describe("AzureReviewPane — toolbar and pipelines refresh surface failures ins
     expect((wrapper.findComponent(ReviewPipelinesTab).props() as Record<string, unknown>).refreshing).toBe(false);
   });
 });
+
+/**
+ * Category A (code-review batch, 2026-07): loadPrBranches swallowed a
+ * failed azureListRemoteBranches/githubListRemoteBranches call into an
+ * empty list, indistinguishable from "this repo genuinely has no remote
+ * branches." It must now surface a distinct error.
+ */
+describe("AzureReviewPane — loadPrBranches surfaces a load failure", () => {
+  function buildPrePrPayload(): StatePayload {
+    return {
+      appState: {
+        activeWorkspaceId: "ws-review",
+        activeViewId: "review:ws-review",
+        activeProfileId: "default",
+        workspaces: [
+          {
+            id: "ws-review",
+            name: "Review WS",
+            kind: "terminal",
+            activeViewId: "review:ws-review",
+            panels: [],
+            review: { provider: "azure-devops" },
+          },
+        ],
+        profiles: [{ id: "default", name: "Default", color: "", workspaceIds: ["ws-review"] }],
+      },
+      workspace: {
+        workspace: {
+          id: "ws-review",
+          name: "Review WS",
+          kind: "terminal",
+          panels: [],
+          review: { provider: "azure-devops" },
+        },
+        project: null,
+        sessions: [],
+      },
+      azureDevops: { pullRequests: {} },
+      github: { pullRequests: {} },
+      reviewBridge: { pullRequests: {}, agentPrompts: [], syncQueue: [] },
+      git: { workspaces: {} },
+    } as unknown as StatePayload;
+  }
+
+  test("a rejected azureListRemoteBranches sets a visible error instead of an empty list", async () => {
+    const appStore = useAppStore();
+    appStore.payload = buildPrePrPayload();
+
+    const wrapper = mount(AzureReviewPane, {
+      props: { workspaceId: "ws-review" },
+      global: {
+        stubs: {
+          PaneShell: true,
+          DiffViewer: true,
+          GitCommitLog: true,
+          MonacoDiffPanel: true,
+          ReviewSummaryTab: true,
+          ReviewCommentsTab: true,
+          ReviewAgentTab: true,
+          ReviewPipelinesTab: true,
+          CustomSelect: true,
+        },
+        provide: {
+          api: {
+            azureListRemoteBranches: () => Promise.reject(new Error("network down")),
+            githubListRemoteBranches: () => Promise.reject(new Error("network down")),
+          },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("network down");
+  });
+});

@@ -107,6 +107,9 @@
                 Load remote branches
               </button>
               <span v-else style="font-size: 12px; color: var(--muted); margin-left: 6px">Loading...</span>
+              <span v-if="prFormBranchesError" style="font-size: 12px; color: var(--danger, #e53935); margin-left: 6px">{{
+                prFormBranchesError
+              }}</span>
             </label>
             <label class="git-pr-form__field">
               <span class="git-pr-form__label">Title</span>
@@ -845,6 +848,7 @@ const prFormTitle = ref<string>("");
 const prFormDescription = ref<string>("");
 const prFormBranches = ref<string[]>([]);
 const prFormLoadingBranches = ref(false);
+const prFormBranchesError = ref("");
 const prFormBusy = ref(false);
 const prFormResult = ref<{ ok: boolean; summary: string; url?: string } | null>(null);
 const prFormDraft = ref(false);
@@ -879,6 +883,7 @@ function generatePrTitleAndDescription() {
 
 async function loadPrBranches() {
   prFormLoadingBranches.value = true;
+  prFormBranchesError.value = "";
   try {
     const listFn = isGitHub.value ? api.githubListRemoteBranches : api.azureListRemoteBranches;
     const result = await listFn({ workspaceId: props.workspaceId });
@@ -892,8 +897,9 @@ async function loadPrBranches() {
         "";
     }
     generatePrTitleAndDescription();
-  } catch {
+  } catch (error) {
     prFormBranches.value = [];
+    prFormBranchesError.value = (error as Error)?.message || "Failed to load remote branches.";
   } finally {
     prFormLoadingBranches.value = false;
   }
