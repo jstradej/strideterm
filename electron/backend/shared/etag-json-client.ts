@@ -92,13 +92,14 @@ export function createEtagJsonClient<TOptions extends EtagJsonRequestOptions>(
     return message;
   }
 
+  // MIGRATION-EXEMPT: mirrors github-api.ts's pre-refactor Promise<any> — GitHub's
+  // higher-level methods read response properties (e.g. `result?.items`) without a
+  // cast, so this can't be narrowed to `unknown` without touching every call site.
   async function requestJson(
     url: string,
     options: TOptions = {} as TOptions,
     allowStaleRetry = true,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: mirrors github-api.ts's pre-refactor
-    // Promise<any> — GitHub's higher-level methods read response properties (e.g. `result?.items`)
-    // without a cast, so this can't be narrowed to `unknown` without touching every call site.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     const startTime = Date.now();
     const method = options.method || "GET";
