@@ -11,7 +11,9 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AzureReviewPane from "./AzureReviewPane.vue";
+import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 declare const setMatchMediaResult: (query: string, matches: boolean) => void;
@@ -235,5 +237,62 @@ describe("AzureReviewPane responsive chrome", () => {
     expect(refreshSpy).toHaveBeenCalled(); // the watch actually fired the refresh
     expect(handledErrors).toHaveLength(0); // ...and the rejection was swallowed
     expect(wrapper.exists()).toBe(true); // pane still mounted, no crash
+  });
+});
+
+/**
+ * Regression coverage for review-code-quality-2026-07.md finding 1.3: the
+ * toolbar Refresh and Pipelines-tab refresh handlers were try/finally with
+ * no catch, so a failed refresh silently reset the busy flag with zero
+ * user-visible feedback. Both now go through notifications.runWithToast.
+ */
+describe("AzureReviewPane — toolbar and pipelines refresh surface failures instead of silently succeeding", () => {
+  test("toolbar Refresh: rejection is caught and surfaced as a toast, busy resets", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    // mountPane() itself installs no-op spies for refreshAzure/markAzurePrSeen —
+    // override them AFTER mounting, otherwise mountPane's noop clobbers ours.
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "refreshAzure").mockRejectedValue(new Error("network down"));
+
+    const refreshBtn = wrapper
+      .findAll("button")
+      .find((b) => b.attributes("title")?.includes("Fetch the latest PR data"))!;
+    await refreshBtn.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Refresh failed");
+    // busy resets — button label back to "Refresh" (not "Refreshing…")
+    expect(refreshBtn.text()).toContain("Refresh");
+    expect(refreshBtn.text()).not.toContain("Refreshing");
+  });
+
+  test("Pipelines tab refresh: rejection is caught and surfaced as a toast, busy resets", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    // mountPane() itself installs no-op spies for refreshAzure/markAzurePrSeen —
+    // override them AFTER mounting, otherwise mountPane's noop clobbers ours.
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "refreshAzure").mockRejectedValue(new Error("pipeline refresh failed"));
+
+    const pipelinesTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Pipelines"))!;
+    await pipelinesTabBtn.trigger("click");
+
+    const pipelinesTab = wrapper.findComponent(ReviewPipelinesTab);
+    expect(pipelinesTab.exists()).toBe(true);
+    await pipelinesTab.vm.$emit("refresh");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Refresh checks failed");
+    // busy resets — refreshing prop passed to the child goes back to false
+    expect((wrapper.findComponent(ReviewPipelinesTab).props() as Record<string, unknown>).refreshing).toBe(false);
   });
 });

@@ -671,6 +671,7 @@
 import { computed, ref, inject, watch, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { useReviewComments } from "../../composables/useReviewComments.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
@@ -688,6 +689,7 @@ const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boole
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const notifications = useNotificationStore();
 const { isMobile } = useIsNarrow();
 const menuOpen = ref(false);
 const tabsMenuOpen = ref(false);
@@ -801,11 +803,9 @@ const refreshingChecks = ref(false);
 async function handleRefreshChecks() {
   refreshingChecks.value = true;
   try {
-    if (isGitHub.value) {
-      await appStore.refreshGitHub();
-    } else {
-      await appStore.refreshAzure();
-    }
+    await notifications.runWithToast("Refresh checks failed", () =>
+      isGitHub.value ? appStore.refreshGitHub() : appStore.refreshAzure(),
+    );
   } finally {
     refreshingChecks.value = false;
   }
@@ -1118,13 +1118,15 @@ const busyAction = ref<string>("");
 async function handleRefresh() {
   busyAction.value = "refresh";
   try {
-    if (isGitHub.value) {
-      await appStore.refreshGitHub();
-      if (prKey.value) await appStore.markGitHubPrSeen(prKey.value);
-    } else {
-      await appStore.refreshAzure();
-      if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
-    }
+    await notifications.runWithToast("Refresh failed", async () => {
+      if (isGitHub.value) {
+        await appStore.refreshGitHub();
+        if (prKey.value) await appStore.markGitHubPrSeen(prKey.value);
+      } else {
+        await appStore.refreshAzure();
+        if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
+      }
+    });
   } finally {
     busyAction.value = "";
   }
