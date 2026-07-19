@@ -42,6 +42,7 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
   async function requestJson(
     url: string,
     { login, token, method = "GET", body = null, headers = {} }: RequestOptions = {},
+    allowStaleRetry = true,
   ) {
     const startTime = Date.now();
     let statusCode = 0;
@@ -54,8 +55,9 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     };
 
     // Add ETag/If-None-Match for GET requests (only when cached data exists to fall back to)
+    let cached: EtagEntry | undefined;
     if (method === "GET") {
-      const cached = etagCache.get(url);
+      cached = etagCache.get(url);
       if (cached?.etag && cached?.data) {
         requestHeaders["If-None-Match"] = cached.etag;
       }
@@ -72,7 +74,6 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
 
       // Return cached response on 304 Not Modified
       if (response.status === 304 && method === "GET") {
-        const cached = etagCache.get(url);
         if (cached?.data) {
           if (auditLogger) {
             try {
@@ -81,9 +82,22 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
           }
           return cached.data;
         }
+
+        // The cache entry was evicted (LRU eviction under concurrent requests)
+        // between sending If-None-Match and this 304 arriving, so there's
+        // nothing to return. Re-issue the same request once without
+        // If-None-Match to force a full response with a real body.
+        if (allowStaleRetry) {
+          if (auditLogger) {
+            try {
+              auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime });
+            } catch {}
+          }
+          return requestJson(url, { login, token, method, body, headers }, false);
+        }
       }
 
-      if (!response.ok) {
+      if (!response.ok && response.status !== 304) {
         const text = await response.text().catch(() => "");
         let message = text || response.statusText;
         try {
@@ -294,6 +308,7 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     buildId: string | number | null | undefined,
   ) {
     if (!buildId) return "";
+    const startTime = Date.now();
     try {
       const timeline = (await requestJson(buildBuildTimelineUrl(connection, projectName, buildId), {
         login: connection.login,
@@ -312,7 +327,19 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
         }
       }
       return errors.join("\n").trim();
-    } catch {
+    } catch (err) {
+      if (auditLogger) {
+        try {
+          auditLogger({
+            method: "GET",
+            url: buildBuildTimelineUrl(connection, projectName, buildId),
+            statusCode: 0,
+            success: false,
+            errorMessage: (err as Error).message,
+            durationMs: Date.now() - startTime,
+          });
+        } catch {}
+      }
       return "";
     }
   }
@@ -429,12 +456,25 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     buildId: string | number | null | undefined,
   ) {
     if (!buildId) return null;
+    const startTime = Date.now();
     try {
       return await requestJson(buildBuildDetailUrl(connection, projectName, buildId), {
         login: connection.login,
         token,
       });
-    } catch {
+    } catch (err) {
+      if (auditLogger) {
+        try {
+          auditLogger({
+            method: "GET",
+            url: buildBuildDetailUrl(connection, projectName, buildId),
+            statusCode: 0,
+            success: false,
+            errorMessage: (err as Error).message,
+            durationMs: Date.now() - startTime,
+          });
+        } catch {}
+      }
       return null;
     }
   }

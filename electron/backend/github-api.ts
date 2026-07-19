@@ -76,6 +76,7 @@ export function createGitHubApi(
       headers = {},
       accept = "application/vnd.github+json",
     }: RequestJsonOptions = {},
+    allowStaleRetry = true,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON, typed later
   ): Promise<any> {
     const startTime = Date.now();
@@ -89,8 +90,9 @@ export function createGitHubApi(
       ...headers,
     };
 
+    let cached: EtagCacheEntry | undefined;
     if (method === "GET") {
-      const cached = etagCache.get(url);
+      cached = etagCache.get(url);
       if (cached?.etag && cached?.data) {
         requestHeaders["If-None-Match"] = cached.etag;
       }
@@ -106,7 +108,6 @@ export function createGitHubApi(
       statusCode = response.status;
 
       if (response.status === 304 && method === "GET") {
-        const cached = etagCache.get(url);
         if (cached?.data) {
           if (auditLogger) {
             try {
@@ -115,9 +116,22 @@ export function createGitHubApi(
           }
           return cached.data;
         }
+
+        // The cache entry was evicted (LRU eviction under concurrent requests)
+        // between sending If-None-Match and this 304 arriving, so there's
+        // nothing to return. Re-issue the same request once without
+        // If-None-Match to force a full response with a real body.
+        if (allowStaleRetry) {
+          if (auditLogger) {
+            try {
+              auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime });
+            } catch {}
+          }
+          return requestJson(url, { token, method, body, headers, accept }, false);
+        }
       }
 
-      if (!response.ok) {
+      if (!response.ok && response.status !== 304) {
         const text = await response.text().catch(() => "");
         let message = text || response.statusText;
         try {
