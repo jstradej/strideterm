@@ -72,6 +72,7 @@ interface GitUiState {
   tagsError?: string;
   remoteBranches?: unknown[];
   remoteBranchesLoading?: boolean;
+  remoteBranchesError?: string;
   branchesLoading?: boolean;
   branchesError?: string;
   branchList?: {
@@ -1337,8 +1338,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (await (_api as any).azureListRemoteBranches({ workspaceId, rootPath })) as any;
       ui.remoteBranches = result?.branches || [];
-    } catch {
+      ui.remoteBranchesError = "";
+    } catch (error) {
       ui.remoteBranches = [];
+      ui.remoteBranchesError = (error as Error)?.message || "Failed to load remote branches.";
     } finally {
       ui.remoteBranchesLoading = false;
     }
@@ -1348,11 +1351,24 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
     const rootPath = getActiveRoot(workspaceId);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const nextPayload = await (_api as any).openLazygitSession({ workspaceId, rootPath });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    appStore.payload = nextPayload as any;
-    appStore.activeViewId = `${workspaceId}:lazygit`;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const nextPayload = await (_api as any).openLazygitSession({ workspaceId, rootPath });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      appStore.payload = nextPayload as any;
+      appStore.activeViewId = `${workspaceId}:lazygit`;
+    } catch (error) {
+      // openLazygitSession's return shape (a raw payload, not { payload, result })
+      // doesn't fit runGitAction's contract, so this mirrors its catch block
+      // (console.error + a user-facing error) directly instead.
+      console.error(`[git-ui] openLazygit failed for workspace ${workspaceId}:`, error);
+      const { useNotificationStore } = await import("./notifications.js");
+      useNotificationStore().showError(
+        "Failed to open Lazygit",
+        (error as Error)?.message || "Lazygit is not available for this workspace.",
+        { workspaceId },
+      );
+    }
   }
 
   // --- Azure review UI state ---

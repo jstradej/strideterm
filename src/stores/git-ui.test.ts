@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useGitUiStore } from "./git-ui.js";
+import { useNotificationStore } from "./notifications.js";
 import type { Transport } from "../transport.js";
 
 beforeEach(() => {
@@ -139,6 +140,43 @@ describe("git-ui store", () => {
         workspaceId: "ws1",
         rootPath: "/repo/b",
       });
+    });
+
+    // Regression: a failed fetch used to silently collapse to an empty
+    // branch list with no error field — indistinguishable in the picker UI
+    // from "this repo genuinely has no other branches."
+    test("azureListRemoteBranches sets remoteBranchesError and clears the list when the API call fails", async () => {
+      const mockApi = {
+        azureListRemoteBranches: vi.fn().mockRejectedValue(new Error("network unreachable")),
+      } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+      store.setActiveRoot("ws1", "/repo/b");
+
+      await store.azureListRemoteBranches("ws1");
+
+      expect(store.get("ws1").remoteBranches).toEqual([]);
+      expect(store.get("ws1").remoteBranchesError).toBe("network unreachable");
+    });
+  });
+
+  describe("openLazygit", () => {
+    // Regression: openLazygit had no error handling at all, so a click did
+    // nothing when lazygit wasn't installed/available — no banner, no toast.
+    test("surfaces an error notification when the session fails to open", async () => {
+      const mockApi = {
+        openLazygitSession: vi.fn().mockRejectedValue(new Error("Lazygit is not available for this workspace.")),
+      } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+      store.setActiveRoot("ws1", "/repo/a");
+
+      await store.openLazygit("ws1");
+
+      const notifications = useNotificationStore();
+      expect(notifications.latestToast?.kind).toBe("error");
+      expect(notifications.latestToast?.title).toBe("Failed to open Lazygit");
+      expect(notifications.latestToast?.body).toBe("Lazygit is not available for this workspace.");
     });
   });
 
