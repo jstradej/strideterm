@@ -862,6 +862,44 @@ describe("AgentTaskRunner", () => {
     });
   });
 
+  describe("worker-side timers are unref'd (don't block process exit)", () => {
+    test("rate-limit resume timer and periodic WORK_LOCK probe interval are unref'd", () => {
+      const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+      const setIntervalSpy = vi.spyOn(global, "setInterval");
+
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      const resetAt = new Date(Date.now() + 60 * 60_000);
+      runner.onWorkerRateLimited(sessionId, { resetAt, needsConfirm: true, providerHint: "claude" as const });
+
+      const timeoutHandle = setTimeoutSpy.mock.results.at(-1)?.value as NodeJS.Timeout;
+      const intervalHandle = setIntervalSpy.mock.results.at(-1)?.value as NodeJS.Timeout;
+      expect(timeoutHandle.hasRef()).toBe(false);
+      expect(intervalHandle.hasRef()).toBe(false);
+
+      clearTimeout(timeoutHandle);
+      clearInterval(intervalHandle);
+      setTimeoutSpy.mockRestore();
+      setIntervalSpy.mockRestore();
+    });
+
+    test("deferred WORK_LOCK override check timer (onAgentIdle during a rate-limit hold) is unref'd", () => {
+      workspace.task.state = "running";
+      workspace.task.rateLimitedUntil = new Date(Date.now() + 60_000).toISOString();
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+
+      const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+      const result = runner.onAgentIdle(sessionId);
+      expect(result).toBe(true);
+
+      const timeoutHandle = setTimeoutSpy.mock.results.at(-1)?.value as NodeJS.Timeout;
+      expect(timeoutHandle.hasRef()).toBe(false);
+
+      clearTimeout(timeoutHandle);
+      setTimeoutSpy.mockRestore();
+    });
+  });
+
   describe("onHookEvent", () => {
     test("returns false for non-task session", () => {
       const result = runner.onHookEvent({

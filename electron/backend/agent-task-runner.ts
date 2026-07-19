@@ -1403,6 +1403,7 @@ export class AgentTaskRunner {
         log.error("rate-limit resume failed", { workspaceId, err: (err as Error)?.message });
       });
     }, waitMs);
+    if (typeof timer.unref === "function") timer.unref();
     this.#rateLimitTimers.set(workspaceId, timer);
   }
 
@@ -1919,6 +1920,7 @@ export class AgentTaskRunner {
       }
       void this.#performWorkLockOverrideCheck(workspaceId, "periodic-probe");
     }, AgentTaskRunner.PERIODIC_WORK_LOCK_PROBE_MS);
+    if (typeof interval.unref === "function") interval.unref();
     this.#periodicWorkLockProbeTimers.set(workspaceId, interval);
   }
 
@@ -1941,6 +1943,7 @@ export class AgentTaskRunner {
     const timer = setTimeout(() => {
       void this.#performWorkLockOverrideCheck(workspaceId, sessionId);
     }, 2000);
+    if (typeof timer.unref === "function") timer.unref();
     this.#workLockOverrideTimers.set(workspaceId, timer);
   }
 
