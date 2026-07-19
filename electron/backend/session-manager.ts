@@ -1400,9 +1400,4 @@ export class SessionManager extends EventEmitter {
     this.sessions.clear();
     this.suppressedExits.clear();
   }
-
-  // Backward-compatible alias while runtime migration completes.
-  removeProjectSessions(workspaceId: string): void {
-    this.removeWorkspaceSessions(workspaceId);
-  }
 }

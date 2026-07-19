@@ -236,18 +236,13 @@ class FakeSessionManager extends EventEmitter {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  removeProjectSessions(projectId: any) {
-    this.removedProjects.push(projectId);
+  removeWorkspaceSessions(workspaceId: any) {
+    this.removedProjects.push(workspaceId);
     for (const sessionId of [...this.sessions.keys()]) {
-      if (sessionId.startsWith(`${projectId}:`)) {
+      if (sessionId.startsWith(`${workspaceId}:`)) {
         this.sessions.delete(sessionId);
       }
     }
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  removeWorkspaceSessions(workspaceId: any) {
-    return this.removeProjectSessions(workspaceId);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
