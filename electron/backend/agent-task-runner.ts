@@ -342,7 +342,7 @@ export class AgentTaskRunner {
       });
       workspace.task.pausedFromState = previousState;
       this.#setTaskState(workspace.task, "paused");
-      this.#logTaskEvent(workspace, "task-paused", `Paused on startup (was ${previousState})`);
+      void this.#logTaskEvent(workspace, "task-paused", `Paused on startup (was ${previousState})`);
 
       this.#startupRecoveryCandidates.push({
         taskId: workspace.task.taskId,
@@ -702,7 +702,7 @@ export class AgentTaskRunner {
           this.#clearSessionContext(judgeSessionId, workspace),
         ]);
         log.info("task start: cleared Worker + Judge context after reset", { workspaceId });
-        this.#logTaskEvent(workspace, "context-cleared", "Sent /clear to Worker and Judge before initial prompt");
+        void this.#logTaskEvent(workspace, "context-cleared", "Sent /clear to Worker and Judge before initial prompt");
       } catch (err: unknown) {
         log.warn("task start: context clear failed (proceeding anyway)", {
           workspaceId,
@@ -721,7 +721,7 @@ export class AgentTaskRunner {
       taskId: task.taskId,
       hasDescription: !!task.description,
     });
-    this.#logTaskEvent(workspace, "task-started", detail);
+    void this.#logTaskEvent(workspace, "task-started", detail);
 
     this.#broadcastState!();
     return true;
@@ -738,7 +738,7 @@ export class AgentTaskRunner {
     this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
     log.info("task stopped (paused)", { workspaceId });
-    this.#logTaskEvent(workspace, "task-stopped");
+    void this.#logTaskEvent(workspace, "task-stopped");
     this.#broadcastState!();
     return true;
   }
@@ -759,7 +759,7 @@ export class AgentTaskRunner {
     this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
     log.info("task paused", { workspaceId });
-    this.#logTaskEvent(workspace, "task-paused");
+    void this.#logTaskEvent(workspace, "task-paused");
     this.#broadcastState!();
     return true;
   }
@@ -783,7 +783,7 @@ export class AgentTaskRunner {
 
     this.#setTaskState(task, resumeTo);
     log.info("task resumed", { workspaceId, previousState, resumeTo });
-    this.#logTaskEvent(workspace, "task-resumed", `Resumed to ${resumeTo}`);
+    void this.#logTaskEvent(workspace, "task-resumed", `Resumed to ${resumeTo}`);
     this.#broadcastState!();
 
     // Krok 3 — resume actively reconciles against on-disk state instead of
@@ -829,7 +829,7 @@ export class AgentTaskRunner {
     // 0. Recovery (resolveTaskRecovery) injects via the deferred-idle path — do
     // not double-drive it.
     if (task.showerResumePrompt) {
-      this.#logTaskEvent(
+      void this.#logTaskEvent(
         workspace,
         "task-resumed-reconcile",
         "Recovery prompt pending — deferring to recovery idle path",
@@ -846,7 +846,7 @@ export class AgentTaskRunner {
     if (verdictPresent && lastRoundUnjudged) {
       log.info("reconcileAfterResume: unread verdict on disk — processing", { workspaceId, verdict: verdict.verdict });
       if (task.state !== "judge-evaluating") this.#setTaskState(task, "judge-evaluating");
-      this.#logTaskEvent(
+      void this.#logTaskEvent(
         workspace,
         "task-resumed-reconcile",
         `Unread verdict on disk (${verdict.verdict}) — processing it.`,
@@ -862,7 +862,7 @@ export class AgentTaskRunner {
       log.info("reconcileAfterResume: judge-evaluating with no verdict — re-running evaluation", { workspaceId });
       task.judgeNudged = false;
       if (task.state !== "running") this.#setTaskState(task, "running");
-      this.#logTaskEvent(
+      void this.#logTaskEvent(
         workspace,
         "task-resumed-reconcile",
         "No verdict — re-running evaluation to rebuild judge prompt.",
@@ -875,7 +875,7 @@ export class AgentTaskRunner {
     // 4. Initial prompt never delivered → send it now (old late-delivery path).
     if (!task.promptSent) {
       log.info("reconcileAfterResume: initial prompt never delivered — injecting", { workspaceId });
-      this.#logTaskEvent(workspace, "task-resumed-reconcile", "Initial prompt was never delivered — injecting now.");
+      void this.#logTaskEvent(workspace, "task-resumed-reconcile", "Initial prompt was never delivered — injecting now.");
       const prompt = buildInitialWorkerPrompt(task);
       await this.#injectPrompt(workerSessionId, prompt, workspace);
       task.promptSent = true;
@@ -886,7 +886,7 @@ export class AgentTaskRunner {
     // Terminal tasks (completed/failed) with a judged last round: leave running
     // for the user — don't silently re-evaluate. Send Back / Reset are explicit.
     if (previousState === "completed" || previousState === "failed") {
-      this.#logTaskEvent(
+      void this.#logTaskEvent(
         workspace,
         "task-resumed-reconcile",
         `Resumed terminal task (${previousState}); awaiting user.`,
@@ -898,7 +898,7 @@ export class AgentTaskRunner {
     const workerDone = await this.isWorkerCompleted(workspaceId);
     if (workerDone) {
       log.info("reconcileAfterResume: WORK_LOCK absent — running evaluation", { workspaceId });
-      this.#logTaskEvent(workspace, "task-resumed-reconcile", "WORK_LOCK absent — worker signalled done; evaluating.");
+      void this.#logTaskEvent(workspace, "task-resumed-reconcile", "WORK_LOCK absent — worker signalled done; evaluating.");
       await this.#evaluateWorker(workspace);
       return;
     }
@@ -907,14 +907,14 @@ export class AgentTaskRunner {
     // loop; otherwise it's idle and stuck — inject a continuation prompt.
     if (this.#isSessionBusy?.(workerSessionId)) {
       log.info("reconcileAfterResume: worker busy — letting it run", { workspaceId });
-      this.#logTaskEvent(workspace, "task-resumed-reconcile", "Worker busy — letting it continue.");
+      void this.#logTaskEvent(workspace, "task-resumed-reconcile", "Worker busy — letting it continue.");
       return;
     }
     const continuation = task.lastJudgeInstructions
       ? `Continue the task. Outstanding judge feedback to address:\n\n${task.lastJudgeInstructions}`
       : buildRecoveryPrompt({ role: "worker", round: task.currentRound, taskId: task.taskId });
     log.info("reconcileAfterResume: worker idle with work remaining — injecting continuation", { workspaceId });
-    this.#logTaskEvent(
+    void this.#logTaskEvent(
       workspace,
       "task-resumed-reconcile",
       "Worker idle with work remaining — injecting continuation prompt.",
@@ -970,7 +970,7 @@ export class AgentTaskRunner {
     await this.#recreateWorkLock(workspace, "reset");
 
     log.info("task reset", { workspaceId, previousState });
-    this.#logTaskEvent(workspace, "task-reset", `Previous state: ${previousState}`);
+    void this.#logTaskEvent(workspace, "task-reset", `Previous state: ${previousState}`);
     this.#broadcastState!();
     return true;
   }
@@ -991,11 +991,11 @@ export class AgentTaskRunner {
     const text = this.#lastInjected.get(sessionId);
     if (!text) {
       log.warn("resendLastInstruction: nothing to resend", { workspaceId, role });
-      this.#logTaskEvent(workspace, "resend-skipped", `No previous ${role} instruction to resend yet.`);
+      void this.#logTaskEvent(workspace, "resend-skipped", `No previous ${role} instruction to resend yet.`);
       return false;
     }
     log.info("resendLastInstruction: re-injecting last instruction", { workspaceId, role, length: text.length });
-    this.#logTaskEvent(workspace, "resend-instruction", `Manually re-sent the last instruction to the ${role}.`);
+    void this.#logTaskEvent(workspace, "resend-instruction", `Manually re-sent the last instruction to the ${role}.`);
     this.#injectPrompt(sessionId, text, workspace).catch((err: unknown) => {
       log.error("resendLastInstruction: inject failed", { workspaceId, role, err: (err as Error)?.message });
     });
@@ -1059,7 +1059,7 @@ export class AgentTaskRunner {
     }
 
     log.info("task verdict rejected by user", { workspaceId, previousState, round: task.currentRound });
-    this.#logTaskEvent(workspace, "verdict-rejected", `User feedback: ${trimmed}`);
+    void this.#logTaskEvent(workspace, "verdict-rejected", `User feedback: ${trimmed}`);
     this.#broadcastState!();
     return true;
   }
@@ -1182,7 +1182,7 @@ export class AgentTaskRunner {
         elapsedMs,
         source,
       });
-      this.#logTaskEvent(
+      void this.#logTaskEvent(
         workspace,
         "worker-idle-detected",
         `Worker went idle via ${source} (${(elapsedMs / 1000).toFixed(1)}s since start). Starting checks…`,
@@ -1223,7 +1223,7 @@ export class AgentTaskRunner {
       this.#dropoutCtx.delete(sessionId);
 
       log.info("judge idle detected, reading verdict", { workspaceId, sessionId, source });
-      this.#logTaskEvent(workspace, "judge-idle-detected", `Judge went idle via ${source}. Reading verdict…`);
+      void this.#logTaskEvent(workspace, "judge-idle-detected", `Judge went idle via ${source}. Reading verdict…`);
       this.#handleJudgeVerdict(workspace, source).catch((err: unknown) => {
         log.error("handleJudgeVerdict error", { workspaceId, err: (err as Error)?.message });
       });
@@ -1344,14 +1344,14 @@ export class AgentTaskRunner {
     if (waitMs > AgentTaskRunner.RATE_LIMIT_HARD_STOP_MS) {
       if (role === "worker") {
         log.error("rate-limit reset > hard stop, pausing task", { workspaceId, waitMs });
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "worker-rate-limit-failed",
           `Rate-limit reset is ${(waitMs / 3_600_000).toFixed(1)}h away (over 12h limit). Pausing task.`,
         );
       } else {
         log.error("judge rate-limit reset > hard stop, pausing task", { workspaceId, waitMs });
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "judge-rate-limit-failed",
           `Judge rate-limit reset is ${(waitMs / 3_600_000).toFixed(1)}h away (over 12h limit). Pausing.`,
@@ -1387,14 +1387,14 @@ export class AgentTaskRunner {
     if (ctx.retries > AgentTaskRunner.MAX_RATE_LIMIT_RETRIES) {
       if (role === "worker") {
         log.error("rate-limit retry cap exceeded, pausing task", { workspaceId, retries: ctx.retries });
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "worker-rate-limit-failed",
           `Worker rate-limited ${ctx.retries} times in a row — pausing task. Resume manually when usage frees up.`,
         );
       } else {
         log.error("judge rate-limit retry cap exceeded, pausing task", { workspaceId, retries: ctx.retries });
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "judge-rate-limit-failed",
           `Judge rate-limited ${ctx.retries} times in a row — pausing task. Resume manually when usage frees up.`,
@@ -1417,7 +1417,7 @@ export class AgentTaskRunner {
         waitMs,
       });
       task.rateLimitedUntil = resetAt.toISOString();
-      this.#logTaskEvent(
+      void this.#logTaskEvent(
         workspace,
         "worker-rate-limited",
         `Worker hit its rate limit (${match.providerHint}, retry ${ctx.retries}/${AgentTaskRunner.MAX_RATE_LIMIT_RETRIES}). Resuming after ${resetAt.toLocaleTimeString()}.`,
@@ -1436,7 +1436,7 @@ export class AgentTaskRunner {
         retries: ctx.retries,
         resetAt: resetAt.toISOString(),
       });
-      this.#logTaskEvent(
+      void this.#logTaskEvent(
         workspace,
         "judge-rate-limited",
         `Judge hit its rate limit (${match.providerHint}, retry ${ctx.retries}/${AgentTaskRunner.MAX_RATE_LIMIT_RETRIES}). Resuming after ${resetAt.toLocaleTimeString()}.`,
@@ -1533,7 +1533,7 @@ export class AgentTaskRunner {
       needsRestart: ctx?.needsRestart,
       retries: ctx?.retries,
     });
-    this.#logTaskEvent(workspace, "worker-rate-limit-resumed", "Rate-limit window expired. Resuming worker…");
+    void this.#logTaskEvent(workspace, "worker-rate-limit-resumed", "Rate-limit window expired. Resuming worker…");
     this.#broadcastState!();
 
     if (task.state !== "running") return;
@@ -1603,7 +1603,7 @@ export class AgentTaskRunner {
       // ">3 re-prompts" → warn once when the streak first exceeds the threshold.
       if (n === AgentTaskRunner.SHORT_WORKER_TURN_THRESHOLD + 1) {
         log.warn("worker short-turn streak — possible undetected rate limit", { workspaceId, streak: n });
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "worker-short-turns",
           `Worker ended ${n} consecutive turns in under ${AgentTaskRunner.SHORT_WORKER_TURN_MS}ms ("Cogitated/Worked for 0s") — possible undetected rate limit.`,
@@ -1649,7 +1649,7 @@ export class AgentTaskRunner {
     if (!workspace) return;
     const task = workspace.task;
     this.#judgeRateLimitedUntil.delete(workspaceId);
-    this.#logTaskEvent(workspace, "judge-rate-limit-resumed", "Judge rate-limit window expired.");
+    void this.#logTaskEvent(workspace, "judge-rate-limit-resumed", "Judge rate-limit window expired.");
     this.#broadcastState!();
     if (task.state !== "judge-evaluating") return;
 
@@ -1796,7 +1796,7 @@ export class AgentTaskRunner {
         const v = await readVerdict(ws.cwd, ws.task.taskId, log);
         if (v.reason === "Judge did not produce a verdict file.") return;
         log.warn("watcher backstop: verdict on disk but no judge hook — handling", { workspaceId });
-        this.#logTaskEvent(ws, "watcher-verdict", "Verdict detected by watcher (no idle hook) — handling it.");
+        void this.#logTaskEvent(ws, "watcher-verdict", "Verdict detected by watcher (no idle hook) — handling it.");
         await this.#handleJudgeVerdict(ws, "watcher");
       });
       return;
@@ -1810,7 +1810,7 @@ export class AgentTaskRunner {
         if (this.#evaluating.has(workspaceId)) return; // a hook started eval already
         if (!(await this.isWorkerCompleted(workspaceId))) return; // lock came back
         log.warn("watcher backstop: WORK_LOCK absent but no worker hook — evaluating", { workspaceId });
-        this.#logTaskEvent(ws, "watcher-worklock", "WORK_LOCK absent (watcher, no idle hook) — evaluating.");
+        void this.#logTaskEvent(ws, "watcher-worklock", "WORK_LOCK absent (watcher, no idle hook) — evaluating.");
         await this.#evaluateWorker(ws);
       });
     }
@@ -1971,7 +1971,7 @@ export class AgentTaskRunner {
     this.#clearRateLimitResumeTimer(workspaceId, "worker");
     this.#rateLimitCtx.delete(this.#rlKey(workspaceId, "worker"));
     this.#stopPeriodicWorkLockProbe(workspaceId);
-    this.#logTaskEvent(
+    void this.#logTaskEvent(
       workspace,
       "worker-rate-limit-overridden",
       "WORK_LOCK absent — worker signaled completion. Clearing rate-limit hold and starting evaluation.",
@@ -2014,7 +2014,7 @@ export class AgentTaskRunner {
       this.#setTaskState(workspace.task, "paused");
       this.#evaluating.delete(workspaceId);
       log.warn("worker session exited, task paused", { workspaceId, sessionId });
-      this.#logTaskEvent(workspace, "worker-crashed", "Worker session exited unexpectedly, task paused");
+      void this.#logTaskEvent(workspace, "worker-crashed", "Worker session exited unexpectedly, task paused");
       this.#raiseTaskAlert(workspace, "failed", "Worker session exited — task paused");
       this.#broadcastState!();
     }
@@ -2041,7 +2041,7 @@ export class AgentTaskRunner {
     this.#dropoutCtx.set(sessionId, attempt);
 
     log.warn("agent dropped out of agent mode", { workspaceId, sessionId, role, attempt });
-    this.#logTaskEvent(
+    void this.#logTaskEvent(
       workspace,
       "agent-dropout",
       `${role[0].toUpperCase()}${role.slice(1)} CLI dropped back to the shell (forced update / crash). Restart attempt ${attempt}/${AgentTaskRunner.MAX_DROPOUT_RESTARTS}.`,
@@ -2127,7 +2127,7 @@ export class AgentTaskRunner {
     if (!workspace) return false;
 
     log.trace("onSubagentStop: task session sub-agent stopped", { sessionId });
-    this.#logTaskEvent(workspace, "subagent-stop", "A sub-agent finished");
+    void this.#logTaskEvent(workspace, "subagent-stop", "A sub-agent finished");
     return true;
   }
 
@@ -2150,7 +2150,7 @@ export class AgentTaskRunner {
     this.#resolveSubmitWaiters(sessionId);
     // If task is paused and user is taking over, leave it paused — don't
     // resume automatically.  The user can click Continue when ready.
-    this.#logTaskEvent(workspace, "user-prompt-submit", "User submitted a prompt");
+    void this.#logTaskEvent(workspace, "user-prompt-submit", "User submitted a prompt");
     return true;
   }
 
@@ -2421,7 +2421,7 @@ export class AgentTaskRunner {
       // a later Continue resumes to the right place.
       task.pausedFromState = task.state;
       this.#setTaskState(task, "paused");
-      this.#logTaskEvent(workspace, "evaluation-error", `Evaluation failed: ${(err as Error)?.message || "unknown"}`);
+      void this.#logTaskEvent(workspace, "evaluation-error", `Evaluation failed: ${(err as Error)?.message || "unknown"}`);
       this.#broadcastState!();
     });
   }
@@ -2482,7 +2482,7 @@ export class AgentTaskRunner {
       evalMs,
     });
     const checkSummary = round.checks.map((c) => `${c.passed ? "PASS" : "FAIL"} ${c.label}`).join(", ");
-    this.#logTaskEvent(
+    void this.#logTaskEvent(
       workspace,
       "evaluation-complete",
       `${passedCount}/${round.checks.length} passed (${evalMs}ms). ${checkSummary}`,
@@ -2508,17 +2508,17 @@ export class AgentTaskRunner {
         });
         round.action = "shower";
         this.#setTaskState(task, "refreshing");
-        this.#logTaskEvent(workspace, "shower-started", "Refreshing Worker context (killing session, writing handoff)");
+        void this.#logTaskEvent(workspace, "shower-started", "Refreshing Worker context (killing session, writing handoff)");
         this.#broadcastState!();
         const showerOk = await this.#performShower(workspace);
         if (showerOk) {
           this.#setTaskState(task, "running");
           round.action = "running";
           log.info("shower completed, waiting for refreshed worker", { workspaceId });
-          this.#logTaskEvent(workspace, "shower-completed", "Worker session restarted with fresh context");
+          void this.#logTaskEvent(workspace, "shower-completed", "Worker session restarted with fresh context");
         } else {
           log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
-          this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
+          void this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
           await this.#ensureFormatFlag(task, workspace);
           const prompt = buildRePrompt(task, round);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
@@ -2534,7 +2534,7 @@ export class AgentTaskRunner {
         this.#setTaskState(task, "running");
         round.action = "running";
         log.info("worker re-prompted", { workspaceId, round: task.currentRound });
-        this.#logTaskEvent(workspace, "worker-reprompted", "Checks failed, Worker re-prompted with failure details");
+        void this.#logTaskEvent(workspace, "worker-reprompted", "Checks failed, Worker re-prompted with failure details");
       }
     } else {
       // All checks passed — invoke judge (still within the current round;
@@ -2554,7 +2554,7 @@ export class AgentTaskRunner {
           workspaceId,
           verdict: staleVerdict.verdict,
         });
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "verdict-discarded",
           `Discarded an unconsumed judge verdict (${staleVerdict.verdict}): ${staleVerdict.reason || ""}`,
@@ -2575,7 +2575,7 @@ export class AgentTaskRunner {
         this.#setTaskState(task, "judge-evaluating");
         this.#programmaticJudges.add(workspaceId);
         this.#broadcastState!();
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "judge-requested",
           `All checks passed. Running Copilot judge in programmatic mode on Windows (git: ${gitContextMs}ms)`,
@@ -2592,7 +2592,7 @@ export class AgentTaskRunner {
         } else {
           log.info("programmatic Copilot judge completed", { workspaceId, round: task.currentRound, totalJudgeMs });
         }
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "judge-programmatic-finished",
           `Copilot judge finished in programmatic mode (${totalJudgeMs}ms, exit ${judgeResult.exitCode})${
@@ -2615,7 +2615,7 @@ export class AgentTaskRunner {
       const totalSetupMs = Date.now() - judgeSetupStart;
       this.#setTaskState(task, "judge-evaluating");
       log.info("judge evaluation requested", { workspaceId, round: task.currentRound, gitContextMs, totalSetupMs });
-      this.#logTaskEvent(
+      void this.#logTaskEvent(
         workspace,
         "judge-requested",
         `All checks passed. Judge prompt injected (git: ${gitContextMs}ms, total setup: ${totalSetupMs}ms)`,
@@ -2669,7 +2669,7 @@ export class AgentTaskRunner {
           // rubber-stamp unevaluated work as complete.
           const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} as a JSON file now. Use the Write tool or cat/heredoc. Example:\n\n{"verdict": "continue", "reason": "Describe what still needs work."}\n\nWrite the file now.`;
           log.info("judge verdict file missing, sending nudge", { workspaceId });
-          this.#logTaskEvent(workspace, "judge-nudged", "Verdict file missing — reminded Judge to write it");
+          void this.#logTaskEvent(workspace, "judge-nudged", "Verdict file missing — reminded Judge to write it");
           await this.#injectPrompt(judgeSessionId, nudge, workspace);
           this.#broadcastState!();
           return; // Wait for next judge idle — will re-enter #handleJudgeVerdict
@@ -2687,7 +2687,7 @@ export class AgentTaskRunner {
         log.warn("judge verdict file missing after nudge", { workspaceId, round: task.currentRound });
         task.pausedFromState = "judge-evaluating"; // Krok 4 — resume reads the verdict
         this.#setTaskState(task, "paused");
-        this.#logTaskEvent(
+        void this.#logTaskEvent(
           workspace,
           "judge-give-up",
           "Judge produced no verdict after nudge + Stop (not busy) — pausing.",
@@ -2704,7 +2704,7 @@ export class AgentTaskRunner {
       this.#rateLimitCtx.delete(this.#rlKey(workspaceId, "judge"));
 
       log.info("judge verdict", { workspaceId, verdict: verdict.verdict, reason: verdict.reason });
-      this.#logTaskEvent(workspace, "judge-verdict", `Verdict: ${verdict.verdict}. ${verdict.reason || ""}`);
+      void this.#logTaskEvent(workspace, "judge-verdict", `Verdict: ${verdict.verdict}. ${verdict.reason || ""}`);
 
       // Bail out if user paused/reset while reading verdict.
       // Note: #wasInterrupted checks #evaluating set which is only used by
@@ -2725,7 +2725,7 @@ export class AgentTaskRunner {
         this.#setTaskState(task, "completed");
         if (lastRound) lastRound.action = "completed";
         log.info("task completed by judge verdict", { workspaceId, rounds: task.currentRound });
-        this.#logTaskEvent(workspace, "task-completed", verdict.reason || "Judge approved");
+        void this.#logTaskEvent(workspace, "task-completed", verdict.reason || "Judge approved");
         this.#raiseTaskAlert(workspace, "completed", verdict.reason ? `Judge: ${verdict.reason}` : undefined);
         // Tell the Worker to stop — otherwise Claude Code continues autonomously
         this.#notifyWorkerTaskEnded(workspace, "completed");
@@ -2744,7 +2744,7 @@ export class AgentTaskRunner {
           this.#setTaskState(task, "failed");
           if (lastRound) lastRound.action = "failed";
           log.info("task failed: max rounds after judge", { workspaceId, rounds: task.currentRound });
-          this.#logTaskEvent(workspace, "task-failed", `Max rounds after judge. ${verdict.reason || ""}`);
+          void this.#logTaskEvent(workspace, "task-failed", `Max rounds after judge. ${verdict.reason || ""}`);
           this.#raiseTaskAlert(workspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
           this.#notifyWorkerTaskEnded(workspace, "failed");
         } else {
@@ -2775,7 +2775,7 @@ export class AgentTaskRunner {
           task.currentRound += 1;
           this.#ensureRunningRound(task);
           log.info("worker re-prompted with judge feedback", { workspaceId, round: task.currentRound });
-          this.#logTaskEvent(workspace, "worker-reprompted", `Judge feedback: ${verdict.reason || "continue working"}`);
+          void this.#logTaskEvent(workspace, "worker-reprompted", `Judge feedback: ${verdict.reason || "continue working"}`);
         }
       }
 
@@ -2785,7 +2785,7 @@ export class AgentTaskRunner {
       // Krok 4 — resume should re-read the verdict, so record judge-evaluating.
       task.pausedFromState = "judge-evaluating";
       this.#setTaskState(task, "paused");
-      this.#logTaskEvent(workspace, "judge-error", `Verdict handling failed: ${(err as Error)?.message || "unknown"}`);
+      void this.#logTaskEvent(workspace, "judge-error", `Verdict handling failed: ${(err as Error)?.message || "unknown"}`);
       this.#broadcastState!();
     }
   }

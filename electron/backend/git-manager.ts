@@ -3318,7 +3318,7 @@ export class GitManager extends EventEmitter {
         const subj = subject || "";
         const m = /^(WIP on |On )([^:]+): (.*)$/.exec(subj);
         let branch = "";
-        let customMessage = "";
+        let customMessage: string;
         let isWipDefault = false;
         if (m) {
           branch = m[2];

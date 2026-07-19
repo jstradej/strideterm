@@ -1408,8 +1408,7 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   "/api/file/info": (_runtime, body) => fm.getFileInfo(body.rootPath as string, body.relativePath as string),
   "/api/file/git-status": (_runtime, body) =>
     fm.getGitFileStatus(body.rootPath as string, { includeIgnored: !!body.includeIgnored }),
-  "/api/file/git-refs": (_runtime, body) =>
-    fm.getGitRefs(body.rootPath as string, (body.relativePath as string) || ""),
+  "/api/file/git-refs": (_runtime, body) => fm.getGitRefs(body.rootPath as string, (body.relativePath as string) || ""),
   "/api/file/git-diff": (_runtime, body) =>
     fm.computeFileDiff(body.rootPath as string, body.relativePath as string, {
       source: (body.source as string) || "head",
@@ -1529,7 +1528,8 @@ async function handleApiRequest(
         v.cols ?? 80,
         v.rows ?? 24,
         (sid: string, data: string) => broadcast({ type: "docker:shell:data", payload: { sessionId: sid, data } }),
-        (sid: string, code: number | null) => broadcast({ type: "docker:shell:close", payload: { sessionId: sid, code } }),
+        (sid: string, code: number | null) =>
+          broadcast({ type: "docker:shell:close", payload: { sessionId: sid, code } }),
       );
       json(response, 200, { ok: true });
       return;
@@ -1792,17 +1792,14 @@ export async function startRemoteServer({
     // window's profile; without slot-aware routing a remote on profile
     // B that omits profileId silently lands the connection in
     // windowSlots[0]'s profile (typically "default").
-    "/api/azure/save-connection": (body, windowId) =>
-      runtime.saveAzureConnection(body.connection || body, windowId),
+    "/api/azure/save-connection": (body, windowId) => runtime.saveAzureConnection(body.connection || body, windowId),
     "/api/azure/delete-connection": (body, windowId) =>
       runtime.deleteAzureConnection(body.connectionId || body.id || "", windowId),
-    "/api/github/save-connection": (body, windowId) =>
-      runtime.saveGitHubConnection(body.connection || body, windowId),
+    "/api/github/save-connection": (body, windowId) => runtime.saveGitHubConnection(body.connection || body, windowId),
     "/api/github/delete-connection": (body, windowId) =>
       runtime.deleteGitHubConnection(body.connectionId || body.id || "", windowId),
     // Activation in window slot — same cross-profile rules as workspace.
-    "/api/session/activate-in-window": (body, windowId) =>
-      runtime.activateSessionInWindow(body.sessionId, windowId),
+    "/api/session/activate-in-window": (body, windowId) => runtime.activateSessionInWindow(body.sessionId, windowId),
     // Take over the per-session input lease ("Take control?" confirm).
     "/api/session/take-control": (body, windowId) =>
       Promise.resolve(runtime.takeSessionControl(String(body.sessionId || ""), windowId)),
@@ -1823,8 +1820,7 @@ export async function startRemoteServer({
     "/api/review-bridge/draft/queue": (body, windowId) => runtime.queueReviewBridgeDraft(body, windowId),
     "/api/review-bridge/draft/delete": (body, windowId) => runtime.deleteReviewBridgeDraft(body, windowId),
     "/api/review-bridge/comment/delete": (body, windowId) => runtime.deleteReviewBridgeComment(body, windowId),
-    "/api/review-bridge/comment/reply-with-changes": (body, windowId) =>
-      runtime.replyWithCodeChanges(body, windowId),
+    "/api/review-bridge/comment/reply-with-changes": (body, windowId) => runtime.replyWithCodeChanges(body, windowId),
     "/api/review-bridge/pull-request/push-and-publish": (body, windowId) =>
       runtime.pushAndPublishReview(body, windowId),
     // Git ops all mutate state in a workspace's cwd (and gitFetch/Push/Pull
@@ -1869,10 +1865,7 @@ export async function startRemoteServer({
     "/api/git/stash-files": (body, windowId) =>
       runtime.gitStashFiles(validateIpc(gitStashFilesSchema, body, "POST /api/git/stash-files"), windowId),
     "/api/git/stash-file-diff": (body, windowId) =>
-      runtime.gitStashFileDiff(
-        validateIpc(gitStashFileDiffSchema, body, "POST /api/git/stash-file-diff"),
-        windowId,
-      ),
+      runtime.gitStashFileDiff(validateIpc(gitStashFileDiffSchema, body, "POST /api/git/stash-file-diff"), windowId),
     "/api/git/stash-apply": (body, windowId) =>
       runtime.gitStashApply(validateIpc(gitStashApplySchema, body, "POST /api/git/stash-apply"), windowId),
     "/api/git/stash-drop": (body, windowId) =>
@@ -1928,10 +1921,7 @@ export async function startRemoteServer({
     "/api/git/resolve-conflict": (body, windowId) =>
       runtime.gitResolveConflict(validateIpc(gitPayloadSchema, body, "POST /api/git/resolve-conflict"), windowId),
     "/api/git/unresolve-conflict": (body, windowId) =>
-      runtime.gitUnresolveConflict(
-        validateIpc(gitPayloadSchema, body, "POST /api/git/unresolve-conflict"),
-        windowId,
-      ),
+      runtime.gitUnresolveConflict(validateIpc(gitPayloadSchema, body, "POST /api/git/unresolve-conflict"), windowId),
     // Grid mutations resolve their target profile from windowId. Without
     // the slot-aware path a mobile client bound to profile B would mutate
     // profile A's grid (runtime falls back to windowSlots[0] when no
@@ -1982,229 +1972,251 @@ export async function startRemoteServer({
       }),
   };
 
-  const server = http.createServer(async (request, response) => {
-    const requestUrl = request.url || "/";
-    const url = new URL(requestUrl, "http://localhost");
-    const isApiRoute = url.pathname.startsWith("/api/");
+  const server = http.createServer((request, response) => {
+    void handleHttpRequest(request, response);
+  });
 
-    if (isApiRoute && !isAuthorized(requestUrl, request.headers)) {
-      writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
-      response.end("Unauthorized");
-      audit.warn("api request rejected", {
-        method: request.method,
-        path: url.pathname,
-        statusCode: 401,
-        remoteAddress: request.socket?.remoteAddress,
-      });
-      return;
-    }
+  // http.createServer's listener type is (req, res) => void — Node itself
+  // never awaits it, so an async listener passed directly is a floating
+  // promise (a synchronous throw before the first await would be an
+  // unhandled rejection with the client left hanging). Named + wrapped in
+  // try/catch here instead, matching how every route handler further down
+  // (handleApiRequest, the slot-aware dispatch) already guards its own body.
+  async function handleHttpRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    try {
+      const requestUrl = request.url || "/";
+      const url = new URL(requestUrl, "http://localhost");
+      const isApiRoute = url.pathname.startsWith("/api/");
 
-    if (isApiRoute) {
-      const startedAt = Date.now();
-      const remoteAddress = request.socket?.remoteAddress;
-      response.on("finish", () => {
-        audit.info("api request", {
-          method: request.method,
-          path: url.pathname,
-          statusCode: response.statusCode,
-          durationMs: Date.now() - startedAt,
-          remoteAddress,
-        });
-      });
-
-      // Bump TTL and get session for per-client endpoints.
-      const apiSessionId = sessionIdForRequest(requestUrl, request.headers);
-      if (apiSessionId && activeSessions.has(apiSessionId)) registry.bumpLastSeen(apiSessionId);
-
-      // Attach the remote-response context ONCE. From here every json() writer —
-      // in the intercepts below AND in handleApiRequest — composes the response
-      // per-client and (for a protocol-2 client) slims it to the RemoteStateV2
-      // core. This is the single adapter the plan requires: no per-route
-      // compose calls, and no runtime method can leak a raw desktop StatePayload.
-      // The old /api/state, azure|github/refresh and pull-request/seen intercepts
-      // existed only to compose those payloads; the adapter now does it uniformly,
-      // so they are gone.
-      const httpProtocol = requestProtocol(requestUrl, request.headers);
-      // Response contract for a v2 client (see adaptRemoteResponse):
-      //  - A route whose renderer handler ADOPTS the response (bootstrap,
-      //    navigation: save / activate / reorder / settings / create-worktree /
-      //    profile) delivers the full slim v2 core — the ~10 KiB "targeted
-      //    result" the client applies synchronously (some inside a suppressed-
-      //    broadcast window, so it cannot wait for the async push).
-      //  - A route whose renderer handler DISCARDS the response (the frequent
-      //    refresh buttons + provider / review-bridge domain mutations, which are
-      //    a no-op on the remote transport) returns a small `{ ok, revision }`
-      //    ack — never serializing / transferring a core "after every button
-      //    click" — and the authoritative core rides the WS broadcast.
-      // Default is core: a misrouted core is harmless (adopted), a misrouted ack
-      // would wipe the client's state, so only PROVABLY-discarded routes ack.
-      const deliversCore = !(request.method === "POST" && ACK_MUTATION_ROUTES.has(url.pathname));
-      (response as ResponseWithCtx).__remoteCtx = {
-        protocol: httpProtocol,
-        capabilities: selectCapabilities(requestCapabilities(requestUrl, request.headers), httpProtocol),
-        coreRevision,
-        deliverCore: deliversCore,
-        sessionId: apiSessionId,
-        registry,
-        route: url.pathname,
-        method: request.method,
-        acceptEncoding: Array.isArray(request.headers["accept-encoding"])
-          ? request.headers["accept-encoding"][0]
-          : request.headers["accept-encoding"],
-        ifNoneMatch: Array.isArray(request.headers["if-none-match"])
-          ? request.headers["if-none-match"][0]
-          : request.headers["if-none-match"],
-      };
-
-      const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
-      if (detailRoute) {
-        const resourceKey = detailRoute(url);
-        if (!resourceKey || !isKnownResourceKey(resourceKey)) {
-          json(response, 400, { error: "Missing or invalid resource id" });
-          return;
-        }
-        const rawPayload = runtime.getPayload() as Record<string, unknown>;
-        // A detail request is ALWAYS profile-scoped: the session's profile, or —
-        // for an unbound caller — the server's default profile. Never null (which
-        // resourceProfileAuthorized now denies), so an unbound client is confined
-        // to one profile's resources rather than authorized for everything.
-        const boundProfile = apiSessionId ? registry.get(apiSessionId)?.profileId : undefined;
-        const profileId = boundProfile ?? registry.resolveFallbackProfileId(rawPayload.appState) ?? null;
-        if (!resourceProfileAuthorized(rawPayload, profileId, resourceKey)) {
-          json(response, 403, { error: "Resource is not in your active profile" });
-          return;
-        }
-        const detail = buildResourceDetail(rawPayload, profileId, resourceKey);
-        if (!detail) {
-          json(response, 404, { error: "Resource not available yet" });
-          return;
-        }
-        json(response, 200, detail);
-        return;
-      }
-
-      // Remote-client-scoped activation endpoints — derive clientId from cookie or token client id.
-      if (url.pathname.startsWith("/api/remote-client/")) {
-        if (!apiSessionId || !activeSessions.has(apiSessionId)) {
-          json(response, 401, { error: "No active session" });
-          return;
-        }
-        let body: Record<string, unknown>;
-        try {
-          body = await readRequestBody(request);
-        } catch (err) {
-          json(response, 400, { error: (err as Error).message || "invalid request body" });
-          return;
-        }
-        try {
-          // Diagnostic for the mobile workspace flip-flop: compare this sessionRef
-          // against the one logged at "WebSocket session resolution" — if HTTP
-          // activations and the WS socket resolve to DIFFERENT sessionRefs for the
-          // same client, the active-workspace selection is split across two registry
-          // contexts (HTTP writes one, WS broadcasts read the other).
-          log.debug("remote-client activation request", {
-            method: request.method,
-            path: url.pathname,
-            sessionRef: remoteSessionRef(apiSessionId),
-          });
-          // The remote client is an independent viewer: activation mutates
-          // ONLY its own RemoteClientContext (profile/workspace/session) and
-          // never touches a desktop windowSlot. The runtime methods spawn
-          // PTYs for the newly viewed workspace and broadcast state — every
-          // socket gets a per-client composed payload with its own view.
-          if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
-            await runtime.activateProfileForRemoteClient(apiSessionId, String(body.profileId ?? ""));
-          } else if (request.method === "POST" && url.pathname === "/api/remote-client/workspace/activate") {
-            await runtime.activateWorkspaceForRemoteClient(apiSessionId, String(body.workspaceId ?? ""));
-          } else if (request.method === "POST" && url.pathname === "/api/remote-client/session/activate") {
-            await runtime.activateSessionForRemoteClient(
-              apiSessionId,
-              String(body.workspaceId ?? ""),
-              String(body.sessionId ?? ""),
-            );
-          } else {
-            json(response, 404, { error: "Not found" });
-            return;
-          }
-          // The central adapter (attached __remoteCtx) composes per-client and
-          // slims to the v2 core; just hand it the raw payload.
-          json(response, 200, runtime.getPayload());
-        } catch (err) {
-          json(response, 400, { error: (err as Error).message || "Activation failed" });
-        }
-        return;
-      }
-
-      const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
-      if (slotAwareHandler) {
-        let body: Record<string, unknown>;
-        try {
-          body = await readRequestBody(request);
-        } catch (err) {
-          json(response, 400, { error: (err as Error).message || "invalid request body" });
-          return;
-        }
-        // Let the response adapter's mutation ack name the resources this route
-        // changed (from prKey/workspaceId in the body).
-        const slotAckCtx = (response as ResponseWithCtx).__remoteCtx;
-        if (slotAckCtx) slotAckCtx.body = body as Record<string, unknown>;
-        // Viewer-aware routes mutate state in the context of the caller's
-        // profile. The remote client IS the viewer: pass its viewer id
-        // (`remote:<sessionId>`) — the runtime resolves the profile through
-        // the registry, so these operations work even when the client's
-        // profile is not open in any desktop window, and per-viewer
-        // mutations (grid, activation mirror) land on the remote context
-        // instead of a desktop slot. A token-only caller that skipped the
-        // session/client-id binding must NOT get to mutate.
-        const viewerId = apiSessionId && registry.get(apiSessionId) ? remoteViewerId(apiSessionId) : "";
-        if (!viewerId) {
-          json(response, 400, {
-            error:
-              "Slot-aware operation requires a bound session — include the strideterm cookie or X-Strideterm-Client-Id header so the server can resolve which profile to act on.",
-          });
-          return;
-        }
-        try {
-          json(response, 200, await slotAwareHandler(body, viewerId));
-        } catch (err) {
-          const msg = (err as Error).message || "Slot operation failed";
-          const statusCode = msg.startsWith("IPC validation failed") ? 400 : 500;
-          json(response, statusCode, { error: msg });
-        }
-        return;
-      }
-
-      await handleApiRequest(runtime, request, response, broadcast);
-      return;
-    }
-
-    // First-hit bootstrap: a freshly-shared QR/URL arrives as
-    // `GET /?token=<master>`. Validate the token, mint a fresh session,
-    // and 302 the browser to a clean URL. Net effect: the master token
-    // appears in network logs / browser history exactly once (the
-    // initial HTTP request) and never again — the cookie carries every
-    // subsequent request, including the WebSocket upgrade.
-    if (request.method === "GET" && url.pathname === "/" && url.searchParams.has("token")) {
-      if (!tokensEqual(url.searchParams.get("token") || "", token)) {
+      if (isApiRoute && !isAuthorized(requestUrl, request.headers)) {
         writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
         response.end("Unauthorized");
+        audit.warn("api request rejected", {
+          method: request.method,
+          path: url.pathname,
+          statusCode: 401,
+          remoteAddress: request.socket?.remoteAddress,
+        });
         return;
       }
-      const sessionId = mintSession(url.searchParams.get("profileId") || "");
-      writeHead(response, 302, {
-        "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
-        Location: "/",
-      });
-      response.end();
-      return;
-    }
 
-    // Static asset fetches don't gate on auth (they're harmless JS/CSS
-    // bundles served to any LAN peer who guesses the URL), but the
-    // renderer's API + WS calls do. Keeping static open avoids a
-    // brittle dependency on every asset path also having auth headers.
-    await serveStatic(staticRoot, requestUrl, response);
-  });
+      if (isApiRoute) {
+        const startedAt = Date.now();
+        const remoteAddress = request.socket?.remoteAddress;
+        response.on("finish", () => {
+          audit.info("api request", {
+            method: request.method,
+            path: url.pathname,
+            statusCode: response.statusCode,
+            durationMs: Date.now() - startedAt,
+            remoteAddress,
+          });
+        });
+
+        // Bump TTL and get session for per-client endpoints.
+        const apiSessionId = sessionIdForRequest(requestUrl, request.headers);
+        if (apiSessionId && activeSessions.has(apiSessionId)) registry.bumpLastSeen(apiSessionId);
+
+        // Attach the remote-response context ONCE. From here every json() writer —
+        // in the intercepts below AND in handleApiRequest — composes the response
+        // per-client and (for a protocol-2 client) slims it to the RemoteStateV2
+        // core. This is the single adapter the plan requires: no per-route
+        // compose calls, and no runtime method can leak a raw desktop StatePayload.
+        // The old /api/state, azure|github/refresh and pull-request/seen intercepts
+        // existed only to compose those payloads; the adapter now does it uniformly,
+        // so they are gone.
+        const httpProtocol = requestProtocol(requestUrl, request.headers);
+        // Response contract for a v2 client (see adaptRemoteResponse):
+        //  - A route whose renderer handler ADOPTS the response (bootstrap,
+        //    navigation: save / activate / reorder / settings / create-worktree /
+        //    profile) delivers the full slim v2 core — the ~10 KiB "targeted
+        //    result" the client applies synchronously (some inside a suppressed-
+        //    broadcast window, so it cannot wait for the async push).
+        //  - A route whose renderer handler DISCARDS the response (the frequent
+        //    refresh buttons + provider / review-bridge domain mutations, which are
+        //    a no-op on the remote transport) returns a small `{ ok, revision }`
+        //    ack — never serializing / transferring a core "after every button
+        //    click" — and the authoritative core rides the WS broadcast.
+        // Default is core: a misrouted core is harmless (adopted), a misrouted ack
+        // would wipe the client's state, so only PROVABLY-discarded routes ack.
+        const deliversCore = !(request.method === "POST" && ACK_MUTATION_ROUTES.has(url.pathname));
+        (response as ResponseWithCtx).__remoteCtx = {
+          protocol: httpProtocol,
+          capabilities: selectCapabilities(requestCapabilities(requestUrl, request.headers), httpProtocol),
+          coreRevision,
+          deliverCore: deliversCore,
+          sessionId: apiSessionId,
+          registry,
+          route: url.pathname,
+          method: request.method,
+          acceptEncoding: Array.isArray(request.headers["accept-encoding"])
+            ? request.headers["accept-encoding"][0]
+            : request.headers["accept-encoding"],
+          ifNoneMatch: Array.isArray(request.headers["if-none-match"])
+            ? request.headers["if-none-match"][0]
+            : request.headers["if-none-match"],
+        };
+
+        const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
+        if (detailRoute) {
+          const resourceKey = detailRoute(url);
+          if (!resourceKey || !isKnownResourceKey(resourceKey)) {
+            json(response, 400, { error: "Missing or invalid resource id" });
+            return;
+          }
+          const rawPayload = runtime.getPayload() as Record<string, unknown>;
+          // A detail request is ALWAYS profile-scoped: the session's profile, or —
+          // for an unbound caller — the server's default profile. Never null (which
+          // resourceProfileAuthorized now denies), so an unbound client is confined
+          // to one profile's resources rather than authorized for everything.
+          const boundProfile = apiSessionId ? registry.get(apiSessionId)?.profileId : undefined;
+          const profileId = boundProfile ?? registry.resolveFallbackProfileId(rawPayload.appState) ?? null;
+          if (!resourceProfileAuthorized(rawPayload, profileId, resourceKey)) {
+            json(response, 403, { error: "Resource is not in your active profile" });
+            return;
+          }
+          const detail = buildResourceDetail(rawPayload, profileId, resourceKey);
+          if (!detail) {
+            json(response, 404, { error: "Resource not available yet" });
+            return;
+          }
+          json(response, 200, detail);
+          return;
+        }
+
+        // Remote-client-scoped activation endpoints — derive clientId from cookie or token client id.
+        if (url.pathname.startsWith("/api/remote-client/")) {
+          if (!apiSessionId || !activeSessions.has(apiSessionId)) {
+            json(response, 401, { error: "No active session" });
+            return;
+          }
+          let body: Record<string, unknown>;
+          try {
+            body = await readRequestBody(request);
+          } catch (err) {
+            json(response, 400, { error: (err as Error).message || "invalid request body" });
+            return;
+          }
+          try {
+            // Diagnostic for the mobile workspace flip-flop: compare this sessionRef
+            // against the one logged at "WebSocket session resolution" — if HTTP
+            // activations and the WS socket resolve to DIFFERENT sessionRefs for the
+            // same client, the active-workspace selection is split across two registry
+            // contexts (HTTP writes one, WS broadcasts read the other).
+            log.debug("remote-client activation request", {
+              method: request.method,
+              path: url.pathname,
+              sessionRef: remoteSessionRef(apiSessionId),
+            });
+            // The remote client is an independent viewer: activation mutates
+            // ONLY its own RemoteClientContext (profile/workspace/session) and
+            // never touches a desktop windowSlot. The runtime methods spawn
+            // PTYs for the newly viewed workspace and broadcast state — every
+            // socket gets a per-client composed payload with its own view.
+            if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
+              await runtime.activateProfileForRemoteClient(apiSessionId, String(body.profileId ?? ""));
+            } else if (request.method === "POST" && url.pathname === "/api/remote-client/workspace/activate") {
+              await runtime.activateWorkspaceForRemoteClient(apiSessionId, String(body.workspaceId ?? ""));
+            } else if (request.method === "POST" && url.pathname === "/api/remote-client/session/activate") {
+              await runtime.activateSessionForRemoteClient(
+                apiSessionId,
+                String(body.workspaceId ?? ""),
+                String(body.sessionId ?? ""),
+              );
+            } else {
+              json(response, 404, { error: "Not found" });
+              return;
+            }
+            // The central adapter (attached __remoteCtx) composes per-client and
+            // slims to the v2 core; just hand it the raw payload.
+            json(response, 200, runtime.getPayload());
+          } catch (err) {
+            json(response, 400, { error: (err as Error).message || "Activation failed" });
+          }
+          return;
+        }
+
+        const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
+        if (slotAwareHandler) {
+          let body: Record<string, unknown>;
+          try {
+            body = await readRequestBody(request);
+          } catch (err) {
+            json(response, 400, { error: (err as Error).message || "invalid request body" });
+            return;
+          }
+          // Let the response adapter's mutation ack name the resources this route
+          // changed (from prKey/workspaceId in the body).
+          const slotAckCtx = (response as ResponseWithCtx).__remoteCtx;
+          if (slotAckCtx) slotAckCtx.body = body as Record<string, unknown>;
+          // Viewer-aware routes mutate state in the context of the caller's
+          // profile. The remote client IS the viewer: pass its viewer id
+          // (`remote:<sessionId>`) — the runtime resolves the profile through
+          // the registry, so these operations work even when the client's
+          // profile is not open in any desktop window, and per-viewer
+          // mutations (grid, activation mirror) land on the remote context
+          // instead of a desktop slot. A token-only caller that skipped the
+          // session/client-id binding must NOT get to mutate.
+          const viewerId = apiSessionId && registry.get(apiSessionId) ? remoteViewerId(apiSessionId) : "";
+          if (!viewerId) {
+            json(response, 400, {
+              error:
+                "Slot-aware operation requires a bound session — include the strideterm cookie or X-Strideterm-Client-Id header so the server can resolve which profile to act on.",
+            });
+            return;
+          }
+          try {
+            json(response, 200, await slotAwareHandler(body, viewerId));
+          } catch (err) {
+            const msg = (err as Error).message || "Slot operation failed";
+            const statusCode = msg.startsWith("IPC validation failed") ? 400 : 500;
+            json(response, statusCode, { error: msg });
+          }
+          return;
+        }
+
+        await handleApiRequest(runtime, request, response, broadcast);
+        return;
+      }
+
+      // First-hit bootstrap: a freshly-shared QR/URL arrives as
+      // `GET /?token=<master>`. Validate the token, mint a fresh session,
+      // and 302 the browser to a clean URL. Net effect: the master token
+      // appears in network logs / browser history exactly once (the
+      // initial HTTP request) and never again — the cookie carries every
+      // subsequent request, including the WebSocket upgrade.
+      if (request.method === "GET" && url.pathname === "/" && url.searchParams.has("token")) {
+        if (!tokensEqual(url.searchParams.get("token") || "", token)) {
+          writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
+          response.end("Unauthorized");
+          return;
+        }
+        const sessionId = mintSession(url.searchParams.get("profileId") || "");
+        writeHead(response, 302, {
+          "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
+          Location: "/",
+        });
+        response.end();
+        return;
+      }
+
+      // Static asset fetches don't gate on auth (they're harmless JS/CSS
+      // bundles served to any LAN peer who guesses the URL), but the
+      // renderer's API + WS calls do. Keeping static open avoids a
+      // brittle dependency on every asset path also having auth headers.
+      await serveStatic(staticRoot, requestUrl, response);
+    } catch (err) {
+      log.error("unhandled HTTP request error", { err: (err as Error)?.message || String(err) });
+      if (!response.headersSent) {
+        try {
+          writeHead(response, 500, { "Content-Type": "text/plain; charset=utf-8" });
+          response.end("Internal server error");
+        } catch {
+          // response is in a bad state (socket gone, etc.) — nothing more we can do
+        }
+      }
+    }
+  }
 
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set<import("ws").WebSocket>();
@@ -2824,7 +2836,18 @@ export async function startRemoteServer({
       }
     }
 
-    wss.handleUpgrade(request, socket, head, async (ws) => {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      void handleWsUpgrade(request, ws);
+    });
+  });
+
+  // wss.handleUpgrade's callback type is (ws) => void — same reasoning as
+  // handleHttpRequest above: an async listener passed directly is a
+  // floating promise from Node's perspective. Named + wrapped in try/catch
+  // so a synchronous throw anywhere in the (long) connection-setup body
+  // can't become an unhandled rejection that silently drops the socket.
+  async function handleWsUpgrade(request: IncomingMessage, ws: import("ws").WebSocket): Promise<void> {
+    try {
       sockets.add(ws);
       // Start in legacy mode: the socket receives the full terminal broadcast
       // until it sends its first terminal:subscribe (see handleTerminalSubscribe).
@@ -3065,8 +3088,15 @@ export async function startRemoteServer({
       const wsBootstrapRev = requestBootstrapRevision(request.url || "/");
       const needsCatchUp = wsServesCore ? wsBootstrapRev !== null && wsBootstrapRev !== coreRevision : true;
       if (needsCatchUp) await sendCoreCatchUp(ws, wsSessionId);
-    });
-  });
+    } catch (err) {
+      log.error("unhandled WebSocket upgrade error", { err: (err as Error)?.message || String(err) });
+      try {
+        ws.close(1011, "internal error");
+      } catch {
+        // socket may already be gone
+      }
+    }
+  }
 
   // Drop dead WebSocket clients: each tick we ping every connection and bump
   // its missed-pong counter. Pong handlers reset it. Only after

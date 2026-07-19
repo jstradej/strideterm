@@ -1251,7 +1251,10 @@ export class SessionManager extends EventEmitter {
     }
 
     if (session.kind === "ssh") {
-      this.stopSshIntentional(sessionId);
+      // stopSshIntentional's returned promise never rejects (it swallows its
+      // own sshManager.stop() error internally) — fire-and-forget since this
+      // method is synchronous.
+      void this.stopSshIntentional(sessionId);
       // Banner so Disconnect-SSH has visible feedback — otherwise the tab
       // just looks the same as before.
       this.emit("terminal:data", {
@@ -1339,7 +1342,7 @@ export class SessionManager extends EventEmitter {
       }
 
       if (session.kind === "ssh") {
-        this.stopSshIntentional(sessionId);
+        void this.stopSshIntentional(sessionId);
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {
@@ -1379,7 +1382,7 @@ export class SessionManager extends EventEmitter {
   stopAll(): void {
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.kind === "ssh") {
-        this.stopSshIntentional(sessionId);
+        void this.stopSshIntentional(sessionId);
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {

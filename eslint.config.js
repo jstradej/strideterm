@@ -165,6 +165,26 @@ export default [
     },
   },
 
+  // --- Type-aware promise-safety rules ---
+  // Catches the fire-and-forget / unhandled-rejection bug class a manual
+  // review pass just fixed across electron/backend/** and src/stores/**
+  // (see git history: "fix: log fire-and-forget and silently-swallowed
+  // async failures..."). Scoped to these two globs only (not repo-wide —
+  // Vue SFCs and other areas need separate handling). These rules are
+  // type-aware and rely on the parserOptions.project already configured
+  // above (tsconfig.backend.json / tsconfig.frontend.json) for the
+  // matching non-test blocks; test files are excluded here since those
+  // two tsconfigs exclude "**/*.test.ts" (covered instead by
+  // tsconfig.tests.json, which is out of scope for this rule).
+  {
+    files: ["electron/backend/**/*.ts", "src/stores/**/*.ts"],
+    ignores: ["**/*.test.ts"],
+    rules: {
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+    },
+  },
+
   // --- Frontend (Vue + browser) ---
   {
     files: ["src/**/*.{js,ts,vue}"],

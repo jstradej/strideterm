@@ -3408,8 +3408,10 @@ export async function createRuntime({
           /* best-effort; task may already be stopped */
         }
       }
-      // Krok 2: same runtime-state cleanup as deleteWorkspace.
-      cleanupWorkspaceRuntimeState(ws.id);
+      // Krok 2: same runtime-state cleanup as deleteWorkspace. Discarded
+      // (not awaited) — matches this function's original fire-and-forget
+      // behavior, per cleanupWorkspaceRuntimeState's own doc comment.
+      void cleanupWorkspaceRuntimeState(ws.id);
     }
     log.info("pruneOrphanedWorkspaces removed orphans", {
       count: toRemove.length,
@@ -3575,15 +3577,17 @@ export async function createRuntime({
       return;
     }
 
-    gitPoll = setInterval(async () => {
-      try {
-        if (await syncWorktrees()) {
-          sessions.syncWithState(getState());
-          broadcastState();
+    gitPoll = setInterval(() => {
+      void (async () => {
+        try {
+          if (await syncWorktrees()) {
+            sessions.syncWithState(getState());
+            broadcastState();
+          }
+        } catch (error) {
+          log.warn("worktree sync error", { err: (error as Error).message });
         }
-      } catch (error) {
-        log.warn("worktree sync error", { err: (error as Error).message });
-      }
+      })();
     }, APP_CONFIG.runtime.gitPollMs);
   }
 
@@ -3598,16 +3602,18 @@ export async function createRuntime({
     try {
       const watcher = watch(treeDir, { persistent: false }, () => {
         if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(async () => {
+        debounceTimer = setTimeout(() => {
           debounceTimer = null;
-          try {
-            if (await syncWorktrees()) {
-              sessions.syncWithState(getState());
-              broadcastState();
+          void (async () => {
+            try {
+              if (await syncWorktrees()) {
+                sessions.syncWithState(getState());
+                broadcastState();
+              }
+            } catch {
+              // Non-fatal
             }
-          } catch {
-            // Non-fatal
-          }
+          })();
         }, TREE_WATCH_DEBOUNCE_MS);
       });
       watcher.on("error", (err: unknown) => {
@@ -3706,23 +3712,25 @@ export async function createRuntime({
     if (activeId) {
       const initialState = getState();
       const activeProfileId = initialState.workspaces.find((w) => w.id === activeId)?.profileId || "default";
-      queueMicrotask(async () => {
-        const others = getState().workspaces.filter(
-          (ws) =>
-            ws.id !== activeId &&
-            ws.kind !== "azure" &&
-            ws.kind !== "github" &&
-            (ws.profileId || "default") === activeProfileId,
-        );
-        for (const ws of others) {
-          try {
-            await refreshGit(ws.id, { useCache: true });
-            broadcastState();
-          } catch {
-            // Non-fatal — background refresh; user can click Refresh if needed
+      queueMicrotask(() => {
+        void (async () => {
+          const others = getState().workspaces.filter(
+            (ws) =>
+              ws.id !== activeId &&
+              ws.kind !== "azure" &&
+              ws.kind !== "github" &&
+              (ws.profileId || "default") === activeProfileId,
+          );
+          for (const ws of others) {
+            try {
+              await refreshGit(ws.id, { useCache: true });
+              broadcastState();
+            } catch {
+              // Non-fatal — background refresh; user can click Refresh if needed
+            }
+            await new Promise((r) => setImmediate(r));
           }
-          await new Promise((r) => setImmediate(r));
-        }
+        })();
       });
     }
   }
