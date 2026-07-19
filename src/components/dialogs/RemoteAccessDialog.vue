@@ -271,6 +271,7 @@ import { useAppStore } from "../../stores/app.js";
 import { useRemoteConnection } from "../../composables/useRemoteConnection.js";
 import { useQrCode } from "../../composables/useQrCode.js";
 import type { Transport } from "../../transport.js";
+import { pickPath } from "../../lib/pick-path.js";
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -339,7 +340,7 @@ async function browseCloudflared(): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const apiBrowse = (api as any)?.browseFile;
   if (!apiBrowse) return;
-  const selected = await apiBrowse({ defaultPath: cloudflaredPathInput.value });
+  const selected = await pickPath(() => apiBrowse({ defaultPath: cloudflaredPathInput.value }));
   if (selected) {
     cloudflaredPathInput.value = selected;
     await store.updateSettings({ remoteAccess: { cloudflaredPath: selected } });

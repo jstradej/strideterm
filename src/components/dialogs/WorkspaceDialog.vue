@@ -401,6 +401,7 @@ import { APP_CONFIG } from "../../../config/app-config.js";
 import { safeColor } from "../../app/helpers.js";
 import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
 import { useAppStore } from "../../stores/app.js";
+import { pickPath } from "../../lib/pick-path.js";
 import PanelEditor from "./PanelEditor.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
@@ -1031,8 +1032,9 @@ const canSubmit = computed(() => {
 });
 
 async function browseCwd() {
-  if (!api?.browseDirectory) return;
-  const selected = (await api.browseDirectory(draft.cwd || "")) as string | null;
+  const browseDirectory = api?.browseDirectory;
+  if (!browseDirectory) return;
+  const selected = await pickPath(() => browseDirectory(draft.cwd || ""));
   if (!selected) return;
   draft.cwd = selected;
   if (!draft.name.trim() || draft.name === APP_CONFIG.ui.defaultPanelTitle) {

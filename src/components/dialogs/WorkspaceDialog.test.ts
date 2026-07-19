@@ -1,7 +1,8 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import WorkspaceDialog from "./WorkspaceDialog.vue";
+import { useNotificationStore } from "../../stores/notifications.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -324,6 +325,25 @@ describe("WorkspaceDialog", () => {
       // Without a seeded store the parent lookup returns null → parentIsMultiRepo = false
       // so the select should NOT be present (guard test).
       expect(wrapper.find("select[required]").exists()).toBe(false);
+    });
+  });
+
+  describe("browseCwd — rejection is caught and surfaced as a toast, not an unhandled rejection", () => {
+    test("browseDirectory rejecting shows an error notification instead of throwing", async () => {
+      const browseDirectory = vi.fn().mockRejectedValueOnce(new Error("dialog picker crashed"));
+      const wrapper = mount(WorkspaceDialog, {
+        props: { onCancel: vi.fn(), onSubmit: vi.fn(), workspace: buildTaskDraft() },
+        global: { provide: { api: { browseDirectory } } },
+      });
+
+      const browseBtn = wrapper.findAll("button").find((b) => b.text() === "Browse")!;
+      await browseBtn.trigger("click");
+      await flushPromises();
+
+      expect(browseDirectory).toHaveBeenCalled();
+      const notifications = useNotificationStore();
+      expect(notifications.sessions).toHaveLength(1);
+      expect(notifications.sessions[0].events[0].title).toBe("Failed to open picker");
     });
   });
 });

@@ -375,6 +375,7 @@
 <script setup lang="ts">
 import { computed, inject } from "vue";
 import type { Transport } from "../../../transport.js";
+import { pickPath } from "../../../lib/pick-path.js";
 import SettingsHookProviderSection from "./SettingsHookProviderSection.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 
@@ -419,14 +420,16 @@ const pathOpenerModes = [
 ];
 
 async function browseEditor() {
-  if (!props.api?.browseFile) return;
-  const selected = await props.api.browseFile({ defaultPath: form.externalEditor });
+  const browseFile = props.api?.browseFile;
+  if (!browseFile) return;
+  const selected = await pickPath(() => browseFile({ defaultPath: form.externalEditor }));
   if (selected) form.externalEditor = selected;
 }
 
 async function browseCloudflared() {
-  if (!props.api?.browseFile) return;
-  const selected = await props.api.browseFile({ defaultPath: form.remoteAccess.cloudflaredPath });
+  const browseFile = props.api?.browseFile;
+  if (!browseFile) return;
+  const selected = await pickPath(() => browseFile({ defaultPath: form.remoteAccess.cloudflaredPath }));
   if (selected) form.remoteAccess.cloudflaredPath = selected;
 }
 
@@ -438,8 +441,9 @@ const clipboardImagePasteDefault = computed(() => {
 });
 
 async function browseClipboardImageDir() {
-  if (!props.api?.browseDirectory) return;
-  const selected = (await props.api.browseDirectory(form.clipboardImagePasteDir || undefined)) as string | undefined;
+  const browseDirectory = props.api?.browseDirectory;
+  if (!browseDirectory) return;
+  const selected = await pickPath(() => browseDirectory(form.clipboardImagePasteDir || undefined));
   if (selected) form.clipboardImagePasteDir = selected;
 }
 </script>

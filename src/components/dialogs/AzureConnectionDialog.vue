@@ -168,6 +168,7 @@
 <script setup lang="ts">
 import { ref, reactive, inject, onMounted, useAttrs } from "vue";
 import type { Transport } from "../../transport.js";
+import { pickPath } from "../../lib/pick-path.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -221,8 +222,9 @@ const verification = ref<{ projectCount: number; projects: { name: string }[] } 
 onMounted(() => labelRef.value?.focus());
 
 async function browseReviewRoot() {
-  if (!api?.browseDirectory) return;
-  const selected = (await api.browseDirectory(draft.reviewRoot || props.defaultReviewRoot || "")) as string | null;
+  const browseDirectory = api?.browseDirectory;
+  if (!browseDirectory) return;
+  const selected = await pickPath(() => browseDirectory(draft.reviewRoot || props.defaultReviewRoot || ""));
   if (selected) draft.reviewRoot = selected;
 }
 
