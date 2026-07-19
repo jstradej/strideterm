@@ -57,9 +57,3 @@ export async function parseSshConfig(configPath = path.join(homedir(), ".ssh", "
 
   return hosts;
 }
-
-export async function parseKnownHosts(
-  _filePath = path.join(homedir(), ".ssh", "known_hosts"),
-): Promise<Record<string, never>> {
-  return {}; // V1 stub
-}
