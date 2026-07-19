@@ -3,14 +3,15 @@ import type { Ref } from "vue";
 import { useAppStore } from "../stores/app.js";
 
 /**
- * Deep-link handling shared by AzureInboxPane and GitHubInboxPane: when the
- * user clicks a "connection error" notification, the store carries a focus
- * request (`appStore.inboxConnectionFocus`). If it targets one of this
- * pane's connections, switch to the Connections tab and highlight + scroll
- * to it so the failing connection is immediately obvious (red border + ❗
- * already mark it; the highlight outline shows which one was clicked).
- * Match on connection id membership — ids are unique per provider, so the
- * wrong pane never reacts. This logic was byte-identical in both panes.
+ * Deep-link handling shared by both providers in InboxPane.vue (formerly
+ * AzureInboxPane/GitHubInboxPane): when the user clicks a "connection error"
+ * notification, the store carries a focus request
+ * (`appStore.inboxConnectionFocus`). If it targets one of this pane's
+ * connections, switch to the Connections tab and highlight + scroll to it so
+ * the failing connection is immediately obvious (red border + ❗ already mark
+ * it; the highlight outline shows which one was clicked). Match on
+ * connection id membership — ids are unique per provider, so the wrong pane
+ * never reacts. This logic was byte-identical in both panes.
  */
 export function useInboxConnectionFocus(myConnectionIds: Ref<Set<string>>, activeTab: Ref<string>) {
   const appStore = useAppStore();

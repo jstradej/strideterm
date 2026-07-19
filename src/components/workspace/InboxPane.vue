@@ -2,17 +2,21 @@
   <div class="workspace-pane__body workspace-pane__body--git">
     <PaneShell
       v-if="showHeader"
-      title="Azure DevOps"
+      :title="isGitHub ? 'GitHub' : 'Azure DevOps'"
       :status="headerStatus"
       :actions="headerActions"
       @action="onHeaderAction"
     />
     <div v-if="!connections.length" class="terminal-empty" style="align-content: start; padding-top: 32px">
-      <p>No Azure DevOps connections yet</p>
-      <small>Add a connection with organization URL, login, PAT and review checkout path.</small>
+      <p>{{ isGitHub ? "No GitHub connections yet" : "No Azure DevOps connections yet" }}</p>
+      <small>{{
+        isGitHub
+          ? "Add a connection with host URL, PAT, and review checkout path."
+          : "Add a connection with organization URL, login, PAT and review checkout path."
+      }}</small>
       <div class="docker-card__actions" style="margin-top: 12px">
-        <button type="button" class="button" @click="appStore.openAzureConnectionDialog('')">
-          Add Azure connection
+        <button type="button" class="button" @click="openConnectionDialog('')">
+          {{ isGitHub ? "Add GitHub connection" : "Add Azure connection" }}
         </button>
       </div>
     </div>
@@ -69,8 +73,12 @@
           <button
             type="button"
             class="button"
-            title="Open the Quick-fix wizard: pick an Azure project & repo, branch off and start work without leaving the IDE."
-            @click="appStore.openQuickFixWizard()"
+            :title="
+              isGitHub
+                ? undefined
+                : 'Open the Quick-fix wizard: pick an Azure project & repo, branch off and start work without leaving the IDE.'
+            "
+            @click="openQuickFixWizard"
           >
             New Branch
           </button>
@@ -78,7 +86,11 @@
             type="button"
             :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']"
             :disabled="!!busyAction"
-            title="Force re-poll all Azure DevOps connections now (PR list, comments, votes). Skips the configured poll interval."
+            :title="
+              isGitHub
+                ? undefined
+                : 'Force re-poll all Azure DevOps connections now (PR list, comments, votes). Skips the configured poll interval.'
+            "
             @click="handleRefresh"
           >
             {{ busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
@@ -86,8 +98,8 @@
           <button
             type="button"
             class="button button--ghost"
-            title="Add a new Azure DevOps connection (organization URL, login, PAT, project filters)."
-            @click="appStore.openAzureConnectionDialog('')"
+            :title="isGitHub ? undefined : 'Add a new Azure DevOps connection (organization URL, login, PAT, project filters).'"
+            @click="openConnectionDialog('')"
           >
             Add connection
           </button>
@@ -106,7 +118,9 @@
           gap: 8px;
         "
       >
-        <span style="color: var(--danger, #e53935); white-space: pre-wrap">{{ openError }}</span>
+        <span :style="{ color: 'var(--danger, #e53935)', whiteSpace: isGitHub ? 'normal' : 'pre-wrap' }">{{
+          openError
+        }}</span>
         <button
           type="button"
           class="button button--ghost"
@@ -127,11 +141,11 @@
             tab.id === 'pipelines' && 'azure-section--fill',
           ]"
         >
-          <!-- Only render heavy content for the active tab -->
+          <!-- Connections tab -->
           <template v-if="tab.id === 'connections' && activeTab === 'connections'">
             <div class="section-head" style="padding: 0 0 8px">
               <div>
-                <p class="eyebrow">Azure DevOps Connections</p>
+                <p class="eyebrow">{{ isGitHub ? "GitHub" : "Azure DevOps" }} Connections</p>
                 <h3>{{ connections.length }} connection{{ connections.length !== 1 ? "s" : "" }}</h3>
               </div>
             </div>
@@ -145,7 +159,7 @@
                   conn.status === 'error' && 'connection-card--error',
                   highlightedConnectionId === conn.id && 'connection-card--focus',
                 ]"
-                :style="`border-left:3px solid ${conn.status === 'ok' ? 'var(--accent)' : conn.status === 'error' ? 'var(--danger)' : 'var(--muted)'};`"
+                :style="`border-left:3px solid ${conn.status === 'ok' ? (isGitHub ? '#238636' : 'var(--accent)') : conn.status === 'error' ? 'var(--danger)' : 'var(--muted)'};`"
               >
                 <div class="docker-card__head">
                   <div>
@@ -157,7 +171,10 @@
                         >❗</span
                       >{{ conn.label }}
                     </h4>
-                    <p class="docker-card__meta">{{ conn.orgUrl }}</p>
+                    <p v-if="isGitHub" class="docker-card__meta">
+                      {{ conn.hostUrl }} · {{ conn.currentUserLogin || "unknown user" }}
+                    </p>
+                    <p v-else class="docker-card__meta">{{ conn.orgUrl }}</p>
                   </div>
                   <span
                     :class="['workspace-chip', conn.status !== 'ok' && 'workspace-chip--alert']"
@@ -165,7 +182,12 @@
                     >{{ conn.status === "ok" ? "Connected" : conn.status || "idle" }}</span
                   >
                 </div>
-                <div style="font-size: 12px; color: var(--muted); padding: 4px 0">
+                <div v-if="isGitHub" style="font-size: 12px; color: var(--muted); padding: 4px 0">
+                  {{ conn.ownerFilters?.length ? conn.ownerFilters.join(", ") : "all owners"
+                  }}{{ conn.repositoryFilters?.length ? ` · ${conn.repositoryFilters.join(", ")}` : "" }} · poll
+                  {{ conn.pollSeconds || 120 }}s
+                </div>
+                <div v-else style="font-size: 12px; color: var(--muted); padding: 4px 0">
                   {{ conn.login }} · {{ conn.projectFilters?.join(", ") || "all projects" }} · poll
                   {{ conn.pollSeconds || 120 }}s
                 </div>
@@ -173,12 +195,16 @@
                 <div v-if="conn.lastSyncAt" style="font-size: 11px; color: var(--muted); padding: 2px 0">
                   Last sync: {{ new Date(conn.lastSyncAt).toLocaleString() }}
                 </div>
-                <div class="docker-card__actions docker-card__actions--end">
+                <div :class="['docker-card__actions', !isGitHub && 'docker-card__actions--end']">
                   <button
                     type="button"
                     class="button button--ghost"
-                    title="Edit this connection (organization URL, PAT, project filters, poll interval, review root)."
-                    @click="appStore.openAzureConnectionDialog(conn.id)"
+                    :title="
+                      isGitHub
+                        ? undefined
+                        : 'Edit this connection (organization URL, PAT, project filters, poll interval, review root).'
+                    "
+                    @click="openConnectionDialog(conn.id)"
                   >
                     Edit
                   </button>
@@ -186,7 +212,11 @@
                     type="button"
                     :class="['button', 'button--ghost', 'danger', busyAction === `delete-${conn.id}` && 'button--busy']"
                     :disabled="!!busyAction"
-                    title="Delete this Azure DevOps connection. PR cache and audit log entries for it remain on disk."
+                    :title="
+                      isGitHub
+                        ? undefined
+                        : 'Delete this Azure DevOps connection. PR cache and audit log entries for it remain on disk.'
+                    "
                     @click="handleDeleteConnection(conn.id)"
                   >
                     Delete
@@ -203,22 +233,24 @@
                 border-top: 1px solid var(--border);
               "
             >
-              📂 Review root: <code>{{ reviewRoot || "not set" }}</code>
+              {{ isGitHub ? "" : "📂 " }}Review root: <code>{{ reviewRoot || "not set" }}</code>
             </div>
           </template>
           <!-- Activity log tab -->
           <template v-else-if="tab.id === 'activity' && activeTab === 'activity'">
-            <AzureAuditLog />
+            <AuditLog :provider="provider" />
           </template>
-          <!-- Pipelines tab -->
+          <!-- Pipelines tab (Azure only) -->
           <template v-else-if="tab.id === 'pipelines' && activeTab === 'pipelines'">
             <AzurePipelinesTab :connections="connections" :workspace-id="workspaceId" />
           </template>
-          <!-- PR list tabs — only render when this tab is active -->
+          <!-- PR list tabs -->
           <template v-else-if="activeTab === tab.id">
+            <!-- Azure: repo + author faceted filters -->
             <div
               v-if="
-                hasActiveFilters || (tabItems(activeTab).length && (repoNames.length > 1 || authorOptions.length > 1))
+                !isGitHub &&
+                (hasActiveFilters || (tabItems(activeTab).length && (repoNames.length > 1 || authorOptions.length > 1)))
               "
               class="azure-inbox__filters"
             >
@@ -292,10 +324,43 @@
                 </select>
               </div>
             </div>
-            <!-- Needs Attention: same visual frame as the All tab (azure-repo-group),
-                 but the groups are sub-buckets by *why* the PR needs attention
-                 (reviewer / author / comments / other) instead of by repo. -->
-            <template v-if="tab.id === 'attention' && attentionGroupedItems.length">
+            <!-- GitHub: simple repo filter -->
+            <div
+              v-if="isGitHub && repoNames.length > 1 && tabItems(activeTab).length"
+              style="display: flex; gap: 4px; padding: 0 12px 8px; flex-wrap: wrap"
+            >
+              <button
+                type="button"
+                :class="['button', 'button--ghost']"
+                :style="
+                  !repoFilter
+                    ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
+                    : 'font-size:11px;padding:2px 8px;'
+                "
+                @click="repoFilter = ''"
+              >
+                All repos
+              </button>
+              <button
+                v-for="repo in repoNames"
+                :key="repo"
+                type="button"
+                :class="['button', 'button--ghost']"
+                :style="
+                  repoFilter === repo
+                    ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
+                    : 'font-size:11px;padding:2px 8px;'
+                "
+                @click="repoFilter = repoFilter === repo ? '' : repo"
+              >
+                {{ repo }}
+              </button>
+            </div>
+            <!-- Needs Attention (Azure only): same visual frame as the All tab
+                 (azure-repo-group), but the groups are sub-buckets by *why* the
+                 PR needs attention (reviewer / author / comments / other)
+                 instead of by repo. -->
+            <template v-if="!isGitHub && tab.id === 'attention' && attentionGroupedItems.length">
               <div v-for="grp in attentionGroupedItems" :key="grp.bucket" class="azure-repo-group">
                 <div class="azure-repo-group__header">
                   <span class="azure-repo-group__name">{{ grp.label }}</span>
@@ -306,6 +371,7 @@
                   v-for="item in grp.items"
                   :key="item.prKey"
                   :item="item"
+                  :provider="provider"
                   :show-seen="true"
                   :opening="item.prKey === openingPrKey"
                   @open="onOpenPr"
@@ -324,7 +390,8 @@
                   v-for="item in group.items"
                   :key="item.prKey"
                   :item="item"
-                  :show-seen="activeTab !== 'all'"
+                  :provider="provider"
+                  :show-seen="isGitHub ? undefined : activeTab !== 'all'"
                   :opening="item.prKey === openingPrKey"
                   @open="onOpenPr"
                   @browser="onOpenBrowser"
@@ -333,7 +400,7 @@
               </div>
             </template>
             <div v-else class="azure-empty">
-              <p>{{ hasActiveFilters ? "No pull requests match the selected filters." : tab.emptyMessage }}</p>
+              <p>{{ !isGitHub && hasActiveFilters ? "No pull requests match the selected filters." : tab.emptyMessage }}</p>
             </div>
           </template>
         </section>
@@ -352,16 +419,22 @@ import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useInboxConnectionFocus } from "../../composables/useInboxConnectionFocus.js";
 import PaneShell from "../layout/PaneShell.vue";
 import PrRow from "./PrRow.vue";
-import AzureAuditLog from "./azure/AzureAuditLog.vue";
+import AuditLog from "./azure/AzureAuditLog.vue";
 import AzurePipelinesTab from "./azure/AzurePipelinesTab.vue";
 
-withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
+const props = withDefaults(
+  defineProps<{ workspaceId: string; showHeader?: boolean; provider?: "azure" | "github" }>(),
+  { showHeader: false, provider: "azure" },
+);
+
+const isGitHub = computed(() => props.provider === "github");
+const provider = computed(() => props.provider);
 
 const appStore = useAppStore();
 const pipelinesStore = useAzurePipelinesStore();
 const notifications = useNotificationStore();
-// Fetch + keep the Azure inbox (lists + connections) current while mounted.
-useResourceInterest(() => "azure-inbox");
+// Fetch + keep this provider's inbox (lists + connections) current while mounted.
+useResourceInterest(() => `${props.provider}-inbox`);
 const { isMobile, menuOpen, tabsMenuOpen, toggleActionsMenu, toggleTabsMenu, closeAllMenus, onTabClick } =
   useMobileShellMenus({
     onSelectTab: (id) => {
@@ -374,24 +447,21 @@ const busyAction = ref<string>("");
 // button so a slow clone/checkout can't be double-clicked. Single-flight:
 // while one PR is opening, other Review buttons are ignored too.
 const openingPrKey = ref<string>("");
-// Default to the "Needs attention" tab so the most actionable items surface
-// first — explicit reviewers, mentions, your-PR comments. Falls back to the
-// generic All tab when there's nothing actionable yet.
-const activeTab = ref<string>("attention");
+// Azure defaults to "Needs attention" so the most actionable items surface
+// first (it's the only provider with attention sub-bucketing); GitHub has no
+// equivalent tab content there, so it defaults to the generic All tab.
+const activeTab = ref<string>(isGitHub.value ? "all" : "attention");
 const openError = ref<string>("");
 
 // Provider state = core badges/connections + the on-demand inbox detail
-// (lists, profile-scoped connections) fetched via the resource interest above.
+// fetched via the resource interest above. Backend ships connections for
+// every open profile (see getAzureConnections/getGitHubConnections); each
+// window shows only its own profile's connections.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const azureData = computed<Record<string, any>>(() => appStore.providerState("azure") || {});
-// Backend's snapshot now ships connections for every open profile so a save
-// in a non-primary window doesn't disappear (see getAzureConnections). Each
-// window shows only its own profile's connections — without this filter,
-// multi-window setups would see every other window's connections too.
-
+const providerData = computed<Record<string, any>>(() => (appStore.providerState(props.provider) as any) || {});
 const connections = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const all = (azureData.value.connections || []) as any[];
+  const all = (providerData.value.connections || []) as any[];
   const myProfileId = appStore.myActiveProfileId || "default";
   return all.filter((c) => (c.profileId || "default") === myProfileId);
 });
@@ -403,7 +473,7 @@ const connections = computed(() => {
 // workspace under profile B, surfacing the cross-profile leak visibly.
 const myConnectionIds = computed(() => new Set(connections.value.map((c) => c.id)));
 const inbox = computed(() => {
-  const raw = azureData.value.inbox || {};
+  const raw = providerData.value.inbox || {};
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mine = (prs: any) =>
     Array.isArray(prs)
@@ -418,17 +488,20 @@ const inbox = computed(() => {
     recentlyUpdated: mine(raw.recentlyUpdated),
   };
 });
-const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.azureDevops?.reviewRoot || "");
+const reviewRoot = computed(
+  () => appStore.payload?.appState?.settings?.integrations?.[isGitHub.value ? "github" : "azureDevops"]?.reviewRoot || "",
+);
 
 // Deep-link: when the user clicks a "connection error" notification, the
 // store carries a focus request targeting one of this pane's connections.
 // See useInboxConnectionFocus for the shared switch-tab/highlight/scroll logic.
 const { connectionListRef, highlightedConnectionId } = useInboxConnectionFocus(myConnectionIds, activeTab);
 
-// Pipelines with a failed/canceled latest run — surfaced as the Pipelines tab
-// badge so failures stand out without opening the tab. Reflects whatever the
-// pipelines store has loaded (see the eager background load below).
+// Pipelines with a failed/canceled latest run (Azure only) — surfaced as the
+// Pipelines tab badge so failures stand out without opening the tab. Reflects
+// whatever the pipelines store has loaded (see the eager background load below).
 const failingPipelineCount = computed(() => {
+  if (isGitHub.value) return 0;
   let n = 0;
   for (const c of connections.value) {
     const entry = pipelinesStore.byConnection[c.id];
@@ -441,60 +514,68 @@ const failingPipelineCount = computed(() => {
   return n;
 });
 
-// Eagerly load pipelines for this profile's connections so the failing badge
-// populates without opening the tab. Cached in the store — re-runs only when
-// the connection set changes, not on every render.
+// Eagerly load pipelines (Azure only) for this profile's connections so the
+// failing badge populates without opening the tab. Cached in the store —
+// re-runs only when the connection set changes, not on every render.
 watch(
   () => connections.value.map((c) => c.id).join(","),
   () => {
+    if (isGitHub.value) return;
     for (const c of connections.value) void pipelinesStore.load(c.id);
   },
   { immediate: true },
 );
 
-const inboxTabs = computed(() => [
-  {
-    id: "all",
-    label: "All",
-    count: inbox.value.recentlyUpdated?.length || 0,
-    alert: false,
-    emptyMessage: "No active pull requests.",
-  },
-  {
-    id: "attention",
-    label: "Needs attention",
-    count: inbox.value.needsAttention?.length || 0,
-    alert: !!inbox.value.needsAttention?.length,
-    emptyMessage: "No pull requests need your attention right now.",
-  },
-  {
-    id: "needs-review",
-    label: "Needs review",
-    count: inbox.value.needsMyReview?.length || 0,
-    alert: false,
-    emptyMessage: "No pull requests waiting for your review.",
-  },
-  {
-    id: "my-prs",
-    label: "My PRs",
-    count: inbox.value.myPullRequests?.length || 0,
-    alert: false,
-    emptyMessage: "You have no active pull requests.",
-  },
-  {
-    id: "pipelines",
-    label: "Pipelines",
-    count: failingPipelineCount.value || null,
-    alert: failingPipelineCount.value > 0,
-  },
-  {
-    id: "connections",
-    label: "Connections",
-    count: connections.value.length,
-    alert: connections.value.some((c) => c.status === "error"),
-  },
-  { id: "activity", label: "Activity Log", count: null, alert: false },
-]);
+const inboxTabs = computed(() => {
+  const tabs = [
+    {
+      id: "all",
+      label: "All",
+      count: inbox.value.recentlyUpdated?.length || 0,
+      alert: false,
+      emptyMessage: "No active pull requests.",
+    },
+    {
+      id: "attention",
+      label: "Needs attention",
+      count: inbox.value.needsAttention?.length || 0,
+      alert: !!inbox.value.needsAttention?.length,
+      emptyMessage: "No pull requests need your attention right now.",
+    },
+    {
+      id: "needs-review",
+      label: "Needs review",
+      count: inbox.value.needsMyReview?.length || 0,
+      alert: false,
+      emptyMessage: "No pull requests waiting for your review.",
+    },
+    {
+      id: "my-prs",
+      label: "My PRs",
+      count: inbox.value.myPullRequests?.length || 0,
+      alert: false,
+      emptyMessage: "You have no active pull requests.",
+    },
+  ];
+  if (!isGitHub.value) {
+    tabs.push({
+      id: "pipelines",
+      label: "Pipelines",
+      count: failingPipelineCount.value || null,
+      alert: failingPipelineCount.value > 0,
+    } as (typeof tabs)[number]);
+  }
+  tabs.push(
+    {
+      id: "connections",
+      label: "Connections",
+      count: connections.value.length,
+      alert: connections.value.some((c) => c.status === "error"),
+    } as (typeof tabs)[number],
+    { id: "activity", label: "Activity Log", count: null, alert: false } as (typeof tabs)[number],
+  );
+  return tabs;
+});
 
 const repoFilter = ref<string>("");
 const authorFilter = ref<string>("");
@@ -509,17 +590,21 @@ function tabItems(tabId: string) {
   return [];
 }
 
-function repoKey(item: { project?: { name?: string }; repository?: { name?: string } }) {
+// Azure groups by project/repository; GitHub identifies a repo by its full
+// "owner/repo" name — the two providers' PR summaries don't share a
+// repository shape, so the key has to branch on provider.
+function repoKey(item: { project?: { name?: string }; repository?: { name?: string; fullName?: string } }) {
+  if (isGitHub.value) return item.repository?.fullName || "";
   return `${item.project?.name || ""}/${item.repository?.name || ""}`;
 }
 
-// Repo names offered as filter buttons — faceted: when an author is selected,
-// only repos that actually contain PRs by that author are listed (and vice
-// versa for authorOptions below).
+// Repo names offered as filter buttons. Azure facets them against the author
+// filter (only repos with PRs by the selected author show up, and vice versa
+// for authorOptions below) — GitHub has no author filter, so it's unfaceted.
 const repoNames = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const all: any[] = inbox.value.recentlyUpdated || [];
-  const items = authorFilter.value ? all.filter((item) => authorKey(item) === authorFilter.value) : all;
+  const items = !isGitHub.value && authorFilter.value ? all.filter((item) => authorKey(item) === authorFilter.value) : all;
   const names = [...new Set(items.map(repoKey))];
   return names.sort();
 });
@@ -529,7 +614,9 @@ function authorKey(item: { author?: { id?: string; uniqueName?: string; displayN
   return author.id || author.uniqueName || author.displayName || "unknown-author";
 }
 
+// Author filter (Azure only — GitHub's inbox has no author-filter axis).
 const authorOptions = computed(() => {
+  if (isGitHub.value) return [];
   const authors = new Map<string, { key: string; label: string; uniqueName: string }>();
   for (const item of inbox.value.recentlyUpdated || []) {
     if (repoFilter.value && repoKey(item) !== repoFilter.value) continue;
@@ -558,20 +645,20 @@ watch(repoNames, (names) => {
   }
 });
 
-const hasActiveFilters = computed(() => Boolean(repoFilter.value || authorFilter.value));
+const hasActiveFilters = computed(() => Boolean(repoFilter.value || (!isGitHub.value && authorFilter.value)));
 
 function matchesActiveFilters(item: {
   project?: { name?: string };
-  repository?: { name?: string };
+  repository?: { name?: string; fullName?: string };
   author?: { id?: string; uniqueName?: string; displayName?: string };
 }) {
   if (repoFilter.value && repoKey(item) !== repoFilter.value) {
     return false;
   }
-  return !authorFilter.value || authorKey(item) === authorFilter.value;
+  return isGitHub.value || !authorFilter.value || authorKey(item) === authorFilter.value;
 }
 
-// Sub-buckets for the "Needs attention" tab: route reviews-of-mine /
+// Sub-buckets for the "Needs attention" tab (Azure only): route reviews-of-mine /
 // commented-on / mine-as-author into the same screen but split by source.
 // First-match wins (no double-counting); the catch-all "other" bucket
 // always returns true so anything that didn't match earlier falls through.
@@ -604,6 +691,7 @@ const attentionBuckets = [
 ];
 
 const attentionGroupedItems = computed(() => {
+  if (isGitHub.value) return [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const items: any[] = [...(inbox.value.needsAttention || [])].filter(matchesActiveFilters);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -624,7 +712,8 @@ const attentionGroupedItems = computed(() => {
   return buckets.filter((b) => b.items.length);
 });
 
-// Group items by project/repo for the active tab, cached as computed
+// Group items by repo for the active tab, cached as computed. GitHub never
+// facets by author, so matchesActiveFilters is a no-op repo-only check there.
 const activeGroupedItems = computed(() => {
   const items: unknown[] = tabItems(activeTab.value).filter(matchesActiveFilters);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -632,7 +721,7 @@ const activeGroupedItems = computed(() => {
   for (const item of items) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const anyItem = item as any;
-    const repo = `${anyItem.project?.name || ""}/${anyItem.repository?.name || ""}`;
+    const repo = repoKey(anyItem);
     if (!groups.has(repo)) groups.set(repo, []);
     groups.get(repo)!.push(anyItem);
   }
@@ -641,13 +730,30 @@ const activeGroupedItems = computed(() => {
 
 const headerStatus = computed(() => `${inbox.value.recentlyUpdated?.length || 0} PRs`);
 const headerActions = computed(() => [
-  { className: "workspace-pane__icon-btn", action: "refresh-azure", title: "Refresh Azure DevOps", label: "↻" },
+  {
+    className: "workspace-pane__icon-btn",
+    action: isGitHub.value ? "refresh-github" : "refresh-azure",
+    title: isGitHub.value ? "Refresh GitHub" : "Refresh Azure DevOps",
+    label: "↻",
+  },
 ]);
+
+function openConnectionDialog(connectionId: string) {
+  if (isGitHub.value) appStore.openGitHubConnectionDialog(connectionId);
+  else appStore.openAzureConnectionDialog(connectionId);
+}
+
+function openQuickFixWizard() {
+  if (isGitHub.value) appStore.openGitHubQuickFixWizard();
+  else appStore.openQuickFixWizard();
+}
 
 async function handleRefresh() {
   busyAction.value = "refresh";
   try {
-    await notifications.runWithToast("Refresh failed", () => appStore.refreshAzure());
+    await notifications.runWithToast("Refresh failed", () =>
+      isGitHub.value ? appStore.refreshGitHub() : appStore.refreshAzure(),
+    );
   } finally {
     busyAction.value = "";
   }
@@ -656,14 +762,16 @@ async function handleRefresh() {
 async function handleDeleteConnection(connId: string) {
   busyAction.value = `delete-${connId}`;
   try {
-    await notifications.runWithToast("Delete connection failed", () => appStore.deleteAzureConnection(connId));
+    await notifications.runWithToast("Delete connection failed", () =>
+      isGitHub.value ? appStore.deleteGitHubConnection(connId) : appStore.deleteAzureConnection(connId),
+    );
   } finally {
     busyAction.value = "";
   }
 }
 
 function onHeaderAction(action: { action: string }) {
-  if (action.action === "refresh-azure") handleRefresh();
+  if (action.action === "refresh-azure" || action.action === "refresh-github") handleRefresh();
 }
 
 async function onOpenPr({ prKey, workspaceId }: { prKey: string; workspaceId: string }) {
@@ -671,7 +779,8 @@ async function onOpenPr({ prKey, workspaceId }: { prKey: string; workspaceId: st
   openError.value = "";
   openingPrKey.value = prKey;
   try {
-    await appStore.openAzurePullRequest(prKey, workspaceId);
+    if (isGitHub.value) await appStore.openGitHubPullRequest(prKey, workspaceId);
+    else await appStore.openAzurePullRequest(prKey, workspaceId);
   } catch (err) {
     openError.value = (err as Error)?.message || "Failed to open review workspace.";
   } finally {
@@ -684,6 +793,7 @@ function onOpenBrowser(url: string) {
 }
 
 function onMarkSeen(prKey: string) {
-  appStore.markAzurePrSeen(prKey);
+  if (isGitHub.value) appStore.markGitHubPrSeen(prKey);
+  else appStore.markAzurePrSeen(prKey);
 }
 </script>

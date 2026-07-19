@@ -1,9 +1,9 @@
 /**
  * Isolated coverage for the "connection error" deep-link handling shared by
- * AzureInboxPane and GitHubInboxPane: switch to the Connections tab and
- * highlight + scroll to the targeted connection, ignoring requests that are
- * stale or belong to another pane. This logic was byte-identical in both
- * panes before being extracted here.
+ * both providers in InboxPane.vue (formerly AzureInboxPane/GitHubInboxPane):
+ * switch to the Connections tab and highlight + scroll to the targeted
+ * connection, ignoring requests that are stale or belong to another pane.
+ * This logic was byte-identical in both panes before being extracted here.
  */
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount } from "@vue/test-utils";

@@ -16,9 +16,9 @@ export interface UseMobileShellMenusOptions {
  * Shared mobile-chrome wiring for workspace panes that collapse their tab
  * strip + action toolbar into two popover triggers ("tabs" and "⋮ Actions")
  * below `useIsNarrow`'s mobile breakpoint. This state machine was
- * byte-identical across GitPane, AzureReviewPane, AzureInboxPane, and
- * GitHubInboxPane — each pane still renders its own trigger markup and
- * toolbar/menu items; this composable only owns menuOpen/tabsMenuOpen.
+ * byte-identical across GitPane, AzureReviewPane, and InboxPane.vue (formerly
+ * AzureInboxPane/GitHubInboxPane) — each pane still renders its own trigger
+ * markup and toolbar/menu items; this composable only owns menuOpen/tabsMenuOpen.
  *
  * At most one popover is open at a time (opening one closes the other), and
  * both close automatically when the viewport crosses back above the mobile

@@ -1,9 +1,10 @@
 /**
  * Isolated coverage for the mobile popover state machine shared by GitPane,
- * AzureReviewPane, AzureInboxPane, and GitHubInboxPane (see those panes'
- * responsive-chrome tests for the DOM-level assertions). This file exercises
- * the composable directly through a synthetic host component with a made-up
- * tab-select action, so it stays independent of any one pane's markup.
+ * AzureReviewPane, and InboxPane.vue (formerly AzureInboxPane/GitHubInboxPane;
+ * see those panes' responsive-chrome tests for the DOM-level assertions).
+ * This file exercises the composable directly through a synthetic host
+ * component with a made-up tab-select action, so it stays independent of any
+ * one pane's markup.
  */
 import { describe, expect, test, vi, afterEach } from "vitest";
 import { mount } from "@vue/test-utils";

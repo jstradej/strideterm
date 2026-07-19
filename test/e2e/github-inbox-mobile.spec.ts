@@ -4,8 +4,9 @@ import { openApp, assertNoErrors } from "./helpers.js";
 
 /**
  * Mobile / responsive E2E tests for the GitHub Inbox pane. Mirrors the
- * Azure mobile spec but exercises GitHubInboxPane.vue + the .azure-inbox
- * shell classes (the GitHub pane reuses the same chrome).
+ * Azure mobile spec but exercises InboxPane.vue with provider="github"
+ * (formerly GitHubInboxPane.vue) + the .azure-inbox shell classes (the
+ * GitHub pane reuses the same chrome).
  */
 
 test.describe("GitHub Inbox — mocked", () => {
@@ -19,7 +20,7 @@ test.describe("GitHub Inbox — mocked", () => {
 
   test("loads workspace and shows PR rows from the mocked inbox", async ({ page }) => {
     await openApp(page, mock);
-    // Default tab is "All" for GitHubInboxPane; the rich fixture seeds 3
+    // Default tab is "All" for the github provider; the rich fixture seeds 3
     // items in recentlyUpdated.
     await expect(page.getByText("Mobile-friendly Azure DevOps + GitHub panes")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText("Add /tunnel Telegram command")).toBeVisible();
