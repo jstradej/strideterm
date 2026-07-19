@@ -290,12 +290,45 @@ describe("GitManager stash lifecycle (real git)", () => {
     expect(list[0].customMessage).toBe("second");
   });
 
+  test("stashPop surfaces conflicts, keeps the stash entry, and reports ok:false", async () => {
+    const { root, manager, g } = await makeStashRepo();
+    await fs.writeFile(path.join(root, "base.txt"), "line1\nstashed\n", "utf8");
+    await manager.stash(null, { rootPath: root, message: "x", includeUntracked: false });
+    // Working tree is clean again (back at the stash's base commit). Diverge
+    // HEAD with a committed change to the same line, so the stash no longer
+    // applies cleanly — popping it now performs a real 3-way merge conflict.
+    await fs.writeFile(path.join(root, "base.txt"), "line1\nconflicting\n", "utf8");
+    await g(["commit", "-aqm", "diverge"]);
+    const res = await manager.stashPop(null, { rootPath: root, ref: "stash@{0}" });
+    expect(res.ok).toBe(false);
+    expect(String(res.summary)).toMatch(/conflict/i);
+    expect(res.conflicts).toEqual(["base.txt"]);
+    // Modern git refuses to drop the entry on conflict — it must stay in place.
+    expect((await manager.listStashes(null, { rootPath: root })).stashes).toHaveLength(1);
+  });
+
   test("stashApply leaves the entry in place", async () => {
     const { root, manager } = await makeStashRepo();
     await fs.writeFile(path.join(root, "base.txt"), "edit\n", "utf8");
     await manager.stash(null, { rootPath: root, message: "x", includeUntracked: false });
     const res = await manager.stashApply(null, { rootPath: root, ref: "stash@{0}" });
     expect(res.ok).toBe(true);
+    expect((await manager.listStashes(null, { rootPath: root })).stashes).toHaveLength(1);
+  });
+
+  test("stashApply surfaces conflicts as ok:true with a warning (entry kept either way)", async () => {
+    const { root, manager, g } = await makeStashRepo();
+    await fs.writeFile(path.join(root, "base.txt"), "line1\nstashed\n", "utf8");
+    await manager.stash(null, { rootPath: root, message: "x", includeUntracked: false });
+    await fs.writeFile(path.join(root, "base.txt"), "line1\nconflicting\n", "utf8");
+    await g(["commit", "-aqm", "diverge"]);
+    const res = await manager.stashApply(null, { rootPath: root, ref: "stash@{0}" });
+    // stashApply's conflict path is a deliberate exception from stashPop's:
+    // the changes did get written (with markers), so this reports ok:true
+    // plus a warning, instead of stashPop's ok:false.
+    expect(res.ok).toBe(true);
+    expect(res.warnings).toEqual(["Stash applied with conflicts. Resolve them in the Changes tab."]);
+    expect(res.conflicts).toEqual(["base.txt"]);
     expect((await manager.listStashes(null, { rootPath: root })).stashes).toHaveLength(1);
   });
 

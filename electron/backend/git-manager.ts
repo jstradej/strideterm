@@ -3234,6 +3234,38 @@ export class GitManager extends EventEmitter {
     }
   }
 
+  /**
+   * Run a git command and wrap the result into a success/failure summary
+   * object — the shape shared by the stash pop/apply/drop and tag
+   * create/delete operations. `onFailure` is an optional hook for callers
+   * that need to inspect the failure output before falling back to
+   * `failSummary` (e.g. the stash methods' conflict detection): return a
+   * full result object to override the default failure result, or
+   * null/undefined to fall through to it.
+   */
+  private async execToResult(
+    cwd: string,
+    args: string[],
+    okSummary: string,
+    failSummary: string,
+    onFailure?: (combined: string) => Record<string, unknown> | null,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const result = await this.execGit(cwd, args);
+      return createStructuredResult({
+        ok: true,
+        summary: okSummary,
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
+      const combined = joinRawOutput(err.stdout, err.stderr);
+      const custom = onFailure?.(combined);
+      if (custom) return custom;
+      return createStructuredResult({ ok: false, summary: failSummary, rawOutput: combined });
+    }
+  }
+
   async stashPop(
     workspace: WorkspaceRef | null,
     { rootPath = "", ref = "" }: { rootPath?: string; ref?: string } = {},
@@ -3242,33 +3274,18 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    try {
-      const args = ["stash", "pop"];
-      if (ref) args.push(ref);
-      const result = await this.execGit(effectiveCwd, args);
-      return createStructuredResult({
-        ok: true,
-        summary: "Stash applied and removed.",
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      const combined = joinRawOutput(err.stdout, err.stderr);
+    const args = ["stash", "pop"];
+    if (ref) args.push(ref);
+    return this.execToResult(effectiveCwd, args, "Stash applied and removed.", "Stash pop failed.", (combined) => {
       // Modern git refuses to drop the entry on conflict — it stays in place.
-      if (/CONFLICT|conflict/i.test(combined)) {
-        return createStructuredResult({
-          ok: false,
-          summary: "Pop produced conflicts. Stash entry kept — resolve in the Changes tab and drop it manually.",
-          conflicts: parseConflictPaths(combined),
-          rawOutput: combined,
-        });
-      }
+      if (!/CONFLICT|conflict/i.test(combined)) return null;
       return createStructuredResult({
         ok: false,
-        summary: "Stash pop failed.",
+        summary: "Pop produced conflicts. Stash entry kept — resolve in the Changes tab and drop it manually.",
+        conflicts: parseConflictPaths(combined),
         rawOutput: combined,
       });
-    }
+    });
   }
 
   // ─── Stash detail / lifecycle operations ──────────────────────────
@@ -3502,21 +3519,17 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    try {
-      const args = ["stash", "apply"];
-      if (ref) args.push(ref);
-      const result = await this.execGit(effectiveCwd, args);
-      return createStructuredResult({
-        ok: true,
-        summary: "Stash applied. The stash entry was kept.",
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      const combined = joinRawOutput(err.stdout, err.stderr);
-      // `git stash apply` exits non-zero on conflicts but still writes the
-      // changes (with conflict markers) into the working tree.
-      if (/CONFLICT|conflict/i.test(combined)) {
+    const args = ["stash", "apply"];
+    if (ref) args.push(ref);
+    return this.execToResult(
+      effectiveCwd,
+      args,
+      "Stash applied. The stash entry was kept.",
+      "Stash apply failed.",
+      (combined) => {
+        // `git stash apply` exits non-zero on conflicts but still writes the
+        // changes (with conflict markers) into the working tree.
+        if (!/CONFLICT|conflict/i.test(combined)) return null;
         return createStructuredResult({
           ok: true,
           summary: "Stash applied with conflicts. Resolve them in the Changes tab.",
@@ -3524,9 +3537,8 @@ export class GitManager extends EventEmitter {
           conflicts: parseConflictPaths(combined),
           rawOutput: combined,
         });
-      }
-      return createStructuredResult({ ok: false, summary: "Stash apply failed.", rawOutput: combined });
-    }
+      },
+    );
   }
 
   async stashDrop(
@@ -3537,23 +3549,9 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    try {
-      const args = ["stash", "drop"];
-      if (ref) args.push(ref);
-      const result = await this.execGit(effectiveCwd, args);
-      return createStructuredResult({
-        ok: true,
-        summary: "Stash dropped.",
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      return createStructuredResult({
-        ok: false,
-        summary: "Stash drop failed.",
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
-      });
-    }
+    const args = ["stash", "drop"];
+    if (ref) args.push(ref);
+    return this.execToResult(effectiveCwd, args, "Stash dropped.", "Stash drop failed.");
   }
 
   async stashBranch(
@@ -3894,23 +3892,9 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    try {
-      const args = message ? ["tag", "-a", name, "-m", message] : ["tag", name];
-      if (commit) args.push(commit);
-      const result = await this.execGit(effectiveCwd, args);
-      return createStructuredResult({
-        ok: true,
-        summary: `Tag '${name}' created.`,
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      return createStructuredResult({
-        ok: false,
-        summary: `Failed to create tag '${name}'.`,
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
-      });
-    }
+    const args = message ? ["tag", "-a", name, "-m", message] : ["tag", name];
+    if (commit) args.push(commit);
+    return this.execToResult(effectiveCwd, args, `Tag '${name}' created.`, `Failed to create tag '${name}'.`);
   }
 
   async deleteTag(
@@ -3925,21 +3909,12 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    try {
-      const result = await this.execGit(effectiveCwd, ["tag", "-d", name]);
-      return createStructuredResult({
-        ok: true,
-        summary: `Tag '${name}' deleted.`,
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      return createStructuredResult({
-        ok: false,
-        summary: `Failed to delete tag '${name}'.`,
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
-      });
-    }
+    return this.execToResult(
+      effectiveCwd,
+      ["tag", "-d", name],
+      `Tag '${name}' deleted.`,
+      `Failed to delete tag '${name}'.`,
+    );
   }
 
   async pushTag(
