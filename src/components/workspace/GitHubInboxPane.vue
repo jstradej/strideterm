@@ -254,6 +254,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import PaneShell from "../layout/PaneShell.vue";
@@ -263,6 +264,7 @@ import AuditLog from "./azure/AzureAuditLog.vue";
 withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
+const notifications = useNotificationStore();
 // Fetch + keep the GitHub inbox (lists + connections) current while mounted.
 useResourceInterest(() => "github-inbox");
 const { isMobile } = useIsNarrow();
@@ -449,7 +451,7 @@ const headerActions = computed(() => [
 async function handleRefresh() {
   busyAction.value = "refresh";
   try {
-    await appStore.refreshGitHub();
+    await notifications.runWithToast("Refresh failed", () => appStore.refreshGitHub());
   } finally {
     busyAction.value = "";
   }
@@ -458,7 +460,7 @@ async function handleRefresh() {
 async function handleDeleteConnection(connId: string) {
   busyAction.value = `delete-${connId}`;
   try {
-    await appStore.deleteGitHubConnection(connId);
+    await notifications.runWithToast("Delete connection failed", () => appStore.deleteGitHubConnection(connId));
   } finally {
     busyAction.value = "";
   }

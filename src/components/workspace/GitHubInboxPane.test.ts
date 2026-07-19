@@ -6,11 +6,12 @@
  * render. The GitHub pane shares the .azure-inbox shell so the same CSS
  * media-query rules apply once the triggers are in the DOM.
  */
-import { describe, expect, test, beforeEach } from "vitest";
+import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import GitHubInboxPane from "./GitHubInboxPane.vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 declare const setMatchMediaResult: (query: string, matches: boolean) => void;
@@ -133,5 +134,56 @@ describe("GitHubInboxPane responsive chrome", () => {
     expect(wrapper.find(".azure-inbox--tabs-menu-open").exists()).toBe(true);
     await wrapper.find(".azure-inbox__menu-backdrop").trigger("click");
     expect(wrapper.find(".azure-inbox--tabs-menu-open").exists()).toBe(false);
+  });
+});
+
+/**
+ * Regression coverage for review-code-quality-2026-07.md finding 1.3: the
+ * toolbar Refresh and connection-delete handlers were try/finally with no
+ * catch, so a failed call silently reset the busy flag with zero
+ * user-visible feedback. Both now go through notifications.runWithToast.
+ */
+describe("GitHubInboxPane — refresh and delete-connection surface failures instead of silently succeeding", () => {
+  beforeEach(() => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+  });
+
+  test("handleRefresh: rejection is caught and surfaced as a toast, busy resets", async () => {
+    const appStore = useAppStore();
+    appStore.payload = buildPayload();
+    vi.spyOn(appStore, "refreshGitHub").mockRejectedValue(new Error("network down"));
+    const wrapper = mountPane();
+    await flushPromises();
+
+    const refreshBtn = wrapper.findAll("button").find((b) => b.text().includes("Refresh"))!;
+    await refreshBtn.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Refresh failed");
+    expect(refreshBtn.text()).toBe("Refresh");
+    expect(refreshBtn.attributes("disabled")).toBeUndefined();
+  });
+
+  test("handleDeleteConnection: rejection is caught and surfaced as a toast, busy resets", async () => {
+    const appStore = useAppStore();
+    appStore.payload = buildPayload();
+    vi.spyOn(appStore, "deleteGitHubConnection").mockRejectedValue(new Error("connection in use"));
+    const wrapper = mountPane();
+    await flushPromises();
+
+    const connectionsTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Connections"))!;
+    await connectionsTabBtn.trigger("click");
+
+    const deleteBtn = wrapper.findAll("button").find((b) => b.text() === "Delete")!;
+    await deleteBtn.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Delete connection failed");
+    expect(deleteBtn.attributes("disabled")).toBeUndefined();
   });
 });
