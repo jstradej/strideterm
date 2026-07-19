@@ -163,6 +163,96 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   /**
+   * Shared optimistic-removal core for deleteWorkspace and forceRemoveWorkspace:
+   * strip the workspace from the local payload + active-workspace bookkeeping
+   * immediately, fire the backend delete in the background (not awaited), and
+   * surface a persistent error toast on failure. `variant` captures the two
+   * callers' differing wording and disk-path handling:
+   *   "delete"       — sends diskPath to the backend, surfaces a distinct
+   *                     "couldn't remove from disk" toast for a soft backend
+   *                     error, and includes copyPath on both toasts.
+   *   "force-remove" — always deletes state-only (deleteFromDisk: false),
+   *                     no disk-error check, no copyPath (nothing was ever
+   *                     asked to be removed from disk).
+   */
+  function optimisticallyRemoveWorkspace(
+    workspaceId: string,
+    ws: AnyApi,
+    wsName: string,
+    options: { variant: "delete" | "force-remove"; deleteFromDisk: boolean; diskPath: string },
+  ): void {
+    const { variant, deleteFromDisk, diskPath } = options;
+    const wasActive = ctx.myActiveWorkspaceId.value === workspaceId;
+    const before = ctx.payload.value;
+    const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
+    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : ctx.myActiveWorkspaceId.value || "";
+    // Track the id so any broadcast arriving before the backend finishes the
+    // delete (e.g. from a docker poll) doesn't put the workspace back into
+    // the sidebar tree.
+    ctx.optimisticallyDeletedIds.value = new Set([...ctx.optimisticallyDeletedIds.value, workspaceId]);
+    if (before) {
+      ctx.payload.value = {
+        ...before,
+        appState: {
+          ...(before.appState as AnyApi),
+          workspaces: remainingWorkspaces,
+          activeWorkspaceId: nextActiveId,
+        },
+      } as StatePayload;
+    }
+
+    // Note: not awaited. The user is free to navigate away. Errors land in a
+    // sticky toast keyed off the workspace name + path so two failures don't
+    // collapse into a single ambiguous error.
+    void (async () => {
+      try {
+        const result = (await (ctx.getApi() as AnyApi).deleteWorkspace(
+          workspaceId,
+          variant === "delete" ? { deleteFromDisk, diskPath } : { deleteFromDisk },
+        )) as AnyApi;
+
+        if (variant === "delete" && result?.deleteWorkspaceError) {
+          // Backend deleted the workspace from state but couldn't remove
+          // disk files. Surface the path + reason so the user can finish.
+          // Lazy import keeps this file out of the notifications store's
+          // dependency cycle.
+          const { useNotificationStore } = await import("./notifications.js");
+          useNotificationStore().pushPersistentToast({
+            title: `Couldn't remove "${wsName}" from disk`,
+            body: result.deleteWorkspaceError,
+            kind: "error",
+            copyPath: diskPath,
+            // Scope to the deleted workspace's own profile — other profiles
+            // never saw this workspace and shouldn't see its failure.
+            profileId: (ws as AnyApi).profileId || "default",
+          });
+        }
+        // Success path: ignore. The next broadcast will reconcile the payload
+        // with what the backend now believes — which already matches our
+        // optimistic state. Once the broadcast confirms the backend agrees
+        // the workspace is gone, the suppression set self-clears in the
+        // broadcast handler. Until then keep it suppressed.
+      } catch (err: unknown) {
+        const message = (err as { message?: string })?.message || String(err);
+        // The IPC call failed outright (couldn't reach backend, schema
+        // rejection, runtime threw). The workspace probably still exists
+        // server-side, so unflag it and let the next broadcast restore it.
+        const next = new Set(ctx.optimisticallyDeletedIds.value);
+        next.delete(workspaceId);
+        ctx.optimisticallyDeletedIds.value = next;
+        const { useNotificationStore } = await import("./notifications.js");
+        useNotificationStore().pushPersistentToast({
+          title: variant === "delete" ? `Failed to delete "${wsName}"` : `Failed to remove "${wsName}"`,
+          body: message,
+          kind: "error",
+          ...(variant === "delete" ? { copyPath: diskPath } : {}),
+          profileId: (ws as AnyApi).profileId || "default",
+        });
+      }
+    })();
+  }
+
+  /**
    * Optimistic workspace delete.
    *
    * Deleting a worktree-backed workspace (regular worktree, review checkout,
@@ -242,84 +332,17 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       });
     }
 
-    // --- Optimistic UI removal ---------------------------------------------
-    //
     // Build a payload with the workspace already gone. Use shallow object
     // copies so Vue's reactivity treats this as a fresh ref assignment.
     // We don't need to clone deeply — the components that consume this
     // payload only need the workspaces array to be a new reference for the
     // computed selectors to refresh.
     const wsName = displayName || (ws as AnyApi).name || "";
-    const wasActive = ctx.myActiveWorkspaceId.value === workspaceId;
-    const before = ctx.payload.value;
-    const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
-    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : ctx.myActiveWorkspaceId.value || "";
-    // Track the id so any broadcast arriving before the backend finishes the
-    // delete (e.g. from a docker poll) doesn't put the workspace back into
-    // the sidebar tree.
-    ctx.optimisticallyDeletedIds.value = new Set([...ctx.optimisticallyDeletedIds.value, workspaceId]);
-    if (before) {
-      ctx.payload.value = {
-        ...before,
-        appState: {
-          ...(before.appState as AnyApi),
-          workspaces: remainingWorkspaces,
-          activeWorkspaceId: nextActiveId,
-        },
-      } as StatePayload;
-    }
-
-    // --- Background deletion ------------------------------------------------
-    //
-    // Note: not awaited. The user is free to navigate away. Errors land in a
-    // sticky toast keyed off the workspace name + path so two failures don't
-    // collapse into a single ambiguous error.
-    void (async () => {
-      try {
-        const result = (await (ctx.getApi() as AnyApi).deleteWorkspace(workspaceId, {
-          deleteFromDisk,
-          diskPath,
-        })) as AnyApi;
-
-        if (result?.deleteWorkspaceError) {
-          // Backend deleted the workspace from state but couldn't remove
-          // disk files. Surface the path + reason so the user can finish.
-          // Lazy import keeps this file out of the notifications store's
-          // dependency cycle.
-          const { useNotificationStore } = await import("./notifications.js");
-          useNotificationStore().pushPersistentToast({
-            title: `Couldn't remove "${wsName}" from disk`,
-            body: result.deleteWorkspaceError,
-            kind: "error",
-            copyPath: diskPath,
-            // Scope to the deleted workspace's own profile — other profiles
-            // never saw this workspace and shouldn't see its failure.
-            profileId: (ws as AnyApi).profileId || "default",
-          });
-        }
-        // Success path: ignore. The next broadcast will reconcile the payload
-        // with what the backend now believes — which already matches our
-        // optimistic state. Once the broadcast confirms the backend agrees
-        // the workspace is gone, the suppression set self-clears in the
-        // broadcast handler. Until then keep it suppressed.
-      } catch (err: unknown) {
-        const message = (err as { message?: string })?.message || String(err);
-        // The IPC call failed outright (couldn't reach backend, schema
-        // rejection, runtime threw). The workspace probably still exists
-        // server-side, so unflag it and let the next broadcast restore it.
-        const next = new Set(ctx.optimisticallyDeletedIds.value);
-        next.delete(workspaceId);
-        ctx.optimisticallyDeletedIds.value = next;
-        const { useNotificationStore } = await import("./notifications.js");
-        useNotificationStore().pushPersistentToast({
-          title: `Failed to delete "${wsName}"`,
-          body: message,
-          kind: "error",
-          copyPath: diskPath,
-          profileId: (ws as AnyApi).profileId || "default",
-        });
-      }
-    })();
+    optimisticallyRemoveWorkspace(workspaceId, ws as AnyApi, wsName, {
+      variant: "delete",
+      deleteFromDisk,
+      diskPath,
+    });
   }
 
   // --- Tab management ----------------------------------------------------
@@ -674,40 +697,11 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     });
     if (!confirmed) return;
 
-    const wasActive = ctx.myActiveWorkspaceId.value === workspaceId;
-    const before = ctx.payload.value;
-    const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
-    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : ctx.myActiveWorkspaceId.value || "";
-    ctx.optimisticallyDeletedIds.value = new Set([...ctx.optimisticallyDeletedIds.value, workspaceId]);
-    if (before) {
-      ctx.payload.value = {
-        ...before,
-        appState: {
-          ...(before.appState as AnyApi),
-          workspaces: remainingWorkspaces,
-          activeWorkspaceId: nextActiveId,
-        },
-      } as StatePayload;
-    }
-
-    void (async () => {
-      try {
-        await (ctx.getApi() as AnyApi).deleteWorkspace(workspaceId, { deleteFromDisk: false });
-        // Success: next broadcast reconciles, optimistic suppression self-clears.
-      } catch (err: unknown) {
-        const message = (err as { message?: string })?.message || String(err);
-        const next = new Set(ctx.optimisticallyDeletedIds.value);
-        next.delete(workspaceId);
-        ctx.optimisticallyDeletedIds.value = next;
-        const { useNotificationStore } = await import("./notifications.js");
-        useNotificationStore().pushPersistentToast({
-          title: `Failed to remove "${wsName}"`,
-          body: message,
-          kind: "error",
-          profileId: (ws as AnyApi).profileId || "default",
-        });
-      }
-    })();
+    optimisticallyRemoveWorkspace(workspaceId, ws as AnyApi, wsName, {
+      variant: "force-remove",
+      deleteFromDisk: false,
+      diskPath: "",
+    });
   }
 
   return {

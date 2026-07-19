@@ -299,4 +299,36 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     // must let the next broadcast restore it instead of silently swallowing.
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
   });
+
+  it("forceRemoveWorkspace shows the same error-toast behavior as deleteWorkspace when the IPC throws (shared optimisticallyRemoveWorkspace)", async () => {
+    // deleteWorkspace and forceRemoveWorkspace both route their optimistic
+    // removal + failure handling through the shared optimisticallyRemoveWorkspace
+    // helper. This locks down that forceRemoveWorkspace's IPC-throw path still
+    // surfaces a persistent toast and rolls back the suppression set, just
+    // like the deleteWorkspace case above — with force-remove's distinct
+    // wording ("remove" not "delete") and no copyPath (nothing was ever
+    // slated for on-disk deletion).
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, optimisticallyDeletedIds } = makeCtx(initial, {
+      deleteWorkspace: vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+    });
+    const actions = createWorkspaceActions(ctx);
+    const notifs = useNotificationStore();
+
+    const finished = actions.forceRemoveWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await finished;
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(notifs.persistentToasts).toHaveLength(1);
+    const toast = notifs.persistentToasts[0];
+    expect(toast.title).toContain("Failed to remove");
+    expect(toast.body).toContain("ECONNREFUSED");
+    expect(toast.copyPath).toBe("");
+    expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
+  });
 });
