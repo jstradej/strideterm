@@ -19,6 +19,8 @@ import {
   dockerPruneSchema,
   dockerRemoveSchema,
   dockerResourceRefSchema,
+  dockerShellCloseSchema,
+  dockerShellOpenSchema,
   dockerStatsSchema,
   dockerSystemDfSchema,
   dockerTopSchema,
@@ -50,6 +52,8 @@ import {
   workspaceGridSetCellSchema,
   workspaceGridSetLayoutSchema,
   workspaceGridSwapCellsSchema,
+  wsDockerShellResizeSchema,
+  wsDockerShellWriteSchema,
   wsResourceInterestSchema,
   wsTerminalInputSchema,
   wsTerminalResizeSchema,
@@ -1610,6 +1614,36 @@ async function handleApiRequest(
     if (request.method === "POST" && url.pathname === "/api/docker/logs/close") {
       const v = validateIpc(dockerLogsCloseSchema, body, "POST /api/docker/logs/close");
       runtime.dockerLogsClose(v.sessionId);
+      json(response, 200, { ok: true });
+      return;
+    }
+
+    // Docker interactive shell (`docker exec -it`). Open/close are infrequent
+    // (once per tab) so they're plain HTTP POSTs, same shape as the log-stream
+    // routes above; per-keystroke write/resize instead ride the WS socket
+    // (see the "docker:shell:write"/"docker:shell:resize" branches in the WS
+    // message handler below) exactly like terminal:input/terminal:resize do
+    // for a regular terminal session — a docker shell is the same kind of
+    // PTY-like stream, just one HTTP POST per keystroke would be wasteful.
+    if (request.method === "POST" && url.pathname === "/api/docker/shell/open") {
+      const v = validateIpc(dockerShellOpenSchema, body, "POST /api/docker/shell/open");
+      await runtime.dockerShellOpen(
+        v.sessionId,
+        v.containerId,
+        v.backendId,
+        v.contextName,
+        v.cols ?? 80,
+        v.rows ?? 24,
+        (sid: string, data: string) => broadcast({ type: "docker:shell:data", payload: { sessionId: sid, data } }),
+        (sid: string, code: number | null) => broadcast({ type: "docker:shell:close", payload: { sessionId: sid, code } }),
+      );
+      json(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/shell/close") {
+      const v = validateIpc(dockerShellCloseSchema, body, "POST /api/docker/shell/close");
+      runtime.dockerShellClose(v.sessionId);
       json(response, 200, { ok: true });
       return;
     }
@@ -3278,6 +3312,24 @@ export async function startRemoteServer({
               runtime.resizeSession(parsed.data.sessionId, { cols: parsed.data.cols, rows: parsed.data.rows });
             } else {
               log.warn("WebSocket terminal resize rejected: invalid payload", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            }
+          } else if (message.type === "docker:shell:write") {
+            const parsed = wsDockerShellWriteSchema.safeParse(message);
+            if (parsed.success) {
+              runtime.dockerShellWrite(parsed.data.sessionId, parsed.data.data);
+            } else {
+              log.warn("WebSocket docker shell write rejected: invalid payload", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            }
+          } else if (message.type === "docker:shell:resize") {
+            const parsed = wsDockerShellResizeSchema.safeParse(message);
+            if (parsed.success) {
+              runtime.dockerShellResize(parsed.data.sessionId, parsed.data.cols, parsed.data.rows);
+            } else {
+              log.warn("WebSocket docker shell resize rejected: invalid payload", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
             }

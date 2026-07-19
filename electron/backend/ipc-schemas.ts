@@ -869,6 +869,27 @@ export const wsResourceInterestSchema = z.object({
 });
 export type WsResourceInterest = z.infer<typeof wsResourceInterestSchema>;
 
+// Client → server over the WS socket: keystrokes/resizes for a docker exec
+// shell session. Mirrors wsTerminalInputSchema/wsTerminalResizeSchema above —
+// a docker shell is a PTY-like stream just like a regular terminal, and
+// write/resize are per-keystroke frequent, so they ride the socket instead of
+// an HTTP POST per keystroke. `data`/cols/rows caps match the existing IPC-side
+// dockerShellWriteSchema/dockerShellResizeSchema above.
+export const wsDockerShellWriteSchema = z.object({
+  type: z.literal("docker:shell:write"),
+  sessionId: nonEmptyString,
+  data: z.string().max(1024 * 1024),
+});
+export type WsDockerShellWrite = z.infer<typeof wsDockerShellWriteSchema>;
+
+export const wsDockerShellResizeSchema = z.object({
+  type: z.literal("docker:shell:resize"),
+  sessionId: nonEmptyString,
+  cols: z.number().int().positive().max(1000),
+  rows: z.number().int().positive().max(1000),
+});
+export type WsDockerShellResize = z.infer<typeof wsDockerShellResizeSchema>;
+
 export const fileListSchema = z.object({
   rootPath: z.string().min(1),
   relativePath: z.string(),

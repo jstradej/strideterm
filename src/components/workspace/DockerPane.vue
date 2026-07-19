@@ -307,7 +307,7 @@ function closeTab(tabId: string): void {
   }
   if (tab?.shellSessionId) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const api = (window as any).strideterm;
+    const api = appStore.getApi() as any;
     api?.dockerShellClose?.({ sessionId: tab.shellSessionId }).catch(() => {});
   }
   detailStore.closeTab(props.workspaceId, tabId);

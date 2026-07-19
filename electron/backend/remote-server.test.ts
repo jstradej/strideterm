@@ -938,6 +938,14 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     // Same, for the PR mutations moved into slotAwareRoute this round: azure/github
     // mark-seen, github comment/review and review-bridge sync (#32/#58/#63).
     const prMutationCalls: { method: string; prKey?: string; windowId?: string }[] = [];
+    // Records every docker shell runtime call (open/write/resize/close) so a test
+    // can assert the HTTP route / WS message handler forwarded the right args.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dockerShellCalls: Record<string, any>[] = [];
+    const dockerShellCallbacks = new Map<
+      string,
+      { onData: (sid: string, data: string) => void; onClose: (sid: string, code: number | null) => void }
+    >();
     const runtime = {
       getPayload: () => payload,
       _azureMutationCalls: azureMutationCalls,
@@ -986,6 +994,33 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       resetAgentPrompts: async () => payload,
       // Docker refresh — a full-payload result a v2 client must receive as an ack.
       refreshDockerState: async () => payload,
+      // Docker interactive shell — mirrors the real runtime's dockerShellOpen/
+      // Write/Resize/Close (electron/backend/runtime.ts): open records the
+      // onData/onClose callbacks the caller wired up (broadcast over the WS in
+      // production) so a test can trigger them via _emitDockerShellData/Close.
+      async dockerShellOpen(
+        sessionId: string,
+        containerId: string,
+        backendId: string,
+        contextName: string,
+        cols: number,
+        rows: number,
+        onData: (sid: string, data: string) => void,
+        onClose: (sid: string, code: number | null) => void,
+      ) {
+        dockerShellCalls.push({ method: "open", sessionId, containerId, backendId, contextName, cols, rows });
+        dockerShellCallbacks.set(sessionId, { onData, onClose });
+      },
+      dockerShellWrite(sessionId: string, data: string) {
+        dockerShellCalls.push({ method: "write", sessionId, data });
+      },
+      dockerShellResize(sessionId: string, cols: number, rows: number) {
+        dockerShellCalls.push({ method: "resize", sessionId, cols, rows });
+      },
+      dockerShellClose(sessionId: string) {
+        dockerShellCalls.push({ method: "close", sessionId });
+        dockerShellCallbacks.delete(sessionId);
+      },
       // Conflict-resolution ops record the viewer id (windowId) they received so a
       // test can prove they are now profile-bound (was a viewerless global path).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1050,6 +1085,11 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       _onSnapshot: (fn: (sessionId: string) => void) => {
         onSnapshot = fn;
       },
+      _dockerShellCalls: dockerShellCalls,
+      _emitDockerShellData: (sessionId: string, data: string) =>
+        dockerShellCallbacks.get(sessionId)?.onData(sessionId, data),
+      _emitDockerShellClose: (sessionId: string, code: number | null) =>
+        dockerShellCallbacks.get(sessionId)?.onClose(sessionId, code),
       _emit: (channel: string, p: unknown) => (handlers[channel] || []).forEach((h) => h(p)),
       _setReplay: (sessionId: string, data: string, throughSeq: number) => replay.set(sessionId, { data, throughSeq }),
       _setWorkspaceProfile: (workspaceId: string, profileId: string) => {
@@ -2305,6 +2345,137 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         expect(body.changedResources).toEqual(["docker"]);
         // The heavy docker lists must not have been serialized into the ack.
         expect(JSON.stringify(body)).not.toContain("HEAVY-IMAGE");
+      });
+    });
+
+    // Docker interactive shell (`docker exec -it`). Open/close are infrequent
+    // HTTP POSTs, same shape as the docker/logs/open|close routes; write/resize
+    // are per-keystroke frequent and instead ride the WS socket exactly like
+    // terminal:input/terminal:resize do for a regular terminal session.
+    test("POST /api/docker/shell/open opens a session; the runtime's data/close callbacks broadcast over the WS", async () => {
+      await withServer("tok-shell", async ({ port, runtime }) => {
+        const c = connectWs(port, "tok-shell", "shell-aaa");
+        await c.opened;
+
+        const res = await fetch(`http://127.0.0.1:${port}/api/docker/shell/open`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-shell",
+            "X-Strideterm-Client-Id": "shell-aaa",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sessionId: "shell-1",
+            containerId: "c1",
+            backendId: "host",
+            contextName: "default",
+            cols: 80,
+            rows: 24,
+          }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true });
+
+        expect(runtime._dockerShellCalls).toContainEqual({
+          method: "open",
+          sessionId: "shell-1",
+          containerId: "c1",
+          backendId: "host",
+          contextName: "default",
+          cols: 80,
+          rows: 24,
+        });
+
+        // The PTY emits data, then exits — the server must broadcast both as
+        // WS push messages so every connected client sees the live stream.
+        runtime._emitDockerShellData("shell-1", "hello$ ");
+        expect(await waitUntil(() => c.messages.some((m) => m.type === "docker:shell:data"))).toBe(true);
+        expect(c.messages.find((m) => m.type === "docker:shell:data")?.payload).toEqual({
+          sessionId: "shell-1",
+          data: "hello$ ",
+        });
+
+        runtime._emitDockerShellClose("shell-1", 0);
+        expect(await waitUntil(() => c.messages.some((m) => m.type === "docker:shell:close"))).toBe(true);
+        expect(c.messages.find((m) => m.type === "docker:shell:close")?.payload).toEqual({
+          sessionId: "shell-1",
+          code: 0,
+        });
+
+        c.ws.close();
+      });
+    });
+
+    test("POST /api/docker/shell/open defaults cols/rows to 80x24 when omitted", async () => {
+      await withServer("tok-shell-def", async ({ port, runtime }) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/docker/shell/open`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-shell-def",
+            "X-Strideterm-Client-Id": "shldef01",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sessionId: "shell-def",
+            containerId: "c1",
+            backendId: "host",
+            contextName: "default",
+          }),
+        });
+        expect(res.status).toBe(200);
+        expect(runtime._dockerShellCalls).toContainEqual(
+          expect.objectContaining({ method: "open", sessionId: "shell-def", cols: 80, rows: 24 }),
+        );
+      });
+    });
+
+    test("POST /api/docker/shell/close closes the shell session", async () => {
+      await withServer("tok-shell-close", async ({ port, runtime }) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/docker/shell/close`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-shell-close",
+            "X-Strideterm-Client-Id": "shlclose1",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ sessionId: "shell-2" }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true });
+        expect(runtime._dockerShellCalls).toContainEqual({ method: "close", sessionId: "shell-2" });
+      });
+    });
+
+    test("WS docker:shell:write and docker:shell:resize route keystrokes/resizes to the runtime", async () => {
+      await withServer("tok-shell-io", async ({ port, runtime }) => {
+        const c = connectWs(port, "tok-shell-io", "shellioaa");
+        await c.opened;
+        c.ws.send(JSON.stringify({ type: "docker:shell:write", sessionId: "shell-3", data: "ls\n" }));
+        c.ws.send(JSON.stringify({ type: "docker:shell:resize", sessionId: "shell-3", cols: 120, rows: 40 }));
+        await delay(80);
+        expect(runtime._dockerShellCalls).toContainEqual({ method: "write", sessionId: "shell-3", data: "ls\n" });
+        expect(runtime._dockerShellCalls).toContainEqual({
+          method: "resize",
+          sessionId: "shell-3",
+          cols: 120,
+          rows: 40,
+        });
+        c.ws.close();
+      });
+    });
+
+    test("WS docker:shell:write with an invalid payload is dropped, not forwarded to the runtime", async () => {
+      await withServer("tok-shell-bad", async ({ port, runtime }) => {
+        const c = connectWs(port, "tok-shell-bad", "shellbadaa");
+        await c.opened;
+        // Missing required `data` field.
+        c.ws.send(JSON.stringify({ type: "docker:shell:write", sessionId: "shell-4" }));
+        await delay(80);
+        expect(runtime._dockerShellCalls.some((call) => call.method === "write")).toBe(false);
+        c.ws.close();
       });
     });
 

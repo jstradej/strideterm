@@ -397,6 +397,79 @@ describe("remote transport endpoint routing", () => {
     ).not.toThrow();
     expect(seenBySecond).toContainEqual({ sessionId: "ws1:a", data: "hi" });
   });
+
+  // Docker interactive shell: open/close are infrequent (once per tab) so they
+  // POST like the log-stream methods; write/resize are per-keystroke frequent
+  // so they ride the WS socket exactly like writeTerminal/resizeTerminal do.
+  it("dockerShellOpen calls /api/docker/shell/open with the session/container payload", async () => {
+    const transport = createRemoteTransport();
+    await transport.dockerShellOpen!({
+      sessionId: "shell-1",
+      containerId: "cnt-1",
+      backendId: "host",
+      contextName: "default",
+      cols: 80,
+      rows: 24,
+    }).catch(() => {});
+    expect(capturedUrls.some((u) => u.includes("/api/docker/shell/open"))).toBe(true);
+    expect(capturedBodies).toContainEqual({
+      sessionId: "shell-1",
+      containerId: "cnt-1",
+      backendId: "host",
+      contextName: "default",
+      cols: 80,
+      rows: 24,
+    });
+  });
+
+  it("dockerShellClose calls /api/docker/shell/close with the sessionId", async () => {
+    const transport = createRemoteTransport();
+    await transport.dockerShellClose!({ sessionId: "shell-2" }).catch(() => {});
+    expect(capturedUrls.some((u) => u.includes("/api/docker/shell/close"))).toBe(true);
+    expect(capturedBodies).toContainEqual({ sessionId: "shell-2" });
+  });
+
+  it("dockerShellWrite sends docker:shell:write over the WS socket instead of an HTTP POST", async () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    await transport.dockerShellWrite!({ sessionId: "shell-3", data: "ls\n" });
+    expect(first.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "docker:shell:write",
+      sessionId: "shell-3",
+      data: "ls\n",
+    });
+    expect(capturedUrls.some((u) => u.includes("/api/docker/shell"))).toBe(false);
+  });
+
+  it("dockerShellResize sends docker:shell:resize over the WS socket", async () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    await transport.dockerShellResize!({ sessionId: "shell-4", cols: 100, rows: 30 });
+    expect(first.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "docker:shell:resize",
+      sessionId: "shell-4",
+      cols: 100,
+      rows: 30,
+    });
+  });
+
+  it("dispatches docker:shell:data and docker:shell:close messages to their listeners", () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    const dataEvents: unknown[] = [];
+    const closeEvents: unknown[] = [];
+    transport.onDockerShellData!((payload) => dataEvents.push(payload));
+    transport.onDockerShellClose!((payload) => closeEvents.push(payload));
+
+    first.message({ type: "docker:shell:data", payload: { sessionId: "shell-5", data: "$ " } });
+    expect(dataEvents).toContainEqual({ sessionId: "shell-5", data: "$ " });
+
+    first.message({ type: "docker:shell:close", payload: { sessionId: "shell-5", code: 0 } });
+    expect(closeEvents).toContainEqual({ sessionId: "shell-5", code: 0 });
+  });
 });
 
 /**
@@ -455,17 +528,6 @@ describe("remote transport API parity — no method silently missing its remote 
     // hides the edit/delete affordance when the transport is remote.
     "saveAgentPrompt",
     "deleteAgentPrompt",
-    // review-code-quality-2026-07.md §2.2: DockerDetailShell/DockerDetail/
-    // DockerPane call `window.strideterm.dockerShellOpen/Write/Resize/Close`
-    // directly instead of going through the transport, so these have no
-    // remote mapping yet and the shell silently no-ops on a remote client.
-    // Tracked as a follow-up to route shell open/close through the transport.
-    "dockerShellOpen",
-    "dockerShellWrite",
-    "dockerShellResize",
-    "dockerShellClose",
-    "onDockerShellData",
-    "onDockerShellClose",
     // review-code-quality-2026-07.md §4.3: dead IPC channels — main.ts handles
     // Ctrl+1-9 directly and nothing ever sends shortcut:switch-*. Tracked for
     // removal from StridetermAPI entirely rather than remote mapping.

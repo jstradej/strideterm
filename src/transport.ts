@@ -63,6 +63,8 @@ interface EventHub {
   sshConnectionState: Set<Handler<SshConnectionState>>;
   dockerLogsWrite: Set<Handler<{ sessionId: string; data: string }>>;
   dockerLogsClose: Set<Handler<{ sessionId: string; code: number | null }>>;
+  dockerShellData: Set<Handler<{ sessionId: string; data: string }>>;
+  dockerShellClose: Set<Handler<{ sessionId: string; code: number | null }>>;
   terminalInputBlocked: Set<Handler<{ sessionId: string; ownerLabel: string }>>;
   resourceInvalidate: Set<Handler<ResourceInvalidate>>;
 }
@@ -144,6 +146,8 @@ function createEventHub(): EventHub {
     sshConnectionState: new Set(),
     dockerLogsWrite: new Set(),
     dockerLogsClose: new Set(),
+    dockerShellData: new Set(),
+    dockerShellClose: new Set(),
     terminalInputBlocked: new Set(),
     resourceInvalidate: new Set(),
   };
@@ -490,6 +494,20 @@ export function createRemoteTransport(): Transport {
         listeners.dockerLogsClose,
         message.payload as { sessionId: string; code: number | null },
         "dockerLogsClose",
+      );
+    }
+    if (message.type === "docker:shell:data") {
+      safeDispatch(
+        listeners.dockerShellData,
+        message.payload as { sessionId: string; data: string },
+        "dockerShellData",
+      );
+    }
+    if (message.type === "docker:shell:close") {
+      safeDispatch(
+        listeners.dockerShellClose,
+        message.payload as { sessionId: string; code: number | null },
+        "dockerShellClose",
       );
     }
     if (message.type === "terminal:input-blocked") {
@@ -982,6 +1000,20 @@ export function createRemoteTransport(): Transport {
     dockerLogsOpen: (payload) => fetchJson("/api/docker/logs/open", payload),
     dockerLogsUpdate: (payload) => fetchJson("/api/docker/logs/update", payload) as Promise<{ ok: boolean }>,
     dockerLogsClose: (payload) => fetchJson("/api/docker/logs/close", payload),
+    // Docker interactive shell. Open/close are infrequent, so plain HTTP POSTs
+    // like the log-stream methods above; write/resize are per-keystroke
+    // frequent, so — like writeTerminal/resizeTerminal — they go straight over
+    // the WS socket instead of an HTTP POST per keystroke.
+    dockerShellOpen: (payload) => fetchJson("/api/docker/shell/open", payload),
+    dockerShellClose: (payload) => fetchJson("/api/docker/shell/close", payload),
+    dockerShellWrite: (payload: { sessionId: string; data: string }) => {
+      send({ type: "docker:shell:write", sessionId: payload.sessionId, data: payload.data });
+      return Promise.resolve();
+    },
+    dockerShellResize: (payload: { sessionId: string; cols: number; rows: number }) => {
+      send({ type: "docker:shell:resize", sessionId: payload.sessionId, cols: payload.cols, rows: payload.rows });
+      return Promise.resolve();
+    },
     dockerComposeAction: (payload) => fetchJson("/api/docker/compose-action", payload),
     // `fetchJson` returns `Promise<unknown>`; the StridetermAPI signatures
     // are stricter (Promise<string>, Promise<{...}>). We cast at the boundary
@@ -1018,6 +1050,10 @@ export function createRemoteTransport(): Transport {
       listeners.dockerLogsWrite.add(handler),
     onDockerLogsClose: (handler: (payload: { sessionId: string; code: number | null }) => void) =>
       listeners.dockerLogsClose.add(handler),
+    onDockerShellData: (handler: (payload: { sessionId: string; data: string }) => void) =>
+      listeners.dockerShellData.add(handler),
+    onDockerShellClose: (handler: (payload: { sessionId: string; code: number | null }) => void) =>
+      listeners.dockerShellClose.add(handler),
     openLazygitSession: (payload) => fetchJson("/api/git/open-lazygit", payload),
     createWorktree: (payload) => fetchJson("/api/git/create-worktree", payload),
     saveProfile: (profile) => fetchJson("/api/profile/save", { profile }),

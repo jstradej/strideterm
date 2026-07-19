@@ -21,6 +21,8 @@ import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import Spinner from "../../common/Spinner.vue";
+import { useAppStore } from "../../../stores/app.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -47,6 +49,9 @@ const props = defineProps<{
   backendId: string;
   contextName: string;
 }>();
+
+const appStore = useAppStore();
+const notifications = useNotificationStore();
 
 const rootEl = ref<HTMLElement | null>(null);
 const termEl = ref<HTMLElement | null>(null);
@@ -82,7 +87,7 @@ function scheduleFit(opts?: { sendResize?: boolean }): void {
 
 function sendResize(): void {
   if (!term) return;
-  const api = (window as AnyApi).strideterm;
+  const api = appStore.getApi() as AnyApi;
   if (api?.dockerShellResize) {
     api
       .dockerShellResize({
@@ -108,7 +113,7 @@ function onShellClose(payload: { sessionId: string; code: number | null }): void
 }
 
 function openSession(): void {
-  const api = (window as AnyApi).strideterm;
+  const api = appStore.getApi() as AnyApi;
   if (!api?.dockerShellOpen) {
     connecting.value = false;
     return;
@@ -125,14 +130,16 @@ function openSession(): void {
       cols: term?.cols ?? 80,
       rows: term?.rows ?? 24,
     })
-    .catch(() => {
+    .catch((e: unknown) => {
       connecting.value = false;
       alive.value = false;
+      const msg = (e as Error)?.message || String(e);
+      notifications.showError("Shell session failed", `${props.containerName}: ${msg}`);
     });
 }
 
 function closeSession(): void {
-  const api = (window as AnyApi).strideterm;
+  const api = appStore.getApi() as AnyApi;
   if (api?.dockerShellClose) {
     api.dockerShellClose({ sessionId: currentSessionId }).catch(() => {});
   }
@@ -168,7 +175,7 @@ onMounted(() => {
 
   // Forward keystrokes to the PTY.
   onDataDisposer = term.onData((data) => {
-    const api = (window as AnyApi).strideterm;
+    const api = appStore.getApi() as AnyApi;
     if (!api?.dockerShellWrite) return;
     api.dockerShellWrite({ sessionId: currentSessionId, data }).catch(() => {});
   });
@@ -178,7 +185,7 @@ onMounted(() => {
     if (rootEl.value) resizeObserver.observe(rootEl.value);
   }
 
-  const api = (window as AnyApi).strideterm;
+  const api = appStore.getApi() as AnyApi;
   if (api?.onDockerShellData) api.onDockerShellData(onShellData);
   if (api?.onDockerShellClose) api.onDockerShellClose(onShellClose);
 
