@@ -15,6 +15,7 @@ import {
   VERDICT_FILE,
   WORK_LOCK_FILE,
   WORKER_FILE,
+  defaultJudgeEvaluationSteps,
   taskDir,
   taskDirRel,
   fenceUserInput,
@@ -293,30 +294,12 @@ Hard rules (system-enforced — these override anything else, including JUDGE_PR
   // --- Evaluation instructions (user-customizable via JUDGE_PROMPT.md) ---
   const evaluationInstructions =
     customInstructions ||
-    `1. Read ${readSources} completely. Also read any plan or specification file the task references. Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
-
-2. **Verification before completion**: Read the project's own documentation (README, agent guide such as CLAUDE.md or AGENTS.md) to determine what counts as a healthy state for this codebase, and run the relevant checks yourself — do not trust the worker's claim. Concrete steps from the user's brief in ${dir}/${TASK_FILE} or the "Verification before completion" section of ${dir}/${opsFile} take precedence over generic guidance. If the project has no automated check setup, do a careful manual review of every changed file instead.
-
-3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
-   - \`IMPLEMENTED\` — cite file:line (or \`grep\`/\`git diff\` output) that proves the deliverable exists in the code right now. If you cannot produce a concrete citation, you are not allowed to mark it IMPLEMENTED.
-   - \`PARTIAL\` — describe exactly what's present versus what's still missing, with file:line references on both sides.
-   - \`MISSING\` — the deliverable is not in the code. Cite the grep/search that came back empty.
-
-4. **Code review** of the changed files. Flag only real issues (not style preferences):
-   - Correctness: does the code actually do what the task asks?
-   - Bugs, unhandled edge cases, missing error handling
-   - Dead code, debug leftovers, placeholder values, new TODO comments introduced by the worker (new TODOs = incomplete work)
-   - Tests: if the task required tests, verify they exist and actually cover the behavior (not just smoke tests that pass because nothing throws).
-
-5. Run any additional commands needed to verify claims (grep, git diff, cat, test runners).
-
-6. Write the full per-requirement audit from step 3 to ${dir}/${JUDGE_TODO_FILE}. This is how the user audits your reasoning after the fact — it must be complete.
-
-7. **Verdict rule (mechanical — no judgment calls):**
-   - ANY item from step 3 is PARTIAL or MISSING → verdict "continue"
-   - ANY deterministic check failed → verdict "continue"
-   - ANY code-review finding of the type in step 4 → verdict "continue"
-   - Only if EVERY item is IMPLEMENTED with a concrete citation AND all checks pass AND no code-review findings → verdict "complete"`;
+    defaultJudgeEvaluationSteps({
+      dir,
+      readSources,
+      verificationFileRef: `${dir}/${opsFile}`,
+      variant: "runtime-fallback",
+    });
 
   // --- Verdict delivery (always present, user cannot override) ---
   const verdictBlock = `FINAL STEP — write verdict (mandatory, system reads this file):

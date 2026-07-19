@@ -1,7 +1,6 @@
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  JUDGE_TODO_FILE,
   JUDGE_PROMPT_FILE,
   MAX_OUTPUT_TAIL,
   TASK_FILE,
@@ -10,6 +9,7 @@ import {
   WORK_LOCK_FILE,
   WORKER_FILE,
   activeItems,
+  defaultJudgeEvaluationSteps,
   extractTaskDescription,
   parseTodoSections,
   tailLines,
@@ -345,35 +345,12 @@ close" is an argument for "continue", not for "complete".
 
 ## Evaluation steps
 
-1. Read ${relDir}/${TASK_FILE} (the user's brief) and ${relDir}/${WORKER_FILE} (operational rules + verification checklist) completely. Also read any plan file referenced in the task (e.g. \`.private/plan-*.md\`). Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
-
-2. **Verification before completion**: Read the project's own documentation (README, agent guide such as CLAUDE.md or AGENTS.md) to determine what counts as a healthy state for this codebase, and run the relevant checks yourself — do not trust the Worker's claim. Concrete steps from the user's brief in ${relDir}/${TASK_FILE} or the "Verification before completion" section of ${relDir}/${WORKER_FILE} (or ${relDir}/${TASK_FILE} for older tasks created before the split) take precedence over generic guidance. If the project has no automated check setup, do a careful manual review of every changed file instead.
-
-3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
-   - \`IMPLEMENTED\` — cite file:line (or \`grep\`/\`git diff\` output) proving the deliverable exists right now. No citation → not allowed to mark it IMPLEMENTED.
-   - \`PARTIAL\` — describe exactly what is present vs missing, with file:line references on both sides.
-   - \`MISSING\` — the deliverable is not in the code. Cite the grep/search that came back empty.
-
-4. **Code review** of the changed files. Flag only real issues (not style preferences):
-   - Correctness: does the code actually do what the task asks?
-   - Bugs, unhandled edge cases, missing error handling
-   - Dead code, debug leftovers, placeholder values, new TODO comments introduced by the Worker (new TODOs = incomplete work)
-   - Tests: if the task required tests, verify they exist and actually cover the behavior, not just smoke-test passes.
-
-5. Run any additional commands needed to verify claims (grep, git diff, cat, test runners).
-
-6. Write the full per-requirement audit from step 3 to ${relDir}/${JUDGE_TODO_FILE} — this is how the user audits your reasoning after the fact, so it must be complete.
-
-7. **Verdict rule (mechanical — no judgment calls):**
-   - ANY item from step 3 is PARTIAL or MISSING → verdict "continue"
-   - ANY deterministic check failed → verdict "continue"
-   - ANY code-review finding of the type in step 4 → verdict "continue"
-   - Only if EVERY item is IMPLEMENTED with a concrete citation AND all checks pass AND no code-review findings → verdict "complete"
-
-8. Write your verdict to ${relDir}/${VERDICT_FILE}:
-   - Complete: \`{"verdict": "complete", "reason": "All <N> requirements verified implemented: ..."}\`
-   - Continue: \`{"verdict": "continue", "reason": "Missing: ...; Partial: ..."}\`
-   Include concrete file:line citations. A "complete" verdict with no citations, or with any phrase like "mostly", "substantially", "largely", "essentially", "close enough", "good enough", "small enough", or mentioning follow-up/deferred work is by definition wrong — change it to "continue".
+${defaultJudgeEvaluationSteps({
+    dir: relDir,
+    readSources: `${relDir}/${TASK_FILE} (the user's brief) and ${relDir}/${WORKER_FILE} (operational rules + verification checklist)`,
+    verificationFileRef: `${relDir}/${WORKER_FILE} (or ${relDir}/${TASK_FILE} for older tasks created before the split)`,
+    variant: "file-template",
+  })}
 
 ## Severity guide (informational — does NOT soften the completion rule)
 

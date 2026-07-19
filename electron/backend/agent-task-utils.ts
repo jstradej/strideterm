@@ -122,3 +122,93 @@ export function extractTaskDescription(taskMd: string): string {
   if (desc.startsWith("> No task description provided.")) return "";
   return desc;
 }
+
+/**
+ * Shared "judge evaluation steps" builder, used by both:
+ *  - agent-task-files.ts's `writeTaskFiles` — the on-disk JUDGE_PROMPT.md
+ *    template written for every new (always split-format) task.
+ *  - agent-task-prompts.ts's `buildJudgePrompt` — the runtime fallback used
+ *    when no custom JUDGE_PROMPT.md exists on disk (must also support legacy
+ *    single-file tasks).
+ *
+ * These two call sites independently accumulated near-identical but NOT
+ * byte-identical text (capitalization of "Worker"/"worker", a few differently
+ * worded clauses, and the file-template site's extra step 8 covering verdict
+ * delivery — the runtime site handles that separately via its always-appended
+ * verdictBlock). `variant` reproduces each call site's exact prior wording
+ * rather than normalizing it away; `dir`, `readSources`, and
+ * `verificationFileRef` are already resolved by the caller (each site
+ * computes these differently for split vs. legacy tasks).
+ */
+export function defaultJudgeEvaluationSteps({
+  dir,
+  readSources,
+  verificationFileRef,
+  variant,
+}: {
+  /** Task directory prefix, e.g. taskDirRel(taskId). */
+  dir: string;
+  /** How step 1 describes which file(s) to read as the source of truth. */
+  readSources: string;
+  /** File reference step 2 cites for the "Verification before completion" section. */
+  verificationFileRef: string;
+  /** Which call site is asking — selects the small wording differences below. */
+  variant: "file-template" | "runtime-fallback";
+}): string {
+  const isTemplate = variant === "file-template";
+  const worker = isTemplate ? "Worker" : "worker";
+  const planNote = isTemplate
+    ? "Also read any plan file referenced in the task (e.g. `.private/plan-*.md`)."
+    : "Also read any plan or specification file the task references.";
+  const step3Implemented = isTemplate
+    ? "cite file:line (or `grep`/`git diff` output) proving the deliverable exists right now. No citation → not allowed to mark it IMPLEMENTED."
+    : "cite file:line (or `grep`/`git diff` output) that proves the deliverable exists in the code right now. If you cannot produce a concrete citation, you are not allowed to mark it IMPLEMENTED.";
+  const step3Partial = isTemplate
+    ? "describe exactly what is present vs missing, with file:line references on both sides."
+    : "describe exactly what's present versus what's still missing, with file:line references on both sides.";
+  const step4Tests = isTemplate
+    ? "verify they exist and actually cover the behavior, not just smoke-test passes."
+    : "verify they exist and actually cover the behavior (not just smoke tests that pass because nothing throws).";
+  const step6 = isTemplate
+    ? `Write the full per-requirement audit from step 3 to ${dir}/${JUDGE_TODO_FILE} — this is how the user audits your reasoning after the fact, so it must be complete.`
+    : `Write the full per-requirement audit from step 3 to ${dir}/${JUDGE_TODO_FILE}. This is how the user audits your reasoning after the fact — it must be complete.`;
+
+  const steps = [
+    `1. Read ${readSources} completely. ${planNote} Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.`,
+    "",
+    `2. **Verification before completion**: Read the project's own documentation (README, agent guide such as CLAUDE.md or AGENTS.md) to determine what counts as a healthy state for this codebase, and run the relevant checks yourself — do not trust the ${worker}'s claim. Concrete steps from the user's brief in ${dir}/${TASK_FILE} or the "Verification before completion" section of ${verificationFileRef} take precedence over generic guidance. If the project has no automated check setup, do a careful manual review of every changed file instead.`,
+    "",
+    `3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
+   - \`IMPLEMENTED\` — ${step3Implemented}
+   - \`PARTIAL\` — ${step3Partial}
+   - \`MISSING\` — the deliverable is not in the code. Cite the grep/search that came back empty.`,
+    "",
+    `4. **Code review** of the changed files. Flag only real issues (not style preferences):
+   - Correctness: does the code actually do what the task asks?
+   - Bugs, unhandled edge cases, missing error handling
+   - Dead code, debug leftovers, placeholder values, new TODO comments introduced by the ${worker} (new TODOs = incomplete work)
+   - Tests: if the task required tests, ${step4Tests}`,
+    "",
+    "5. Run any additional commands needed to verify claims (grep, git diff, cat, test runners).",
+    "",
+    `6. ${step6}`,
+    "",
+    `7. **Verdict rule (mechanical — no judgment calls):**
+   - ANY item from step 3 is PARTIAL or MISSING → verdict "continue"
+   - ANY deterministic check failed → verdict "continue"
+   - ANY code-review finding of the type in step 4 → verdict "continue"
+   - Only if EVERY item is IMPLEMENTED with a concrete citation AND all checks pass AND no code-review findings → verdict "complete"`,
+  ];
+
+  if (isTemplate) {
+    steps.push(
+      "",
+      `8. Write your verdict to ${dir}/${VERDICT_FILE}:
+   - Complete: \`{"verdict": "complete", "reason": "All <N> requirements verified implemented: ..."}\`
+   - Continue: \`{"verdict": "continue", "reason": "Missing: ...; Partial: ..."}\`
+   Include concrete file:line citations. A "complete" verdict with no citations, or with any phrase like "mostly", "substantially", "largely", "essentially", "close enough", "good enough", "small enough", or mentioning follow-up/deferred work is by definition wrong — change it to "continue".`,
+    );
+  }
+
+  return steps.join("\n");
+}
