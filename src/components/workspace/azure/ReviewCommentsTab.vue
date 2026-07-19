@@ -366,6 +366,7 @@ import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import MarkdownContent from "./MarkdownContent.vue";
+import { formatRelative } from "./azurePipelineFormat.js";
 
 const props = defineProps<{
   prKey: string;
@@ -430,16 +431,12 @@ function avatarColor(name: unknown): string {
 /* ── Relative time ── */
 function formatRelativeTime(dateStr: string) {
   if (!dateStr) return "";
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 14) return `${days}d ago`;
-  const weeks = Math.floor(days / 7);
-  return `${weeks}w ago`;
+  // Under 2 weeks: same "just now / Xm ago / Xh ago / Xd ago" the Azure
+  // Pipelines views use. Older comments (long-lived PR threads) switch to
+  // weeks instead of accumulating days indefinitely — specific to this view.
+  const days = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86_400_000);
+  if (days >= 14) return `${Math.floor(days / 7)}w ago`;
+  return formatRelative(dateStr);
 }
 
 /* ── Thread helpers ── */

@@ -119,6 +119,7 @@
 
 <script setup lang="ts">
 import { ref, inject, watch, computed, onUnmounted } from "vue";
+import { formatRelative, formatFull, formatDuration } from "../azure/azurePipelineFormat.js";
 
 interface ChecksData {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -224,28 +225,5 @@ function openUrl(url: string) {
   } else if (typeof window !== "undefined") {
     window.open(url, "_blank");
   }
-}
-
-function formatRelative(dateStr: string) {
-  if (!dateStr) return "";
-  const diff = Date.now() - new Date(dateStr).getTime();
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-function formatFull(dateStr: string) {
-  if (!dateStr) return "";
-  return new Date(dateStr).toLocaleString();
-}
-
-function formatDuration(startStr: string, endStr: string) {
-  if (!startStr || !endStr) return "";
-  const ms = new Date(endStr).getTime() - new Date(startStr).getTime();
-  if (ms < 1000) return "<1s";
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`;
-  return `${Math.floor(ms / 3_600_000)}h ${Math.floor((ms % 3_600_000) / 60_000)}m`;
 }
 </script>
