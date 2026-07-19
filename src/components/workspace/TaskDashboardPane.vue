@@ -23,7 +23,7 @@
             v-if="taskState?.state === 'idle'"
             class="button button--sm"
             title="Begin the task — sends prompt to Worker and starts the automation loop"
-            @click="onStartWithBrief(statusTabRef?.briefDraft?.value)"
+            @click="onStartWithBrief(statusTabRef?.briefDraft)"
           >
             Start
           </button>
@@ -365,6 +365,7 @@ async function onStartWithBrief(brief?: string) {
       if (payload) store.handleBroadcastPayload(payload);
     } catch (err) {
       console.error("[task-dashboard] save brief before start failed:", err);
+      await taskToast("Could not save brief", (err as Error)?.message || "Unknown error");
       return;
     }
   }

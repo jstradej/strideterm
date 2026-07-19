@@ -1,8 +1,10 @@
-import { describe, expect, test, beforeEach } from "vitest";
-import { shallowMount } from "@vue/test-utils";
+import { describe, expect, test, beforeEach, vi } from "vitest";
+import { shallowMount, mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TaskDashboardPane from "./TaskDashboardPane.vue";
+import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 /**
@@ -62,7 +64,10 @@ function buildTaskWorkspace(taskOverrides: TaskOverride = {}) {
   };
 }
 
-function mountDashboard(taskOverrides: TaskOverride = {}) {
+function mountDashboard(
+  taskOverrides: TaskOverride = {},
+  options: { full?: boolean; apiOverrides?: Record<string, unknown> } = {},
+) {
   const ws = buildTaskWorkspace(taskOverrides);
   const appStore = useAppStore();
   appStore.payload = {
@@ -83,9 +88,14 @@ function mountDashboard(taskOverrides: TaskOverride = {}) {
   const apiStub = {
     fileRead: () => Promise.resolve({ content: "" }),
     fileWrite: () => Promise.resolve({ ok: true }),
+    ...options.apiOverrides,
   };
 
-  return shallowMount(TaskDashboardPane, {
+  // `full: true` performs a real `mount` instead of `shallowMount` — needed
+  // for tests that exercise the StatusTab's `defineExpose`d template ref
+  // (shallowMount stubs the child, so its exposed state never resolves).
+  const mountFn = options.full ? mount : shallowMount;
+  return mountFn(TaskDashboardPane, {
     props: { workspaceId: ws.id },
     global: {
       provide: { api: apiStub },
@@ -183,5 +193,63 @@ describe("TaskDashboardPane — tab bar", () => {
     const sectionText = wrapper.find(".td__section").text();
     expect(sectionText).toContain("Refactor the authentication module");
     expect(sectionText).toContain("8"); // maxRounds default we passed in
+  });
+});
+
+// Regression coverage for code review finding 1.8: the header "Start" button
+// read the StatusTab's exposed `briefDraft` as `statusTabRef?.briefDraft?.value`.
+// `defineExpose({ briefDraft })` in TaskDashboardStatusTab.vue already crosses
+// the expose boundary unwrapped (Vue's `proxyRefs` unwraps refs on the exposed
+// proxy, same as it does for template refs), so the extra `.value` always
+// resolved to `undefined` — silently discarding whatever the user typed into
+// the hero textarea. shallowMount stubs the child and never exercises the real
+// defineExpose boundary, so these use a full `mount`.
+describe("TaskDashboardPane — header Start reads the hero brief draft (review 1.8)", () => {
+  test("typing a brief into the hero textarea and clicking the header Start button passes the typed text through, not undefined", async () => {
+    const updateTaskDescription = vi.fn().mockResolvedValue({ payload: null });
+    const wrapper = mountDashboard(
+      { state: "idle", description: "" },
+      { full: true, apiOverrides: { updateTaskDescription } },
+    );
+
+    const textarea = wrapper.find("#td-hero-brief");
+    expect(textarea.exists()).toBe(true);
+    await textarea.setValue("Implement the new caching layer.");
+
+    const start = wrapper.findAll("button").find((b) => b.text() === "Start")!;
+    await start.trigger("click");
+    await flushPromises();
+
+    expect(updateTaskDescription).toHaveBeenCalledTimes(1);
+    expect(updateTaskDescription).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "Implement the new caching layer." }),
+    );
+  });
+});
+
+// Regression coverage for code review finding 1.8, bug #2: onStartWithBrief's
+// catch block used to `console.error` and `return` with no user-visible
+// feedback. It now routes through the same `taskToast` -> pushEphemeralToast
+// pattern the other error paths in this file already use (see onStart,
+// onResend).
+describe("TaskDashboardPane — onStartWithBrief surfaces failures as a toast (review 1.8)", () => {
+  test("a rejected save-brief call surfaces an error toast instead of failing silently", async () => {
+    const updateTaskDescription = vi.fn().mockRejectedValue(new Error("network unreachable"));
+    const wrapper = mountDashboard(
+      { state: "idle", description: "Old brief." },
+      { full: true, apiOverrides: { updateTaskDescription } },
+    );
+    const notificationStore = useNotificationStore();
+    const toastSpy = vi.spyOn(notificationStore, "pushEphemeralToast");
+
+    const statusTab = wrapper.findComponent(TaskDashboardStatusTab);
+    await statusTab.vm.$emit("start", "A brand new brief that differs from the persisted one.");
+    await flushPromises();
+
+    expect(updateTaskDescription).toHaveBeenCalledTimes(1);
+    expect(toastSpy).toHaveBeenCalledTimes(1);
+    const call = toastSpy.mock.calls[0][0];
+    expect(call.kind).toBe("error");
+    expect(call.body).toContain("network unreachable");
   });
 });
