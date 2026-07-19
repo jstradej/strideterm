@@ -395,6 +395,7 @@ async function onStartNewRun(brief?: string) {
     activeTab.value = "status";
   } catch (err) {
     console.error("[task-dashboard] start-new failed:", err);
+    await taskToast("Start failed", (err as Error)?.message || "Unknown error");
   }
 }
 
@@ -433,6 +434,7 @@ async function onStop() {
     if (r?.payload) store.handleBroadcastPayload(r.payload);
   } catch (err) {
     console.error("[task-dashboard] stop failed:", err);
+    await taskToast("Stop failed", (err as Error)?.message || "Unknown error");
   }
 }
 
@@ -466,6 +468,7 @@ async function onReset() {
     activeTab.value = "status";
   } catch (err) {
     console.error("[task-dashboard] reset failed:", err);
+    await taskToast("Reset failed", (err as Error)?.message || "Unknown error");
   }
 }
 
@@ -489,6 +492,7 @@ function onRejectVerdict() {
         activeTab.value = "status";
       } catch (err) {
         console.error("[task-dashboard] reject verdict failed:", err);
+        await taskToast("Reject verdict failed", (err as Error)?.message || "Unknown error");
       } finally {
         store.closeDialog();
       }

@@ -253,3 +253,85 @@ describe("TaskDashboardPane — onStartWithBrief surfaces failures as a toast (r
     expect(call.body).toContain("network unreachable");
   });
 });
+
+// Category C (code-review batch, 2026-07): onStartNewRun, onStop, onReset and
+// onRejectVerdict only did `console.error` on failure, with zero user-visible
+// feedback — unlike their already-fixed siblings (onStart, onResend,
+// onStartWithBrief) which route through `taskToast`. These four now do too.
+describe("TaskDashboardPane — remaining handlers surface failures as a toast", () => {
+  test("onStartNewRun: a rejected resetTask surfaces an error toast", async () => {
+    const resetTask = vi.fn().mockRejectedValue(new Error("disk full"));
+    const wrapper = mountDashboard({ state: "completed" }, { full: true, apiOverrides: { resetTask } });
+    const notificationStore = useNotificationStore();
+    const toastSpy = vi.spyOn(notificationStore, "pushEphemeralToast");
+
+    const statusTab = wrapper.findComponent(TaskDashboardStatusTab);
+    await statusTab.vm.$emit("start-new", "A brand new brief for the next run.");
+    await flushPromises();
+
+    expect(resetTask).toHaveBeenCalledTimes(1);
+    expect(toastSpy).toHaveBeenCalledTimes(1);
+    const call = toastSpy.mock.calls[0][0];
+    expect(call.kind).toBe("error");
+    expect(call.body).toContain("disk full");
+  });
+
+  test("onStop: a rejected stopTask surfaces an error toast", async () => {
+    const stopTask = vi.fn().mockRejectedValue(new Error("runtime not responding"));
+    const wrapper = mountDashboard({ state: "running" }, { apiOverrides: { stopTask } });
+    const notificationStore = useNotificationStore();
+    const toastSpy = vi.spyOn(notificationStore, "pushEphemeralToast");
+
+    const pause = wrapper.findAll("button").find((b) => b.text() === "Pause")!;
+    await pause.trigger("click");
+    await flushPromises();
+
+    expect(stopTask).toHaveBeenCalledTimes(1);
+    expect(toastSpy).toHaveBeenCalledTimes(1);
+    const call = toastSpy.mock.calls[0][0];
+    expect(call.kind).toBe("error");
+    expect(call.body).toContain("runtime not responding");
+  });
+
+  test("onReset: a rejected resetTask surfaces an error toast", async () => {
+    const resetTask = vi.fn().mockRejectedValue(new Error("control file locked"));
+    const wrapper = mountDashboard({ state: "paused" }, { apiOverrides: { resetTask } });
+    const notificationStore = useNotificationStore();
+    const toastSpy = vi.spyOn(notificationStore, "pushEphemeralToast");
+
+    const reset = wrapper.findAll("button").find((b) => b.text() === "Reset")!;
+    await reset.trigger("click");
+    await flushPromises();
+
+    expect(resetTask).toHaveBeenCalledTimes(1);
+    expect(toastSpy).toHaveBeenCalledTimes(1);
+    const call = toastSpy.mock.calls[0][0];
+    expect(call.kind).toBe("error");
+    expect(call.body).toContain("control file locked");
+  });
+
+  test("onRejectVerdict: a rejected rejectTaskVerdict surfaces an error toast", async () => {
+    const rejectTaskVerdict = vi.fn().mockRejectedValue(new Error("verdict already finalized"));
+    const wrapper = mountDashboard({ state: "completed" }, { apiOverrides: { rejectTaskVerdict } });
+    const appStore = useAppStore();
+    const notificationStore = useNotificationStore();
+    const toastSpy = vi.spyOn(notificationStore, "pushEphemeralToast");
+
+    const sendBack = wrapper.findAll("button").find((b) => b.text() === "Send back")!;
+    await sendBack.trigger("click");
+
+    // onRejectVerdict opens a TextAreaDialog and does the actual API call from
+    // its onSubmit callback — invoke that callback directly, the same way the
+    // dialog would after the user types feedback and submits.
+    const onSubmit = appStore.overlayProps.onSubmit as (feedback: string) => Promise<void>;
+    expect(typeof onSubmit).toBe("function");
+    await onSubmit("Please redo the git polling section.");
+    await flushPromises();
+
+    expect(rejectTaskVerdict).toHaveBeenCalledTimes(1);
+    expect(toastSpy).toHaveBeenCalledTimes(1);
+    const call = toastSpy.mock.calls[0][0];
+    expect(call.kind).toBe("error");
+    expect(call.body).toContain("verdict already finalized");
+  });
+});
