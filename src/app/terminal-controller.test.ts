@@ -552,6 +552,47 @@ describe("terminal clipboard interoperability", () => {
 
     expect(terminalMouseHandler).not.toHaveBeenCalled();
   });
+
+  test("right-click paste logs (and does not throw) when clipboard.readText() rejects", async () => {
+    // On the remote/web transport, navigator.clipboard.readText() is commonly
+    // unavailable (insecure context / no permission) and rejects every time —
+    // this must not surface as an unhandled promise rejection.
+    const readText = vi.fn(() => Promise.reject(new Error("not allowed")));
+    const previousClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      value: { readText },
+      configurable: true,
+    });
+    try {
+      const logRenderer = vi.fn();
+      const { controller, views } = buildAttachController({ isRemote: true, logRenderer });
+      const sessionId = "workspace-1:shell-1";
+      controller.ensureTerminal(sessionId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId);
+
+      expect(() => {
+        view.mount.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      }).not.toThrow();
+
+      // Flush the tryImagePasteToTerminal().then() chain and the
+      // readText().then().catch() chain that follows it.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(readText).toHaveBeenCalled();
+      expect(view.term.paste).not.toHaveBeenCalled();
+      expect(logRenderer).toHaveBeenCalledWith(
+        "warn",
+        "[terminal-clipboard] right-click paste failed",
+        expect.objectContaining({ error: "not allowed" }),
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { value: previousClipboard, configurable: true });
+    }
+  });
 });
 
 describe("search addon wiring", () => {

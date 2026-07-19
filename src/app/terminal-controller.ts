@@ -857,9 +857,16 @@ export function createTerminalController({
       }
       void tryImagePasteToTerminal().then((handled) => {
         if (handled) return;
-        navigator.clipboard.readText().then((text) => {
-          if (text) term.paste(text);
-        });
+        navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text) term.paste(text);
+          })
+          .catch((err: unknown) => {
+            api.logRenderer?.("warn", "[terminal-clipboard] right-click paste failed", {
+              error: (err as Error)?.message || String(err),
+            });
+          });
       });
     });
     // Copy-on-select: a constantly repainting TUI (Claude Code's spinner and
