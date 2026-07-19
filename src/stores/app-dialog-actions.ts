@@ -997,7 +997,6 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openDialog("SshHostEditor", {
       host,
       onCancel: closeDialog,
-      onSave: closeDialog,
     });
   }
 

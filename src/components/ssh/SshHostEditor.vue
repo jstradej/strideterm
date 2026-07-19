@@ -157,7 +157,6 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: "cancel"): void;
-  (e: "save"): void;
 }>();
 const sshStore = useSshStore();
 
