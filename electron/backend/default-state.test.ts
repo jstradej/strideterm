@@ -73,6 +73,66 @@ describe("default state", () => {
     expect(ids).toContain("copilot");
   });
 
+  test("normalizeState migrates legacy tabTemplates by adding opencode right after copilot", () => {
+    // Copilot already migrated in; opencode's anchor list must prefer "copilot"
+    // over gemini/codex/claude, otherwise it would land in the wrong slot.
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "" },
+        { id: "claude", title: "Claude Code", command: "claude", icon: "\u{1F916}" },
+        { id: "codex", title: "Codex", command: "codex", icon: "\u{1F9E0}" },
+        { id: "gemini", title: "Gemini CLI", command: "gemini", icon: "✨" },
+        { id: "copilot", title: "GitHub Copilot", command: "copilot", icon: "\u{1F419}" },
+        { id: "devserver", title: "Dev Server", command: "npm run dev", icon: "\u{1F680}" },
+      ],
+    });
+
+    const ids = state.tabTemplates.map((t) => t.id);
+    expect(ids).toContain("opencode");
+    const copilotIdx = ids.indexOf("copilot");
+    const opencodeIdx = ids.indexOf("opencode");
+    expect(opencodeIdx).toBe(copilotIdx + 1);
+
+    const opencode = state.tabTemplates[opencodeIdx];
+    expect(opencode).toMatchObject({ id: "opencode", title: "OpenCode", command: "opencode" });
+  });
+
+  test("normalizeState places opencode after the last built-in agent when copilot is absent", () => {
+    // No copilot anchor present — opencode should fall back to the same
+    // gemini/codex/claude anchor order copilot itself uses.
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "" },
+        { id: "claude", title: "Claude Code", command: "claude", icon: "\u{1F916}" },
+        { id: "codex", title: "Codex", command: "codex", icon: "\u{1F9E0}" },
+        { id: "gemini", title: "Gemini CLI", command: "gemini", icon: "✨" },
+        { id: "devserver", title: "Dev Server", command: "npm run dev", icon: "\u{1F680}" },
+      ],
+    });
+
+    const ids = state.tabTemplates.map((t) => t.id);
+    const geminiIdx = ids.indexOf("gemini");
+    // copilot is migrated in first (per anchor list gemini/codex/claude), so
+    // opencode ends up right after it.
+    const copilotIdx = ids.indexOf("copilot");
+    expect(copilotIdx).toBe(geminiIdx + 1);
+    const opencodeIdx = ids.indexOf("opencode");
+    expect(opencodeIdx).toBe(copilotIdx + 1);
+  });
+
+  test("normalizeState does not duplicate opencode template if user already has one", () => {
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "" },
+        { id: "opencode", title: "My OpenCode", command: "opencode --profile work" },
+      ],
+    });
+    const opencodeEntries = state.tabTemplates.filter((t) => t.id === "opencode" || t.command?.startsWith("opencode"));
+    expect(opencodeEntries).toHaveLength(1);
+    // User's customized entry is preserved — not clobbered by the default
+    expect(opencodeEntries[0].title).toBe("My OpenCode");
+  });
+
   test("default tab templates include every built-in agent provider", () => {
     const state = createDefaultState();
     const ids = state.tabTemplates.map((tpl) => tpl.id);

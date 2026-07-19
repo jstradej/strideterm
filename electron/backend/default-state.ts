@@ -977,35 +977,32 @@ export function normalizeState(
       (t) => t.id === "fish" || t.command === "fish",
     );
   }
-  // Migration for existing users: ensure the "copilot" agent template exists
-  // alongside claude/codex/gemini. Insert right after the last built-in agent
-  // so the group stays tidy in the Tab picker dropdown.
-  if (!tabTemplates.some((t) => t.id === "copilot" || t.command === "copilot")) {
-    const copilotTemplate = { id: "copilot", title: "GitHub Copilot", command: "copilot", icon: "\u{1F419}" };
+  // Migration for existing users: ensure agent templates added after the initial
+  // release exist for everyone. Each entry is inserted right after the first
+  // anchor id found (searched in order), so it lands next to the most recently
+  // added sibling agent when present, or after the last built-in agent
+  // otherwise — keeping the agent group tidy in the Tab picker dropdown.
+  const AGENT_TEMPLATE_MIGRATIONS: Array<{ tmpl: TabTemplate; anchors: string[] }> = [
+    {
+      tmpl: { id: "copilot", title: "GitHub Copilot", command: "copilot", icon: "\u{1F419}" },
+      anchors: ["gemini", "codex", "claude"],
+    },
+    {
+      tmpl: { id: "opencode", title: "OpenCode", command: "opencode", icon: "\u{1F9EC}" },
+      anchors: ["copilot", "gemini", "codex", "claude"],
+    },
+  ];
+  for (const { tmpl, anchors } of AGENT_TEMPLATE_MIGRATIONS) {
+    if (tabTemplates.some((t) => t.id === tmpl.id || t.command === tmpl.command)) continue;
     const anchorIdx = (() => {
-      for (const anchor of ["gemini", "codex", "claude"]) {
+      for (const anchor of anchors) {
         const idx = tabTemplates.findIndex((t) => t.id === anchor);
         if (idx >= 0) return idx;
       }
       return -1;
     })();
-    if (anchorIdx >= 0) tabTemplates.splice(anchorIdx + 1, 0, copilotTemplate);
-    else tabTemplates.push(copilotTemplate);
-  }
-  // Migration for existing users: ensure the "opencode" agent template exists.
-  // Insert right after "copilot" (or after the last built-in agent) so the
-  // agent group stays tidy in the Tab picker dropdown.
-  if (!tabTemplates.some((t) => t.id === "opencode" || t.command === "opencode")) {
-    const opencodeTemplate = { id: "opencode", title: "OpenCode", command: "opencode", icon: "\u{1F9EC}" };
-    const anchorIdx = (() => {
-      for (const anchor of ["copilot", "gemini", "codex", "claude"]) {
-        const idx = tabTemplates.findIndex((t) => t.id === anchor);
-        if (idx >= 0) return idx;
-      }
-      return -1;
-    })();
-    if (anchorIdx >= 0) tabTemplates.splice(anchorIdx + 1, 0, opencodeTemplate);
-    else tabTemplates.push(opencodeTemplate);
+    if (anchorIdx >= 0) tabTemplates.splice(anchorIdx + 1, 0, tmpl);
+    else tabTemplates.push(tmpl);
   }
   const profiles = normalizeProfiles(rawState.profiles, defaults);
   // Derive activeProfileId from the active workspace's profile. Used internally for
