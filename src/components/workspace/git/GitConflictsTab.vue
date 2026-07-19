@@ -81,7 +81,6 @@
         :key="mergeTarget.path"
         ref="mergePanel"
         :file-path="mergeTarget.path"
-        :conflict-type="mergeTarget.conflictType"
         :workspace-id="workspaceId"
         :root-path="dlg.rootPath"
         :sides="operationSides"

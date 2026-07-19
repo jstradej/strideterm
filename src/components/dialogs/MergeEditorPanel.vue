@@ -178,7 +178,6 @@ import { guessLanguageFromPath } from "../../../config/language-map.js";
 
 const props = defineProps<{
   filePath: string;
-  conflictType: string;
   workspaceId: string;
   rootPath: string;
   sides: { ours: string; theirs: string } | null;
