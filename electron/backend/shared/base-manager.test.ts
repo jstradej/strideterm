@@ -364,3 +364,203 @@ describe("BaseProviderManager.fetchReviewWorkspace / rebaseReviewWorkspace / pus
     ).rejects.toThrow("Cannot determine branch name for push.");
   });
 });
+
+// syncCore is the template-method skeleton AzureDevOpsManager.sync() and
+// GitHubManager.sync() used to each reimplement as a separate ~250-line copy
+// (connection bookkeeping, stale-PR resolution, dedup, snapshot build).
+// Providers supply only the 4 genuinely-divergent pieces via hooks.
+describe("BaseProviderManager.syncCore", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function createSyncReviewStore(overrides: Record<string, any> = {}) {
+    return {
+      getState: overrides.getState || (() => ({ connections: {} })),
+      getTrackedPullRequest: overrides.getTrackedPullRequest || (() => null),
+      upsertConnectionState: overrides.upsertConnectionState || (async () => {}),
+      upsertTrackedPullRequest: overrides.upsertTrackedPullRequest || (async () => {}),
+    };
+  }
+
+  function createSyncManager({
+    reviewStore,
+    secrets = {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }: { reviewStore?: any; secrets?: Record<string, string> } = {}) {
+    return new BaseProviderManager({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      credentialStore: createCredentialStore(secrets) as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      reviewStore: (reviewStore || createSyncReviewStore()) as any,
+      execFileTextImpl: vi.fn(),
+      createApi: () => ({}),
+    });
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function baseHooks(overrides: Record<string, any> = {}) {
+    return {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createConnectionSnapshot: (connection: any, persistedState: any) => ({ ...connection, ...persistedState }),
+      fetchConnectionPrs: async () => {},
+      isPrResolved: () => true,
+      resolveStalePr: async () => null,
+      ...overrides,
+    };
+  }
+
+  test("marks a connection ok and persists its state when fetchConnectionPrs succeeds", async () => {
+    const upsertConnectionState = vi.fn(async () => {});
+    const manager = createSyncManager({
+      reviewStore: createSyncReviewStore({ upsertConnectionState }),
+      secrets: { "tok-1": "secret-1" },
+    });
+
+    const snapshot = await manager.syncCore({ connections: [{ id: "conn-1", tokenRef: "tok-1" }] }, baseHooks());
+
+    expect(snapshot.connections[0]).toMatchObject({ id: "conn-1", status: "ok" });
+    expect(upsertConnectionState).toHaveBeenCalledWith("conn-1", expect.objectContaining({ status: "ok" }));
+  });
+
+  test("marks a connection errored when the token is missing, without calling fetchConnectionPrs", async () => {
+    const fetchConnectionPrs = vi.fn(async () => {});
+    const manager = createSyncManager();
+
+    const snapshot = await manager.syncCore(
+      { connections: [{ id: "conn-1" }] },
+      baseHooks({ fetchConnectionPrs }),
+    );
+
+    expect(fetchConnectionPrs).not.toHaveBeenCalled();
+    expect(snapshot.connections[0]).toMatchObject({ status: "error", lastError: "PAT is missing." });
+  });
+
+  test("uses the provider's syncErrorFallbackMessage when fetchConnectionPrs throws a message-less error", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret-1" } });
+    manager.syncErrorFallbackMessage = "Widget sync failed.";
+
+    const snapshot = await manager.syncCore(
+      { connections: [{ id: "conn-1", tokenRef: "tok-1" }] },
+      baseHooks({
+        fetchConnectionPrs: async () => {
+          throw new Error("");
+        },
+      }),
+    );
+
+    expect(snapshot.connections[0]).toMatchObject({ status: "error", lastError: "Widget sync failed." });
+  });
+
+  test("fetchConnectionPrs' pushed summaries land in the inbox, detailMap, and trackedPullRequests", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret-1" } });
+
+    const snapshot = await manager.syncCore(
+      { connections: [{ id: "conn-1", tokenRef: "tok-1" }] },
+      baseHooks({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        fetchConnectionPrs: async (_connection: any, _token: string, ctx: any) => {
+          ctx.visibleSummaries.push({
+            prKey: "pr-1",
+            role: "reviewer",
+            hasAttention: true,
+            lastActivityAt: "2024-01-01",
+          });
+          ctx.trackedPullRequests["pr-1"] = { key: "pr-1" };
+          ctx.detailMap["pr-1"] = { prKey: "pr-1" };
+        },
+      }),
+    );
+
+    expect(snapshot.inbox.needsMyReview).toHaveLength(1);
+    expect(snapshot.pullRequests["pr-1"]).toEqual({ prKey: "pr-1" });
+    expect(snapshot.trackedPullRequests["pr-1"]).toEqual({ key: "pr-1" });
+  });
+
+  test("calls resolveStalePr for a workspace whose PR fell out of the poll, and adopts its result", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret-1" } });
+
+    const resolveStalePr = vi.fn(async () => ({ prKey: "pr-1", status: "resolved" }));
+    const snapshot = await manager.syncCore(
+      {
+        connections: [{ id: "conn-1", tokenRef: "tok-1" }],
+        workspaces: [{ review: { provider: "provider", prKey: "pr-1", connectionId: "conn-1" } }],
+      },
+      baseHooks({ isPrResolved: () => false, resolveStalePr }),
+    );
+
+    expect(resolveStalePr).toHaveBeenCalled();
+    expect(snapshot.pullRequests["pr-1"]).toEqual({ prKey: "pr-1", status: "resolved" });
+  });
+
+  test("resolveStalePr returning null leaves the existing detailMap entry untouched (retry next poll)", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret-1" } });
+    manager.snapshot.pullRequests = { "pr-1": { prKey: "pr-1", stale: "yes" } };
+    manager.snapshot.connections = [{ id: "conn-1" }];
+
+    const snapshot = await manager.syncCore(
+      {
+        connections: [{ id: "conn-1", tokenRef: "tok-1" }],
+        workspaces: [{ review: { provider: "provider", prKey: "pr-1", connectionId: "conn-1" } }],
+      },
+      baseHooks({ isPrResolved: () => false, resolveStalePr: async () => null }),
+    );
+
+    expect(snapshot.pullRequests["pr-1"]).toEqual({ prKey: "pr-1", stale: "yes" });
+  });
+
+  test("skips stale-PR resolution entirely when isPrResolved says the existing entry is already terminal", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret-1" } });
+    manager.snapshot.pullRequests = { "pr-1": { prKey: "pr-1" } };
+    manager.snapshot.connections = [{ id: "conn-1" }];
+    const resolveStalePr = vi.fn(async () => null);
+
+    await manager.syncCore(
+      {
+        connections: [{ id: "conn-1", tokenRef: "tok-1" }],
+        workspaces: [{ review: { provider: "provider", prKey: "pr-1", connectionId: "conn-1" } }],
+      },
+      baseHooks({ isPrResolved: () => true, resolveStalePr }),
+    );
+
+    expect(resolveStalePr).not.toHaveBeenCalled();
+  });
+
+  test("skips stale-PR resolution for a workspace belonging to a different provider", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret-1" } });
+    const resolveStalePr = vi.fn(async () => null);
+
+    await manager.syncCore(
+      {
+        connections: [{ id: "conn-1", tokenRef: "tok-1" }],
+        workspaces: [{ review: { provider: "other-provider", prKey: "pr-1", connectionId: "conn-1" } }],
+      },
+      baseHooks({ resolveStalePr }),
+    );
+
+    expect(resolveStalePr).not.toHaveBeenCalled();
+  });
+
+  test("resets the snapshot's stale pullRequests when the connection id set changes", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret-1" } });
+    manager.snapshot.pullRequests = { "stale-pr": { prKey: "stale-pr" } };
+    manager.snapshot.connections = [{ id: "conn-0" }];
+
+    const snapshot = await manager.syncCore(
+      { connections: [{ id: "conn-1", tokenRef: "tok-1" }] },
+      baseHooks(),
+    );
+
+    expect(snapshot.pullRequests["stale-pr"]).toBeUndefined();
+  });
+
+  test("preserves prior pullRequests when the connection id set is unchanged", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret-1" } });
+    manager.snapshot.pullRequests = { "kept-pr": { prKey: "kept-pr" } };
+    manager.snapshot.connections = [{ id: "conn-1" }];
+
+    const snapshot = await manager.syncCore(
+      { connections: [{ id: "conn-1", tokenRef: "tok-1" }] },
+      baseHooks(),
+    );
+
+    expect(snapshot.pullRequests["kept-pr"]).toEqual({ prKey: "kept-pr" });
+  });
+});

@@ -19,14 +19,11 @@ import type { CredentialStore } from "./shared/credential-store.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
 import {
-  appendReviewActivity,
-  buildConnectionErrorEvent,
   buildReviewActivityEvent,
   diffSignatureKeys,
   filterNewComments,
   parseAzureVoteSignature,
   seedNotifiedTimestamp,
-  shouldSeedConnection,
   truncateBody,
 } from "./shared/review-activity.js";
 import {
@@ -47,11 +44,8 @@ import {
   formatReviewWorkspaceError,
   buildCheckSummary,
   createConnectionSnapshot,
-  createEmptySnapshot,
   normalizeConnectionInput,
   exists,
-  dedupePrSummaries,
-  buildInboxViews,
 } from "./azure-devops-utils.js";
 
 // ─── Local type aliases ──────────────────────────────────────────────────────
@@ -189,24 +183,6 @@ interface TrackedPullRequest {
   [key: string]: unknown;
 }
 
-interface AzureConnectionSnapshot {
-  id: string;
-  label: string;
-  orgUrl: string;
-  login: string;
-  tokenRef: string;
-  enabled: boolean;
-  projectFilters: string[];
-  repositoryFilters: string[];
-  pollSeconds: number;
-  reviewRoot: string;
-  status: string;
-  lastSyncAt: string | null;
-  lastSuccessAt: string | null;
-  lastError: string;
-  [key: string]: unknown;
-}
-
 interface AzureReviewStore {
   getState(): {
     connections?: Record<
@@ -339,6 +315,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     this.providerLabel = "azure-devops";
     this.defaultGitLogin = "";
     this.connectionNotFoundMessage = "Azure DevOps connection was not found.";
+    this.syncErrorFallbackMessage = "Azure sync failed.";
   }
 
   /**
@@ -1018,264 +995,209 @@ export class AzureDevOpsManager extends BaseProviderManager {
     gitSnapshots = {} as Record<string, unknown>,
     activeProfileId = "default",
   } = {}) {
-    const reviewState = this.reviewStore.getState();
-    const startedAt = new Date(this.now()).toISOString();
-    // Immediately apply the new connections list so any intermediate broadcastState
-    // (triggered by emitUpdated) reflects the correct profile-filtered connections.
-    const connectionsChanged =
-      JSON.stringify(connections.map((c) => c.id).sort()) !==
-      JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.syncCore({ connections: connections as any, workspaces, gitSnapshots, activeProfileId }, {
+      createConnectionSnapshot: (connection, persistedState) =>
+        createConnectionSnapshot(connection as unknown as AzureConnection, persistedState),
+      fetchConnectionPrs: (connection, token, ctx) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this._fetchAzureConnectionPrs(connection as unknown as AzureConnection, token, ctx as any),
+      isPrResolved: (existing) => (existing as AzurePrSummary | undefined)?.pullRequest?.status !== "active",
+      resolveStalePr: (ws, existing, conn, token) =>
+        this._resolveStaleAzurePr(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ws as any,
+          existing as AzurePrSummary | undefined,
+          conn as unknown as AzureConnection,
+          token,
+        ),
+    });
+  }
 
-    this.snapshot = {
-      ...(connectionsChanged ? createEmptySnapshot() : this.snapshot),
-      connections: connections as unknown as typeof this.snapshot.connections,
-      sync: {
-        ...this.snapshot.sync,
-        running: true,
-        lastStartedAt: startedAt,
-      },
-    };
-    this.emitUpdated();
+  /**
+   * Azure-specific per-connection PR walk: project → repository → PR, fetching
+   * each PR's threads to compute vote/comment state. This is the one part of
+   * sync() that's genuinely provider-specific (GitHub's equivalent runs 2
+   * search queries with dedup instead) — everything else lives in
+   * BaseProviderManager.syncCore.
+   */
+  async _fetchAzureConnectionPrs(
+    connection: AzureConnection,
+    token: string,
+    ctx: {
+      workspaces: ReviewWorkspace[];
+      gitSnapshots: Record<string, unknown>;
+      activeProfileId: string;
+      seedingConnection: boolean;
+      visibleSummaries: AzurePrSummary[];
+      trackedPullRequests: Record<string, TrackedPullRequest>;
+      detailMap: Record<string, AzurePrSummary>;
+      newActivityEvents: unknown[];
+    },
+  ): Promise<void> {
+    const {
+      workspaces,
+      gitSnapshots,
+      activeProfileId,
+      seedingConnection,
+      visibleSummaries,
+      trackedPullRequests,
+      detailMap,
+      newActivityEvents,
+    } = ctx;
 
-    const connectionSnapshots: AzureConnectionSnapshot[] = [];
-    const visibleSummaries: AzurePrSummary[] = [];
-    const detailMap: Record<string, AzurePrSummary> = { ...this.snapshot.pullRequests } as Record<
-      string,
-      AzurePrSummary
-    >;
-    const trackedPullRequests: Record<string, TrackedPullRequest> = {};
-    const newActivityEvents: unknown[] = [];
+    const projects = (await this.azureApi.listProjects(connection, token)) as AzureProject[];
+    const filteredProjects = connection.projectFilters?.length
+      ? projects.filter(
+          (project) =>
+            connection.projectFilters!.includes(project.name) || connection.projectFilters!.includes(project.id),
+        )
+      : projects;
 
-    for (const connection of connections.filter((entry) => entry.enabled !== false)) {
-      this.setAuditContext({ connectionId: connection.id, userInitiated: false });
-      const persistedState = reviewState.connections?.[connection.id] || {};
-      const connectionSnapshot = createConnectionSnapshot(connection, persistedState);
-      connectionSnapshots.push(connectionSnapshot);
-      const seedingConnection = shouldSeedConnection(this._seededConnections, connection.id);
-
-      try {
-        const token = this.credentialStore.getSecret(connection.tokenRef);
-        if (!token) {
-          throw new Error("PAT is missing.");
-        }
-
-        const projects = (await this.azureApi.listProjects(connection, token)) as AzureProject[];
-        const filteredProjects = connection.projectFilters?.length
-          ? projects.filter(
-              (project) =>
-                connection.projectFilters!.includes(project.name) || connection.projectFilters!.includes(project.id),
-            )
-          : projects;
-
-        for (const project of filteredProjects) {
-          const pullRequests = (await this.azureApi.listPullRequestsByProject(
-            connection,
-            token,
-            project.name,
-          )) as Array<{
-            pullRequestId: string | number;
-            repository: { id: string; name: string };
-            [key: string]: unknown;
-          }>;
-          for (const pr of pullRequests) {
-            if (connection.repositoryFilters?.length) {
-              const matchesRepository =
-                connection.repositoryFilters.includes(pr.repository?.id) ||
-                connection.repositoryFilters.includes(pr.repository?.name);
-              if (!matchesRepository) {
-                continue;
-              }
-            }
-
-            const threads = (await this.azureApi.listThreads(
-              connection,
-              token,
-              project.name,
-              pr.repository.id,
-              pr.pullRequestId,
-            )) as Array<Record<string, unknown>>;
-            const prKey = createPullRequestKey(connection.id, pr.repository.id, pr.pullRequestId);
-            const tracked = this.reviewStore.getTrackedPullRequest(prKey) || {};
-            const { summary, internals } = buildPullRequestSummary({
-              connection,
-              pr: pr as Record<string, unknown>,
-              projectName: project.name,
-              threads,
-              tracked,
-              workspaces: workspaces as Array<{ id: string; profileId?: string; [key: string]: unknown }>,
-              gitSnapshots,
-              activeProfileId,
-              now: this.now,
-            });
-            const typedSummary = summary as AzurePrSummary;
-            const typedInternals = internals as Record<string, unknown>;
-            visibleSummaries.push(typedSummary);
-
-            const { events, lastNotifiedActivityAt } = this._detectAzureReviewActivityDeltas({
-              connection,
-              tracked,
-              summary: typedSummary,
-              internals: typedInternals,
-              seedingConnection,
-            });
-            newActivityEvents.push(...events);
-
-            if (this.reviewBridgeStore?.syncPullRequest) {
-              try {
-                await this.reviewBridgeStore.syncPullRequest(typedSummary);
-              } catch (error) {
-                this.log.warn("review bridge sync failed", { prKey, err: (error as Error).message || String(error) });
-              }
-            }
-            trackedPullRequests[prKey] = {
-              ...(tracked || {}),
-              key: prKey,
-              connectionId: connection.id,
-              pullRequestId: pr.pullRequestId,
-              repositoryId: pr.repository.id,
-              projectName: project.name,
-              repositoryName: pr.repository.name,
-              reviewWorkspaceId: typedSummary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
-              lastRemoteActivityAt: typedSummary.lastRemoteActivityAt,
-              lastVoteSignature: typedInternals.voteSignature as string | null,
-              lastMergeStatus: typedSummary.pullRequest?.mergeStatus,
-              lastSourceCommitId: typedSummary.pullRequest?.sourceCommitId,
-              lastSeenActivityAt: tracked.lastSeenActivityAt || null,
-              lastNotifiedActivityAt: lastNotifiedActivityAt as string | null,
-            };
-            detailMap[prKey] = {
-              ...(detailMap[prKey] || {}),
-              ...typedSummary,
-              threads: typedSummary.threads,
-            };
+    for (const project of filteredProjects) {
+      const pullRequests = (await this.azureApi.listPullRequestsByProject(connection, token, project.name)) as Array<{
+        pullRequestId: string | number;
+        repository: { id: string; name: string };
+        [key: string]: unknown;
+      }>;
+      for (const pr of pullRequests) {
+        if (connection.repositoryFilters?.length) {
+          const matchesRepository =
+            connection.repositoryFilters.includes(pr.repository?.id) ||
+            connection.repositoryFilters.includes(pr.repository?.name);
+          if (!matchesRepository) {
+            continue;
           }
         }
-        this._seededConnections.add(connection.id);
 
-        connectionSnapshot.status = "ok";
-        connectionSnapshot.lastError = "";
-        connectionSnapshot.lastSyncAt = new Date(this.now()).toISOString();
-        connectionSnapshot.lastSuccessAt = connectionSnapshot.lastSyncAt;
-        await this.reviewStore.upsertConnectionState(connection.id, {
-          status: "ok",
-          lastError: "",
-          lastSyncAt: connectionSnapshot.lastSyncAt,
-          lastSuccessAt: connectionSnapshot.lastSuccessAt ?? undefined,
-        });
-      } catch (error) {
-        connectionSnapshot.status = "error";
-        connectionSnapshot.lastError = (error as Error).message || "Azure sync failed.";
-        connectionSnapshot.lastSyncAt = new Date(this.now()).toISOString();
-        await this.reviewStore.upsertConnectionState(connection.id, {
-          status: "error",
-          lastError: connectionSnapshot.lastError,
-          lastSyncAt: connectionSnapshot.lastSyncAt,
-        });
-      }
-
-      // Connection-level errors are surfaced once per transition: when status
-      // flips into "error" OR when the error message changes. Silent on
-      // startup if the error was already persisted from the previous session.
-      const connectionErrorEvent = buildConnectionErrorEvent({
-        provider: "azure-devops",
-        connection,
-        prevState: persistedState,
-        currentStatus: connectionSnapshot.status,
-        currentError: connectionSnapshot.lastError,
-        at: connectionSnapshot.lastSyncAt || new Date(this.now()).toISOString(),
-      });
-      if (connectionErrorEvent) {
-        newActivityEvents.push(connectionErrorEvent);
-      }
-    }
-
-    // Resolve actual status for PRs with open workspaces that are no longer in the active poll.
-    // Only fetches once — resolved status is persisted in detailMap so subsequent polls skip them.
-    for (const ws of workspaces) {
-      if (ws.review?.provider !== "azure-devops" || !ws.review?.prKey) continue;
-      const key = ws.review.prKey;
-      if (trackedPullRequests[key]) continue; // still active
-      const existing = detailMap[key];
-      if (existing && existing.pullRequest?.status !== "active") continue; // already resolved
-      const conn = connections.find((c) => c.id === ws.review!.connectionId);
-      const token = conn && this.credentialStore.getSecret(conn.tokenRef);
-      if (!conn || !token) continue;
-      try {
-        const pr = (await this.azureApi.getPullRequestById(
-          conn,
+        const threads = (await this.azureApi.listThreads(
+          connection,
           token,
-          ws.review!.project?.name || "",
-          ws.review!.repository?.id || "",
-          ws.review!.pullRequest?.id || "",
-        )) as { status?: string; closedDate?: string | null };
-        const resolved: AzurePrSummary = {
-          ...(existing || {}),
-          connectionId: ws.review!.connectionId || "",
-          project: ws.review!.project as AzurePrSummary["project"],
-          repository: ws.review!.repository as AzurePrSummary["repository"],
-          prKey: key,
-          pullRequest: {
-            ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
-            id: existing?.pullRequest?.id ?? "",
-            status: pr.status || "completed",
-            closedDate: pr.closedDate ?? undefined,
-          },
-        };
-        detailMap[key] = resolved;
-      } catch (error) {
-        // Azure's requestJson embeds the HTTP status in the thrown message, e.g.
-        // "Azure DevOps request failed (404): ...". Only a 404/410 means the PR
-        // is genuinely gone — any other failure (network blip, 500, timeout,
-        // unparseable status) is transient, so leave detailMap[key] untouched
-        // and let the next poll cycle retry the check instead of permanently
-        // mislabeling a still-active PR as completed.
-        const message = (error as Error).message || String(error);
-        const statusMatch = message.match(/request failed \((\d+)\)/);
-        const statusCode = statusMatch ? Number(statusMatch[1]) : undefined;
-        if (statusCode !== 404 && statusCode !== 410) {
-          this.log.warn("stale PR check failed, will retry next poll", { prKey: key, statusCode, err: message });
-          continue;
+          project.name,
+          pr.repository.id,
+          pr.pullRequestId,
+        )) as Array<Record<string, unknown>>;
+        const prKey = createPullRequestKey(connection.id, pr.repository.id, pr.pullRequestId);
+        const tracked = this.reviewStore.getTrackedPullRequest(prKey) || {};
+        const { summary, internals } = buildPullRequestSummary({
+          connection,
+          pr: pr as Record<string, unknown>,
+          projectName: project.name,
+          threads,
+          tracked,
+          workspaces: workspaces as Array<{ id: string; profileId?: string; [key: string]: unknown }>,
+          gitSnapshots,
+          activeProfileId,
+          now: this.now,
+        });
+        const typedSummary = summary as AzurePrSummary;
+        const typedInternals = internals as Record<string, unknown>;
+        visibleSummaries.push(typedSummary);
+
+        const { events, lastNotifiedActivityAt } = this._detectAzureReviewActivityDeltas({
+          connection,
+          tracked,
+          summary: typedSummary,
+          internals: typedInternals,
+          seedingConnection,
+        });
+        newActivityEvents.push(...events);
+
+        if (this.reviewBridgeStore?.syncPullRequest) {
+          try {
+            await this.reviewBridgeStore.syncPullRequest(typedSummary);
+          } catch (error) {
+            this.log.warn("review bridge sync failed", { prKey, err: (error as Error).message || String(error) });
+          }
         }
-        this.log.warn("stale PR confirmed gone, marking completed", { prKey: key, statusCode, err: message });
-        detailMap[key] = {
-          ...(existing || {}),
-          connectionId: ws.review!.connectionId || "",
-          project: ws.review!.project as AzurePrSummary["project"],
-          repository: ws.review!.repository as AzurePrSummary["repository"],
-          prKey: key,
-          pullRequest: {
-            ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
-            id: existing?.pullRequest?.id ?? "",
-            status: "completed",
-          },
+        trackedPullRequests[prKey] = {
+          ...(tracked || {}),
+          key: prKey,
+          connectionId: connection.id,
+          pullRequestId: pr.pullRequestId,
+          repositoryId: pr.repository.id,
+          projectName: project.name,
+          repositoryName: pr.repository.name,
+          reviewWorkspaceId: typedSummary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
+          lastRemoteActivityAt: typedSummary.lastRemoteActivityAt,
+          lastVoteSignature: typedInternals.voteSignature as string | null,
+          lastMergeStatus: typedSummary.pullRequest?.mergeStatus,
+          lastSourceCommitId: typedSummary.pullRequest?.sourceCommitId,
+          lastSeenActivityAt: tracked.lastSeenActivityAt || null,
+          lastNotifiedActivityAt: lastNotifiedActivityAt as string | null,
+        };
+        detailMap[prKey] = {
+          ...(detailMap[prKey] || {}),
+          ...typedSummary,
+          threads: typedSummary.threads,
         };
       }
     }
+  }
 
-    for (const [key, tracked] of Object.entries(trackedPullRequests)) {
-      await this.reviewStore.upsertTrackedPullRequest(key, tracked);
+  /**
+   * Fetch a single stale/inactive PR by id and return either its updated
+   * state or (on a confirmed 404/410) a terminal "completed" summary. Returns
+   * null on any other failure so BaseProviderManager.syncCore leaves the
+   * existing detailMap entry untouched and retries on the next poll instead
+   * of mislabeling a still-active PR.
+   */
+  async _resolveStaleAzurePr(
+    ws: ReviewWorkspace,
+    existing: AzurePrSummary | undefined,
+    conn: AzureConnection,
+    token: string,
+  ): Promise<AzurePrSummary | null> {
+    const key = ws.review!.prKey!;
+    try {
+      const pr = (await this.azureApi.getPullRequestById(
+        conn,
+        token,
+        ws.review!.project?.name || "",
+        ws.review!.repository?.id || "",
+        ws.review!.pullRequest?.id || "",
+      )) as { status?: string; closedDate?: string | null };
+      return {
+        ...(existing || {}),
+        connectionId: ws.review!.connectionId || "",
+        project: ws.review!.project as AzurePrSummary["project"],
+        repository: ws.review!.repository as AzurePrSummary["repository"],
+        prKey: key,
+        pullRequest: {
+          ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
+          id: existing?.pullRequest?.id ?? "",
+          status: pr.status || "completed",
+          closedDate: pr.closedDate ?? undefined,
+        },
+      };
+    } catch (error) {
+      // Azure's requestJson embeds the HTTP status in the thrown message, e.g.
+      // "Azure DevOps request failed (404): ...". Only a 404/410 means the PR
+      // is genuinely gone — any other failure (network blip, 500, timeout,
+      // unparseable status) is transient, so leave detailMap[key] untouched
+      // and let the next poll cycle retry the check instead of permanently
+      // mislabeling a still-active PR as completed.
+      const message = (error as Error).message || String(error);
+      const statusMatch = message.match(/request failed \((\d+)\)/);
+      const statusCode = statusMatch ? Number(statusMatch[1]) : undefined;
+      if (statusCode !== 404 && statusCode !== 410) {
+        this.log.warn("stale PR check failed, will retry next poll", { prKey: key, statusCode, err: message });
+        return null;
+      }
+      this.log.warn("stale PR confirmed gone, marking completed", { prKey: key, statusCode, err: message });
+      return {
+        ...(existing || {}),
+        connectionId: ws.review!.connectionId || "",
+        project: ws.review!.project as AzurePrSummary["project"],
+        repository: ws.review!.repository as AzurePrSummary["repository"],
+        prKey: key,
+        pullRequest: {
+          ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
+          id: existing?.pullRequest?.id ?? "",
+          status: "completed",
+        },
+      };
     }
-
-    // Collapse PRs that several connections fetched independently (e.g.
-    // 3 connections to the same Azure DevOps org → same PR 3× otherwise).
-    // The per-connection trackedPullRequests / detailMap are kept intact;
-    // dedup applies only to the inbox views the user sees.
-    const dedupedSummaries = dedupePrSummaries(visibleSummaries);
-    const snapshot = {
-      connections: connectionSnapshots as unknown as typeof this.snapshot.connections,
-      inbox: buildInboxViews(dedupedSummaries),
-      trackedPullRequests,
-      pullRequests: detailMap,
-      reviewActivity: appendReviewActivity(this.snapshot.reviewActivity, newActivityEvents),
-      sync: {
-        running: false,
-        lastStartedAt: startedAt,
-        lastCompletedAt: new Date(this.now()).toISOString(),
-      },
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.setSnapshot(snapshot as any);
-    return this.getSnapshot();
   }
 
   /**

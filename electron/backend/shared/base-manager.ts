@@ -4,15 +4,24 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { mkdir, rm } from "node:fs/promises";
 import { execFileText as defaultExecFileText } from "../process-utils.js";
-import { clone, createEmptySnapshot, stripRefsPrefix, exists, shortPathKey } from "./provider-utils.js";
+import {
+  clone,
+  createEmptySnapshot,
+  stripRefsPrefix,
+  exists,
+  shortPathKey,
+  dedupePrSummaries,
+  buildInboxViews,
+} from "./provider-utils.js";
+import { appendReviewActivity, buildConnectionErrorEvent, shouldSeedConnection } from "./review-activity.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./git-auth-utils.js";
 import type { Logger } from "../logger.js";
 import { getLogger } from "../logger.js";
 import type { CredentialStore } from "./credential-store.js";
 
 interface PrSummaryItem {
-  prKey: string;
-  lastRemoteActivityAt?: string;
+  prKey?: string;
+  lastRemoteActivityAt?: string | null;
   reviewWorkspaceId?: string;
   hasAttention?: boolean;
   attentionReason?: string;
@@ -63,12 +72,88 @@ interface ProviderSnapshot {
 interface ReviewStore {
   upsertTrackedPullRequest(
     prKey: string,
-    data: { lastSeenActivityAt: string; reviewWorkspaceId: string },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    data: any,
   ): Promise<void>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getState(): { connections?: Record<string, any> };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getTrackedPullRequest(prKey: string): Record<string, any> | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  upsertConnectionState(connectionId: string, data: any): Promise<unknown>;
 }
 
 interface ReviewBridgeStore {
   markPullRequestSeen?(prKey: string, lastSeenActivityAt: string): Promise<void>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  syncPullRequest?(summary: any): Promise<void>;
+}
+
+interface SyncConnectionRef {
+  id: string;
+  tokenRef?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
+interface SyncOptions {
+  connections?: SyncConnectionRef[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  workspaces?: any[];
+  gitSnapshots?: Record<string, unknown>;
+  activeProfileId?: string;
+}
+
+interface SyncConnectionCtx {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  workspaces: any[];
+  gitSnapshots: Record<string, unknown>;
+  activeProfileId: string;
+  seedingConnection: boolean;
+  visibleSummaries: PrSummaryItem[];
+  trackedPullRequests: Record<string, Record<string, unknown>>;
+  detailMap: Record<string, PrSummaryItem>;
+  newActivityEvents: unknown[];
+}
+
+interface ConnectionSnapshotLike {
+  status?: string;
+  lastError?: string | null;
+  lastSyncAt?: string | null;
+  lastSuccessAt?: string | null;
+  [key: string]: unknown;
+}
+
+interface SyncHooks {
+  /** Provider-specific connection snapshot shape (azure-devops-utils.ts /
+   *  github-utils.ts each have their own createConnectionSnapshot). */
+  createConnectionSnapshot(
+    connection: SyncConnectionRef,
+    persistedState: Record<string, unknown>,
+  ): ConnectionSnapshotLike;
+  /** Walk this connection's PRs (project/repo/PR nested loop for Azure, 2
+   *  search queries for GitHub — the one part of sync() that's genuinely
+   *  provider-specific), pushing/setting into ctx's shared accumulators. */
+  fetchConnectionPrs(connection: SyncConnectionRef, token: string, ctx: SyncConnectionCtx): Promise<void>;
+  /** True once `existing` already reflects a terminal PR state (Azure:
+   *  status !== "active"; GitHub: state !== "open") — skips the re-fetch. */
+  isPrResolved(existing: PrSummaryItem | undefined): boolean;
+  /**
+   * Given a workspace whose tracked PR fell out of the active poll, fetch its
+   * current state and return the updated detailMap entry — resolved (still
+   * open, new data) or terminal (confirmed gone via 404/410). Return
+   * null/undefined to leave detailMap untouched: a transient fetch failure
+   * that should retry on the next poll instead of mislabeling an active PR.
+   * The hook owns its own try/catch and status-code parsing since the
+   * terminal-state field shape and log wording differ per provider.
+   */
+  resolveStalePr(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ws: any,
+    existing: PrSummaryItem | undefined,
+    conn: SyncConnectionRef,
+    token: string,
+  ): Promise<PrSummaryItem | null | undefined>;
 }
 
 interface AuditLogStore {
@@ -134,6 +219,7 @@ export class BaseProviderManager extends EventEmitter {
   providerLabel: string;
   defaultGitLogin: string;
   connectionNotFoundMessage: string;
+  syncErrorFallbackMessage: string;
   _log: Logger | null;
 
   constructor({
@@ -170,6 +256,7 @@ export class BaseProviderManager extends EventEmitter {
     this.providerLabel = "provider";
     this.defaultGitLogin = "";
     this.connectionNotFoundMessage = "Connection was not found.";
+    this.syncErrorFallbackMessage = "Sync failed.";
     this._log = null;
   }
 
@@ -263,6 +350,148 @@ export class BaseProviderManager extends EventEmitter {
   setSnapshot(snapshot: ProviderSnapshot): void {
     this.snapshot = clone(snapshot);
     this.emitUpdated();
+  }
+
+  /**
+   * Template-method skeleton shared by AzureDevOpsManager.sync / GitHubManager.sync:
+   * reset-on-connections-changed, per-connection fetch + ok/error bookkeeping,
+   * stale-PR resolution for workspaces that fell out of the active poll,
+   * tracked-PR persistence, cross-connection dedup, and final snapshot build.
+   * Each provider supplies the 4 genuinely-divergent pieces via `hooks`
+   * (connection-snapshot shape, the PR-fetch walk itself, and stale-PR
+   * resolution) — everything else here is the byte-identical part both
+   * managers used to carry as their own ~250-line copy.
+   */
+  async syncCore(
+    { connections = [], workspaces = [], gitSnapshots = {}, activeProfileId = "default" }: SyncOptions = {},
+    hooks: SyncHooks,
+  ): Promise<ProviderSnapshot> {
+    const reviewState = this.reviewStore.getState();
+    const startedAt = new Date(this.now()).toISOString();
+    // Immediately apply the new connections list so any intermediate broadcastState
+    // (triggered by emitUpdated) reflects the correct profile-filtered connections.
+    const connectionsChanged =
+      JSON.stringify(connections.map((c) => c.id).sort()) !==
+      JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
+
+    this.snapshot = {
+      ...(connectionsChanged ? (createEmptySnapshot() as ProviderSnapshot) : this.snapshot),
+      connections: connections as unknown as ProviderSnapshot["connections"],
+      sync: {
+        ...this.snapshot.sync,
+        running: true,
+        lastStartedAt: startedAt,
+      },
+    };
+    this.emitUpdated();
+
+    const connectionSnapshots: ConnectionSnapshotLike[] = [];
+    const visibleSummaries: PrSummaryItem[] = [];
+    const detailMap: Record<string, PrSummaryItem> = { ...this.snapshot.pullRequests };
+    const trackedPullRequests: Record<string, Record<string, unknown>> = {};
+    const newActivityEvents: unknown[] = [];
+
+    for (const connection of connections.filter((entry) => entry.enabled !== false)) {
+      this.setAuditContext({ connectionId: connection.id, userInitiated: false });
+      const persistedState = reviewState.connections?.[connection.id] || {};
+      const connectionSnapshot = hooks.createConnectionSnapshot(connection, persistedState);
+      connectionSnapshots.push(connectionSnapshot);
+      const seedingConnection = shouldSeedConnection(this._seededConnections, connection.id);
+
+      try {
+        const token = this.credentialStore.getSecret(connection.tokenRef || "");
+        if (!token) {
+          throw new Error("PAT is missing.");
+        }
+
+        await hooks.fetchConnectionPrs(connection, token, {
+          workspaces,
+          gitSnapshots,
+          activeProfileId,
+          seedingConnection,
+          visibleSummaries,
+          trackedPullRequests,
+          detailMap,
+          newActivityEvents,
+        });
+        this._seededConnections.add(connection.id);
+
+        connectionSnapshot.status = "ok";
+        connectionSnapshot.lastError = "";
+        connectionSnapshot.lastSyncAt = new Date(this.now()).toISOString();
+        connectionSnapshot.lastSuccessAt = connectionSnapshot.lastSyncAt;
+        await this.reviewStore.upsertConnectionState(connection.id, {
+          status: "ok",
+          lastError: "",
+          lastSyncAt: connectionSnapshot.lastSyncAt,
+          lastSuccessAt: connectionSnapshot.lastSuccessAt,
+        });
+      } catch (error) {
+        connectionSnapshot.status = "error";
+        connectionSnapshot.lastError = (error as Error).message || this.syncErrorFallbackMessage;
+        connectionSnapshot.lastSyncAt = new Date(this.now()).toISOString();
+        await this.reviewStore.upsertConnectionState(connection.id, {
+          status: "error",
+          lastError: connectionSnapshot.lastError,
+          lastSyncAt: connectionSnapshot.lastSyncAt,
+        });
+      }
+
+      // Connection-level errors are surfaced once per transition: when status
+      // flips into "error" OR when the error message changes. Silent on
+      // startup if the error was already persisted from the previous session.
+      const connectionErrorEvent = buildConnectionErrorEvent({
+        provider: this.providerLabel,
+        connection,
+        prevState: persistedState,
+        currentStatus: connectionSnapshot.status || "",
+        currentError: connectionSnapshot.lastError,
+        at: connectionSnapshot.lastSyncAt || new Date(this.now()).toISOString(),
+      });
+      if (connectionErrorEvent) {
+        newActivityEvents.push(connectionErrorEvent);
+      }
+    }
+
+    // Resolve actual status for PRs with open workspaces that are no longer in the active poll.
+    // Only fetches once — resolved status is persisted in detailMap so subsequent polls skip them.
+    for (const ws of workspaces) {
+      if (ws.review?.provider !== this.providerLabel || !ws.review?.prKey) continue;
+      const key = ws.review.prKey;
+      if (trackedPullRequests[key]) continue; // still active
+      const existing = detailMap[key];
+      if (existing && hooks.isPrResolved(existing)) continue; // already resolved
+      const conn = connections.find((c) => c.id === ws.review!.connectionId);
+      const token = conn && this.credentialStore.getSecret(conn.tokenRef || "");
+      if (!conn || !token) continue;
+      const resolved = await hooks.resolveStalePr(ws, existing, conn, token);
+      if (resolved) detailMap[key] = resolved;
+    }
+
+    for (const [key, tracked] of Object.entries(trackedPullRequests)) {
+      await this.reviewStore.upsertTrackedPullRequest(key, tracked);
+    }
+
+    // Collapse PRs that several connections fetched independently (e.g.
+    // 3 connections to the same org/repo → same PR 3× otherwise). The
+    // per-connection trackedPullRequests / detailMap are kept intact; dedup
+    // applies only to the inbox views the user sees.
+    const dedupedSummaries = dedupePrSummaries(visibleSummaries);
+    const snapshot: ProviderSnapshot = {
+      ...this.snapshot,
+      connections: connectionSnapshots as unknown as ProviderSnapshot["connections"],
+      inbox: buildInboxViews(dedupedSummaries),
+      trackedPullRequests,
+      pullRequests: detailMap,
+      reviewActivity: appendReviewActivity(this.snapshot.reviewActivity, newActivityEvents),
+      sync: {
+        running: false,
+        lastStartedAt: startedAt,
+        lastCompletedAt: new Date(this.now()).toISOString(),
+      },
+    };
+    this.setSnapshot(snapshot);
+    return this.getSnapshot();
   }
 
   stopPolling(): void {

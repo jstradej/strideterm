@@ -7,14 +7,11 @@ import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
 import { buildCheckSummary, buildPullRequestSummary, findWorkspaceForPullRequest } from "./github-pr-summary.js";
 import {
-  appendReviewActivity,
-  buildConnectionErrorEvent,
   buildReviewActivityEvent,
   diffSignatureKeys,
   filterNewComments,
   parseGitHubReviewSignature,
   seedNotifiedTimestamp,
-  shouldSeedConnection,
   truncateBody,
 } from "./shared/review-activity.js";
 import {
@@ -31,11 +28,8 @@ import {
   formatReviewWorkspaceError,
   normalizeConnectionInput,
   createConnectionSnapshot,
-  createEmptySnapshot,
   exists,
   buildRepositoryRemoteUrl,
-  dedupePrSummaries,
-  buildInboxViews,
 } from "./github-utils.js";
 
 interface SyncConnection {
@@ -192,6 +186,7 @@ export class GitHubManager extends BaseProviderManager {
     this.providerLabel = "github";
     this.defaultGitLogin = "x-access-token";
     this.connectionNotFoundMessage = "GitHub connection was not found.";
+    this.syncErrorFallbackMessage = "GitHub sync failed.";
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -259,268 +254,223 @@ export class GitHubManager extends BaseProviderManager {
     gitSnapshots = {},
     activeProfileId = "default",
   }: SyncOptions = {}): Promise<Record<string, unknown>> {
-    const reviewState = this.reviewStore.getState();
-    const startedAt = new Date(this.now()).toISOString();
-    const connectionsChanged =
-      JSON.stringify(connections.map((c) => c.id).sort()) !==
-      JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
-    this.snapshot = {
-      ...(connectionsChanged ? (createEmptySnapshot() as typeof this.snapshot) : this.snapshot),
-      connections,
-      sync: {
-        ...this.snapshot.sync,
-        running: true,
-        lastStartedAt: startedAt,
-      },
-    };
-    this.emitUpdated();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.syncCore({ connections: connections as any, workspaces, gitSnapshots, activeProfileId }, {
+      createConnectionSnapshot: (connection, persistedState) =>
+        createConnectionSnapshot(connection as unknown as SyncConnection, persistedState),
+      fetchConnectionPrs: (connection, token, ctx) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this._fetchGitHubConnectionPrs(connection as unknown as SyncConnection, token, ctx as any),
+      isPrResolved: (existing) =>
+        (existing?.pullRequest as Record<string, unknown> | undefined)?.state !== "open",
+      resolveStalePr: (ws, existing, conn, token) =>
+        this._resolveStaleGitHubPr(
+          ws as unknown as SyncWorkspace,
+          existing,
+          conn as unknown as SyncConnection,
+          token,
+        ),
+    }) as Promise<Record<string, unknown>>;
+  }
 
-    const connectionSnapshots: Record<string, unknown>[] = [];
-    const visibleSummaries: Record<string, unknown>[] = [];
-    const detailMap: Record<string, Record<string, unknown>> = { ...this.snapshot.pullRequests };
-    const trackedPullRequests: Record<string, Record<string, unknown>> = {};
-    const newActivityEvents: unknown[] = [];
-
+  /**
+   * GitHub-specific per-connection PR walk: 2 search queries (review-requested
+   * + author) with cross-query dedup, then per-PR detail/reviews/comments
+   * fetches. This is the one part of sync() that's genuinely provider-specific
+   * (Azure's equivalent walks project → repository → PR instead) — everything
+   * else lives in BaseProviderManager.syncCore.
+   */
+  async _fetchGitHubConnectionPrs(
+    connection: SyncConnection,
+    token: string,
+    ctx: {
+      workspaces: SyncWorkspace[];
+      gitSnapshots: Record<string, unknown>;
+      activeProfileId: string;
+      seedingConnection: boolean;
+      visibleSummaries: Record<string, unknown>[];
+      trackedPullRequests: Record<string, Record<string, unknown>>;
+      detailMap: Record<string, Record<string, unknown>>;
+      newActivityEvents: unknown[];
+    },
+  ): Promise<void> {
+    const {
+      workspaces,
+      gitSnapshots,
+      activeProfileId,
+      seedingConnection,
+      visibleSummaries,
+      trackedPullRequests,
+      detailMap,
+      newActivityEvents,
+    } = ctx;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = this.api as any;
 
-    for (const connection of connections.filter((c) => c.enabled !== false)) {
-      this.setAuditContext({ connectionId: connection.id, userInitiated: false });
-      const persistedState = reviewState.connections?.[connection.id] || {};
-      const connectionSnapshot = createConnectionSnapshot(connection, persistedState);
-      connectionSnapshots.push(connectionSnapshot);
-      const seedingConnection = shouldSeedConnection(this._seededConnections, connection.id);
+    const login = connection.currentUserLogin;
+    if (!login) throw new Error("GitHub login is not configured. Re-verify the connection.");
 
-      try {
-        const token = this.credentialStore.getSecret(connection.tokenRef || "");
-        if (!token) throw new Error("PAT is missing.");
+    // Build search queries for inbox
+    const ownerScope = connection.ownerFilters?.length ? connection.ownerFilters.map((o) => `org:${o}`).join(" ") : "";
 
-        const login = connection.currentUserLogin;
-        if (!login) throw new Error("GitHub login is not configured. Re-verify the connection.");
+    const repoScope = connection.repositoryFilters?.length
+      ? connection.repositoryFilters.map((r) => `repo:${r}`).join(" ")
+      : "";
 
-        // Build search queries for inbox
-        const ownerScope = connection.ownerFilters?.length
-          ? connection.ownerFilters.map((o) => `org:${o}`).join(" ")
-          : "";
+    const scope = repoScope || ownerScope;
 
-        const repoScope = connection.repositoryFilters?.length
-          ? connection.repositoryFilters.map((r) => `repo:${r}`).join(" ")
-          : "";
+    const queries = [
+      `is:pr is:open archived:false review-requested:${login} ${scope}`.trim(),
+      `is:pr is:open archived:false author:${login} ${scope}`.trim(),
+    ];
 
-        const scope = repoScope || ownerScope;
+    const seenPrKeys = new Set<string>();
 
-        const queries = [
-          `is:pr is:open archived:false review-requested:${login} ${scope}`.trim(),
-          `is:pr is:open archived:false author:${login} ${scope}`.trim(),
-        ];
+    for (const query of queries) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const searchResults: any[] = await api.searchPullRequests(connection, token, query);
 
-        const seenPrKeys = new Set<string>();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const item of searchResults as any[]) {
+        const prUrl = item.pull_request?.url;
+        if (!prUrl) continue;
 
-        for (const query of queries) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const searchResults: any[] = await api.searchPullRequests(connection, token, query);
+        // Extract owner/repo from the search result
+        const repoFullName = item.repository_url?.split("/repos/")[1] || "";
+        const [prOwner, prRepo] = repoFullName.split("/");
+        if (!prOwner || !prRepo) continue;
 
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          for (const item of searchResults as any[]) {
-            const prUrl = item.pull_request?.url;
-            if (!prUrl) continue;
+        const pullNumber = item.number;
+        const prKey = createPullRequestKey(connection.id, prOwner, prRepo, pullNumber);
+        if (seenPrKeys.has(prKey)) continue;
+        seenPrKeys.add(prKey);
 
-            // Extract owner/repo from the search result
-            const repoFullName = item.repository_url?.split("/repos/")[1] || "";
-            const [prOwner, prRepo] = repoFullName.split("/");
-            if (!prOwner || !prRepo) continue;
+        // Fetch full PR detail
+        const pr = await api.getPullRequest(connection, token, prOwner, prRepo, pullNumber);
 
-            const pullNumber = item.number;
-            const prKey = createPullRequestKey(connection.id, prOwner, prRepo, pullNumber);
-            if (seenPrKeys.has(prKey)) continue;
-            seenPrKeys.add(prKey);
+        // Fetch reviews, review comments, issue comments, requested reviewers
+        const [reviews, reviewComments, issueCommentsList, requestedReviewers] = await Promise.all([
+          api.listReviews(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
+          api.listReviewComments(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
+          api.listIssueComments(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
+          api.listRequestedReviewers(connection, token, prOwner, prRepo, pullNumber).catch(() => ({})),
+        ]);
 
-            // Fetch full PR detail
-            const pr = await api.getPullRequest(connection, token, prOwner, prRepo, pullNumber);
+        const tracked: Record<string, unknown> = this.reviewStore.getTrackedPullRequest(prKey) || {};
+        const { summary, internals } = buildPullRequestSummary({
+          connection,
+          pr,
+          reviews,
+          reviewComments,
+          issueComments: issueCommentsList,
+          requestedReviewers,
+          tracked,
+          workspaces,
+          gitSnapshots,
+          activeProfileId,
+          now: this.now,
+        });
+        visibleSummaries.push(summary);
 
-            // Fetch reviews, review comments, issue comments, requested reviewers
-            const [reviews, reviewComments, issueCommentsList, requestedReviewers] = await Promise.all([
-              api.listReviews(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
-              api.listReviewComments(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
-              api.listIssueComments(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
-              api.listRequestedReviewers(connection, token, prOwner, prRepo, pullNumber).catch(() => ({})),
-            ]);
+        const { events, lastNotifiedActivityAt } = this._detectGitHubReviewActivityDeltas({
+          tracked,
+          summary,
+          internals,
+          seedingConnection,
+        });
+        newActivityEvents.push(...events);
 
-            const tracked: Record<string, unknown> = this.reviewStore.getTrackedPullRequest(prKey) || {};
-            const { summary, internals } = buildPullRequestSummary({
-              connection,
-              pr,
-              reviews,
-              reviewComments,
-              issueComments: issueCommentsList,
-              requestedReviewers,
-              tracked,
-              workspaces,
-              gitSnapshots,
-              activeProfileId,
-              now: this.now,
-            });
-            visibleSummaries.push(summary);
-
-            const { events, lastNotifiedActivityAt } = this._detectGitHubReviewActivityDeltas({
-              tracked,
-              summary,
-              internals,
-              seedingConnection,
-            });
-            newActivityEvents.push(...events);
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const bridgeStore = this.reviewBridgeStore as any;
-            if (bridgeStore?.syncPullRequest) {
-              try {
-                await bridgeStore.syncPullRequest(summary);
-              } catch (error) {
-                this.log.warn("review bridge sync failed", { prKey, err: (error as Error).message || String(error) });
-              }
-            }
-
-            trackedPullRequests[prKey] = {
-              ...(tracked || {}),
-              key: prKey,
-              connectionId: connection.id,
-              pullRequestNumber: pullNumber,
-              owner: prOwner,
-              repo: prRepo,
-              reviewWorkspaceId: summary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
-              lastRemoteActivityAt: summary.lastRemoteActivityAt,
-              lastReviewStateSignature: internals.reviewStateSignature,
-              lastHeadSha: internals.headSha,
-              lastChecksSignature: internals.checksSignature,
-              lastSeenActivityAt: tracked.lastSeenActivityAt || null,
-              lastNotifiedActivityAt,
-            };
-            detailMap[prKey] = {
-              ...(detailMap[prKey] || {}),
-              ...summary,
-            };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bridgeStore = this.reviewBridgeStore as any;
+        if (bridgeStore?.syncPullRequest) {
+          try {
+            await bridgeStore.syncPullRequest(summary);
+          } catch (error) {
+            this.log.warn("review bridge sync failed", { prKey, err: (error as Error).message || String(error) });
           }
         }
-        this._seededConnections.add(connection.id);
 
-        connectionSnapshot.status = "ok";
-        connectionSnapshot.lastError = "";
-        connectionSnapshot.lastSyncAt = new Date(this.now()).toISOString();
-        connectionSnapshot.lastSuccessAt = connectionSnapshot.lastSyncAt;
-        await this.reviewStore.upsertConnectionState(connection.id, {
-          status: "ok",
-          lastError: "",
-          lastSyncAt: connectionSnapshot.lastSyncAt as string,
-          lastSuccessAt: connectionSnapshot.lastSuccessAt as string,
-        });
-      } catch (error) {
-        connectionSnapshot.status = "error";
-        connectionSnapshot.lastError = (error as Error).message || "GitHub sync failed.";
-        connectionSnapshot.lastSyncAt = new Date(this.now()).toISOString();
-        await this.reviewStore.upsertConnectionState(connection.id, {
-          status: "error",
-          lastError: connectionSnapshot.lastError as string,
-          lastSyncAt: connectionSnapshot.lastSyncAt as string,
-        });
-      }
-
-      // Mirrors AzureDevOpsManager — notify once per transition into error
-      // (or on a different error message), not every poll while the error
-      // persists and not on startup if the same error was already persisted.
-      const connectionErrorEvent = buildConnectionErrorEvent({
-        provider: "github",
-        connection,
-        prevState: persistedState,
-        currentStatus: connectionSnapshot.status as string,
-        currentError: connectionSnapshot.lastError as string,
-        at: (connectionSnapshot.lastSyncAt || new Date(this.now()).toISOString()) as string,
-      });
-      if (connectionErrorEvent) {
-        newActivityEvents.push(connectionErrorEvent);
-      }
-    }
-
-    // Resolve actual status for PRs with open workspaces that are no longer in the active poll.
-    // Only fetches once — resolved status is persisted in detailMap so subsequent polls skip them.
-    for (const ws of workspaces) {
-      if (ws.review?.provider !== "github" || !ws.review?.prKey) continue;
-      const key = ws.review.prKey;
-      if (trackedPullRequests[key]) continue; // still active
-      const existing = detailMap[key];
-      if (existing && (existing.pullRequest as Record<string, unknown> | undefined)?.state !== "open") continue; // already resolved
-      const conn = connections.find((c) => c.id === ws.review?.connectionId);
-      const token = conn && this.credentialStore.getSecret(conn.tokenRef || "");
-      if (!conn || !token) continue;
-      const [owner, repo] = (ws.review.repository?.fullName || "").split("/");
-      const pullNumber = ws.review.pullRequest?.number || ws.review.pullRequest?.id;
-      if (!owner || !repo || !pullNumber) continue;
-      try {
-        const pr = await api.getPullRequest(conn, token, owner, repo, pullNumber);
-        detailMap[key] = {
-          ...(existing || {}),
-          connectionId: ws.review.connectionId,
-          repository: ws.review.repository,
-          pullRequest: {
-            ...((existing?.pullRequest as Record<string, unknown>) || ws.review.pullRequest || {}),
-            state: pr.state || "closed",
-            mergedAt: pr.merged_at || null,
-            closedAt: pr.closed_at || null,
-          },
+        trackedPullRequests[prKey] = {
+          ...(tracked || {}),
+          key: prKey,
+          connectionId: connection.id,
+          pullRequestNumber: pullNumber,
+          owner: prOwner,
+          repo: prRepo,
+          reviewWorkspaceId: summary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
+          lastRemoteActivityAt: summary.lastRemoteActivityAt,
+          lastReviewStateSignature: internals.reviewStateSignature,
+          lastHeadSha: internals.headSha,
+          lastChecksSignature: internals.checksSignature,
+          lastSeenActivityAt: tracked.lastSeenActivityAt || null,
+          lastNotifiedActivityAt,
         };
-      } catch (error) {
-        // GitHub's requestJson embeds the HTTP status in the thrown message, e.g.
-        // "GitHub request failed (404): ...". Only a 404/410 means the PR is
-        // genuinely gone — any other failure (network blip, 500, timeout,
-        // unparseable status) is transient, so leave detailMap[key] untouched
-        // and let the next poll cycle retry the check instead of permanently
-        // mislabeling a still-active PR as closed.
-        const message = (error as Error).message || String(error);
-        const statusMatch = message.match(/request failed \((\d+)\)/);
-        const statusCode = statusMatch ? Number(statusMatch[1]) : undefined;
-        if (statusCode !== 404 && statusCode !== 410) {
-          this.log.warn("stale PR check failed, will retry next poll", { prKey: key, statusCode, err: message });
-          continue;
-        }
-        this.log.warn("stale PR confirmed gone, marking closed", { prKey: key, statusCode, err: message });
-        detailMap[key] = {
-          ...(existing || {}),
-          connectionId: ws.review.connectionId,
-          repository: ws.review.repository,
-          pullRequest: {
-            ...((existing?.pullRequest as Record<string, unknown>) || ws.review.pullRequest || {}),
-            state: "closed",
-            mergedAt: null,
-          },
+        detailMap[prKey] = {
+          ...(detailMap[prKey] || {}),
+          ...summary,
         };
       }
     }
+  }
 
-    for (const [key, tracked] of Object.entries(trackedPullRequests)) {
-      await this.reviewStore.upsertTrackedPullRequest(key, tracked);
+  /**
+   * Fetch a single stale/inactive PR by number and return either its updated
+   * state or (on a confirmed 404/410) a terminal "closed" summary. Returns
+   * null on any other failure so BaseProviderManager.syncCore leaves the
+   * existing detailMap entry untouched and retries on the next poll instead
+   * of mislabeling a still-active PR.
+   */
+  async _resolveStaleGitHubPr(
+    ws: SyncWorkspace,
+    existing: Record<string, unknown> | undefined,
+    conn: SyncConnection,
+    token: string,
+  ): Promise<Record<string, unknown> | null> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    const key = ws.review!.prKey!;
+    const [owner, repo] = (ws.review!.repository?.fullName || "").split("/");
+    const pullNumber = ws.review!.pullRequest?.number || ws.review!.pullRequest?.id;
+    if (!owner || !repo || !pullNumber) return null;
+    try {
+      const pr = await api.getPullRequest(conn, token, owner, repo, pullNumber);
+      return {
+        ...(existing || {}),
+        connectionId: ws.review!.connectionId,
+        repository: ws.review!.repository,
+        pullRequest: {
+          ...((existing?.pullRequest as Record<string, unknown>) || ws.review!.pullRequest || {}),
+          state: pr.state || "closed",
+          mergedAt: pr.merged_at || null,
+          closedAt: pr.closed_at || null,
+        },
+      };
+    } catch (error) {
+      // GitHub's requestJson embeds the HTTP status in the thrown message, e.g.
+      // "GitHub request failed (404): ...". Only a 404/410 means the PR is
+      // genuinely gone — any other failure (network blip, 500, timeout,
+      // unparseable status) is transient, so leave detailMap[key] untouched
+      // and let the next poll cycle retry the check instead of permanently
+      // mislabeling a still-active PR as closed.
+      const message = (error as Error).message || String(error);
+      const statusMatch = message.match(/request failed \((\d+)\)/);
+      const statusCode = statusMatch ? Number(statusMatch[1]) : undefined;
+      if (statusCode !== 404 && statusCode !== 410) {
+        this.log.warn("stale PR check failed, will retry next poll", { prKey: key, statusCode, err: message });
+        return null;
+      }
+      this.log.warn("stale PR confirmed gone, marking closed", { prKey: key, statusCode, err: message });
+      return {
+        ...(existing || {}),
+        connectionId: ws.review!.connectionId,
+        repository: ws.review!.repository,
+        pullRequest: {
+          ...((existing?.pullRequest as Record<string, unknown>) || ws.review!.pullRequest || {}),
+          state: "closed",
+          mergedAt: null,
+        },
+      };
     }
-
-    // Collapse PRs that several connections fetched independently (e.g. 2
-    // GitHub connections with access to the same repo → same PR twice
-    // otherwise). Mirrors AzureDevOpsManager — the per-connection
-    // trackedPullRequests / detailMap are kept intact; dedup applies only to
-    // the inbox views the user sees.
-    const dedupedSummaries = dedupePrSummaries(visibleSummaries);
-
-    const snapshot = {
-      connections: connectionSnapshots,
-      inbox: buildInboxViews(dedupedSummaries),
-      trackedPullRequests,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      pullRequests: detailMap as any,
-      reviewActivity: appendReviewActivity(this.snapshot.reviewActivity, newActivityEvents),
-      sync: {
-        running: false,
-        lastStartedAt: startedAt,
-        lastCompletedAt: new Date(this.now()).toISOString(),
-      },
-    };
-    this.setSnapshot(snapshot as typeof this.snapshot);
-    return this.getSnapshot();
   }
 
   /**
