@@ -126,7 +126,6 @@
             :selected-id="selectedNodeId"
             :filter-active="!!treeStore.filter"
             @select="onNodeSelect"
-            @context-menu="onContextMenu"
           />
         </div>
       </div>
@@ -168,7 +167,6 @@
             :selected-id="selectedNodeId"
             :filter-active="!!treeStore.filter"
             @select="onNodeSelect"
-            @context-menu="onContextMenu"
           />
         </div>
       </Pane>
@@ -374,10 +372,6 @@ function onNodeSelect(node: TreeNode): void {
   } else if (node.kind === "networks-group") {
     detailStore.openNetworksList(props.workspaceId, node.backendId!, node.contextName!, node.label);
   }
-}
-
-function onContextMenu(_node: TreeNode): void {
-  // Context menu — noop in MVP (toolbar covers actions)
 }
 
 /**
