@@ -4,16 +4,10 @@ import pty from "node-pty";
 import type { IPty } from "node-pty";
 import { quotePosixArg } from "./process-utils.js";
 import { getLogger } from "./logger.js";
-import type { DockerBackendId } from "../shared/types/state.js";
+import type { DockerStreamBackend } from "./shared/docker-stream-backend.js";
+import { SessionMap } from "./shared/session-map.js";
 
 const log = getLogger("docker-shell-streamer");
-
-interface ShellBackend {
-  id: DockerBackendId;
-  type: "host" | "wsl";
-  file: string;
-  argsPrefix: string[];
-}
 
 /**
  * Bidirectional `docker exec -it <id> sh` session piped through node-pty so
@@ -26,7 +20,7 @@ export class DockerShellSession extends EventEmitter {
 
   constructor(
     sessionId: string,
-    private readonly backend: ShellBackend,
+    private readonly backend: DockerStreamBackend,
     private readonly contextName: string,
     private readonly containerId: string,
     private readonly cols: number = 80,
@@ -114,11 +108,11 @@ export class DockerShellSession extends EventEmitter {
 }
 
 export class DockerShellManager {
-  private sessions = new Map<string, DockerShellSession>();
+  private sessions = new SessionMap<DockerShellSession>();
 
   openSession(
     sessionId: string,
-    backend: ShellBackend,
+    backend: DockerStreamBackend,
     contextName: string,
     containerId: string,
     cols: number,
@@ -148,17 +142,11 @@ export class DockerShellManager {
   }
 
   closeSession(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    session.stop();
-    this.sessions.delete(sessionId);
+    this.sessions.remove(sessionId);
   }
 
   closeAll(): void {
-    for (const session of this.sessions.values()) {
-      session.stop();
-    }
-    this.sessions.clear();
+    this.sessions.stopAll();
   }
 
   hasSession(sessionId: string): boolean {
@@ -166,6 +154,6 @@ export class DockerShellManager {
   }
 
   hasAnySessions(): boolean {
-    return this.sessions.size > 0;
+    return this.sessions.hasAny();
   }
 }

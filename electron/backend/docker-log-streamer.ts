@@ -3,16 +3,10 @@ import { EventEmitter } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
 import { quotePosixArg } from "./process-utils.js";
 import { getLogger } from "./logger.js";
-import type { DockerBackendId } from "../shared/types/state.js";
+import type { DockerStreamBackend } from "./shared/docker-stream-backend.js";
+import { SessionMap } from "./shared/session-map.js";
 
 const log = getLogger("docker-log-streamer");
-
-interface LogBackend {
-  id: DockerBackendId;
-  type: "host" | "wsl";
-  file: string;
-  argsPrefix: string[];
-}
 
 export interface LogStreamOptions {
   /** Inject docker's RFC3339 timestamp prefix (`docker logs --timestamps`). */
@@ -38,7 +32,7 @@ export class DockerLogSession extends EventEmitter {
 
   constructor(
     sessionId: string,
-    private readonly backend: LogBackend,
+    private readonly backend: DockerStreamBackend,
     private readonly contextName: string,
     private readonly containerId: string,
     options: LogStreamOptions = {},
@@ -190,11 +184,11 @@ export class DockerLogSession extends EventEmitter {
 }
 
 export class DockerLogManager {
-  private sessions = new Map<string, DockerLogSession>();
+  private sessions = new SessionMap<DockerLogSession>();
 
   openSession(
     sessionId: string,
-    backend: LogBackend,
+    backend: DockerStreamBackend,
     contextName: string,
     containerId: string,
     onData: (sessionId: string, data: Buffer) => void,
@@ -232,17 +226,11 @@ export class DockerLogManager {
   }
 
   closeSession(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    session.stop();
-    this.sessions.delete(sessionId);
+    this.sessions.remove(sessionId);
   }
 
   closeAll(): void {
-    for (const session of this.sessions.values()) {
-      session.stop();
-    }
-    this.sessions.clear();
+    this.sessions.stopAll();
   }
 
   hasSession(sessionId: string): boolean {
@@ -250,6 +238,6 @@ export class DockerLogManager {
   }
 
   hasAnySessions(): boolean {
-    return this.sessions.size > 0;
+    return this.sessions.hasAny();
   }
 }
