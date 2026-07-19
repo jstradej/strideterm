@@ -23,6 +23,7 @@
 import { ref } from "vue";
 import DockerDiskUsage from "./DockerDiskUsage.vue";
 import { useAppStore } from "../../../stores/app.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 defineProps<{
   summary: string;
@@ -35,12 +36,13 @@ const emit = defineEmits<{
 }>();
 
 const appStore = useAppStore();
+const notifications = useNotificationStore();
 const refreshing = ref(false);
 
 async function handleRefresh(): Promise<void> {
   refreshing.value = true;
   try {
-    await appStore.refreshDocker();
+    await notifications.runWithToast("Refresh Docker failed", () => appStore.refreshDocker());
   } finally {
     refreshing.value = false;
   }
