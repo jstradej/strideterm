@@ -51,10 +51,6 @@ export function cloneWorkspace<T>(workspace: T): T {
   return JSON.parse(JSON.stringify(workspace)) as T;
 }
 
-export function normalizeWorkspaces<T>(workspaces: T[]): T[] {
-  return [...workspaces];
-}
-
 export function statusTone(status: string): "running" | "error" | "idle" {
   switch (status) {
     case "running":
@@ -65,8 +61,3 @@ export function statusTone(status: string): "running" | "error" | "idle" {
       return "idle";
   }
 }
-
-// Backward-compatible aliases while the migration from project naming completes.
-export const createEmptyProject = createEmptyWorkspace;
-export const cloneProject = cloneWorkspace;
-export const normalizeProjects = normalizeWorkspaces;
