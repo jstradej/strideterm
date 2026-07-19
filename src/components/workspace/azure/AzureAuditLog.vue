@@ -202,6 +202,8 @@
 import { ref, computed, watch, onMounted, reactive } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import CustomSelect from "../../common/CustomSelect.vue";
+import { downloadTextFile } from "../../../app/helpers.js";
+import { formatRelative } from "./azurePipelineFormat.js";
 
 const filterCategoryOptions = [
   { value: "", label: "All operations" },
@@ -477,18 +479,6 @@ function toCsv(rows: Record<string, any>[]): string {
   return [header, ...lines].join("\n");
 }
 
-function downloadFile(filename: string, content: string, mime: string): void {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
 async function exportLog(format: "csv" | "json"): Promise<void> {
   if (exporting.value) return;
   exporting.value = true;
@@ -497,9 +487,9 @@ async function exportLog(format: "csv" | "json"): Promise<void> {
     const provider = isGitHub.value ? "github" : "azure";
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     if (format === "csv") {
-      downloadFile(`${provider}-audit-log-${stamp}.csv`, toCsv(rows), "text/csv;charset=utf-8");
+      downloadTextFile(`${provider}-audit-log-${stamp}.csv`, toCsv(rows), "text/csv;charset=utf-8");
     } else {
-      downloadFile(`${provider}-audit-log-${stamp}.json`, JSON.stringify(rows, null, 2), "application/json");
+      downloadTextFile(`${provider}-audit-log-${stamp}.json`, JSON.stringify(rows, null, 2), "application/json");
     }
   } catch (err) {
     console.warn("Audit log export failed:", err);
@@ -512,11 +502,12 @@ function formatTime(iso: string) {
   if (!iso) return "\u2014";
   try {
     const d = new Date(iso);
-    const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    if (diffMs < 60_000) return "just now";
-    if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
-    if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
+    const diffMs = Date.now() - d.getTime();
+    // Under 24h: same "just now / Xm ago / Xh ago" shared with the Azure
+    // Pipelines views. Beyond that, this table (spanning up to 30 days of
+    // audit entries) switches to an absolute date instead of "Xd ago" \u2014
+    // that's specific to this view, so it stays local.
+    if (diffMs < 86_400_000) return formatRelative(iso);
     return (
       d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
       " " +

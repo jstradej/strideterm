@@ -156,6 +156,7 @@ import {
 import { useAppStore } from "../../../stores/app.js";
 import { useAzurePipelinesStore } from "../../../stores/azure-pipelines.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { downloadTextFile } from "../../../app/helpers.js";
 import type { AzurePipelineSummary } from "../../../../electron/shared/types/azure-pipelines.js";
 
 interface PipelineRow extends AzurePipelineSummary {
@@ -558,15 +559,7 @@ async function onDownloadLog({ pipeline, run }: { pipeline: AzurePipelineSummary
   try {
     const text = await store.getBuildLog(pipeline.connectionId, pipeline.project.name, run.id);
     const slug = pipeline.name.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "pipeline";
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${slug}-run-${run.id}.log`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadTextFile(`${slug}-run-${run.id}.log`, text, "text/plain;charset=utf-8");
   } catch (err) {
     notify.pushPersistentToast({
       title: "Couldn't download log",

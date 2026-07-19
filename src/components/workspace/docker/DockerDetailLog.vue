@@ -67,6 +67,7 @@ import Spinner from "../../common/Spinner.vue";
 import DockerLogToolbar from "./DockerLogToolbar.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { downloadTextFile } from "../../../app/helpers.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -415,17 +416,9 @@ async function copyAll(): Promise<void> {
 
 function downloadAll(): void {
   const text = collectScrollback();
-  const blob = new Blob([text], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
   const safeName = props.containerName.replace(/[^a-zA-Z0-9._-]/g, "_");
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  a.href = url;
-  a.download = `${safeName}-${ts}.log`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadTextFile(`${safeName}-${ts}.log`, text, "text/plain");
 }
 
 function collectScrollback(): string {
