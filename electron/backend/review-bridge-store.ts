@@ -441,7 +441,7 @@ export async function createReviewBridgeStore(rootPath: string) {
       DELETE FROM draft_responses WHERE draft_id = ?
     `),
     deleteQueueByDraft: db.prepare(`
-      DELETE FROM sync_queue WHERE payload_json LIKE ?
+      DELETE FROM sync_queue WHERE queue_id = ?
     `),
     deleteCommentByKey: db.prepare(`
       DELETE FROM review_comments WHERE comment_key = ?
@@ -1358,7 +1358,7 @@ export async function createReviewBridgeStore(rootPath: string) {
         try {
           db.exec("BEGIN IMMEDIATE TRANSACTION");
           statements.deleteDraftById.run(draftId);
-          statements.deleteQueueByDraft.run(`%${draftId.replace(/%/g, "").replace(/_/g, "")}%`);
+          statements.deleteQueueByDraft.run(`sync:${draftId}`);
           db.exec("COMMIT");
         } catch (error) {
           try {
@@ -1538,7 +1538,7 @@ export async function createReviewBridgeStore(rootPath: string) {
               // re-import the published comment as a normal thread comment.
               statements.deleteDraftById.run(draftRow.draft_id);
               statements.deleteCommentByKey.run(commentRow.comment_key);
-              statements.deleteQueueByDraft.run(`%${draftRow.draft_id}%`);
+              statements.deleteQueueByDraft.run(`sync:${draftRow.draft_id}`);
               db.exec("COMMIT");
             } catch (error) {
               try {

@@ -226,4 +226,58 @@ describe("review bridge store", () => {
 
     await store.close();
   });
+
+  test("deleteDraft removes the sync_queue entry even when draftId contains underscores", async () => {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-underscore-"));
+    tempPaths.push(rootPath);
+    const store = await createReviewBridgeStore(rootPath);
+
+    // Real draftIds are derived from prKey/commentKey, which frequently
+    // contain underscores (e.g. connection ids like "ado_main").
+    const prKey = "ado_main:repo_1:300";
+    await store.syncPullRequest({
+      provider: "azure-devops",
+      prKey,
+      connectionId: "ado_main",
+      repository: { id: "repo_1", name: "web-app" },
+      pullRequest: { id: 300, title: "Add underscore coverage", status: "active" },
+      role: "reviewer",
+      threads: [
+        {
+          id: 60,
+          status: "active",
+          filePath: "/src/test.js",
+          lineStart: 5,
+          publishedDate: "2026-03-21T10:00:00.000Z",
+          comments: [
+            {
+              id: 600,
+              parentCommentId: 0,
+              content: "Needs a fix.",
+              publishedDate: "2026-03-21T10:00:00.000Z",
+              author: { displayName: "Reviewer" },
+            },
+          ],
+        },
+      ],
+    });
+
+    const draftedContext = await store.saveDraftResponse({
+      prKey,
+      commentKey: `${prKey}:thread:60`,
+      body: "I'll address this.",
+      authorAgent: "codex",
+    });
+    const draftId = draftedContext?.drafts[0]?.draftId as string;
+    expect(draftId).toContain("_");
+
+    const queuedContext = await store.queueDraftResponse({ prKey, draftId });
+    expect(queuedContext?.syncQueue.some((q) => q.queueId === `sync:${draftId}`)).toBe(true);
+
+    const deletedContext = await store.deleteDraft({ prKey, draftId });
+    expect(deletedContext?.syncQueue.some((q) => q.queueId === `sync:${draftId}`)).toBe(false);
+    expect(deletedContext?.syncQueue).toHaveLength(0);
+
+    await store.close();
+  });
 });
