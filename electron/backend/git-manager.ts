@@ -849,10 +849,6 @@ export class GitManager extends EventEmitter {
     return roots[0] || createUnavailableSnapshot(workspace, "No git roots detected.");
   }
 
-  async inspectProject(project: WorkspaceRef): Promise<Record<string, unknown>> {
-    return this.inspectWorkspace(project);
-  }
-
   async readUpstream(cwd: string): Promise<string> {
     try {
       const result = await this.execGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
@@ -1183,10 +1179,6 @@ export class GitManager extends EventEmitter {
     }
     this.emit("updated", this.getWorkspaceMap());
     return this.getWorkspaceMap();
-  }
-
-  async refreshProjects(projects: WorkspaceRef[] = []): Promise<Record<string, unknown>> {
-    return this.refreshWorkspaces(projects);
   }
 
   createLazygitLaunch(workspaceId: string, rootPath: string | null = null): { file: string; args: string[] } | null {

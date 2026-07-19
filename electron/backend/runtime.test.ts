@@ -373,7 +373,7 @@ class FakeGitManager extends EventEmitter {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async refreshProjects(projects: any[] = []) {
+  async refreshWorkspaces(projects: any[] = []) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.refreshArgs.push(projects.map((project: any) => project.id));
     this.snapshots = new Map(
@@ -3933,7 +3933,7 @@ describe("runtime integration", () => {
   // scheduleGitRefreshFromShell is exposed on the runtime (see returnObj) so these
   // exercise the real debounce + 10s leading-edge coalescing + delete-cancellation
   // deterministically with fake timers and fixture.git.refreshArgs as the
-  // refreshGit spy (refreshGit → git.refreshProjects([ws]) pushes [ws.id]).
+  // refreshGit spy (refreshGit → git.refreshWorkspaces([ws]) pushes [ws.id]).
 
   // Plain git-available terminal workspace; making it the active workspace avoids
   // the background init refresh that runInitialRefresh schedules for non-active ones.
@@ -8939,7 +8939,7 @@ describe("dispatchAgentHookEvent call sites — an async rejection is logged via
 });
 
 describe("runShellGitRefresh — a rejecting refreshGit is logged via log.debug", () => {
-  test("scheduleGitRefreshFromShell → runShellGitRefresh: a rejecting git.refreshProjects is caught and logged", async () => {
+  test("scheduleGitRefreshFromShell → runShellGitRefresh: a rejecting git.refreshWorkspaces is caught and logged", async () => {
     const fixture = await createFixture({
       initialState: {
         activeWorkspaceId: "ws-a",
@@ -8959,7 +8959,7 @@ describe("runShellGitRefresh — a rejecting refreshGit is logged via log.debug"
     // Drain the background init refresh before rigging the rejection.
     await new Promise((r) => setTimeout(r, 50));
 
-    fixture.git.refreshProjects = vi.fn().mockRejectedValue(new Error("boom: refreshProjects"));
+    fixture.git.refreshWorkspaces = vi.fn().mockRejectedValue(new Error("boom: refreshWorkspaces"));
 
     const calls = captureLogCalls();
     vi.useFakeTimers();
@@ -8971,7 +8971,7 @@ describe("runShellGitRefresh — a rejecting refreshGit is logged via log.debug"
         expect.objectContaining({
           level: "debug",
           message: "shell git refresh failed",
-          meta: expect.objectContaining({ workspaceId: "ws-a", err: "boom: refreshProjects" }),
+          meta: expect.objectContaining({ workspaceId: "ws-a", err: "boom: refreshWorkspaces" }),
         }),
       );
     } finally {

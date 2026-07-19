@@ -3719,7 +3719,7 @@ export async function createRuntime({
     const workspaces = state.workspaces.filter(
       (workspace) => (!projectId || workspace.id === projectId) && workspace.kind !== "azure",
     );
-    return git.refreshWorkspaces ? git.refreshWorkspaces(workspaces) : git.refreshProjects(workspaces);
+    return git.refreshWorkspaces(workspaces);
   }
 
   function resolveGitWorkspace(
