@@ -6,6 +6,7 @@ import {
   resolveRootPath as resolveRootPathShared,
   assertPrInViewerProfile as assertPrInViewerProfileShared,
   mirrorActivationIntoSlot,
+  assertWorktreeCleanForPush,
 } from "./shared/runtime-provider-guards.js";
 import type { WorkspaceState, AppState } from "../shared/types/state.js";
 
@@ -313,13 +314,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
       if (!workspace?.review) throw new Error("GitHub review workspace not found.");
-      const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
-      if (dirtyState.dirty) {
-        throw new Error(
-          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. ` +
-            "Commit your changes first, then try again.",
-        );
-      }
+      await assertWorktreeCleanForPush(git, workspace);
       const snapshot = git.getSnapshot(workspaceId);
       await github.pushReviewWorkspace({ workspace, force, branch: snapshot?.branch });
       await refreshGit(workspaceId);

@@ -1,5 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
-import { resolveRootPath, assertPrInViewerProfile, mirrorActivationIntoSlot } from "./runtime-provider-guards.js";
+import {
+  resolveRootPath,
+  assertPrInViewerProfile,
+  mirrorActivationIntoSlot,
+  assertWorktreeCleanForPush,
+} from "./runtime-provider-guards.js";
 
 describe("resolveRootPath", () => {
   test("returns the resolved path when resolveGitRootPath finds a match", () => {
@@ -121,5 +126,27 @@ describe("mirrorActivationIntoSlot", () => {
     mirrorActivationIntoSlot(draft, "win-a", { id: "ws-new", profileId: "p1" });
     expect(draft.windowSlots[0].activeWorkspaceId).toBe("ws-new");
     expect(draft.windowSlots[1].activeWorkspaceId).toBe("ws-old-a2");
+  });
+});
+
+describe("assertWorktreeCleanForPush", () => {
+  test("resolves without throwing when the worktree is clean", async () => {
+    const git = { getCachedWorktreeDirtyState: vi.fn(async () => ({ dirty: false, dirtyCount: 0 })) };
+    await expect(assertWorktreeCleanForPush(git, { cwd: "/repo" })).resolves.toBeUndefined();
+    expect(git.getCachedWorktreeDirtyState).toHaveBeenCalledWith("/repo");
+  });
+
+  test("throws with a singular message for exactly one uncommitted change", async () => {
+    const git = { getCachedWorktreeDirtyState: vi.fn(async () => ({ dirty: true, dirtyCount: 1 })) };
+    await expect(assertWorktreeCleanForPush(git, { cwd: "/repo" })).rejects.toThrow(
+      "Cannot push: 1 uncommitted change in the worktree. Commit your changes first, then try again.",
+    );
+  });
+
+  test("throws with a plural message for multiple uncommitted changes", async () => {
+    const git = { getCachedWorktreeDirtyState: vi.fn(async () => ({ dirty: true, dirtyCount: 3 })) };
+    await expect(assertWorktreeCleanForPush(git, { cwd: "/repo" })).rejects.toThrow(
+      "Cannot push: 3 uncommitted changes in the worktree. Commit your changes first, then try again.",
+    );
   });
 });
