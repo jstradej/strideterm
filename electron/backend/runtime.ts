@@ -773,31 +773,9 @@ export async function createRuntime({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let claudeAvailableCache = (getState().settings as any)?.claudeAvailable === true;
   if (!claudeAvailableCache) {
-    (async () => {
-      try {
-        await execFileTextImpl("claude", ["--version"], { timeout: 5000 });
-        claudeAvailableCache = true;
-        await store.mutate((draft: AppState) => {
-          draft.settings = draft.settings || {};
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (draft.settings as any).claudeAvailable = true;
-        });
-      } catch {
-        try {
-          const which = process.platform === "win32" ? "where" : "which";
-          await execFileTextImpl(which, ["claude"], { timeout: 5000 });
-          claudeAvailableCache = true;
-          await store.mutate((draft: AppState) => {
-            draft.settings = draft.settings || {};
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (draft.settings as any).claudeAvailable = true;
-          });
-        } catch {
-          claudeAvailableCache = false;
-          log.info("Claude Code CLI not found on PATH");
-        }
-      }
-    })();
+    void recheckClaudeAvailability().catch((err) => {
+      log.warn("recheckClaudeAvailability (bootstrap) failed", { err: (err as Error)?.message });
+    });
   }
 
   async function recheckClaudeAvailability() {
