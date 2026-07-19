@@ -330,6 +330,16 @@ describe("detectCodexHookStatus", () => {
     expect(status.status).toBe("flag-missing");
   });
 
+  test("does not report flag-missing for the legacy codex_hooks flag", async () => {
+    await configureCodexHook(userDataPath);
+    // Replace the migrated flag with the pre-rename legacy key, as an
+    // old install (never touched by ensureCodexHooksFeatureFlag) would have it.
+    await fs.writeFile(getCodexConfigPath(), "[features]\ncodex_hooks = true\n");
+
+    const status = await detectCodexHookStatus(userDataPath);
+    expect(status.status).toBe("configured");
+  });
+
   test("returns partial when only some events are registered", async () => {
     await configureCodexHook(userDataPath);
     const hooks = JSON.parse(await fs.readFile(getCodexHooksPath(), "utf8"));

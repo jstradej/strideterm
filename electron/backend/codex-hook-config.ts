@@ -171,16 +171,6 @@ export async function isCodexHooksFeatureFlagEnabled(): Promise<boolean> {
   }
 }
 
-async function isCurrentCodexHooksFeatureFlagEnabled(): Promise<boolean> {
-  try {
-    const raw = await readFile(getCodexConfigPath(), "utf8");
-    const section = findFeaturesSection(raw.replace(/\r\n/g, "\n"));
-    return !!section && hasFeatureFlag(section.body, "hooks", true);
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Configure Codex CLI lifecycle hooks.
  *
@@ -283,7 +273,7 @@ export async function detectCodexHookStatus(userDataPath: string) {
   const result = await detectHookEntriesStatus(hooksPath, scriptPath, CODEX_EVENT_MAP, {
     hookMarkers: HOOK_MARKERS,
     matchesEntry: matchesNestedCommandEntry,
-    extraCheck: async () => ((await isCurrentCodexHooksFeatureFlagEnabled()) ? null : { status: "flag-missing" }),
+    extraCheck: async () => ((await isCodexHooksFeatureFlagEnabled()) ? null : { status: "flag-missing" }),
   });
   return { ...result, configPath, hooksPath, scriptPath };
 }
