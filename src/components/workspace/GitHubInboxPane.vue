@@ -230,10 +230,11 @@
                   <span class="azure-repo-group__name">{{ group.repo }}</span>
                   <span class="azure-repo-group__count">{{ group.items.length }}</span>
                 </div>
-                <GitHubPrRow
+                <PrRow
                   v-for="item in group.items"
                   :key="item.prKey"
                   :item="item"
+                  provider="github"
                   :opening="item.prKey === openingPrKey"
                   @open="onOpenPr"
                   @browser="onOpenBrowser"
@@ -259,7 +260,7 @@ import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useInboxConnectionFocus } from "../../composables/useInboxConnectionFocus.js";
 import PaneShell from "../layout/PaneShell.vue";
-import GitHubPrRow from "./github/GitHubPrRow.vue";
+import PrRow from "./PrRow.vue";
 import AuditLog from "./azure/AzureAuditLog.vue";
 
 withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });

@@ -302,7 +302,7 @@
                   <span class="azure-repo-group__count">{{ grp.items.length }}</span>
                   <small class="azure-repo-group__hint">{{ grp.hint }}</small>
                 </div>
-                <AzurePrRow
+                <PrRow
                   v-for="item in grp.items"
                   :key="item.prKey"
                   :item="item"
@@ -320,7 +320,7 @@
                   <span class="azure-repo-group__name">{{ group.repo }}</span>
                   <span class="azure-repo-group__count">{{ group.items.length }}</span>
                 </div>
-                <AzurePrRow
+                <PrRow
                   v-for="item in group.items"
                   :key="item.prKey"
                   :item="item"
@@ -351,7 +351,7 @@ import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useInboxConnectionFocus } from "../../composables/useInboxConnectionFocus.js";
 import PaneShell from "../layout/PaneShell.vue";
-import AzurePrRow from "./azure/AzurePrRow.vue";
+import PrRow from "./PrRow.vue";
 import AzureAuditLog from "./azure/AzureAuditLog.vue";
 import AzurePipelinesTab from "./azure/AzurePipelinesTab.vue";
 

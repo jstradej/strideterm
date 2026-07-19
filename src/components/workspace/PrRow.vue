@@ -18,9 +18,9 @@
         >
           <span class="azure-pr-row__expand-caret" aria-hidden="true">{{ expanded ? "▾" : "▸" }}</span>
         </button>
-        <span class="azure-pr-row__id">#{{ pullRequest.id }}</span>
+        <span class="azure-pr-row__id">#{{ prNumber }}</span>
         <strong>{{ pullRequest.title || "Untitled pull request" }}</strong>
-        <span v-if="pullRequest.isDraft" class="workspace-chip" style="font-size: 10px">
+        <span v-if="isDraft" class="workspace-chip" style="font-size: 10px">
           <span class="chip-icon">✎</span>Draft
         </span>
         <span v-if="item.hasAttention" class="workspace-chip workspace-chip--alert" style="font-size: 10px">
@@ -29,7 +29,7 @@
         </span>
       </div>
       <div class="azure-pr-row__meta">
-        <span>{{ item.project?.name || "" }} / {{ item.repository?.name || "" }}</span>
+        <span>{{ repoMeta }}</span>
         <span>&middot;</span>
         <span>{{ authorName }}</span>
         <span>&middot;</span>
@@ -37,21 +37,33 @@
           <span class="chip-icon">{{ roleIcon }}</span
           >{{ item.role || "reviewer" }}
         </span>
+        <template v-if="isGitHub && item.reviewerSummary?.approvedCount">
+          <span>&middot;</span>
+          <span style="color: #6edfb6">{{ item.reviewerSummary.approvedCount }} approved</span>
+        </template>
+        <template v-if="isGitHub && item.reviewerSummary?.changesRequestedCount">
+          <span>&middot;</span>
+          <span style="color: #ff6f8d">{{ item.reviewerSummary.changesRequestedCount }} changes requested</span>
+        </template>
       </div>
       <div class="azure-pr-row__branch">
         {{ stripRef(pullRequest.sourceRefName) }} &rarr; {{ stripRef(pullRequest.targetRefName) }}
       </div>
       <div v-if="expanded" class="azure-pr-row__details">
-        <p v-if="pullRequest.description" class="azure-pr-row__description">{{ pullRequest.description }}</p>
+        <p v-if="descriptionText" class="azure-pr-row__description">{{ descriptionText }}</p>
         <p v-else class="azure-pr-row__description azure-pr-row__description--empty">No description provided.</p>
         <dl class="azure-pr-row__facts">
-          <div v-if="pullRequest.creationDate" class="azure-pr-row__fact">
+          <div v-if="createdDate" class="azure-pr-row__fact">
             <dt>Created</dt>
-            <dd>{{ formatDate(pullRequest.creationDate) }}</dd>
+            <dd>{{ formatDate(createdDate) }}</dd>
+          </div>
+          <div v-if="isGitHub && pullRequest.updatedAt" class="azure-pr-row__fact">
+            <dt>Updated</dt>
+            <dd>{{ formatDate(pullRequest.updatedAt) }}</dd>
           </div>
           <div class="azure-pr-row__fact">
-            <dt>Status</dt>
-            <dd>{{ pullRequest.status || "unknown" }}</dd>
+            <dt>{{ isGitHub ? "State" : "Status" }}</dt>
+            <dd>{{ isGitHub ? pullRequest.state || "open" : pullRequest.status || "unknown" }}</dd>
           </div>
           <div v-if="mergeStatusLabel" class="azure-pr-row__fact">
             <dt>Merge</dt>
@@ -69,14 +81,14 @@
             <dt>Reviewers</dt>
             <dd>{{ reviewerLabel }}</dd>
           </div>
-          <div v-if="pullRequest.sourceCommitId" class="azure-pr-row__fact">
+          <div v-if="headShaValue" class="azure-pr-row__fact">
             <dt>HEAD</dt>
             <dd>
-              <code>{{ shortSha(pullRequest.sourceCommitId) }}</code>
+              <code>{{ shortSha(headShaValue) }}</code>
             </dd>
           </div>
         </dl>
-        <p v-if="latestCommentPreview" class="azure-pr-row__comment-preview">
+        <p v-if="!isGitHub && latestCommentPreview" class="azure-pr-row__comment-preview">
           <span class="azure-pr-row__comment-label">Latest comment</span>
           <span class="azure-pr-row__comment-body">{{ latestCommentPreview }}</span>
         </p>
@@ -87,16 +99,16 @@
         type="button"
         :class="['button', opening && 'button--busy']"
         :disabled="opening"
-        :title="actionTitle"
-        @click="$emit('open', { prKey: item.prKey, workspaceId: openWorkspaceId })"
+        :title="isGitHub ? undefined : actionTitle"
+        @click="handleOpen"
       >
         {{ opening ? "Opening…" : actionLabel }}
       </button>
       <button
         type="button"
         class="button button--ghost"
-        title="Open this pull request in your default browser."
-        @click="$emit('browser', pullRequest.webUrl || pullRequest.url)"
+        :title="isGitHub ? undefined : 'Open this pull request in your default browser.'"
+        @click="handleBrowser"
       >
         Browser
       </button>
@@ -120,27 +132,45 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { stripRef } from "./azurePipelineFormat.js";
-import { shortSha, formatDate } from "../prRowFormat.js";
+import { stripRef } from "./azure/azurePipelineFormat.js";
+import { shortSha, formatDate } from "./prRowFormat.js";
 
 const props = withDefaults(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  defineProps<{ item: Record<string, any>; showSeen?: boolean; opening?: boolean }>(),
-  { showSeen: true, opening: false },
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    item: Record<string, any>;
+    showSeen?: boolean;
+    opening?: boolean;
+    provider?: "azure" | "github";
+  }>(),
+  { showSeen: true, opening: false, provider: "azure" },
 );
 
-defineEmits<{
+const emit = defineEmits<{
   (e: "open", payload: { prKey: string; workspaceId: string }): void;
   (e: "browser", url: string): void;
   (e: "seen", prKey: string): void;
 }>();
 
+const isGitHub = computed(() => props.provider === "github");
+
 const expanded = ref(false);
 
 const pullRequest = computed(() => props.item.pullRequest || {});
+
+const prNumber = computed(() => (isGitHub.value ? pullRequest.value.number || pullRequest.value.id : pullRequest.value.id));
+
+const isDraft = computed(() => (isGitHub.value ? pullRequest.value.draft || pullRequest.value.isDraft : pullRequest.value.isDraft));
+
+const repoMeta = computed(() =>
+  isGitHub.value
+    ? props.item.repository?.fullName || ""
+    : `${props.item.project?.name || ""} / ${props.item.repository?.name || ""}`,
+);
+
 const authorName = computed(() => {
   const author = props.item.author;
-  return (author?.displayName as string) || "Unknown author";
+  return (author?.displayName as string) || (author?.login as string) || "Unknown author";
 });
 
 const openWorkspaceId = computed(() =>
@@ -155,6 +185,7 @@ const actionLabel = computed(() => {
   return "Review";
 });
 
+// Azure-only tooltip for the primary action button — GitHub's button has none.
 const actionTitle = computed(() => {
   if (actionLabel.value === "Attach") {
     return "Attach this PR to your existing workspace at the same source branch — no review workspace will be created.";
@@ -173,7 +204,8 @@ const roleIcon = computed(() => {
 });
 
 // Pick an icon that mirrors the attentionReason text. Falls back to a
-// generic alert glyph if the reason is empty / unknown.
+// generic alert glyph if the reason is empty / unknown. "vote" only ever
+// appears in Azure's attentionReason vocabulary — harmless no-op for GitHub.
 const attentionIcon = computed(() => {
   const reason = String(props.item.attentionReason || "").toLowerCase();
   if (reason.includes("comment")) return "\u{1F4AC}"; // 💬
@@ -183,7 +215,29 @@ const attentionIcon = computed(() => {
   return "⚡"; // ⚡ generic attention
 });
 
+const descriptionText = computed(() => {
+  if (isGitHub.value) {
+    // GitHub stores PR body under `body`; older code may have populated
+    // `description` directly. Check both for forward compatibility.
+    return String(pullRequest.value.body || pullRequest.value.description || "").trim();
+  }
+  return pullRequest.value.description || "";
+});
+
+const createdDate = computed(() => pullRequest.value.creationDate || pullRequest.value.createdAt);
+
 const mergeStatusLabel = computed(() => {
+  if (isGitHub.value) {
+    const status = String(pullRequest.value.mergeableState || "");
+    if (!status) return "";
+    if (status === "clean") return "No conflicts";
+    if (status === "dirty") return "Conflicts detected";
+    if (status === "blocked") return "Blocked";
+    if (status === "behind") return "Behind base";
+    if (status === "unstable") return "Unstable (failing checks)";
+    if (status === "unknown") return "";
+    return status;
+  }
   const status = String(pullRequest.value.mergeStatus || "");
   if (!status) return "";
   if (status === "succeeded") return "No conflicts";
@@ -193,8 +247,15 @@ const mergeStatusLabel = computed(() => {
 
 const commentLabel = computed(() => {
   const total = Number(props.item.commentCount || 0);
-  const unresolved = Number(props.item.unresolvedThreadCount || 0);
   const fresh = Number(props.item.newCommentsCount || 0);
+  if (isGitHub.value) {
+    if (!total && !fresh) return "";
+    const parts: string[] = [];
+    if (total) parts.push(`${total} total`);
+    if (fresh) parts.push(`${fresh} new`);
+    return parts.join(" · ");
+  }
+  const unresolved = Number(props.item.unresolvedThreadCount || 0);
   if (!total && !unresolved && !fresh) return "";
   const parts = [`${total} total`];
   if (unresolved) parts.push(`${unresolved} unresolved`);
@@ -218,6 +279,18 @@ const checksLabel = computed(() => {
 
 const reviewerLabel = computed(() => {
   const summary = props.item.reviewerSummary;
+  if (isGitHub.value) {
+    const reviewers = (summary?.reviewers || []) as unknown[];
+    if (!reviewers.length) return "";
+    const approved = Number(summary?.approvedCount || 0);
+    const changesRequested = Number(summary?.changesRequestedCount || 0);
+    const requested = Number(summary?.requestedCount || 0);
+    const parts = [`${reviewers.length} total`];
+    if (approved) parts.push(`${approved} approved`);
+    if (changesRequested) parts.push(`${changesRequested} changes requested`);
+    if (requested) parts.push(`${requested} requested`);
+    return parts.join(" · ");
+  }
   const reviewers: Array<{ vote?: number; isRequired?: boolean }> = (summary?.reviewers || []) as Array<{
     vote?: number;
     isRequired?: boolean;
@@ -235,10 +308,22 @@ const reviewerLabel = computed(() => {
   return parts.join(" · ");
 });
 
+const headShaValue = computed(() => (isGitHub.value ? pullRequest.value.headSha : pullRequest.value.sourceCommitId));
+
+// Azure-only — GitHub's data never carries this field, so this stays empty for GitHub.
 const latestCommentPreview = computed(() => {
   const text = String(props.item.latestCommentPreview || "").trim();
   if (!text) return "";
   // Truncate long previews so the row stays readable when expanded.
   return text.length > 240 ? `${text.slice(0, 237)}…` : text;
 });
+
+function handleOpen() {
+  emit("open", { prKey: props.item.prKey as string, workspaceId: openWorkspaceId.value });
+}
+
+function handleBrowser() {
+  // Azure PR summaries may only carry a legacy `.url`; GitHub always has webUrl.
+  emit("browser", isGitHub.value ? pullRequest.value.webUrl : pullRequest.value.webUrl || pullRequest.value.url);
+}
 </script>

@@ -107,7 +107,7 @@ function mountPane(payload = buildPayload()) {
         // chrome-collapse assertion; stubbing speeds up mount and avoids
         // pulling their dependencies into the test.
         PaneShell: true,
-        AzurePrRow: {
+        PrRow: {
           props: ["item"],
           template: '<div class="azure-pr-row-stub">{{ item.author.displayName }}</div>',
         },

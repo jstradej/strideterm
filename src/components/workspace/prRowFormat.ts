@@ -1,8 +1,9 @@
 /**
- * Formatting helpers shared by AzurePrRow and GitHubPrRow. Each provider's PR
- * row used to carry its own copy of these — this is the single home for them
- * so both stay in sync. (`stripRef` is shared too, but its existing home is
- * azurePipelineFormat.ts — see the imports in AzurePrRow.vue/GitHubPrRow.vue.)
+ * Formatting helpers used by PrRow.vue (Azure/GitHub PR rows share the one
+ * component, parametrized by a `provider` prop). Each provider's PR row used
+ * to carry its own copy of these before the merge — this is the single home
+ * for them. (`stripRef` is shared too, but its existing home is
+ * azurePipelineFormat.ts — see the import in PrRow.vue.)
  */
 
 /** First 7 chars of a commit SHA, for the compact "HEAD" fact. */

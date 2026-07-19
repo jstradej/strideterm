@@ -79,7 +79,7 @@ function mountPane() {
     global: {
       stubs: {
         PaneShell: true,
-        GitHubPrRow: true,
+        PrRow: true,
         AuditLog: true,
       },
     },
