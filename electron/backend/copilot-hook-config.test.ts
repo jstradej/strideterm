@@ -89,6 +89,36 @@ describe("configureCopilotHook", () => {
     expect(merged.hooks.sessionEnd).toHaveLength(1);
   });
 
+  test("parses and merges an externally-authored JSONC config (line/block comments + trailing commas)", async () => {
+    const copilotDir = path.join(mockHomedir, ".copilot");
+    await fs.mkdir(copilotDir, { recursive: true });
+    // Genuine JSONC, not JSON.stringify output: header line comment, an
+    // inline trailing comment, a block comment, and trailing commas before
+    // both `]` and the top-level `}` — all of which JSON.parse would reject.
+    const jsoncConfig = `// Copilot CLI user settings
+{
+  "model": "gpt-5.4", // pinned model
+  /* theme block
+     comment */
+  "theme": "dark",
+  "trustedFolders": [
+    "/home/user/proj",
+  ],
+}
+`;
+    await fs.writeFile(getCopilotConfigPath(), jsoncConfig);
+
+    const result = await configureCopilotHook(userDataPath);
+    expect(result.ok).toBe(true);
+
+    const merged = JSON.parse(await fs.readFile(getCopilotConfigPath(), "utf8"));
+    expect(merged.model).toBe("gpt-5.4");
+    expect(merged.theme).toBe("dark");
+    expect(merged.trustedFolders).toEqual(["/home/user/proj"]);
+    expect(merged.hooks.sessionEnd).toHaveLength(1);
+    expect(merged.hooks.userPromptSubmitted).toHaveLength(1);
+  });
+
   test("preserves user-authored hook entries", async () => {
     const copilotDir = path.join(mockHomedir, ".copilot");
     await fs.mkdir(copilotDir, { recursive: true });
@@ -239,6 +269,36 @@ describe("detectCopilotHookStatus", () => {
 
   test("returns configured after configureCopilotHook", async () => {
     await configureCopilotHook(userDataPath);
+    const status = await detectCopilotHookStatus(userDataPath);
+    expect(status.status).toBe("configured");
+    expect(status.registered).toEqual([...HOOKS_TO_REGISTER]);
+  });
+
+  test("returns configured for a hand-authored JSONC config with comments and trailing commas", async () => {
+    const copilotDir = path.join(mockHomedir, ".copilot");
+    await fs.mkdir(copilotDir, { recursive: true });
+    const hooksDir = path.join(userDataPath, "hooks");
+    await fs.mkdir(hooksDir, { recursive: true });
+    await fs.writeFile(path.join(hooksDir, "notify.mjs"), "// stub\n");
+
+    // Simulates Copilot's own config.json shape: header comment, an inline
+    // trailing comment, a block comment, and trailing commas before `]`/`}`.
+    const jsoncConfig = `// Copilot CLI settings
+{
+  "model": "gpt-5.4",
+  /* strIDEterm-managed hooks below */
+  "hooks": {
+    "sessionEnd": [
+      { "type": "command", "bash": "node \\"/x/hooks/notify.mjs\\" Stop", "powershell": "node \\"/x/hooks/notify.mjs\\" Stop", "timeoutSec": 5 }, // notify on stop
+    ],
+    "userPromptSubmitted": [
+      { "type": "command", "bash": "node \\"/x/hooks/notify.mjs\\" UserPromptSubmit", "powershell": "node \\"/x/hooks/notify.mjs\\" UserPromptSubmit", "timeoutSec": 5 },
+    ],
+  },
+}
+`;
+    await fs.writeFile(getCopilotConfigPath(), jsoncConfig);
+
     const status = await detectCopilotHookStatus(userDataPath);
     expect(status.status).toBe("configured");
     expect(status.registered).toEqual([...HOOKS_TO_REGISTER]);

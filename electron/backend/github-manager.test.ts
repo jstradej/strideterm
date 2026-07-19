@@ -548,6 +548,68 @@ describe("GitHubManager openQuickFixWorkspace", () => {
   });
 });
 
+// fetchReviewWorkspace/rebaseReviewWorkspace/pushReviewWorkspace were hoisted onto
+// BaseProviderManager and previously had test coverage only through a bare
+// BaseProviderManager test double (base-manager.test.ts), never through a real
+// GitHubManager instance — these confirm the real subclass wiring works, including
+// that GitHub connections (which carry no `login`, unlike Azure) fall back cleanly
+// to defaultGitLogin ("x-access-token").
+describe("GitHubManager fetchReviewWorkspace / rebaseReviewWorkspace / pushReviewWorkspace", () => {
+  test("fetchReviewWorkspace resolves the connection and falls back to defaultGitLogin since GitHub connections carry no login", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).execFileText = execFileTextImpl;
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await manager.fetchReviewWorkspace({
+      workspace: { id: "review-ws-1", cwd: "/repo", review: { connectionId: "gh-main" } },
+    });
+
+    const fetchCall = execFileTextImpl.mock.calls.find(
+      (call) => call[0] === "git" && call[1].includes("fetch") && call[1].includes("origin"),
+    );
+    expect(fetchCall).toBeDefined();
+    expect(fetchCall![2]).toMatchObject({ cwd: "/repo" });
+    const headerArg = fetchCall![1].find((a: string) => a.startsWith("http.extraheader="));
+    const decoded = Buffer.from(
+      headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""),
+      "base64",
+    ).toString("utf8");
+    expect(decoded).toBe("x-access-token:ghp-token");
+  });
+
+  test("rebaseReviewWorkspace and pushReviewWorkspace run fetch+rebase and push against the PR's branches end-to-end", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).execFileText = execFileTextImpl;
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    const workspace = {
+      id: "review-ws-1",
+      cwd: "/repo",
+      review: {
+        connectionId: "gh-main",
+        pullRequest: { sourceRefName: "refs/heads/feature", targetRefName: "refs/heads/main" },
+      },
+    };
+
+    await manager.rebaseReviewWorkspace({ workspace });
+    const gitCalls = execFileTextImpl.mock.calls.filter((call) => call[0] === "git");
+    expect(gitCalls[0][1]).toEqual(expect.arrayContaining(["fetch", "origin"]));
+    expect(gitCalls[1][1]).toEqual(expect.arrayContaining(["rebase", "origin/main"]));
+
+    execFileTextImpl.mockClear();
+    await manager.pushReviewWorkspace({ workspace, force: true });
+    expect(execFileTextImpl).toHaveBeenCalledWith(
+      "git",
+      expect.arrayContaining(["push", "--force-with-lease", "-u", "origin", "HEAD:refs/heads/feature"]),
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+  });
+});
+
 describe("GitHubManager listRemoteBranches / listQuickFixBranches", () => {
   test("listQuickFixBranches delegates to listRemoteBranches and returns the same branch names", async () => {
     const { manager } = createManager({

@@ -52,3 +52,69 @@ describe("GitHub per-PR mutations — cross-profile viewer guard", () => {
     expect(markPullRequestSeen).toHaveBeenCalledWith("gh:pr1");
   });
 });
+
+// pushGitHubReviewWorkspace wires the shared assertWorktreeCleanForPush guard
+// (runtime-provider-guards.ts) in front of the real push. The guard itself is
+// unit-tested in isolation; these tests pin its actual wiring into this
+// handler — that it's called with the review workspace's cwd, that its thrown
+// error propagates out of the handler, and that a dirty worktree blocks the
+// push from ever reaching github.pushReviewWorkspace.
+describe("pushGitHubReviewWorkspace — worktree-clean guard wiring", () => {
+  function makeHandlers({ dirty = false, dirtyCount = 0 } = {}) {
+    const workspace = { id: "ws-1", cwd: "/repo/ws-1", review: { prKey: "gh:pr1" } };
+    const getCachedWorktreeDirtyState = vi.fn(async () => ({ dirty, dirtyCount }));
+    const getSnapshot = vi.fn(() => ({ branch: "feature/foo" }));
+    const pushReviewWorkspace = vi.fn(async () => {});
+    const refreshGit = vi.fn(async () => {});
+    const refreshGitHub = vi.fn(async () => {});
+    const getPayload = vi.fn(() => ({ ok: true }));
+    const handlers = createGitHubHandlers({
+      getState: () => ({ workspaces: [workspace] }),
+      git: { getCachedWorktreeDirtyState, getSnapshot },
+      github: { pushReviewWorkspace },
+      refreshGit,
+      refreshGitHub,
+      getPayload,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    return {
+      handlers,
+      workspace,
+      getCachedWorktreeDirtyState,
+      getSnapshot,
+      pushReviewWorkspace,
+      refreshGit,
+      refreshGitHub,
+      getPayload,
+    };
+  }
+
+  test("rejects and never pushes when the worktree has uncommitted changes", async () => {
+    const { handlers, workspace, getCachedWorktreeDirtyState, pushReviewWorkspace, refreshGit, refreshGitHub } =
+      makeHandlers({ dirty: true, dirtyCount: 2 });
+
+    await expect(handlers.pushGitHubReviewWorkspace("ws-1")).rejects.toThrow(
+      "Cannot push: 2 uncommitted changes in the worktree. Commit your changes first, then try again.",
+    );
+
+    expect(getCachedWorktreeDirtyState).toHaveBeenCalledWith(workspace.cwd);
+    expect(pushReviewWorkspace).not.toHaveBeenCalled();
+    expect(refreshGit).not.toHaveBeenCalled();
+    expect(refreshGitHub).not.toHaveBeenCalled();
+  });
+
+  test("pushes through when the worktree is clean", async () => {
+    const { handlers, workspace, pushReviewWorkspace, refreshGit, refreshGitHub, getPayload } = makeHandlers({
+      dirty: false,
+      dirtyCount: 0,
+    });
+
+    const result = await handlers.pushGitHubReviewWorkspace("ws-1", { force: true });
+
+    expect(pushReviewWorkspace).toHaveBeenCalledWith({ workspace, force: true, branch: "feature/foo" });
+    expect(refreshGit).toHaveBeenCalledWith("ws-1");
+    expect(refreshGitHub).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true });
+    expect(getPayload).toHaveBeenCalled();
+  });
+});

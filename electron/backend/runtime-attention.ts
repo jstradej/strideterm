@@ -142,8 +142,7 @@ export function createRuntimeAttentionManager({
     return {
       sessions: sessionsSnapshot,
       byWorkspace,
-      // Wire-compat alias: older clients (and the frontend fallback in
-      // runtime-bindings) still read byProject.
+      // Wire-compat alias: older clients still read byProject.
       byProject: byWorkspace,
     };
   }

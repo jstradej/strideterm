@@ -1063,6 +1063,63 @@ describe("AzureDevOpsManager openQuickFixWorkspace", () => {
   });
 });
 
+// fetchReviewWorkspace/rebaseReviewWorkspace/pushReviewWorkspace were hoisted onto
+// BaseProviderManager and previously had test coverage only through a bare
+// BaseProviderManager test double (base-manager.test.ts), never through a real
+// AzureDevOpsManager instance — these confirm the connection's `login` (Azure-only,
+// unlike GitHub) and PAT are threaded through correctly by the real subclass.
+describe("AzureDevOpsManager fetchReviewWorkspace / rebaseReviewWorkspace / pushReviewWorkspace", () => {
+  test("fetchReviewWorkspace resolves the connection and threads its login + PAT through to runGit", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ execFileTextImpl });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await manager.fetchReviewWorkspace({
+      workspace: { id: "review-ws-1", cwd: "/repo", review: { connectionId: "ado-main" } },
+    });
+
+    const fetchCall = execFileTextImpl.mock.calls.find(
+      (call) => call[0] === "git" && call[1].includes("fetch") && call[1].includes("origin"),
+    );
+    expect(fetchCall).toBeDefined();
+    expect(fetchCall![2]).toMatchObject({ cwd: "/repo" });
+    const headerArg = fetchCall![1].find((a: string) => a.startsWith("http.extraheader="));
+    const decoded = Buffer.from(
+      headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""),
+      "base64",
+    ).toString("utf8");
+    expect(decoded).toBe("me@example.com:pat-123");
+  });
+
+  test("rebaseReviewWorkspace and pushReviewWorkspace run fetch+rebase and push against the PR's branches end-to-end", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ execFileTextImpl });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    const workspace = {
+      id: "review-ws-1",
+      cwd: "/repo",
+      review: {
+        connectionId: "ado-main",
+        pullRequest: { sourceRefName: "refs/heads/feature/login-fix", targetRefName: "refs/heads/main" },
+      },
+    };
+
+    await manager.rebaseReviewWorkspace({ workspace });
+    const gitCalls = execFileTextImpl.mock.calls.filter((call) => call[0] === "git");
+    expect(gitCalls[0][1]).toEqual(expect.arrayContaining(["fetch", "origin"]));
+    expect(gitCalls[1][1]).toEqual(expect.arrayContaining(["rebase", "origin/main"]));
+
+    execFileTextImpl.mockClear();
+    await manager.pushReviewWorkspace({ workspace, force: true });
+    expect(execFileTextImpl).toHaveBeenCalledWith(
+      "git",
+      expect.arrayContaining(["push", "--force-with-lease", "-u", "origin", "HEAD:refs/heads/feature/login-fix"]),
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+  });
+});
+
 describe("createPullRequestForWorkspace — cross-profile connection guard", () => {
   test("refuses when the connection belongs to a different profile than the workspace", async () => {
     const { manager } = createManager();

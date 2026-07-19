@@ -8161,6 +8161,55 @@ describe("provider connections — profile ownership across viewers", () => {
     }
   }
 
+  class ConnFakeGitHubManager extends EventEmitter {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    declare opened: any[];
+    constructor() {
+      super();
+      this.opened = [];
+    }
+    async verifyConnection() {
+      return { ok: true, login: "me@example.com" };
+    }
+    getSnapshot() {
+      return {
+        connections: [],
+        inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+        trackedPullRequests: {},
+        pullRequests: {},
+        sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+      };
+    }
+    async sync() {
+      return this.getSnapshot();
+    }
+    stopPolling() {}
+    configurePolling() {}
+    async markPullRequestSeen() {}
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async openReviewWorkspace({ prKey, callerProfileId }: any) {
+      this.opened.push({ prKey, callerProfileId });
+      return {
+        workspace: {
+          id: "ws-review-1",
+          name: "web-app PR #123",
+          kind: "terminal",
+          cwd: "/tmp/review-pr-123",
+          profileId: "profile-a",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          review: {
+            provider: "github",
+            prKey,
+            connectionId: "gh-1",
+            parentWorkspaceId: "ws-github",
+            checkout: { mode: "managed-worktree" },
+          },
+        },
+      };
+    }
+  }
+
   function makeConnectionState() {
     return {
       activeProjectId: "ws-a1",
@@ -8399,6 +8448,22 @@ describe("provider connections — profile ownership across viewers", () => {
     expect(registry.get("mobile-1")!.activeWorkspaceId).toBe("ws-review-1");
     const slots = fixture.runtime.getPayload().appState.windowSlots!;
     expect(slots.find((s) => s.id === "win-a")?.activeWorkspaceId).toBe("ws-a1");
+    expect(slots.find((s) => s.id === "win-a2")?.activeWorkspaceId).toBe("ws-a1");
+    expect(slots.find((s) => s.id === "win-default")?.activeWorkspaceId).toBe("ws-default");
+  });
+
+  test("open GitHub PR review from window P activates only that window — the sibling window of P stays put", async () => {
+    const fixture = await createFixture({
+      initialState: makeConnectionState(),
+      dependencies: { GitHubManager: ConnFakeGitHubManager },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.openGitHubPullRequest({ prKey: "gh-1:repo:123" }, "win-a");
+
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-a")?.activeWorkspaceId).toBe("ws-review-1");
+    // The OTHER window of the same profile keeps its own view.
     expect(slots.find((s) => s.id === "win-a2")?.activeWorkspaceId).toBe("ws-a1");
     expect(slots.find((s) => s.id === "win-default")?.activeWorkspaceId).toBe("ws-default");
   });

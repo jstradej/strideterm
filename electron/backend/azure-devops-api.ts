@@ -532,20 +532,6 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return result.value || [];
   }
 
-  /** Recent runs for a pipeline (definition id == pipelineId). */
-  async function listPipelineRuns(
-    connection: AzureConnection,
-    token: string,
-    projectName: string,
-    pipelineId: string | number,
-  ) {
-    const result = (await requestJson(buildPipelineRunsUrl(connection, projectName, pipelineId), {
-      login: connection.login,
-      token,
-    })) as { value?: unknown[] };
-    return result.value || [];
-  }
-
   /** Recent builds for a definition (Build API — richer than Pipelines runs: who/branch/commit/timing). */
   async function listBuildsByDefinition(
     connection: AzureConnection,

@@ -4,8 +4,20 @@ import { useGitUiStore } from "./git-ui.js";
 import { useNotificationStore } from "./notifications.js";
 import type { Transport } from "../transport.js";
 
+// gitSelectDiff is the only one of the three diff-preview loaders that reads
+// the app store's git snapshot (to resolve rootPath/baseBranch), so it needs
+// a mock here; the default null return matches the real store's behaviour
+// when no payload has been loaded, which is what the other describe blocks
+// below implicitly relied on before this mock existed.
+const getGitSnapshot = vi.fn((_workspaceId: string, _rootPath?: string | null): unknown => null);
+vi.mock("./app.js", () => ({
+  useAppStore: () => ({ getGitSnapshot }),
+}));
+
 beforeEach(() => {
   setActivePinia(createPinia());
+  getGitSnapshot.mockReset();
+  getGitSnapshot.mockReturnValue(null);
 });
 
 describe("git-ui store", () => {
@@ -110,6 +122,74 @@ describe("git-ui store", () => {
       const store = useGitUiStore();
       await store.gitSelectCommit("ws1", "");
       expect(store.get("ws1").commitDiffPreview).toBeUndefined();
+    });
+
+    test("gitSelectDiff replaces the loading placeholder with the fetched result, carrying scope and resolving rootPath/baseBranch from the app-store snapshot", async () => {
+      getGitSnapshot.mockReturnValue({ baseBranch: "main" });
+      // A manually-controlled promise (rather than mockResolvedValue) so the
+      // in-flight "Loading…" placeholder can be observed deterministically:
+      // gitSelectDiff awaits a dynamic import before loadDiffPreview ever
+      // runs, so the placeholder isn't visible synchronously the way
+      // gitSelectCommit's is — flushing via a macrotask (setTimeout) drains
+      // every microtask ahead of it (the import + loadDiffPreview's
+      // pre-fetch code) while this fetch stays deliberately unresolved.
+      let resolveFetch: (value: unknown) => void = () => {};
+      const gitDiffPreview = vi.fn(() => new Promise((resolve) => (resolveFetch = resolve)));
+      const mockApi = { gitDiffPreview } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+      store.setActiveRoot("ws1", "/repo/a");
+
+      const pending = store.gitSelectDiff("ws1", "src/foo.ts", "staged");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(store.get("ws1").diffPreview).toEqual({
+        ok: true,
+        path: "src/foo.ts",
+        scope: "staged",
+        diff: "",
+        summary: "Loading diff preview...",
+      });
+      expect(store.get("ws1").selectedDiff).toEqual({ path: "src/foo.ts", scope: "staged" });
+      expect(gitDiffPreview).toHaveBeenCalledWith({
+        workspaceId: "ws1",
+        path: "src/foo.ts",
+        scope: "staged",
+        baseBranch: "main",
+        rootPath: "/repo/a",
+      });
+
+      resolveFetch({ ok: true, path: "src/foo.ts", scope: "staged", diff: "+line", summary: "1 file" });
+      await pending;
+      expect(store.get("ws1").diffPreview).toEqual({
+        ok: true,
+        path: "src/foo.ts",
+        scope: "staged",
+        diff: "+line",
+        summary: "1 file",
+      });
+    });
+
+    test("gitSelectDiff falls back to an error-shaped result carrying the path and scope when the fetch rejects", async () => {
+      const gitDiffPreview = vi.fn().mockRejectedValue(new Error("diff fetch failed"));
+      const mockApi = { gitDiffPreview } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+
+      await store.gitSelectDiff("ws1", "src/foo.ts", "unstaged");
+
+      expect(store.get("ws1").diffPreview).toEqual({
+        ok: false,
+        path: "src/foo.ts",
+        scope: "unstaged",
+        diff: "",
+        summary: "diff fetch failed",
+      });
+    });
+
+    test("gitSelectDiff is a no-op for an empty path", async () => {
+      const store = useGitUiStore();
+      await store.gitSelectDiff("ws1", "", "staged");
+      expect(store.get("ws1").diffPreview).toBeUndefined();
     });
 
     test("reviewSelectFileDiff falls back to an error-shaped result carrying only the path (no scope)", async () => {

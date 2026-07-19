@@ -153,11 +153,10 @@ describe("useTerminalStore — font size watch", () => {
   });
 });
 
-// Production wiring guard: the app boots through main.ts → terminalStore.init,
-// NOT through app/runtime-bindings.ts (which has no callers). These tests pin
-// the replay/seq/intentional pass-through to the wiring that actually runs —
-// the review's most severe finding was replay handling living only in the
-// uncalled module.
+// Production wiring guard: the app boots through main.ts → terminalStore.init.
+// These tests pin the replay/seq/intentional pass-through to the wiring that
+// actually runs — the review's most severe finding was replay handling living
+// only in an uncalled module (app/runtime-bindings.ts, since deleted).
 describe("useTerminalStore — terminal event wiring (production path)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

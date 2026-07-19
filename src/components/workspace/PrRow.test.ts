@@ -191,6 +191,30 @@ describe("PrRow — provider=github", () => {
     }, { provider: "github" });
     expect(wrapper.text()).toContain("Draft");
   });
+
+  test("descriptionText falls back to the legacy `description` field when `body` is missing", async () => {
+    const wrapper = mountRow(
+      {
+        ...githubItem,
+        pullRequest: { ...githubItem.pullRequest, body: undefined, description: "Legacy description text" },
+      },
+      { provider: "github" },
+    );
+    await expand(wrapper);
+    expect(wrapper.find(".azure-pr-row__description").text()).toBe("Legacy description text");
+  });
+
+  test("descriptionText prefers `body` over `description` when both are present, and trims whitespace", async () => {
+    const wrapper = mountRow(
+      {
+        ...githubItem,
+        pullRequest: { ...githubItem.pullRequest, body: "  Adds a widget  ", description: "Legacy description text" },
+      },
+      { provider: "github" },
+    );
+    await expand(wrapper);
+    expect(wrapper.find(".azure-pr-row__description").text()).toBe("Adds a widget");
+  });
 });
 
 describe("PrRow — shared behavior across providers", () => {
