@@ -4952,11 +4952,157 @@ export async function createRuntime({
     return treePath;
   }
 
+  /**
+   * End-to-end probe of a notification hook pipeline (Claude, Gemini, Codex,
+   * Copilot, or Opencode).
+   *
+   * Spawns the installed notify.mjs with synthetic stdin containing a
+   * probe UUID. Waits up to 2s for the dispatcher to receive it.
+   * Returns { ok, elapsedMs?, reason?, logTail? }.
+   *
+   * Provider-neutral — every provider uses the same notify.mjs; this helper
+   * just needs a detect/configure pair for the requested provider.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function runHookProbe({ detectStatus, configure }: { detectStatus: any; configure: any }) {
+    const status = await detectStatus(userDataPath);
+    if (status.status === "error") {
+      return { ok: false, reason: "config-error", detail: status.error };
+    }
+    if (status.status !== "configured") {
+      const cfg = await configure(userDataPath);
+      if (!cfg.ok) return { ok: false, reason: "configure-failed", detail: cfg.error };
+    }
+
+    if (!notifyServerHandle) await startAgentNotifyServer();
+    if (!notifyServerHandle) return { ok: false, reason: "notify-server-unavailable" };
+
+    const probeId = randomUUID();
+    const probeSessionId = `probe:${probeId}`;
+    const probeUrl = buildNotifyUrl(notifyServerHandle.port, probeSessionId, notifySecret);
+
+    const receivedPromise = new Promise((resolve) => {
+      hookProbeListeners.set(probeId, resolve);
+      setTimeout(() => {
+        if (hookProbeListeners.has(probeId)) {
+          hookProbeListeners.delete(probeId);
+          resolve({ ok: false, reason: "timeout" });
+        }
+      }, 2000);
+    });
+
+    // Override STRIDETERM_NOTIFY_URL so the probe doesn't rely on
+    // CLAUDE_PROJECT_DIR / notify-urls.json resolution.
+    const scriptPath = path.join(userDataPath, "hooks", "notify.mjs");
+    const startedAt = Date.now();
+    let spawnError: Error | null = null;
+    try {
+      const child = spawn(process.execPath, [scriptPath, "Notification"], {
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: "1",
+          STRIDETERM_NOTIFY_URL: probeUrl,
+          CLAUDE_PROJECT_DIR: "",
+        },
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      child.on("error", (err) => {
+        spawnError = err;
+      });
+      child.stdin.write(JSON.stringify({ notification_type: "probe", probe_id: probeId }));
+      child.stdin.end();
+    } catch (err) {
+      hookProbeListeners.delete(probeId);
+      return { ok: false, reason: "spawn-failed", detail: (err as Error).message };
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped probe result from dynamic hook spawn
+    const result = (await receivedPromise) as any;
+    const elapsedMs = Date.now() - startedAt;
+
+    if (result?.ok) return { ok: true, elapsedMs };
+    if (spawnError) {
+      return { ok: false, reason: "spawn-error", detail: (spawnError as Error).message, elapsedMs };
+    }
+
+    // Timeout — surface hook.log tail so the user can see what happened.
+    let logTail = "";
+    try {
+      const logPath = path.join(userDataPath, "logs", "hook.log");
+      const raw = await readFile(logPath, "utf8");
+      logTail = raw.split("\n").slice(-10).join("\n");
+    } catch {
+      /* no log yet */
+    }
+    return { ok: false, reason: "timeout", elapsedMs, logTail };
+  }
+
+  /**
+   * One entry per agent hook-config provider. Generates the
+   * configure/remove/status/test quartet below instead of 20 hand-written
+   * one-liners — each provider module (claude/gemini/codex/copilot/opencode
+   * -hook-config.js) exports the same configure/remove/detectStatus shape.
+   */
+  interface HookProviderTableEntry {
+    id: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    configure: (userDataPath: string) => Promise<any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    remove: () => Promise<any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    detectStatus: (userDataPath: string) => Promise<any>;
+  }
+  const HOOK_PROVIDERS = [
+    { id: "Claude", configure: configureClaudeHook, remove: removeClaudeHook, detectStatus: detectClaudeHookStatus },
+    { id: "Gemini", configure: configureGeminiHook, remove: removeGeminiHook, detectStatus: detectGeminiHookStatus },
+    { id: "Codex", configure: configureCodexHook, remove: removeCodexHook, detectStatus: detectCodexHookStatus },
+    {
+      id: "Copilot",
+      configure: configureCopilotHook,
+      remove: removeCopilotHook,
+      detectStatus: detectCopilotHookStatus,
+    },
+    {
+      id: "Opencode",
+      configure: configureOpencodeHook,
+      remove: removeOpencodeHook,
+      detectStatus: detectOpencodeHookStatus,
+    },
+  ] as const satisfies readonly HookProviderTableEntry[];
+  type HookProviderId = (typeof HOOK_PROVIDERS)[number]["id"];
+  // Method names are derived from HOOK_PROVIDERS' ids so the public runtime
+  // API surface (relied on by ipc.ts / remote-server.ts) stays fully typed
+  // even though the implementations below are generated from the table.
+  type HookProviderHandlers = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [Id in HookProviderId as `configure${Id}Hook`]: () => Promise<any>;
+  } & {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [Id in HookProviderId as `remove${Id}Hook`]: () => Promise<any>;
+  } & {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [Id in HookProviderId as `get${Id}HookStatus`]: () => Promise<any>;
+  } & {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [Id in HookProviderId as `test${Id}Hook`]: () => Promise<any>;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hookProviderHandlers: Record<string, (...args: any[]) => any> = {};
+  for (const provider of HOOK_PROVIDERS) {
+    hookProviderHandlers[`configure${provider.id}Hook`] = () => provider.configure(userDataPath);
+    hookProviderHandlers[`remove${provider.id}Hook`] = () => provider.remove();
+    hookProviderHandlers[`get${provider.id}HookStatus`] = () => provider.detectStatus(userDataPath);
+    hookProviderHandlers[`test${provider.id}Hook`] = () =>
+      runHookProbe({ detectStatus: provider.detectStatus, configure: provider.configure });
+  }
+  const typedHookProviderHandlers = hookProviderHandlers as unknown as HookProviderHandlers;
+
   const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
     ...sshHandlers,
     ...dockerHandlers,
+    ...typedHookProviderHandlers,
     /**
      * Re-scan parent workspaces for new/removed `.strideterm/tree/*` worktrees
      * and reconcile workspace state. Normally called from the git poll timer;
@@ -6412,156 +6558,13 @@ export async function createRuntime({
         log.warn("hook dispatch failed", { sessionId, hook, err: (err as Error)?.message || String(err) });
       });
     },
-    async configureClaudeHook() {
-      return configureClaudeHook(userDataPath);
-    },
-    async removeClaudeHook() {
-      return removeClaudeHook();
-    },
-    async getClaudeHookStatus() {
-      return detectClaudeHookStatus(userDataPath);
-    },
-    async configureGeminiHook() {
-      return configureGeminiHook(userDataPath);
-    },
-    async removeGeminiHook() {
-      return removeGeminiHook();
-    },
-    async getGeminiHookStatus() {
-      return detectGeminiHookStatus(userDataPath);
-    },
-    async configureCodexHook() {
-      return configureCodexHook(userDataPath);
-    },
-    async removeCodexHook() {
-      return removeCodexHook();
-    },
-    async getCodexHookStatus() {
-      return detectCodexHookStatus(userDataPath);
-    },
-    async configureCopilotHook() {
-      return configureCopilotHook(userDataPath);
-    },
-    async removeCopilotHook() {
-      return removeCopilotHook();
-    },
-    async getCopilotHookStatus() {
-      return detectCopilotHookStatus(userDataPath);
-    },
-    async configureOpencodeHook() {
-      return configureOpencodeHook(userDataPath);
-    },
-    async removeOpencodeHook() {
-      return removeOpencodeHook();
-    },
-    async getOpencodeHookStatus() {
-      return detectOpencodeHookStatus(userDataPath);
-    },
+    runHookProbe,
     /**
      * Expose notification-pipeline metrics for the About dialog / diagnostics.
      * Pure read — returns a snapshot.
      */
     getNotificationMetrics() {
       return getMetrics();
-    },
-    /**
-     * End-to-end probe of a notification hook pipeline (Claude or Gemini).
-     *
-     * Spawns the installed notify.mjs with synthetic stdin containing a
-     * probe UUID. Waits up to 2s for the dispatcher to receive it.
-     * Returns { ok, elapsedMs?, reason?, logTail? }.
-     *
-     * Provider-neutral — both Claude and Gemini use the same notify.mjs;
-     * this helper just needs a detect/configure pair for the requested
-     * provider.
-     */
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async runHookProbe({ detectStatus, configure }: { detectStatus: any; configure: any }) {
-      const status = await detectStatus(userDataPath);
-      if (status.status === "error") {
-        return { ok: false, reason: "config-error", detail: status.error };
-      }
-      if (status.status !== "configured") {
-        const cfg = await configure(userDataPath);
-        if (!cfg.ok) return { ok: false, reason: "configure-failed", detail: cfg.error };
-      }
-
-      if (!notifyServerHandle) await startAgentNotifyServer();
-      if (!notifyServerHandle) return { ok: false, reason: "notify-server-unavailable" };
-
-      const probeId = randomUUID();
-      const probeSessionId = `probe:${probeId}`;
-      const probeUrl = buildNotifyUrl(notifyServerHandle.port, probeSessionId, notifySecret);
-
-      const receivedPromise = new Promise((resolve) => {
-        hookProbeListeners.set(probeId, resolve);
-        setTimeout(() => {
-          if (hookProbeListeners.has(probeId)) {
-            hookProbeListeners.delete(probeId);
-            resolve({ ok: false, reason: "timeout" });
-          }
-        }, 2000);
-      });
-
-      // Override STRIDETERM_NOTIFY_URL so the probe doesn't rely on
-      // CLAUDE_PROJECT_DIR / notify-urls.json resolution.
-      const scriptPath = path.join(userDataPath, "hooks", "notify.mjs");
-      const startedAt = Date.now();
-      let spawnError: Error | null = null;
-      try {
-        const child = spawn(process.execPath, [scriptPath, "Notification"], {
-          env: {
-            ...process.env,
-            ELECTRON_RUN_AS_NODE: "1",
-            STRIDETERM_NOTIFY_URL: probeUrl,
-            CLAUDE_PROJECT_DIR: "",
-          },
-          stdio: ["pipe", "ignore", "ignore"],
-        });
-        child.on("error", (err) => {
-          spawnError = err;
-        });
-        child.stdin.write(JSON.stringify({ notification_type: "probe", probe_id: probeId }));
-        child.stdin.end();
-      } catch (err) {
-        hookProbeListeners.delete(probeId);
-        return { ok: false, reason: "spawn-failed", detail: (err as Error).message };
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped probe result from dynamic hook spawn
-      const result = (await receivedPromise) as any;
-      const elapsedMs = Date.now() - startedAt;
-
-      if (result?.ok) return { ok: true, elapsedMs };
-      if (spawnError) {
-        return { ok: false, reason: "spawn-error", detail: (spawnError as Error).message, elapsedMs };
-      }
-
-      // Timeout — surface hook.log tail so the user can see what happened.
-      let logTail = "";
-      try {
-        const logPath = path.join(userDataPath, "logs", "hook.log");
-        const raw = await readFile(logPath, "utf8");
-        logTail = raw.split("\n").slice(-10).join("\n");
-      } catch {
-        /* no log yet */
-      }
-      return { ok: false, reason: "timeout", elapsedMs, logTail };
-    },
-    async testClaudeHook() {
-      return this.runHookProbe({ detectStatus: detectClaudeHookStatus, configure: configureClaudeHook });
-    },
-    async testGeminiHook() {
-      return this.runHookProbe({ detectStatus: detectGeminiHookStatus, configure: configureGeminiHook });
-    },
-    async testCodexHook() {
-      return this.runHookProbe({ detectStatus: detectCodexHookStatus, configure: configureCodexHook });
-    },
-    async testCopilotHook() {
-      return this.runHookProbe({ detectStatus: detectCopilotHookStatus, configure: configureCopilotHook });
-    },
-    async testOpencodeHook() {
-      return this.runHookProbe({ detectStatus: detectOpencodeHookStatus, configure: configureOpencodeHook });
     },
     /**
      * Clear a single session's alert entry. Called from the notification
