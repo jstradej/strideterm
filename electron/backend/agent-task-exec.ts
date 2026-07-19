@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, type ChildProcess } from "node:child_process";
 
 export interface ExecResult {
   exitCode: number;
@@ -7,8 +7,10 @@ export interface ExecResult {
 }
 
 export function execCommand(command: string, cwd: string, timeoutMs: number): Promise<ExecResult> {
+  let child: ChildProcess | undefined;
+
   const childPromise = new Promise<ExecResult>((resolve) => {
-    const child = exec(command, {
+    child = exec(command, {
       cwd,
       timeout: timeoutMs,
       windowsHide: true,
@@ -33,11 +35,19 @@ export function execCommand(command: string, cwd: string, timeoutMs: number): Pr
     });
   });
 
+  let hardTimeoutTimer: ReturnType<typeof setTimeout> | undefined;
   const hardTimeout = new Promise<ExecResult>((resolve) => {
-    setTimeout(() => {
+    hardTimeoutTimer = setTimeout(() => {
+      try {
+        child?.kill();
+      } catch {
+        // child already gone — no-op
+      }
       resolve({ exitCode: 1, stdout: "", stderr: `Command timed out after ${timeoutMs}ms` });
     }, timeoutMs + 5000);
   });
 
-  return Promise.race([childPromise, hardTimeout]);
+  return Promise.race([childPromise, hardTimeout]).finally(() => {
+    clearTimeout(hardTimeoutTimer);
+  });
 }
