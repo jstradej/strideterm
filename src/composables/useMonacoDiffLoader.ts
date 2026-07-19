@@ -11,9 +11,8 @@ export type MonacoDiffPayload = Record<string, any>;
  *    stale one
  *  - a uniform error payload shaped for MonacoDiffPanel when the fetch rejects
  *
- * Used by GitBranchesTab.vue (commit file diff) and GitChangesTab.vue
- * (working-tree file diff). AzureReviewPane.vue keeps its own copy for now —
- * unifying it is a follow-up (see the GitBranchesTab.vue extraction report).
+ * Used by GitBranchesTab.vue (commit file diff), GitChangesTab.vue
+ * (working-tree file diff), and AzureReviewPane.vue (review file diff).
  */
 export function useMonacoDiffLoader<TArgs extends unknown[]>(
   fetchThunk: (...args: TArgs) => Promise<MonacoDiffPayload>,

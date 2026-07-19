@@ -371,3 +371,165 @@ describe("AzureReviewPane — loadPrBranches surfaces a load failure", () => {
     expect(wrapper.text()).toContain("network down");
   });
 });
+
+/**
+ * Regression coverage for review-code-quality-2026-07.md §3.5: AzureReviewPane
+ * used to carry its own inline copy of the Monaco diff seq-guard/error-envelope
+ * logic instead of the shared useMonacoDiffLoader composable that
+ * GitBranchesTab/GitChangesTab already used. This proves the shared composable
+ * is wired correctly here — the right fetch is issued when a file is selected,
+ * and a rejection produces the same error-envelope shape MonacoDiffPanel expects.
+ */
+describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLoader", () => {
+  function buildFileDiffPayload(): StatePayload {
+    const prKey = "ado:1";
+    const detail = {
+      pullRequest: {
+        id: 1,
+        title: "Sample review PR",
+        isDraft: false,
+        sourceRefName: "refs/heads/feature/x",
+        targetRefName: "refs/heads/main",
+        url: "",
+        webUrl: "",
+        mergeStatus: "succeeded",
+      },
+      project: { name: "MockProject" },
+      repository: { name: "platform-api" },
+      role: "reviewer",
+      hasAttention: false,
+      attentionReason: "",
+      reviewerSummary: { reviewers: [] },
+      checks: { failedCount: 0, pendingCount: 0, passedCount: 1, checks: [] },
+      changedFiles: [{ path: "src/foo.ts", changeType: "modified" }],
+      threads: [],
+      issueComments: [],
+    };
+    return {
+      appState: {
+        activeWorkspaceId: "ws-review",
+        activeViewId: "review:ws-review",
+        activeProfileId: "default",
+        workspaces: [
+          {
+            id: "ws-review",
+            name: "Review WS",
+            kind: "terminal",
+            cwd: "/repo",
+            activeViewId: "review:ws-review",
+            panels: [],
+            review: { provider: "azure-devops", prKey },
+          },
+        ],
+        profiles: [{ id: "default", name: "Default", color: "", workspaceIds: ["ws-review"] }],
+      },
+      workspace: {
+        workspace: {
+          id: "ws-review",
+          name: "Review WS",
+          kind: "terminal",
+          cwd: "/repo",
+          panels: [],
+          review: { provider: "azure-devops", prKey },
+        },
+        project: null,
+        sessions: [],
+      },
+      azureDevops: { pullRequests: { [prKey]: detail } },
+      github: { pullRequests: {} },
+      reviewBridge: { pullRequests: {}, agentPrompts: [], syncQueue: [] },
+      git: { workspaces: {} },
+    } as unknown as StatePayload;
+  }
+
+  function mountWithFileDiff() {
+    const appStore = useAppStore();
+    appStore.payload = buildFileDiffPayload();
+    for (const fn of ["refreshAzure", "markAzurePrSeen", "markAzurePullRequestSeen"]) {
+      if (typeof (appStore as unknown as Record<string, unknown>)[fn] === "function") {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (vi.spyOn(appStore as any, fn as any) as any).mockImplementation(() => Promise.resolve());
+      }
+    }
+    return mount(AzureReviewPane, {
+      props: { workspaceId: "ws-review" },
+      global: {
+        stubs: {
+          PaneShell: true,
+          DiffViewer: true,
+          GitCommitLog: true,
+          ReviewSummaryTab: true,
+          ReviewCommentsTab: true,
+          ReviewAgentTab: true,
+          ReviewPipelinesTab: true,
+          CustomSelect: true,
+          // MonacoDiffPanel is intentionally NOT stubbed away here — we need to
+          // read its monaco-payload prop to confirm the loader actually wired.
+        },
+        provide: {
+          api: {
+            azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+          },
+        },
+      },
+    });
+  }
+
+  test("selecting a file fetches the branch diff against origin/<target> and feeds MonacoDiffPanel", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithFileDiff();
+    await flushPromises();
+
+    const appStore = useAppStore();
+    const fileGitDiff = vi.fn().mockResolvedValue({ ok: true, leftContent: "old", rightContent: "new" });
+    vi.spyOn(appStore, "getApi").mockReturnValue({ fileGitDiff } as unknown as ReturnType<typeof appStore.getApi>);
+
+    const filesTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Files"))!;
+    await filesTabBtn.trigger("click");
+    await flushPromises();
+
+    const fileBtn = wrapper.find(".review-tree-file");
+    expect(fileBtn.exists()).toBe(true);
+    await fileBtn.trigger("click");
+    await flushPromises();
+
+    expect(fileGitDiff).toHaveBeenCalledWith({
+      rootPath: "/repo",
+      relativePath: "src/foo.ts",
+      source: "branch",
+      revisionRef: "origin/main",
+    });
+
+    // MonacoDiffPanel is auto-stubbed as a defineAsyncComponent in this test
+    // environment, so assert via the (real, unstubbed) ReviewFileDiffPreview
+    // wrapper's own monacoPayload prop instead of reaching across the stub.
+    const preview = wrapper.findComponent({ name: "ReviewFileDiffPreview" });
+    expect(preview.exists()).toBe(true);
+    expect(preview.props("monacoPayload")).toEqual({ ok: true, leftContent: "old", rightContent: "new" });
+  });
+
+  test("a rejected fetch produces the shared error-envelope shape instead of throwing", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithFileDiff();
+    await flushPromises();
+
+    const appStore = useAppStore();
+    const fileGitDiff = vi.fn().mockRejectedValue(new Error("git show failed"));
+    vi.spyOn(appStore, "getApi").mockReturnValue({ fileGitDiff } as unknown as ReturnType<typeof appStore.getApi>);
+
+    const filesTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Files"))!;
+    await filesTabBtn.trigger("click");
+    await flushPromises();
+
+    await wrapper.find(".review-tree-file").trigger("click");
+    await flushPromises();
+
+    const preview = wrapper.findComponent({ name: "ReviewFileDiffPreview" });
+    expect(preview.props("monacoPayload")).toEqual(
+      expect.objectContaining({ ok: false, leftError: "git show failed", leftMissing: true, rightMissing: true }),
+    );
+  });
+});

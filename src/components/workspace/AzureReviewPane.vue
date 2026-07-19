@@ -409,6 +409,7 @@ import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
+import { useMonacoDiffLoader } from "../../composables/useMonacoDiffLoader.js";
 import { useReviewComments } from "../../composables/useReviewComments.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import PaneShell from "../layout/PaneShell.vue";
@@ -756,13 +757,25 @@ async function handlePublish() {
 
 // --- Monaco diff state for the review Files tab ---
 // We mirror GitChangesTab/GitHistoryTab: load raw left/right content via
-// fileGitDiff and feed it to MonacoDiffPanel for word-level diff, side-by-
-// side view, change navigation. The unified-text DiffViewer fallback is
-// kept around as a safety net for environments where Monaco fails to load.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const monacoDiffPayload = ref<Record<string, any> | null>(null);
-const monacoDiffLoading = ref(false);
-let monacoDiffSeq = 0;
+// fileGitDiff/fileCommitDiff and feed it to MonacoDiffPanel for word-level
+// diff, side-by-side view, change navigation (shared seq-guard + error
+// envelope via useMonacoDiffLoader.ts). The unified-text DiffViewer fallback
+// is kept around as a safety net for environments where Monaco fails to load.
+const diffLoader = useMonacoDiffLoader((filePath: string) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const w = workspace.value as any;
+  const rootPath = w?.cwd || (w?.gitRoots?.[0] ?? "");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const api = appStore.getApi() as any;
+  if (reviewDiffMode.value === "commit") {
+    return api.fileCommitDiff({ rootPath, relativePath: filePath, hash: reviewCommitFilter.value });
+  }
+  const targetBranch = stripRef(pullRequest.value.targetRefName || "");
+  const ref = targetBranch ? `origin/${targetBranch}` : "HEAD";
+  return api.fileGitDiff({ rootPath, relativePath: filePath, source: "branch", revisionRef: ref });
+});
+const monacoDiffPayload = diffLoader.payload;
+const monacoDiffLoading = diffLoader.loading;
 
 // When set, we render the per-commit diff for the selected commit instead of
 // the rolled-up branch diff. The user requested both views (final state +
@@ -817,7 +830,7 @@ const commitFilterOptions = computed(() => {
   return [{ value: "", label: `Final — vs ${target}` }, ...commits];
 });
 
-async function loadMonacoReviewDiff(filePath: string) {
+function loadMonacoReviewDiff(filePath: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = workspace.value as any;
   const rootPath = w?.cwd || (w?.gitRoots?.[0] ?? "");
@@ -825,37 +838,7 @@ async function loadMonacoReviewDiff(filePath: string) {
     monacoDiffPayload.value = null;
     return;
   }
-  const seq = ++monacoDiffSeq;
-  monacoDiffLoading.value = true;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const api = appStore.getApi() as any;
-    let payload;
-    if (reviewDiffMode.value === "commit") {
-      payload = await api.fileCommitDiff({ rootPath, relativePath: filePath, hash: reviewCommitFilter.value });
-    } else {
-      const targetBranch = stripRef(pullRequest.value.targetRefName || "");
-      const ref = targetBranch ? `origin/${targetBranch}` : "HEAD";
-      payload = await api.fileGitDiff({ rootPath, relativePath: filePath, source: "branch", revisionRef: ref });
-    }
-    if (seq !== monacoDiffSeq) return;
-    monacoDiffPayload.value = payload || null;
-  } catch (err) {
-    if (seq !== monacoDiffSeq) return;
-    monacoDiffPayload.value = {
-      ok: false,
-      leftError: (err as Error)?.message || "Failed to load diff",
-      leftContent: "",
-      rightContent: "",
-      leftLabel: "",
-      rightLabel: "",
-      leftMissing: true,
-      rightMissing: true,
-      language: "plaintext",
-    };
-  } finally {
-    if (seq === monacoDiffSeq) monacoDiffLoading.value = false;
-  }
+  void diffLoader.load(filePath);
 }
 
 function onSelectFile(filePath: string) {
