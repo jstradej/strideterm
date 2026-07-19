@@ -222,6 +222,38 @@ describe("notification store (session-grouped)", () => {
     });
   });
 
+  describe("runWithToast", () => {
+    it("returns true and stays silent when the action resolves", async () => {
+      const store = useNotificationStore();
+      const ok = await store.runWithToast("Save", async () => "result");
+      expect(ok).toBe(true);
+      expect(store.sessions).toHaveLength(0);
+    });
+
+    it("returns false and surfaces an error toast when the action rejects", async () => {
+      const store = useNotificationStore();
+      const ok = await store.runWithToast("Save prompt failed", async () => {
+        throw new Error("disk full");
+      });
+      expect(ok).toBe(false);
+      expect(store.sessions).toHaveLength(1);
+      expect(store.sessions[0].events[0].title).toBe("Save prompt failed");
+      expect(store.sessions[0].events[0].body).toBe("disk full");
+    });
+
+    it("passes profileId through to the error toast for profile-scoped rendering", async () => {
+      const store = useNotificationStore();
+      await store.runWithToast(
+        "Delete failed",
+        async () => {
+          throw new Error("nope");
+        },
+        { profileId: "p3" },
+      );
+      expect(store.sessions[0].meta?.profileId).toBe("p3");
+    });
+  });
+
   describe("profile-scoped filters", () => {
     // Sessions are stamped with `meta.profileId` at creation time by the
     // review / pipeline composables. The store-level helpers stay agnostic

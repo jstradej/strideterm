@@ -65,6 +65,7 @@
                   📋
                 </button>
                 <button
+                  v-if="!appStore.isRemoteTransport"
                   type="button"
                   class="button button--ghost review-copy-btn"
                   title="Open the prompt editor for this template — change title, description, and body. Saved per review root."
@@ -73,7 +74,7 @@
                   ✎
                 </button>
                 <button
-                  v-if="!prompt.isDefault"
+                  v-if="!prompt.isDefault && !appStore.isRemoteTransport"
                   type="button"
                   :class="[
                     'button',
@@ -121,6 +122,7 @@
 import { ref } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 const props = defineProps<{
   prKey: string;
@@ -134,6 +136,7 @@ const props = defineProps<{
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const notifications = useNotificationStore();
 
 const busyAction = ref<string>("");
 
@@ -147,7 +150,7 @@ async function handleResetPrompts() {
   if (!confirmed) return;
   busyAction.value = "reset-prompts";
   try {
-    await appStore.resetAgentPrompts();
+    await notifications.runWithToast("Reset prompts failed", () => appStore.resetAgentPrompts());
   } finally {
     busyAction.value = "";
   }
@@ -156,7 +159,7 @@ async function handleResetPrompts() {
 async function handleDeletePrompt(promptId: string): Promise<void> {
   busyAction.value = `delete-${promptId}`;
   try {
-    await appStore.deleteAgentPrompt(promptId);
+    await notifications.runWithToast("Delete prompt failed", () => appStore.deleteAgentPrompt(promptId));
   } finally {
     busyAction.value = "";
   }
@@ -182,14 +185,18 @@ function editAgentPrompt(prompt: Record<string, any>): void {
     submitLabel: "Save prompt",
     onCancel: () => appStore.closeDialog(),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    onSubmit: (content: any) => {
-      appStore.saveAgentPrompt({
-        promptId: prompt.promptId,
-        title: prompt.title,
-        description: prompt.description,
-        template: content,
-      });
-      appStore.closeDialog();
+    onSubmit: async (content: any) => {
+      const ok = await notifications.runWithToast("Save prompt failed", () =>
+        appStore.saveAgentPrompt({
+          promptId: prompt.promptId,
+          title: prompt.title,
+          description: prompt.description,
+          template: content,
+        }),
+      );
+      // Keep the dialog open with the user's edits on failure — closing
+      // unconditionally would silently discard the prompt they just wrote.
+      if (ok) appStore.closeDialog();
     },
   });
 }

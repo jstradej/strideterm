@@ -2,7 +2,9 @@
  * Verifies that the remote transport routes profile/workspace/session
  * activations to the correct /api/remote-client/* endpoints.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, test } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createRemoteTransport } from "./transport.js";
 
 interface MockWebSocketEvent {
@@ -352,5 +354,110 @@ describe("remote transport endpoint routing", () => {
     transport.onTerminalReplay((payload) => replays.push(payload));
     first.message({ type: "terminal:replay", payload: { sessionId: "ws1:a", data: "R", throughSeq: 3 } });
     expect(replays).toContainEqual({ sessionId: "ws1:a", data: "R", throughSeq: 3 });
+  });
+});
+
+/**
+ * Regression guard for review-code-quality-2026-07.md finding 1.3 ("forgot the
+ * remote mapping" bug class): a desktop preload method with no remote-transport
+ * counterpart isn't a compile error, because `Transport` wraps `StridetermAPI`
+ * in `Partial<>` for exactly this reason (some desktop methods legitimately
+ * don't apply remotely). That means a genuinely missing mapping — like
+ * gitCompareBranch, which HAD a working server route and desktop binding but
+ * no remote fetchJson call — only ever surfaced as a runtime TypeError on a
+ * real remote client.
+ *
+ * This test parses both object literals as text (no Electron import, so it
+ * runs under plain jsdom) and asserts the only keys present in the desktop
+ * API but absent from the remote transport are ones we've deliberately
+ * decided don't apply remotely. Adding a new desktop-only preload method
+ * requires a conscious addition to KNOWN_DESKTOP_ONLY_METHODS below — any
+ * other gap fails the test instead of shipping silently.
+ */
+describe("remote transport API parity — no method silently missing its remote mapping", () => {
+  // Keep in sync with any legitimately desktop-only additions. Each entry
+  // documents WHY the remote transport doesn't (or doesn't yet) implement it.
+  const KNOWN_DESKTOP_ONLY_METHODS = new Set([
+    // Native OS integration with no remote-browser equivalent.
+    "openTerminalPath",
+    "pasteClipboardImageForTerminal",
+    "showSystemNotification",
+    "checkForUpdates",
+    "browseDirectory",
+    "browseFile",
+    "saveFile",
+    "getNotificationMetrics",
+    "closeTerminal",
+    "listPlugins",
+    "getPluginWorkspaceTemplate",
+    // Electron multi-window management — a remote client is a single browser
+    // tab, there is no OS-level window to create/close/focus.
+    "getWindowId",
+    "focusWindow",
+    "createWindow",
+    "closeWindow",
+    "respondConfirmClose",
+    "openDiffPopout",
+    "getDiffPopoutInit",
+    "onNewWindowShortcut",
+    "onConfirmCloseRequest",
+    // Renderer-side logging writes into the Electron main-process log file,
+    // which doesn't exist for a remote browser client. Always called via
+    // optional chaining (api.logRenderer?.(...)) at every call site.
+    "logRenderer",
+    // Plain data, not an RPC method.
+    "startupFlags",
+    // review-code-quality-2026-07.md §1.3: agent prompts are a global (not
+    // per-profile) resource; save/delete are intentionally desktop-IPC-only
+    // (reset is the only remote-reachable prompt mutation). ReviewAgentTab
+    // hides the edit/delete affordance when the transport is remote.
+    "saveAgentPrompt",
+    "deleteAgentPrompt",
+    // review-code-quality-2026-07.md §2.2: DockerDetailShell/DockerDetail/
+    // DockerPane call `window.strideterm.dockerShellOpen/Write/Resize/Close`
+    // directly instead of going through the transport, so these have no
+    // remote mapping yet and the shell silently no-ops on a remote client.
+    // Tracked as a follow-up to route shell open/close through the transport.
+    "dockerShellOpen",
+    "dockerShellWrite",
+    "dockerShellResize",
+    "dockerShellClose",
+    "onDockerShellData",
+    "onDockerShellClose",
+    // review-code-quality-2026-07.md §4.3: dead IPC channels — main.ts handles
+    // Ctrl+1-9 directly and nothing ever sends shortcut:switch-*. Tracked for
+    // removal from StridetermAPI entirely rather than remote mapping.
+    "onSwitchWorkspace",
+    "onSwitchProject",
+    "onSwitchTab",
+  ]);
+
+  function extractDesktopApiKeys(): string[] {
+    const preloadSrc = readFileSync(resolve(process.cwd(), "electron/preload.cts"), "utf8");
+    const start = preloadSrc.indexOf('exposeInMainWorld("strideterm", {');
+    const end = preloadSrc.indexOf("} satisfies StridetermAPI);", start);
+    if (start < 0 || end < 0) throw new Error("Could not locate the strideterm API object literal in preload.cts");
+    const body = preloadSrc.slice(start, end);
+    const keys = new Set<string>();
+    for (const m of body.matchAll(/^  ([a-zA-Z_$][\w$]*)[:,]/gm)) keys.add(m[1]);
+    return [...keys];
+  }
+
+  it("every desktop API key is either remote-mapped or an acknowledged desktop-only method", () => {
+    const desktopKeys = extractDesktopApiKeys();
+    expect(desktopKeys.length).toBeGreaterThan(50); // sanity check the regex actually matched something
+
+    const transport = createRemoteTransport() as unknown as Record<string, unknown>;
+    const remoteKeys = new Set(Object.keys(transport));
+
+    const unmapped = desktopKeys.filter((key) => !remoteKeys.has(key) && !KNOWN_DESKTOP_ONLY_METHODS.has(key));
+    expect(unmapped).toEqual([]);
+  });
+
+  it("KNOWN_DESKTOP_ONLY_METHODS doesn't accumulate stale entries that are now mapped", () => {
+    const transport = createRemoteTransport() as unknown as Record<string, unknown>;
+    const remoteKeys = new Set(Object.keys(transport));
+    const stale = [...KNOWN_DESKTOP_ONLY_METHODS].filter((key) => remoteKeys.has(key));
+    expect(stale).toEqual([]);
   });
 });

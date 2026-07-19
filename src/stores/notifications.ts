@@ -646,6 +646,26 @@ export const useNotificationStore = defineStore("notifications", () => {
     return id;
   }
 
+  /**
+   * Run an async action, turning a rejection into an error toast instead of
+   * an unhandled rejection with no user-visible feedback. Returns whether
+   * the action succeeded so a caller can decide UI state (e.g. keep a
+   * dialog open) without needing its own try/catch.
+   */
+  async function runWithToast(
+    title: string,
+    fn: () => Promise<unknown>,
+    options: { workspaceId?: string; workspaceName?: string; profileId?: string } = {},
+  ): Promise<boolean> {
+    try {
+      await fn();
+      return true;
+    } catch (err) {
+      showError(title, (err as Error)?.message || "Action failed", options);
+      return false;
+    }
+  }
+
   return {
     // State
     sessions,
@@ -677,6 +697,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     togglePin,
     requestFocus,
     showError,
+    runWithToast,
     pushPersistentToast,
     pushEphemeralToast,
     dismissPersistentToast,

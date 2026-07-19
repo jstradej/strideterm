@@ -905,6 +905,7 @@ export function createRemoteTransport(): Transport {
     gitContinueOperation: (payload) => fetchJson("/api/git/continue", payload),
     gitAbortOperation: (payload) => fetchJson("/api/git/abort", payload),
     gitDiffPreview: (payload) => fetchJson("/api/git/diff-preview", payload),
+    gitCompareBranch: (payload) => fetchJson("/api/git/compare-branch", payload),
     gitMergeCurrentIntoBase: (payload) => fetchJson("/api/git/merge-into-base", payload),
     gitRemoveWorktree: (payload) => fetchJson("/api/git/remove-worktree", payload),
     gitCommitAll: (payload) => fetchJson("/api/git/commit-all", payload),
