@@ -189,6 +189,30 @@ export function createGitHubApi(
     }
   }
 
+  /**
+   * Follows GitHub's page-number pagination (`?page=N`) for a list endpoint,
+   * aggregating every page's items into one array. Stops when a page comes
+   * back empty/non-array, or short of `perPage` (the standard signal that it
+   * was the last page) — matching the per-endpoint loops this replaces.
+   */
+  async function paginate(
+    buildPageUrl: (page: number) => string,
+    token: string | undefined,
+    perPage: number,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
+  ): Promise<any[]> {
+    const results: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
+    let page = 1;
+    while (true) {
+      const batch = await requestJson(buildPageUrl(page), { token });
+      if (!Array.isArray(batch) || !batch.length) break;
+      results.push(...batch);
+      if (batch.length < perPage) break;
+      page++;
+    }
+    return results;
+  }
+
   // ---------------------------------------------------------------------------
   // URL builders
   // ---------------------------------------------------------------------------
@@ -331,17 +355,7 @@ export function createGitHubApi(
     pullNumber: number | string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    const files: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
-    let page = 1;
-    while (true) {
-      const url = `${buildPullRequestFilesUrl(connection, owner, repo, pullNumber)}&page=${page}`;
-      const batch = await requestJson(url, { token });
-      if (!Array.isArray(batch) || !batch.length) break;
-      files.push(...batch);
-      if (batch.length < 100) break;
-      page++;
-    }
-    return files;
+    return paginate((page) => `${buildPullRequestFilesUrl(connection, owner, repo, pullNumber)}&page=${page}`, token, 100);
   }
 
   async function listReviews(
@@ -364,17 +378,7 @@ export function createGitHubApi(
     pullNumber: number | string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    const comments: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
-    let page = 1;
-    while (true) {
-      const url = `${buildReviewCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`;
-      const batch = await requestJson(url, { token });
-      if (!Array.isArray(batch) || !batch.length) break;
-      comments.push(...batch);
-      if (batch.length < 100) break;
-      page++;
-    }
-    return comments;
+    return paginate((page) => `${buildReviewCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`, token, 100);
   }
 
   async function listIssueComments(
@@ -385,17 +389,7 @@ export function createGitHubApi(
     pullNumber: number | string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    const comments: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
-    let page = 1;
-    while (true) {
-      const url = `${buildIssueCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`;
-      const batch = await requestJson(url, { token });
-      if (!Array.isArray(batch) || !batch.length) break;
-      comments.push(...batch);
-      if (batch.length < 100) break;
-      page++;
-    }
-    return comments;
+    return paginate((page) => `${buildIssueCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`, token, 100);
   }
 
   async function listCheckRuns(
@@ -466,17 +460,11 @@ export function createGitHubApi(
     { perPage = 100, sort = "pushed" }: ListUserReposOptions = {},
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    const repos: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
-    let page = 1;
-    while (true) {
-      const url = `${buildApiBase(connection)}/user/repos?per_page=${perPage}&sort=${sort}&direction=desc&page=${page}`;
-      const batch = await requestJson(url, { token });
-      if (!Array.isArray(batch) || !batch.length) break;
-      repos.push(...batch);
-      if (batch.length < perPage) break;
-      page++;
-    }
-    return repos;
+    return paginate(
+      (page) => `${buildApiBase(connection)}/user/repos?per_page=${perPage}&sort=${sort}&direction=desc&page=${page}`,
+      token,
+      perPage,
+    );
   }
 
   async function listBranches(
@@ -487,17 +475,12 @@ export function createGitHubApi(
     { perPage = 100 }: ListBranchesOptions = {},
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    const branches: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
-    let page = 1;
-    while (true) {
-      const url = `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=${perPage}&page=${page}`;
-      const batch = await requestJson(url, { token });
-      if (!Array.isArray(batch) || !batch.length) break;
-      branches.push(...batch);
-      if (batch.length < perPage) break;
-      page++;
-    }
-    return branches;
+    return paginate(
+      (page) =>
+        `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=${perPage}&page=${page}`,
+      token,
+      perPage,
+    );
   }
 
   async function submitReview(
@@ -518,6 +501,7 @@ export function createGitHubApi(
 
   return {
     requestJson,
+    paginate,
     // URL builders (exposed for direct use if needed)
     buildApiBase,
     buildGetUserUrl,
