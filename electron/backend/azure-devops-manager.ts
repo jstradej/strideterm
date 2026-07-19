@@ -39,7 +39,6 @@ import {
   normalizeReviewRoot,
   createPullRequestKey,
   stripRefsPrefix,
-  parseDate,
   firstNonEmpty,
   normalizeRemoteUrl,
   buildRepositoryRemoteUrl,
@@ -52,6 +51,7 @@ import {
   normalizeConnectionInput,
   exists,
   dedupePrSummaries,
+  buildInboxViews,
 } from "./azure-devops-utils.js";
 
 // ─── Local type aliases ──────────────────────────────────────────────────────
@@ -1260,33 +1260,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
     // The per-connection trackedPullRequests / detailMap are kept intact;
     // dedup applies only to the inbox views the user sees.
     const dedupedSummaries = dedupePrSummaries(visibleSummaries);
-    const recentlyUpdated = dedupedSummaries
-      .slice()
-      .sort((left, right) => parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt));
     const snapshot = {
       connections: connectionSnapshots as unknown as typeof this.snapshot.connections,
-      inbox: {
-        needsMyReview: dedupedSummaries
-          .filter((summary) => summary.role === "reviewer")
-          .sort((left, right) => {
-            if (left.hasAttention !== right.hasAttention) {
-              return Number(right.hasAttention) - Number(left.hasAttention);
-            }
-            return parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt);
-          }),
-        myPullRequests: dedupedSummaries
-          .filter((summary) => summary.role === "author")
-          .sort((left, right) => {
-            if (left.hasAttention !== right.hasAttention) {
-              return Number(right.hasAttention) - Number(left.hasAttention);
-            }
-            return parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt);
-          }),
-        recentlyUpdated,
-        needsAttention: dedupedSummaries
-          .filter((summary) => summary.hasAttention)
-          .sort((left, right) => parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt)),
-      },
+      inbox: buildInboxViews(dedupedSummaries),
       trackedPullRequests,
       pullRequests: detailMap,
       reviewActivity: appendReviewActivity(this.snapshot.reviewActivity, newActivityEvents),

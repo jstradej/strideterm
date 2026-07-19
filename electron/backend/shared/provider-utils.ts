@@ -160,6 +160,51 @@ function comparePrSummariesForDedup(a: PrSummaryDedupShape, b: PrSummaryDedupSha
   return ta - tb;
 }
 
+/**
+ * Shape used by `buildInboxViews`. Both Azure and GitHub PR summaries
+ * satisfy this (both carry `role`/`hasAttention`/`lastActivityAt`, typed
+ * loosely as `unknown` here so either provider's stricter summary type —
+ * or a plain `Record<string, unknown>` — is accepted without a cast).
+ */
+export interface InboxSortableSummary {
+  role?: unknown;
+  hasAttention?: unknown;
+  lastActivityAt?: unknown;
+}
+
+export interface InboxViews<T> {
+  needsMyReview: T[];
+  myPullRequests: T[];
+  recentlyUpdated: T[];
+  needsAttention: T[];
+}
+
+function byAttentionThenRecency(a: InboxSortableSummary, b: InboxSortableSummary): number {
+  if (Boolean(a.hasAttention) !== Boolean(b.hasAttention)) {
+    return Number(b.hasAttention) - Number(a.hasAttention);
+  }
+  return parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt);
+}
+
+/**
+ * Build the four inbox views (needsMyReview / myPullRequests / recentlyUpdated
+ * / needsAttention) from a list of already-deduped PR summaries.
+ *
+ * Shared by AzureDevOpsManager.sync() and GitHubManager.sync() — the
+ * grouping/sort rules are byte-identical between providers; only the
+ * summary shape's field values differ.
+ */
+export function buildInboxViews<T extends InboxSortableSummary>(summaries: T[]): InboxViews<T> {
+  return {
+    needsMyReview: summaries.filter((summary) => summary.role === "reviewer").sort(byAttentionThenRecency),
+    myPullRequests: summaries.filter((summary) => summary.role === "author").sort(byAttentionThenRecency),
+    recentlyUpdated: summaries.slice().sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt)),
+    needsAttention: summaries
+      .filter((summary) => Boolean(summary.hasAttention))
+      .sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt)),
+  };
+}
+
 export function formatReviewWorkspaceError(error: unknown, reviewRoot: string, providerLabel = "connection"): string {
   const text = extractErrorText(error);
   if (!text) return "";

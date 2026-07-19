@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dedupePrSummaries } from "./provider-utils.js";
+import { dedupePrSummaries, buildInboxViews } from "./provider-utils.js";
 
 describe("dedupePrSummaries", () => {
   it("collapses summaries with identical (orgUrl, repoId, prId) keeping the better one", () => {
@@ -102,5 +102,66 @@ describe("dedupePrSummaries", () => {
     const broken2 = { prKey: "b", orgUrl: "o", repository: {}, pullRequest: {} };
     const result = dedupePrSummaries([broken1, broken2]);
     expect(result).toHaveLength(2);
+  });
+});
+
+describe("buildInboxViews", () => {
+  it("routes summaries into needsMyReview / myPullRequests by role", () => {
+    const reviewerPr = { prKey: "r", role: "reviewer", hasAttention: false, lastActivityAt: "2026-01-01T00:00:00Z" };
+    const authorPr = { prKey: "a", role: "author", hasAttention: false, lastActivityAt: "2026-01-01T00:00:00Z" };
+    const otherPr = { prKey: "o", role: "other", hasAttention: false, lastActivityAt: "2026-01-01T00:00:00Z" };
+
+    const views = buildInboxViews([reviewerPr, authorPr, otherPr]);
+
+    expect(views.needsMyReview).toEqual([reviewerPr]);
+    expect(views.myPullRequests).toEqual([authorPr]);
+    // "other"-role summaries land in neither role bucket, but still show up
+    // in recentlyUpdated (which is role-agnostic).
+    expect(views.recentlyUpdated).toHaveLength(3);
+  });
+
+  it("sorts each role bucket by hasAttention first, then most-recent activity", () => {
+    const stale = { prKey: "stale", role: "reviewer", hasAttention: false, lastActivityAt: "2026-01-01T00:00:00Z" };
+    const fresh = { prKey: "fresh", role: "reviewer", hasAttention: false, lastActivityAt: "2026-03-01T00:00:00Z" };
+    const urgent = { prKey: "urgent", role: "reviewer", hasAttention: true, lastActivityAt: "2025-01-01T00:00:00Z" };
+
+    const views = buildInboxViews([stale, fresh, urgent]);
+
+    // urgent wins despite being the oldest, because hasAttention beats recency.
+    expect(views.needsMyReview.map((s) => s.prKey)).toEqual(["urgent", "fresh", "stale"]);
+  });
+
+  it("sorts recentlyUpdated purely by lastActivityAt, ignoring hasAttention and role", () => {
+    const older = { prKey: "older", role: "author", hasAttention: true, lastActivityAt: "2025-01-01T00:00:00Z" };
+    const newer = { prKey: "newer", role: "reviewer", hasAttention: false, lastActivityAt: "2026-06-01T00:00:00Z" };
+
+    const views = buildInboxViews([older, newer]);
+
+    expect(views.recentlyUpdated.map((s) => s.prKey)).toEqual(["newer", "older"]);
+  });
+
+  it("filters needsAttention to only hasAttention summaries, sorted by recency", () => {
+    const attentionOld = { prKey: "old", role: "author", hasAttention: true, lastActivityAt: "2025-01-01T00:00:00Z" };
+    const attentionNew = {
+      prKey: "new",
+      role: "reviewer",
+      hasAttention: true,
+      lastActivityAt: "2026-06-01T00:00:00Z",
+    };
+    const noAttention = { prKey: "none", role: "author", hasAttention: false, lastActivityAt: "2026-06-01T00:00:00Z" };
+
+    const views = buildInboxViews([attentionOld, attentionNew, noAttention]);
+
+    expect(views.needsAttention.map((s) => s.prKey)).toEqual(["new", "old"]);
+  });
+
+  it("does not mutate the input array (recentlyUpdated sorts a copy)", () => {
+    const a = { prKey: "a", role: "author", hasAttention: false, lastActivityAt: "2025-01-01T00:00:00Z" };
+    const b = { prKey: "b", role: "author", hasAttention: false, lastActivityAt: "2026-01-01T00:00:00Z" };
+    const input = [a, b];
+
+    buildInboxViews(input);
+
+    expect(input).toEqual([a, b]);
   });
 });

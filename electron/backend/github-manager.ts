@@ -35,6 +35,7 @@ import {
   exists,
   buildRepositoryRemoteUrl,
   dedupePrSummaries,
+  buildInboxViews,
 } from "./github-utils.js";
 
 interface SyncConnection {
@@ -504,30 +505,9 @@ export class GitHubManager extends BaseProviderManager {
     // the inbox views the user sees.
     const dedupedSummaries = dedupePrSummaries(visibleSummaries);
 
-    const recentlyUpdated = dedupedSummaries
-      .slice()
-      .sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt));
-
     const snapshot = {
       connections: connectionSnapshots,
-      inbox: {
-        needsMyReview: dedupedSummaries
-          .filter((s) => s.role === "reviewer")
-          .sort((a, b) => {
-            if (a.hasAttention !== b.hasAttention) return Number(b.hasAttention) - Number(a.hasAttention);
-            return parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt);
-          }),
-        myPullRequests: dedupedSummaries
-          .filter((s) => s.role === "author")
-          .sort((a, b) => {
-            if (a.hasAttention !== b.hasAttention) return Number(b.hasAttention) - Number(a.hasAttention);
-            return parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt);
-          }),
-        recentlyUpdated,
-        needsAttention: dedupedSummaries
-          .filter((s) => s.hasAttention)
-          .sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt)),
-      },
+      inbox: buildInboxViews(dedupedSummaries),
       trackedPullRequests,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       pullRequests: detailMap as any,

@@ -19,6 +19,7 @@ export {
   createEmptySnapshot,
   extractErrorText,
   dedupePrSummaries,
+  buildInboxViews,
 } from "./shared/provider-utils.js";
 
 import { trimTrailingSlash } from "./shared/provider-utils.js";
