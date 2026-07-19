@@ -1,4 +1,4 @@
-import { attentionTitle, isFreshAttention, safeColor, tabAttentionTitle, isFreshAlert } from "./helpers.js";
+import { attentionTitle, isFreshAttention, safeColor } from "./helpers.js";
 import type { WorkspaceState, GitSnapshot } from "../../electron/shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-display.js";
 import { formatRelativeAge } from "./relative-age.js";
@@ -6,15 +6,6 @@ import { formatRelativeAge } from "./relative-age.js";
 // ---------------------------------------------------------------------------
 // Local structural types
 // ---------------------------------------------------------------------------
-
-interface TabLike {
-  id: string;
-  title: string;
-  status: string;
-  tone: string;
-  persistent?: boolean;
-  closable?: boolean;
-}
 
 interface AttentionLike {
   count?: number;
@@ -116,56 +107,6 @@ function computeDepth(workspace: WorkspaceState, byId: Map<string, WorkspaceStat
     return 1;
   if ((workspace.notes || "").startsWith("Worktree of ")) return 1;
   return 0;
-}
-
-export function buildTabStripModel({
-  tabs,
-  activeViewId,
-  isInSplitGroup,
-  getTabAttention,
-}: {
-  tabs: TabLike[];
-  activeViewId: string;
-  isInSplitGroup: (id: string) => boolean;
-  getTabAttention: (id: string) => AttentionLike | null | undefined;
-}): Array<{
-  id: string;
-  title: string;
-  status: string;
-  tone: string;
-  active: boolean;
-  grouped: boolean;
-  persistent: boolean;
-  closable: boolean;
-  attention: boolean;
-  attentionFresh: boolean;
-  attentionTooltip: string;
-  titleTooltip: string;
-}> {
-  return tabs.map((session) => {
-    const tabAttention = getTabAttention(session.id);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const attentionTooltip = tabAttentionTitle(tabAttention as any);
-    return {
-      id: session.id,
-      title: session.title,
-      status: session.status,
-      tone: session.tone,
-      active: session.id === activeViewId,
-      grouped: isInSplitGroup(session.id),
-      persistent: !!session.persistent,
-      closable: session.closable !== false,
-      attention: !!tabAttention,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      attentionFresh: isFreshAlert(tabAttention as any),
-      attentionTooltip,
-      titleTooltip:
-        attentionTooltip ||
-        (session.persistent
-          ? "Double click to rename. Drag to reorder."
-          : `${session.title}${session.status ? `\n${session.status}` : ""}`),
-    };
-  });
 }
 
 export function buildWorkspaceCards({

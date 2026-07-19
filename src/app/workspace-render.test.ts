@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildWorkspaceCards, buildTabStripModel } from "./workspace-render.js";
+import { buildWorkspaceCards } from "./workspace-render.js";
 import type { WorkspaceState } from "../../electron/shared/types/state.js";
 
 describe("buildWorkspaceCards", () => {
@@ -342,38 +342,5 @@ describe("buildWorkspaceCards", () => {
 
     expect(card.agentActivityState).toBeNull();
     expect(card.agentActivityLabel).toBe("");
-  });
-});
-
-describe("buildTabStripModel", () => {
-  test("marks active tab and grouped tab", () => {
-    const model = buildTabStripModel({
-      tabs: [
-        { id: "t1", title: "Shell", status: "running", tone: "ok", persistent: true, closable: true },
-        { id: "t2", title: "Log", status: "idle", tone: "ok", persistent: false, closable: true },
-      ],
-      activeViewId: "t1",
-      isInSplitGroup: (id) => id === "t2",
-      getTabAttention: () => null,
-    });
-
-    expect(model[0].active).toBe(true);
-    expect(model[0].grouped).toBe(false);
-    expect(model[0].persistent).toBe(true);
-    expect(model[1].active).toBe(false);
-    expect(model[1].grouped).toBe(true);
-  });
-
-  test("sets attention fields from tabAttention", () => {
-    const now = new Date().toISOString();
-    const [tab] = buildTabStripModel({
-      tabs: [{ id: "t1", title: "Shell", status: "", tone: "ok" }],
-      activeViewId: "",
-      isInSplitGroup: () => false,
-      getTabAttention: () => ({ count: 1, alerts: [{ title: "Build failed" }], latestAt: now }),
-    });
-
-    expect(tab.attention).toBe(true);
-    expect(tab.attentionTooltip).not.toBe("");
   });
 });
