@@ -1,10 +1,20 @@
 /// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
-import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
+import { readFile, mkdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { getLogger } from "./logger.js";
 import { ensureNotifyScript } from "./claude-hook-config.js";
+import {
+  matchesNestedCommandEntry,
+  buildNestedCommandEntry,
+  getNotifyScriptPath,
+  findHookIndex,
+  configureHookEntries,
+  removeHookEntries,
+  detectHookEntriesStatus,
+  atomicWriteFile,
+} from "./hook-config-engine.js";
 
 const log = getLogger("codex-hook");
 
@@ -36,6 +46,8 @@ const log = getLogger("codex-hook");
 // PreToolUse/PostToolUse only fire for Bash today and would flood; skip.
 // SessionStart has no strIDEterm consumer; skip.
 export const HOOKS_TO_REGISTER = Object.freeze(["Stop", "UserPromptSubmit"]);
+// Registration key === canonical hook name for Codex (no aliasing needed).
+const CODEX_EVENT_MAP: Record<string, string> = Object.fromEntries(HOOKS_TO_REGISTER.map((h) => [h, h]));
 
 const HOOK_MARKERS = Object.freeze(["hooks/notify.mjs", "hooks\\notify.mjs"]);
 
@@ -47,67 +59,8 @@ export function getCodexHooksPath(): string {
   return path.join(os.homedir(), ".codex", "hooks.json");
 }
 
-function getNotifyScriptPath(userDataPath: string): string {
-  return path.join(userDataPath, "hooks", "notify.mjs");
-}
-
-function buildCodexHookEntry(notifyScriptPath: string, hookName: string) {
-  const normalized = notifyScriptPath.replace(/\\/g, "/");
-  return {
-    matcher: "",
-    hooks: [
-      {
-        type: "command",
-        command: `node "${normalized}" ${hookName}`,
-        timeout: 5,
-      },
-    ],
-  };
-}
-
 export function findExistingHook(settings: Record<string, unknown>, hookName: string): number {
-  const hooksSection = (settings?.hooks as Record<string, unknown> | undefined)?.[hookName];
-  if (!Array.isArray(hooksSection)) return -1;
-  return hooksSection.findIndex(
-    (entry: unknown) =>
-      Array.isArray((entry as Record<string, unknown>)?.hooks) &&
-      ((entry as Record<string, unknown>).hooks as unknown[]).some(
-        (h: unknown) =>
-          typeof (h as Record<string, unknown>)?.command === "string" &&
-          HOOK_MARKERS.some((m) => (h as Record<string, string>).command.includes(m)),
-      ),
-  );
-}
-
-async function readHooksJson(): Promise<{
-  ok: boolean;
-  data: Record<string, unknown> | null;
-  path: string;
-  error?: string;
-}> {
-  const hooksPath = getCodexHooksPath();
-  try {
-    const raw = await readFile(hooksPath, "utf8");
-    return { ok: true, data: JSON.parse(raw) as Record<string, unknown>, path: hooksPath };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, data: null, path: hooksPath };
-    return { ok: false, data: null, error: (error as NodeJS.ErrnoException).message, path: hooksPath };
-  }
-}
-
-async function writeHooksJson(data: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
-  const hooksPath = getCodexHooksPath();
-  const dir = path.dirname(hooksPath);
-  const tmpPath = hooksPath + ".strideterm-tmp";
-  try {
-    if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-    await writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf8");
-    await rename(tmpPath, hooksPath);
-    return { ok: true };
-  } catch (error) {
-    await rm(tmpPath, { force: true }).catch(() => {});
-    return { ok: false, error: (error as NodeJS.ErrnoException).message };
-  }
+  return findHookIndex(settings, hookName, HOOK_MARKERS, matchesNestedCommandEntry);
 }
 
 function findFeaturesSection(content: string): { bodyStart: number; bodyEnd: number; body: string } | null {
@@ -190,11 +143,10 @@ export async function ensureCodexHooksFeatureFlag() {
   }
 
   const dir = path.dirname(configPath);
-  const tmpPath = configPath + ".strideterm-tmp";
+  const tmpPath = `${configPath}.strideterm-tmp`;
   try {
     if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-    await writeFile(tmpPath, updated, "utf8");
-    await rename(tmpPath, configPath);
+    await atomicWriteFile(configPath, updated);
     return { ok: true, changed: true, path: configPath };
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => {});
@@ -237,7 +189,15 @@ async function isCurrentCodexHooksFeatureFlagEnabled(): Promise<boolean> {
  * - Merges hook entries into ~/.codex/hooks.json (preserves user hooks)
  * - Idempotent: re-running replaces existing strIDEterm entries
  */
-export async function configureCodexHook(userDataPath: string) {
+export async function configureCodexHook(userDataPath: string): Promise<{
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  scriptPath?: string;
+  configPath?: string;
+  hooksPath?: string;
+  registered?: string[];
+}> {
   const scriptResult = await ensureNotifyScript(userDataPath);
   if (!scriptResult.ok) {
     return {
@@ -256,51 +216,29 @@ export async function configureCodexHook(userDataPath: string) {
     };
   }
 
-  const readResult = await readHooksJson();
-  if (!readResult.ok) {
-    return {
-      ok: false,
-      error: `Cannot read ${readResult.path}: ${readResult.error}. Check if the file contains valid JSON.`,
-      detail: "hooks-read-failed",
-    };
-  }
-
-  const hooks = readResult.data || {};
-  if (!hooks.hooks || typeof hooks.hooks !== "object") hooks.hooks = {};
-  const hooksMap = hooks.hooks as Record<string, unknown[]>;
-
-  const registered: string[] = [];
-  for (const hookName of HOOKS_TO_REGISTER) {
-    if (!Array.isArray(hooksMap[hookName])) hooksMap[hookName] = [];
-    const entry = buildCodexHookEntry(scriptResult.path, hookName);
-    const idx = findExistingHook(hooks, hookName);
-    if (idx >= 0) hooksMap[hookName][idx] = entry;
-    else hooksMap[hookName].push(entry);
-    registered.push(hookName);
-  }
-
-  const writeResult = await writeHooksJson(hooks);
-  if (!writeResult.ok) {
-    return {
-      ok: false,
-      error: `Failed to write ${readResult.path}: ${writeResult.error}`,
-      detail: "hooks-write-failed",
-    };
-  }
+  const hooksPath = getCodexHooksPath();
+  const result = await configureHookEntries(hooksPath, CODEX_EVENT_MAP, scriptResult.path, {
+    hookMarkers: HOOK_MARKERS,
+    buildEntry: buildNestedCommandEntry,
+    matchesEntry: matchesNestedCommandEntry,
+    readFailedDetail: "hooks-read-failed",
+    writeFailedDetail: "hooks-write-failed",
+  });
+  if (!result.ok) return result;
 
   log.info("codex hooks configured", {
     scriptPath: scriptResult.path,
     configPath: flagResult.path,
-    hooksPath: readResult.path,
+    hooksPath,
     featureFlagChanged: flagResult.changed,
-    registered,
+    registered: result.registered,
   });
   return {
     ok: true,
     scriptPath: scriptResult.path,
     configPath: flagResult.path,
-    hooksPath: readResult.path,
-    registered,
+    hooksPath,
+    registered: result.registered,
   };
 }
 
@@ -310,43 +248,20 @@ export async function configureCodexHook(userDataPath: string) {
  * have their own hooks that rely on it.
  */
 export async function removeCodexHook() {
-  const readResult = await readHooksJson();
-  if (!readResult.ok) {
-    log.warn("removeCodexHook: cannot read hooks", { path: readResult.path, err: readResult.error });
-    return { ok: false, error: `Cannot read ${readResult.path}: ${readResult.error}` };
-  }
-  if (!readResult.data) {
-    log.debug("removeCodexHook: hooks file not found, nothing to remove");
-    return { ok: true, removed: false };
-  }
+  const hooksPath = getCodexHooksPath();
+  const result = await removeHookEntries(hooksPath, HOOKS_TO_REGISTER, {
+    hookMarkers: HOOK_MARKERS,
+    matchesEntry: matchesNestedCommandEntry,
+  });
 
-  const hooks = readResult.data;
-  const removedFrom: string[] = [];
-  const hooksMap2 = (hooks.hooks || {}) as Record<string, unknown[]>;
-  const hookKeys = new Set([...HOOKS_TO_REGISTER, ...Object.keys(hooksMap2)]);
-
-  for (const hookName of hookKeys) {
-    const idx = findExistingHook(hooks, hookName);
-    if (idx < 0) continue;
-    hooksMap2[hookName].splice(idx, 1);
-    removedFrom.push(hookName);
-    if (hooksMap2[hookName].length === 0) delete hooksMap2[hookName];
+  if (!result.ok) {
+    log.warn("removeCodexHook: failed", { hooksPath, err: result.error });
+  } else if (result.removed) {
+    log.info("codex hooks removed", { hooksPath, removedFrom: result.removedFrom });
+  } else {
+    log.debug("removeCodexHook: no strIDEterm hooks found or hooks.json missing");
   }
-
-  if (removedFrom.length === 0) {
-    log.debug("removeCodexHook: no strIDEterm hooks found in hooks.json");
-    return { ok: true, removed: false };
-  }
-  if (Object.keys(hooksMap2).length === 0) delete hooks.hooks;
-
-  const writeResult = await writeHooksJson(hooks);
-  if (!writeResult.ok) {
-    log.warn("removeCodexHook: failed to write hooks", { path: readResult.path, err: writeResult.error });
-    return { ok: false, error: `Failed to write ${readResult.path}: ${writeResult.error}` };
-  }
-
-  log.info("codex hooks removed", { hooksPath: readResult.path, removedFrom });
-  return { ok: true, removed: true, removedFrom };
+  return result;
 }
 
 /**
@@ -364,47 +279,13 @@ export async function detectCodexHookStatus(userDataPath: string) {
   const configPath = getCodexConfigPath();
   const hooksPath = getCodexHooksPath();
   const scriptPath = getNotifyScriptPath(userDataPath);
-  const scriptExists = existsSync(scriptPath);
 
-  const readResult = await readHooksJson();
-  if (!readResult.ok) {
-    return { status: "error", error: readResult.error, configPath, hooksPath, scriptPath };
-  }
-  if (!readResult.data) {
-    return { status: "not-configured", configPath, hooksPath, scriptPath };
-  }
-
-  const registered: string[] = [];
-  const missing: string[] = [];
-  for (const event of HOOKS_TO_REGISTER) {
-    const idx = findExistingHook(readResult.data, event);
-    if (idx >= 0) registered.push(event);
-    else missing.push(event);
-  }
-
-  if (registered.length === 0) {
-    return { status: "not-configured", configPath, hooksPath, scriptPath };
-  }
-  if (!scriptExists) {
-    return { status: "script-missing", configPath, hooksPath, scriptPath, registered, missingHooks: missing };
-  }
-
-  const flagEnabled = await isCurrentCodexHooksFeatureFlagEnabled();
-  if (!flagEnabled) {
-    return {
-      status: "flag-missing",
-      configPath,
-      hooksPath,
-      scriptPath,
-      registered,
-      missingHooks: missing,
-    };
-  }
-
-  if (missing.length > 0) {
-    return { status: "partial", configPath, hooksPath, scriptPath, registered, missingHooks: missing };
-  }
-  return { status: "configured", configPath, hooksPath, scriptPath, registered };
+  const result = await detectHookEntriesStatus(hooksPath, scriptPath, CODEX_EVENT_MAP, {
+    hookMarkers: HOOK_MARKERS,
+    matchesEntry: matchesNestedCommandEntry,
+    extraCheck: async () => ((await isCurrentCodexHooksFeatureFlagEnabled()) ? null : { status: "flag-missing" }),
+  });
+  return { ...result, configPath, hooksPath, scriptPath };
 }
 
 export { HOOK_MARKERS };

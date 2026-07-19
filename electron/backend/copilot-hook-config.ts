@@ -1,10 +1,15 @@
 /// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
-import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { getLogger } from "./logger.js";
 import { ensureNotifyScript } from "./claude-hook-config.js";
+import {
+  getNotifyScriptPath,
+  findHookIndex,
+  configureHookEntries,
+  removeHookEntries,
+  detectHookEntriesStatus,
+} from "./hook-config-engine.js";
 
 const log = getLogger("copilot-hook");
 
@@ -54,10 +59,6 @@ export function getCopilotConfigPath(): string {
   return path.join(getCopilotHome(), "config.json");
 }
 
-function getNotifyScriptPath(userDataPath: string): string {
-  return path.join(userDataPath, "hooks", "notify.mjs");
-}
-
 function buildCopilotHookEntry(notifyScriptPath: string, canonicalEventName: string) {
   const normalized = notifyScriptPath.replace(/\\/g, "/");
   // Copilot's flat schema: one entry = one command. Both `bash` and
@@ -72,16 +73,15 @@ function buildCopilotHookEntry(notifyScriptPath: string, canonicalEventName: str
   };
 }
 
+function matchesCopilotEntry(entry: unknown, markers: readonly string[]): boolean {
+  const e = entry as Record<string, unknown>;
+  if (typeof e?.bash === "string" && markers.some((m) => (e.bash as string).includes(m))) return true;
+  if (typeof e?.powershell === "string" && markers.some((m) => (e.powershell as string).includes(m))) return true;
+  return false;
+}
+
 export function findExistingHook(config: Record<string, unknown>, copilotEventName: string): number {
-  const hooksSection = (config?.hooks as Record<string, unknown> | undefined)?.[copilotEventName];
-  if (!Array.isArray(hooksSection)) return -1;
-  return hooksSection.findIndex((entry: unknown) => {
-    const e = entry as Record<string, unknown>;
-    if (typeof e?.bash === "string" && HOOK_MARKERS.some((m) => (e.bash as string).includes(m))) return true;
-    if (typeof e?.powershell === "string" && HOOK_MARKERS.some((m) => (e.powershell as string).includes(m)))
-      return true;
-    return false;
-  });
+  return findHookIndex(config, copilotEventName, HOOK_MARKERS, matchesCopilotEntry);
 }
 
 // Copilot's config.json is JSONC — it ships with `// User settings ...`
@@ -128,35 +128,8 @@ function stripJsoncComments(input: string): string {
   return out.replace(/,(\s*[}\]])/g, "$1");
 }
 
-async function readCopilotConfig(): Promise<{
-  ok: boolean;
-  data: Record<string, unknown> | null;
-  path: string;
-  error?: string;
-}> {
-  const configPath = getCopilotConfigPath();
-  try {
-    const raw = await readFile(configPath, "utf8");
-    return { ok: true, data: JSON.parse(stripJsoncComments(raw)) as Record<string, unknown>, path: configPath };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, data: null, path: configPath };
-    return { ok: false, data: null, error: (error as NodeJS.ErrnoException).message, path: configPath };
-  }
-}
-
-async function writeCopilotConfig(data: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
-  const configPath = getCopilotConfigPath();
-  const dir = path.dirname(configPath);
-  const tmpPath = configPath + ".strideterm-tmp";
-  try {
-    if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-    await writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf8");
-    await rename(tmpPath, configPath);
-    return { ok: true };
-  } catch (error) {
-    await rm(tmpPath, { force: true }).catch(() => {});
-    return { ok: false, error: (error as NodeJS.ErrnoException).message };
-  }
+function parseCopilotConfig(raw: string): Record<string, unknown> {
+  return JSON.parse(stripJsoncComments(raw)) as Record<string, unknown>;
 }
 
 /**
@@ -168,7 +141,15 @@ async function writeCopilotConfig(data: Record<string, unknown>): Promise<{ ok: 
  *
  * Returns { ok, error?, detail?, scriptPath?, configPath?, registered?: string[] }
  */
-export async function configureCopilotHook(userDataPath: string) {
+export async function configureCopilotHook(userDataPath: string): Promise<{
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  scriptPath?: string;
+  configPath?: string;
+  settingsPath?: string;
+  registered?: string[];
+}> {
   const scriptResult = await ensureNotifyScript(userDataPath);
   if (!scriptResult.ok) {
     return {
@@ -178,49 +159,28 @@ export async function configureCopilotHook(userDataPath: string) {
     };
   }
 
-  const readResult = await readCopilotConfig();
-  if (!readResult.ok) {
-    return {
-      ok: false,
-      error: `Cannot read ${readResult.path}: ${readResult.error}. Check if the file contains valid JSON.`,
-      detail: "config-read-failed",
-    };
-  }
-
-  const config = readResult.data || {};
-  if (!config.hooks || typeof config.hooks !== "object") config.hooks = {};
-  const hooksMap = config.hooks as Record<string, unknown[]>;
-
-  const registered: string[] = [];
-  for (const [copilotEvent, canonicalName] of Object.entries(COPILOT_HOOK_MAP)) {
-    if (!Array.isArray(hooksMap[copilotEvent])) hooksMap[copilotEvent] = [];
-    const entry = buildCopilotHookEntry(scriptResult.path, canonicalName);
-    const idx = findExistingHook(config, copilotEvent);
-    if (idx >= 0) hooksMap[copilotEvent][idx] = entry;
-    else hooksMap[copilotEvent].push(entry);
-    registered.push(copilotEvent);
-  }
-
-  const writeResult = await writeCopilotConfig(config);
-  if (!writeResult.ok) {
-    return {
-      ok: false,
-      error: `Failed to write ${readResult.path}: ${writeResult.error}`,
-      detail: "config-write-failed",
-    };
-  }
+  const configPath = getCopilotConfigPath();
+  const result = await configureHookEntries(configPath, COPILOT_HOOK_MAP, scriptResult.path, {
+    hookMarkers: HOOK_MARKERS,
+    buildEntry: buildCopilotHookEntry,
+    matchesEntry: matchesCopilotEntry,
+    parseConfig: parseCopilotConfig,
+    readFailedDetail: "config-read-failed",
+    writeFailedDetail: "config-write-failed",
+  });
+  if (!result.ok) return result;
 
   log.info("copilot hooks configured", {
     scriptPath: scriptResult.path,
-    configPath: readResult.path,
-    registered,
+    configPath,
+    registered: result.registered,
   });
   return {
     ok: true,
     scriptPath: scriptResult.path,
-    configPath: readResult.path,
-    settingsPath: readResult.path,
-    registered,
+    configPath,
+    settingsPath: configPath,
+    registered: result.registered,
   };
 }
 
@@ -229,43 +189,21 @@ export async function configureCopilotHook(userDataPath: string) {
  * Leaves other top-level keys and user-authored hooks intact.
  */
 export async function removeCopilotHook() {
-  const readResult = await readCopilotConfig();
-  if (!readResult.ok) {
-    log.warn("removeCopilotHook: cannot read config", { path: readResult.path, err: readResult.error });
-    return { ok: false, error: `Cannot read ${readResult.path}: ${readResult.error}` };
-  }
-  if (!readResult.data) {
-    log.debug("removeCopilotHook: config file not found, nothing to remove");
-    return { ok: true, removed: false };
-  }
+  const configPath = getCopilotConfigPath();
+  const result = await removeHookEntries(configPath, HOOKS_TO_REGISTER, {
+    hookMarkers: HOOK_MARKERS,
+    matchesEntry: matchesCopilotEntry,
+    parseConfig: parseCopilotConfig,
+  });
 
-  const config = readResult.data;
-  const removedFrom: string[] = [];
-  const hooksMap2 = (config.hooks || {}) as Record<string, unknown[]>;
-  const hookKeys = new Set([...HOOKS_TO_REGISTER, ...Object.keys(hooksMap2)]);
-
-  for (const eventName of hookKeys) {
-    const idx = findExistingHook(config, eventName);
-    if (idx < 0) continue;
-    hooksMap2[eventName].splice(idx, 1);
-    removedFrom.push(eventName);
-    if (hooksMap2[eventName].length === 0) delete hooksMap2[eventName];
+  if (!result.ok) {
+    log.warn("removeCopilotHook: failed", { configPath, err: result.error });
+  } else if (result.removed) {
+    log.info("copilot hooks removed", { configPath, removedFrom: result.removedFrom });
+  } else {
+    log.debug("removeCopilotHook: no strIDEterm hooks found or config missing");
   }
-
-  if (removedFrom.length === 0) {
-    log.debug("removeCopilotHook: no strIDEterm hooks found in config");
-    return { ok: true, removed: false };
-  }
-  if (Object.keys(hooksMap2).length === 0) delete config.hooks;
-
-  const writeResult = await writeCopilotConfig(config);
-  if (!writeResult.ok) {
-    log.warn("removeCopilotHook: failed to write config", { path: readResult.path, err: writeResult.error });
-    return { ok: false, error: `Failed to write ${readResult.path}: ${writeResult.error}` };
-  }
-
-  log.info("copilot hooks removed", { configPath: readResult.path, removedFrom });
-  return { ok: true, removed: true, removedFrom };
+  return result;
 }
 
 /**
@@ -282,45 +220,13 @@ export async function removeCopilotHook() {
 export async function detectCopilotHookStatus(userDataPath: string) {
   const configPath = getCopilotConfigPath();
   const scriptPath = getNotifyScriptPath(userDataPath);
-  const scriptExists = existsSync(scriptPath);
-
-  const readResult = await readCopilotConfig();
-  if (!readResult.ok) {
-    log.debug("detectCopilotHookStatus: cannot read config", { err: readResult.error });
-    return { status: "error", error: readResult.error, configPath, scriptPath };
-  }
-  if (!readResult.data) {
-    return { status: "not-configured", configPath, scriptPath };
-  }
-
-  const registered: string[] = [];
-  const missing: string[] = [];
-  for (const event of HOOKS_TO_REGISTER) {
-    const idx = findExistingHook(readResult.data, event);
-    if (idx >= 0) registered.push(event);
-    else missing.push(event);
-  }
-
-  if (registered.length === 0) {
-    return { status: "not-configured", configPath, scriptPath };
-  }
-  if (!scriptExists) {
-    log.warn("detectCopilotHookStatus: hooks configured but script missing", { scriptPath });
-    return { status: "script-missing", configPath, scriptPath, registered, missingHooks: missing };
-  }
-  if (readResult.data.disableAllHooks === true) {
-    return {
-      status: "configured-but-disabled",
-      configPath,
-      scriptPath,
-      registered,
-      missingHooks: missing,
-    };
-  }
-  if (missing.length > 0) {
-    return { status: "partial", configPath, scriptPath, registered, missingHooks: missing };
-  }
-  return { status: "configured", configPath, scriptPath, registered };
+  const result = await detectHookEntriesStatus(configPath, scriptPath, COPILOT_HOOK_MAP, {
+    hookMarkers: HOOK_MARKERS,
+    matchesEntry: matchesCopilotEntry,
+    parseConfig: parseCopilotConfig,
+    extraCheck: (data) => (data.disableAllHooks === true ? { status: "configured-but-disabled" } : null),
+  });
+  return { ...result, configPath, scriptPath };
 }
 
 export { HOOK_MARKERS };

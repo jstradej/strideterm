@@ -2,6 +2,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { getLogger } from "./logger.js";
+import { atomicWriteFile } from "./hook-config-engine.js";
 
 const log = getLogger("version-check");
 
@@ -74,15 +75,6 @@ function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
   return { owner: match[1], repo: match[2] };
 }
 
-/**
- * Atomic write: write to a temp file first, then rename over the target.
- */
-async function atomicWriteFile(filePath: string, data: string): Promise<void> {
-  const tmpPath = `${filePath}.tmp-${process.pid}`;
-  await fs.writeFile(tmpPath, data);
-  await fs.rename(tmpPath, filePath);
-}
-
 async function loadCache(cachePath: string): Promise<CachedResult | null> {
   try {
     const raw = await fs.readFile(cachePath, "utf8");
@@ -95,7 +87,7 @@ async function loadCache(cachePath: string): Promise<CachedResult | null> {
 async function saveCache(cachePath: string, data: CachedResult): Promise<void> {
   try {
     await fs.mkdir(path.dirname(cachePath), { recursive: true });
-    await atomicWriteFile(cachePath, JSON.stringify(data, null, 2));
+    await atomicWriteFile(cachePath, JSON.stringify(data, null, 2), `.tmp-${process.pid}`);
   } catch {
     // Ignore write failures — cache is best-effort.
   }

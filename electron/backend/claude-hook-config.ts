@@ -4,6 +4,15 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { getLogger } from "./logger.js";
+import {
+  matchesNestedCommandEntry,
+  buildNestedCommandEntry,
+  getNotifyScriptPath,
+  findHookIndex,
+  configureHookEntries,
+  removeHookEntries,
+  detectHookEntriesStatus,
+} from "./hook-config-engine.js";
 
 const log = getLogger("claude-hook");
 
@@ -25,6 +34,8 @@ const log = getLogger("claude-hook");
 
 // Hook types to register. Order matters only for log readability.
 export const HOOKS_TO_REGISTER = ["Notification", "Stop", "SubagentStop", "UserPromptSubmit"];
+// Registration key === canonical hook name for Claude (no aliasing needed).
+const CLAUDE_EVENT_MAP: Record<string, string> = Object.fromEntries(HOOKS_TO_REGISTER.map((h) => [h, h]));
 
 // Markers used to identify strIDEterm hooks in Claude Code settings.
 // We check for the env var reference (legacy curl-based hook) and the
@@ -186,10 +197,6 @@ function getClaudeSettingsPath(): string {
   return path.join(os.homedir(), ".claude", "settings.json");
 }
 
-function getNotifyScriptPath(userDataPath: string): string {
-  return path.join(userDataPath, "hooks", "notify.mjs");
-}
-
 /**
  * Ensures the notify.mjs hook script exists at ~/.strideterm/hooks/notify.mjs.
  * Overwrites on every startup to keep it up to date.
@@ -209,70 +216,6 @@ export async function ensureNotifyScript(userDataPath: string): Promise<{ ok: bo
 }
 
 /**
- * Reads and parses ~/.claude/settings.json.
- * Returns { ok, data, error } — data is null if file doesn't exist.
- */
-async function readClaudeSettings(): Promise<{
-  ok: boolean;
-  data: Record<string, unknown> | null;
-  path: string;
-  error?: string;
-}> {
-  const settingsPath = getClaudeSettingsPath();
-  try {
-    const raw = await fs.readFile(settingsPath, "utf8");
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    return { ok: true, data, path: settingsPath };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { ok: true, data: null, path: settingsPath };
-    }
-    return { ok: false, data: null, path: settingsPath, error: (error as NodeJS.ErrnoException).message };
-  }
-}
-
-/**
- * Writes settings to ~/.claude/settings.json atomically.
- */
-async function writeClaudeSettings(data: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
-  const settingsPath = getClaudeSettingsPath();
-  const dir = path.dirname(settingsPath);
-  const tmpPath = settingsPath + ".strideterm-tmp";
-  try {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    const content = JSON.stringify(data, null, 2) + "\n";
-    await fs.writeFile(tmpPath, content, "utf8");
-    await fs.rename(tmpPath, settingsPath);
-    return { ok: true };
-  } catch (error) {
-    // Clean up temp file if rename failed
-    await fs.rm(tmpPath, { force: true }).catch(() => {});
-    return { ok: false, error: (error as NodeJS.ErrnoException).message };
-  }
-}
-
-/**
- * Builds the hook entry object for Claude Code settings.
- * The hook name is passed as argv[2] so the same script handles all hook types.
- */
-function buildHookEntry(notifyScriptPath: string, hookName: string) {
-  // Normalize path separators to forward slashes for cross-platform shell compat
-  const normalizedPath = notifyScriptPath.replace(/\\/g, "/");
-  return {
-    matcher: "",
-    hooks: [
-      {
-        type: "command",
-        command: `node "${normalizedPath}" ${hookName}`,
-        timeout: 5,
-      },
-    ],
-  };
-}
-
-/**
  * Checks if a strIDEterm hook is already configured in a given hook category.
  * Returns the index in settings.hooks[hookName], or -1 if not found.
  *
@@ -280,17 +223,7 @@ function buildHookEntry(notifyScriptPath: string, hookName: string) {
  * callers/tests that assumed only Notification was registered.
  */
 export function findExistingHook(settings: Record<string, unknown>, hookName = "Notification"): number {
-  const hooksSection = (settings?.hooks as Record<string, unknown> | undefined)?.[hookName];
-  if (!Array.isArray(hooksSection)) return -1;
-  return hooksSection.findIndex(
-    (entry: unknown) =>
-      Array.isArray((entry as Record<string, unknown>)?.hooks) &&
-      ((entry as Record<string, unknown>).hooks as unknown[]).some(
-        (h: unknown) =>
-          typeof (h as Record<string, unknown>)?.command === "string" &&
-          HOOK_MARKERS.some((marker) => (h as Record<string, string>).command.includes(marker)),
-      ),
-  );
+  return findHookIndex(settings, hookName, HOOK_MARKERS, matchesNestedCommandEntry);
 }
 
 /**
@@ -305,8 +238,14 @@ export function findExistingHook(settings: Record<string, unknown>, hookName = "
  *
  * Returns { ok, error?, detail?, scriptPath?, settingsPath?, registered?: string[] }
  */
-export async function configureClaudeHook(userDataPath: string) {
-  // Step 1: ensure the notify script exists
+export async function configureClaudeHook(userDataPath: string): Promise<{
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  scriptPath?: string;
+  settingsPath?: string;
+  registered?: string[];
+}> {
   const scriptResult = await ensureNotifyScript(userDataPath);
   if (!scriptResult.ok) {
     return {
@@ -316,55 +255,26 @@ export async function configureClaudeHook(userDataPath: string) {
     };
   }
 
-  // Step 2: read existing Claude settings
-  const readResult = await readClaudeSettings();
-  if (!readResult.ok) {
-    return {
-      ok: false,
-      error: `Cannot read ${readResult.path}: ${readResult.error}. Check if the file contains valid JSON.`,
-      detail: "settings-read-failed",
-    };
-  }
-
-  // Step 3: merge hooks into settings (iterate over all hook types)
-  const settings = readResult.data || {};
-  if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
-  const hooksMap = settings.hooks as Record<string, unknown[]>;
-  const registered: string[] = [];
-
-  for (const hookName of HOOKS_TO_REGISTER) {
-    if (!Array.isArray(hooksMap[hookName])) hooksMap[hookName] = [];
-    const hookEntry = buildHookEntry(scriptResult.path, hookName);
-    const existingIndex = findExistingHook(settings, hookName);
-
-    if (existingIndex >= 0) {
-      hooksMap[hookName][existingIndex] = hookEntry;
-    } else {
-      hooksMap[hookName].push(hookEntry);
-    }
-    registered.push(hookName);
-  }
-
-  // Step 4: write back
-  const writeResult = await writeClaudeSettings(settings);
-  if (!writeResult.ok) {
-    return {
-      ok: false,
-      error: `Failed to write ${readResult.path}: ${writeResult.error}`,
-      detail: "settings-write-failed",
-    };
-  }
+  const settingsPath = getClaudeSettingsPath();
+  const result = await configureHookEntries(settingsPath, CLAUDE_EVENT_MAP, scriptResult.path, {
+    hookMarkers: HOOK_MARKERS,
+    buildEntry: buildNestedCommandEntry,
+    matchesEntry: matchesNestedCommandEntry,
+    readFailedDetail: "settings-read-failed",
+    writeFailedDetail: "settings-write-failed",
+  });
+  if (!result.ok) return result;
 
   log.info("claude hooks configured", {
     scriptPath: scriptResult.path,
-    settingsPath: readResult.path,
-    registered,
+    settingsPath,
+    registered: result.registered,
   });
   return {
     ok: true,
     scriptPath: scriptResult.path,
-    settingsPath: readResult.path,
-    registered,
+    settingsPath,
+    registered: result.registered,
   };
 }
 
@@ -375,57 +285,20 @@ export async function configureClaudeHook(userDataPath: string) {
  * Returns { ok, error?, removed?: boolean, removedFrom?: string[] }
  */
 export async function removeClaudeHook() {
-  const readResult = await readClaudeSettings();
-  if (!readResult.ok) {
-    log.warn("removeClaudeHook: cannot read settings", { path: readResult.path, err: readResult.error });
-    return { ok: false, error: `Cannot read ${readResult.path}: ${readResult.error}` };
+  const settingsPath = getClaudeSettingsPath();
+  const result = await removeHookEntries(settingsPath, HOOKS_TO_REGISTER, {
+    hookMarkers: HOOK_MARKERS,
+    matchesEntry: matchesNestedCommandEntry,
+  });
+
+  if (!result.ok) {
+    log.warn("removeClaudeHook: failed", { settingsPath, err: result.error });
+  } else if (result.removed) {
+    log.info("claude hooks removed", { settingsPath, removedFrom: result.removedFrom });
+  } else {
+    log.debug("removeClaudeHook: no strIDEterm hooks found or settings missing");
   }
-
-  if (!readResult.data) {
-    log.debug("removeClaudeHook: settings file not found, nothing to remove");
-    return { ok: true, removed: false };
-  }
-
-  const settings = readResult.data;
-  const removedFrom: string[] = [];
-
-  // Remove strIDEterm entries from each registered hook category.
-  // We also iterate over ANY hook key that contains our marker, to handle
-  // cleanup of old-format hook entries that may not be in HOOKS_TO_REGISTER.
-  const hooksMap = (settings.hooks || {}) as Record<string, unknown[]>;
-  const hookKeysToCheck = new Set([...HOOKS_TO_REGISTER, ...Object.keys(hooksMap)]);
-
-  for (const hookName of hookKeysToCheck) {
-    const existingIndex = findExistingHook(settings, hookName);
-    if (existingIndex < 0) continue;
-
-    hooksMap[hookName].splice(existingIndex, 1);
-    removedFrom.push(hookName);
-
-    // Clean up empty array for this hook type
-    if (hooksMap[hookName].length === 0) {
-      delete hooksMap[hookName];
-    }
-  }
-
-  if (removedFrom.length === 0) {
-    log.debug("removeClaudeHook: no strIDEterm hooks found in settings");
-    return { ok: true, removed: false };
-  }
-
-  // Clean up empty hooks object
-  if (Object.keys(hooksMap).length === 0) {
-    delete settings.hooks;
-  }
-
-  const writeResult = await writeClaudeSettings(settings);
-  if (!writeResult.ok) {
-    log.warn("removeClaudeHook: failed to write settings", { path: readResult.path, err: writeResult.error });
-    return { ok: false, error: `Failed to write ${readResult.path}: ${writeResult.error}` };
-  }
-
-  log.info("claude hooks removed", { settingsPath: readResult.path, removedFrom });
-  return { ok: true, removed: true, removedFrom };
+  return result;
 }
 
 /**
@@ -438,59 +311,11 @@ export async function removeClaudeHook() {
 export async function detectClaudeHookStatus(userDataPath: string) {
   const settingsPath = getClaudeSettingsPath();
   const scriptPath = getNotifyScriptPath(userDataPath);
-
-  // Check if the notify script exists
-  const scriptExists = existsSync(scriptPath);
-
-  // Check Claude settings
-  const readResult = await readClaudeSettings();
-  if (!readResult.ok) {
-    log.debug("detectClaudeHookStatus: cannot read settings", { err: readResult.error });
-    return {
-      status: "error",
-      error: readResult.error,
-      settingsPath,
-      scriptPath,
-    };
-  }
-
-  if (!readResult.data) {
-    log.debug("detectClaudeHookStatus: settings file not found", { settingsPath });
-    return { status: "not-configured", settingsPath, scriptPath };
-  }
-
-  // Check each hook category.
-  const registered: string[] = [];
-  const missing: string[] = [];
-  for (const hookName of HOOKS_TO_REGISTER) {
-    const idx = findExistingHook(readResult.data, hookName);
-    if (idx >= 0) registered.push(hookName);
-    else missing.push(hookName);
-  }
-
-  if (registered.length === 0) {
-    log.debug("detectClaudeHookStatus: no strIDEterm hooks found");
-    return { status: "not-configured", settingsPath, scriptPath };
-  }
-
-  if (!scriptExists) {
-    log.warn("detectClaudeHookStatus: hooks configured but script missing", { scriptPath });
-    return { status: "script-missing", settingsPath, scriptPath, registered, missingHooks: missing };
-  }
-
-  if (missing.length > 0) {
-    log.info("detectClaudeHookStatus: partial — missing hooks", { missing });
-    return {
-      status: "partial",
-      settingsPath,
-      scriptPath,
-      registered,
-      missingHooks: missing,
-    };
-  }
-
-  log.debug("detectClaudeHookStatus: all hooks configured", { settingsPath, scriptPath });
-  return { status: "configured", settingsPath, scriptPath, registered };
+  const result = await detectHookEntriesStatus(settingsPath, scriptPath, CLAUDE_EVENT_MAP, {
+    hookMarkers: HOOK_MARKERS,
+    matchesEntry: matchesNestedCommandEntry,
+  });
+  return { ...result, settingsPath, scriptPath };
 }
 
 // For testing
