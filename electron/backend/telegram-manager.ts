@@ -704,6 +704,19 @@ export class TelegramManager extends EventEmitter {
   // ---------------------------------------------------------------------------
 
   /**
+   * Resolve a chat's connection and bot token together. Several
+   * runtime → manager methods need both: the connection (to know a chat is
+   * actually configured) and the decrypted secret (to make API calls).
+   * `getSecret` is only invoked when a connection was found, matching every
+   * call site's original short-circuit behavior.
+   */
+  private _tokenForChat(chatId: string): { conn: TelegramConnectionConfig | undefined; token: string } {
+    const conn = this.connections.find((c) => c.chatId === chatId);
+    const token = conn ? this.credentialStore.getSecret(conn.botTokenRef) : "";
+    return { conn, token };
+  }
+
+  /**
    * Send a plain text notification to a chat. Used by the runtime to confirm
    * follow-up state changes (task started, task paused, ...) so the user
    * gets immediate feedback in Telegram.
@@ -711,12 +724,11 @@ export class TelegramManager extends EventEmitter {
    * Markdown V2 formatting is enabled — caller must escape special characters.
    */
   async notifyChat(chatId: string, text: string): Promise<void> {
-    const conn = this.connections.find((c) => c.chatId === chatId);
+    const { conn, token } = this._tokenForChat(chatId);
     if (!conn) {
       log.debug("telegram notifyChat: no matching connection", { chatId });
       return;
     }
-    const token = this.credentialStore.getSecret(conn.botTokenRef);
     if (!token) {
       log.debug("telegram notifyChat: no token", { chatId });
       return;
@@ -816,8 +828,7 @@ export class TelegramManager extends EventEmitter {
     profileId: string,
     candidates: { windowId: string; activeWorkspaceId?: string; lastFocusedAt?: number }[],
   ): Promise<void> {
-    const conn = this.connections.find((c) => c.chatId === chatId);
-    const token = conn ? this.credentialStore.getSecret(conn.botTokenRef) : "";
+    const { token } = this._tokenForChat(chatId);
     if (!token) {
       log.debug("telegram promptScreenshotWindowPick: no connection/token", { chatId });
       return;
@@ -834,8 +845,7 @@ export class TelegramManager extends EventEmitter {
    * workspace picker (workspace screenshots can create a window).
    */
   async promptNoWindowForScreenshot(chatId: string, profileId: string): Promise<void> {
-    const conn = this.connections.find((c) => c.chatId === chatId);
-    const token = conn ? this.credentialStore.getSecret(conn.botTokenRef) : "";
+    const { token } = this._tokenForChat(chatId);
     if (!token) {
       log.debug("telegram promptNoWindowForScreenshot: no connection/token", { chatId });
       return;
@@ -888,12 +898,11 @@ export class TelegramManager extends EventEmitter {
      *  user can save / forward the original bytes regardless of type. */
     mode?: "auto" | "document";
   }): Promise<void> {
-    const conn = this.connections.find((c) => c.chatId === opts.chatId);
+    const { conn, token } = this._tokenForChat(opts.chatId);
     if (!conn) {
       log.warn("telegram sendFile: no matching connection", { chatId: opts.chatId });
       return;
     }
-    const token = this.credentialStore.getSecret(conn.botTokenRef);
     if (!token) {
       log.warn("telegram sendFile: no token", { chatId: opts.chatId });
       return;
@@ -1065,12 +1074,11 @@ export class TelegramManager extends EventEmitter {
     parentName: string;
     cwd: string;
   }): Promise<void> {
-    const conn = this.connections.find((c) => c.chatId === opts.chatId);
+    const { conn, token } = this._tokenForChat(opts.chatId);
     if (!conn) {
       log.warn("telegram promptStartAfterCreate: no matching connection", { chatId: opts.chatId });
       return;
     }
-    const token = this.credentialStore.getSecret(conn.botTokenRef);
     if (!token) {
       log.warn("telegram promptStartAfterCreate: no token", { chatId: opts.chatId });
       return;
@@ -1697,6 +1705,50 @@ export class TelegramManager extends EventEmitter {
     }
   }
 
+  /**
+   * Shared `/help` body text.
+   *
+   * NOTE: "full" and "short" are NOT the same copy — this is a pre-existing
+   * divergence, not something introduced by this extraction. The "short"
+   * variant (used by the /menu → Help button) predates the /tunnel and
+   * /profile commands and was never updated to mention them, and its
+   * `/menu` line is missing the "(recommended on mobile)" hint that the
+   * "full" variant (used by the /help text command) has. Both exact strings
+   * are preserved unchanged here rather than merged into one, to avoid
+   * silently changing either call site's behavior.
+   */
+  private _helpText(variant: "full" | "short"): string {
+    if (variant === "short") {
+      return [
+        "📖 *strIDEterm bot commands:*",
+        "",
+        "`/menu` — interactive main menu",
+        "`/status` — show all task agents",
+        "`/workspaces` — list workspaces",
+        "`/task` — start a new task agent \\(workspace picker\\)",
+        "`/prs` — list pull requests and start reviews",
+        "`/screenshot` — capture a screenshot of the strIDEterm window",
+        "",
+        "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
+      ].join("\n");
+    }
+    return [
+      "📖 *strIDEterm bot commands:*",
+      "",
+      "`/menu` — interactive main menu \\(recommended on mobile\\)",
+      "`/status` — show all task agents",
+      "`/workspaces` — list workspaces",
+      "`/task` — start a new task agent \\(workspace picker\\)",
+      "`/prs` — list pull requests and start reviews",
+      "`/tunnel` — get the strIDEterm remote URL \\(LAN / Cloudflare\\) on this phone",
+      "`/tunnel reconnect` — restart the Cloudflare tunnel when it drops",
+      "`/screenshot` — capture a screenshot of the strIDEterm window",
+      "`/profile` — show or switch which profile commands target \\(`/profile clear` unpins\\)",
+      "",
+      "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
+    ].join("\n");
+  }
+
   private async _handleMessage(msg: TgMessage, conn: TelegramConnectionConfig, token: string): Promise<void> {
     const chatId = String(msg.chat.id);
     if (chatId !== conn.chatId) {
@@ -1779,26 +1831,7 @@ export class TelegramManager extends EventEmitter {
     }
     if (lower === "/help" || lower === "help") {
       log.debug("telegram command: /help", { chatId });
-      await this._sendText(
-        token,
-        chatId,
-        [
-          "📖 *strIDEterm bot commands:*",
-          "",
-          "`/menu` — interactive main menu \\(recommended on mobile\\)",
-          "`/status` — show all task agents",
-          "`/workspaces` — list workspaces",
-          "`/task` — start a new task agent \\(workspace picker\\)",
-          "`/prs` — list pull requests and start reviews",
-          "`/tunnel` — get the strIDEterm remote URL \\(LAN / Cloudflare\\) on this phone",
-          "`/tunnel reconnect` — restart the Cloudflare tunnel when it drops",
-          "`/screenshot` — capture a screenshot of the strIDEterm window",
-          "`/profile` — show or switch which profile commands target \\(`/profile clear` unpins\\)",
-          "",
-          "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
-        ].join("\n"),
-        true,
-      );
+      await this._sendText(token, chatId, this._helpText("full"), true);
       return;
     }
 
@@ -3618,6 +3651,44 @@ export class TelegramManager extends EventEmitter {
     });
   }
 
+  /**
+   * Shared "pending-state gate" for inline-button callback handlers: looks
+   * up the pending request for `chatId`, confirms its `type` is one of
+   * `types` (plus any extra site-specific validity via `extraValid` — some
+   * callers additionally require a companion field, e.g. `draftTask`), and
+   * confirms it hasn't exceeded PENDING_TIMEOUT_MS.
+   *
+   * On either failure, sends the site's "not active" / "expired" reply,
+   * logs a debug line tagged with `logLabel` (matching each call site's
+   * original message), and returns `null` so the caller can bail out. On
+   * success, returns the still-valid PendingRequest — NOT yet deleted;
+   * callers that need to consume it still call `pendingRequests.delete`
+   * themselves, exactly as before this extraction.
+   */
+  private async _takePendingOrExpire(
+    chatId: string,
+    token: string,
+    messageId: number,
+    types: string[],
+    op: string,
+    logLabel: string,
+    opts?: { extraValid?: (p: PendingRequest) => boolean; expiredText?: string },
+  ): Promise<PendingRequest | null> {
+    const pending = this.pendingRequests.get(chatId);
+    const valid = !!pending && types.includes(pending.type) && (!opts?.extraValid || opts.extraValid(pending));
+    if (!valid) {
+      log.debug(`telegram ${logLabel} callback: no matching pending`, { chatId, op });
+      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
+      return null;
+    }
+    if (Date.now() - pending!.createdAt >= PENDING_TIMEOUT_MS) {
+      this.pendingRequests.delete(chatId);
+      await this._answerText(token, chatId, messageId, opts?.expiredText || "⚠️ Option expired\\.");
+      return null;
+    }
+    return pending!;
+  }
+
   private async _handleWorktreeModeCallback(
     data: string,
     chatId: string,
@@ -3628,18 +3699,16 @@ export class TelegramManager extends EventEmitter {
     const op = parts[1] || "";
     const arg = parts.slice(2).join(":");
 
-    const pending = this.pendingRequests.get(chatId);
-    const acceptedTypes = new Set(["worktree-mode-selection", "worktree-existing-pick"]);
-    if (!pending || !acceptedTypes.has(pending.type) || !pending.draftTask) {
-      log.debug("telegram worktree-mode callback: no matching pending", { chatId, op });
-      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
-      return;
-    }
-    if (Date.now() - pending.createdAt >= PENDING_TIMEOUT_MS) {
-      this.pendingRequests.delete(chatId);
-      await this._answerText(token, chatId, messageId, "⚠️ Option expired — run `/task` again\\.");
-      return;
-    }
+    const pending = await this._takePendingOrExpire(
+      chatId,
+      token,
+      messageId,
+      ["worktree-mode-selection", "worktree-existing-pick"],
+      op,
+      "worktree-mode",
+      { extraValid: (p) => !!p.draftTask, expiredText: "⚠️ Option expired — run `/task` again\\." },
+    );
+    if (!pending || !pending.draftTask) return;
 
     const draft = pending.draftTask;
 
@@ -3748,17 +3817,16 @@ export class TelegramManager extends EventEmitter {
    */
   private async _handleFileModeCallback(data: string, chatId: string, token: string, messageId: number): Promise<void> {
     const op = data.split(":")[1] || "";
-    const pending = this.pendingRequests.get(chatId);
-    if (!pending || pending.type !== "file-mode-selection" || !pending.pendingFilePath) {
-      log.debug("telegram file-mode callback: no matching pending", { chatId, op });
-      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
-      return;
-    }
-    if (Date.now() - pending.createdAt >= PENDING_TIMEOUT_MS) {
-      this.pendingRequests.delete(chatId);
-      await this._answerText(token, chatId, messageId, "⚠️ Option expired\\.");
-      return;
-    }
+    const pending = await this._takePendingOrExpire(
+      chatId,
+      token,
+      messageId,
+      ["file-mode-selection"],
+      op,
+      "file-mode",
+      { extraValid: (p) => !!p.pendingFilePath },
+    );
+    if (!pending || !pending.pendingFilePath) return;
 
     const fileMode: TelegramCommandEvent["fileMode"] = op === "d" ? "document" : "auto";
     this.pendingRequests.delete(chatId);
@@ -3807,20 +3875,17 @@ export class TelegramManager extends EventEmitter {
     messageId: number,
   ): Promise<void> {
     const op = data.split(":")[1] || "";
-    const pending = this.pendingRequests.get(chatId);
     // `ss:w` (workspace pick) is also offered from the multi-window menu and
     // the no-window prompt — both carry workspaceChoices, so accept them too.
-    const validTypes = ["screenshot-mode-selection", "screenshot-window-pick"];
-    if (!pending || !validTypes.includes(pending.type)) {
-      log.debug("telegram screenshot-mode callback: no matching pending", { chatId, op });
-      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
-      return;
-    }
-    if (Date.now() - pending.createdAt >= PENDING_TIMEOUT_MS) {
-      this.pendingRequests.delete(chatId);
-      await this._answerText(token, chatId, messageId, "⚠️ Option expired\\.");
-      return;
-    }
+    const pending = await this._takePendingOrExpire(
+      chatId,
+      token,
+      messageId,
+      ["screenshot-mode-selection", "screenshot-window-pick"],
+      op,
+      "screenshot-mode",
+    );
+    if (!pending) return;
 
     if (op === "c") {
       // Several windows show the profile? Never pick one silently — ask.
@@ -3890,17 +3955,15 @@ export class TelegramManager extends EventEmitter {
     messageId: number,
   ): Promise<void> {
     const op = data.split(":")[1] || "";
-    const pending = this.pendingRequests.get(chatId);
-    if (!pending || pending.type !== "screenshot-window-pick") {
-      log.debug("telegram screenshot-window callback: no matching pending", { chatId, op });
-      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
-      return;
-    }
-    if (Date.now() - pending.createdAt >= PENDING_TIMEOUT_MS) {
-      this.pendingRequests.delete(chatId);
-      await this._answerText(token, chatId, messageId, "⚠️ Option expired\\.");
-      return;
-    }
+    const pending = await this._takePendingOrExpire(
+      chatId,
+      token,
+      messageId,
+      ["screenshot-window-pick"],
+      op,
+      "screenshot-window",
+    );
+    if (!pending) return;
 
     const choices = pending.windowChoices || [];
     let windowId: string | undefined;
@@ -3973,23 +4036,7 @@ export class TelegramManager extends EventEmitter {
         await this._handleTunnelCommand(chatId, token, conn);
         return;
       case "help":
-        await this._sendText(
-          token,
-          chatId,
-          [
-            "📖 *strIDEterm bot commands:*",
-            "",
-            "`/menu` — interactive main menu",
-            "`/status` — show all task agents",
-            "`/workspaces` — list workspaces",
-            "`/task` — start a new task agent \\(workspace picker\\)",
-            "`/prs` — list pull requests and start reviews",
-            "`/screenshot` — capture a screenshot of the strIDEterm window",
-            "",
-            "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
-          ].join("\n"),
-          true,
-        );
+        await this._sendText(token, chatId, this._helpText("short"), true);
         return;
       default:
         log.debug("telegram /menu callback: unknown op", { op });
@@ -4002,12 +4049,11 @@ export class TelegramManager extends EventEmitter {
    * (and Telegram lets them save/forward the original PNG by tapping it).
    */
   async sendScreenshotPng(chatId: string, png: Buffer, workspaceName: string): Promise<void> {
-    const conn = this.connections.find((c) => c.chatId === chatId);
+    const { conn, token } = this._tokenForChat(chatId);
     if (!conn) {
       log.warn("telegram sendScreenshotPng: no matching connection", { chatId });
       return;
     }
-    const token = this.credentialStore.getSecret(conn.botTokenRef);
     if (!token) {
       log.warn("telegram sendScreenshotPng: no token", { chatId });
       return;

@@ -5344,3 +5344,309 @@ describe("TelegramManager — command profile resolution (pin + open-window defa
     expect(sentTexts.some((t) => t.includes("Pick a profile"))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// _tokenForChat — shared connection+token resolution (dedup of the 6
+// "look up conn by chatId, then look up its token" call sites)
+// ---------------------------------------------------------------------------
+
+describe("_tokenForChat resolution (exercised via notifyChat and sendScreenshotPng)", () => {
+  test("notifyChat sends when the chat resolves to a connection with a stored token", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendText = async (_token: string, _chatId: string, text: string) => {
+      sentTexts.push(text);
+    };
+
+    await manager.notifyChat("12345", "Hello");
+    expect(sentTexts).toEqual(["Hello"]);
+  });
+
+  test("notifyChat no-ops when chatId has no matching connection", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendText = async (_token: string, _chatId: string, text: string) => {
+      sentTexts.push(text);
+    };
+
+    await manager.notifyChat("no-such-chat", "Hello");
+    expect(sentTexts).toHaveLength(0);
+  });
+
+  test("notifyChat no-ops when the connection's token was never stored", async () => {
+    const cred = makeCredentialStore({}); // botTokenRef is set, but no secret behind it
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendText = async (_token: string, _chatId: string, text: string) => {
+      sentTexts.push(text);
+    };
+
+    await manager.notifyChat("12345", "Hello");
+    expect(sentTexts).toHaveLength(0);
+  });
+
+  test("sendScreenshotPng resolves the same connection/token pair and sends the photo", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const photoCalls: Array<{ token: string; chatId: string }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendPhoto = async (token: string, chatId: string) => {
+      photoCalls.push({ token, chatId });
+    };
+
+    await manager.sendScreenshotPng("12345", Buffer.from([1, 2, 3]), "myproject");
+    expect(photoCalls).toEqual([{ token: "token123", chatId: "12345" }]);
+  });
+
+  test("sendScreenshotPng no-ops when chatId has no matching connection", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const photoCalls: unknown[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendPhoto = async () => {
+      photoCalls.push(true);
+    };
+
+    await manager.sendScreenshotPng("no-such-chat", Buffer.from([1, 2, 3]), "myproject");
+    expect(photoCalls).toHaveLength(0);
+  });
+
+  test("sendScreenshotPng no-ops when the connection's token was never stored", async () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const photoCalls: unknown[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendPhoto = async () => {
+      photoCalls.push(true);
+    };
+
+    await manager.sendScreenshotPng("12345", Buffer.from([1, 2, 3]), "myproject");
+    expect(photoCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// _helpText — /help text command vs /menu "Help" button
+//
+// NOTE: these two call paths render DIFFERENT text (a pre-existing
+// divergence discovered while extracting the shared helper, not introduced
+// by it — see review notes). The "short" (/menu button) variant predates
+// the /tunnel and /profile commands and was never updated to mention them.
+// Both exact strings are pinned here rather than merged into one.
+// ---------------------------------------------------------------------------
+
+describe("_helpText — /help command vs /menu Help button", () => {
+  test("/help text command sends the full command list (includes /tunnel and /profile)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendText = async (_token: string, _chatId: string, text: string) => {
+      sentTexts.push(text);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 1, chat: { id: 12345 }, text: "/help" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(sentTexts).toHaveLength(1);
+    expect(sentTexts[0]).toContain("interactive main menu \\(recommended on mobile\\)");
+    expect(sentTexts[0]).toContain("`/tunnel` — get the strIDEterm remote URL");
+    expect(sentTexts[0]).toContain("`/tunnel reconnect` — restart the Cloudflare tunnel");
+    expect(sentTexts[0]).toContain("`/profile` — show or switch which profile commands target");
+  });
+
+  test("/menu Help button sends a shorter list, missing /tunnel and /profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendText = async (_token: string, _chatId: string, text: string) => {
+      sentTexts.push(text);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMenuCallback("mn:help", "12345", "token123", makeConnection());
+
+    expect(sentTexts).toHaveLength(1);
+    expect(sentTexts[0]).toContain("`/menu` — interactive main menu");
+    expect(sentTexts[0]).not.toContain("recommended on mobile");
+    expect(sentTexts[0]).not.toContain("/tunnel");
+    expect(sentTexts[0]).not.toContain("/profile");
+  });
+
+  test("documents that the two variants are not identical (pre-existing divergence)", () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const full = (manager as any)._helpText("full");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const short = (manager as any)._helpText("short");
+    expect(full).not.toBe(short);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// _takePendingOrExpire — shared pending-state validity + expiry gate for
+// inline-button callback handlers (dedup of 4 near-identical expiry checks)
+// ---------------------------------------------------------------------------
+
+describe("_takePendingOrExpire (exercised via worktree-mode and file-mode callbacks)", () => {
+  test("worktree-mode callback: still-valid pending is taken and acted on", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const answers: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._answerText = async (_token: string, _chatId: string, _messageId: number, text: string) => {
+      answers.push(text);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set("12345", {
+      type: "worktree-mode-selection",
+      workspaceId: "ws-1",
+      panelId: "panel-1",
+      createdAt: Date.now(),
+      draftTask: {
+        parentWorkspaceId: "ws-1",
+        parentName: "main-repo",
+        parentCwd: "/projects/main",
+        useWorktree: false,
+      },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleWorktreeModeCallback("m:d", "12345", "token123", 1);
+
+    // Pending was taken (transitioned to task-description), not expired.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("task-description");
+    expect(answers.some((a) => a.includes("Task will run directly in"))).toBe(true);
+    expect(answers.some((a) => a.includes("expired"))).toBe(false);
+  });
+
+  test("worktree-mode callback: expired pending is dropped with the worktree-specific expiry text", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const answers: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._answerText = async (_token: string, _chatId: string, _messageId: number, text: string) => {
+      answers.push(text);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set("12345", {
+      type: "worktree-mode-selection",
+      workspaceId: "ws-1",
+      panelId: "panel-1",
+      createdAt: Date.now() - 11 * 60 * 1000, // older than the 10-minute PENDING_TIMEOUT_MS
+      draftTask: {
+        parentWorkspaceId: "ws-1",
+        parentName: "main-repo",
+        parentCwd: "/projects/main",
+        useWorktree: false,
+      },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleWorktreeModeCallback("m:d", "12345", "token123", 1);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any).pendingRequests.has("12345")).toBe(false);
+    expect(answers).toEqual(["⚠️ Option expired — run `/task` again\\."]);
+  });
+
+  test("file-mode callback: still-valid pending is taken and emits send-task-file", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._answerText = async () => {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._audit = () => {};
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set("12345", {
+      type: "file-mode-selection",
+      workspaceId: "ws-1",
+      panelId: "panel-1",
+      createdAt: Date.now(),
+      pendingFilePath: "src/index.ts",
+    });
+
+    const emitted: unknown[] = [];
+    manager.on("command", (cmd) => emitted.push(cmd));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleFileModeCallback("f:a", "12345", "token123", 2);
+
+    expect(emitted).toHaveLength(1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((emitted[0] as any).type).toBe("send-task-file");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any).pendingRequests.has("12345")).toBe(false);
+  });
+
+  test("file-mode callback: expired pending is dropped with the generic expiry text (no /task suffix)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const answers: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._answerText = async (_token: string, _chatId: string, _messageId: number, text: string) => {
+      answers.push(text);
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set("12345", {
+      type: "file-mode-selection",
+      workspaceId: "ws-1",
+      panelId: "panel-1",
+      createdAt: Date.now() - 11 * 60 * 1000,
+      pendingFilePath: "src/index.ts",
+    });
+
+    const emitted: unknown[] = [];
+    manager.on("command", (cmd) => emitted.push(cmd));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleFileModeCallback("f:a", "12345", "token123", 2);
+
+    expect(emitted).toHaveLength(0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any).pendingRequests.has("12345")).toBe(false);
+    expect(answers).toEqual(["⚠️ Option expired\\."]);
+  });
+});
