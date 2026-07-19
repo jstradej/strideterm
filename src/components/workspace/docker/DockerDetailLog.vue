@@ -4,7 +4,6 @@
       ref="toolbarEl"
       :paused="paused"
       :timestamps="timestamps"
-      :wrap="wrap"
       :tail="tail"
       :line-count="lineCount"
       :byte-count="byteCount"
@@ -20,7 +19,6 @@
       @search-prev="searchPrev"
       @tail-change="onTailChange"
       @toggle-timestamps="toggleTimestamps"
-      @toggle-wrap="toggleWrap"
     />
 
     <div class="detail-log__stage">
@@ -162,10 +160,9 @@ const containerStateLower = computed(() => {
 const containerRunning = computed(() => containerStateLower.value === "running");
 
 // User-configurable stream + display options. Defaults match the previous
-// behaviour (1000 tail, no timestamps, wrap on).
+// behaviour (1000 tail, no timestamps).
 const paused = ref(false);
 const timestamps = ref(false);
-const wrap = ref(true);
 const tail = ref<number | "all">(1000);
 const autoScroll = ref(true);
 const pendingLines = ref(0);
@@ -532,17 +529,6 @@ function clearSearch(): void {
 async function toggleTimestamps(): Promise<void> {
   timestamps.value = !timestamps.value;
   await restartStream();
-}
-
-function toggleWrap(): void {
-  // Pure renderer-side toggle — xterm wraps long lines by default. Setting
-  // `scrollback` doesn't control wrap directly; xterm has `wraparoundMode` on
-  // its low-level options (set via term.options.windowsMode?) — simplest UI
-  // tweak is via CSS overflow on the host while xterm itself stays in wrap.
-  // For docker logs the user typically wants the same semantics as `less -S`
-  // when off: scrollable horizontally. xterm doesn't natively do that on its
-  // canvas, so we toggle CSS overflow as the visible-only behavior.
-  wrap.value = !wrap.value;
 }
 
 async function onTailChange(newTail: number | "all"): Promise<void> {

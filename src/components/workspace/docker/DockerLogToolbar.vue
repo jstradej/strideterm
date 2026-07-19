@@ -92,17 +92,6 @@
       <span class="log-toolbar__label">Time</span>
     </button>
 
-    <!-- Wrap toggle -->
-    <button
-      type="button"
-      :class="['log-toolbar__toggle', wrap && 'log-toolbar__toggle--on']"
-      title="Toggle line wrapping (xterm wraps long lines visually)"
-      @click="emit('toggle-wrap')"
-    >
-      <span class="log-toolbar__icon">↩</span>
-      <span class="log-toolbar__label">Wrap</span>
-    </button>
-
     <!-- Stats / counts -->
     <span class="log-toolbar__stats" :title="`Total received from this stream session`">
       <span class="log-toolbar__stat-num">{{ formatNum(lineCount) }}</span>
@@ -119,7 +108,6 @@ import { ref, watch } from "vue";
 const props = defineProps<{
   paused: boolean;
   timestamps: boolean;
-  wrap: boolean;
   tail: number | "all";
   lineCount: number;
   byteCount: number;
@@ -138,7 +126,6 @@ const emit = defineEmits<{
   "search-prev": [];
   "tail-change": [tail: number | "all"];
   "toggle-timestamps": [];
-  "toggle-wrap": [];
 }>();
 
 const searchInput = ref("");

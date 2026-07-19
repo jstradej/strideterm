@@ -6,7 +6,6 @@ function defaultProps() {
   return {
     paused: false,
     timestamps: false,
-    wrap: true,
     tail: 1000 as number | "all",
     lineCount: 0,
     byteCount: 0,

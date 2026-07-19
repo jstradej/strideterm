@@ -142,13 +142,6 @@ export const useAppStore = defineStore("app", () => {
   // so the layout is restored when the user returns.
   const _splitGroupCache = new Map<string, SplitGroup>();
 
-  // --- Error handling ---
-  const lastError = ref<{ label: string; message: string; timestamp: number } | null>(null); // { label, message, timestamp } | null
-
-  function dismissError(): void {
-    lastError.value = null;
-  }
-
   // --- Internal api reference (set in init) ---
   let _api: Transport | null = null;
   const isRemoteTransport = ref(false);
@@ -231,14 +224,6 @@ export const useAppStore = defineStore("app", () => {
       return resolveRemoteProfileId();
     }
     return myWindowSlot.value?.profileId || null;
-  });
-
-  /** ActiveSessionId scoped to this window or remote client context. */
-  const myActiveSessionId = computed<string>(() => {
-    if (isRemoteTransport.value) {
-      return (payload.value as AnyApi)?.remoteClient?.activeSessionId || "";
-    }
-    return myWindowSlot.value?.activeSessionId || "";
   });
 
   let _prevFilteredWsKey = "";
@@ -1416,7 +1401,6 @@ export const useAppStore = defineStore("app", () => {
     pendingWorkspaceActivationId,
     pendingViewActivationId,
     suppressBroadcast,
-    lastError,
     recoveryCandidates,
     inboxConnectionFocus,
     requestInboxConnectionFocus,
@@ -1425,7 +1409,6 @@ export const useAppStore = defineStore("app", () => {
     myWindowSlot,
     myActiveWorkspaceId,
     myActiveProfileId,
-    myActiveSessionId,
     isRemoteTransport,
     // Computed
     activeWorkspace,
@@ -1447,7 +1430,6 @@ export const useAppStore = defineStore("app", () => {
     activateView,
     setRemoteConnectionIssue,
     clearRemoteConnectionIssue,
-    dismissError,
     getApi,
     resolveTaskRecovery,
     // Grid actions
