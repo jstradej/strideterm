@@ -408,7 +408,7 @@ import { computed, ref, inject, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useReviewComments } from "../../composables/useReviewComments.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import PaneShell from "../layout/PaneShell.vue";
@@ -426,44 +426,17 @@ const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boole
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 const notifications = useNotificationStore();
-const { isMobile } = useIsNarrow();
-const menuOpen = ref(false);
-const tabsMenuOpen = ref(false);
-
-watch(isMobile, (mobile) => {
-  if (!mobile) {
-    menuOpen.value = false;
-    tabsMenuOpen.value = false;
-  }
+const {
+  isMobile,
+  menuOpen,
+  tabsMenuOpen,
+  toggleActionsMenu,
+  toggleTabsMenu,
+  closeAllMenus,
+  onTabClick: onReviewTabClick,
+} = useMobileShellMenus({
+  onSelectTab: (id) => gitUiStore.reviewSwitchTab(props.workspaceId, id),
 });
-
-function toggleActionsMenu() {
-  if (menuOpen.value) {
-    menuOpen.value = false;
-  } else {
-    menuOpen.value = true;
-    tabsMenuOpen.value = false;
-  }
-}
-
-function toggleTabsMenu() {
-  if (tabsMenuOpen.value) {
-    tabsMenuOpen.value = false;
-  } else {
-    tabsMenuOpen.value = true;
-    menuOpen.value = false;
-  }
-}
-
-function closeAllMenus() {
-  menuOpen.value = false;
-  tabsMenuOpen.value = false;
-}
-
-function onReviewTabClick(id: string) {
-  gitUiStore.reviewSwitchTab(props.workspaceId, id);
-  if (tabsMenuOpen.value) tabsMenuOpen.value = false;
-}
 
 // Data selectors
 const workspace = computed(() =>

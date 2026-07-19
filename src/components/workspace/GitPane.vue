@@ -387,7 +387,7 @@ import GitOperationCard from "./git/GitOperationCard.vue";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import ConfirmDialog from "../dialogs/ConfirmDialog.vue";
 import CustomSelect from "../common/CustomSelect.vue";
-import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
@@ -397,44 +397,10 @@ const gitUiStore = useGitUiStore();
 // Declare interest in this workspace's git detail so the remote client fetches
 // and keeps the full snapshot current while the Git pane is mounted.
 useResourceInterest(() => (props.workspaceId ? `git:${props.workspaceId}` : null));
-const { isMobile } = useIsNarrow();
-const menuOpen = ref(false);
-const tabsMenuOpen = ref(false);
-
-watch(isMobile, (mobile) => {
-  if (!mobile) {
-    menuOpen.value = false;
-    tabsMenuOpen.value = false;
-  }
-});
-
-function toggleActionsMenu() {
-  if (menuOpen.value) {
-    menuOpen.value = false;
-  } else {
-    menuOpen.value = true;
-    tabsMenuOpen.value = false;
-  }
-}
-
-function toggleTabsMenu() {
-  if (tabsMenuOpen.value) {
-    tabsMenuOpen.value = false;
-  } else {
-    tabsMenuOpen.value = true;
-    menuOpen.value = false;
-  }
-}
-
-function closeAllMenus() {
-  menuOpen.value = false;
-  tabsMenuOpen.value = false;
-}
-
-function onTabClick(id: string) {
-  gitUiStore.gitSwitchTab(props.workspaceId, id);
-  if (tabsMenuOpen.value) tabsMenuOpen.value = false;
-}
+const { isMobile, menuOpen, tabsMenuOpen, toggleActionsMenu, toggleTabsMenu, closeAllMenus, onTabClick } =
+  useMobileShellMenus({
+    onSelectTab: (id) => gitUiStore.gitSwitchTab(props.workspaceId, id),
+  });
 
 function onToolbarClick(e: MouseEvent) {
   if (!isMobile.value || !menuOpen.value) return;

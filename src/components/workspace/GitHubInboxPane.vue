@@ -255,7 +255,7 @@
 import { computed, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import PaneShell from "../layout/PaneShell.vue";
 import GitHubPrRow from "./github/GitHubPrRow.vue";
@@ -267,44 +267,12 @@ const appStore = useAppStore();
 const notifications = useNotificationStore();
 // Fetch + keep the GitHub inbox (lists + connections) current while mounted.
 useResourceInterest(() => "github-inbox");
-const { isMobile } = useIsNarrow();
-const menuOpen = ref(false);
-const tabsMenuOpen = ref(false);
-
-watch(isMobile, (mobile) => {
-  if (!mobile) {
-    menuOpen.value = false;
-    tabsMenuOpen.value = false;
-  }
-});
-
-function toggleActionsMenu() {
-  if (menuOpen.value) {
-    menuOpen.value = false;
-  } else {
-    menuOpen.value = true;
-    tabsMenuOpen.value = false;
-  }
-}
-
-function toggleTabsMenu() {
-  if (tabsMenuOpen.value) {
-    tabsMenuOpen.value = false;
-  } else {
-    tabsMenuOpen.value = true;
-    menuOpen.value = false;
-  }
-}
-
-function closeAllMenus() {
-  menuOpen.value = false;
-  tabsMenuOpen.value = false;
-}
-
-function onTabClick(id: string) {
-  activeTab.value = id;
-  if (tabsMenuOpen.value) tabsMenuOpen.value = false;
-}
+const { isMobile, menuOpen, tabsMenuOpen, toggleActionsMenu, toggleTabsMenu, closeAllMenus, onTabClick } =
+  useMobileShellMenus({
+    onSelectTab: (id) => {
+      activeTab.value = id;
+    },
+  });
 
 const busyAction = ref<string>("");
 const activeTab = ref<string>("all");
