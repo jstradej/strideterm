@@ -346,6 +346,7 @@
 import { computed, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import PaneShell from "../layout/PaneShell.vue";
@@ -357,6 +358,7 @@ withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { sho
 
 const appStore = useAppStore();
 const pipelinesStore = useAzurePipelinesStore();
+const notifications = useNotificationStore();
 // Fetch + keep the Azure inbox (lists + connections) current while mounted.
 useResourceInterest(() => "azure-inbox");
 const { isMobile } = useIsNarrow();
@@ -700,7 +702,7 @@ const headerActions = computed(() => [
 async function handleRefresh() {
   busyAction.value = "refresh";
   try {
-    await appStore.refreshAzure();
+    await notifications.runWithToast("Refresh failed", () => appStore.refreshAzure());
   } finally {
     busyAction.value = "";
   }
@@ -709,7 +711,7 @@ async function handleRefresh() {
 async function handleDeleteConnection(connId: string) {
   busyAction.value = `delete-${connId}`;
   try {
-    await appStore.deleteAzureConnection(connId);
+    await notifications.runWithToast("Delete connection failed", () => appStore.deleteAzureConnection(connId));
   } finally {
     busyAction.value = "";
   }
