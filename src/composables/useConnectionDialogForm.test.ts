@@ -1,10 +1,10 @@
 /**
- * Isolated coverage for the draft/test/submit scaffolding shared by
- * AzureConnectionDialog and GitHubConnectionDialog: busy-flag bookkeeping
- * around "Test connection" / submit, and the "Browse" directory picker.
- * This logic was duplicated near-verbatim in both dialogs before being
- * extracted here (see each dialog's own .test.ts for its picker-rejection
- * regression coverage through the full component).
+ * Isolated coverage for the draft/test/submit scaffolding used by
+ * ConnectionDialog.vue (Azure and GitHub, parametrized by `provider`):
+ * busy-flag bookkeeping around "Test connection" / submit, and the "Browse"
+ * directory picker. This logic was duplicated near-verbatim in two separate
+ * dialogs before being extracted here (see ConnectionDialog.test.ts for its
+ * picker-rejection regression coverage through the full component).
  */
 import { describe, expect, test, vi, beforeEach } from "vitest";
 import { createPinia, setActivePinia } from "pinia";

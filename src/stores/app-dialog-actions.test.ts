@@ -436,7 +436,8 @@ describe("createDialogActions profile-aware saves", () => {
 // makeOpenConnectionDialog is the factory behind openAzureConnectionDialog /
 // openGitHubConnectionDialog. These tests exercise it directly (not through
 // createDialogActions) to prove "azure" vs "github" config wires the right
-// dialog name, settings key, and save-transport method.
+// provider prop, settings key, and save-transport method — both open the
+// same ConnectionDialog component.
 describe("makeOpenConnectionDialog", () => {
   function makeDeps() {
     const dialogCalls: Array<{ name: string; props: Record<string, unknown> }> = [];
@@ -448,11 +449,11 @@ describe("makeOpenConnectionDialog", () => {
 
   (
     [
-      { provider: "azure", settingsKey: "azureDevops", dialogName: "AzureConnectionDialog" },
-      { provider: "github", settingsKey: "github", dialogName: "GitHubConnectionDialog" },
+      { provider: "azure", settingsKey: "azureDevops" },
+      { provider: "github", settingsKey: "github" },
     ] as const
-  ).forEach(({ provider, settingsKey, dialogName }) => {
-    it(`${provider}: opens ${dialogName} seeded from integrations.${settingsKey} and saves via the ${provider} transport method`, async () => {
+  ).forEach(({ provider, settingsKey }) => {
+    it(`${provider}: opens ConnectionDialog(provider=${provider}) seeded from integrations.${settingsKey} and saves via the ${provider} transport method`, async () => {
       const saveConnection = vi.fn(async (_api: AnyApi, draft: unknown) => ({ payload: { saved: draft } }));
       const ctx = {
         payload: shallowRef({
@@ -472,14 +473,15 @@ describe("makeOpenConnectionDialog", () => {
       const { dialogCalls, openDialog, closeDialog, currentProfileId } = makeDeps();
       const open = makeOpenConnectionDialog(ctx, openDialog, closeDialog, currentProfileId, {
         settingsKey,
-        dialogName,
+        provider,
         saveConnection,
       });
 
       open("conn-1");
 
       expect(dialogCalls).toHaveLength(1);
-      expect(dialogCalls[0].name).toBe(dialogName);
+      expect(dialogCalls[0].name).toBe("ConnectionDialog");
+      expect(dialogCalls[0].props.provider).toBe(provider);
       expect(dialogCalls[0].props.connection).toEqual({ id: "conn-1", name: "Existing" });
       expect(dialogCalls[0].props.defaultReviewRoot).toBe("/repos");
 

@@ -1,7 +1,7 @@
 /**
  * Regression coverage for the file/directory picker call sites (WorkspaceDialog,
- * SettingsGeneralTab, AzureConnectionDialog, GitHubConnectionDialog,
- * RemoteAccessDialog) that used to call api.browseDirectory/browseFile
+ * SettingsGeneralTab, ConnectionDialog, RemoteAccessDialog) that used to call
+ * api.browseDirectory/browseFile
  * directly inside a click handler with no try/catch. A rejection (rare — an
  * IPC-layer failure) was an unhandled rejection with zero user feedback.
  * pickPath() centralizes the try/catch and error-toast behavior.

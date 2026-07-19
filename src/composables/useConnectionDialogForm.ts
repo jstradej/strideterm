@@ -2,11 +2,12 @@ import { ref } from "vue";
 import { pickPath } from "../lib/pick-path.js";
 
 /**
- * Draft/test/submit scaffolding shared by AzureConnectionDialog and
- * GitHubConnectionDialog: busy-flag bookkeeping, the "Test connection" flow,
- * the save-on-submit flow, and the "Browse" directory picker. Each dialog
- * still owns its own draft shape, template and field set — this only
- * factors out the identical try/catch/finally plumbing around them.
+ * Draft/test/submit scaffolding used by ConnectionDialog.vue (Azure and
+ * GitHub connection editing, parametrized by a `provider` prop): busy-flag
+ * bookkeeping, the "Test connection" flow, the save-on-submit flow, and the
+ * "Browse" directory picker. The dialog still owns its own draft shape,
+ * template and field set per provider — this only factors out the identical
+ * try/catch/finally plumbing around them.
  */
 export function useConnectionDialogForm<TPayload, TVerification>(options: {
   draft: { reviewRoot: string };

@@ -2,12 +2,12 @@
   <div class="dialog" style="width: min(680px, 100%)">
     <div class="dialog__header">
       <div>
-        <p class="eyebrow">Azure DevOps</p>
+        <p class="eyebrow">{{ isGitHub ? "GitHub" : "Azure DevOps" }}</p>
         <h2>{{ connection ? "Edit connection" : "Add connection" }}</h2>
       </div>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
-      <div class="grid grid--two-col">
+      <div :class="isGitHub ? 'grid' : 'grid grid--two-col'">
         <label>
           <span>Label</span>
           <input
@@ -15,7 +15,11 @@
             v-model="draft.label"
             required
             maxlength="60"
-            title="Human-readable name for this Azure DevOps connection. Shown in the inbox header and connection list."
+            :title="
+              isGitHub
+                ? undefined
+                : `Human-readable name for this Azure DevOps connection. Shown in the inbox header and connection list.`
+            "
           />
         </label>
         <label>
@@ -25,11 +29,22 @@
             type="number"
             min="15"
             max="3600"
-            title="How often (in seconds) strIDEterm should re-poll Azure DevOps for this connection. Lower = fresher but more API calls; minimum 15s, maximum 1 hour."
+            :title="
+              isGitHub
+                ? undefined
+                : 'How often (in seconds) strIDEterm should re-poll Azure DevOps for this connection. Lower = fresher but more API calls; minimum 15s, maximum 1 hour.'
+            "
           />
         </label>
       </div>
-      <label>
+      <label v-if="isGitHub">
+        <span>Host URL</span>
+        <input v-model="draft.hostUrl" placeholder="https://github.com" required maxlength="300" />
+        <small style="color: var(--muted); font-size: 12px"
+          >Use https://github.com for GitHub.com or your GitHub Enterprise Server URL.</small
+        >
+      </label>
+      <label v-else>
         <span>Organization URL</span>
         <input
           v-model="draft.orgUrl"
@@ -42,7 +57,14 @@
           >A project or repository page URL also works. The app will normalize it.</small
         >
       </label>
-      <div class="grid grid--two-col">
+      <template v-if="isGitHub">
+        <label>
+          <span>PAT {{ connection ? "(leave empty to keep current token)" : "" }}</span>
+          <input v-model="draft.pat" type="password" placeholder="Personal Access Token" maxlength="300" />
+          <small style="color: var(--muted); font-size: 12px">Fine-grained or classic PAT with repo scope.</small>
+        </label>
+      </template>
+      <div v-else class="grid grid--two-col">
         <label>
           <span>Login / UPN</span>
           <input
@@ -69,23 +91,32 @@
         <div class="input-with-action">
           <input
             v-model="draft.reviewRoot"
-            placeholder="C:/Users/me/.strideterm/azure-pr"
+            :placeholder="isGitHub ? 'C:/Users/me/.strideterm/github-pr' : 'C:/Users/me/.strideterm/azure-pr'"
             maxlength="500"
-            title="Local directory under which strIDEterm will create per-PR review worktrees. Each PR gets a folder named pr-<id>; cloning is shared across PRs from the same repo."
+            :title="
+              isGitHub
+                ? undefined
+                : 'Local directory under which strIDEterm will create per-PR review worktrees. Each PR gets a folder named pr-<id>; cloning is shared across PRs from the same repo.'
+            "
           />
           <button
             v-if="api?.browseDirectory"
             type="button"
             class="button button--ghost input-with-action__btn"
-            title="Pick a directory using the OS file picker."
+            :title="isGitHub ? undefined : 'Pick a directory using the OS file picker.'"
             @click="browseReviewRoot"
           >
             Browse
           </button>
         </div>
       </label>
-      <div class="grid grid--two-col">
-        <label>
+      <div :class="isGitHub ? 'grid' : 'grid grid--two-col'">
+        <label v-if="isGitHub">
+          <span>Owner filters</span>
+          <input v-model="draft.ownerFilters" placeholder="my-org, my-user" maxlength="500" />
+          <small style="color: var(--muted); font-size: 12px">Comma-separated GitHub org or user names.</small>
+        </label>
+        <label v-else>
           <span>Project filters</span>
           <input
             v-model="draft.projectFilters"
@@ -99,18 +130,28 @@
           <span>Repository filters</span>
           <input
             v-model="draft.repositoryFilters"
-            placeholder="web-app, api"
+            :placeholder="isGitHub ? 'owner/repo, owner/other-repo' : 'web-app, api'"
             maxlength="500"
-            title="Comma-separated list of repository names or ids inside the filtered projects. Empty = include every repo in the selected projects."
+            :title="
+              isGitHub
+                ? undefined
+                : 'Comma-separated list of repository names or ids inside the filtered projects. Empty = include every repo in the selected projects.'
+            "
           />
-          <small style="color: var(--muted); font-size: 12px">Optional repo ids or names.</small>
+          <small style="color: var(--muted); font-size: 12px">{{
+            isGitHub ? "Optional owner/repo names." : "Optional repo ids or names."
+          }}</small>
         </label>
       </div>
       <label style="display: flex; align-items: center; gap: 8px">
         <input
           v-model="draft.enabled"
           type="checkbox"
-          title="When unchecked, strIDEterm keeps the connection but stops polling it. Useful for temporarily silencing one connection without deleting its config."
+          :title="
+            isGitHub
+              ? undefined
+              : 'When unchecked, strIDEterm keeps the connection but stops polling it. Useful for temporarily silencing one connection without deleting its config.'
+          "
         />
         <span>Enable polling for this connection</span>
       </label>
@@ -127,18 +168,31 @@
         "
       >
         <strong>Connection verified</strong>
-        <small style="color: var(--muted)">{{ verification.projectCount }} projects available.</small>
-        <div style="display: flex; flex-wrap: wrap; gap: 6px">
-          <span v-for="project in verification.projects.slice(0, 8)" :key="project.name" class="workspace-chip">{{
-            project.name
-          }}</span>
-        </div>
+        <template v-if="isGitHub">
+          <small style="color: var(--muted)"
+            >Authenticated as <strong>{{ verification.login }}</strong
+            >{{
+              verification.name && verification.name !== verification.login ? ` (${verification.name})` : ""
+            }}</small
+          >
+        </template>
+        <template v-else>
+          <small style="color: var(--muted)">{{ verification.projectCount }} projects available.</small>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px">
+            <span
+              v-for="project in (verification.projects || []).slice(0, 8)"
+              :key="project.name"
+              class="workspace-chip"
+              >{{ project.name }}</span
+            >
+          </div>
+        </template>
       </div>
-      <footer class="dialog__footer dialog__footer--end">
+      <footer :class="isGitHub ? 'dialog__footer' : 'dialog__footer dialog__footer--end'">
         <button
           type="button"
           class="button button--ghost"
-          title="Discard the changes you made and close the dialog."
+          :title="isGitHub ? undefined : 'Discard the changes you made and close the dialog.'"
           @click="emit('cancel')"
         >
           Cancel
@@ -147,7 +201,11 @@
           type="button"
           :class="['button', 'button--ghost', busy && 'button--busy']"
           :disabled="busy"
-          title="Verify the URL, login and PAT against Azure DevOps and list the projects this connection can see. Does not save."
+          :title="
+            isGitHub
+              ? undefined
+              : 'Verify the URL, login and PAT against Azure DevOps and list the projects this connection can see. Does not save.'
+          "
           @click="testConnection"
         >
           {{ busy ? "Testing…" : "Test connection" }}
@@ -156,7 +214,11 @@
           type="submit"
           :class="['button', busy && 'button--busy']"
           :disabled="busy"
-          title="Save this connection and (when enabled) start polling it on the configured interval."
+          :title="
+            isGitHub
+              ? undefined
+              : 'Save this connection and (when enabled) start polling it on the configured interval.'
+          "
         >
           {{ busy ? "Saving…" : "Save connection" }}
         </button>
@@ -166,38 +228,51 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, inject, onMounted, useAttrs } from "vue";
+import { ref, reactive, computed, inject, onMounted, useAttrs } from "vue";
 import type { Transport } from "../../transport.js";
 import { useConnectionDialogForm } from "../../composables/useConnectionDialogForm.js";
 
 defineOptions({ inheritAttrs: false });
 
-interface AzureConnection {
+interface ConnectionDraftSource {
   id?: string;
   label?: string;
   orgUrl?: string;
   login?: string;
+  hostUrl?: string;
   reviewRoot?: string;
   projectFilters?: string[];
+  ownerFilters?: string[];
   repositoryFilters?: string[];
   pollSeconds?: number;
   enabled?: boolean;
 }
 
+interface VerificationResult {
+  projectCount?: number;
+  projects?: { name: string }[];
+  login?: string;
+  name?: string;
+}
+
 interface Props {
-  connection?: AzureConnection | null;
+  connection?: ConnectionDraftSource | null;
   defaultReviewRoot?: string;
+  provider?: "azure" | "github";
 }
 
 const props = withDefaults(defineProps<Props>(), {
   connection: null,
   defaultReviewRoot: "",
+  provider: "azure",
 });
 
 const emit = defineEmits<{
   cancel: [];
 }>();
 const attrs = useAttrs();
+
+const isGitHub = computed(() => props.provider === "github");
 
 const api = inject<Transport>("api");
 const labelRef = ref<HTMLInputElement | null>(null);
@@ -207,9 +282,11 @@ const draft = reactive({
   label: props.connection?.label || "",
   orgUrl: props.connection?.orgUrl || "",
   login: props.connection?.login || "",
+  hostUrl: props.connection?.hostUrl || "https://github.com",
   pat: "",
   reviewRoot: props.connection?.reviewRoot || props.defaultReviewRoot || "",
   projectFilters: (props.connection?.projectFilters || []).join(", "),
+  ownerFilters: (props.connection?.ownerFilters || []).join(", "),
   repositoryFilters: (props.connection?.repositoryFilters || []).join(", "),
   pollSeconds: props.connection?.pollSeconds || 120,
   enabled: props.connection?.enabled !== false,
@@ -218,20 +295,33 @@ const draft = reactive({
 onMounted(() => labelRef.value?.focus());
 
 function buildDraftPayload() {
-  return {
+  const base = {
     id: draft.id,
     label: draft.label.trim(),
-    orgUrl: draft.orgUrl.trim(),
-    login: draft.login.trim(),
     pat: draft.pat.trim(),
     reviewRoot: draft.reviewRoot.trim(),
     enabled: draft.enabled,
     pollSeconds: Number(draft.pollSeconds) || 120,
-    projectFilters: draft.projectFilters
+    repositoryFilters: draft.repositoryFilters
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean),
-    repositoryFilters: draft.repositoryFilters
+  };
+  if (isGitHub.value) {
+    return {
+      ...base,
+      hostUrl: draft.hostUrl.trim(),
+      ownerFilters: draft.ownerFilters
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean),
+    };
+  }
+  return {
+    ...base,
+    orgUrl: draft.orgUrl.trim(),
+    login: draft.login.trim(),
+    projectFilters: draft.projectFilters
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean),
@@ -240,15 +330,17 @@ function buildDraftPayload() {
 
 const { busy, errorMessage, verification, browseReviewRoot, testConnection, handleSubmit } = useConnectionDialogForm<
   ReturnType<typeof buildDraftPayload>,
-  { projectCount: number; projects: { name: string }[] }
+  VerificationResult
 >({
   draft,
   defaultReviewRoot: () => props.defaultReviewRoot,
   browseDirectory: api?.browseDirectory,
   buildPayload: buildDraftPayload,
   verify: (payload) =>
-    api?.verifyAzureConnection?.(payload) as Promise<{ projectCount: number; projects: { name: string }[] } | null> | undefined,
+    (isGitHub.value ? api?.verifyGitHubConnection?.(payload) : api?.verifyAzureConnection?.(payload)) as
+      | Promise<VerificationResult | null>
+      | undefined,
   onSave: (payload) => (attrs.onSave as ((payload: unknown) => Promise<void>) | undefined)?.(payload),
-  providerLabel: "Azure DevOps",
+  providerLabel: isGitHub.value ? "GitHub" : "Azure DevOps",
 });
 </script>

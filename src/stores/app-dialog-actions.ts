@@ -109,14 +109,15 @@ function hookApiForProvider(
 }
 
 // Azure DevOps / GitHub connection-dialog opening is structurally identical
-// between the two providers — only the settings key, dialog component name,
-// and save-transport method differ. makeOpenConnectionDialog generates the
-// shared body once; createDialogActions below assigns the result onto
+// between the two providers — only the settings key, provider, and
+// save-transport method differ. Both open the same ConnectionDialog
+// component (parametrized by `provider`). makeOpenConnectionDialog generates
+// the shared body once; createDialogActions below assigns the result onto
 // openAzureConnectionDialog / openGitHubConnectionDialog so every existing
 // call site keeps working unchanged.
 interface ConnectionDialogConfig {
   settingsKey: "azureDevops" | "github";
-  dialogName: "AzureConnectionDialog" | "GitHubConnectionDialog";
+  provider: "azure" | "github";
   saveConnection: (api: AnyApi, draft: unknown) => Promise<AnyApi>;
 }
 
@@ -130,7 +131,8 @@ export function makeOpenConnectionDialog(
   return function openConnectionDialog(connectionId = ""): void {
     const settings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.[config.settingsKey] || {};
     const connection = ((settings as AnyApi).connections || []).find((c: AnyApi) => c.id === connectionId) || null;
-    openDialog(config.dialogName, {
+    openDialog("ConnectionDialog", {
+      provider: config.provider,
       connection,
       defaultReviewRoot: (settings as AnyApi).reviewRoot || "",
       onCancel: closeDialog,
@@ -616,13 +618,13 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   const openAzureConnectionDialog = makeOpenConnectionDialog(ctx, openDialog, closeDialog, currentProfileId, {
     settingsKey: "azureDevops",
-    dialogName: "AzureConnectionDialog",
+    provider: "azure",
     saveConnection: (api, draft) => api.saveAzureConnection(draft),
   });
 
   const openGitHubConnectionDialog = makeOpenConnectionDialog(ctx, openDialog, closeDialog, currentProfileId, {
     settingsKey: "github",
-    dialogName: "GitHubConnectionDialog",
+    provider: "github",
     saveConnection: (api, draft) => api.saveGitHubConnection(draft),
   });
 
