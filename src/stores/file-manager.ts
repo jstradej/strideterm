@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed, shallowRef } from "vue";
+import { rlog } from "../lib/renderer-log.js";
 
 interface FileEntry {
   name: string;
@@ -230,8 +231,11 @@ export const useFileManagerStore = defineStore("fileManager", () => {
         expanded: true,
       });
       treeNodes.value = next;
-    } catch {
-      // silently fail tree expansion
+    } catch (err) {
+      rlog("warn", "file-manager: expandTreeNode failed", {
+        relativePath,
+        err: (err as Error)?.message || String(err),
+      });
     }
   }
 

@@ -608,6 +608,55 @@ describe("useAppStore — remote mode identity", () => {
   });
 });
 
+// Category D (code-review batch, 2026-07): the Git-tab-activation refreshGit
+// call used to swallow a rejection with a bare `.catch(() => {})`, leaving
+// stale git data on screen with no trace in the logs.
+describe("useAppStore — Git tab activation surfaces a failed refreshGit", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("a rejected refreshGit logs a warning instead of failing silently", async () => {
+    const payload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [{ id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" }],
+        windowSlots: [],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const transport = makeElectronTransport(payload);
+    const logRenderer = vi.fn();
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "" }, logRenderer };
+    (transport as AnyApi).refreshGit = vi.fn(() => Promise.reject(new Error("git backend unavailable")));
+    (transport as AnyApi).setWorkspaceUIState = vi.fn(() => Promise.resolve());
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await store.activateView("git:ws1");
+    // refreshGit's rejection isn't awaited by activateView (fire-and-forget) —
+    // flush a couple of microtasks so its .catch handler runs.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((transport as AnyApi).refreshGit).toHaveBeenCalledWith("ws1");
+    const warnCalls = logRenderer.mock.calls.filter((c) => c[0] === "warn");
+    expect(warnCalls.some((c) => String(c[1]).includes("refreshGit failed"))).toBe(true);
+  });
+});
+
 describe("handleBroadcastPayload — optimistic-delete suppression", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

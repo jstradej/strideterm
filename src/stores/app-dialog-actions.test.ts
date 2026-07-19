@@ -391,4 +391,38 @@ describe("createDialogActions profile-aware saves", () => {
 
     expect(createTaskWorkspace).toHaveBeenCalledWith(expect.objectContaining({ parentWorkspaceId: "ws-clicked" }));
   });
+
+  // Category D (code-review batch, 2026-07): recheckClaude/checkProviders
+  // background refreshes used to swallow a rejection with a bare `.catch(()
+  // => {})` — the dialog silently kept showing stale provider availability.
+  // They now log via rlog; this confirms the rejection no longer escapes as
+  // an unhandled promise rejection and the warning is logged.
+  it("openTaskWorkspaceDialog: a rejected recheckClaude/checkProviders logs a warning instead of throwing", async () => {
+    const logRenderer = vi.fn();
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-b" }, logRenderer };
+    const ctx = makeCtx({
+      appState: {
+        profiles: [{ id: "profile-a", name: "A", color: "#fff" }],
+        settings: {},
+        workspaces: [],
+        windowSlots: [{ id: "win-b", profileId: "profile-a", activeWorkspaceId: "ws-a" }],
+      },
+    });
+    ctx.getApi = () => ({
+      isRemote: false,
+      recheckClaude: () => Promise.reject(new Error("claude cli not found")),
+      checkProviders: () => Promise.reject(new Error("provider check timed out")),
+    });
+    const actions = createDialogActions(ctx);
+
+    actions.openTaskWorkspaceDialog();
+    // Let the background recheckClaude()/checkProviders() promises settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const warnCalls = logRenderer.mock.calls.filter((c) => c[0] === "warn");
+    expect(warnCalls.length).toBeGreaterThanOrEqual(2);
+    expect(warnCalls.some((c) => c[1].includes("recheckClaude"))).toBe(true);
+    expect(warnCalls.some((c) => c[1].includes("checkProviders"))).toBe(true);
+  });
 });

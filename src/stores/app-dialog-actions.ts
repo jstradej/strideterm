@@ -2,6 +2,7 @@ import { cloneWorkspace } from "../workspace-state.js";
 import type { Ref, ShallowRef } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
+import { rlog } from "../lib/renderer-log.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -713,7 +714,11 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       .then((result: AnyApi) => {
         if (result?.payload) ctx.payload.value = result.payload as StatePayload;
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        rlog("warn", "task dialog: recheckClaude failed, provider availability may be stale", {
+          err: (err as Error)?.message || String(err),
+        });
+      });
 
     // Check all provider availabilities in the background — result is passed
     // to the dialog via the providerAvailability prop after resolution.
@@ -723,7 +728,11 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       .then((result: AnyApi) => {
         providerAvailabilityRef.value = result || {};
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        rlog("warn", "task dialog: checkProviders failed, provider availability may be stale", {
+          err: (err as Error)?.message || String(err),
+        });
+      });
 
     // Use per-user taskDefaults from settings for the initial provider selection
     const taskDefaults = (ctx.payload.value?.appState?.settings as AnyApi)?.taskDefaults || {};

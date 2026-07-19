@@ -179,6 +179,7 @@ import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../stores/app.js";
 import { useFileManagerStore } from "../../stores/file-manager.js";
+import { rlog } from "../../lib/renderer-log.js";
 import PaneShell from "../layout/PaneShell.vue";
 import FileToolbar from "./file-manager/FileToolbar.vue";
 import FileBreadcrumb from "./file-manager/FileBreadcrumb.vue";
@@ -365,7 +366,13 @@ function onCtxEdit() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (entry?.kind === "file") store.selectEntry(entry as any).then(() => store.startEdit());
+  if (entry?.kind === "file")
+    store
+      .selectEntry(entry as any)
+      .then(() => store.startEdit())
+      .catch((err: unknown) => {
+        rlog("warn", "file-manager: selectEntry before edit failed", { err: (err as Error)?.message || String(err) });
+      });
 }
 
 function onCtxDiff() {
@@ -513,7 +520,12 @@ async function confirmDelete() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function onOpenEdit(entry: Record<string, any>) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  store.selectEntry(entry as any).then(() => store.startEdit());
+  store
+    .selectEntry(entry as any)
+    .then(() => store.startEdit())
+    .catch((err: unknown) => {
+      rlog("warn", "file-manager: selectEntry before edit failed", { err: (err as Error)?.message || String(err) });
+    });
 }
 
 // Drop on tree root area = move to repo root

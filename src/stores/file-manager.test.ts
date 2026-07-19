@@ -221,6 +221,28 @@ describe("file-manager store", () => {
     }
   });
 
+  // Category D (code-review batch, 2026-07): expandTreeNode's catch used to
+  // silently swallow a failed fileTree call. It now also logs via rlog — this
+  // just confirms the failure stays non-throwing and doesn't corrupt
+  // previously-loaded tree state (a log call to a no-op window.strideterm
+  // stub isn't independently asserted; see report for rationale).
+  it("expandTreeNode leaves prior tree state intact when fileTree rejects", async () => {
+    const { api } = makeFakeApi({
+      fileTree: async (p: AnyObj) =>
+        p.relativePath === "src" ? Promise.reject(new Error("EACCES")) : { entries: [] },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    const rootBefore = store.treeNodes.get("");
+    await expect(store.expandTreeNode("src")).resolves.toBeUndefined();
+
+    // The rejected expansion must not have touched the root node or thrown.
+    expect(store.treeNodes.get("")).toBe(rootBefore);
+    expect(store.treeNodes.get("src")).toBeUndefined();
+  });
+
   it("clipboard cut + paste flow clears the clipboard, copy keeps it", async () => {
     const { api } = makeFakeApi();
     const store = useFileManagerStore();

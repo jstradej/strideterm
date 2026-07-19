@@ -1036,7 +1036,12 @@ export const useAppStore = defineStore("app", () => {
                 _cacheCurrentWorkspace();
               }
             })
-            .catch(() => {});
+            .catch((err: unknown) => {
+              rlog("warn", "git tab activate: refreshGit failed, showing stale git data", {
+                workspaceId: wsId,
+                err: (err as Error)?.message || String(err),
+              });
+            });
         }
       }
       return;
