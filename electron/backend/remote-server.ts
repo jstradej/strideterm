@@ -1972,7 +1972,6 @@ async function handleApiRequest(
 export async function startRemoteServer({
   runtime,
   staticRoot,
-  logger: _logger = console,
   congestionCloseGraceMs = CONGESTION_CLOSE_GRACE_MS,
   socketStallGraceMs = SOCKET_STALL_GRACE_MS,
   socketStallSweepMs = SOCKET_STALL_SWEEP_MS,
@@ -1980,8 +1979,6 @@ export async function startRemoteServer({
 }: {
   runtime: Runtime;
   staticRoot: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  logger?: any;
   /** Grace period between a backpressure 1013 close and the terminate()
    *  fallback. Injectable so tests can exercise the fallback without a 5s wait. */
   congestionCloseGraceMs?: number;

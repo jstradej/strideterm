@@ -55,7 +55,6 @@ export interface NotifyServerHandle {
 export interface StartNotifyServerOptions {
   onNotification: (n: NotifyPayload) => void;
   secret: string;
-  logger?: unknown;
 }
 
 export function generateNotifySecret(): string {
@@ -69,7 +68,6 @@ export function buildNotifyUrl(port: number, sessionId: string, secret: string):
 export function startNotifyServer({
   onNotification,
   secret,
-  logger: _logger = null,
 }: StartNotifyServerOptions): Promise<NotifyServerHandle> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((request: IncomingMessage, response: ServerResponse) => {

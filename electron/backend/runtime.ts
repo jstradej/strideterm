@@ -1276,7 +1276,6 @@ export async function createRuntime({
       notifyServerHandle = await startNotifyServer({
         secret: notifySecret,
         onNotification: handleAgentHookNotification,
-        logger: log,
       });
       log.info("notify server started", { port: notifyServerHandle.port });
       // Purge leftovers claiming our port (previous run that crashed without

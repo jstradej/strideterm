@@ -59,7 +59,7 @@ const servers: any[] = [];
 async function createServer(options: any = {}) {
   const secret = options.secret || generateNotifySecret();
   const onNotification = options.onNotification || vi.fn();
-  const handle = await startNotifyServer({ secret, onNotification, logger: null });
+  const handle = await startNotifyServer({ secret, onNotification });
   servers.push(handle);
   return { handle, secret, onNotification };
 }
