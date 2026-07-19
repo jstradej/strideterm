@@ -3712,12 +3712,7 @@ export async function createRuntime({
     // A remote client on profile B passing workspaceId from profile A would
     // otherwise drive git fetch/push/checkout on a repo it has no
     // visibility of (and possibly using profile-A's credentials).
-    const slotProfileId = getWindowProfileId(windowId);
-    if (slotProfileId && (workspace.profileId || "default") !== slotProfileId) {
-      throw new Error(
-        `Cross-profile refused: workspace ${workspace.id} is in profile ${workspace.profileId || "default"}, window ${windowId} is bound to ${slotProfileId}.`,
-      );
-    }
+    assertWorkspaceInViewerProfile(workspace.id, windowId);
     return workspace;
   }
 
@@ -5648,15 +5643,7 @@ export async function createRuntime({
       if (slotProfileId) {
         const incomingProfileId = workspace?.profileId || "default";
         if (workspace?.id) {
-          const existing = getState().workspaces.find((w) => w.id === workspace.id);
-          if (existing) {
-            const existingProfileId = existing.profileId || "default";
-            if (existingProfileId !== slotProfileId) {
-              throw new Error(
-                `Cross-profile refused: workspace ${workspace.id} is in profile ${existingProfileId}, window ${windowId} is bound to ${slotProfileId}.`,
-              );
-            }
-          }
+          assertWorkspaceInViewerProfile(workspace.id, windowId);
         }
         if (incomingProfileId !== slotProfileId) {
           throw new Error(
