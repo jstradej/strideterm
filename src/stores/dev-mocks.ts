@@ -336,7 +336,6 @@ function buildGitHubSnapshot(): AnyRecord {
       { path: "src/components/workspace/AzureInboxPane.vue", changeType: "edit" },
       { path: "src/components/workspace/AzureReviewPane.vue", changeType: "edit" },
       { path: "src/components/workspace/GitHubInboxPane.vue", changeType: "edit" },
-      { path: "src/components/workspace/GitHubReviewPane.vue", changeType: "edit" },
       { path: "src/styles/review.css", changeType: "edit" },
       { path: "src/stores/dev-mocks.ts", changeType: "add" },
     ],
