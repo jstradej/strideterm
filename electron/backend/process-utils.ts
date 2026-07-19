@@ -1,4 +1,7 @@
 import { execFile, type ExecFileOptions } from "node:child_process";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("process-utils");
 
 export function quotePosixArg(value: unknown): string {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -29,9 +32,22 @@ export function execFileText(
 }
 
 export function parseJsonLines(rawText: string): unknown[] {
-  return rawText
+  const lines = rawText
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
+    .filter(Boolean);
+
+  const parsed: unknown[] = [];
+  let skipped = 0;
+  for (const line of lines) {
+    try {
+      parsed.push(JSON.parse(line));
+    } catch {
+      skipped++;
+    }
+  }
+  if (skipped > 0) {
+    log.debug(`parseJsonLines: skipped ${skipped} non-JSON line(s)`, { skipped, total: lines.length });
+  }
+  return parsed;
 }
