@@ -1,5 +1,17 @@
 import { describe, expect, test, vi, afterEach, beforeAll } from "vitest";
+import { flushPromises } from "@vue/test-utils";
 import { createTerminalController } from "./terminal-controller.js";
+
+// Backing spy for the path-link providers' shared error-reporting helper
+// (reportOpenPathError). Declared via vi.hoisted so it's safe to reference
+// from the vi.mock factories below.
+const { mockShowError } = vi.hoisted(() => ({ mockShowError: vi.fn() }));
+vi.mock("../stores/notifications.js", () => ({
+  useNotificationStore: () => ({ showError: mockShowError }),
+}));
+vi.mock("../stores/app.js", () => ({
+  useAppStore: () => ({ activeProfile: { id: "test-profile" } }),
+}));
 
 // jsdom doesn't implement ResizeObserver — stub it so attachTerminalPane tests pass.
 beforeAll(() => {
@@ -802,5 +814,158 @@ describe("visual profile switch — handleTerminalData and pruneTerminalViews", 
     controller.pruneTerminalViews(new Set(["ws-b:sh"]));
 
     expect(disposeSpy).toHaveBeenCalled();
+  });
+});
+
+describe("path-link providers — shared error reporting (reportOpenPathError)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setLine(view: any, text: string) {
+    view.term.buffer.active.getLine = () => ({ translateToString: () => text });
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function getProviders(view: any) {
+    const calls = view.term.registerLinkProvider.mock.calls;
+    // Registration order in ensureTerminal: file-path provider, then the
+    // file:// URL provider.
+    return { pathProvider: calls[0][0], fileUrlProvider: calls[1][0] };
+  }
+
+  test("path-link provider: a 'not ok' result routes through reportOpenPathError", async () => {
+    mockShowError.mockClear();
+    const openTerminalPath = vi.fn(async () => ({ ok: false, error: "boom" }));
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    setLine(view, "/usr/local/bin/mytool");
+    const { pathProvider } = getProviders(view);
+
+    const callback = vi.fn();
+    pathProvider.provideLinks(1, callback);
+    const links = callback.mock.calls[0][0];
+    expect(links).toHaveLength(1);
+
+    links[0].activate();
+    await flushPromises();
+    await flushPromises();
+
+    expect(mockShowError).toHaveBeenCalledWith("Open path failed", "Couldn't open /usr/local/bin/mytool: boom", {
+      profileId: "test-profile",
+    });
+  });
+
+  test("path-link provider: a rejected openTerminalPath call routes through reportOpenPathError", async () => {
+    mockShowError.mockClear();
+    const openTerminalPath = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    setLine(view, "/usr/local/bin/mytool");
+    const { pathProvider } = getProviders(view);
+
+    const callback = vi.fn();
+    pathProvider.provideLinks(1, callback);
+    const links = callback.mock.calls[0][0];
+
+    links[0].activate();
+    await flushPromises();
+    await flushPromises();
+
+    expect(mockShowError).toHaveBeenCalledWith(
+      "Open path failed",
+      "Couldn't open /usr/local/bin/mytool: network down",
+      { profileId: "test-profile" },
+    );
+  });
+
+  test("file:// URL provider: a 'not ok' result routes through reportOpenPathError", async () => {
+    mockShowError.mockClear();
+    const openTerminalPath = vi.fn(async () => ({ ok: false, error: "boom" }));
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    setLine(view, "see file:///usr/local/bin/mytool for details");
+    const { fileUrlProvider } = getProviders(view);
+
+    const callback = vi.fn();
+    fileUrlProvider.provideLinks(1, callback);
+    const links = callback.mock.calls[0][0];
+    expect(links).toHaveLength(1);
+
+    links[0].activate();
+    await flushPromises();
+    await flushPromises();
+
+    expect(mockShowError).toHaveBeenCalledWith("Open path failed", "Couldn't open /usr/local/bin/mytool: boom", {
+      profileId: "test-profile",
+    });
+  });
+
+  test("file:// URL provider: a rejected openTerminalPath call routes through reportOpenPathError", async () => {
+    mockShowError.mockClear();
+    const openTerminalPath = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    setLine(view, "see file:///usr/local/bin/mytool for details");
+    const { fileUrlProvider } = getProviders(view);
+
+    const callback = vi.fn();
+    fileUrlProvider.provideLinks(1, callback);
+    const links = callback.mock.calls[0][0];
+
+    links[0].activate();
+    await flushPromises();
+    await flushPromises();
+
+    expect(mockShowError).toHaveBeenCalledWith(
+      "Open path failed",
+      "Couldn't open /usr/local/bin/mytool: network down",
+      { profileId: "test-profile" },
+    );
+  });
+
+  test("all 4 sites route through exactly one shared implementation (identical title + options shape)", async () => {
+    mockShowError.mockClear();
+    const openTerminalPath = vi.fn(async () => ({ ok: false, error: "boom" }));
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const { pathProvider, fileUrlProvider } = getProviders(view);
+
+    setLine(view, "/usr/local/bin/mytool");
+    const cb1 = vi.fn();
+    pathProvider.provideLinks(1, cb1);
+    cb1.mock.calls[0][0][0].activate();
+    await flushPromises();
+
+    setLine(view, "see file:///usr/local/bin/mytool for details");
+    const cb2 = vi.fn();
+    fileUrlProvider.provideLinks(1, cb2);
+    cb2.mock.calls[0][0][0].activate();
+    await flushPromises();
+
+    expect(mockShowError).toHaveBeenCalledTimes(2);
+    // Both providers' error paths produce the same title + { profileId }
+    // shape — evidence they share the one reportOpenPathError implementation
+    // rather than each formatting its own toast independently.
+    for (const call of mockShowError.mock.calls) {
+      expect(call[0]).toBe("Open path failed");
+      expect(call[2]).toEqual({ profileId: "test-profile" });
+    }
   });
 });

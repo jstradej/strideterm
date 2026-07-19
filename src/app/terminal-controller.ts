@@ -536,6 +536,19 @@ export function createTerminalController({
     // and would open files there, which is rarely what a remote user wants.
     if (!api.isRemote && typeof api.openTerminalPath === "function") {
       const openPath = api.openTerminalPath;
+      // Shared error toast for both path-link providers below (file-path and
+      // file:// URL) — each has a "backend responded but couldn't open it"
+      // and a "the IPC call itself rejected" site, so 4 near-identical blocks
+      // collapse to this one helper (mirrors reportImagePasteError's shape).
+      async function reportOpenPathError(path: string, message: string): Promise<void> {
+        const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
+          import("../stores/notifications.js"),
+          import("../stores/app.js"),
+        ]);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
+        useNotificationStore().showError("Open path failed", `Couldn't open ${path}: ${message}`, { profileId });
+      }
       term.registerLinkProvider({
         provideLinks(bufferLineNumber, callback) {
           const buffer = term.buffer.active;
@@ -561,17 +574,7 @@ export function createTerminalController({
               void openPath({ path: m.path, line: m.line, column: m.column, workspaceCwd })
                 .then(async (result) => {
                   if (!result?.ok) {
-                    const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
-                      import("../stores/notifications.js"),
-                      import("../stores/app.js"),
-                    ]);
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
-                    useNotificationStore().showError(
-                      "Open path failed",
-                      `Couldn't open ${m.path}: ${result?.error || "unknown error"}`,
-                      { profileId },
-                    );
+                    void reportOpenPathError(m.path, result?.error || "unknown error");
                     return;
                   }
                   // Internal-mode response: backend resolved + validated the
@@ -582,18 +585,8 @@ export function createTerminalController({
                     await openInInternalViewer(result.absPath);
                   }
                 })
-                .catch(async (err: unknown) => {
-                  const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
-                    import("../stores/notifications.js"),
-                    import("../stores/app.js"),
-                  ]);
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
-                  useNotificationStore().showError(
-                    "Open path failed",
-                    `Couldn't open ${m.path}: ${(err as Error)?.message || String(err)}`,
-                    { profileId },
-                  );
+                .catch((err: unknown) => {
+                  void reportOpenPathError(m.path, (err as Error)?.message || String(err));
                 });
             },
           }));
@@ -659,35 +652,15 @@ export function createTerminalController({
                 void openPath({ path: resolvedPath, workspaceCwd })
                   .then(async (result) => {
                     if (!result?.ok) {
-                      const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
-                        import("../stores/notifications.js"),
-                        import("../stores/app.js"),
-                      ]);
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
-                      useNotificationStore().showError(
-                        "Open path failed",
-                        `Couldn't open ${resolvedPath}: ${result?.error || "unknown error"}`,
-                        { profileId },
-                      );
+                      void reportOpenPathError(resolvedPath, result?.error || "unknown error");
                       return;
                     }
                     if (result.internal === true && result.absPath) {
                       await openInInternalViewer(result.absPath);
                     }
                   })
-                  .catch(async (err: unknown) => {
-                    const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
-                      import("../stores/notifications.js"),
-                      import("../stores/app.js"),
-                    ]);
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
-                    useNotificationStore().showError(
-                      "Open path failed",
-                      `Couldn't open ${resolvedPath}: ${(err as Error)?.message || String(err)}`,
-                      { profileId },
-                    );
+                  .catch((err: unknown) => {
+                    void reportOpenPathError(resolvedPath, (err as Error)?.message || String(err));
                   });
               },
             });
