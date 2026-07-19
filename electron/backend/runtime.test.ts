@@ -7653,6 +7653,56 @@ describe("multiple windows per profile — viewer model", () => {
     expect(created?.activeWorkspaceId).toBe("ws-a1");
   });
 
+  test("telegram start-task with useWorktree builds the promptStartAfterCreate cwd via path.join, not a hardcoded backslash string", async () => {
+    // Regression for code-review finding 1.10: the Telegram start-task
+    // dispatch used to build the new worktree's cwd with
+    // `${cwd}\\.strideterm\\tree\\${branch}`, which is bogus on macOS/Linux.
+    // It must use path.join like every other worktree-path call site.
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-telegram-wt-"));
+    tempPaths.push(parentRoot);
+    const branch = "feature/x";
+    const dirName = branch.replace(/\//g, "-");
+
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "parent",
+        projects: [
+          {
+            id: "parent",
+            name: "Parent",
+            kind: "terminal",
+            cwd: parentRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const manager = fixture.runtime._telegramManagerForTest();
+    const promptStartAfterCreate = vi.fn(async () => undefined);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).promptStartAfterCreate = promptStartAfterCreate;
+
+    await fixture.runtime._dispatchTelegramCommandForTest({
+      type: "start-task",
+      workspaceId: "parent",
+      taskDescription: "Do the thing",
+      chatId: "12345",
+      useWorktree: true,
+      worktreeBranch: branch,
+    });
+
+    expect(promptStartAfterCreate).toHaveBeenCalledTimes(1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [opts] = promptStartAfterCreate.mock.calls[0] as any[];
+    // Platform-agnostic assertion: path.join produces the native separator
+    // (backslash on Windows, forward slash on POSIX) rather than a
+    // hardcoded backslash regardless of platform.
+    expect(opts.cwd).toBe(path.join(parentRoot, ".strideterm", "tree", dirName));
+  });
+
   test("removeWindowSlot mirrors the closing window's view and grid into the profile legacy defaults", async () => {
     const base = makeProfileSwitchState();
     const initialState = {

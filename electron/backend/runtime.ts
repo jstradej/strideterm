@@ -2216,7 +2216,7 @@ export async function createRuntime({
           // the task now or leave it idle so they can edit TASK.md first.
           if (cmd.chatId) {
             const promptCwd = useWorktree
-              ? `${parentWorkspace.cwd}\\.strideterm\\tree\\${worktreeBranch.replace(/\//g, "-")}`
+              ? path.join(parentWorkspace.cwd, ".strideterm", "tree", worktreeBranch.replace(/\//g, "-"))
               : taskCwd;
             await telegramManager.promptStartAfterCreate({
               chatId: cmd.chatId,
