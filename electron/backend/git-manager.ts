@@ -3643,10 +3643,12 @@ export class GitManager extends EventEmitter {
     const crypto = await import("node:crypto");
     const tmpFile = path.join(os.tmpdir(), `strideterm-stash-import-${crypto.randomUUID()}.patch`);
 
+    let autoStashed = false;
+    const warnings: string[] = [];
+
     try {
       await fs.writeFile(tmpFile, patch, "utf8");
 
-      const warnings: string[] = [];
       // If the tree is dirty, set the user's current changes aside FIRST so the
       // patch is checked and applied against a clean tree. Checking before the
       // auto-stash would test the patch against the dirty tree it will never be
@@ -3656,7 +3658,6 @@ export class GitManager extends EventEmitter {
         stdout: "",
         stderr: "",
       }));
-      let autoStashed = false;
       if (String(status.stdout || "").trim()) {
         await this.execGit(effectiveCwd, [
           "stash",
@@ -3698,9 +3699,22 @@ export class GitManager extends EventEmitter {
       });
     } catch (error) {
       const err = error as { stdout?: string; stderr?: string };
+      // The apply (or the final stash push) failed after we already set the
+      // user's changes aside. Restore them best-effort so a failed import
+      // doesn't look like it wiped local work — a pop failure here must not
+      // mask the real error, so just log it.
+      if (autoStashed) {
+        await this.execGit(effectiveCwd, ["stash", "pop"]).catch((popErr) => {
+          log.warn("stashImportPatch: failed to restore auto-stash after import failure", {
+            cwd: effectiveCwd,
+            err: extractErrorMessage(popErr),
+          });
+        });
+      }
       return createStructuredResult({
         ok: false,
         summary: "Failed to import patch.",
+        warnings,
         rawOutput: joinRawOutput(err.stdout, err.stderr),
       });
     } finally {

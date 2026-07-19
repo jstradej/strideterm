@@ -2,7 +2,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { GitManager } from "./git-manager.js";
 import { setAllowedRootsResolver } from "./file-manager.js";
 
@@ -469,5 +469,48 @@ describe("GitManager stash lifecycle (real git)", () => {
     // The patch really applied: the imported stash (top) carries the PATCHED line.
     await manager.stashApply(null, { rootPath: root, ref: "stash@{0}" });
     expect(await fs.readFile(path.join(root, "base.txt"), "utf8")).toContain("PATCHED");
+  });
+
+  test("stashImportPatch pops the auto-stash and reports it when apply fails after the auto-stash", async () => {
+    const { root, manager } = await makeStashRepo();
+    // Build a valid patch via the same export/drop round trip used above.
+    await fs.writeFile(path.join(root, "base.txt"), "line1\nPATCHED\n", "utf8");
+    await manager.stash(null, { rootPath: root, message: "src", includeUntracked: false });
+    const exported = await manager.stashExportPatch(null, { rootPath: root, ref: "stash@{0}" });
+    await manager.stashDrop(null, { rootPath: root, ref: "stash@{0}" });
+
+    // Dirty the tree with an unrelated change so import auto-stashes it first.
+    await fs.writeFile(path.join(root, "other.txt"), "unrelated dirty\n", "utf8");
+
+    // Let `apply --check` (and everything else) run against real git, but make
+    // the real `apply` fail — simulating a failure AFTER the auto-stash already
+    // succeeded, distinct from the `apply --check` failure covered above.
+    const originalExecGit = manager.execGit.bind(manager);
+    const execGitSpy = vi.spyOn(manager, "execGit").mockImplementation(async (cwd, args, opts) => {
+      if (args[0] === "apply" && !args.includes("--check")) {
+        throw new Error("simulated apply failure");
+      }
+      return originalExecGit(cwd, args, opts);
+    });
+
+    const res = await manager.stashImportPatch(null, {
+      rootPath: root,
+      patch: exported.patch,
+      message: "imported",
+    });
+
+    expect(res.ok).toBe(false);
+    expect(String(res.summary)).toMatch(/failed to import patch/i);
+    expect(res.warnings).toEqual(["Your existing changes were stashed before importing."]);
+
+    // The auto-stash pop was attempted after the simulated failure.
+    const poppedAutoStash = execGitSpy.mock.calls.some(([, callArgs]) => callArgs[0] === "stash" && callArgs[1] === "pop");
+    expect(poppedAutoStash).toBe(true);
+
+    execGitSpy.mockRestore();
+
+    // The auto-stashed change is back in the working tree, and no stash entries remain.
+    expect(await fs.readFile(path.join(root, "other.txt"), "utf8")).toContain("unrelated dirty");
+    expect((await manager.listStashes(null, { rootPath: root })).stashes).toHaveLength(0);
   });
 });
