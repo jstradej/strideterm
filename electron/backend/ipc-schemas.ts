@@ -107,9 +107,6 @@ export const azureConnectionSchema = z
   .passthrough();
 export type AzureConnectionPayload = z.infer<typeof azureConnectionSchema>;
 
-export const prKeySchema = nonEmptyString;
-export type PrKey = z.infer<typeof prKeySchema>;
-
 export const azureCommentSchema = z.object({
   prKey: nonEmptyString,
   content: z.string(),
@@ -196,13 +193,6 @@ export const agentPromptDeleteSchema = z.object({
   promptId: nonEmptyString,
 });
 export type AgentPromptDelete = z.infer<typeof agentPromptDeleteSchema>;
-
-export const gitWorkspaceRef = z.object({
-  workspaceId: z.string().optional(),
-  projectId: z.string().optional(),
-  rootPath: z.string().optional(),
-});
-export type GitWorkspaceRef = z.infer<typeof gitWorkspaceRef>;
 
 export const gitPayloadSchema = z
   .object({
