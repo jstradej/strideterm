@@ -24,12 +24,6 @@ export interface OpenTab {
   activeSubTab?: SubTabKind;
 }
 
-export interface ComposeActionProgress {
-  action: string;
-  current: number;
-  total: number;
-}
-
 function makeTabId(kind: TabKind, backendId: string, contextName: string, id: string): string {
   switch (kind) {
     case "container":
@@ -63,8 +57,6 @@ export const useDockerDetail = defineStore("docker-detail", () => {
   const tabsByWorkspace = ref<Map<string, OpenTab[]>>(new Map());
   // Active tab per workspace
   const activeByWorkspace = ref<Map<string, string>>(new Map());
-  // Compose action progress per workspace
-  const composeProgress = ref<Map<string, ComposeActionProgress>>(new Map());
 
   function getTabs(workspaceId: string): OpenTab[] {
     return tabsByWorkspace.value.get(workspaceId) || [];
@@ -248,12 +240,6 @@ export const useDockerDetail = defineStore("docker-detail", () => {
     tabsByWorkspace.value.set(workspaceId, updated);
   }
 
-  function updateLogSessionId(workspaceId: string, tabId: string, sessionId: string): void {
-    const tabs = getTabs(workspaceId);
-    const updated = tabs.map((t) => (t.tabId === tabId ? { ...t, logSessionId: sessionId } : t));
-    tabsByWorkspace.value.set(workspaceId, updated);
-  }
-
   // Watch for removed containers to mark tabs as removed
   watchEffect(() => {
     const docker = appStore.dockerState();
@@ -285,8 +271,6 @@ export const useDockerDetail = defineStore("docker-detail", () => {
     setActive,
     setActiveSubTab,
     markRemoved,
-    updateLogSessionId,
-    composeProgress,
     tabsByWorkspace,
     activeByWorkspace,
   };
