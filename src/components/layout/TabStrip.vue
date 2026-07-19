@@ -91,6 +91,7 @@
 import { computed, ref, nextTick, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { useTabDragDrop } from "../../composables/useDragDrop.js";
 import { isFreshAlert, tabAttentionTitle } from "../../app/helpers.js";
 
@@ -122,6 +123,7 @@ const props = withDefaults(
 
 const store = useAppStore();
 const termStore = useTerminalStore();
+const notifications = useNotificationStore();
 const stripRef = ref<HTMLElement | null>(null);
 const compactPickerBtnRef = ref<HTMLButtonElement | null>(null);
 const compactPickerOpen = ref(false);
@@ -286,12 +288,12 @@ async function ensureCompactWorkspaceActive(): Promise<void> {
 }
 
 function activateTab(viewId: string): void {
-  void (async () => {
+  void notifications.runWithToast("Switch tab failed", async () => {
     await ensureCompactWorkspaceActive();
     await store.activateView(viewId);
     await nextTick();
     termStore.focusActiveTerminal();
-  })();
+  });
 }
 
 function updateCompactPickerAnchor(): void {

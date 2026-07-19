@@ -1,13 +1,15 @@
-import { describe, expect, test, beforeEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { describe, expect, test, beforeEach, vi } from "vitest";
+import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TabStrip from "./TabStrip.vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { isMobileViewport } from "../../composables/useIsNarrow.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  window.localStorage.removeItem("strideterm-notifications-v2");
   isMobileViewport.value = false;
 });
 
@@ -129,5 +131,20 @@ describe("TabStrip", () => {
     store.getTabAttentionForView = () => ({ count: 1, alerts: [{ title: "Build" }], latestAt: now });
     const wrapper = mount(TabStrip);
     expect(wrapper.find(".tab__attention").exists()).toBe(true);
+  });
+
+  test("clicking a tab that fails to activate surfaces an error toast instead of an unhandled rejection", async () => {
+    const store = useAppStore();
+    store.payload = makePayload([{ id: "ws1:shell", title: "Shell" }]);
+    vi.spyOn(store, "activateView").mockRejectedValueOnce(new Error("session gone"));
+
+    const wrapper = mount(TabStrip);
+    await wrapper.find(".tab").trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions).toHaveLength(1);
+    expect(notifications.sessions[0].events[0].title).toBe("Switch tab failed");
+    expect(notifications.sessions[0].events[0].body).toBe("session gone");
   });
 });
