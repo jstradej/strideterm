@@ -2,6 +2,9 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("azure-review-store");
 
 interface TrackedPullRequest {
   key: string;
@@ -27,13 +30,35 @@ function createDefaultState(): AzureReviewState {
   };
 }
 
+function corruptPathFor(filePath: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${filePath}.corrupt-${stamp}`;
+}
+
 async function loadState(filePath: string): Promise<AzureReviewState> {
   if (!existsSync(filePath)) {
     return createDefaultState();
   }
 
+  let raw: string;
   try {
-    const raw = await fs.readFile(filePath, "utf8");
+    raw = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return createDefaultState();
+    }
+    // Any other read failure (EPERM/EBUSY/permission denied/...) means the
+    // file exists but we couldn't safely read it. Falling back to defaults
+    // here would immediately overwrite real state via the persist() call
+    // in createAzureReviewStore — rethrow so startup fails loudly instead.
+    log.error("failed to read azure review state file", {
+      filePath,
+      err: (error as Error)?.message || String(error),
+    });
+    throw error;
+  }
+
+  try {
     const parsed = JSON.parse(raw) as { trackedPullRequests?: unknown; connections?: unknown };
     return {
       version: 1,
@@ -46,7 +71,19 @@ async function loadState(filePath: string): Promise<AzureReviewState> {
           ? (parsed.connections as Record<string, ConnectionState>)
           : {},
     };
-  } catch {
+  } catch (error) {
+    log.error("failed to parse azure review state file, quarantining corrupt file", {
+      filePath,
+      err: (error as Error)?.message || String(error),
+    });
+    try {
+      await fs.rename(filePath, corruptPathFor(filePath));
+    } catch (renameError) {
+      log.warn("failed to quarantine corrupt azure review state file", {
+        filePath,
+        err: (renameError as Error)?.message || String(renameError),
+      });
+    }
     return createDefaultState();
   }
 }
