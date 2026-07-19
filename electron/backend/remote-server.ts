@@ -1138,44 +1138,16 @@ async function handleApiRequest(
     const ackCtx = (response as ResponseWithCtx).__remoteCtx;
     if (ackCtx) ackCtx.body = body as Record<string, unknown>;
 
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/api/workspace/activate" || url.pathname === "/api/project/activate")
-    ) {
-      json(response, 200, await runtime.activateWorkspace((body.workspaceId || body.projectId) as string));
-      return;
-    }
-
-    if (request.method === "POST" && (url.pathname === "/api/workspace/save" || url.pathname === "/api/project/save")) {
-      json(response, 200, await runtime.saveWorkspace(body.workspace || body.project));
-      return;
-    }
-
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/api/workspace/delete" || url.pathname === "/api/project/delete")
-    ) {
-      const wsId = validateIpc(
-        workspaceIdSchema,
-        body.workspaceId || body.projectId,
-        "remote:workspace/delete.workspaceId",
-      );
-      const opts = validateIpc(
-        workspaceDeleteOptionsSchema,
-        { deleteFromDisk: body.deleteFromDisk, diskPath: body.diskPath },
-        "remote:workspace/delete.options",
-      );
-      json(response, 200, await runtime.deleteWorkspace(wsId, opts));
-      return;
-    }
-
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/api/workspace/reorder" || url.pathname === "/api/project/reorder")
-    ) {
-      json(response, 200, await runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[]));
-      return;
-    }
+    // NOTE: every POST pathname registered in `slotAwareRoute` (below, at the
+    // server top level) is intercepted there UNCONDITIONALLY, before this
+    // function ever runs — so this function must not carry an inline copy of
+    // any of those routes. An inline copy would be dead code today, but would
+    // silently "fail open" onto no-windowId behavior (re-opening the
+    // cross-profile hole slot-aware routing exists to close) if the
+    // slotAwareRoute entry were ever accidentally removed later. Only routes
+    // that are NOT in slotAwareRoute belong here. See the `/api/git/skip`
+    // family comment further down for the original instance of this pattern;
+    // a source-shape test in remote-server.test.ts enforces it repo-wide.
 
     if (request.method === "POST" && url.pathname === "/api/settings/update") {
       // Drop fields a remote caller is never authorised to change. See
@@ -1207,17 +1179,6 @@ async function handleApiRequest(
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/azure/save-connection") {
-      const result = await runtime.saveAzureConnection(body.connection || {});
-      json(response, 200, result.payload);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/azure/delete-connection") {
-      json(response, 200, await runtime.deleteAzureConnection(body.connectionId));
-      return;
-    }
-
     if (request.method === "POST" && url.pathname === "/api/azure/refresh") {
       json(response, 200, await runtime.refreshAzureState());
       return;
@@ -1238,49 +1199,14 @@ async function handleApiRequest(
     // bound viewer id from the remote-client registry and reject cross-profile
     // PRs; reaching here would mean the route bypassed that intercept.
 
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/draft-comment/create") {
-      json(response, 200, await runtime.createReviewBridgeDraftComment(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/draft/save") {
-      json(response, 200, await runtime.saveReviewBridgeDraft(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/draft/queue") {
-      json(response, 200, await runtime.queueReviewBridgeDraft(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/draft/delete") {
-      json(response, 200, await runtime.deleteReviewBridgeDraft(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/comment/delete") {
-      json(response, 200, await runtime.deleteReviewBridgeComment(body));
-      return;
-    }
-
     if (request.method === "POST" && url.pathname === "/api/review-bridge/agent-prompt/reset") {
       json(response, 200, await runtime.resetAgentPrompts());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/comment/reply-with-changes") {
-      json(response, 200, await runtime.replyWithCodeChanges(body));
       return;
     }
 
     // /api/review-bridge/pull-request/sync is handled in the outer dispatch
     // (slotAwareRoute) so it resolves the caller's viewer id and refuses to
     // publish drafts to a PR outside the caller's profile.
-
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/pull-request/push-and-publish") {
-      json(response, 200, await runtime.pushAndPublishReview(body));
-      return;
-    }
 
     // /api/azure/pull-request/vote is handled in the outer dispatch
     // (slotAwareRoute) so it resolves the caller's viewer id and rejects a vote
@@ -1384,15 +1310,6 @@ async function handleApiRequest(
     // --- GitHub ---
     if (request.method === "POST" && url.pathname === "/api/github/verify-connection") {
       json(response, 200, await runtime.verifyGitHubConnection(body.connection || {}));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/save-connection") {
-      const result = await runtime.saveGitHubConnection(body.connection || {});
-      json(response, 200, result.payload);
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/github/delete-connection") {
-      json(response, 200, await runtime.deleteGitHubConnection(body.connectionId));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/github/refresh") {
@@ -1590,38 +1507,12 @@ async function handleApiRequest(
       return;
     }
     // /api/task/create is handled in the outer dispatch (slot-aware).
-    if (request.method === "POST" && url.pathname === "/api/task/start") {
-      json(response, 200, await runtime.startTask(body.workspaceId));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/stop") {
-      json(response, 200, runtime.stopTask(body.workspaceId));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/pause") {
-      json(response, 200, runtime.pauseTask(body.workspaceId));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/resume") {
-      json(response, 200, await runtime.resumeTask(body.workspaceId));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/reset") {
-      json(response, 200, await runtime.resetTask(body.workspaceId));
-      return;
-    }
     if (request.method === "POST" && url.pathname === "/api/task/reject-verdict") {
       json(response, 200, await runtime.rejectTaskVerdict(body.workspaceId, body.feedback));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/task/resend-instruction") {
       json(response, 200, await runtime.resendTaskInstruction(body.workspaceId, body.role));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/task/update-description") {
-      // OPEN-5: HTTP path was missing the Zod parse its IPC counterpart uses.
-      const parsed = validateIpc(taskUpdateDescriptionSchema, body, "POST /api/task/update-description");
-      json(response, 200, await runtime.updateTaskDescription(parsed.workspaceId, parsed.description));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/task-recovery/resolve") {
@@ -1635,11 +1526,6 @@ async function handleApiRequest(
 
     if (request.method === "POST" && url.pathname === "/api/session/activate") {
       json(response, 200, await runtime.activateSession(body.sessionId));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/workspace/set-ui-state") {
-      json(response, 200, await runtime.setWorkspaceUIState(body.workspaceId, body.uiState));
       return;
     }
 
@@ -1670,69 +1556,6 @@ async function handleApiRequest(
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/git/fetch") {
-      json(response, 200, await runtime.gitFetch(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/pull") {
-      json(response, 200, await runtime.gitPull(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/push") {
-      json(response, 200, await runtime.gitPush(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/checkout-branch") {
-      json(response, 200, await runtime.gitCheckoutBranch(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/create-branch") {
-      json(response, 200, await runtime.gitCreateBranch(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/merge-into-current") {
-      json(response, 200, await runtime.gitMergeIntoCurrent(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/rebase-onto") {
-      json(response, 200, await runtime.gitRebaseOnto(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/cherry-pick") {
-      json(
-        response,
-        200,
-        await runtime.gitCherryPick(validateIpc(gitCherryPickSchema, body, "POST /api/git/cherry-pick")),
-      );
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/squash-commits") {
-      json(
-        response,
-        200,
-        await runtime.gitSquashCommits(validateIpc(gitSquashSchema, body, "POST /api/git/squash-commits")),
-      );
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/continue") {
-      json(response, 200, await runtime.gitContinueOperation(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/abort") {
-      json(response, 200, await runtime.gitAbortOperation(body));
-      return;
-    }
-
     // /api/git/skip, /list-conflicts, /conflict-detail, /resolve-conflict and
     // /unresolve-conflict are handled in the outer dispatch (slotAwareRoute) so
     // they resolve the caller's bound windowId and refuse a cross-profile
@@ -1742,154 +1565,6 @@ async function handleApiRequest(
     // conflict resolution on a workspace in profile A. Removing the inline
     // fallback also fails safe — an accidental drop of the slot-aware entry
     // 404s rather than silently re-opening the cross-profile hole.
-
-    if (request.method === "POST" && url.pathname === "/api/git/diff-preview") {
-      json(response, 200, await runtime.gitDiffPreview(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/merge-into-base") {
-      json(response, 200, await runtime.gitMergeCurrentIntoBase(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/remove-worktree") {
-      json(response, 200, await runtime.gitRemoveWorktree(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/commit-all") {
-      json(response, 200, await runtime.gitCommitAll(validateIpc(gitCommitSchema, body, "POST /api/git/commit-all")));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/stash") {
-      json(response, 200, await runtime.gitStash(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/stash-pop") {
-      json(response, 200, await runtime.gitStashPop(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/stash-list") {
-      json(response, 200, await runtime.gitListStashes(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/git/stash-files") {
-      json(response, 200, await runtime.gitStashFiles(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/git/stash-file-diff") {
-      json(response, 200, await runtime.gitStashFileDiff(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/git/stash-apply") {
-      json(response, 200, await runtime.gitStashApply(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/git/stash-drop") {
-      json(response, 200, await runtime.gitStashDrop(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/git/stash-branch") {
-      json(response, 200, await runtime.gitStashBranch(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/git/stash-export") {
-      json(response, 200, await runtime.gitStashExport(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/git/stash-import") {
-      json(response, 200, await runtime.gitStashImport(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/commit-diff") {
-      json(response, 200, await runtime.gitCommitDiff(body));
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/api/git/commit-info") {
-      json(response, 200, await runtime.gitCommitInfo(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/log-page") {
-      json(response, 200, await runtime.gitLogPage(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/list-tags") {
-      json(response, 200, await runtime.gitListTags(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/create-tag") {
-      json(response, 200, await runtime.gitCreateTag(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/delete-tag") {
-      json(response, 200, await runtime.gitDeleteTag(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/push-tag") {
-      json(response, 200, await runtime.gitPushTag(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/push-all-tags") {
-      json(response, 200, await runtime.gitPushAllTags(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/delete-remote-tag") {
-      json(response, 200, await runtime.gitDeleteRemoteTag(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/force-push-with-lease") {
-      json(response, 200, await runtime.gitForcePushWithLease(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/list-branches") {
-      const v = validateIpc(gitBranchListSchema, body, "POST /api/git/list-branches");
-      json(response, 200, await runtime.gitListBranches(v));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/delete-branch") {
-      const v = validateIpc(gitBranchDeleteSchema, body, "POST /api/git/delete-branch");
-      json(response, 200, await runtime.gitDeleteBranch(v));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/delete-remote-branch") {
-      const v = validateIpc(gitRemoteBranchDeleteSchema, body, "POST /api/git/delete-remote-branch");
-      json(response, 200, await runtime.gitDeleteRemoteBranch(v));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/rename-branch") {
-      const v = validateIpc(gitBranchRenameSchema, body, "POST /api/git/rename-branch");
-      json(response, 200, await runtime.gitRenameBranch(v));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/checkout-remote-branch") {
-      const v = validateIpc(gitCheckoutRemoteSchema, body, "POST /api/git/checkout-remote-branch");
-      json(response, 200, await runtime.gitCheckoutRemoteBranch(v));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/git/log-graph") {
-      const v = validateIpc(gitLogGraphSchema, body, "POST /api/git/log-graph");
-      json(response, 200, await runtime.gitLogGraph(v));
-      return;
-    }
 
     // Docker endpoints are validated through the same zod schemas as the
     // Electron IPC channel so a remote/mobile client can't bypass the
@@ -2584,8 +2259,10 @@ export async function startRemoteServer({
         "/api/task/pause": (body, windowId) => Promise.resolve(runtime.pauseTask(body.workspaceId, windowId)),
         "/api/task/resume": (body, windowId) => Promise.resolve(runtime.resumeTask(body.workspaceId, windowId)),
         "/api/task/reset": (body, windowId) => runtime.resetTask(body.workspaceId, windowId),
-        "/api/task/update-description": (body, windowId) =>
-          runtime.updateTaskDescription(body.workspaceId, body.description, windowId),
+        "/api/task/update-description": (body, windowId) => {
+          const parsed = validateIpc(taskUpdateDescriptionSchema, body, "POST /api/task/update-description");
+          return runtime.updateTaskDescription(parsed.workspaceId, parsed.description, windowId);
+        },
         // Activation also moves slot.activeWorkspaceId for the bound slot
         // (legacy activateWorkspace mirrors to windowSlots[0]) — must be
         // refused when the target lives in another profile.

@@ -558,6 +558,105 @@ describe("workspace delete endpoint validation", () => {
       await server.close();
     }
   });
+
+  // review-code-quality-2026-07.md finding 1.7: handleApiRequest's inline copy
+  // of this route validated with taskUpdateDescriptionSchema (a comment there
+  // called out "HTTP path was missing the Zod parse its IPC counterpart
+  // uses"), but that inline copy was PROVABLY DEAD — slotAwareRoute always
+  // intercepts POST /api/task/update-description first. Deleting the dead
+  // inline copy (as part of removing ~60 shadowed handlers) would have
+  // silently dropped this validation entirely unless the slot-aware entry
+  // gained its own validateIpc call, which it now has.
+  test("POST /api/task/update-description with an over-length description returns 400 (validated on the live slot-aware path)", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-desc-invalid";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      updateTaskDescription: (...args: unknown[]) => Promise<unknown>;
+    };
+    runtime.updateTaskDescription = async () => ({});
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/task/update-description`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify({ workspaceId: "ws-1", description: "x".repeat(200_000) }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toMatch(/IPC validation failed/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("POST /api/task/update-description with a valid body returns 200 and forwards the parsed fields", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-desc-ok";
+    const calls: unknown[] = [];
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      updateTaskDescription: (...args: unknown[]) => Promise<unknown>;
+    };
+    runtime.updateTaskDescription = async (...args: unknown[]) => {
+      calls.push(args);
+      return {};
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/task/update-description`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify({ workspaceId: "ws-1", description: "new brief" }),
+      });
+      expect(res.status).toBe(200);
+      expect(calls[0]).toEqual(["ws-1", "new brief", expect.any(String)]);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+// review-code-quality-2026-07.md finding 1.7: ~60 POST routes had a SHADOWED
+// inline copy in handleApiRequest that could never actually run (slotAwareRoute
+// always intercepts first, unconditionally) but which — per a comment already
+// in this file documenting the /api/git/skip family's prior removal — made an
+// accidental future drop of the slot-aware entry silently "fail open" onto the
+// inline handler, which passes no windowId and so re-opens the cross-profile
+// hole slot-aware routing exists to close. The shadowed copies were deleted as
+// a mechanical pass: for every key in slotAwareRoute, remove the matching
+// `url.pathname === "<key>"` check from handleApiRequest. This is a permanent
+// static regression guard against that duplication creeping back in — it reads
+// the actual source text (not a mocked HTTP request) so it fails the moment
+// ANY of these route names reappears as an inline POST dispatch, regardless of
+// how the surrounding code around it is refactored later.
+describe("remote-server.ts source shape — no route may have BOTH a slotAwareRoute entry and a shadowed inline handleApiRequest copy", () => {
+  test("none of the slot-aware route keys appear as an inline POST dispatch inside handleApiRequest", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const srcPath = path.resolve(process.cwd(), "electron/backend/remote-server.ts");
+    const src = fs.readFileSync(srcPath, "utf8");
+
+    const fnStart = src.indexOf("async function handleApiRequest(");
+    const fnEnd = src.indexOf("export async function startRemoteServer(");
+    expect(fnStart).toBeGreaterThan(0);
+    expect(fnEnd).toBeGreaterThan(fnStart);
+    const handleApiRequestBody = src.slice(fnStart, fnEnd);
+
+    const slotMapStart = src.indexOf("const slotAwareRoute:");
+    const slotMapEnd = src.indexOf("const slotAwareHandler =", slotMapStart);
+    expect(slotMapStart).toBeGreaterThan(0);
+    const slotAwareRouteBody = src.slice(slotMapStart, slotMapEnd);
+    const slotKeys = [...slotAwareRouteBody.matchAll(/"(\/api\/[^"]+)":/g)].map((m) => m[1]);
+    expect(slotKeys.length).toBeGreaterThan(50); // sanity: the map still has its full route set
+
+    const stillShadowed = slotKeys.filter((key) => handleApiRequestBody.includes(`url.pathname === "${key}"`));
+    expect(stillShadowed).toEqual([]);
+  });
 });
 
 describe("malformed request body handling — must respond, never hang", () => {
