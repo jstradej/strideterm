@@ -588,6 +588,7 @@ import BranchSelectPopover from "./BranchSelectPopover.vue";
 import GitCommitContextMenu from "./GitCommitContextMenu.vue";
 import GitDiffStat from "./GitDiffStat.vue";
 import { isRemoteRef } from "./base-ref.js";
+import { buildBranchForest, type BranchForestNode } from "./branch-forest.js";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
@@ -795,83 +796,48 @@ const branchTree = computed<BranchTreeNode[]>(() => {
     });
   }
 
-  // Build a `/`-split forest from a list of names.
-  function buildForest(
-    entries: Array<{ shortName: string; ref: string; meta: BranchTreeNode["meta"]; kind: BranchTreeNode["kind"] }>,
-    keyPrefix: string,
-  ): BranchTreeNode[] {
-    interface Cursor extends BranchTreeNode {
-      childMap: Map<string, Cursor>;
-    }
-    const root: Cursor = {
-      key: keyPrefix,
-      kind: "folder",
-      label: "",
-      ref: "",
-      children: [],
-      childMap: new Map(),
-    } as Cursor;
-    for (const entry of entries) {
-      if (q && !entry.shortName.toLowerCase().includes(q)) continue;
-      const parts = entry.shortName.split("/").filter(Boolean);
-      let cursor: Cursor = root;
-      for (let i = 0; i < parts.length - 1; i++) {
-        const seg = parts[i];
-        let next = cursor.childMap!.get(seg);
-        if (!next) {
-          const folderPath = parts.slice(0, i + 1).join("/");
-          next = {
-            key: `${keyPrefix}:dir:${folderPath}`,
-            kind: "folder",
-            label: seg,
-            ref: "",
-            children: [],
-            childMap: new Map(),
-          } as Cursor;
-          cursor.childMap!.set(seg, next);
-          cursor.children!.push(next);
-        }
-        cursor = next;
+  // Build a `/`-split forest from a list of names, via the shared pure
+  // helper in ./branch-forest.ts (also used by BranchSelectPopover.vue).
+  type ForestEntry = { shortName: string; ref: string; meta: BranchTreeNode["meta"]; kind: BranchTreeNode["kind"] };
+
+  function toBranchTreeNodes(nodes: BranchForestNode<ForestEntry>[]): BranchTreeNode[] {
+    return nodes.map((n) => {
+      if (n.kind === "folder") {
+        return { key: n.key, kind: "folder", label: n.label, ref: "", children: toBranchTreeNodes(n.children) };
       }
-      const leaf: BranchTreeNode = {
-        key: `${keyPrefix}:${entry.ref}`,
-        kind: entry.kind,
-        label: parts[parts.length - 1] || entry.shortName,
-        ref: entry.ref,
-        isCurrent: entry.kind === "branch-local" && entry.ref === head,
-        meta: entry.meta,
+      return {
+        key: n.key,
+        kind: n.payload.kind,
+        label: n.label,
+        ref: n.ref,
+        isCurrent: n.payload.kind === "branch-local" && n.ref === head,
+        meta: n.payload.meta,
         children: [],
       };
-      cursor.children!.push(leaf);
-    }
-    // Strip cursor-only helper data before returning
-    function strip(node: BranchTreeNode): BranchTreeNode {
-      const { childMap: _drop, ...rest } = node as Cursor;
-      void _drop;
-      return { ...rest, children: (rest.children || []).map(strip) };
-    }
-    sortForest(root);
-    return root.children!.map(strip);
+    });
+  }
 
-    function sortForest(node: Cursor) {
-      const folders = node.children!.filter((c) => c.kind === "folder") as Cursor[];
-      const leaves = node.children!.filter((c) => c.kind !== "folder");
-      folders.sort((a, b) => a.label.localeCompare(b.label));
-      leaves.sort((a, b) => {
+  function buildForest(entries: ForestEntry[], keyPrefix: string): BranchTreeNode[] {
+    const filtered = q ? entries.filter((e) => e.shortName.toLowerCase().includes(q)) : entries;
+    const forest = buildBranchForest(
+      filtered.map((entry) => ({ path: entry.shortName, ref: entry.ref, payload: entry })),
+      keyPrefix,
+      (a, b) => {
         if (sortMode === "newest" || sortMode === "oldest") {
-          const ta = a.meta?.lastCommitTimestamp || 0;
-          const tb = b.meta?.lastCommitTimestamp || 0;
+          const ta = a.payload.meta?.lastCommitTimestamp || 0;
+          const tb = b.payload.meta?.lastCommitTimestamp || 0;
           if (ta !== tb) return sortMode === "newest" ? tb - ta : ta - tb;
           return a.label.localeCompare(b.label);
         }
         // "name" mode — current branch always floats to the top.
-        if (a.isCurrent && !b.isCurrent) return -1;
-        if (!a.isCurrent && b.isCurrent) return 1;
+        const aCurrent = a.payload.kind === "branch-local" && a.ref === head;
+        const bCurrent = b.payload.kind === "branch-local" && b.ref === head;
+        if (aCurrent && !bCurrent) return -1;
+        if (!aCurrent && bCurrent) return 1;
         return a.label.localeCompare(b.label);
-      });
-      node.children = [...folders, ...leaves];
-      for (const f of folders) sortForest(f);
-    }
+      },
+    );
+    return toBranchTreeNodes(forest);
   }
 
   // ---- Local ----

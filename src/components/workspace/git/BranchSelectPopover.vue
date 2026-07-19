@@ -68,6 +68,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { buildBranchForest, type BranchForestNode } from "./branch-forest.js";
 
 interface Props {
   modelValue?: string;
@@ -195,51 +196,28 @@ const sections = computed<SectionNode[]>(() => {
     }
   }
 
-  function buildForest(entries: Array<{ fullRef: string; strippedPath: string }>, prefix: string): BuildNode[] {
-    const root: BuildNode[] = [];
-    const dirMap = new Map<string, BuildNode>();
-    for (const { fullRef, strippedPath } of entries) {
-      const parts = strippedPath.split("/").filter(Boolean);
-      if (!parts.length) continue;
-      let parent = root;
-      let path = "";
-      for (let i = 0; i < parts.length - 1; i++) {
-        const seg = parts[i];
-        path = path ? `${path}/${seg}` : seg;
-        const dirKey = `${prefix}:dir:${path}`;
-        let folder = dirMap.get(dirKey);
-        if (!folder) {
-          folder = { key: dirKey, label: seg, segment: seg, children: [] };
-          dirMap.set(dirKey, folder);
-          parent.push(folder);
-        }
-        parent = folder.children;
-      }
-      const leafLabel = parts[parts.length - 1];
-      parent.push({
-        key: `${prefix}:leaf:${fullRef}`,
-        label: leafLabel,
-        segment: leafLabel,
-        ref: fullRef,
-        children: [],
-      });
-    }
-    sortNodes(root);
-    return root;
+  // Delegates to the shared pure forest-builder (see ./branch-forest.ts,
+  // also used by GitBranchesTab.vue's branch tree) and adapts its generic
+  // node shape back to this component's BuildNode.
+  function toBuildNodes(nodes: BranchForestNode<null>[]): BuildNode[] {
+    return nodes.map((n) =>
+      n.kind === "folder"
+        ? { key: n.key, label: n.label, segment: n.label, children: toBuildNodes(n.children) }
+        : { key: n.key, label: n.label, segment: n.label, ref: n.ref, children: [] },
+    );
   }
 
-  function sortNodes(nodes: BuildNode[]): void {
-    const folders = nodes.filter((n) => n.children.length > 0);
-    const leaves = nodes.filter((n) => n.children.length === 0);
-    folders.sort((a, b) => a.label.localeCompare(b.label));
-    leaves.sort((a, b) => {
-      if (a.ref === dflt && b.ref !== dflt) return -1;
-      if (b.ref === dflt && a.ref !== dflt) return 1;
-      return a.label.localeCompare(b.label);
-    });
-    nodes.length = 0;
-    nodes.push(...folders, ...leaves);
-    for (const f of folders) sortNodes(f.children);
+  function buildForest(entries: Array<{ fullRef: string; strippedPath: string }>, prefix: string): BuildNode[] {
+    const forest = buildBranchForest(
+      entries.map((e) => ({ path: e.strippedPath, ref: e.fullRef, payload: null })),
+      prefix,
+      (a, b) => {
+        if (a.ref === dflt && b.ref !== dflt) return -1;
+        if (b.ref === dflt && a.ref !== dflt) return 1;
+        return a.label.localeCompare(b.label);
+      },
+    );
+    return toBuildNodes(forest);
   }
 
   const out: SectionNode[] = [];
