@@ -1,10 +1,17 @@
 import { defineStore } from "pinia";
-import { createTransport } from "../transport.js";
+import type { Transport } from "../transport.js";
 import type { SshHost, SshKey, SshCert, SshConnectionState } from "../../electron/shared/types/ssh.js";
 
-const transport = createTransport();
+// Injected via init(api) from the SAME transport main.ts/App.vue already
+// created and provided — this store must not mint its own createTransport(),
+// which used to open a second WebSocket (with its own reconnect loop and
+// resume probe) on every remote client, never subscribed to terminals, and
+// so doubled the server's pushed traffic per client.
+let _api: Transport | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const t = transport as any;
+function t(): any {
+  return _api as any;
+}
 
 interface SshAuthPrompt {
   sessionId: string;
@@ -34,8 +41,13 @@ export const useSshStore = defineStore("ssh", {
   }),
 
   actions: {
+    init(api: Transport): void {
+      _api = api;
+    },
+
     async load(): Promise<void> {
-      const [hosts, keys, certs] = await Promise.all([t.sshHostsList(), t.sshKeysList(), t.sshCertsList()]);
+      if (!_api) return;
+      const [hosts, keys, certs] = await Promise.all([t().sshHostsList(), t().sshKeysList(), t().sshCertsList()]);
       this.hosts = (hosts as SshHost[]) || [];
       this.keys = (keys as SshKey[]) || [];
       this.certificates = (certs as SshCert[]) || [];
@@ -43,20 +55,20 @@ export const useSshStore = defineStore("ssh", {
 
     async saveHost(host: SshHost): Promise<void> {
       if (host.id) {
-        await t.sshHostsUpdate({ id: host.id, patch: host });
+        await t().sshHostsUpdate({ id: host.id, patch: host });
       } else {
-        await t.sshHostsCreate(host);
+        await t().sshHostsCreate(host);
       }
       await this.load();
     },
 
     async deleteHost(id: string): Promise<void> {
-      await t.sshHostsDelete({ id });
+      await t().sshHostsDelete({ id });
       await this.load();
     },
 
     async importKey(file: string, label: string, passphrase: string): Promise<void> {
-      await t.sshKeysImport({ label, privateKey: file, passphrase });
+      await t().sshKeysImport({ label, privateKey: file, passphrase });
       await this.load();
     },
 
@@ -69,22 +81,22 @@ export const useSshStore = defineStore("ssh", {
       comment: string;
       passphrase: string;
     }): Promise<void> {
-      await t.sshKeysGenerate({ kind, comment, passphrase });
+      await t().sshKeysGenerate({ kind, comment, passphrase });
       await this.load();
     },
 
     async deleteKey(id: string): Promise<void> {
-      await t.sshKeysDelete({ id });
+      await t().sshKeysDelete({ id });
       await this.load();
     },
 
     async importCertificate(keyId: string, certificate: string): Promise<void> {
-      await t.sshCertsImport({ keyId, certificate });
+      await t().sshCertsImport({ keyId, certificate });
       await this.load();
     },
 
     async deleteCertificate(id: string): Promise<void> {
-      await t.sshCertsDelete({ id });
+      await t().sshCertsDelete({ id });
       await this.load();
     },
 
@@ -96,7 +108,7 @@ export const useSshStore = defineStore("ssh", {
       // silently rejects, leaving the prompt dialog stuck open.
       const plainAnswers = JSON.parse(JSON.stringify(Array.from(answers || []))) as unknown[];
       try {
-        await t.sshAuthAnswer({ sessionId, answers: plainAnswers, promptId });
+        await t().sshAuthAnswer({ sessionId, answers: plainAnswers, promptId });
       } finally {
         this.authPrompt = null;
       }
@@ -105,32 +117,33 @@ export const useSshStore = defineStore("ssh", {
     async cancelAuthPrompt(sessionId: string): Promise<void> {
       const promptId = this.authPrompt?.promptId;
       try {
-        await t.sshAuthCancel({ sessionId, promptId });
+        await t().sshAuthCancel({ sessionId, promptId });
       } finally {
         this.authPrompt = null;
       }
     },
 
     async acceptHostKey(sessionId: string, mode = "permanent"): Promise<void> {
-      await t.sshHostKeyAccept({ sessionId, mode, promptId: this.hostKeyWarning?.promptId });
+      await t().sshHostKeyAccept({ sessionId, mode, promptId: this.hostKeyWarning?.promptId });
       this.hostKeyWarning = null;
     },
 
     async rejectHostKey(sessionId: string): Promise<void> {
       const promptId = this.hostKeyWarning?.promptId;
       try {
-        await t.sshHostKeyReject({ sessionId, promptId });
+        await t().sshHostKeyReject({ sessionId, promptId });
       } finally {
         this.hostKeyWarning = null;
       }
     },
 
     bindEvents(): void {
-      t.onSshAuthPrompt((payload: unknown) => {
+      if (!_api) return;
+      t().onSshAuthPrompt((payload: unknown) => {
         this.authPrompt = payload as SshAuthPrompt;
       });
 
-      t.onSshAuthPromptCancel((payload: { sessionId: string; promptId: string }) => {
+      t().onSshAuthPromptCancel((payload: { sessionId: string; promptId: string }) => {
         // The backend tore down (or another client answered/cancelled) the prompt
         // for THIS generation → close the matching dialog. Scoped by promptId so a
         // stale teardown can't dismiss a newer connection's prompt on this client.
@@ -138,15 +151,15 @@ export const useSshStore = defineStore("ssh", {
         if (this.hostKeyWarning?.promptId === payload.promptId) this.hostKeyWarning = null;
       });
 
-      t.onSshHostKeyChange((payload: unknown) => {
+      t().onSshHostKeyChange((payload: unknown) => {
         this.hostKeyWarning = payload as SshHostKeyWarning;
       });
 
-      t.onSshState(() => {
+      t().onSshState(() => {
         void this.load();
       });
 
-      t.onSshConnectionState((payload: SshConnectionState) => {
+      t().onSshConnectionState((payload: SshConnectionState) => {
         const { sessionId, status } = payload;
         const newMap = new Map(this.pendingConnections);
         newMap.set(sessionId, status);

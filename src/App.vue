@@ -348,6 +348,7 @@ const { latestToast } = useNotificationCapture();
 useReviewNotifications(latestToast);
 usePipelineNotifications();
 
+sshStore.init(api as Transport);
 sshStore.bindEvents();
 sshStore.load();
 

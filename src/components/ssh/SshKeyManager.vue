@@ -147,31 +147,18 @@ function formatDate(isoString: string | undefined): string {
   return new Date(isoString).toLocaleString();
 }
 
-async function pasteKey(): Promise<void> {
-  const pem = window.prompt("Paste the full private key (PEM or OpenSSH format). The key never leaves your machine.");
-  if (!pem || !pem.trim()) return;
-  const label = window.prompt("Label this key (e.g. 'laptop-ed25519'):") || "Imported key";
-  const passphrase = window.prompt("Passphrase (leave empty for unencrypted keys):") || "";
-  try {
-    await sshStore.importKey(pem.trim(), label.trim(), passphrase);
-  } catch (err) {
-    window.alert(`Import failed: ${(err as Error).message}`);
-  }
+function pasteKey(): void {
+  // window.prompt() throws unconditionally in an Electron renderer ("prompt()
+  // is and will not be supported") — use the in-app multi-field dialog instead.
+  store.openSshKeyImportDialog();
 }
 
-async function pasteCert(): Promise<void> {
+function pasteCert(): void {
   if (sshStore.keys.length === 0) {
     window.alert("Import a private key before adding a certificate.");
     return;
   }
-  const cert = window.prompt("Paste the OpenSSH certificate (ssh-ed25519-cert-v01@... AAAA...):");
-  if (!cert || !cert.trim()) return;
-  const keyId = sshStore.keys[0].id;
-  try {
-    await sshStore.importCertificate(keyId, cert.trim());
-  } catch (err) {
-    window.alert(`Import failed: ${(err as Error).message}`);
-  }
+  store.openSshCertImportDialog(sshStore.keys[0].id);
 }
 
 async function deleteKey(key: SshKey): Promise<void> {

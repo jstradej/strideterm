@@ -45,6 +45,8 @@ const DIALOGS = {
   SshHostEditor: defineAsyncComponent(() => import("../ssh/SshHostEditor.vue")),
   SshKeyManager: defineAsyncComponent(() => import("../ssh/SshKeyManager.vue")),
   SshKeyGenerateDialog: defineAsyncComponent(() => import("../ssh/SshKeyGenerateDialog.vue")),
+  SshKeyImportDialog: defineAsyncComponent(() => import("../ssh/SshKeyImportDialog.vue")),
+  SshCertImportDialog: defineAsyncComponent(() => import("../ssh/SshCertImportDialog.vue")),
   // SshAuthPrompt and SshHostKeyWarning are rendered directly from App.vue
   // (driven by backend events, not openDialog), so they aren't in this map.
 };

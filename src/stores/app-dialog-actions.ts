@@ -1000,6 +1000,14 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openDialog("SshKeyGenerateDialog", { onCancel: closeDialog });
   }
 
+  function openSshKeyImportDialog(): void {
+    openDialog("SshKeyImportDialog", { onCancel: closeDialog });
+  }
+
+  function openSshCertImportDialog(keyId: string): void {
+    openDialog("SshCertImportDialog", { keyId, onCancel: closeDialog });
+  }
+
   function openNewWindowModal(): void {
     const appState = ctx.payload.value?.appState || ({} as AnyApi);
     // Window context for "Duplicate current window" — desktop only; remote
@@ -1057,5 +1065,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openSshHostEditor,
     openSshKeyManager,
     openSshKeyGenerateDialog,
+    openSshKeyImportDialog,
+    openSshCertImportDialog,
   };
 }
