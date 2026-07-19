@@ -252,6 +252,7 @@
 import { ref, computed } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 const props = defineProps<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -272,6 +273,7 @@ defineEmits<{ (e: "new-comment"): void }>();
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const notifications = useNotificationStore();
 
 const busyAction = ref<string>("");
 
@@ -351,10 +353,10 @@ function formatDate(iso: unknown): string {
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-async function handleVote(prKey: string, vote: number, _label: string) {
+async function handleVote(prKey: string, vote: number, label: string) {
   busyAction.value = `vote-${vote}`;
   try {
-    await appStore.azureVote(prKey, String(vote));
+    await notifications.runWithToast(`${label} failed`, () => appStore.azureVote(prKey, String(vote)));
   } finally {
     busyAction.value = "";
   }
@@ -363,7 +365,7 @@ async function handleVote(prKey: string, vote: number, _label: string) {
 async function handleFetch(workspaceId: string) {
   busyAction.value = "fetch";
   try {
-    await appStore.azureFetchReviewWorkspace(workspaceId);
+    await notifications.runWithToast("Fetch failed", () => appStore.azureFetchReviewWorkspace(workspaceId));
   } finally {
     busyAction.value = "";
   }
@@ -372,7 +374,7 @@ async function handleFetch(workspaceId: string) {
 async function handleRebase(workspaceId: string) {
   busyAction.value = "rebase";
   try {
-    await appStore.azureRebaseReviewWorkspace(workspaceId);
+    await notifications.runWithToast("Rebase failed", () => appStore.azureRebaseReviewWorkspace(workspaceId));
   } finally {
     busyAction.value = "";
   }
