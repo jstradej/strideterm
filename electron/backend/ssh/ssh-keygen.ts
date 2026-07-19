@@ -94,8 +94,10 @@ async function generateViaSshpk({
   let pair: any;
   if (kind === "rsa") {
     pair = generateKeyPairSync("rsa", { modulusLength: 4096 });
-  } else if (kind === "ec") {
+  } else if (kind === "ecdsa") {
     pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  } else if (kind === "dsa") {
+    throw new Error("dsa requires the ssh-keygen binary — no pure-JS fallback is implemented");
   } else {
     pair = generateKeyPairSync("ed25519");
   }
