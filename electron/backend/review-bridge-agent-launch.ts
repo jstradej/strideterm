@@ -244,6 +244,81 @@ function resolveWindowsCommandPath(
   return "";
 }
 
+interface FinishLaunchInput {
+  platform?: string;
+  commandName: string;
+  preferredExtensions?: string[];
+  args: string[];
+  workspace?: { cwd?: string };
+  processInfo?: ProcessInfo;
+  // env to attach when running on win32 (both the resolved-binary and the
+  // bare-command-fallback returns always carry it, matching the pre-refactor
+  // per-provider tails).
+  win32Env?: Record<string, string>;
+  // env to attach on non-win32 platforms. Omitted entirely (no `env` key)
+  // unless a provider explicitly needs one there (only OpenCode does, since
+  // it ships its MCP config via env on every platform, not just win32).
+  nonWin32Env?: Record<string, string>;
+  // Overrides the default single-binary `resolveWindowsCommandPath` lookup
+  // for providers whose win32 resolution needs more than one binary (Codex
+  // resolves both `node` and `codex` and rewrites `args` around them).
+  resolveWin32?: () => { file: string; args: string[] } | null;
+}
+
+// Shared win32 binary-resolution-with-fallback tail used by every
+// buildXxxLaunch function: try to resolve a real path for the provider's
+// command on Windows, fall back to invoking the bare command name if that
+// fails (relying on shell/PATH resolution), and leave non-Windows platforms
+// untouched.
+function finishLaunch({
+  platform,
+  commandName,
+  preferredExtensions,
+  args,
+  workspace,
+  processInfo,
+  win32Env,
+  nonWin32Env,
+  resolveWin32,
+}: FinishLaunchInput): AgentLaunch {
+  const cwd = workspace?.cwd || "";
+
+  if (platform === "win32") {
+    const resolved = resolveWin32
+      ? resolveWin32()
+      : (() => {
+          const resolvedPath = resolveWindowsCommandPath(commandName, processInfo, preferredExtensions);
+          return resolvedPath ? { file: resolvedPath, args } : null;
+        })();
+
+    if (resolved) {
+      return {
+        file: resolved.file,
+        args: resolved.args,
+        cwd,
+        env: win32Env || {},
+        skipCommandInjection: true,
+      };
+    }
+
+    return {
+      file: commandName,
+      args,
+      cwd,
+      env: win32Env || {},
+      skipCommandInjection: true,
+    };
+  }
+
+  return {
+    file: commandName,
+    args,
+    cwd,
+    ...(nonWin32Env !== undefined ? { env: nonWin32Env } : {}),
+    skipCommandInjection: true,
+  };
+}
+
 function resolveDefaultAppEntry(processInfo: ProcessInfo = {}): string {
   const argv = Array.isArray(processInfo.argv) ? processInfo.argv : [];
   const explicitTarget = argv.slice(1).find((value) => {
@@ -322,33 +397,15 @@ function buildClaudeLaunch({ workspace, panel, context, processInfo }: BuildLaun
     buildReviewPrompt(context),
   );
 
-  if (platform === "win32") {
-    const claudePath = resolveWindowsCommandPath("claude", processInfo, [".exe", ".cmd", ".bat"]);
-    if (claudePath) {
-      return {
-        file: claudePath,
-        args,
-        cwd: workspace?.cwd || "",
-        env: mcp.env || {},
-        skipCommandInjection: true,
-      };
-    }
-
-    return {
-      file: "claude",
-      args,
-      cwd: workspace?.cwd || "",
-      env: mcp.env || {},
-      skipCommandInjection: true,
-    };
-  }
-
-  return {
-    file: "claude",
+  return finishLaunch({
+    platform,
+    commandName: "claude",
+    preferredExtensions: [".exe", ".cmd", ".bat"],
     args,
-    cwd: workspace?.cwd || "",
-    skipCommandInjection: true,
-  };
+    workspace,
+    processInfo,
+    win32Env: mcp.env,
+  });
 }
 
 function buildCodexLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
@@ -368,34 +425,29 @@ function buildCodexLaunch({ workspace, panel, context, processInfo }: BuildLaunc
     buildReviewPrompt(context),
   );
 
-  if (platform === "win32") {
-    const nodePath = resolveWindowsCommandPath("node", processInfo, [".exe", ".cmd", ".bat"]);
-    const codexShim = resolveWindowsCommandPath("codex", processInfo, [".cmd", ".bat", ".ps1", ".exe"]);
-    if (nodePath && codexShim) {
+  return finishLaunch({
+    platform,
+    commandName: "codex",
+    args,
+    workspace,
+    processInfo,
+    win32Env: mcp.env,
+    // Codex needs both `node` and its own shim resolved on Windows: the
+    // launch invokes node directly against the resolved codex.js entrypoint
+    // rather than the shim itself, so this can't use the generic single-path
+    // resolution the other providers share.
+    resolveWin32: () => {
+      const nodePath = resolveWindowsCommandPath("node", processInfo, [".exe", ".cmd", ".bat"]);
+      const codexShim = resolveWindowsCommandPath("codex", processInfo, [".cmd", ".bat", ".ps1", ".exe"]);
+      if (!nodePath || !codexShim) {
+        return null;
+      }
       return {
         file: nodePath,
         args: [path.join(path.dirname(codexShim), "node_modules", "@openai", "codex", "bin", "codex.js"), ...args],
-        cwd: workspace?.cwd || "",
-        env: mcp.env || {},
-        skipCommandInjection: true,
       };
-    }
-
-    return {
-      file: "codex",
-      args,
-      cwd: workspace?.cwd || "",
-      env: mcp.env || {},
-      skipCommandInjection: true,
-    };
-  }
-
-  return {
-    file: "codex",
-    args,
-    cwd: workspace?.cwd || "",
-    skipCommandInjection: true,
-  };
+    },
+  });
 }
 
 function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
@@ -424,32 +476,15 @@ function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLau
     buildReviewPrompt(context),
   );
 
-  if (platform === "win32") {
-    const copilotPath = resolveWindowsCommandPath("copilot", processInfo, [".cmd", ".bat", ".exe", ".ps1"]);
-    if (copilotPath) {
-      return {
-        file: copilotPath,
-        args,
-        cwd: workspace?.cwd || "",
-        env: mcp.env || {},
-        skipCommandInjection: true,
-      };
-    }
-    return {
-      file: "copilot",
-      args,
-      cwd: workspace?.cwd || "",
-      env: mcp.env || {},
-      skipCommandInjection: true,
-    };
-  }
-
-  return {
-    file: "copilot",
+  return finishLaunch({
+    platform,
+    commandName: "copilot",
+    preferredExtensions: [".cmd", ".bat", ".exe", ".ps1"],
     args,
-    cwd: workspace?.cwd || "",
-    skipCommandInjection: true,
-  };
+    workspace,
+    processInfo,
+    win32Env: mcp.env,
+  });
 }
 
 function buildOpencodeLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
@@ -478,34 +513,19 @@ function buildOpencodeLaunch({ workspace, panel, context, processInfo }: BuildLa
   });
   const env = { ...(mcp.env || {}), OPENCODE_CONFIG_CONTENT: configContent };
 
-  if (platform === "win32") {
-    const opencodePath = resolveWindowsCommandPath("opencode", processInfo, [".cmd", ".bat", ".exe", ".ps1"]);
-    if (opencodePath) {
-      return {
-        file: opencodePath,
-        args,
-        cwd: workspace?.cwd || "",
-        env,
-        skipCommandInjection: true,
-      };
-    }
-
-    return {
-      file: "opencode",
-      args,
-      cwd: workspace?.cwd || "",
-      env,
-      skipCommandInjection: true,
-    };
-  }
-
-  return {
-    file: "opencode",
+  return finishLaunch({
+    platform,
+    commandName: "opencode",
+    preferredExtensions: [".cmd", ".bat", ".exe", ".ps1"],
     args,
-    cwd: workspace?.cwd || "",
-    env,
-    skipCommandInjection: true,
-  };
+    workspace,
+    processInfo,
+    win32Env: env,
+    // Unlike Claude/Codex/Copilot, OpenCode needs its env on every platform
+    // (its MCP config is delivered via OPENCODE_CONFIG_CONTENT, not a CLI
+    // flag), so it's the only provider passing a non-win32 env too.
+    nonWin32Env: env,
+  });
 }
 
 export function detectReviewAgentPanel(panel: ReviewPanel = {}): string | null {

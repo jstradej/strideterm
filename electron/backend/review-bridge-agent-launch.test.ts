@@ -432,4 +432,29 @@ describe("review bridge agent launch", () => {
     expect(launch.args.join(" ")).toContain("mcp_servers.review.command=");
     expect(launch.args.join(" ")).toContain("--review-bridge-mcp");
   });
+
+  test("falls back to bare codex command on Windows when node or codex path is not resolvable", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "codex", title: "Codex", command: "codex -s danger-full-access" },
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "win32",
+        // A non-empty PATH pointing at a directory with no binaries — unlike
+        // an empty pathEnv, this can't fall back to the real process.env.PATH,
+        // so neither `node` nor `codex` resolves.
+        pathEnv: "C:/strideterm-test-empty-path-dir",
+      },
+    });
+
+    expect(launch.file).toBe("codex");
+    expect(launch.args).toContain("-s");
+    expect(launch.args).toContain("danger-full-access");
+    expect(launch.env).toMatchObject({
+      ELECTRON_RUN_AS_NODE: "1",
+    });
+  });
 });
