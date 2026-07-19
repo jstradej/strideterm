@@ -1571,7 +1571,6 @@ export async function createRuntime({
     cancelPromptTimer,
     resetSessionSignal,
     deleteSessionSignal,
-    addProjectAlert,
     clearProjectAlerts,
     clearAlertSession,
     getSessionSignal,

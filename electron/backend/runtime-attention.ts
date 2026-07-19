@@ -543,17 +543,6 @@ export function createRuntimeAttentionManager({
     signal.waitingRaised = false;
   }
 
-  function clearAllAttention(): void {
-    projectAlerts.clear();
-    for (const [, signal] of sessionSignals) {
-      cancelPromptTimer(signal);
-    }
-    sessionSignals.clear();
-    attentionContext.visibleSessionIds = new Set();
-    attentionContext.recentlyVisibleUntil.clear();
-    attentionContext.visibleByViewer.clear();
-  }
-
   return {
     projectAlerts,
     sessionSignals,
@@ -574,6 +563,5 @@ export function createRuntimeAttentionManager({
     dropViewerVisibility,
     isSessionVisible,
     markSessionPromptInjected,
-    clearAllAttention,
   };
 }
