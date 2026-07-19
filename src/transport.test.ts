@@ -54,6 +54,10 @@ class MockWebSocket {
     this.emit("message", { data: JSON.stringify(payload) });
   }
 
+  rawMessage(data: string) {
+    this.emit("message", { data });
+  }
+
   private emit(type: string, event: MockWebSocketEvent) {
     for (const handler of this.handlers.get(type) || []) handler(event);
   }
@@ -354,6 +358,44 @@ describe("remote transport endpoint routing", () => {
     transport.onTerminalReplay((payload) => replays.push(payload));
     first.message({ type: "terminal:replay", payload: { sessionId: "ws1:a", data: "R", throughSeq: 3 } });
     expect(replays).toContainEqual({ sessionId: "ws1:a", data: "R", throughSeq: 3 });
+  });
+
+  // review-code-quality-2026-07.md finding §2.2 (src/transport.ts:417-418):
+  // handleWsMessage's JSON.parse had no try/catch, so a tunnel/proxy injecting
+  // a non-JSON frame (an HTML error body) crashed the message handler and
+  // silently dropped that frame's state/terminal update with no log.
+  it("a malformed (non-JSON) WS frame is dropped without throwing, and does not affect later valid frames", () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    const states: unknown[] = [];
+    transport.onStateUpdated((payload) => states.push(payload));
+
+    expect(() => first.rawMessage("{not valid json")).not.toThrow();
+    expect(states).toHaveLength(0);
+
+    // A subsequent, well-formed frame on the SAME socket still gets through.
+    first.message({ type: "state:updated", payload: { coreRevision: 1 } });
+    expect(states).toHaveLength(1);
+  });
+
+  // The forEach-based dispatch used to abort the rest of a listener set the
+  // moment one listener threw. A throwing listener must not silence its
+  // siblings registered for the same event.
+  it("one throwing terminal:data listener does not prevent sibling listeners from firing", () => {
+    const transport = createRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    const seenBySecond: unknown[] = [];
+    transport.onTerminalData(() => {
+      throw new Error("listener boom");
+    });
+    transport.onTerminalData((payload) => seenBySecond.push(payload));
+
+    expect(() =>
+      first.message({ type: "terminal:data", payload: { sessionId: "ws1:a", data: "hi" } }),
+    ).not.toThrow();
+    expect(seenBySecond).toContainEqual({ sessionId: "ws1:a", data: "hi" });
   });
 });
 

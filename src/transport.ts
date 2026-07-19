@@ -9,6 +9,7 @@ import type {
 import type { RemoteStateV2 } from "../electron/shared/types/state.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "../electron/shared/types/ssh.js";
+import { rlog } from "./lib/renderer-log.js";
 
 /**
  * The state shape a client actually receives: the full desktop `StatePayload`
@@ -414,21 +415,43 @@ export function createRemoteTransport(): Transport {
     }, delay);
   }
 
+  /** Invoke every listener for one event, isolating each call — a listener
+   *  that throws must not stop the remaining listeners for the same event
+   *  from running (Set#forEach would otherwise abort mid-iteration). */
+  function safeDispatch<T>(handlers: Set<Handler<T>>, payload: T, label: string): void {
+    for (const handler of handlers) {
+      try {
+        handler(payload);
+      } catch (err) {
+        rlog("warn", `transport listener threw (${label})`, { err: (err as Error)?.message || String(err) });
+      }
+    }
+  }
+
   function handleWsMessage(event: MessageEvent): void {
-    const message = JSON.parse(event.data as string) as { type: string; payload: unknown };
+    let message: { type: string; payload: unknown };
+    try {
+      message = JSON.parse(event.data as string) as { type: string; payload: unknown };
+    } catch (err) {
+      // A tunnel/proxy in front of the WS can inject a non-JSON frame (e.g. an
+      // HTML error body) — drop it instead of throwing and losing every
+      // subsequent frame's listeners on this socket.
+      rlog("warn", "WS message ignored: malformed JSON", { err: (err as Error)?.message || String(err) });
+      return;
+    }
     if (message.type === "state:updated") {
       emitConnectionState({ connected: true, message: "" });
       noteCoreRevision(message.payload);
-      listeners.stateUpdated.forEach((handler) => handler(message.payload as CoreState));
+      safeDispatch(listeners.stateUpdated, message.payload as CoreState, "stateUpdated");
     }
     if (message.type === "terminal:replay") {
-      listeners.terminalReplay.forEach((handler) => handler(message.payload as TerminalReplayPayload));
+      safeDispatch(listeners.terminalReplay, message.payload as TerminalReplayPayload, "terminalReplay");
     }
     if (message.type === "terminal:data") {
-      listeners.terminalData.forEach((handler) => handler(message.payload as TerminalDataPayload));
+      safeDispatch(listeners.terminalData, message.payload as TerminalDataPayload, "terminalData");
     }
     if (message.type === "terminal:exit") {
-      listeners.terminalExit.forEach((handler) => handler(message.payload as TerminalExitPayload));
+      safeDispatch(listeners.terminalExit, message.payload as TerminalExitPayload, "terminalExit");
     }
     if (message.type === "terminal:removed") {
       const removedId = (message.payload as { sessionId?: string })?.sessionId || "";
@@ -437,44 +460,54 @@ export function createRemoteTransport(): Transport {
         // the resync they trigger isn't suppressed by subscribeTerminals' own
         // idempotence guard (which compares against lastTerminalSubscription).
         lastTerminalSubscription = lastTerminalSubscription.filter((id) => id !== removedId);
-        listeners.terminalRemoved.forEach((handler) => handler({ sessionId: removedId }));
+        safeDispatch(listeners.terminalRemoved, { sessionId: removedId }, "terminalRemoved");
       }
     }
     if (message.type === "ssh:auth-prompt") {
-      listeners.sshAuthPrompt.forEach((handler) => handler(message.payload as SshAuthRequest));
+      safeDispatch(listeners.sshAuthPrompt, message.payload as SshAuthRequest, "sshAuthPrompt");
     }
     if (message.type === "ssh:auth-prompt-cancel") {
-      listeners.sshAuthPromptCancel.forEach((handler) => handler(message.payload as SshAuthPromptCancel));
+      safeDispatch(listeners.sshAuthPromptCancel, message.payload as SshAuthPromptCancel, "sshAuthPromptCancel");
     }
     if (message.type === "ssh:host-key-change") {
-      listeners.sshHostKeyChange.forEach((handler) => handler(message.payload as Record<string, unknown>));
+      safeDispatch(listeners.sshHostKeyChange, message.payload as Record<string, unknown>, "sshHostKeyChange");
     }
     if (message.type === "ssh:state") {
-      listeners.sshState.forEach((handler) => handler(message.payload as Record<string, unknown>));
+      safeDispatch(listeners.sshState, message.payload as Record<string, unknown>, "sshState");
     }
     if (message.type === "ssh:connection-state") {
-      listeners.sshConnectionState.forEach((handler) => handler(message.payload as SshConnectionState));
+      safeDispatch(listeners.sshConnectionState, message.payload as SshConnectionState, "sshConnectionState");
     }
     if (message.type === "docker:logs:write") {
-      listeners.dockerLogsWrite.forEach((handler) => handler(message.payload as { sessionId: string; data: string }));
+      safeDispatch(
+        listeners.dockerLogsWrite,
+        message.payload as { sessionId: string; data: string },
+        "dockerLogsWrite",
+      );
     }
     if (message.type === "docker:logs:close") {
-      listeners.dockerLogsClose.forEach((handler) =>
-        handler(message.payload as { sessionId: string; code: number | null }),
+      safeDispatch(
+        listeners.dockerLogsClose,
+        message.payload as { sessionId: string; code: number | null },
+        "dockerLogsClose",
       );
     }
     if (message.type === "terminal:input-blocked") {
       // Sent flat (no payload wrapper) — { type, sessionId, ownerLabel }.
       const blocked = message as unknown as { sessionId: string; ownerLabel: string };
-      listeners.terminalInputBlocked.forEach((handler) =>
-        handler({ sessionId: blocked.sessionId || "", ownerLabel: blocked.ownerLabel || "another window" }),
+      safeDispatch(
+        listeners.terminalInputBlocked,
+        { sessionId: blocked.sessionId || "", ownerLabel: blocked.ownerLabel || "another window" },
+        "terminalInputBlocked",
       );
     }
     if (message.type === "resource:invalidate") {
       const payload = (message.payload || {}) as { resource?: string; revision?: string };
       if (payload.resource) {
-        listeners.resourceInvalidate.forEach((handler) =>
-          handler({ resource: payload.resource!, revision: String(payload.revision || "") }),
+        safeDispatch(
+          listeners.resourceInvalidate,
+          { resource: payload.resource!, revision: String(payload.revision || "") },
+          "resourceInvalidate",
         );
       }
     }
