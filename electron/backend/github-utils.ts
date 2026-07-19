@@ -55,20 +55,6 @@ export function createPullRequestKey(
 }
 
 /**
- * Parse owner/repo from a full repository name or remote URL.
- * Returns { owner, repo } or null.
- */
-export function parseOwnerRepo(fullName: unknown): { owner: string; repo: string } | null {
-  if (!fullName) return null;
-  // "owner/repo" format
-  const slashParts = String(fullName).split("/").filter(Boolean);
-  if (slashParts.length >= 2) {
-    return { owner: slashParts[slashParts.length - 2], repo: slashParts[slashParts.length - 1].replace(/\.git$/i, "") };
-  }
-  return null;
-}
-
-/**
  * Derive apiBaseUrl from a hostUrl.
  * github.com → https://api.github.com
  * GHES       → https://HOST/api/v3

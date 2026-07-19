@@ -40,12 +40,12 @@ export function getDefaultReviewRoot() {
     ? path.join(path.resolve(process.env.STRIDETERM_DATA_DIR), "azure-pr")
     : path.join(os.homedir(), ".strideterm", "azure-pr");
 }
-export const STATUS_PRIORITY: Record<string, number> = {
+const STATUS_PRIORITY: Record<string, number> = {
   active: 2,
   pending: 1,
   fixed: 0,
 };
-export const CHECK_STATE_PRIORITY: Record<string, number> = {
+const CHECK_STATE_PRIORITY: Record<string, number> = {
   failed: 4,
   pending: 3,
   succeeded: 2,
@@ -57,7 +57,7 @@ export function normalizeReviewRoot(value: unknown): string {
   return baseNormalizeReviewRoot(value, getDefaultReviewRoot());
 }
 
-export function uniqueList(values: unknown[] = []): string[] {
+function uniqueList(values: unknown[] = []): string[] {
   const seen = new Set();
   const result = [];
   for (const value of values.map((entry) => String(entry || "").trim()).filter(Boolean)) {
@@ -79,7 +79,7 @@ export function createPullRequestKey(
   return `${connectionId}:${repositoryId}:${pullRequestId}`;
 }
 
-export function normalizeIdentityValue(value: unknown): string {
+function normalizeIdentityValue(value: unknown): string {
   return String(value || "")
     .trim()
     .toLowerCase();
@@ -209,7 +209,7 @@ export function normalizeCheckState(value: unknown): string {
   return "unknown";
 }
 
-export function checkStateLabel(value: unknown): string {
+function checkStateLabel(value: unknown): string {
   const normalized = normalizeCheckState(value);
   if (normalized === "failed") {
     return "failed";
@@ -224,27 +224,6 @@ export function checkStateLabel(value: unknown): string {
     return "skipped";
   }
   return "unknown";
-}
-
-export function summarizePolicyContext(
-  context: {
-    errorMessage?: string;
-    statusDescription?: string;
-    buildDefinitionName?: string;
-    buildNumber?: string;
-    message?: string;
-  } = {},
-): string {
-  return firstNonEmpty(
-    context.errorMessage,
-    context.statusDescription,
-    context.buildDefinitionName && context.buildNumber
-      ? `${context.buildDefinitionName} \u00B7 ${context.buildNumber}`
-      : "",
-    context.buildDefinitionName || "",
-    context.buildNumber || "",
-    context.message || "",
-  );
 }
 
 export function buildCheckSummary({

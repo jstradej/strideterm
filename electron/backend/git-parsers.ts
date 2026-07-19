@@ -68,7 +68,7 @@ export const DEFAULT_OPERATION_STATE: Readonly<{
   canAbort: false,
 });
 
-export function createGitChangeBucket(name: string): { name: string; files: NameStatusEntry[]; diffStat: DiffStat } {
+function createGitChangeBucket(name: string): { name: string; files: NameStatusEntry[]; diffStat: DiffStat } {
   return {
     name,
     files: [],
