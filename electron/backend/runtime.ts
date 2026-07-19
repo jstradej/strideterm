@@ -21,6 +21,7 @@ import {
   parseSessionId,
 } from "./default-state.js";
 import { parseRemoteViewerId } from "./viewer-id.js";
+import { filterConnectionsByOpenProfiles } from "./shared/runtime-provider-guards.js";
 import { execFileText } from "./process-utils.js";
 import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
@@ -1299,19 +1300,9 @@ export async function createRuntime({
 
   function getAzureConnections(state = getState()) {
     const all = getAzureSettings(state).connections || [];
-    // Include connections for every profile that is open in some window.
-    // Using only windowSlots[0] hid the connection a user just saved when
-    // they were in a non-primary window (e.g. saving on profile "asdf" while
-    // windowSlots[0] is "default" — `getAzureConnections` returned [] and
-    // the snapshot showed "No Azure DevOps connections yet" in every window,
-    // even though the connection persisted to disk).
-    const openProfileIds = new Set(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (state.windowSlots || []).map((s: any) => String(s?.profileId || "default")),
-    );
-    if (openProfileIds.size === 0) return all;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return all.filter((c: any) => openProfileIds.has(String(c.profileId || "default")));
+    // Include connections for every profile that is open in some window —
+    // see shared/runtime-provider-guards.ts#filterConnectionsByOpenProfiles.
+    return filterConnectionsByOpenProfiles(all, state.windowSlots);
   }
 
   function getGitHubSettings(state = getState()) {
@@ -1329,13 +1320,7 @@ export async function createRuntime({
     const all = getGitHubSettings(state).connections || [];
     // See getAzureConnections for why we union over all open windowSlot
     // profiles rather than just slot[0].
-    const openProfileIds = new Set(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (state.windowSlots || []).map((s: any) => String(s?.profileId || "default")),
-    );
-    if (openProfileIds.size === 0) return all;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return all.filter((c: any) => openProfileIds.has(String(c.profileId || "default")));
+    return filterConnectionsByOpenProfiles(all, state.windowSlots);
   }
 
   function getTelegramSettings(state = getState()) {

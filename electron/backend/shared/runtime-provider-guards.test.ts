@@ -4,6 +4,7 @@ import {
   assertPrInViewerProfile,
   mirrorActivationIntoSlot,
   assertWorktreeCleanForPush,
+  filterConnectionsByOpenProfiles,
 } from "./runtime-provider-guards.js";
 
 describe("resolveRootPath", () => {
@@ -148,5 +149,35 @@ describe("assertWorktreeCleanForPush", () => {
     await expect(assertWorktreeCleanForPush(git, { cwd: "/repo" })).rejects.toThrow(
       "Cannot push: 3 uncommitted changes in the worktree. Commit your changes first, then try again.",
     );
+  });
+});
+
+describe("filterConnectionsByOpenProfiles", () => {
+  test("returns all connections unfiltered when there are no open window slots", () => {
+    const connections = [{ id: "c1", profileId: "p1" }, { id: "c2", profileId: "p2" }];
+    expect(filterConnectionsByOpenProfiles(connections, [])).toEqual(connections);
+    expect(filterConnectionsByOpenProfiles(connections, undefined)).toEqual(connections);
+  });
+
+  test("keeps only connections owned by a profile open in some window", () => {
+    const connections = [
+      { id: "c1", profileId: "p1" },
+      { id: "c2", profileId: "p2" },
+      { id: "c3", profileId: "p3" },
+    ];
+    const windowSlots = [{ profileId: "p1" }, { profileId: "p3" }];
+    expect(filterConnectionsByOpenProfiles(connections, windowSlots).map((c) => c.id)).toEqual(["c1", "c3"]);
+  });
+
+  test("treats a missing connection profileId as 'default', matched by a slot with no profileId", () => {
+    const connections = [{ id: "c1" }, { id: "c2", profileId: "p2" }];
+    const windowSlots = [{}];
+    expect(filterConnectionsByOpenProfiles(connections, windowSlots).map((c) => c.id)).toEqual(["c1"]);
+  });
+
+  test("a profile open in more than one window still dedupes to a single inclusion criterion", () => {
+    const connections = [{ id: "c1", profileId: "p1" }];
+    const windowSlots = [{ profileId: "p1" }, { profileId: "p1" }];
+    expect(filterConnectionsByOpenProfiles(connections, windowSlots).map((c) => c.id)).toEqual(["c1"]);
   });
 });

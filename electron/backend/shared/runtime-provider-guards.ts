@@ -114,3 +114,21 @@ export async function assertWorktreeCleanForPush(
     );
   }
 }
+
+/**
+ * Filter a provider's full connection list down to connections owned by a
+ * profile that is currently open in some window. Filtering by only
+ * `windowSlots[0]` hid a connection the user just saved while working in a
+ * non-primary window (e.g. saving on profile "asdf" while windowSlots[0] is
+ * "default" left every window's snapshot reporting "no connections yet"
+ * even though the connection had persisted to disk). Returns all
+ * connections unfiltered when there are no open window slots at all.
+ */
+export function filterConnectionsByOpenProfiles<T extends { profileId?: string }>(
+  connections: T[],
+  windowSlots: Array<{ profileId?: string }> | undefined,
+): T[] {
+  const openProfileIds = new Set((windowSlots || []).map((s) => String(s?.profileId || "default")));
+  if (openProfileIds.size === 0) return connections;
+  return connections.filter((c) => openProfileIds.has(String(c.profileId || "default")));
+}
