@@ -382,14 +382,6 @@ function isAbortError(err: unknown): boolean {
 
 // Compact callback action codes (kept short to fit in Telegram's 64 B limit).
 type CallbackAction = "s" | "o" | "d" | "c" | "x" | "ar";
-const CALLBACK_ACTION_LABEL: Record<CallbackAction, string> = {
-  s: "start-task",
-  o: "open-pr-review",
-  d: "dismiss",
-  c: "confirm",
-  x: "cancel",
-  ar: "auto-review",
-};
 
 export class TelegramManager extends EventEmitter {
   private credentialStore: CredentialStore;
@@ -571,10 +563,6 @@ export class TelegramManager extends EventEmitter {
       if (profileExists(only)) return { profileId: only, source: "only-open-profile" };
     }
     return null;
-  }
-
-  private _resolveConnectionProfileId(conn: TelegramConnectionConfig, explicitProfileId?: string): string | null {
-    return this._resolveCommandProfile(conn, explicitProfileId)?.profileId ?? null;
   }
 
   private _profileName(profileId: string): string {

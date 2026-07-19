@@ -408,12 +408,9 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
   }
 
   return {
-    getAzureWorkspace,
     ensureAzureWorkspace,
     refreshAzure,
-    repairAzureReviewWorkspaceMetadata,
     scheduleAzurePolling,
-    getGitHubWorkspace,
     ensureGitHubWorkspace,
     refreshGitHub,
     scheduleGitHubPolling,

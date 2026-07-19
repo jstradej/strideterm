@@ -4731,10 +4731,10 @@ describe("TelegramManager windowSlot validation for /task", () => {
     manager.setWindowSlotsGetter(() => [{ id: "w2", profileId: "p2" }]);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((manager as any)._resolveConnectionProfileId(makeConnection(), "p1")).toBe("p1");
+    expect((manager as any)._resolveCommandProfile(makeConnection(), "p1")?.profileId).toBe("p1");
     // A profile that doesn't exist at all is still rejected.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((manager as any)._resolveConnectionProfileId(makeConnection(), "p-gone")).toBeNull();
+    expect((manager as any)._resolveCommandProfile(makeConnection(), "p-gone")).toBeNull();
   });
 
   test("proceeds when profile p1 is in windowSlot W2 (targets W2)", async () => {
