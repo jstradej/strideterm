@@ -16,6 +16,7 @@ import { TerminalReplayStore } from "./terminal-replay-buffer.js";
 import {
   createAccessToken,
   createSessionId,
+  GRID_LAYOUT_SLOTS,
   normalizeWorkspace,
   normalizeWorkspaceGrid,
   parseSessionId,
@@ -4502,6 +4503,99 @@ export async function createRuntime({
     return profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : (draft.workspaceGrid ?? null);
   }
 
+  // --- Pure grid transforms (no store/remote-registry access) ---
+  // Each returns the next grid value, or undefined to signal "invalid input,
+  // leave the grid untouched" (as opposed to null, which means "clear it").
+
+  /** Build a fresh grid for `layout`, placing `workspaceIds` positionally. */
+  function gridForLayout(layout: unknown, workspaceIds?: (string | null)[]): WorkspaceGridState | undefined {
+    const slots = GRID_LAYOUT_SLOTS[String(layout)];
+    if (!slots) return undefined;
+    const ids: (string | null)[] = [];
+    for (let i = 0; i < slots; i++) ids.push(workspaceIds?.[i] ?? null);
+    return { layout: layout as WorkspaceGridState["layout"], cellWorkspaceIds: ids };
+  }
+
+  /** Re-layout an existing grid: repack its non-null ids in order into the new slot count. */
+  function gridRelayout(existing: WorkspaceGridState, layout: unknown): WorkspaceGridState | undefined {
+    const slots = GRID_LAYOUT_SLOTS[String(layout)];
+    if (!slots) return undefined;
+    const compact = existing.cellWorkspaceIds.filter((id) => id !== null);
+    const ids: (string | null)[] = [];
+    let taken = 0;
+    for (let i = 0; i < slots; i++) ids.push(taken < compact.length ? (compact[taken++] ?? null) : null);
+    return { layout: layout as WorkspaceGridState["layout"], cellWorkspaceIds: ids };
+  }
+
+  /**
+   * Place `workspaceId` into `cellIndex`, clearing any other cell that
+   * already held it. Returns null (clear the grid) if every cell ends up
+   * empty, or undefined if `cellIndex` is out of range.
+   */
+  function gridSetCell(
+    grid: WorkspaceGridState,
+    cellIndex: number,
+    workspaceId: string | null,
+  ): WorkspaceGridState | null | undefined {
+    const ids = grid.cellWorkspaceIds;
+    if (cellIndex < 0 || cellIndex >= ids.length) return undefined;
+    const next = [...ids];
+    if (workspaceId) {
+      const existingIndex = next.indexOf(workspaceId);
+      if (existingIndex >= 0 && existingIndex !== cellIndex) next[existingIndex] = null;
+    }
+    next[cellIndex] = workspaceId;
+    const allNull = next.every((id) => id === null);
+    return allNull ? null : { ...grid, cellWorkspaceIds: next };
+  }
+
+  /** Swap two cells. Returns undefined (no-op) if either index is out of range or they're equal. */
+  function gridSwap(grid: WorkspaceGridState, a: number, b: number): WorkspaceGridState | undefined {
+    const ids = grid.cellWorkspaceIds;
+    if (a < 0 || a >= ids.length || b < 0 || b >= ids.length || a === b) return undefined;
+    const next = [...ids];
+    const tmp = next[a];
+    next[a] = next[b];
+    next[b] = tmp;
+    return { ...grid, cellWorkspaceIds: next };
+  }
+
+  /**
+   * Route a grid mutation to whichever store the caller's window owns: a
+   * remote viewer's runtime-only grid, or the desktop window slot persisted
+   * in the app store. `transform` receives the current grid (or null) and
+   * returns the next value — `undefined` means "leave untouched".
+   *
+   * The store path always broadcasts after `store.mutate` resolves (matching
+   * this handler group's pre-extraction behavior of broadcasting
+   * unconditionally once the mutate call completes); the remote path only
+   * broadcasts when `transform` actually produced a value.
+   */
+  async function applyGridMutation(
+    windowId: string | undefined,
+    transform: (existing: WorkspaceGridState | null) => WorkspaceGridState | null | undefined,
+  ): Promise<void> {
+    const remoteGridSessionId = parseRemoteViewerId(windowId);
+    if (remoteGridSessionId) {
+      const existing = readRemoteViewerGrid(remoteGridSessionId);
+      const next = transform(existing);
+      if (next !== undefined) {
+        writeRemoteViewerGrid(remoteGridSessionId, next);
+        broadcastState();
+      }
+      return;
+    }
+    await store.mutate((draft: AppState) => {
+      const slot = resolveWorkspaceGridSlot(draft, windowId);
+      const existing = readSlotGrid(draft, slot);
+      const next = transform(existing);
+      if (next === undefined) return;
+      if (slot) slot.workspaceGrid = next;
+      draft.workspaceGrid = next;
+    });
+    broadcastState();
+  }
+
   // Restore invariant: a valid saved session is the authority, and the
   // workspace follows that session. This keeps windowSlots from restoring a
   // workspace/session pair that belongs to different workspaces.
@@ -5094,88 +5188,18 @@ export async function createRuntime({
           }
         }
       }
-      const remoteGridSessionId = parseRemoteViewerId(windowId);
-      if (remoteGridSessionId) {
-        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
-          number | undefined;
-        if (slots) {
-          const ids: (string | null)[] = [];
-          for (let i = 0; i < slots; i++) ids.push(workspaceIds?.[i] ?? null);
-          writeRemoteViewerGrid(remoteGridSessionId, { layout, cellWorkspaceIds: ids });
-          broadcastState();
-        }
-        return getPayload();
-      }
-      await store.mutate((draft: AppState) => {
-        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
-          number | undefined;
-        if (!slots) return;
-        const ids: (string | null)[] = [];
-        for (let i = 0; i < slots; i++) {
-          ids.push(workspaceIds?.[i] ?? null);
-        }
-        const grid = { layout, cellWorkspaceIds: ids };
-        // Viewer-owned: only this window's slot gets the new grid. Sibling
-        // windows of the same profile keep their own layout.
-        const slot = resolveWorkspaceGridSlot(draft, windowId);
-        if (slot) slot.workspaceGrid = grid;
-        draft.workspaceGrid = grid;
-      });
-      broadcastState();
+      await applyGridMutation(windowId, () => gridForLayout(layout, workspaceIds));
       return getPayload();
     },
 
     async disableWorkspaceGrid(windowId?: string) {
-      const remoteGridSessionId = parseRemoteViewerId(windowId);
-      if (remoteGridSessionId) {
-        writeRemoteViewerGrid(remoteGridSessionId, null);
-        broadcastState();
-        return getPayload();
-      }
-      await store.mutate((draft: AppState) => {
-        const slot = resolveWorkspaceGridSlot(draft, windowId);
-        if (slot) slot.workspaceGrid = null;
-        draft.workspaceGrid = null;
-      });
-      broadcastState();
+      await applyGridMutation(windowId, () => null);
       return getPayload();
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async setGridLayout(layout: any, windowId?: string) {
-      const remoteGridSessionId = parseRemoteViewerId(windowId);
-      if (remoteGridSessionId) {
-        const grid = readRemoteViewerGrid(remoteGridSessionId);
-        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
-          number | undefined;
-        if (grid && slots) {
-          const existing = grid.cellWorkspaceIds.filter((id) => id !== null);
-          const ids: (string | null)[] = [];
-          let taken = 0;
-          for (let i = 0; i < slots; i++) ids.push(taken < existing.length ? (existing[taken++] ?? null) : null);
-          writeRemoteViewerGrid(remoteGridSessionId, { layout, cellWorkspaceIds: ids });
-          broadcastState();
-        }
-        return getPayload();
-      }
-      await store.mutate((draft: AppState) => {
-        const slot = resolveWorkspaceGridSlot(draft, windowId);
-        const grid = readSlotGrid(draft, slot);
-        if (!grid) return;
-        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
-          number | undefined;
-        if (!slots) return;
-        const existing = grid.cellWorkspaceIds.filter((id) => id !== null);
-        const ids: (string | null)[] = [];
-        let taken = 0;
-        for (let i = 0; i < slots; i++) {
-          ids.push(taken < existing.length ? (existing[taken++] ?? null) : null);
-        }
-        const updated = { layout, cellWorkspaceIds: ids };
-        if (slot) slot.workspaceGrid = updated;
-        draft.workspaceGrid = updated;
-      });
-      broadcastState();
+      await applyGridMutation(windowId, (existing) => (existing ? gridRelayout(existing, layout) : undefined));
       return getPayload();
     },
 
@@ -5196,72 +5220,14 @@ export async function createRuntime({
           );
         }
       }
-      const remoteGridSessionId = parseRemoteViewerId(windowId);
-      if (remoteGridSessionId) {
-        const grid = readRemoteViewerGrid(remoteGridSessionId);
-        if (grid) {
-          const ids = [...grid.cellWorkspaceIds];
-          if (cellIndex >= 0 && cellIndex < ids.length) {
-            if (workspaceId) {
-              const existing = ids.indexOf(workspaceId);
-              if (existing >= 0 && existing !== cellIndex) ids[existing] = null;
-            }
-            ids[cellIndex] = workspaceId;
-            const allNull = ids.every((id) => id === null);
-            writeRemoteViewerGrid(remoteGridSessionId, allNull ? null : { ...grid, cellWorkspaceIds: ids });
-            broadcastState();
-          }
-        }
-        return getPayload();
-      }
-      await store.mutate((draft: AppState) => {
-        const slot = resolveWorkspaceGridSlot(draft, windowId);
-        const grid = readSlotGrid(draft, slot);
-        if (!grid) return;
-        const ids = grid.cellWorkspaceIds;
-        if (cellIndex < 0 || cellIndex >= ids.length) return;
-        if (workspaceId) {
-          const existing = ids.indexOf(workspaceId);
-          if (existing >= 0 && existing !== cellIndex) ids[existing] = null;
-        }
-        ids[cellIndex] = workspaceId;
-        const allNull = ids.every((id) => id === null);
-        if (slot) slot.workspaceGrid = allNull ? null : grid;
-        draft.workspaceGrid = allNull ? null : grid;
-      });
-      broadcastState();
+      await applyGridMutation(windowId, (existing) =>
+        existing ? gridSetCell(existing, cellIndex, workspaceId) : undefined,
+      );
       return getPayload();
     },
 
     async swapGridCells(a: number, b: number, windowId?: string) {
-      const remoteGridSessionId = parseRemoteViewerId(windowId);
-      if (remoteGridSessionId) {
-        const grid = readRemoteViewerGrid(remoteGridSessionId);
-        if (grid) {
-          const ids = [...grid.cellWorkspaceIds];
-          if (a >= 0 && a < ids.length && b >= 0 && b < ids.length && a !== b) {
-            const tmp = ids[a];
-            ids[a] = ids[b];
-            ids[b] = tmp;
-            writeRemoteViewerGrid(remoteGridSessionId, { ...grid, cellWorkspaceIds: ids });
-            broadcastState();
-          }
-        }
-        return getPayload();
-      }
-      await store.mutate((draft: AppState) => {
-        const slot = resolveWorkspaceGridSlot(draft, windowId);
-        const grid = readSlotGrid(draft, slot);
-        if (!grid) return;
-        const ids = grid.cellWorkspaceIds;
-        if (a < 0 || a >= ids.length || b < 0 || b >= ids.length || a === b) return;
-        const tmp = ids[a];
-        ids[a] = ids[b];
-        ids[b] = tmp;
-        if (slot) slot.workspaceGrid = grid;
-        draft.workspaceGrid = grid;
-      });
-      broadcastState();
+      await applyGridMutation(windowId, (existing) => (existing ? gridSwap(existing, a, b) : undefined));
       return getPayload();
     },
 
