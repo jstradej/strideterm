@@ -1418,6 +1418,3 @@ export function parseSessionId(sessionId: string): { workspaceId: string; panelI
 
   return { workspaceId, panelId };
 }
-
-// Backward-compatible aliases while the wider codebase migrates from project naming.
-export const normalizeProject = normalizeWorkspace;
