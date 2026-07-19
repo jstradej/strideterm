@@ -217,4 +217,103 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect(clearSpy).not.toHaveBeenCalled();
     expect(notifStore.sessions[0].state).toBe("waiting");
   });
+
+  it("jump: surfaces a toast and leaves the session unresolved when activateWorkspaceInGrid rejects", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+
+    appStore.payload = makePayload({
+      appState: {
+        activeWorkspaceId: "ws-a",
+        profiles: [{ id: "p1", name: "Profile Alpha", color: "#fff", workspaceIds: ["ws-a"] }],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a", activeSessionId: "" }],
+        workspaces: [
+          {
+            id: "ws-a",
+            name: "WsA",
+            profileId: "p1",
+            panels: [{ id: "sh", title: "Shell", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp/a",
+          },
+          {
+            id: "ws-b",
+            name: "WsB",
+            profileId: "p1",
+            panels: [{ id: "sh", title: "Shell", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp/b",
+          },
+        ],
+      },
+    }) as AnyApi;
+    notifStore.panelOpen = true;
+
+    notifStore.add({
+      title: "Needs input",
+      kind: "waiting",
+      workspaceId: "ws-b",
+      viewId: "ws-b:sh",
+      meta: { profileId: "p1" },
+    });
+
+    (appStore as AnyApi).activateWorkspaceInGrid = vi.fn(() => Promise.reject(new Error("grid busy")));
+    const clearSpy = vi.spyOn(notifStore, "clearOnBackend");
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    await wrapper.find(".quick-action").trigger("click"); // Jump is the first quick action
+    await nextTick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((appStore as AnyApi).activateWorkspaceInGrid).toHaveBeenCalledWith("ws-b");
+    // A failed navigation must not be treated as "cleared" — session stays waiting.
+    expect(clearSpy).not.toHaveBeenCalled();
+    expect(notifStore.sessions[0].state).toBe("waiting");
+    expect(notifStore.sessions.find((s) => s.category === "error")).toBeTruthy();
+    const errorSession = notifStore.sessions.find((s) => s.category === "error")!;
+    expect(errorSession.events[0].title).toBe("Open workspace failed");
+    expect(errorSession.events[0].body).toBe("grid busy");
+  });
+
+  it("dismiss: surfaces a toast when clearOnBackend rejects but still resolves the session (best-effort)", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+
+    notifStore.add({
+      title: "Needs input",
+      kind: "waiting",
+      workspaceId: "ws-a",
+      viewId: "ws-a:sh",
+      meta: { profileId: "p1" },
+    });
+
+    vi.spyOn(notifStore, "clearOnBackend").mockRejectedValueOnce(new Error("backend unreachable"));
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    const dismissBtn = wrapper.findAll(".quick-action")[1];
+    expect(dismissBtn.text()).toBe("Dismiss");
+    await dismissBtn.trigger("click");
+    await nextTick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Best-effort: the session still resolves locally even though the
+    // backend call failed, but the user is told about the failure.
+    const resolvedSession = notifStore.sessions.find((s) => s.viewId === "ws-a:sh");
+    expect(resolvedSession?.state).toBe("resolved");
+    const errorSession = notifStore.sessions.find((s) => s.category === "error");
+    expect(errorSession).toBeTruthy();
+    expect(errorSession!.events[0].title).toBe("Clear notification failed");
+    expect(errorSession!.events[0].body).toBe("backend unreachable");
+  });
 });

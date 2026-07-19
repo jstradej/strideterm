@@ -782,16 +782,20 @@ async function jump(s: NotificationSession): Promise<void> {
       cancelLabel: "Cancel",
     });
     if (!confirmed) return;
-    await appStore.activateProfile(targetProfileId);
+    const switched = await notifStore.runWithToast("Switch profile failed", () => appStore.activateProfile(targetProfileId));
+    if (!switched) return;
   }
 
   const activeWsId = appStore.myActiveWorkspaceId;
   if (activeWsId !== target.workspaceId) {
     // Route through the grid-aware wrapper so jumping to a non-grid
     // workspace from a notification doesn't dissolve the user's split.
-    await appStore.activateWorkspaceInGrid(target.workspaceId);
+    const opened = await notifStore.runWithToast("Open workspace failed", () =>
+      appStore.activateWorkspaceInGrid(target.workspaceId),
+    );
+    if (!opened) return;
   }
-  if (target.viewId) appStore.activateView(target.viewId);
+  if (target.viewId) notifStore.runWithToast("Open tab failed", () => appStore.activateView(target.viewId));
   // Connection-error notifications have no PR / review workspace to land on —
   // resolveJumpTarget routed us to the provider inbox above. Ask that inbox to
   // switch to its Connections tab and highlight the failing connection so the
@@ -803,7 +807,9 @@ async function jump(s: NotificationSession): Promise<void> {
   // Clear only after any cross-profile confirmation and navigation succeeds; a
   // cancelled switch must leave the notification actionable.
   if (s.category !== "review") {
-    await notifStore.clearOnBackend(backendSessionId(s), { dismissed: false });
+    await notifStore.runWithToast("Clear notification failed", () =>
+      notifStore.clearOnBackend(backendSessionId(s), { dismissed: false }),
+    );
   }
   notifStore.setState(s.id, "resolved");
   // Pinned dock stays open — the item greys in place instead of the panel closing.
@@ -815,7 +821,9 @@ async function dismiss(s: NotificationSession): Promise<void> {
   // Feeds adaptive suppression for terminal alerts; review events don't
   // use adaptive suppression, so skip the backend call.
   if (s.category !== "review") {
-    await notifStore.clearOnBackend(backendSessionId(s), { dismissed: true });
+    await notifStore.runWithToast("Clear notification failed", () =>
+      notifStore.clearOnBackend(backendSessionId(s), { dismissed: true }),
+    );
   }
   notifStore.setState(s.id, "resolved");
 }
