@@ -73,12 +73,12 @@
               :context-name="activeTab.contextName"
             />
           </KeepAlive>
-          <DockerDetailInspect
+          <DockerResourceInspect
             v-if="activeTab.activeSubTab === 'inspect'"
             :key="`inspect-${activeTab.tabId}`"
-            :container-id="activeTab.containerId!"
-            :backend-id="activeTab.backendId"
-            :context-name="activeTab.contextName"
+            kind="container"
+            :resource-key="inspectResourceKey"
+            :fetcher="inspectFetcher"
           />
           <DockerDetailEnv
             v-if="activeTab.activeSubTab === 'env'"
@@ -186,7 +186,7 @@ import DockerNetworkPanel from "./DockerNetworkPanel.vue";
 import DockerImagesTable from "./DockerImagesTable.vue";
 import DockerVolumesTable from "./DockerVolumesTable.vue";
 import DockerNetworksTable from "./DockerNetworksTable.vue";
-import DockerDetailInspect from "./DockerDetailInspect.vue";
+import DockerResourceInspect from "./DockerResourceInspect.vue";
 import DockerDetailEnv from "./DockerDetailEnv.vue";
 import DockerDetailTop from "./DockerDetailTop.vue";
 import ConfirmDialog from "../../dialogs/ConfirmDialog.vue";
@@ -209,6 +209,16 @@ const showRemoveDialog = ref(false);
 const tabs = computed(() => detailStore.getTabs(props.workspaceId));
 const activeTabId = computed(() => detailStore.getActiveTabId(props.workspaceId));
 const activeTab = computed(() => detailStore.getActiveTab(props.workspaceId));
+
+const inspectResourceKey = computed(() => {
+  const tab = activeTab.value;
+  return `${tab?.backendId}:${tab?.contextName}:${tab?.containerId}`;
+});
+
+const inspectFetcher = (): Promise<string> => {
+  const tab = activeTab.value;
+  return appStore.dockerInspect(tab?.containerId || "", tab?.backendId || "", tab?.contextName || "");
+};
 
 const lazydockerAvailable = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

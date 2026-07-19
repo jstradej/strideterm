@@ -70,7 +70,13 @@ function formatJson(raw: string): string {
   }
 }
 
-/** Character-by-character tokenizer; see DockerDetailInspect.vue for rationale. */
+/**
+ * Lightweight JSON syntax highlighter. Walks the input character-by-character
+ * so that already-emitted span tags can't themselves match later patterns
+ * (the previous regex-pass implementation had that exact bug).
+ *
+ * Operates on JSON.stringify output but defensively escapes &<> in raw values.
+ */
 function highlightJson(text: string): string {
   if (!text) return "";
   function escapeHtml(s: string): string {
