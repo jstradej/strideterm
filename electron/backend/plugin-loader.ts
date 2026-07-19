@@ -61,7 +61,6 @@ interface RawManifest {
   name?: unknown;
   version?: unknown;
   capabilities?: unknown;
-  entryPoint?: unknown;
   description?: unknown;
   icon?: unknown;
   color?: unknown;
@@ -87,7 +86,6 @@ interface ValidatedManifest {
   name: string;
   version: string;
   capabilities?: string[];
-  entryPoint?: string;
   description?: string;
   icon?: string;
   color?: string;
@@ -106,8 +104,6 @@ type ValidationResult =
 interface PluginEntry {
   manifest: ValidatedManifest | RawManifest;
   directory: string;
-  loaded: boolean;
-  instance: { deactivate?: () => Promise<void> } | null;
   error: string | null;
   builtin?: boolean;
 }
@@ -120,7 +116,6 @@ interface PluginInfo {
   icon: string;
   color: string;
   kind: string;
-  loaded: boolean;
   builtin: boolean;
   error: string | null;
   capabilities: string[];
@@ -175,14 +170,6 @@ function validateManifest(manifest: unknown, pluginDir: string): ValidationResul
       if (!ALLOWED_CAPABILITIES.has(cap as string)) {
         errors.push(`Unknown capability: '${cap}'. Allowed: ${[...ALLOWED_CAPABILITIES].join(", ")}`);
       }
-    }
-  }
-
-  // Ensure the plugin doesn't try to escape its directory
-  if (m.entryPoint) {
-    const resolved = path.resolve(pluginDir, String(m.entryPoint));
-    if (!resolved.startsWith(path.resolve(pluginDir))) {
-      errors.push("Plugin entryPoint must not escape the plugin directory.");
     }
   }
 
@@ -303,16 +290,12 @@ async function discoverPlugins(pluginsDir: string): Promise<PluginEntry[]> {
         plugins.push({
           manifest: validation.manifest,
           directory: pluginDir,
-          loaded: false,
-          instance: null,
           error: null,
         });
       } else {
         plugins.push({
           manifest: (manifest as RawManifest) || { id: entry.name, name: entry.name },
           directory: pluginDir,
-          loaded: false,
-          instance: null,
           error: `Validation failed: ${validation.errors.join("; ")}`,
         });
       }
@@ -321,8 +304,6 @@ async function discoverPlugins(pluginsDir: string): Promise<PluginEntry[]> {
       plugins.push({
         manifest: { id: entry.name, name: entry.name },
         directory: pluginDir,
-        loaded: false,
-        instance: null,
         error: `Failed to parse plugin.json: ${err.message}`,
       });
     }
@@ -382,7 +363,6 @@ export async function createPluginManager({
           icon: m.icon || "PL",
           color: m.color || "#888",
           kind: m.kind || "terminal",
-          loaded: p.loaded,
           builtin: p.builtin || false,
           error: p.error,
           capabilities: (m.capabilities as string[]) || [],
@@ -410,19 +390,10 @@ export async function createPluginManager({
 
     /**
      * Stops all loaded plugins.
+     * No-op today: plugin runtime loading (spawning entryPoint, tracking a
+     * live instance to deactivate) isn't implemented yet, so there is
+     * nothing here to stop.
      */
-    async stopAll(): Promise<void> {
-      for (const plugin of allPlugins) {
-        if (plugin.instance?.deactivate) {
-          try {
-            await plugin.instance.deactivate();
-          } catch {
-            // Best-effort cleanup.
-          }
-        }
-        plugin.loaded = false;
-        plugin.instance = null;
-      }
-    },
+    async stopAll(): Promise<void> {},
   };
 }
