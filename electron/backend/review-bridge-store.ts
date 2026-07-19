@@ -514,6 +514,24 @@ export async function createReviewBridgeStore(rootPath: string) {
     }
   }
 
+  // Wraps a synchronous mutation in a BEGIN IMMEDIATE/COMMIT transaction.
+  // On any error, attempts ROLLBACK (best-effort — its own failure is
+  // swallowed) and always rethrows the original error so callers see the
+  // exact same failure they would have without the transaction wrapper.
+  function withTransaction<T>(fn: () => T): T {
+    try {
+      db.exec("BEGIN IMMEDIATE TRANSACTION");
+      const result = fn();
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {}
+      throw error;
+    }
+  }
+
   function buildDismissMissingCommentsSql(threadIds: number[]): string {
     return `
       UPDATE review_comments
@@ -691,6 +709,16 @@ export async function createReviewBridgeStore(rootPath: string) {
     await fs.writeFile(signalPath, Date.now().toString()).catch(() => {});
   }
 
+  // Shared post-mutation epilog: re-read the persisted context for a PR and
+  // refresh its on-disk exports (or no-op if the PR no longer has a context).
+  async function finishAndExport(prKey: string): Promise<ReturnType<typeof readContext>> {
+    const context = readContext(prKey);
+    if (context) {
+      await writeExports(context);
+    }
+    return context;
+  }
+
   function resolveCommentRow({
     prKey,
     commentKey,
@@ -786,8 +814,7 @@ export async function createReviewBridgeStore(rootPath: string) {
           ]),
         );
 
-        try {
-          db.exec("BEGIN IMMEDIATE TRANSACTION");
+        withTransaction(() => {
           statements.upsertPullRequest.run(
             summary.prKey,
             summary.provider || "azure-devops",
@@ -908,20 +935,9 @@ export async function createReviewBridgeStore(rootPath: string) {
             db.prepare(`DELETE FROM sync_queue WHERE comment_key = ?`).run(row.comment_key);
             db.prepare(`DELETE FROM review_comments WHERE comment_key = ?`).run(row.comment_key);
           }
+        });
 
-          db.exec("COMMIT");
-        } catch (error) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {}
-          throw error;
-        }
-
-        const context = readContext(summary.prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        return finishAndExport(summary.prKey);
       });
     },
     async markPullRequestSeen(prKey: string, lastSeenActivityAt?: string | null) {
@@ -931,11 +947,7 @@ export async function createReviewBridgeStore(rootPath: string) {
       }
       return enqueue(async () => {
         statements.markSeen.run(lastSeenActivityAt || new Date().toISOString(), prKey);
-        const context = readContext(prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        return finishAndExport(prKey);
       });
     },
     async createDraftComment({
@@ -989,8 +1001,7 @@ export async function createReviewBridgeStore(rootPath: string) {
           const draftId = canReuse ? (existingDraft.draft_id as string) : `${resolvedCommentKey}:draft:${randomUUID()}`;
           const draftPayload = { threadId: resolvedThreadId, source: "draft-comment" };
 
-          try {
-            db.exec("BEGIN IMMEDIATE TRANSACTION");
+          withTransaction(() => {
             statements.upsertDraft.run(
               draftId,
               resolvedCommentKey,
@@ -1022,19 +1033,9 @@ export async function createReviewBridgeStore(rootPath: string) {
               statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
               statements.updateCommentState.run("ready-to-sync", now, resolvedCommentKey);
             }
-            db.exec("COMMIT");
-          } catch (error) {
-            try {
-              db.exec("ROLLBACK");
-            } catch {}
-            throw error;
-          }
+          });
 
-          const context = readContext(prKey);
-          if (context) {
-            await writeExports(context);
-          }
-          return context;
+          return finishAndExport(prKey);
         }
 
         // New standalone draft comment (no thread)
@@ -1059,8 +1060,7 @@ export async function createReviewBridgeStore(rootPath: string) {
         const draftId = `${commentKey}:draft`;
         const draftPayload = { threadId: null, source: "draft-comment" };
 
-        try {
-          db.exec("BEGIN IMMEDIATE TRANSACTION");
+        withTransaction(() => {
           const displayIndex = (statements.nextDisplayIndex.get(prKey) as SqlRow).next_index as number;
           statements.upsertComment.run(
             commentKey,
@@ -1109,19 +1109,9 @@ export async function createReviewBridgeStore(rootPath: string) {
             statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
             statements.updateCommentState.run("ready-to-sync", now, commentKey);
           }
-          db.exec("COMMIT");
-        } catch (error) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {}
-          throw error;
-        }
+        });
 
-        const context = readContext(prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        return finishAndExport(prKey);
       });
     },
     async saveDraftResponse({
@@ -1160,8 +1150,7 @@ export async function createReviewBridgeStore(rootPath: string) {
           source: "local-bridge",
         };
 
-        try {
-          db.exec("BEGIN IMMEDIATE TRANSACTION");
+        withTransaction(() => {
           statements.upsertDraft.run(
             draftId,
             resolvedCommentKey,
@@ -1176,19 +1165,9 @@ export async function createReviewBridgeStore(rootPath: string) {
             toJson(draftPayload),
           );
           statements.updateCommentState.run("draft-ready", now, resolvedCommentKey);
-          db.exec("COMMIT");
-        } catch (error) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {}
-          throw error;
-        }
+        });
 
-        const context = readContext(prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        return finishAndExport(prKey);
       });
     },
     async queueDraftResponse({
@@ -1214,8 +1193,7 @@ export async function createReviewBridgeStore(rootPath: string) {
 
         const now = new Date().toISOString();
         const queueId = `sync:${resolvedDraft.draft_id as string}`;
-        try {
-          db.exec("BEGIN IMMEDIATE TRANSACTION");
+        withTransaction(() => {
           statements.upsertQueueItem.run(
             queueId,
             prKey,
@@ -1235,19 +1213,9 @@ export async function createReviewBridgeStore(rootPath: string) {
             resolvedDraft.draft_id,
           );
           statements.updateCommentState.run("ready-to-sync", now, resolvedDraft.comment_key);
-          db.exec("COMMIT");
-        } catch (error) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {}
-          throw error;
-        }
+        });
 
-        const context = readContext(prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        return finishAndExport(prKey);
       });
     },
     async replyWithCodeChanges({
@@ -1278,8 +1246,7 @@ export async function createReviewBridgeStore(rootPath: string) {
         const resolvedCommentKey = commentRow.comment_key as string;
         const replyBody = collapseText(body) || "Done.";
 
-        try {
-          db.exec("BEGIN IMMEDIATE TRANSACTION");
+        withTransaction(() => {
           statements.updateCommentFixStatus.run("has-code-changes", replyBody, now, resolvedCommentKey);
           // Create a draft reply so it gets published to the Azure thread
           const existingDraft =
@@ -1320,19 +1287,9 @@ export async function createReviewBridgeStore(rootPath: string) {
           } else {
             statements.updateCommentState.run("draft-ready", now, resolvedCommentKey);
           }
-          db.exec("COMMIT");
-        } catch (error) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {}
-          throw error;
-        }
+        });
 
-        const context = readContext(prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        return finishAndExport(prKey);
       });
     },
     async deleteComment({ prKey, commentKey }: { prKey: string; commentKey: string }) {
@@ -1341,23 +1298,12 @@ export async function createReviewBridgeStore(rootPath: string) {
         throw new Error("prKey and commentKey are required.");
       }
       return enqueue(async () => {
-        try {
-          db.exec("BEGIN IMMEDIATE TRANSACTION");
+        withTransaction(() => {
           statements.deleteDraftsByComment.run(commentKey);
           statements.deleteQueueByComment.run(commentKey);
           statements.deleteCommentByKey.run(commentKey);
-          db.exec("COMMIT");
-        } catch (error) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {}
-          throw error;
-        }
-        const context = readContext(prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        });
+        return finishAndExport(prKey);
       });
     },
     async deleteDraft({ prKey, draftId }: { prKey: string; draftId: string }) {
@@ -1366,22 +1312,11 @@ export async function createReviewBridgeStore(rootPath: string) {
         throw new Error("prKey and draftId are required.");
       }
       return enqueue(async () => {
-        try {
-          db.exec("BEGIN IMMEDIATE TRANSACTION");
+        withTransaction(() => {
           statements.deleteDraftById.run(draftId);
           statements.deleteQueueByDraft.run(`sync:${draftId}`);
-          db.exec("COMMIT");
-        } catch (error) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {}
-          throw error;
-        }
-        const context = readContext(prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        });
+        return finishAndExport(prKey);
       });
     },
     getAgentPrompts() {
@@ -1528,26 +1463,18 @@ export async function createReviewBridgeStore(rootPath: string) {
           );
           try {
             await publishDraft(publishInput);
-            try {
-              db.exec("BEGIN IMMEDIATE TRANSACTION");
+            withTransaction(() => {
               // Remove the draft, local comment, and queue entry so the DB
               // stays 1:1 with remote state.  The next syncPullRequest will
               // re-import the published comment as a normal thread comment.
               statements.deleteDraftById.run(draftRow.draft_id);
               statements.deleteCommentByKey.run(commentRow.comment_key);
               statements.deleteQueueByDraft.run(`sync:${draftRow.draft_id}`);
-              db.exec("COMMIT");
-            } catch (error) {
-              try {
-                db.exec("ROLLBACK");
-              } catch {}
-              throw error;
-            }
+            });
           } catch (error) {
             const failedAt = new Date().toISOString();
             const message = error instanceof Error ? error.message : String(error || "Sync failed.");
-            try {
-              db.exec("BEGIN IMMEDIATE TRANSACTION");
+            withTransaction(() => {
               statements.updateQueueState.run(
                 "failed",
                 Number(queueEntry.attempts || 0) + 1,
@@ -1558,21 +1485,11 @@ export async function createReviewBridgeStore(rootPath: string) {
               );
               statements.updateDraftState.run("failed", failedAt, draftRow.payload_json || "{}", draftRow.draft_id);
               statements.updateCommentState.run("conflict", failedAt, commentRow.comment_key);
-              db.exec("COMMIT");
-            } catch (transactionError) {
-              try {
-                db.exec("ROLLBACK");
-              } catch {}
-              throw transactionError;
-            }
+            });
           }
         }
 
-        const context = readContext(prKey);
-        if (context) {
-          await writeExports(context);
-        }
-        return context;
+        return finishAndExport(prKey);
       });
     },
     getSignalPath() {

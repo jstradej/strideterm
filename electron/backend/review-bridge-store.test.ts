@@ -281,6 +281,52 @@ describe("review bridge store", () => {
     await store.close();
   });
 
+  test("syncPullRequest rolls back the entire transaction when a mid-transaction statement fails", async () => {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-rollback-"));
+    tempPaths.push(rootPath);
+    const store = await createReviewBridgeStore(rootPath);
+
+    const prKey = "ado-main:repo-1:999";
+    // Two threads sharing the same remote thread id violate the
+    // review_threads PRIMARY KEY (pr_key, remote_thread_id), so the second
+    // insertThread call throws partway through the transaction — after the
+    // pull_requests upsert and the first thread's insert have already run.
+    await expect(
+      store.syncPullRequest({
+        provider: "azure-devops",
+        prKey,
+        connectionId: "ado-main",
+        repository: { id: "repo-1", name: "web-app" },
+        pullRequest: { id: 999, title: "Rollback check", status: "active" },
+        role: "reviewer",
+        threads: [
+          {
+            id: 70,
+            status: "active",
+            filePath: "/src/a.js",
+            lineStart: 1,
+            publishedDate: "2026-03-22T10:00:00.000Z",
+            comments: [],
+          },
+          {
+            id: 70,
+            status: "active",
+            filePath: "/src/b.js",
+            lineStart: 2,
+            publishedDate: "2026-03-22T10:05:00.000Z",
+            comments: [],
+          },
+        ],
+      }),
+    ).rejects.toThrow();
+
+    // The whole transaction — including the initial pull_requests upsert —
+    // must have been rolled back. No partial row should be left behind.
+    expect(store.getPullRequestContext(prKey)).toBeNull();
+
+    await store.close();
+  });
+
   test("getAgentPrompts returns identically-shaped rows from the seeded and non-seeded paths", async () => {
     const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-prompts-"));
     tempPaths.push(rootPath);
