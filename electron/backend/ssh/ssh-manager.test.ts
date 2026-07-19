@@ -2,7 +2,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createStore } from "../store.js";
 import { SshManager } from "./ssh-manager.js";
 import { verifyHostKey, recordHostKey } from "./ssh-known-hosts.js";
@@ -710,6 +710,63 @@ describe("SshManager prompt generation scoping", () => {
     await expect(connect).rejects.toThrow();
 
     expect(dismissed).toContainEqual({ sessionId: "w:p", promptId });
+  });
+});
+
+describe("SshManager onReady host-key persistence failure", () => {
+  test("warns with the host id and error when recordHostKey's store write rejects", async () => {
+    // Security-relevant: TOFU pinning silently failing to persist means a later
+    // MITM host-key swap looks identical to a normal first connection (no
+    // baseline was ever recorded). The write failure must at least be surfaced
+    // via the logger instead of swallowed by an empty .catch(() => {}).
+    const warn = vi.fn();
+    const fakeLogger = { info: vi.fn(), warn, debug: vi.fn(), error: vi.fn(), trace: vi.fn() };
+    const mutateError = new Error("disk full");
+    const store = {
+      getState: () => ({ ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: {} } }),
+      mutate: vi.fn(() => Promise.reject(mutateError)),
+    };
+    const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: fakeLogger });
+
+    const inlineHost = {
+      host: "h.example.com",
+      port: 22,
+      username: "u",
+      hostKeyPolicy: "warn",
+      auth: { methods: ["agent"], agent: "auto" },
+      advanced: { launchVia: "ssh2" },
+    };
+
+    const { SshSession } = await import("./ssh-session.js");
+    const origStart = SshSession.prototype.start;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    SshSession.prototype.start = async function mockStart(this: any) {
+      // Simulate a first-time TOFU accept: onReady fires with verifiedHostKey.first set,
+      // which is what triggers the manager's fire-and-forget recordHostKey() call.
+      this.verifiedHostKey = { first: true, fingerprint: "SHA256:abc", keyType: "ssh-ed25519" };
+      this.onReady?.();
+    };
+
+    try {
+      await mgr.createSession({
+        sessionId: "w:p",
+        inlineHost,
+        cols: 80,
+        rows: 24,
+        onData: () => {},
+        onExit: () => {},
+      });
+    } finally {
+      SshSession.prototype.start = origStart;
+    }
+
+    // Let the fire-and-forget .catch() microtask run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(warn).toHaveBeenCalledWith(
+      "failed to persist host key",
+      expect.objectContaining({ hostId: "inline:w:p", err: mutateError }),
+    );
   });
 });
 

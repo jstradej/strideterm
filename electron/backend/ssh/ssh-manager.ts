@@ -372,7 +372,9 @@ export class SshManager extends EventEmitter {
         // is persisted separately via acceptHostKey("permanent")).
         const activeSession = this.activeSessions.get(sessionId);
         if (activeSession?.verifiedHostKey?.first) {
-          recordHostKey(this.store as KnownHostsStore, host, activeSession.verifiedHostKey).catch(() => {});
+          recordHostKey(this.store as KnownHostsStore, host, activeSession.verifiedHostKey).catch((err) =>
+            (this.log as Logger).warn?.("failed to persist host key", { hostId: host.id, err }),
+          );
         }
         // Fire-and-forget lastConnectedAt bump.
         this.store
