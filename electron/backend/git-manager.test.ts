@@ -5,6 +5,8 @@ import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { GitManager } from "./git-manager.js";
+import { runEffect } from "./effect/runtime.js";
+import { reconfigureLogger } from "./logger.js";
 
 // Real-git availability gate for the fixture round-trip suite (Phase 1 §5).
 // Mirrors merge3.test.ts's golden-test guard: skip gracefully where git is absent.
@@ -486,6 +488,78 @@ describe("GitManager", () => {
     expect(result.rawOutput).toContain("Successfully rebased");
   });
 
+  describe("execAuthGitEffect retry policy", () => {
+    // fetch/pull/push/merge/rebase all funnel through execAuthGitEffect. Only
+    // transient/network-shaped stderr should be retried — a deterministic
+    // failure (merge/rebase conflict, bad ref, …) never succeeds on retry, and
+    // for merge/rebase specifically, retrying re-runs the command against an
+    // already-started operation instead of surfacing the real conflict.
+
+    test("retries a transient network error (regression guard for fetch/pull/push)", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi
+        .fn()
+        .mockRejectedValueOnce({
+          stderr: "fatal: unable to access 'https://example.com/repo.git/': Connection timed out",
+          stdout: "",
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "" });
+      const manager = new GitManager({ execGitImpl });
+
+      const result = await runEffect(manager.execAuthGitEffect(root, ["fetch", "--all", "--prune"]));
+
+      expect(result).toEqual({ stdout: "", stderr: "" });
+      expect(execGitImpl).toHaveBeenCalledTimes(2);
+    });
+
+    test("does not retry a merge conflict", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi.fn().mockRejectedValue({
+        stderr:
+          "Auto-merging file.txt\nCONFLICT (content): Merge conflict in file.txt\nAutomatic merge failed; fix conflicts and then commit the result.",
+        stdout: "",
+        exitCode: 1,
+      });
+      const manager = new GitManager({ execGitImpl });
+
+      await expect(
+        runEffect(manager.execAuthGitEffect(root, ["merge", "--no-edit", "main"])),
+      ).rejects.toMatchObject({ _tag: "GitCommandError" });
+      expect(execGitImpl).toHaveBeenCalledTimes(1);
+    });
+
+    test("does not retry a rebase conflict", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi.fn().mockRejectedValue({
+        stderr:
+          "CONFLICT (content): Merge conflict in file.txt\nerror: could not apply abc1234... combined\nhint: Resolve all conflicts manually",
+        stdout: "",
+        exitCode: 1,
+      });
+      const manager = new GitManager({ execGitImpl });
+
+      await expect(runEffect(manager.execAuthGitEffect(root, ["rebase", "main"]))).rejects.toMatchObject({
+        _tag: "GitCommandError",
+      });
+      expect(execGitImpl).toHaveBeenCalledTimes(1);
+    });
+
+    test("does not retry a non-transient, non-auth error on a non-merge/rebase command", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi.fn().mockRejectedValue({
+        stderr: "fatal: 'origin' does not appear to be a git repository",
+        stdout: "",
+        exitCode: 128,
+      });
+      const manager = new GitManager({ execGitImpl });
+
+      await expect(
+        runEffect(manager.execAuthGitEffect(root, ["fetch", "--all", "--prune"])),
+      ).rejects.toMatchObject({ _tag: "GitCommandError" });
+      expect(execGitImpl).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test("reuses cached sibling dirty state within a short inspection window", async () => {
     const { root, sibling } = await createGitFixture();
     let nowValue = new Date("2026-03-17T12:00:00.000Z");
@@ -890,6 +964,40 @@ describe("GitManager", () => {
     expect(auditLogStore.logEntry).toHaveBeenCalledWith(
       expect.objectContaining({ operation: "gitCherry-pick", success: true }),
     );
+  });
+
+  test("_logGitAudit logs a warning but never breaks the git action when the audit DB write throws", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const auditLogStore = {
+      logEntry: vi.fn(() => {
+        throw new Error("SQLITE_BUSY: database is locked");
+      }),
+    };
+    const manager = new GitManager({ execGitImpl, auditLogStore });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue(cleanSnapshot);
+
+    // Reconfigure the shared logger singleton so we get a handle to the
+    // underlying winston instance to spy on. getLogger() proxies always
+    // resolve the singleton at call time, so this affects git-manager.ts's
+    // already-created `log` proxy too.
+    const winstonLogger = reconfigureLogger();
+    const warnSpy = vi.spyOn(winstonLogger, "warn").mockImplementation(() => winstonLogger);
+
+    try {
+      const result = await manager.cherryPick(
+        { id: "ws-1", cwd: root },
+        { hashes: ["aaa111"], connection: { id: "az-1", provider: "azure" } },
+      );
+
+      // The "never break the main flow" contract: the git action itself
+      // still succeeds even though the audit write threw.
+      expect(result.ok).toBe(true);
+      expect(auditLogStore.logEntry).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith("git audit write failed", expect.objectContaining({ label: "git" }));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   test("cherryPick rejects empty and non-hex hashes without touching git", async () => {

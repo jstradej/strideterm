@@ -10,6 +10,7 @@ import { execFileText, quotePosixArg } from "./process-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
+import { createIntervalGate } from "./runtime-utils.js";
 import { runEffect } from "./effect/runtime.js";
 import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
 import { httpRetry } from "./effect/schedules.js";
@@ -65,6 +66,17 @@ const log = getLogger("git");
 
 const WORKTREE_DIRTY_CACHE_TTL_MS = 1500;
 const SNAPSHOT_CACHE_TTL_MS = 8000;
+
+// stderr patterns that indicate a transient/network failure worth retrying
+// (used by execAuthGitEffect's retry policy). Deterministic failures — merge/
+// rebase conflicts, bad refs, etc. — never match this and fail on first try.
+const TRANSIENT_GIT_ERROR_RE =
+  /could not resolve host|connection refused|connection timed out|early eof|rpc failed|\b502\b|\b503\b/i;
+
+// _logGitAudit is called on every git operation; if the audit DB is
+// permanently broken (locked/corrupt), gate the warning to ≤1 / minute so a
+// failing store doesn't spam the log while still leaving a trace it's broken.
+const auditLogFailureGate = createIntervalGate(60_000);
 
 // Hex-only commit hashes (short or full) — also rules out option injection
 // ("-x") since execGit passes args verbatim.
@@ -299,7 +311,12 @@ export class GitManager extends EventEmitter {
       }),
       {
         schedule: httpRetry,
-        while: (error) => error._tag === "GitCommandError" && !/authentication failed|401|403/i.test(error.stderr),
+        // Only retry transient/network-shaped failures. Deterministic failures
+        // (merge/rebase conflicts, bad refs, etc.) never succeed on retry — and
+        // for merge/rebase specifically, retrying re-runs the command against an
+        // already-started operation, turning a clear conflict message into a
+        // confusing "MERGE_HEAD exists" error after a pointless backoff delay.
+        while: (error) => error._tag === "GitCommandError" && TRANSIENT_GIT_ERROR_RE.test(error.stderr),
       },
     );
   }
@@ -2362,8 +2379,13 @@ export class GitManager extends EventEmitter {
           ...extra,
         });
       }
-    } catch {
-      // Never let audit logging break the main flow
+    } catch (err) {
+      // Never let audit logging break the main flow, but don't let a
+      // permanently-failing audit DB (locked/corrupt) go completely silent.
+      const gate = auditLogFailureGate.allow("git-audit-write-failed");
+      if (gate.allow) {
+        log.warn("git audit write failed", { err: extractErrorMessage(err), suppressed: gate.suppressed });
+      }
     }
   }
 
