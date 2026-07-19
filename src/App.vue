@@ -307,6 +307,7 @@
 import { computed, inject, onErrorCaptured, onMounted, onUnmounted, ref, watch } from "vue";
 import type { ComponentPublicInstance } from "vue";
 import type { Transport } from "./transport.js";
+import { apiKey } from "./types/keys.js";
 import { useAppStore } from "./stores/app.js";
 import { useGlobalEvents } from "./composables/useGlobalEvents.js";
 import { useAttentionSync } from "./composables/useAttentionSync.js";
@@ -340,7 +341,7 @@ import { usePipelineNotifications } from "./composables/usePipelineNotifications
 import { useNotificationStore } from "./stores/notifications.js";
 import { useSshStore } from "./stores/ssh.js";
 
-const api = inject<Transport>("api");
+const api = inject(apiKey);
 const store = useAppStore();
 const notifStore = useNotificationStore();
 const sshStore = useSshStore();

@@ -9,6 +9,7 @@ import { useTerminalStore } from "./stores/terminal.js";
 import { useGitUiStore } from "./stores/git-ui.js";
 import { useAzurePipelinesStore } from "./stores/azure-pipelines.js";
 import { rlog } from "./lib/renderer-log.js";
+import { apiKey } from "./types/keys.js";
 
 // crypto.randomUUID is gated to secure contexts (HTTPS / localhost / file://).
 // The remote web client served over LAN HTTP is not a secure context, so it
@@ -156,7 +157,7 @@ if (popoutView === "diff-popout") {
 
   const app = createApp(App);
   app.use(createPinia());
-  app.provide("api", api);
+  app.provide(apiKey, api);
   app.mount("#app");
 
   // Init stores after Pinia is mounted
