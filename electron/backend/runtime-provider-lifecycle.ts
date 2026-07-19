@@ -66,90 +66,123 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
     findWorkspace,
   } = ctx;
 
-  // --- Azure DevOps ---
-
-  // Inbox workspaces are PROFILE-owned (one per provider per profile, shared
-  // by every window/remote viewer of that profile). Callers always pass the
-  // owner profile explicitly (connection.profileId / caller viewer profile);
-  // "default" is only the legacy no-context fallback — never windowSlots[0],
-  // which is arbitrary in a multi-window install.
-  function getAzureWorkspace(profileId = "default"): WorkspaceState | null {
-    return (
-      getState().workspaces.find(
-        (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === profileId,
-      ) || null
-    );
-  }
-
-  async function ensureAzureWorkspace(profileId = "default"): Promise<WorkspaceState> {
-    const existing = getAzureWorkspace(profileId);
-    log.debug("ensureAzureWorkspace: called", {
-      requestedProfileId: profileId,
-      existingId: existing?.id || null,
-      existingProfileId: existing?.profileId || null,
-    });
-    if (existing) {
-      return existing;
-    }
-
-    const panels = createAzureWorkspaceReviewPanels(getState().tabTemplates || []);
-
-    const workspace = normalizeWorkspace({
-      id: `workspace-${randomUUID()}`,
-      name: "Azure DevOps",
-      icon: "AZ",
-      color: "#0078d4",
-      kind: "azure",
-      cwd: getAzureSettings().reviewRoot || path.join(strideDataDir(), "azure-pr"),
-      notes: "Azure DevOps inbox",
-      profileId,
-      panels,
-      activePanelId: panels[0]?.id || "",
-    });
-    log.debug("ensureAzureWorkspace: creating", {
-      workspaceId: workspace.id,
-      profileId: workspace.profileId,
-      cwd: workspace.cwd,
-    });
+  /**
+   * Provider-parametrized ensure/refresh/schedule-polling triplet, shared by
+   * Azure DevOps and GitHub. Both providers' inbox workspaces are
+   * PROFILE-owned (one per provider per profile, shared by every
+   * window/remote viewer of that profile) — callers always pass the owner
+   * profile explicitly (connection.profileId / caller viewer profile);
+   * "default" is only the legacy no-context fallback, never windowSlots[0],
+   * which is arbitrary in a multi-window install.
+   */
+  function makeProviderLifecycle(descriptor: {
+    kind: "azure" | "github";
+    logLabel: string;
+    reviewProviderKey: string;
+    manager: AnyManager;
+    name: string;
+    icon: string;
+    color: string;
+    notes: string;
+    reviewRootDirName: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await store.mutate((draft: any) => {
-      draft.workspaces.push(workspace);
-      if (!draft.activeWorkspaceId) {
-        draft.activeWorkspaceId = workspace.id;
-      }
-    });
-    return workspace as WorkspaceState;
-  }
-
-  async function refreshAzure(): Promise<unknown> {
-    const state = getState();
-    // No activeProfileId: each PR summary is owned by its connection's
-    // profile (connection.profileId, "default" for unmigrated legacy
-    // connections) — there is no single "active" profile in a multi-window
-    // install.
-    await azure.sync({
-      connections: getAzureConnections(state),
-      workspaces: state.workspaces,
-      gitSnapshots: git.getProjectMap(),
-    });
-    await repairAzureReviewWorkspaceMetadata();
-
-    const refreshedState = getState();
-    const activeWorkspace = findWorkspace(refreshedState, refreshedState.activeWorkspaceId);
-    if (
-      activeWorkspace?.review?.provider === "azure-devops" &&
-      activeWorkspace.review.prKey &&
-      typeof azure.ensurePullRequestDetail === "function"
-    ) {
-      await azure
-        .ensurePullRequestDetail(activeWorkspace.review.prKey, {
-          workspaces: refreshedState.workspaces,
-          force: true,
-        })
-        .catch(() => {});
+    getSettings: (state?: AppState) => any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getConnections: (state?: AppState) => any[];
+    afterSync?: () => Promise<unknown>;
+  }) {
+    function getWorkspace(profileId = "default"): WorkspaceState | null {
+      return (
+        getState().workspaces.find(
+          (workspace) => workspace.kind === descriptor.kind && (workspace.profileId || "default") === profileId,
+        ) || null
+      );
     }
 
-    return azure.getSnapshot();
+    async function ensureWorkspace(profileId = "default"): Promise<WorkspaceState> {
+      const existing = getWorkspace(profileId);
+      log.debug(`ensure${descriptor.logLabel}Workspace: called`, {
+        requestedProfileId: profileId,
+        existingId: existing?.id || null,
+        existingProfileId: existing?.profileId || null,
+      });
+      if (existing) {
+        return existing;
+      }
+
+      const panels = createAzureWorkspaceReviewPanels(getState().tabTemplates || []);
+
+      const workspace = normalizeWorkspace({
+        id: `workspace-${randomUUID()}`,
+        name: descriptor.name,
+        icon: descriptor.icon,
+        color: descriptor.color,
+        kind: descriptor.kind,
+        cwd: descriptor.getSettings().reviewRoot || path.join(strideDataDir(), descriptor.reviewRootDirName),
+        notes: descriptor.notes,
+        profileId,
+        panels,
+        activePanelId: panels[0]?.id || "",
+      });
+      log.debug(`ensure${descriptor.logLabel}Workspace: creating`, {
+        workspaceId: workspace.id,
+        profileId: workspace.profileId,
+        cwd: workspace.cwd,
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
+        draft.workspaces.push(workspace);
+        if (!draft.activeWorkspaceId) {
+          draft.activeWorkspaceId = workspace.id;
+        }
+      });
+      return workspace as WorkspaceState;
+    }
+
+    async function refresh(): Promise<unknown> {
+      const state = getState();
+      // No activeProfileId: each PR summary is owned by its connection's
+      // profile (connection.profileId, "default" for unmigrated legacy
+      // connections) — there is no single "active" profile in a multi-window
+      // install.
+      await descriptor.manager.sync({
+        connections: descriptor.getConnections(state),
+        workspaces: state.workspaces,
+        gitSnapshots: git.getProjectMap(),
+      });
+      if (descriptor.afterSync) await descriptor.afterSync();
+
+      const refreshedState = getState();
+      const activeWorkspace = findWorkspace(refreshedState, refreshedState.activeWorkspaceId);
+      if (
+        activeWorkspace?.review?.provider === descriptor.reviewProviderKey &&
+        activeWorkspace.review.prKey &&
+        typeof descriptor.manager.ensurePullRequestDetail === "function"
+      ) {
+        await descriptor.manager
+          .ensurePullRequestDetail(activeWorkspace.review.prKey, {
+            workspaces: refreshedState.workspaces,
+            force: true,
+          })
+          .catch(() => {});
+      }
+
+      return descriptor.manager.getSnapshot();
+    }
+
+    function schedulePolling(): void {
+      const settings = descriptor.getSettings();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const enabledConnections = descriptor.getConnections().filter((c: any) => c.enabled !== false);
+      if (!settings.enabled || !enabledConnections.length) {
+        descriptor.manager.stopPolling();
+        return;
+      }
+      const pollSeconds = computeMinPollSeconds(enabledConnections, settings.defaultPollSeconds);
+      descriptor.manager.configurePolling(pollSeconds * 1000, refresh);
+    }
+
+    return { getWorkspace, ensureWorkspace, refresh, schedulePolling };
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -309,97 +342,41 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
     return true;
   }
 
-  function scheduleAzurePolling(): void {
-    const settings = getAzureSettings();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const enabledConnections = getAzureConnections().filter((connection: any) => connection.enabled !== false);
-    if (!settings.enabled || !enabledConnections.length) {
-      azure.stopPolling();
-      return;
-    }
+  const azureLifecycle = makeProviderLifecycle({
+    kind: "azure",
+    logLabel: "Azure",
+    reviewProviderKey: "azure-devops",
+    manager: azure,
+    name: "Azure DevOps",
+    icon: "AZ",
+    color: "#0078d4",
+    notes: "Azure DevOps inbox",
+    reviewRootDirName: "azure-pr",
+    getSettings: getAzureSettings,
+    getConnections: getAzureConnections,
+    afterSync: repairAzureReviewWorkspaceMetadata,
+  });
 
-    const pollSeconds = computeMinPollSeconds(enabledConnections, settings.defaultPollSeconds);
-    azure.configurePolling(pollSeconds * 1000, refreshAzure);
-  }
-
-  // --- GitHub ---
-
-  // See getAzureWorkspace — profile-owned inbox, no windowSlots[0] fallback.
-  function getGitHubWorkspace(profileId = "default"): WorkspaceState | null {
-    return (
-      getState().workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === profileId) || null
-    );
-  }
-
-  async function ensureGitHubWorkspace(profileId = "default"): Promise<WorkspaceState> {
-    const existing = getGitHubWorkspace(profileId);
-    if (existing) return existing;
-    const panels = createAzureWorkspaceReviewPanels(getState().tabTemplates || []);
-    const workspace = normalizeWorkspace({
-      id: `workspace-${randomUUID()}`,
-      name: "GitHub",
-      icon: "GH",
-      color: "#238636",
-      kind: "github",
-      cwd: getGitHubSettings().reviewRoot || path.join(strideDataDir(), "github-pr"),
-      notes: "GitHub inbox",
-      profileId,
-      panels,
-      activePanelId: panels[0]?.id || "",
-    });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await store.mutate((draft: any) => {
-      draft.workspaces.push(workspace);
-      if (!draft.activeWorkspaceId) draft.activeWorkspaceId = workspace.id;
-    });
-    return workspace as WorkspaceState;
-  }
-
-  async function refreshGitHub(): Promise<unknown> {
-    const state = getState();
-    // See refreshAzure — PR summaries are owned by connection.profileId.
-    await github.sync({
-      connections: getGitHubConnections(state),
-      workspaces: state.workspaces,
-      gitSnapshots: git.getProjectMap(),
-    });
-
-    const refreshedState = getState();
-    const activeWorkspace = findWorkspace(refreshedState, refreshedState.activeWorkspaceId);
-    if (
-      activeWorkspace?.review?.provider === "github" &&
-      activeWorkspace.review.prKey &&
-      typeof github.ensurePullRequestDetail === "function"
-    ) {
-      await github
-        .ensurePullRequestDetail(activeWorkspace.review.prKey, {
-          workspaces: refreshedState.workspaces,
-          force: true,
-        })
-        .catch(() => {});
-    }
-
-    return github.getSnapshot();
-  }
-
-  function scheduleGitHubPolling(): void {
-    const settings = getGitHubSettings();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const enabledConnections = getGitHubConnections().filter((c: any) => c.enabled !== false);
-    if (!settings.enabled || !enabledConnections.length) {
-      github.stopPolling();
-      return;
-    }
-    const pollSeconds = computeMinPollSeconds(enabledConnections, settings.defaultPollSeconds);
-    github.configurePolling(pollSeconds * 1000, refreshGitHub);
-  }
+  const githubLifecycle = makeProviderLifecycle({
+    kind: "github",
+    logLabel: "GitHub",
+    reviewProviderKey: "github",
+    manager: github,
+    name: "GitHub",
+    icon: "GH",
+    color: "#238636",
+    notes: "GitHub inbox",
+    reviewRootDirName: "github-pr",
+    getSettings: getGitHubSettings,
+    getConnections: getGitHubConnections,
+  });
 
   return {
-    ensureAzureWorkspace,
-    refreshAzure,
-    scheduleAzurePolling,
-    ensureGitHubWorkspace,
-    refreshGitHub,
-    scheduleGitHubPolling,
+    ensureAzureWorkspace: azureLifecycle.ensureWorkspace,
+    refreshAzure: azureLifecycle.refresh,
+    scheduleAzurePolling: azureLifecycle.schedulePolling,
+    ensureGitHubWorkspace: githubLifecycle.ensureWorkspace,
+    refreshGitHub: githubLifecycle.refresh,
+    scheduleGitHubPolling: githubLifecycle.schedulePolling,
   };
 }
