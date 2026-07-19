@@ -2,6 +2,7 @@ import { onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { useTerminalStore } from "../stores/terminal.js";
 import { useNotificationStore } from "../stores/notifications.js";
+import { rlog } from "../lib/renderer-log.js";
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 
@@ -21,7 +22,27 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
   const termStore = useTerminalStore();
   const notifStore = useNotificationStore();
 
+  // Registered directly as a raw `keydown` DOM listener, so a rejection from
+  // any of the awaited actions below has nowhere useful to go — the browser
+  // can't surface it, and it would otherwise fail silently mid-keystroke.
+  // The try/catch wraps the whole handler (rather than each await site
+  // individually) since the many early `return`s inside make per-site
+  // wrapping far more invasive for the same result.
   async function handleKeydown(event: KeyboardEvent) {
+    try {
+      await handleKeydownInner(event);
+    } catch (err) {
+      const message = (err as Error)?.message || String(err);
+      rlog("error", "[keyboard-shortcut] handler failed", {
+        key: event.key,
+        code: event.code,
+        error: message,
+      });
+      notifStore.showError("Keyboard shortcut failed", message);
+    }
+  }
+
+  async function handleKeydownInner(event: KeyboardEvent) {
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
       const digitMatch = event.code?.match(/^Digit([1-9])$/);
       if (digitMatch) {
