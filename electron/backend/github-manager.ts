@@ -1,9 +1,7 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
-import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
+import { BaseProviderManager } from "./shared/base-manager.js";
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
 import { buildCheckSummary, buildPullRequestSummary, findWorkspaceForPullRequest } from "./github-pr-summary.js";
 import {
@@ -28,7 +26,6 @@ import {
   formatReviewWorkspaceError,
   normalizeConnectionInput,
   createConnectionSnapshot,
-  exists,
   buildRepositoryRemoteUrl,
 } from "./github-utils.js";
 
@@ -1092,106 +1089,53 @@ export class GitHubManager extends BaseProviderManager {
     workspace: Record<string, unknown>;
     parentWorkspaceId: string;
   }> {
-    const { connection, token } = this.resolveConnectionAndToken(connectionId);
-    const connRec = connection as Record<string, unknown>;
-
-    // Pin to the connection's profile — falling back to active profile breaks
-    // when quickfix is invoked from a profile that doesn't own the connection
-    // (the workspace ends up on the wrong profile and goes invisible).
-    const connectionProfileId = (connRec.profileId as string) || "";
-    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
-      throw new Error(
-        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
-      );
-    }
-    const activeProfile = connectionProfileId || callerProfileId || "default";
-    const parentGitHubWorkspace =
-      state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === activeProfile) || null;
-    const reviewRoot = parentGitHubWorkspace?.cwd || (connRec.reviewRoot as string) || getDefaultReviewRoot();
-
-    const cacheRepoPath = await this.ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot });
-
-    await this.runGit(
-      cacheRepoPath,
-      ["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
-      { token },
-    );
-
-    const worktreePath = path.join(
-      normalizeReviewRoot(reviewRoot),
-      "quickfix",
-      shortPathKey(connection.id, "connection"),
-      sanitizePathSegment(`${owner}-${repo}`),
-      sanitizePathSegment(newBranchName),
-    );
-    await mkdir(path.dirname(worktreePath), { recursive: true });
-
-    const worktreeExists = await exists(path.join(worktreePath, ".git"));
-    if (!worktreeExists) {
-      try {
-        await this.runGit(cacheRepoPath, [
-          "worktree",
-          "add",
-          "--force",
-          "-b",
-          newBranchName,
-          worktreePath,
-          `refs/remotes/origin/${baseBranch}`,
-        ]);
-      } catch (err) {
-        const errRec = err as Record<string, unknown>;
-        const msg = String(errRec?.stderr || (err as Error)?.message || err);
-        if (msg.includes("already exists")) {
-          throw new Error(`Branch "${newBranchName}" already exists. Choose a different name.`, { cause: err });
-        }
-        throw err;
-      }
-    }
-
-    const panels = createReviewWorkspacePanels(
-      (parentGitHubWorkspace?.panels || []) as Parameters<typeof createReviewWorkspacePanels>[0],
-      (state.tabTemplates || []) as Parameters<typeof createReviewWorkspacePanels>[1],
-    );
-    const workspace: Record<string, unknown> = {
-      id: `workspace-${randomUUID()}`,
-      name: newBranchName,
-      icon: GITHUB_REVIEW_ICON,
-      color: GITHUB_REVIEW_COLOR,
-      kind: "terminal",
-      source: "manual",
-      pluginId: "",
-      cwd: worktreePath,
-      notes: "",
-      profileId: activeProfile,
-      connectionId,
-      activePanelId: panels[0]?.id || "",
-      panels,
-      review: {
-        provider: "github",
-        prKey: "",
-        connectionId,
-        hostUrl: (connRec.hostUrl as string) || "",
-        parentWorkspaceId: parentGitHubWorkspace?.id || "",
-        repository: { owner, name: repo, fullName: `${owner}/${repo}`, remoteUrl },
-        pullRequest: null,
-        role: "author",
-        checkout: {
-          mode: "managed-worktree",
-          rootPath: worktreePath,
-          cacheRepoPath,
+     
+    const result = await this.openQuickFixWorkspaceCore(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { state: state as any, connectionId, baseBranch, newBranchName, callerProfileId },
+      {
+        prepareQuickFixCheckout: ({ connection, token, reviewRoot }) =>
+          this.prepareQuickFixCheckout({
+            connection,
+            token,
+            reviewRoot,
+            baseBranch,
+            newBranchName,
+            repoPathSegment: `${owner}-${repo}`,
+            ensureCacheRepo: () => this.ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot }),
+          }),
+        buildQuickFixMetadata: ({ connection, checkout, parentWorkspaceId }) => {
+          const connRec = connection as Record<string, unknown>;
+          return {
+            review: {
+              provider: "github",
+              prKey: "",
+              connectionId,
+              hostUrl: (connRec.hostUrl as string) || "",
+              parentWorkspaceId,
+              repository: { owner, name: repo, fullName: `${owner}/${repo}`, remoteUrl },
+              pullRequest: null,
+              role: "author",
+              checkout: {
+                mode: "managed-worktree",
+                rootPath: checkout.rootPath,
+                cacheRepoPath: checkout.cacheRepoPath,
+              },
+            },
+            quickfix: {
+              connectionId,
+              owner,
+              repo,
+              remoteUrl,
+              baseBranch,
+              parentWorkspaceId,
+            },
+          };
         },
       },
-      quickfix: {
-        connectionId,
-        owner,
-        repo,
-        remoteUrl,
-        baseBranch,
-        parentWorkspaceId: parentGitHubWorkspace?.id || "",
-      },
-    };
-
-    return { workspace, parentWorkspaceId: parentGitHubWorkspace?.id || "" };
+    );
+    result.workspace.connectionId = connectionId;
+    return result as { workspace: Record<string, unknown>; parentWorkspaceId: string };
   }
 }
 

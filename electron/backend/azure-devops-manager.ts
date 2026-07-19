@@ -1,7 +1,5 @@
 /// <reference types="node" />
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
 import type {
@@ -14,7 +12,7 @@ import type {
   AzurePipelineCommit,
   AzureRunDetail,
 } from "../shared/types/azure-pipelines.js";
-import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
+import { BaseProviderManager } from "./shared/base-manager.js";
 import type { CredentialStore } from "./shared/credential-store.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
@@ -45,7 +43,6 @@ import {
   buildCheckSummary,
   createConnectionSnapshot,
   normalizeConnectionInput,
-  exists,
 } from "./azure-devops-utils.js";
 
 // ─── Local type aliases ──────────────────────────────────────────────────────
@@ -2147,63 +2144,6 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return refs.map((ref) => stripRefsPrefix(ref.name || ""));
   }
 
-  async prepareQuickFixCheckout({
-    connection,
-    token,
-    repository,
-    baseBranch,
-    newBranchName,
-    reviewRoot,
-  }: {
-    connection: AzureConnection;
-    token: string;
-    repository: { id?: string; name: string; remoteUrl?: string };
-    baseBranch: string;
-    newBranchName: string;
-    reviewRoot: string;
-  }): Promise<{ rootPath: string; cacheRepoPath: string; baseBranch: string; newBranchName: string }> {
-    const cacheRepoPath = await this.ensureCacheRepo({ connection, token, repository, reviewRoot });
-
-    await this.runGit(
-      cacheRepoPath,
-      ["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
-      { login: connection.login, token },
-    );
-
-    const worktreePath = path.join(
-      normalizeReviewRoot(reviewRoot),
-      "quickfix",
-      shortPathKey(connection.id, "connection"),
-      sanitizePathSegment(repository.name),
-      sanitizePathSegment(newBranchName),
-    );
-    await mkdir(path.dirname(worktreePath), { recursive: true });
-
-    const worktreeExists = await exists(path.join(worktreePath, ".git"));
-    if (!worktreeExists) {
-      try {
-        await this.runGit(cacheRepoPath, [
-          "worktree",
-          "add",
-          "--force",
-          "-b",
-          newBranchName,
-          worktreePath,
-          `refs/remotes/origin/${baseBranch}`,
-        ]);
-      } catch (err) {
-        const e = err as { stderr?: string; message?: string };
-        const msg = String(e?.stderr || e?.message || err);
-        if (msg.includes("already exists")) {
-          throw new Error(`Branch "${newBranchName}" already exists. Choose a different name.`, { cause: err });
-        }
-        throw err;
-      }
-    }
-
-    return { rootPath: worktreePath, cacheRepoPath, baseBranch, newBranchName };
-  }
-
   async openQuickFixWorkspace({
     state,
     connectionId,
@@ -2228,80 +2168,54 @@ export class AzureDevOpsManager extends BaseProviderManager {
      * a profile-A quickfix workspace on disk. */
     callerProfileId?: string;
   }): Promise<{ workspace: ReviewWorkspace; parentWorkspaceId: string }> {
-    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
-
-    // Pin quickfix to the profile that owns the connection — falling back to
-    // active profile breaks when the user triggers quickfix from a different
-    // profile than the one the connection lives on (the workspace lands on
-    // the wrong profile and goes invisible).
-    const connectionProfileId = (connection as { profileId?: string }).profileId || "";
-    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
-      throw new Error(
-        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
-      );
-    }
-    const activeProfile = connectionProfileId || callerProfileId || "default";
-    const parentAzureWorkspace: ReviewWorkspace | null =
-      state.workspaces.find(
-        (ws: ReviewWorkspace) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile,
-      ) || null;
-    const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot();
-
     const repository = { id: repositoryId, name: repositoryName, remoteUrl };
-    const checkout = await this.prepareQuickFixCheckout({
-      connection,
-      token,
-      repository,
-      baseBranch,
-      newBranchName,
-      reviewRoot,
-    });
-
-    const panels = createReviewWorkspacePanels(
-      (parentAzureWorkspace?.panels || []) as any[], // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: panels is open-ended server JSON
-      (state.tabTemplates || []) as any[], // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: tabTemplates is open-ended server JSON
+     
+    const result = await this.openQuickFixWorkspaceCore(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { state: state as any, connectionId, baseBranch, newBranchName, callerProfileId },
+      {
+        prepareQuickFixCheckout: ({ connection, token, reviewRoot }) =>
+          this.prepareQuickFixCheckout({
+            connection,
+            token,
+            reviewRoot,
+            baseBranch,
+            newBranchName,
+            repoPathSegment: repositoryName,
+            login: (connection as AzureConnection).login,
+            ensureCacheRepo: () =>
+              this.ensureCacheRepo({ connection: connection as AzureConnection, token, repository, reviewRoot }),
+          }),
+        buildQuickFixMetadata: ({ connection, checkout, parentWorkspaceId }) => ({
+          review: {
+            provider: "azure-devops",
+            prKey: "",
+            connectionId,
+            orgUrl: (connection as AzureConnection).orgUrl || "",
+            parentWorkspaceId,
+            project: undefined,
+            repository: { id: repositoryId, name: repositoryName, remoteUrl },
+            pullRequest: undefined,
+            role: "author",
+            checkout: {
+              mode: "managed-worktree",
+              rootPath: checkout.rootPath,
+              cacheRepoPath: checkout.cacheRepoPath || "",
+            },
+          },
+          quickfix: {
+            connectionId,
+            projectName,
+            repositoryId,
+            repositoryName,
+            remoteUrl,
+            baseBranch,
+            parentWorkspaceId,
+          },
+        }),
+      },
     );
-    const workspace = {
-      id: `workspace-${randomUUID()}`,
-      name: newBranchName,
-      icon: AZURE_REVIEW_ICON,
-      color: AZURE_REVIEW_COLOR,
-      kind: "terminal",
-      source: "manual",
-      pluginId: "",
-      cwd: checkout.rootPath,
-      notes: "",
-      profileId: activeProfile,
-      activePanelId: panels[0]?.id || "",
-      panels,
-      review: {
-        provider: "azure-devops",
-        prKey: "",
-        connectionId,
-        orgUrl: connection.orgUrl || "",
-        parentWorkspaceId: parentAzureWorkspace?.id || "",
-        project: undefined,
-        repository: { id: repositoryId, name: repositoryName, remoteUrl },
-        pullRequest: undefined,
-        role: "author",
-        checkout: {
-          mode: "managed-worktree",
-          rootPath: checkout.rootPath,
-          cacheRepoPath: checkout.cacheRepoPath || "",
-        },
-      },
-      quickfix: {
-        connectionId,
-        projectName,
-        repositoryId,
-        repositoryName,
-        remoteUrl,
-        baseBranch,
-        parentWorkspaceId: parentAzureWorkspace?.id || "",
-      },
-    };
-
-    return { workspace, parentWorkspaceId: parentAzureWorkspace?.id || "" };
+    return result as unknown as { workspace: ReviewWorkspace; parentWorkspaceId: string };
   }
 }
 

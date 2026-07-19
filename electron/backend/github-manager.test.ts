@@ -454,6 +454,100 @@ describe("GitHubManager openReviewWorkspace", () => {
   });
 });
 
+describe("GitHubManager openQuickFixWorkspace", () => {
+  test("creates a quickfix worktree workspace on the parent's profile", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ secrets: { "cred:gh-main": "ghp-token" } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).execFileText = execFileTextImpl;
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    const result = (await manager.openQuickFixWorkspace({
+      state: {
+        tabTemplates: [{ id: "shell", title: "Shell", command: "" }],
+        workspaces: [
+          {
+            id: "github-root",
+            kind: "github",
+            profileId: "default",
+            cwd: "C:/reviews",
+            panels: [{ id: "shell-template", title: "Shell", command: "" }],
+          },
+        ],
+      },
+      connectionId: "gh-main",
+      owner: "acme",
+      repo: "web",
+      remoteUrl: "https://github.com/acme/web.git",
+      baseBranch: "main",
+      newBranchName: "fix-123",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    expect(result.parentWorkspaceId).toBe("github-root");
+    expect(result.workspace.name).toBe("fix-123");
+    expect(result.workspace.profileId).toBe("default");
+    expect(result.workspace.cwd).toContain(path.join("quickfix", "gh-main"));
+    expect(result.workspace.review).toMatchObject({
+      provider: "github",
+      prKey: "",
+      connectionId: "gh-main",
+      role: "author",
+      checkout: { mode: "managed-worktree" },
+    });
+    expect(result.workspace.quickfix).toMatchObject({
+      connectionId: "gh-main",
+      owner: "acme",
+      repo: "web",
+      baseBranch: "main",
+      parentWorkspaceId: "github-root",
+    });
+  });
+
+  test("refuses when the caller's profile doesn't match the connection's profile", async () => {
+    const profileBConnection = { ...connection, id: "gh-b", profileId: "profile-b", tokenRef: "cred:gh-b" };
+    const { manager } = createManager({ secrets: { "cred:gh-b": "ghp-b" } });
+    await manager.sync({ connections: [profileBConnection], workspaces: [], gitSnapshots: {} });
+
+    await expect(
+      manager.openQuickFixWorkspace({
+        state: { tabTemplates: [], workspaces: [] },
+        connectionId: "gh-b",
+        owner: "acme",
+        repo: "web",
+        remoteUrl: "https://github.com/acme/web.git",
+        baseBranch: "main",
+        newBranchName: "fix-123",
+        callerProfileId: "default",
+      }),
+    ).rejects.toThrow(/Cross-profile refused.*profile-b.*default/s);
+  });
+
+  test("surfaces a clear error when the branch already exists", async () => {
+    const execFileTextImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: "", stderr: "" }) // clone
+      .mockResolvedValueOnce({ stdout: "", stderr: "" }) // fetch
+      .mockRejectedValueOnce({ stderr: "fatal: a branch named 'fix-123' already exists" }); // worktree add
+    const { manager } = createManager({ secrets: { "cred:gh-main": "ghp-token" } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).execFileText = execFileTextImpl;
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await expect(
+      manager.openQuickFixWorkspace({
+        state: { tabTemplates: [], workspaces: [] },
+        connectionId: "gh-main",
+        owner: "acme",
+        repo: "web",
+        remoteUrl: "https://github.com/acme/web.git",
+        baseBranch: "main",
+        newBranchName: "fix-123",
+      }),
+    ).rejects.toThrow('Branch "fix-123" already exists. Choose a different name.');
+  });
+});
+
 describe("GitHubManager listRemoteBranches / listQuickFixBranches", () => {
   test("listQuickFixBranches delegates to listRemoteBranches and returns the same branch names", async () => {
     const { manager } = createManager({

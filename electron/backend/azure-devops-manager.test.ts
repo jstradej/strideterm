@@ -964,6 +964,105 @@ describe("azure manager helpers", () => {
   });
 });
 
+describe("AzureDevOpsManager openQuickFixWorkspace", () => {
+  test("creates a quickfix worktree workspace on the parent's profile", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ execFileTextImpl });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    const result = (await manager.openQuickFixWorkspace({
+      state: {
+        tabTemplates: [{ id: "shell", title: "Shell", command: "" }],
+        workspaces: [
+          {
+            id: "azure-root",
+            kind: "azure",
+            profileId: "default",
+            cwd: "C:/reviews",
+            panels: [{ id: "shell-template", title: "Shell", command: "" }],
+          },
+        ],
+      },
+      connectionId: "ado-main",
+      projectName: "Platform",
+      repositoryId: "repo-1",
+      repositoryName: "web-app",
+      remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+      baseBranch: "main",
+      newBranchName: "fix-123",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    expect(result.parentWorkspaceId).toBe("azure-root");
+    expect(result.workspace.name).toBe("fix-123");
+    expect(result.workspace.profileId).toBe("default");
+    expect(result.workspace.cwd).toContain(path.join("quickfix", "ado-main"));
+    expect(result.workspace.review).toMatchObject({
+      provider: "azure-devops",
+      prKey: "",
+      connectionId: "ado-main",
+      role: "author",
+      checkout: { mode: "managed-worktree" },
+    });
+    expect(result.workspace.quickfix).toMatchObject({
+      connectionId: "ado-main",
+      projectName: "Platform",
+      repositoryId: "repo-1",
+      repositoryName: "web-app",
+      baseBranch: "main",
+      parentWorkspaceId: "azure-root",
+    });
+    const worktreeCall = execFileTextImpl.mock.calls.find(
+      (call) => call[1].includes("worktree") && call[1].includes("add"),
+    );
+    expect(worktreeCall?.[1]).toContain("fix-123");
+  });
+
+  test("refuses when the caller's profile doesn't match the connection's profile", async () => {
+    const profileBConnection = { ...connection, id: "ado-b", profileId: "profile-b", tokenRef: "cred:ado-b" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: createManager.secrets has a strict literal type; widening is fine in test scope
+    const { manager } = createManager({ secrets: { "cred:ado-b": "pat-b" } as any });
+    await manager.sync({ connections: [profileBConnection], workspaces: [], gitSnapshots: {} });
+
+    await expect(
+      manager.openQuickFixWorkspace({
+        state: { tabTemplates: [], workspaces: [] },
+        connectionId: "ado-b",
+        projectName: "Platform",
+        repositoryId: "repo-1",
+        repositoryName: "web-app",
+        remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+        baseBranch: "main",
+        newBranchName: "fix-123",
+        callerProfileId: "default",
+      }),
+    ).rejects.toThrow(/Cross-profile refused.*profile-b.*default/s);
+  });
+
+  test("surfaces a clear error when the branch already exists", async () => {
+    const execFileTextImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: "", stderr: "" }) // clone
+      .mockResolvedValueOnce({ stdout: "", stderr: "" }) // fetch
+      .mockRejectedValueOnce({ stderr: "fatal: a branch named 'fix-123' already exists" }); // worktree add
+    const { manager } = createManager({ execFileTextImpl });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await expect(
+      manager.openQuickFixWorkspace({
+        state: { tabTemplates: [], workspaces: [] },
+        connectionId: "ado-main",
+        projectName: "Platform",
+        repositoryId: "repo-1",
+        repositoryName: "web-app",
+        remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+        baseBranch: "main",
+        newBranchName: "fix-123",
+      }),
+    ).rejects.toThrow('Branch "fix-123" already exists. Choose a different name.');
+  });
+});
+
 describe("createPullRequestForWorkspace — cross-profile connection guard", () => {
   test("refuses when the connection belongs to a different profile than the workspace", async () => {
     const { manager } = createManager();

@@ -12,6 +12,8 @@ import {
   shortPathKey,
   dedupePrSummaries,
   buildInboxViews,
+  sanitizePathSegment,
+  normalizeReviewRoot,
 } from "./provider-utils.js";
 import { appendReviewActivity, buildConnectionErrorEvent, shouldSeedConnection } from "./review-activity.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./git-auth-utils.js";
@@ -199,6 +201,44 @@ interface OpenReviewWorkspaceHooks {
     prKey: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): any;
+}
+
+interface OpenQuickFixWorkspaceOptions {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  state: { workspaces: any[]; tabTemplates?: unknown[] };
+  connectionId: string;
+  baseBranch: string;
+  newBranchName: string;
+  /** Profile of the window that initiated the action. Refusing on mismatch
+   *  keeps a remote/mobile client on profile B from spawning a profile-A
+   *  quickfix workspace on disk. */
+  callerProfileId?: string;
+  /** Provider-specific extra identity fields (Azure: projectName/repositoryId/
+   *  repositoryName; GitHub: owner/repo) — opaque to the shared skeleton,
+   *  threaded through to the hooks below. */
+  [key: string]: unknown;
+}
+
+interface OpenQuickFixWorkspaceHooks {
+  /** Create (or reuse) the quickfix worktree checkout on disk. */
+  prepareQuickFixCheckout(opts: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    connection: any;
+    token: string;
+    reviewRoot: string;
+    baseBranch: string;
+    newBranchName: string;
+    options: OpenQuickFixWorkspaceOptions;
+  }): Promise<{ rootPath: string; cacheRepoPath: string }>;
+  /** Provider-specific `review` + `quickfix` metadata objects for the new workspace. */
+  buildQuickFixMetadata(opts: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    connection: any;
+    checkout: { rootPath: string; cacheRepoPath: string };
+    parentWorkspaceId: string;
+    options: OpenQuickFixWorkspaceOptions;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }): { review: Record<string, any>; quickfix: Record<string, any> };
 }
 
 interface AuditLogStore {
@@ -1040,6 +1080,143 @@ export class BaseProviderManager extends EventEmitter {
       created: true,
       attached: false,
     };
+  }
+
+  /**
+   * Shared git/worktree mechanics of AzureDevOpsManager.prepareQuickFixCheckout
+   * and GitHubManager's equivalent inline logic: fetch the base branch into
+   * the cache repo, then create (or reuse) a worktree checked out to a new
+   * branch off it. `ensureCacheRepo` is provided by the caller since each
+   * provider's own `ensureCacheRepo` wrapper needs different identity fields
+   * (Azure: repository object; GitHub: owner/repo).
+   */
+  async prepareQuickFixCheckout({
+    connection,
+    token,
+    reviewRoot,
+    baseBranch,
+    newBranchName,
+    repoPathSegment,
+    login,
+    ensureCacheRepo,
+  }: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    connection: any;
+    token: string;
+    reviewRoot: string;
+    baseBranch: string;
+    newBranchName: string;
+    repoPathSegment: string;
+    login?: string;
+    ensureCacheRepo: () => Promise<string>;
+  }): Promise<{ rootPath: string; cacheRepoPath: string }> {
+    const cacheRepoPath = await ensureCacheRepo();
+
+    await this.runGit(
+      cacheRepoPath,
+      ["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+      { login, token },
+    );
+
+    const worktreePath = path.join(
+      normalizeReviewRoot(reviewRoot, this.getDefaultReviewRoot()),
+      "quickfix",
+      shortPathKey(connection.id, "connection"),
+      sanitizePathSegment(repoPathSegment),
+      sanitizePathSegment(newBranchName),
+    );
+    await mkdir(path.dirname(worktreePath), { recursive: true });
+
+    const worktreeExists = await exists(path.join(worktreePath, ".git"));
+    if (!worktreeExists) {
+      try {
+        await this.runGit(cacheRepoPath, [
+          "worktree",
+          "add",
+          "--force",
+          "-b",
+          newBranchName,
+          worktreePath,
+          `refs/remotes/origin/${baseBranch}`,
+        ]);
+      } catch (err) {
+        const e = err as { stderr?: string; message?: string };
+        const msg = String(e?.stderr || e?.message || err);
+        if (msg.includes("already exists")) {
+          throw new Error(`Branch "${newBranchName}" already exists. Choose a different name.`, { cause: err });
+        }
+        throw err;
+      }
+    }
+
+    return { rootPath: worktreePath, cacheRepoPath };
+  }
+
+  /**
+   * Shared skeleton of AzureDevOpsManager.openQuickFixWorkspace /
+   * GitHubManager.openQuickFixWorkspace: cross-profile guard, parent-workspace
+   * resolution, and the common workspace envelope. Providers supply checkout
+   * creation and the `review`/`quickfix` metadata shape via hooks — Azure's
+   * 3-level project/repository/branch hierarchy and GitHub's 2-level
+   * owner/repo hierarchy produce genuinely different metadata, so those stay
+   * per-provider rather than being forced into one shape.
+   */
+  async openQuickFixWorkspaceCore(
+    options: OpenQuickFixWorkspaceOptions,
+    hooks: OpenQuickFixWorkspaceHooks,
+  ): Promise<{ workspace: Record<string, unknown>; parentWorkspaceId: string }> {
+    const { state, connectionId, baseBranch, newBranchName, callerProfileId = "" } = options;
+    const { connection, token } = this.resolveConnectionAndToken(connectionId);
+
+    // Pin quickfix to the profile that owns the connection — falling back to
+    // active profile breaks when the user triggers quickfix from a different
+    // profile than the one the connection lives on (the workspace lands on
+    // the wrong profile and goes invisible).
+    const connectionProfileId = (connection as { profileId?: string }).profileId || "";
+    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
+      );
+    }
+    const activeProfile = connectionProfileId || callerProfileId || "default";
+    const parentWorkspace =
+      state.workspaces.find(
+        (ws) => ws.kind === this.parentWorkspaceKind && (ws.profileId || "default") === activeProfile,
+      ) || null;
+    const reviewRoot = parentWorkspace?.cwd || (connection as { reviewRoot?: string }).reviewRoot || this.getDefaultReviewRoot();
+
+    const checkout = await hooks.prepareQuickFixCheckout({ connection, token, reviewRoot, baseBranch, newBranchName, options });
+
+    const panels = createReviewWorkspacePanels(
+      (parentWorkspace?.panels || []) as PanelTemplate[],
+      (state.tabTemplates || []) as PanelTemplate[],
+    );
+
+    const { review, quickfix } = hooks.buildQuickFixMetadata({
+      connection,
+      checkout,
+      parentWorkspaceId: parentWorkspace?.id || "",
+      options,
+    });
+
+    const workspace: Record<string, unknown> = {
+      id: `workspace-${randomUUID()}`,
+      name: newBranchName,
+      icon: this.reviewIcon,
+      color: this.reviewColor,
+      kind: "terminal",
+      source: "manual",
+      pluginId: "",
+      cwd: checkout.rootPath,
+      notes: "",
+      profileId: activeProfile,
+      activePanelId: panels[0]?.id || "",
+      panels,
+      review,
+      quickfix,
+    };
+
+    return { workspace, parentWorkspaceId: parentWorkspace?.id || "" };
   }
 }
 
