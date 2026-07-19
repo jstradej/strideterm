@@ -168,7 +168,7 @@
 <script setup lang="ts">
 import { ref, reactive, inject, onMounted, useAttrs } from "vue";
 import type { Transport } from "../../transport.js";
-import { pickPath } from "../../lib/pick-path.js";
+import { useConnectionDialogForm } from "../../composables/useConnectionDialogForm.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -215,18 +215,7 @@ const draft = reactive({
   enabled: props.connection?.enabled !== false,
 });
 
-const busy = ref(false);
-const errorMessage = ref("");
-const verification = ref<{ projectCount: number; projects: { name: string }[] } | null>(null);
-
 onMounted(() => labelRef.value?.focus());
-
-async function browseReviewRoot() {
-  const browseDirectory = api?.browseDirectory;
-  if (!browseDirectory) return;
-  const selected = await pickPath(() => browseDirectory(draft.reviewRoot || props.defaultReviewRoot || ""));
-  if (selected) draft.reviewRoot = selected;
-}
 
 function buildDraftPayload() {
   return {
@@ -249,30 +238,17 @@ function buildDraftPayload() {
   };
 }
 
-async function testConnection() {
-  busy.value = true;
-  errorMessage.value = "";
-  verification.value = null;
-  try {
-    verification.value = (await api?.verifyAzureConnection?.(buildDraftPayload())) as {
-      projectCount: number;
-      projects: { name: string }[];
-    } | null;
-  } catch (err) {
-    errorMessage.value = (err as Error)?.message || "Azure DevOps connection test failed.";
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function handleSubmit() {
-  busy.value = true;
-  errorMessage.value = "";
-  try {
-    await (attrs.onSave as ((payload: unknown) => Promise<void>) | undefined)?.(buildDraftPayload());
-  } catch (err) {
-    errorMessage.value = (err as Error)?.message || "Saving Azure DevOps connection failed.";
-    busy.value = false;
-  }
-}
+const { busy, errorMessage, verification, browseReviewRoot, testConnection, handleSubmit } = useConnectionDialogForm<
+  ReturnType<typeof buildDraftPayload>,
+  { projectCount: number; projects: { name: string }[] }
+>({
+  draft,
+  defaultReviewRoot: () => props.defaultReviewRoot,
+  browseDirectory: api?.browseDirectory,
+  buildPayload: buildDraftPayload,
+  verify: (payload) =>
+    api?.verifyAzureConnection?.(payload) as Promise<{ projectCount: number; projects: { name: string }[] } | null> | undefined,
+  onSave: (payload) => (attrs.onSave as ((payload: unknown) => Promise<void>) | undefined)?.(payload),
+  providerLabel: "Azure DevOps",
+});
 </script>

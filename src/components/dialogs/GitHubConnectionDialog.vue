@@ -98,7 +98,7 @@
 <script setup lang="ts">
 import { ref, reactive, inject, onMounted, useAttrs } from "vue";
 import type { Transport } from "../../transport.js";
-import { pickPath } from "../../lib/pick-path.js";
+import { useConnectionDialogForm } from "../../composables/useConnectionDialogForm.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -143,18 +143,7 @@ const draft = reactive({
   enabled: props.connection?.enabled !== false,
 });
 
-const busy = ref(false);
-const errorMessage = ref("");
-const verification = ref<{ login: string; name?: string } | null>(null);
-
 onMounted(() => labelRef.value?.focus());
-
-async function browseReviewRoot() {
-  const browseDirectory = api?.browseDirectory;
-  if (!browseDirectory) return;
-  const selected = await pickPath(() => browseDirectory(draft.reviewRoot || props.defaultReviewRoot || ""));
-  if (selected) draft.reviewRoot = selected;
-}
 
 function buildDraftPayload() {
   return {
@@ -176,30 +165,17 @@ function buildDraftPayload() {
   };
 }
 
-async function testConnection() {
-  busy.value = true;
-  errorMessage.value = "";
-  verification.value = null;
-  try {
-    verification.value = (await api?.verifyGitHubConnection?.(buildDraftPayload())) as {
-      login: string;
-      name?: string;
-    } | null;
-  } catch (err) {
-    errorMessage.value = (err as Error)?.message || "GitHub connection test failed.";
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function handleSubmit() {
-  busy.value = true;
-  errorMessage.value = "";
-  try {
-    await (attrs.onSave as ((payload: unknown) => Promise<void>) | undefined)?.(buildDraftPayload());
-  } catch (err) {
-    errorMessage.value = (err as Error)?.message || "Saving GitHub connection failed.";
-    busy.value = false;
-  }
-}
+const { busy, errorMessage, verification, browseReviewRoot, testConnection, handleSubmit } = useConnectionDialogForm<
+  ReturnType<typeof buildDraftPayload>,
+  { login: string; name?: string }
+>({
+  draft,
+  defaultReviewRoot: () => props.defaultReviewRoot,
+  browseDirectory: api?.browseDirectory,
+  buildPayload: buildDraftPayload,
+  verify: (payload) =>
+    api?.verifyGitHubConnection?.(payload) as Promise<{ login: string; name?: string } | null> | undefined,
+  onSave: (payload) => (attrs.onSave as ((payload: unknown) => Promise<void>) | undefined)?.(payload),
+  providerLabel: "GitHub",
+});
 </script>
