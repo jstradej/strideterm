@@ -282,6 +282,40 @@ describe("WorkspaceDialog", () => {
       expect(wrapper.find(".multi-repo-rescan-btn").exists()).toBe(true);
     });
 
+    test("re-scan failure shows a visible error instead of silently vanishing the section", async () => {
+      // Category A (code-review batch, 2026-07): rescanDirectory used to swallow
+      // a probeDirectory rejection into `null`, which silently reset
+      // cwdProbeResult (and thus hid the whole multi-repo section) with no
+      // explanation. It must now surface a distinct error message.
+      const probeDirectory = vi.fn().mockResolvedValueOnce({
+        childRepos: ["/tmp/monorepo/pkg-a", "/tmp/monorepo/pkg-b"],
+        truncated: false,
+        isGitRepo: false,
+      });
+      const checkIsGitRepo = vi.fn().mockResolvedValue({ isGitRepo: false });
+      const wrapper = mount(WorkspaceDialog, {
+        props: {
+          onCancel: vi.fn(),
+          onSubmit: vi.fn(),
+          workspace: buildProjectDraft({ cwd: "" }),
+        },
+        global: { provide: { api: { probeDirectory, checkIsGitRepo } } },
+      });
+      await wrapper.find('input[name="cwd"]').setValue("/tmp/monorepo");
+      await new Promise((r) => setTimeout(r, 400));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find(".multi-repo-section").exists()).toBe(true);
+
+      probeDirectory.mockRejectedValueOnce(new Error("scan failed: permission denied"));
+      await wrapper.find(".multi-repo-rescan-btn").trigger("click");
+      await flushPromises();
+
+      // Section stays visible (previous probe result is preserved) and the
+      // failure is now explained instead of the section just disappearing.
+      expect(wrapper.find(".multi-repo-section").exists()).toBe(true);
+      expect(wrapper.text()).toContain("scan failed: permission denied");
+    });
+
     test("multi-repo section is NOT shown when probe returns only 1 child repo", async () => {
       const probeDirectory = vi.fn().mockResolvedValue({
         childRepos: ["/tmp/monorepo/pkg-a"],
