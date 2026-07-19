@@ -343,12 +343,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from "vue";
+import { computed, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
+import { useInboxConnectionFocus } from "../../composables/useInboxConnectionFocus.js";
 import PaneShell from "../layout/PaneShell.vue";
 import AzurePrRow from "./azure/AzurePrRow.vue";
 import AzureAuditLog from "./azure/AzureAuditLog.vue";
@@ -420,33 +421,9 @@ const inbox = computed(() => {
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.azureDevops?.reviewRoot || "");
 
 // Deep-link: when the user clicks a "connection error" notification, the
-// store carries a focus request. If it targets one of this pane's
-// connections, switch to the Connections tab and highlight + scroll to it so
-// the failing connection is immediately obvious (red border + ❗ already mark
-// it; the highlight outline shows which one was clicked). Match on connection
-// id membership — ids are unique per provider, so the wrong pane never reacts.
-const connectionListRef = ref<HTMLElement | null>(null);
-const highlightedConnectionId = ref("");
-let highlightTimer: ReturnType<typeof setTimeout> | null = null;
-watch(
-  () => appStore.inboxConnectionFocus,
-  (req) => {
-    if (!req?.connectionId) return;
-    if (Date.now() - req.ts > 15000) return; // stale request — don't hijack a later visit
-    if (!myConnectionIds.value.has(req.connectionId)) return; // belongs to another pane
-    appStore.inboxConnectionFocus = null; // consume so it fires once
-    activeTab.value = "connections";
-    highlightedConnectionId.value = req.connectionId;
-    if (highlightTimer) clearTimeout(highlightTimer);
-    highlightTimer = setTimeout(() => (highlightedConnectionId.value = ""), 4000);
-    nextTick(() => {
-      connectionListRef.value
-        ?.querySelector(`[data-connection-id="${req.connectionId}"]`)
-        ?.scrollIntoView({ block: "center", behavior: "smooth" });
-    });
-  },
-  { immediate: true },
-);
+// store carries a focus request targeting one of this pane's connections.
+// See useInboxConnectionFocus for the shared switch-tab/highlight/scroll logic.
+const { connectionListRef, highlightedConnectionId } = useInboxConnectionFocus(myConnectionIds, activeTab);
 
 // Pipelines with a failed/canceled latest run — surfaced as the Pipelines tab
 // badge so failures stand out without opening the tab. Reflects whatever the

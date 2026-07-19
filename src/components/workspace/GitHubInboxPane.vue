@@ -252,11 +252,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from "vue";
+import { computed, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
+import { useInboxConnectionFocus } from "../../composables/useInboxConnectionFocus.js";
 import PaneShell from "../layout/PaneShell.vue";
 import GitHubPrRow from "./github/GitHubPrRow.vue";
 import AuditLog from "./azure/AzureAuditLog.vue";
@@ -314,31 +315,10 @@ const inbox = computed(() => {
 });
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.github?.reviewRoot || "");
 
-// Deep-link from a "connection error" notification — mirror of AzureInboxPane:
-// switch to the Connections tab and highlight + scroll to the failing
-// connection. Matches on connection id membership so only the owning pane reacts.
-const connectionListRef = ref<HTMLElement | null>(null);
-const highlightedConnectionId = ref("");
-let highlightTimer: ReturnType<typeof setTimeout> | null = null;
-watch(
-  () => appStore.inboxConnectionFocus,
-  (req) => {
-    if (!req?.connectionId) return;
-    if (Date.now() - req.ts > 15000) return; // stale request — don't hijack a later visit
-    if (!myConnectionIds.value.has(req.connectionId)) return; // belongs to another pane
-    appStore.inboxConnectionFocus = null; // consume so it fires once
-    activeTab.value = "connections";
-    highlightedConnectionId.value = req.connectionId;
-    if (highlightTimer) clearTimeout(highlightTimer);
-    highlightTimer = setTimeout(() => (highlightedConnectionId.value = ""), 4000);
-    nextTick(() => {
-      connectionListRef.value
-        ?.querySelector(`[data-connection-id="${req.connectionId}"]`)
-        ?.scrollIntoView({ block: "center", behavior: "smooth" });
-    });
-  },
-  { immediate: true },
-);
+// Deep-link from a "connection error" notification — see
+// useInboxConnectionFocus for the shared switch-tab/highlight/scroll logic
+// (mirrors AzureInboxPane; matches on connection id so only the owning pane reacts).
+const { connectionListRef, highlightedConnectionId } = useInboxConnectionFocus(myConnectionIds, activeTab);
 
 const inboxTabs = computed(() => [
   {
