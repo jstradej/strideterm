@@ -5,7 +5,7 @@ import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
-import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./github-pr-summary.js";
+import { buildCheckSummary, buildPullRequestSummary, findWorkspaceForPullRequest } from "./github-pr-summary.js";
 import {
   appendReviewActivity,
   buildConnectionErrorEvent,
@@ -34,6 +34,7 @@ import {
   createEmptySnapshot,
   exists,
   buildRepositoryRemoteUrl,
+  dedupePrSummaries,
 } from "./github-utils.js";
 
 interface SyncConnection {
@@ -464,7 +465,21 @@ export class GitHubManager extends BaseProviderManager {
             closedAt: pr.closed_at || null,
           },
         };
-      } catch {
+      } catch (error) {
+        // GitHub's requestJson embeds the HTTP status in the thrown message, e.g.
+        // "GitHub request failed (404): ...". Only a 404/410 means the PR is
+        // genuinely gone — any other failure (network blip, 500, timeout,
+        // unparseable status) is transient, so leave detailMap[key] untouched
+        // and let the next poll cycle retry the check instead of permanently
+        // mislabeling a still-active PR as closed.
+        const message = (error as Error).message || String(error);
+        const statusMatch = message.match(/request failed \((\d+)\)/);
+        const statusCode = statusMatch ? Number(statusMatch[1]) : undefined;
+        if (statusCode !== 404 && statusCode !== 410) {
+          this.log.warn("stale PR check failed, will retry next poll", { prKey: key, statusCode, err: message });
+          continue;
+        }
+        this.log.warn("stale PR confirmed gone, marking closed", { prKey: key, statusCode, err: message });
         detailMap[key] = {
           ...(existing || {}),
           connectionId: ws.review.connectionId,
@@ -482,27 +497,34 @@ export class GitHubManager extends BaseProviderManager {
       await this.reviewStore.upsertTrackedPullRequest(key, tracked);
     }
 
-    const recentlyUpdated = visibleSummaries
+    // Collapse PRs that several connections fetched independently (e.g. 2
+    // GitHub connections with access to the same repo → same PR twice
+    // otherwise). Mirrors AzureDevOpsManager — the per-connection
+    // trackedPullRequests / detailMap are kept intact; dedup applies only to
+    // the inbox views the user sees.
+    const dedupedSummaries = dedupePrSummaries(visibleSummaries);
+
+    const recentlyUpdated = dedupedSummaries
       .slice()
       .sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt));
 
     const snapshot = {
       connections: connectionSnapshots,
       inbox: {
-        needsMyReview: visibleSummaries
+        needsMyReview: dedupedSummaries
           .filter((s) => s.role === "reviewer")
           .sort((a, b) => {
             if (a.hasAttention !== b.hasAttention) return Number(b.hasAttention) - Number(a.hasAttention);
             return parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt);
           }),
-        myPullRequests: visibleSummaries
+        myPullRequests: dedupedSummaries
           .filter((s) => s.role === "author")
           .sort((a, b) => {
             if (a.hasAttention !== b.hasAttention) return Number(b.hasAttention) - Number(a.hasAttention);
             return parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt);
           }),
         recentlyUpdated,
-        needsAttention: visibleSummaries
+        needsAttention: dedupedSummaries
           .filter((s) => s.hasAttention)
           .sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt)),
       },
@@ -751,50 +773,13 @@ export class GitHubManager extends BaseProviderManager {
       patch: f.patch || "",
     }));
 
-    // Inline check aggregation
-    const checks: { failedCount: number; pendingCount: number; passedCount: number; items: Record<string, unknown>[] } =
-      { failedCount: 0, pendingCount: 0, passedCount: 0, items: [] };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const run of checkRuns as any[]) {
-      const conclusion = String(run.conclusion || run.status || "").toLowerCase();
-      let state = "unknown";
-      if (["failure", "timed_out", "action_required", "cancelled"].includes(conclusion)) state = "failed";
-      else if (["queued", "in_progress", "waiting", "pending", "requested"].includes(conclusion)) state = "pending";
-      else if (["success", "neutral", "skipped"].includes(conclusion)) state = "succeeded";
-      checks.items.push({
-        id: `check:${run.id}`,
-        kind: "check",
-        name: run.name || "Check",
-        description: run.output?.title || "",
-        state,
-        url: run.html_url || run.details_url || "",
-      });
-      if (state === "failed") checks.failedCount++;
-      else if (state === "pending") checks.pendingCount++;
-      else if (state === "succeeded") checks.passedCount++;
-    }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((combinedStatus as any)?.statuses) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      for (const status of (combinedStatus as any).statuses as any[]) {
-        const s = String(status.state || "").toLowerCase();
-        let state = "unknown";
-        if (["failure", "error"].includes(s)) state = "failed";
-        else if (["pending"].includes(s)) state = "pending";
-        else if (["success"].includes(s)) state = "succeeded";
-        checks.items.push({
-          id: `status:${status.id || status.context}`,
-          kind: "status",
-          name: status.context || "Status",
-          description: status.description || "",
-          state,
-          url: status.target_url || "",
-        });
-        if (state === "failed") checks.failedCount++;
-        else if (state === "pending") checks.pendingCount++;
-        else if (state === "succeeded") checks.passedCount++;
-      }
-    }
+    // Shared with github-pr-summary.ts's ensurePullRequestSummary path so a check's
+    // aggregated state (failed/pending/succeeded) can't drift between the inbox
+    // summary and this detail view.
+    const checks = buildCheckSummary(
+      checkRuns as Array<Record<string, unknown>>,
+      combinedStatus as Record<string, unknown> | null,
+    );
 
     const workspace =
       findWorkspaceForPullRequest(workspaces as Array<{ id: string; [key: string]: unknown }>, prKey) ||

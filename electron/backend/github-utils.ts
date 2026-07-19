@@ -18,6 +18,7 @@ export {
   exists,
   createEmptySnapshot,
   extractErrorText,
+  dedupePrSummaries,
 } from "./shared/provider-utils.js";
 
 import { trimTrailingSlash } from "./shared/provider-utils.js";

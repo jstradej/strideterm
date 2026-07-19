@@ -147,7 +147,7 @@ function summarizeReviewers(
 /**
  * Build check summary from check runs and combined status.
  */
-function buildCheckSummary(
+export function buildCheckSummary(
   checkRuns: Array<Record<string, unknown>> = [],
   combinedStatus: Record<string, unknown> | null = null,
 ): {

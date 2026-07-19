@@ -102,7 +102,11 @@ export function extractErrorText(error: unknown): string {
  */
 export interface PrSummaryDedupShape {
   orgUrl?: string;
-  repository?: { id?: string };
+  // GitHub summaries key their host as `hostUrl` instead of `orgUrl`, and
+  // identify a repository by `fullName` rather than a numeric `id` — both
+  // are accepted as fallbacks so the same helper works for either provider.
+  hostUrl?: string;
+  repository?: { id?: string; fullName?: string };
   pullRequest?: { id?: string | number };
   hasAttention?: boolean;
   role?: string;
@@ -130,8 +134,8 @@ export interface PrSummaryDedupShape {
 export function dedupePrSummaries<T extends PrSummaryDedupShape>(summaries: T[]): T[] {
   const byKey = new Map<string, T>();
   for (const summary of summaries) {
-    const orgUrl = summary.orgUrl || "";
-    const repoId = summary.repository?.id || "";
+    const orgUrl = summary.orgUrl || summary.hostUrl || "";
+    const repoId = summary.repository?.id || summary.repository?.fullName || "";
     const prId = summary.pullRequest?.id != null ? String(summary.pullRequest.id) : "";
     if (!repoId || !prId) {
       byKey.set(`__nokey__${summary.prKey || byKey.size}`, summary);
