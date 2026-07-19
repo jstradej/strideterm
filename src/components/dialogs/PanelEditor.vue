@@ -66,98 +66,7 @@
           </div>
         </label>
 
-        <!-- Launch mode toggle: plain shell vs. WSL helper. The WSL helper
-             builds the `wsl -- bash -lic "cd … && …; exec bash"` boilerplate
-             from structured fields so users don't have to remember the
-             quoting. Mirrors the toggle in EditTabDialog. -->
-        <div class="segmented panel-card__launch-mode" role="tablist" aria-label="Launch mode">
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="getLaunchMode(panel) === 'shell'"
-            :class="['segmented__btn', { 'segmented__btn--active': getLaunchMode(panel) === 'shell' }]"
-            title="Run the command directly in your default shell."
-            @click="setLaunchMode(panel, 'shell')"
-          >
-            💻 Shell
-          </button>
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="getLaunchMode(panel) === 'wsl'"
-            :class="['segmented__btn', { 'segmented__btn--active': getLaunchMode(panel) === 'wsl' }]"
-            title="Wrap your command in `wsl -- bash -lic '…'` with optional distro, working directory, and keep-shell-open flag."
-            @click="setLaunchMode(panel, 'wsl')"
-          >
-            🐧 WSL
-          </button>
-        </div>
-
-        <template v-if="getLaunchMode(panel) === 'shell'">
-          <label>
-            <span>Command</span>
-            <input v-model="panel.command" placeholder="optional boot command" maxlength="500" />
-          </label>
-        </template>
-        <template v-else>
-          <div class="wsl-grid">
-            <label>
-              <span>Distro (optional)</span>
-              <input
-                :value="wslStateFor(panel).distro"
-                placeholder="e.g. Ubuntu-22.04 — leave blank for default"
-                maxlength="60"
-                title="Optional WSL distribution name (passed as `wsl -d <distro>`). Leave blank to use your configured default distro."
-                @input="updateWsl(panel, 'distro', ($event.target as HTMLInputElement).value)"
-              />
-            </label>
-            <label>
-              <span>Working directory (optional)</span>
-              <input
-                :value="wslStateFor(panel).cwd"
-                placeholder="/home/you"
-                maxlength="500"
-                title="Optional `cd <path>` to run before your command. Use a Linux-style path inside the WSL distro."
-                @input="updateWsl(panel, 'cwd', ($event.target as HTMLInputElement).value)"
-              />
-            </label>
-          </div>
-          <label>
-            <span>Command</span>
-            <input
-              :value="wslStateFor(panel).command"
-              placeholder="claude --dangerously-skip-permissions"
-              maxlength="500"
-              title="The actual command to run inside the WSL shell — no quoting needed, strIDEterm handles it."
-              @input="updateWsl(panel, 'command', ($event.target as HTMLInputElement).value)"
-            />
-          </label>
-          <label class="wsl-keep-open">
-            <input
-              type="checkbox"
-              :checked="wslStateFor(panel).keepOpen"
-              @change="updateWsl(panel, 'keepOpen', ($event.target as HTMLInputElement).checked)"
-            />
-            <span>
-              Keep shell open after the command exits
-              <small>Appends `; exec bash` so the WSL terminal stays open instead of closing on exit.</small>
-            </span>
-          </label>
-          <div
-            class="wsl-preview"
-            title="The actual command strIDEterm will run. The structured fields above are just a helper — you can edit this directly for anything they don't cover (e.g. extra wsl flags)."
-          >
-            <span class="wsl-preview__label">Generated command</span>
-            <input
-              :value="panel.command"
-              class="wsl-preview__code wsl-preview__code--input"
-              placeholder="(empty — nothing will run)"
-              maxlength="500"
-              spellcheck="false"
-              @input="panel.command = ($event.target as HTMLInputElement).value"
-            />
-          </div>
-        </template>
+        <WslCommandFields v-model:command="panel.command" compact />
 
         <label
           class="panel-card__toggle"
@@ -172,10 +81,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, watch } from "vue";
+import { ref, computed } from "vue";
 import { APP_CONFIG } from "../../../config/app-config.js";
-import { buildWslCommand, parseWslCommand, type WslState } from "./wsl-launcher.js";
 import { BADGE_ICONS, getTitleIcon, setTitleIcon } from "../../lib/badge-icons.js";
+import WslCommandFields from "./WslCommandFields.vue";
 
 const DEFAULT_TAB_TEMPLATES = [
   { title: "Shell", command: "", icon: "\u{1F4BB}" },
@@ -242,105 +151,6 @@ function pickPanelIcon(panel: PanelEntry, icon: string) {
   panelIconPickerOpen.value = next;
 }
 
-// --- WSL launcher per-panel state ------------------------------------------
-// Each panel keeps its own structured WSL fields. The flat panel.command is
-// the persisted source of truth (round-trippable via parseWslCommand /
-// buildWslCommand); these reactive maps just hold the editor state so the
-// user can toggle Shell↔WSL without losing what they've typed.
-
-const wslStates = reactive<Record<string, WslState>>({});
-const panelLaunchModes = reactive<Record<string, "shell" | "wsl">>({});
-
-function isWslLike(cmd: string): boolean {
-  return /^wsl(\s|$)/i.test((cmd || "").trim());
-}
-
-function ensurePanelMode(panel: PanelEntry) {
-  if (panelLaunchModes[panel.id]) return;
-  const parsed = parseWslCommand(panel.command || "");
-  if (parsed) {
-    wslStates[panel.id] = { ...parsed };
-    panelLaunchModes[panel.id] = "wsl";
-    return;
-  }
-  if (isWslLike(panel.command)) {
-    // Bare `wsl` or `wsl -d <distro>` from the template — open in WSL mode
-    // with whatever distro flag we can extract. keepOpen=false so the build
-    // returns "" for an unedited form and panel.command stays as the
-    // original bare command on submit.
-    const distroMatch = /^wsl\s+-d\s+(\S+)/i.exec((panel.command || "").trim());
-    wslStates[panel.id] = {
-      distro: distroMatch?.[1] || "",
-      cwd: "",
-      command: "",
-      keepOpen: false,
-    };
-    panelLaunchModes[panel.id] = "wsl";
-    return;
-  }
-  wslStates[panel.id] = { distro: "", cwd: "", command: "", keepOpen: true };
-  panelLaunchModes[panel.id] = "shell";
-}
-
-watch(
-  () => props.panels.map((p) => p.id).join("|"),
-  () => {
-    for (const panel of props.panels) ensurePanelMode(panel);
-  },
-  { immediate: true },
-);
-
-function getLaunchMode(panel: PanelEntry): "shell" | "wsl" {
-  ensurePanelMode(panel);
-  return panelLaunchModes[panel.id];
-}
-
-function wslStateFor(panel: PanelEntry): WslState {
-  ensurePanelMode(panel);
-  return wslStates[panel.id];
-}
-
-function setLaunchMode(panel: PanelEntry, mode: "shell" | "wsl") {
-  ensurePanelMode(panel);
-  if (panelLaunchModes[panel.id] === mode) return;
-  if (mode === "wsl") {
-    // Seed inner command from the current panel.command if it's plain text
-    // (not already a WSL wrapper) so the user doesn't lose what they typed
-    // when toggling. Parsing the wrapper would also work but the typical
-    // case is "user typed `claude`, clicked WSL" — preserve `claude`.
-    const parsed = parseWslCommand(panel.command || "");
-    if (parsed) {
-      wslStates[panel.id] = { ...parsed };
-    } else if (panel.command?.trim() && !wslStates[panel.id].command && !isWslLike(panel.command)) {
-      wslStates[panel.id].command = panel.command.trim();
-    }
-  } else {
-    // Switching back to Shell: keep the generated WSL wrapper in
-    // panel.command so the user keeps their work — they can edit it inline
-    // or delete it and start over.
-    const generated = buildWslCommand(wslStates[panel.id]);
-    if (generated) panel.command = generated;
-  }
-  panelLaunchModes[panel.id] = mode;
-  syncPanelCommand(panel);
-}
-
-function updateWsl<K extends keyof WslState>(panel: PanelEntry, field: K, value: WslState[K]) {
-  ensurePanelMode(panel);
-  wslStates[panel.id][field] = value;
-  syncPanelCommand(panel);
-}
-
-function syncPanelCommand(panel: PanelEntry) {
-  if (panelLaunchModes[panel.id] !== "wsl") return;
-  const generated = buildWslCommand(wslStates[panel.id]);
-  // Only overwrite when the user actually filled something in. An empty
-  // generated string means all WSL fields are blank — in that case keep
-  // whatever the panel.command already is (e.g. the bare `wsl` from the
-  // template) so toggling into WSL mode and not editing doesn't destroy it.
-  if (generated) panel.command = generated;
-}
-
 function addPanel() {
   emit("update:panels", [
     ...props.panels,
@@ -368,8 +178,6 @@ function addPanelFromTemplate(tmpl: TabTemplate) {
 }
 
 function removePanel(panelId: string) {
-  delete wslStates[panelId];
-  delete panelLaunchModes[panelId];
   emit(
     "update:panels",
     props.panels.filter((p) => p.id !== panelId),
@@ -460,113 +268,5 @@ function removePanel(panelId: string) {
   letter-spacing: normal;
   color: var(--text);
   font-weight: 500;
-}
-
-/* Launch-mode segmented control — mirrors EditTabDialog's style so the two
-   places that edit a panel.command stay visually consistent. */
-.segmented {
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border);
-}
-.segmented__btn {
-  flex: 1;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background 0.12s,
-    color 0.12s;
-}
-.segmented__btn:hover:not(.segmented__btn--active) {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
-}
-.segmented__btn--active {
-  background: var(--accent);
-  color: #000;
-}
-
-/* WSL launcher fields — same layout idea as EditTabDialog. */
-.wsl-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
-  gap: 10px;
-}
-.wsl-keep-open {
-  display: flex !important;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0;
-  cursor: pointer;
-  padding: 4px 0;
-}
-.wsl-keep-open input[type="checkbox"] {
-  width: auto;
-  padding: 0;
-  margin: 2px 0 0 0;
-  flex-shrink: 0;
-  accent-color: var(--accent);
-}
-.wsl-keep-open span {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 13px;
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--text);
-  font-weight: 500;
-}
-.wsl-keep-open small {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 400;
-}
-.wsl-preview {
-  display: grid;
-  gap: 4px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.02);
-}
-.wsl-preview__label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-}
-.wsl-preview__code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  color: var(--text);
-  word-break: break-all;
-  white-space: pre-wrap;
-}
-/* Editable form of the preview — same monospace look, but a real input so
-   the user can override anything the structured fields can't express. */
-.wsl-preview__code--input {
-  width: 100%;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: rgba(var(--tint), 0.04);
-  outline: none;
-}
-.wsl-preview__code--input:focus {
-  border-color: var(--accent);
-  background: rgba(var(--tint), 0.06);
 }
 </style>
