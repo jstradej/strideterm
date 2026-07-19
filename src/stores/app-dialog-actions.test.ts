@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ref, shallowRef } from "vue";
 import { createDialogActions } from "./app-dialog-actions.js";
+import { resolveViewerProfileId } from "./app.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -23,6 +24,7 @@ function makeCtx(payloadValue: AnyApi) {
     getPanelByViewId: () => null,
     createWorktree: async () => undefined,
     quickAddTemplateTab: async () => undefined,
+    resolveViewerProfileId,
   } as AnyApi;
 }
 
@@ -363,7 +365,10 @@ describe("createDialogActions profile-aware saves", () => {
           { id: "ws-active", name: "Azure", profileId: "profile-a", cwd: "C:\\active", kind: "azure", panels: [] },
           { id: "ws-clicked", name: "mhub", profileId: "profile-a", cwd: "C:\\mhub", kind: "terminal", panels: [] },
         ],
-        windowSlots: [{ id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-active" }],
+        // This describe block's beforeEach sets the current window to "win-b" —
+        // its slot must be present for currentProfileId() to resolve it (sibling
+        // tests in this block all include it; this one was missing it).
+        windowSlots: [{ id: "win-b", profileId: "profile-a", activeWorkspaceId: "ws-active" }],
       },
       // Active workspace context points at the Azure workspace.
       workspace: {

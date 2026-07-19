@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { nextTick } from "vue";
-import { useAppStore } from "./app.js";
+import { useAppStore, resolveViewerProfileId } from "./app.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -1110,5 +1110,114 @@ describe("handleBroadcastPayload — remote revision gate (bootstrap→WS handof
     transport._push(remotePayload(1, "v-after-restart"));
     await Promise.resolve();
     expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v-after-restart");
+  });
+});
+
+// Pins the consolidated fallback order (code review 2026-07 §5.4): app.ts's
+// resolveRemoteProfileId + myActiveProfileId pairing was picked as the
+// authoritative implementation over 3 divergent copies previously living in
+// app-dialog-actions.ts (x2) and app-api-actions.ts. All 4 call sites now
+// delegate here — this is the ONE place that fallback order is decided.
+describe("resolveViewerProfileId — pinned fallback order", () => {
+  function payload(overrides: AnyApi = {}): AnyApi {
+    return {
+      appState: {
+        profiles: [{ id: "profile-a" }, { id: "profile-b" }],
+        windowSlots: [{ id: "win-a", profileId: "profile-a" }],
+      },
+      ...overrides,
+    };
+  }
+
+  describe("desktop (isRemote: false)", () => {
+    it("returns this window's slot profileId when the slot exists", () => {
+      const p = payload();
+      expect(resolveViewerProfileId(p, { isRemote: false, windowId: "win-a" })).toBe("profile-a");
+    });
+
+    it("returns null (no profiles[0]/'default' fallback) when this window has no matching slot", () => {
+      // Every open window always has its own slot in real usage; this is the
+      // hyper-edge-case tail of the fallback chain. app.ts's version stops
+      // here rather than guessing profiles[0] like the old dialog-actions
+      // copy did — callers that need a non-null value apply their own
+      // `|| "default"` at the point of use (see currentProfileId()).
+      const p = payload();
+      expect(resolveViewerProfileId(p, { isRemote: false, windowId: "win-missing" })).toBeNull();
+    });
+
+    it("returns null when no windowId is available at all", () => {
+      const p = payload();
+      expect(resolveViewerProfileId(p, { isRemote: false, windowId: "" })).toBeNull();
+    });
+
+    it("returns null when the matching slot has no profileId", () => {
+      const p = payload({
+        appState: {
+          profiles: [{ id: "profile-a" }],
+          windowSlots: [{ id: "win-a" }],
+        },
+      });
+      expect(resolveViewerProfileId(p, { isRemote: false, windowId: "win-a" })).toBeNull();
+    });
+  });
+
+  describe("remote (isRemote: true)", () => {
+    it("returns remoteClient.profileId when it names a real profile", () => {
+      const p = payload({ remoteClient: { profileId: "profile-b" } });
+      expect(resolveViewerProfileId(p, { isRemote: true, windowId: "" })).toBe("profile-b");
+    });
+
+    it("falls back past a stale remoteClient.profileId (deleted profile) to a slot with a valid profile", () => {
+      const p = payload({
+        appState: {
+          profiles: [{ id: "profile-a" }, { id: "profile-b" }],
+          windowSlots: [{ id: "win-a", profileId: "profile-a" }],
+        },
+        remoteClient: { profileId: "profile-deleted" },
+      });
+      expect(resolveViewerProfileId(p, { isRemote: true, windowId: "" })).toBe("profile-a");
+    });
+
+    it("skips a slot whose profileId no longer names a real profile, preferring one that does", () => {
+      const p = payload({
+        appState: {
+          profiles: [{ id: "profile-b" }],
+          windowSlots: [
+            { id: "win-a", profileId: "profile-deleted" },
+            { id: "win-b", profileId: "profile-b" },
+          ],
+        },
+      });
+      expect(resolveViewerProfileId(p, { isRemote: true, windowId: "" })).toBe("profile-b");
+    });
+
+    it("falls back to the first (id-bearing) profile when no slot names a valid profile", () => {
+      const p = payload({
+        appState: {
+          profiles: [{ id: "profile-a" }, { id: "profile-b" }],
+          windowSlots: [{ id: "win-a", profileId: "profile-deleted" }],
+        },
+      });
+      expect(resolveViewerProfileId(p, { isRemote: true, windowId: "" })).toBe("profile-a");
+    });
+
+    it("filters out malformed profile entries (no id) before taking the profiles[0] fallback", () => {
+      // This is the concrete difference vs. the 3 non-authoritative copies:
+      // they used the raw (unfiltered) profiles array for their own
+      // `profiles[0]?.id` fallback, so a malformed leading entry would have
+      // resolved to undefined instead of skipping to the next real profile.
+      const p = payload({
+        appState: {
+          profiles: [{ name: "malformed, no id" }, { id: "profile-b" }],
+          windowSlots: [],
+        },
+      });
+      expect(resolveViewerProfileId(p, { isRemote: true, windowId: "" })).toBe("profile-b");
+    });
+
+    it("returns null when there is truly no profile information available", () => {
+      const p = payload({ appState: { profiles: [], windowSlots: [] } });
+      expect(resolveViewerProfileId(p, { isRemote: true, windowId: "" })).toBeNull();
+    });
   });
 });

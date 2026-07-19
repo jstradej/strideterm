@@ -30,6 +30,9 @@ interface DialogActionsCtx {
     cwdOverride?: string,
     options?: Record<string, unknown>,
   ) => Promise<void>;
+  /** Single source of truth for "which profile does the current viewer belong
+   *  to" — see resolveViewerProfileId in stores/app.ts. */
+  resolveViewerProfileId: (sourcePayload: unknown, opts: { isRemote: boolean; windowId: string }) => string | null;
 }
 
 // Build an initial CLI command string for a provider — used to pre-populate
@@ -118,25 +121,10 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   // --- Dialog / overlay --------------------------------------------------
 
   function currentProfileId(): string {
-    const payload = ctx.payload.value as AnyApi;
-    const appState = payload?.appState || {};
-    const profiles = (appState.profiles || []) as AnyApi[];
-    const remoteProfileId = payload?.remoteClient?.profileId || "";
-    const slots = (appState.windowSlots || []) as Array<{ id: string; profileId?: string }>;
-    if (ctx.getApi().isRemote) {
-      // The remote client is an independent viewer — any EXISTING profile is
-      // a valid binding, even one with no desktop window.
-      if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) {
-        return remoteProfileId;
-      }
-      return (
-        slots.find((slot) => slot.profileId && profiles.some((profile) => profile.id === slot.profileId))?.profileId ||
-        profiles[0]?.id ||
-        ""
-      );
-    }
     const windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
-    return (windowId && slots.find((slot) => slot.id === windowId)?.profileId) || profiles[0]?.id || "default";
+    return (
+      ctx.resolveViewerProfileId(ctx.payload.value, { isRemote: ctx.getApi().isRemote, windowId }) || "default"
+    );
   }
 
   function openDialog(name: string, props: Record<string, unknown> = {}): void {
@@ -434,17 +422,11 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     const profiles = ((appState as AnyApi).profiles || []) as AnyApi[];
 
     // Determine the current profile for THIS viewer (window slot in Electron,
-    // remoteClient context in remote mode). The remote client is an
-    // independent viewer — any EXISTING profile is a valid binding, no
-    // desktop window required.
+    // remoteClient context in remote mode) via the shared resolveViewerProfileId
+    // — see currentProfileId() elsewhere in this file for the same resolution.
     const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
     const slots = ((appState as AnyApi).windowSlots || []) as Array<{ id: string; profileId: string }>;
-    const remoteProfileId = (ctx.payload.value as AnyApi)?.remoteClient?.profileId || "";
-    const myCurrentProfileId = isRemote
-      ? (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)
-          ? remoteProfileId
-          : slots[0]?.profileId || profiles[0]?.id) || null
-      : (myWindowId && slots.find((s) => s.id === myWindowId)?.profileId) || slots[0]?.profileId || null;
+    const myCurrentProfileId = ctx.resolveViewerProfileId(ctx.payload.value, { isRemote, windowId: myWindowId });
 
     // Build desktopOccupancy map: profileId → number of desktop windows
     // currently showing it. Info-only badge ("Open on desktop: N windows").

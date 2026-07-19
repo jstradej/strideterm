@@ -46,6 +46,52 @@ interface WorkspacePayloadCache {
   activeWorkspaceGit: unknown;
 }
 
+/**
+ * Resolve which profile the CURRENT viewer (this desktop window, or this
+ * remote client) is bound to. Single source of truth for "viewer profile"
+ * resolution — dialog-actions and api-actions call this (via the
+ * resolveViewerProfileId they're handed in their ctx) instead of keeping
+ * their own slightly-different copies. Code review 2026-07 §5.4 found 4
+ * divergent implementations of this same idea; this is the consolidated
+ * one, adopted from this file's original resolveRemoteProfileId +
+ * myActiveProfileId pairing (the most defensive of the four — filters out
+ * malformed profile entries with no id, and prefers a desktop slot whose
+ * profileId still resolves to a real profile over an arbitrary first slot).
+ *
+ * A pure function (not a store method) so dialog-actions/api-actions can
+ * call it without importing from this module (avoiding a circular import,
+ * since this module already imports createDialogActions/createApiActions
+ * from them) and so it's directly unit-testable without Pinia setup.
+ */
+export function resolveViewerProfileId(
+  sourcePayload: unknown,
+  { isRemote, windowId }: { isRemote: boolean; windowId: string },
+): string | null {
+  const appState = (sourcePayload as AnyApi)?.appState || {};
+  const profiles = ((appState.profiles || []) as AnyApi[]).filter((profile) => profile?.id);
+  const slots = (appState.windowSlots || []) as AnyApi[];
+
+  if (isRemote) {
+    // The remote client is an independent viewer: ANY existing profile is a
+    // valid binding — it does not need to be open in a desktop window.
+    const remoteProfileId = (sourcePayload as AnyApi)?.remoteClient?.profileId || "";
+    if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) {
+      return remoteProfileId;
+    }
+    // Fallback for stale payloads: prefer a profile open on the desktop,
+    // else the first existing profile.
+    const openProfileIds = slots.map((slot) => String(slot?.profileId || "")).filter(Boolean);
+    return (
+      openProfileIds.find((profileId) => profiles.some((profile) => profile.id === profileId)) ||
+      profiles[0]?.id ||
+      null
+    );
+  }
+
+  const slot = windowId ? slots.find((s: AnyApi) => s.id === windowId) : null;
+  return slot?.profileId || null;
+}
+
 export const useAppStore = defineStore("app", () => {
   // --- This window's identity (injected via additionalArguments in preload) ---
   const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
@@ -173,30 +219,10 @@ export const useAppStore = defineStore("app", () => {
     return slots.find((s: AnyApi) => s.id === myWindowId) ?? null;
   });
 
-  function resolveRemoteProfileId(sourcePayload: StatePayload | null = payload.value): string | null {
-    // The remote client is an independent viewer: ANY existing profile is a
-    // valid binding — it does not need to be open in a desktop window.
-    const appState = (sourcePayload as AnyApi)?.appState || {};
-    const profiles = ((appState.profiles || []) as AnyApi[]).filter((profile) => profile?.id);
-    const remoteProfileId = (sourcePayload as AnyApi)?.remoteClient?.profileId || "";
-    if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) {
-      return remoteProfileId;
-    }
-    // Fallback for stale payloads: prefer a profile open on the desktop,
-    // else the first existing profile.
-    const slots = (appState.windowSlots || []) as AnyApi[];
-    const openProfileIds = slots.map((slot) => String(slot?.profileId || "")).filter(Boolean);
-    return (
-      openProfileIds.find((profileId) => profiles.some((profile) => profile.id === profileId)) ||
-      profiles[0]?.id ||
-      null
-    );
-  }
-
   function resolveRemoteWorkspaceId(sourcePayload: StatePayload | null = payload.value): string {
     const remoteClient = (sourcePayload as AnyApi)?.remoteClient;
     const workspaces = ((sourcePayload as AnyApi)?.appState?.workspaces || []) as AnyApi[];
-    const profileId = resolveRemoteProfileId(sourcePayload);
+    const profileId = resolveViewerProfileId(sourcePayload, { isRemote: true, windowId: myWindowId });
     // A remote client must NEVER fall back to the global appState.activeWorkspaceId:
     // that value tracks the DESKTOP's selection, so falling back to it made the
     // mobile view snap to whatever workspace the desktop had open — and flip-flop
@@ -220,12 +246,9 @@ export const useAppStore = defineStore("app", () => {
   });
 
   /** ActiveProfileId scoped to this window or remote client context. Null when no profile context is available. */
-  const myActiveProfileId = computed<string | null>(() => {
-    if (isRemoteTransport.value) {
-      return resolveRemoteProfileId();
-    }
-    return myWindowSlot.value?.profileId || null;
-  });
+  const myActiveProfileId = computed<string | null>(() =>
+    resolveViewerProfileId(payload.value, { isRemote: isRemoteTransport.value, windowId: myWindowId }),
+  );
 
   let _prevFilteredWsKey = "";
   let _prevFilteredWs: AnyApi[] = [];
@@ -1254,6 +1277,7 @@ export const useAppStore = defineStore("app", () => {
     getPanelByViewId,
     createWorktree: workspaceActions.createWorktree,
     quickAddTemplateTab: workspaceActions.quickAddTemplateTab,
+    resolveViewerProfileId,
   });
 
   // --- Init ---
@@ -1361,6 +1385,7 @@ export const useAppStore = defineStore("app", () => {
     },
     withSuppressedBroadcast,
     confirmInApp: workspaceActions.confirmInApp,
+    resolveViewerProfileId,
   });
 
   async function resolveTaskRecovery(decisions: Record<string, "continue" | "fresh" | "skip">): Promise<void> {

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { ref, shallowRef } from "vue";
 import { createApiActions } from "./app-api-actions.js";
+import { resolveViewerProfileId } from "./app.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -16,6 +17,7 @@ function makeCtx(payloadValue: AnyApi) {
     getApi: () => ({ isRemote: false }),
     withSuppressedBroadcast: async (fn: () => Promise<void>) => fn(),
     confirmInApp: async () => true,
+    resolveViewerProfileId,
   } as AnyApi;
 }
 

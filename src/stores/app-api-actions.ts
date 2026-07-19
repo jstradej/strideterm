@@ -35,6 +35,9 @@ interface ApiActionsCtx {
     cancelLabel?: string;
     danger?: boolean;
   }) => Promise<boolean>;
+  /** Single source of truth for "which profile does the current viewer belong
+   *  to" — see resolveViewerProfileId in stores/app.ts. */
+  resolveViewerProfileId: (sourcePayload: unknown, opts: { isRemote: boolean; windowId: string }) => string | null;
 }
 
 /**
@@ -455,11 +458,11 @@ export function createApiActions(ctx: ApiActionsCtx) {
   function getRemoteShareUrl(): string {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = ctx.payload.value as any;
+    const isRemote = ctx.getApi().isRemote;
+    // A remote client never shares a remote-access URL of its own — this UI
+    // is desktop-only, so no profile scoping is attempted when already remote.
     const windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
-    const slots = (p?.appState?.windowSlots || []) as Array<{ id: string; profileId?: string }>;
-    const profileId = ctx.getApi().isRemote
-      ? ""
-      : (windowId && slots.find((slot) => slot.id === windowId)?.profileId) || slots[0]?.profileId || "";
+    const profileId = isRemote ? "" : ctx.resolveViewerProfileId(p, { isRemote: false, windowId }) || "";
     return withRemoteToken(
       preferredRemoteUrl({
         urls: p?.remoteAccess?.urls || [],
