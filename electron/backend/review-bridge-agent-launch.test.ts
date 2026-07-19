@@ -279,6 +279,130 @@ describe("review bridge agent launch", () => {
     expect(launch.args).toContain("--additional-mcp-config");
   });
 
+  test("builds an opencode launch with inline OPENCODE_CONFIG_CONTENT mcp wiring", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "opencode", title: "OpenCode", command: "opencode --model anthropic/claude-sonnet-4-6" },
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "linux",
+      },
+    });
+
+    expect(launch).toMatchObject({
+      file: "opencode",
+      skipCommandInjection: true,
+    });
+    // Permission bypass must be present even when the panel command omits it —
+    // review MCP requires tool access without interactive approval prompts.
+    expect(launch.args).toContain("--yolo");
+    // Panel args are inherited (everything after "opencode")
+    expect(launch.args).toContain("--model");
+    expect(launch.args).toContain("anthropic/claude-sonnet-4-6");
+    expect(launch.args).toContain("--prompt");
+
+    expect(launch.env).toBeDefined();
+    const configContent = launch.env.OPENCODE_CONFIG_CONTENT;
+    expect(configContent).toBeTruthy();
+    const parsed = JSON.parse(configContent);
+    expect(parsed.mcp.review.type).toBe("local");
+    expect(parsed.mcp.review.enabled).toBe(true);
+    expect(parsed.mcp.review.command[0]).toBe("C:/Program Files/strIDEterm/strIDEterm.exe");
+    expect(parsed.mcp.review.command).toContain("--review-bridge-mcp");
+    expect(parsed.mcp.review.command).toContain("--review-pr-key");
+    expect(parsed.mcp.review.command).toContain("ado-main:repo-1:123");
+  });
+
+  test("does not duplicate --yolo when panel command already includes it", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "opencode", title: "OpenCode", command: "opencode --yolo --model default" },
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "linux",
+      },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const yoloCount = (launch.args as any[]).filter((arg: any) => arg === "--yolo").length;
+    expect(yoloCount).toBe(1);
+  });
+
+  test("resolves opencode binary path on Windows via commandLookup", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "opencode", title: "OpenCode", command: "opencode" },
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "win32",
+        commandLookup: {
+          opencode: "C:/Users/test/AppData/Roaming/npm/opencode.cmd",
+        },
+      },
+    });
+
+    expect(launch.file).toBe("C:/Users/test/AppData/Roaming/npm/opencode.cmd");
+    expect(launch.args).toContain("--yolo");
+    expect(launch.env).toMatchObject({
+      ELECTRON_RUN_AS_NODE: "1",
+    });
+    const parsed = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT);
+    expect(parsed.mcp.review.environment).toMatchObject({
+      ELECTRON_RUN_AS_NODE: "1",
+    });
+    expect(parsed.mcp.review.command.join(" ")).toContain("--review-bridge-mcp");
+  });
+
+  test("falls back to bare opencode command on Windows when not resolvable via PATH", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "opencode", title: "OpenCode", command: "opencode" },
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "win32",
+        pathEnv: "",
+      },
+    });
+
+    expect(launch.file).toBe("opencode");
+    expect(launch.env.OPENCODE_CONFIG_CONTENT).toBeTruthy();
+  });
+
+  test("dispatches a detected opencode panel to buildOpencodeLaunch instead of falling through", () => {
+    const panel = { title: "OpenCode session" }; // no command/id — detected via title only
+    expect(detectReviewAgentPanel(panel)).toBe("opencode");
+
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel,
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "linux",
+      },
+    });
+
+    expect(launch).not.toBeNull();
+    expect(launch.file).toBe("opencode");
+    expect(launch.env.OPENCODE_CONFIG_CONTENT).toBeTruthy();
+    const parsed = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT);
+    expect(parsed.mcp.review.command).toContain("--review-bridge-mcp");
+  });
+
   test("uses node plus codex js entrypoint on Windows", () => {
     const launch = buildReviewAgentLaunch({
       workspace: createWorkspace(),

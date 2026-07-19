@@ -452,6 +452,62 @@ function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLau
   };
 }
 
+function buildOpencodeLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
+  const mcp = buildMcpServerSpec({ context, processInfo });
+  const platform = processInfo?.platform || process.platform;
+  const args = [...inheritedPanelArgs(panel)];
+  if (!args.includes("--yolo")) {
+    args.unshift("--yolo");
+  }
+  args.push("--prompt", buildReviewPrompt(context));
+
+  // Unlike Claude/Codex/Copilot, OpenCode's CLI has no flag for inline
+  // per-session MCP config. Its config loader does support OPENCODE_CONFIG_CONTENT
+  // — an env var carrying an opencode.json fragment that's merged on top of the
+  // project config (see https://opencode.ai/docs/mcp-servers/ for the "mcp" shape,
+  // which uses a combined command+args array and "environment" instead of "env").
+  const configContent = JSON.stringify({
+    mcp: {
+      review: {
+        type: "local",
+        command: [mcp.command, ...mcp.args],
+        environment: mcp.env,
+        enabled: true,
+      },
+    },
+  });
+  const env = { ...(mcp.env || {}), OPENCODE_CONFIG_CONTENT: configContent };
+
+  if (platform === "win32") {
+    const opencodePath = resolveWindowsCommandPath("opencode", processInfo, [".cmd", ".bat", ".exe", ".ps1"]);
+    if (opencodePath) {
+      return {
+        file: opencodePath,
+        args,
+        cwd: workspace?.cwd || "",
+        env,
+        skipCommandInjection: true,
+      };
+    }
+
+    return {
+      file: "opencode",
+      args,
+      cwd: workspace?.cwd || "",
+      env,
+      skipCommandInjection: true,
+    };
+  }
+
+  return {
+    file: "opencode",
+    args,
+    cwd: workspace?.cwd || "",
+    env,
+    skipCommandInjection: true,
+  };
+}
+
 export function detectReviewAgentPanel(panel: ReviewPanel = {}): string | null {
   const commandToken = firstCommandToken(panel.command);
   if (SUPPORTED_REVIEW_AGENTS.has(commandToken)) {
@@ -506,6 +562,9 @@ export function buildReviewAgentLaunch({
   }
   if (agent === "copilot") {
     return buildCopilotLaunch({ workspace, panel, context, processInfo });
+  }
+  if (agent === "opencode") {
+    return buildOpencodeLaunch({ workspace, panel, context, processInfo });
   }
   return null;
 }
