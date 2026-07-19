@@ -143,6 +143,12 @@ interface WriteActionOptions {
   connection?: Connection | null;
   extraAudit?: Record<string, unknown>;
   rootPath?: string;
+  // Optional pre-computed pre-write snapshot. Several call sites already
+  // inspect the workspace before deciding what write to run (to pick a
+  // branch/remote, resolve operationState.kind, etc.) — passing it through
+  // lets runWriteAction skip its own redundant inspect instead of redoing
+  // the same dozen+ subprocess calls a moment later.
+  snapshot?: Record<string, unknown>;
 }
 
 interface LogGitAuditOptions {
@@ -1280,6 +1286,7 @@ export class GitManager extends EventEmitter {
       run: (cwd) => runEffect(this.execAuthGitEffect(cwd, pushArgs, { connection })),
       connection,
       rootPath,
+      snapshot,
     });
   }
 
@@ -1354,6 +1361,7 @@ export class GitManager extends EventEmitter {
       connection,
       extraAudit,
       rootPath,
+      snapshot,
     });
   }
 
@@ -1654,6 +1662,7 @@ export class GitManager extends EventEmitter {
       skipPreflight: true,
       run: async (cwd) => this.execGit(cwd, args),
       rootPath,
+      snapshot,
     });
 
     if (result.ok) {
@@ -1714,6 +1723,7 @@ export class GitManager extends EventEmitter {
       skipPreflight: true,
       run: async (cwd) => this.execGit(cwd, args),
       rootPath,
+      snapshot,
     });
 
     if (result.ok) {
@@ -1747,6 +1757,7 @@ export class GitManager extends EventEmitter {
       skipPreflight: true,
       run: async (cwd) => this.execGit(cwd, args),
       rootPath,
+      snapshot,
     });
 
     if (result.ok) {
@@ -2075,30 +2086,27 @@ export class GitManager extends EventEmitter {
     ].join(SEP);
 
     try {
-      const result = await this.execGit(effectiveCwd, ["show", "--no-patch", "--shortstat", `--format=${fmt}`, hash]);
-      const raw = String(result.stdout || "").replace(/\r\n/g, "\n");
-      // git show concatenates the format output and the --shortstat line; the
-      // shortstat sits on its own line at the very end. We split on the last
-      // newline that follows the body.
+      // Two purpose-built calls instead of one combined --shortstat +
+      // --format=<fields>%B call: the old approach had to pop/regex-strip a
+      // trailing shortstat line off the end of the raw %B body, which is
+      // fragile if the commit message itself ever contains a line that looks
+      // like a shortstat summary. Nothing follows %B in the metadata format
+      // string, so there's no ambiguity about where the body ends; the stat
+      // line comes from its own `--format=` (empty) call that prints nothing
+      // else.
+      const [metaResult, statResult] = await Promise.all([
+        this.execGit(effectiveCwd, ["show", "--no-patch", `--format=${fmt}`, hash]),
+        this.execGit(effectiveCwd, ["show", "--no-patch", "--shortstat", "--format=", hash]),
+      ]);
+      const raw = String(metaResult.stdout || "").replace(/\r\n/g, "\n");
       const parts = raw.split(SEP);
-      // The 12th field is %B (full body); but everything after the 12th SEP
-      // is part of %B and may itself contain newlines + the appended stat
-      // line. We re-join indices ≥12 in case anyone ever sneaks SEP into a
-      // commit message.
       if (parts.length < 13) {
         return { ok: false, hash, error: "Could not parse git show output." };
       }
-      const tail = parts.slice(12).join(SEP);
-      // Pull the trailing shortstat line (e.g. " 3 files changed, 12 insertions(+), 1 deletion(-)").
-      const tailLines = tail.split(/\n/);
-      let stat = "";
-      while (tailLines.length && tailLines[tailLines.length - 1].trim() === "") tailLines.pop();
-      if (tailLines.length && /file[s]?\s+changed/.test(tailLines[tailLines.length - 1])) {
-        stat = tailLines.pop()!.trim();
-        // Drop the blank line that git inserts between body and shortstat.
-        while (tailLines.length && tailLines[tailLines.length - 1].trim() === "") tailLines.pop();
-      }
-      const body = tailLines.join("\n").trim();
+      // The 12th field is %B (full body); re-join indices ≥12 in case anyone
+      // ever sneaks SEP into a commit message.
+      const body = parts.slice(12).join(SEP).trim();
+      const stat = String(statResult.stdout || "").replace(/\r\n/g, "\n").trim();
       return {
         ok: true,
         hash: parts[0] || hash,
@@ -2161,10 +2169,13 @@ export class GitManager extends EventEmitter {
       connection = null,
       extraAudit = {},
       rootPath = "",
+      snapshot: precomputedSnapshot,
     }: WriteActionOptions,
   ): Promise<Record<string, unknown>> {
     this.invalidateSnapshotCache(workspace.id, rootPath || null);
-    const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
+    const snapshot =
+      precomputedSnapshot ??
+      (await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace)));
     if (!snapshot.available) {
       return createStructuredResult({
         ok: false,
@@ -3271,15 +3282,22 @@ export class GitManager extends EventEmitter {
       return { ok: false, stashes: [], summary: "Workspace has no working directory." };
     }
     try {
-      const result = await this.execGit(effectiveCwd, ["stash", "list", "--format=%gd%x09%ct%x09%H%x09%gs%x09%an"]);
+      // %P (parent hashes) gets us each stash's base commit SHA for free —
+      // no extra `git log <ref>^1` subprocess per stash needed.
+      const result = await this.execGit(effectiveCwd, [
+        "stash",
+        "list",
+        "--format=%gd%x09%ct%x09%H%x09%gs%x09%an%x09%P",
+      ]);
       const lines = String(result.stdout || "")
         .split(/\r?\n/)
         .filter(Boolean);
-      const stashes: StashEntry[] = [];
-      for (const line of lines) {
-        const [ref, ct, hash, subject, author] = line.split("\t");
+
+      // First pass: parse the reflog fields (no subprocess spawning here).
+      const parsed = lines.map((line, i) => {
+        const [ref, ct, hash, subject, author, parents] = line.split("\t");
         const idxMatch = /stash@\{(\d+)\}/.exec(ref || "");
-        const index = idxMatch ? parseInt(idxMatch[1], 10) : stashes.length;
+        const index = idxMatch ? parseInt(idxMatch[1], 10) : i;
         const subj = subject || "";
         const m = /^(WIP on |On )([^:]+): (.*)$/.exec(subj);
         let branch = "";
@@ -3297,39 +3315,51 @@ export class GitManager extends EventEmitter {
           customMessage = subj;
         }
         const date = ct ? new Date(parseInt(ct, 10) * 1000).toISOString() : "";
-
-        let baseCommit = "";
-        let baseSubject = "";
-        try {
-          const baseRes = await this.execGit(effectiveCwd, ["log", "-1", "--format=%h%x09%s", `${ref}^1`]);
-          const parts = String(baseRes.stdout || "")
-            .trim()
-            .split("\t");
-          baseCommit = parts[0] || "";
-          baseSubject = parts.slice(1).join("\t");
-        } catch {
-          // Detached or unborn base — leave blank.
-        }
-
-        const filePaths = await this.stashShowNameOnly(effectiveCwd, ref);
-        const fileCount = filePaths.length;
-
-        stashes.push({
+        // First parent of the stash commit = the base commit it was created on.
+        const baseSha = (parents || "").trim().split(/\s+/)[0] || "";
+        return {
+          ref: ref || "",
           index,
-          ref,
           hash: hash || "",
           date,
           author: author || "",
           branch,
-          baseCommit,
-          baseSubject,
-          message: subj,
+          baseSha,
+          subj,
           customMessage,
           isWipDefault,
-          fileCount,
+        };
+      });
+
+      // Second pass: one batched `git log --no-walk` across every distinct
+      // base SHA (instead of one `git log` per stash), and every stash's
+      // touched-file list fetched concurrently (instead of sequentially) —
+      // both run in parallel since they don't depend on each other.
+      const uniqueBaseShas = [...new Set(parsed.map((p) => p.baseSha).filter(Boolean))];
+      const [baseInfoMap, filePathsList] = await Promise.all([
+        this._resolveStashBaseCommits(effectiveCwd, uniqueBaseShas),
+        Promise.all(parsed.map((p) => this.stashShowNameOnly(effectiveCwd, p.ref))),
+      ]);
+
+      const stashes: StashEntry[] = parsed.map((p, i) => {
+        const baseInfo = p.baseSha ? baseInfoMap.get(p.baseSha) : undefined;
+        const filePaths = filePathsList[i];
+        return {
+          index: p.index,
+          ref: p.ref,
+          hash: p.hash,
+          date: p.date,
+          author: p.author,
+          branch: p.branch,
+          baseCommit: baseInfo?.baseCommit || "",
+          baseSubject: baseInfo?.baseSubject || "",
+          message: p.subj,
+          customMessage: p.customMessage,
+          isWipDefault: p.isWipDefault,
+          fileCount: filePaths.length,
           filePaths,
-        });
-      }
+        };
+      });
       return { ok: true, stashes, summary: `${stashes.length} stash(es) found.` };
     } catch (error) {
       const err = error as { stdout?: string; stderr?: string };
@@ -3339,6 +3369,31 @@ export class GitManager extends EventEmitter {
         summary: joinRawOutput(err.stdout, err.stderr) || "Failed to list stashes.",
       };
     }
+  }
+
+  /**
+   * Batch-resolve short hash + subject for a set of base commit SHAs in one
+   * `git log --no-walk` call, instead of one `git log -1 <ref>^1` per stash.
+   */
+  private async _resolveStashBaseCommits(
+    cwd: string,
+    baseShas: string[],
+  ): Promise<Map<string, { baseCommit: string; baseSubject: string }>> {
+    const map = new Map<string, { baseCommit: string; baseSubject: string }>();
+    if (!baseShas.length) return map;
+    try {
+      const result = await this.execGit(cwd, ["log", "--no-walk", "--format=%H%x09%h%x09%s", ...baseShas]);
+      for (const line of String(result.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean)) {
+        const [full, short, ...subjectParts] = line.split("\t");
+        if (full) map.set(full, { baseCommit: short || "", baseSubject: subjectParts.join("\t") });
+      }
+    } catch {
+      // Detached or unborn base — leave every entry blank (same fallback the
+      // old per-stash `git log -1 <ref>^1` catch produced).
+    }
+    return map;
   }
 
   private async stashShowNameOnly(cwd: string, ref: string): Promise<string[]> {

@@ -1828,6 +1828,195 @@ describe("GitManager", () => {
     });
   });
 
+  describe("commitInfo", () => {
+    const SEP = "\x1f";
+
+    function metaStdout(fields: string[]): string {
+      return fields.join(SEP);
+    }
+
+    test("parses metadata (from the format call) and stat (from the dedicated --shortstat call)", async () => {
+      const fields = [
+        "abcdef1234567890abcdef1234567890abcdef12", // %H
+        "abcdef1", // %h
+        "parent1hash", // %P
+        "Jane Doe", // %an
+        "jane@example.com", // %ae
+        "2026-07-01T10:00:00+02:00", // %aI
+        "Jane Doe", // %cn
+        "jane@example.com", // %ce
+        "2026-07-01T10:00:00+02:00", // %cI
+        "2 weeks ago", // %ar
+        " (HEAD -> main)", // %d
+        "Fix bug", // %s
+        "Fix bug\n\nDetailed body text.", // %B
+      ];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        if (args.includes("--shortstat")) {
+          return { stdout: " 2 files changed, 3 insertions(+), 1 deletion(-)\n", stderr: "" };
+        }
+        return { stdout: metaStdout(fields), stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.commitInfo({ id: "ws1", cwd: "/repo" }, { hash: "abcdef1" });
+
+      // Two purpose-built calls instead of one combined one.
+      expect(execGitImpl).toHaveBeenCalledTimes(2);
+      expect(result.ok).toBe(true);
+      expect(result.hash).toBe(fields[0]);
+      expect(result.shortHash).toBe("abcdef1");
+      expect(result.parents).toBe("parent1hash");
+      expect(result.author).toBe("Jane Doe");
+      expect(result.authorEmail).toBe("jane@example.com");
+      expect(result.subject).toBe("Fix bug");
+      expect(result.body).toBe("Fix bug\n\nDetailed body text.");
+      expect(result.refs).toBe("HEAD -> main");
+      expect(result.stat).toBe("2 files changed, 3 insertions(+), 1 deletion(-)");
+    });
+
+    test("correctly parses a body whose last line looks like a shortstat summary", async () => {
+      // Regression test: the old regex-based stripping popped the trailing
+      // line off the raw %B body if it matched /file[s]? changed/, so a
+      // commit message ending in a line like this would have been silently
+      // truncated. The new implementation gets the stat from its own
+      // dedicated --shortstat call, so the body is never touched.
+      const bodyWithFakeStat =
+        "Refactor parser\n\nSee the note below:\n 3 files changed, 12 insertions(+), 1 deletion(-)";
+      const fields = [
+        "abcdef1234567890abcdef1234567890abcdef12",
+        "abcdef1",
+        "parenthash",
+        "Jane Doe",
+        "jane@example.com",
+        "2026-07-01T10:00:00+02:00",
+        "Jane Doe",
+        "jane@example.com",
+        "2026-07-01T10:00:00+02:00",
+        "2 weeks ago",
+        "",
+        "Refactor parser",
+        bodyWithFakeStat,
+      ];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        if (args.includes("--shortstat")) {
+          return { stdout: " 1 file changed, 5 insertions(+)\n", stderr: "" };
+        }
+        return { stdout: metaStdout(fields), stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.commitInfo({ id: "ws1", cwd: "/repo" }, { hash: "abcdef1" });
+
+      expect(result.ok).toBe(true);
+      // The body-looking-like-a-shortstat line must survive intact.
+      expect(result.body).toBe(bodyWithFakeStat);
+      // The real stat comes from the dedicated call, not confused with the
+      // fake shortstat-looking line embedded in the body.
+      expect(result.stat).toBe("1 file changed, 5 insertions(+)");
+    });
+  });
+
+  describe("listStashes", () => {
+    test("batches base-commit lookups and runs file-list lookups concurrently, same output shape as before", async () => {
+      const root = "/repo";
+      const execGitImpl = createExecMock({
+        [`${root}::stash list --format=%gd%x09%ct%x09%H%x09%gs%x09%an%x09%P`]: {
+          stdout: [
+            "stash@{0}\t1700000000\tHASH0\tWIP on main: abc\tJane\tBASE0FULL",
+            "stash@{1}\t1700003600\tHASH1\tOn feature: custom msg\tJane\tBASE1FULL",
+          ].join("\n"),
+          stderr: "",
+        },
+        [`${root}::log --no-walk --format=%H%x09%h%x09%s BASE0FULL BASE1FULL`]: {
+          stdout: "BASE0FULL\tbase0\tBase commit zero subject\nBASE1FULL\tbase1\tBase commit one subject\n",
+          stderr: "",
+        },
+        [`${root}::stash show --include-untracked --name-only stash@{0}`]: {
+          stdout: "file0.txt\nfile1.txt\n",
+          stderr: "",
+        },
+        [`${root}::stash show --include-untracked --name-only stash@{1}`]: {
+          stdout: "file2.txt\n",
+          stderr: "",
+        },
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.listStashes({ id: "ws1", cwd: root });
+
+      expect(result.ok).toBe(true);
+      expect(result.stashes).toHaveLength(2);
+      expect(result.stashes[0]).toMatchObject({
+        index: 0,
+        ref: "stash@{0}",
+        hash: "HASH0",
+        author: "Jane",
+        branch: "main",
+        isWipDefault: true,
+        customMessage: "",
+        message: "WIP on main: abc",
+        baseCommit: "base0",
+        baseSubject: "Base commit zero subject",
+        fileCount: 2,
+        filePaths: ["file0.txt", "file1.txt"],
+      });
+      expect(result.stashes[0].date).toBe(new Date(1700000000 * 1000).toISOString());
+      expect(result.stashes[1]).toMatchObject({
+        index: 1,
+        ref: "stash@{1}",
+        hash: "HASH1",
+        author: "Jane",
+        branch: "feature",
+        isWipDefault: false,
+        customMessage: "custom msg",
+        message: "On feature: custom msg",
+        baseCommit: "base1",
+        baseSubject: "Base commit one subject",
+        fileCount: 1,
+        filePaths: ["file2.txt"],
+      });
+
+      // Old approach: 1 (stash list) + 2 (one `git log <ref>^1` per stash) +
+      // 2 (one stashShowNameOnly per stash) = 5 subprocess spawns for 2
+      // stashes. New approach: 1 (stash list) + 1 (batched base-commit log)
+      // + 2 (concurrent stashShowNameOnly) = 4.
+      expect(execGitImpl).toHaveBeenCalledTimes(4);
+    });
+
+    test("runs per-stash file-list lookups concurrently, not sequentially", async () => {
+      const root = "/repo";
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        if (args[0] === "stash" && args[1] === "list") {
+          return {
+            stdout: [
+              "stash@{0}\t1700000000\tHASH0\tWIP on main: abc\tJane\tBASE0",
+              "stash@{1}\t1700003600\tHASH1\tWIP on main: def\tJane\tBASE1",
+            ].join("\n"),
+            stderr: "",
+          };
+        }
+        if (args[0] === "log" && args[1] === "--no-walk") {
+          return { stdout: "BASE0\tbase0\tzero\nBASE1\tbase1\tone\n", stderr: "" };
+        }
+        if (args[0] === "stash" && args[1] === "show") {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          inFlight--;
+          return { stdout: "file.txt\n", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.listStashes({ id: "ws1", cwd: root });
+
+      expect(result.ok).toBe(true);
+      // Sequential per-stash calls would never have more than 1 in flight;
+      // Promise.all lets both stashShowNameOnly calls overlap.
+      expect(maxInFlight).toBe(2);
+    });
+  });
+
   describe("removeWorktree fast path", () => {
     test("uses fs.rm + git worktree prune when directory removal succeeds", async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-rm-"));
@@ -2594,8 +2783,10 @@ describe("GitManager", () => {
         return { stdout: "Successfully skipped\n", stderr: "" };
       });
       const mgr = new GitManager({ execGitImpl });
-      // mockResolvedValue (not Once) so both the skipCommit pre-check and
-      // runWriteAction's internal inspect call get the same mocked snapshot.
+      // mockResolvedValue (not Once): skipCommit's own pre-check inspects once,
+      // hands that snapshot to runWriteAction (which no longer re-inspects),
+      // and the post-success restoreParkedStashIfFinished check inspects once
+      // more — so inspectWorkspace is called twice total, not three times.
       mgr.inspectWorkspace = vi.fn().mockResolvedValue({
         available: true,
         dirty: false,
@@ -2606,6 +2797,7 @@ describe("GitManager", () => {
       const result = await mgr.skipCommit({ id: "ws", cwd: "/repo", kind: "terminal" });
       expect(result.ok).toBe(true);
       expect(calls).toContainEqual(["rebase", "--skip"]);
+      expect(mgr.inspectWorkspace).toHaveBeenCalledTimes(2);
     });
 
     test("fails when no operation in progress", async () => {
@@ -2618,6 +2810,62 @@ describe("GitManager", () => {
       });
       const result = await mgr.skipCommit({ id: "ws", cwd: "/repo", kind: "terminal" });
       expect(result.ok).toBe(false);
+    });
+  });
+
+  // ─── runWriteAction snapshot passthrough ──────────────────────────
+  // push/forcePushWithLease/continueOperation/abortOperation/skipCommit each
+  // inspect the workspace themselves before deciding what to run, then used
+  // to hand off to runWriteAction, which inspected *again* from scratch.
+  // runWriteAction now accepts that already-computed snapshot instead of
+  // redoing the same dozen-plus-subprocess inspect a moment later.
+  describe("runWriteAction snapshot passthrough (no redundant re-inspect)", () => {
+    function makeSnapshotSpyMgr(operationState = { kind: "idle", inProgress: false, conflicts: [] as string[] }) {
+      const execGitImpl = vi.fn(async () => ({ stdout: "", stderr: "" }));
+      const mgr = new GitManager({ execGitImpl });
+      mgr.inspectWorkspace = vi.fn().mockResolvedValue({
+        available: true,
+        branch: "feature-x",
+        baseBranch: "main",
+        upstream: "origin/feature-x",
+        dirty: false,
+        aheadCount: 2,
+        behindCount: 2,
+        operationState,
+        remotes: { origin: "https://example.com/repo.git" },
+      });
+      return { mgr, execGitImpl };
+    }
+
+    test("push inspects the workspace once instead of twice", async () => {
+      const { mgr } = makeSnapshotSpyMgr();
+      const result = await mgr.push({ id: "ws-1", cwd: "/repo" });
+      expect(result.ok).toBe(true);
+      expect(mgr.inspectWorkspace).toHaveBeenCalledTimes(1);
+    });
+
+    test("forcePushWithLease inspects the workspace once instead of twice", async () => {
+      const { mgr } = makeSnapshotSpyMgr();
+      const result = await mgr.forcePushWithLease({ id: "ws-1", cwd: "/repo" });
+      expect(result.ok).toBe(true);
+      expect(mgr.inspectWorkspace).toHaveBeenCalledTimes(1);
+    });
+
+    test("abortOperation inspects the workspace once instead of twice", async () => {
+      const { mgr } = makeSnapshotSpyMgr({ kind: "rebase", inProgress: true, conflicts: [] });
+      const result = await mgr.abortOperation({ id: "ws-1", cwd: "/repo" });
+      expect(result.ok).toBe(true);
+      expect(mgr.inspectWorkspace).toHaveBeenCalledTimes(1);
+    });
+
+    // continueOperation additionally re-inspects once more after a successful
+    // run (restoreParkedStashIfFinished — an unrelated post-action check), so
+    // its count drops from 3 to 2, not 2 to 1.
+    test("continueOperation drops from 3 inspects to 2", async () => {
+      const { mgr } = makeSnapshotSpyMgr({ kind: "rebase", inProgress: true, conflicts: [] });
+      const result = await mgr.continueOperation({ id: "ws-1", cwd: "/repo" });
+      expect(result.ok).toBe(true);
+      expect(mgr.inspectWorkspace).toHaveBeenCalledTimes(2);
     });
   });
 
