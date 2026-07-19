@@ -152,6 +152,8 @@ export const useGitStashStore = defineStore("git-stash", () => {
         st.selectedRef = st.entries[0]?.ref || "";
         st.selectedFile = "";
       }
+    } catch (error) {
+      await toast("Stashes", (error as Error)?.message || "Failed to load stashes.", "error");
     } finally {
       st.loading = false;
     }
@@ -160,11 +162,15 @@ export const useGitStashStore = defineStore("git-stash", () => {
   async function loadFiles(workspaceId: string, ref: string): Promise<void> {
     if (!ref) return;
     const st = ensure(workspaceId);
-    const rootPath = await activeRoot(workspaceId);
-    const client = await api();
-    if (!client) return;
-    const res = (await client.gitStashFiles({ workspaceId, rootPath, ref })) as { files?: StashFile[] };
-    st.filesByRef = { ...st.filesByRef, [ref]: Array.isArray(res?.files) ? res.files : [] };
+    try {
+      const rootPath = await activeRoot(workspaceId);
+      const client = await api();
+      if (!client) return;
+      const res = (await client.gitStashFiles({ workspaceId, rootPath, ref })) as { files?: StashFile[] };
+      st.filesByRef = { ...st.filesByRef, [ref]: Array.isArray(res?.files) ? res.files : [] };
+    } catch (error) {
+      await toast("Stashes", (error as Error)?.message || "Failed to load stash files.", "error");
+    }
   }
 
   async function loadDiff(workspaceId: string, ref: string, path: string): Promise<void> {
@@ -172,16 +178,20 @@ export const useGitStashStore = defineStore("git-stash", () => {
     const st = ensure(workspaceId);
     const key = `${ref}::${path}`;
     if (st.diffByRefAndPath[key]) return; // cached
-    const rootPath = await activeRoot(workspaceId);
-    const client = await api();
-    if (!client) return;
-    const payload = (await client.gitStashFileDiff({
-      workspaceId,
-      rootPath,
-      ref,
-      relativePath: path,
-    })) as DiffPayload;
-    st.diffByRefAndPath = { ...st.diffByRefAndPath, [key]: payload };
+    try {
+      const rootPath = await activeRoot(workspaceId);
+      const client = await api();
+      if (!client) return;
+      const payload = (await client.gitStashFileDiff({
+        workspaceId,
+        rootPath,
+        ref,
+        relativePath: path,
+      })) as DiffPayload;
+      st.diffByRefAndPath = { ...st.diffByRefAndPath, [key]: payload };
+    } catch (error) {
+      await toast("Stashes", (error as Error)?.message || "Failed to load stash diff.", "error");
+    }
   }
 
   function setFilter(workspaceId: string, text: string): void {

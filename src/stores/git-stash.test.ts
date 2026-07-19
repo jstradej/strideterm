@@ -100,6 +100,48 @@ describe("git-stash store", () => {
     expect(store.get("ws1").diffByRefAndPath["stash@{0}::src/foo.ts"]).toBeTruthy();
   });
 
+  // Regression coverage for review-code-quality-2026-07.md finding 2:
+  // loadStashes/loadFiles/loadDiff had no catch and the store had no error
+  // surfacing — a failed IPC call left an empty stash list / empty diff with
+  // zero explanation. They now use the same toast mechanism runStashAction's
+  // own error handling already established in this file.
+  test("loadStashes failure surfaces an error toast and clears the loading flag", async () => {
+    const store = useGitStashStore();
+    fakeApi.gitListStashes = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    await store.loadStashes("ws1");
+    expect(store.get("ws1").entries).toEqual([]);
+    expect(store.get("ws1").loading).toBe(false);
+    expect(pushEphemeralToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Stashes", body: "ECONNREFUSED", kind: "error" }),
+    );
+  });
+
+  test("loadFiles failure surfaces an error toast", async () => {
+    const store = useGitStashStore();
+    fakeApi.gitStashFiles = vi.fn(async () => {
+      throw new Error("stash not found");
+    });
+    await store.loadFiles("ws1", "stash@{0}");
+    expect(store.get("ws1").filesByRef["stash@{0}"]).toBeUndefined();
+    expect(pushEphemeralToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Stashes", body: "stash not found", kind: "error" }),
+    );
+  });
+
+  test("loadDiff failure surfaces an error toast", async () => {
+    const store = useGitStashStore();
+    fakeApi.gitStashFileDiff = vi.fn(async () => {
+      throw new Error("path not found");
+    });
+    await store.loadDiff("ws1", "stash@{0}", "src/foo.ts");
+    expect(store.get("ws1").diffByRefAndPath["stash@{0}::src/foo.ts"]).toBeUndefined();
+    expect(pushEphemeralToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Stashes", body: "path not found", kind: "error" }),
+    );
+  });
+
   test("apply sets busyRef during the call and clears it after", async () => {
     const store = useGitStashStore();
     let release: (v: unknown) => void = () => {};
