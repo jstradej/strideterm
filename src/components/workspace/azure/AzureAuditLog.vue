@@ -153,7 +153,9 @@
                     class="button button--ghost azure-audit-log__copy-btn"
                     @click.stop="copyEntry(entry)"
                   >
-                    {{ copiedId === entry.id ? "Copied!" : "Copy to clipboard" }}
+                    {{
+                      copiedId === entry.id ? "Copied!" : copyFailedId === entry.id ? "Failed" : "Copy to clipboard"
+                    }}
                   </button>
                 </div>
               </td>
@@ -161,6 +163,9 @@
           </template>
         </tbody>
       </table>
+    </div>
+    <div v-else-if="!loading && entriesError" class="azure-empty">
+      <p style="color: var(--danger, #e53935)">Failed to load audit log: {{ entriesError }}</p>
     </div>
     <div v-else-if="!loading" class="azure-empty"><p>No audit log entries for the selected period.</p></div>
 
@@ -234,6 +239,7 @@ const filterRange = ref("24h");
 const searchText = ref("");
 let searchDebounce: ReturnType<typeof setTimeout> | null = null;
 const loading = ref(false);
+const entriesError = ref("");
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const entries = ref<Record<string, any>[]>([]);
 const total = ref(0);
@@ -241,6 +247,7 @@ const page = ref(0);
 const pageSize = 50;
 const expandedId = ref<unknown>(null);
 const copiedId = ref<unknown>(null);
+const copyFailedId = ref<unknown>(null);
 const sortKey = ref("id");
 const sortDir = ref<"asc" | "desc">("desc");
 const stats = ref({ total: 0, successCount: 0, errorCount: 0, readCount: 0, writeCount: 0, avgDurationMs: 0 });
@@ -339,7 +346,12 @@ async function copyEntry(entry: Record<string, any>) {
     setTimeout(() => {
       if (copiedId.value === entry.id) copiedId.value = null;
     }, 2000);
-  } catch {}
+  } catch {
+    copyFailedId.value = entry.id;
+    setTimeout(() => {
+      if (copyFailedId.value === entry.id) copyFailedId.value = null;
+    }, 2000);
+  }
 }
 
 // --- Search debounce ---
@@ -369,6 +381,7 @@ function buildFilters(): Record<string, unknown> {
 
 async function loadEntries() {
   loading.value = true;
+  entriesError.value = "";
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const queryFn: ((args: Record<string, unknown>) => Promise<any>) | undefined = isGitHub.value
@@ -384,6 +397,9 @@ async function loadEntries() {
     total.value = result?.total || 0;
   } catch (err) {
     console.warn("Audit log query failed:", err);
+    entries.value = [];
+    total.value = 0;
+    entriesError.value = (err as Error)?.message || "Failed to load audit log entries.";
   } finally {
     loading.value = false;
   }
