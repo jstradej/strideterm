@@ -307,6 +307,7 @@ import { safeColor } from "../../app/helpers.js";
 import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
 import { useAppStore } from "../../stores/app.js";
 import { pickPath } from "../../lib/pick-path.js";
+import { rlog } from "../../lib/renderer-log.js";
 import { BADGE_ICONS } from "../../lib/badge-icons.js";
 import { PROVIDER_CHOICES, type ProviderConfig } from "../../lib/agent-providers.js";
 import PanelEditor from "./PanelEditor.vue";
@@ -634,7 +635,11 @@ onMounted(async () => {
     try {
       const result = (await api.checkProviders?.()) as Record<string, { available?: boolean }> | undefined;
       if (result) providerAvailability.value = result;
-    } catch {}
+    } catch (err) {
+      rlog("warn", "WorkspaceDialog: checkProviders failed, provider availability may be stale", {
+        err: (err as Error)?.message || String(err),
+      });
+    }
   }
 });
 

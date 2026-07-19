@@ -380,4 +380,26 @@ describe("WorkspaceDialog", () => {
       expect(notifications.sessions[0].events[0].title).toBe("Failed to open picker");
     });
   });
+
+  describe("checkProviders — a rejected background refresh logs a warning instead of failing silently", () => {
+    test("a rejecting checkProviders logs via rlog instead of swallowing the error", async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const logRenderer = vi.fn();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).strideterm = { logRenderer };
+      const checkProviders = vi.fn().mockRejectedValueOnce(new Error("providers cli not found"));
+
+      mount(WorkspaceDialog, {
+        props: { onCancel: vi.fn(), onSubmit: vi.fn(), workspace: buildTaskDraft() },
+        global: { provide: { api: { checkProviders } } },
+      });
+      await flushPromises();
+
+      expect(checkProviders).toHaveBeenCalled();
+      const warnCalls = logRenderer.mock.calls.filter((c) => c[0] === "warn");
+      expect(warnCalls.some((c) => c[1].includes("checkProviders"))).toBe(true);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (window as any).strideterm;
+    });
+  });
 });
