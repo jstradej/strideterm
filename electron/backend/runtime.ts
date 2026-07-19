@@ -4830,6 +4830,52 @@ export async function createRuntime({
     return null;
   }
 
+  /**
+   * Shared tail for openDockerSession/openLazydockerSession/openLazygitSession:
+   * create or update `panelId` on the target workspace with the caller's
+   * launch spec, activate it, and re-sync sessions/alerts. Each caller keeps
+   * only its own launch-construction specifics (and "not found" wording).
+   */
+  async function openLaunchPanel(
+    targetWorkspaceId: string,
+    panelId: string,
+    panelSpec: { title: string; command: string; launch: unknown; notFoundMessage: string },
+  ) {
+    await store.mutate((draft: AppState) => {
+      const workspace = findWorkspace(draft, targetWorkspaceId);
+      if (!workspace) {
+        throw new Error(panelSpec.notFoundMessage);
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const existing = (workspace as any).panels?.find((panel: any) => panel.id === panelId);
+      const nextPanel = {
+        id: panelId,
+        title: panelSpec.title,
+        command: panelSpec.command,
+        launch: panelSpec.launch,
+        shell: true,
+        startup: APP_CONFIG.ui.manualPanelStartup,
+      };
+
+      if (existing) {
+        Object.assign(existing, nextPanel);
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (workspace as any).panels?.push(nextPanel);
+      }
+
+      draft.activeWorkspaceId = targetWorkspaceId;
+      workspace.activePanelId = panelId;
+    });
+
+    sessions.syncWithState(getState());
+    ensureSessionSafe(createSessionId(targetWorkspaceId, panelId));
+    clearProjectAlerts(targetWorkspaceId, panelId);
+    broadcastState();
+    return getPayload();
+  }
+
   const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
@@ -6935,42 +6981,15 @@ export async function createRuntime({
 
       const panelId = `${mode}-${containerId}`;
       const title = mode === "logs" ? `${container.Names} logs` : `${container.Names} shell`;
-      const description =
+      const command =
         mode === "logs" ? `docker logs -f ${container.Names}` : `docker exec -it ${container.Names} sh`;
 
-      await store.mutate((draft: AppState) => {
-        const workspace = findWorkspace(draft, targetWorkspaceId);
-        if (!workspace) {
-          throw new Error("Docker workspace not found.");
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const existing = (workspace as any).panels?.find((panel: any) => panel.id === panelId);
-        const nextPanel = {
-          id: panelId,
-          title,
-          command: description,
-          launch,
-          shell: true,
-          startup: APP_CONFIG.ui.manualPanelStartup,
-        };
-
-        if (existing) {
-          Object.assign(existing, nextPanel);
-        } else {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (workspace as any).panels?.push(nextPanel);
-        }
-
-        draft.activeWorkspaceId = targetWorkspaceId;
-        workspace.activePanelId = panelId;
+      return openLaunchPanel(targetWorkspaceId, panelId, {
+        title,
+        command,
+        launch,
+        notFoundMessage: "Docker workspace not found.",
       });
-
-      sessions.syncWithState(getState());
-      ensureSessionSafe(createSessionId(targetWorkspaceId, panelId));
-      clearProjectAlerts(targetWorkspaceId, panelId);
-      broadcastState();
-      return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async openLazydockerSession({ workspaceId, projectId }: { workspaceId?: any; projectId: any }) {
@@ -6981,40 +7000,12 @@ export async function createRuntime({
         throw new Error("Lazydocker is not available in the active Docker environment.");
       }
 
-      const panelId = "lazydocker";
-      await store.mutate((draft: AppState) => {
-        const workspace = findWorkspace(draft, targetWorkspaceId);
-        if (!workspace) {
-          throw new Error("Docker workspace not found.");
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const existing = (workspace as any).panels?.find((panel: any) => panel.id === panelId);
-        const nextPanel = {
-          id: panelId,
-          title: "Lazydocker",
-          command: "lazydocker",
-          launch,
-          shell: true,
-          startup: APP_CONFIG.ui.manualPanelStartup,
-        };
-
-        if (existing) {
-          Object.assign(existing, nextPanel);
-        } else {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (workspace as any).panels?.push(nextPanel);
-        }
-
-        draft.activeWorkspaceId = targetWorkspaceId;
-        workspace.activePanelId = panelId;
+      return openLaunchPanel(targetWorkspaceId, "lazydocker", {
+        title: "Lazydocker",
+        command: "lazydocker",
+        launch,
+        notFoundMessage: "Docker workspace not found.",
       });
-
-      sessions.syncWithState(getState());
-      ensureSessionSafe(createSessionId(targetWorkspaceId, panelId));
-      clearProjectAlerts(targetWorkspaceId, panelId);
-      broadcastState();
-      return getPayload();
     },
     async openLazygitSession({
       workspaceId,
@@ -7032,40 +7023,12 @@ export async function createRuntime({
         throw new Error("Lazygit is not available for this workspace.");
       }
 
-      const panelId = "lazygit";
-      await store.mutate((draft: AppState) => {
-        const workspace = findWorkspace(draft, targetWorkspaceId);
-        if (!workspace) {
-          throw new Error("Workspace not found.");
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const existing = (workspace as any).panels?.find((panel: any) => panel.id === panelId);
-        const nextPanel = {
-          id: panelId,
-          title: "Lazygit",
-          command: "lazygit",
-          launch,
-          shell: true,
-          startup: APP_CONFIG.ui.manualPanelStartup,
-        };
-
-        if (existing) {
-          Object.assign(existing, nextPanel);
-        } else {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (workspace as any).panels?.push(nextPanel);
-        }
-
-        draft.activeWorkspaceId = targetWorkspaceId;
-        workspace.activePanelId = panelId;
+      return openLaunchPanel(targetWorkspaceId, "lazygit", {
+        title: "Lazygit",
+        command: "lazygit",
+        launch,
+        notFoundMessage: "Workspace not found.",
       });
-
-      sessions.syncWithState(getState());
-      ensureSessionSafe(createSessionId(targetWorkspaceId, panelId));
-      clearProjectAlerts(targetWorkspaceId, panelId);
-      broadcastState();
-      return getPayload();
     },
     async createWorktree(
       {
