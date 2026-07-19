@@ -67,17 +67,13 @@ export async function probeDirectory(
   const budget: ScanBudget = { readdir: 0, maxReaddir, startMs: Date.now(), maxMs, truncated: false };
 
   const isGitRepo = await hasGitDir(resolved);
-  let isInsideGitRepo = false;
-  if (isGitRepo) {
-    isInsideGitRepo = true;
-  }
 
   const childRepos: string[] = [];
   await scanDir(resolved, maxDepth, budget, childRepos);
 
   return {
     path: resolved,
-    isGitRepo: isGitRepo || isInsideGitRepo,
+    isGitRepo,
     childRepos,
     scannedDepth: maxDepth,
     truncated: budget.truncated,
