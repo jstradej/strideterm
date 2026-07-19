@@ -734,6 +734,122 @@ describe("malformed request body handling — must respond, never hang", () => {
   });
 });
 
+describe("sendCoreCatchUp resilience — a rejecting getInitialState() must not crash a WS connection", () => {
+  // review-code-quality-2026-07.md finding §2.1 (remote-server.ts:3618,3703 in
+  // the review's line numbers): the WS-connect-time catch-up
+  // (`await sendCoreCatchUp(...)` with no enclosing try/catch in the
+  // handleUpgrade callback) and the state:sync catch-up (`void
+  // sendCoreCatchUp(...)`, fire-and-forget) both call runtime.getInitialState(),
+  // which can reject (git/docker refreshes). Before the fix that was an
+  // unhandled rejection and the client silently never got its catch-up core.
+  test("connection-time catch-up: a rejecting getInitialState() is caught inside sendCoreCatchUp, socket stays open", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-catchup-connect";
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth } },
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    const runtime = {
+      getPayload: () => payload,
+      getInitialState: async () => {
+        throw new Error("boom: transient failure");
+      },
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      // needsCatchUp is unconditionally true for a socket that doesn't
+      // advertise sp=2 (a legacy tab) — connecting one immediately exercises
+      // the `await sendCoreCatchUp(ws, wsSessionId)` connection-time path.
+      const q = new URLSearchParams({ token: auth, clientId: "catchup-client" });
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?${q.toString()}`);
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      await new Promise((r) => setTimeout(r, 150));
+      // The socket must still be open: a rejection from getInitialState()
+      // must be absorbed inside sendCoreCatchUp, never crash/close the
+      // connection or escape as an unhandled rejection (which would fail
+      // this test file under vitest's unhandled-rejection detection).
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("state:sync catch-up: a rejecting getInitialState() is caught, no unhandled rejection", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-catchup-sync";
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth } },
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    let bootstrapDone = false;
+    const runtime = {
+      getPayload: () => payload,
+      getInitialState: async () => {
+        // Let the very first call (the legacy connection-time catch-up)
+        // succeed so coreRevision-vs-rev state is established; the
+        // state:sync-triggered catch-up below is the one under test.
+        if (!bootstrapDone) {
+          bootstrapDone = true;
+          return payload;
+        }
+        throw new Error("boom: transient failure");
+      },
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      // sp=2 + a bootstrap rev equal to the server's initial coreRevision (0)
+      // so the connection-time catch-up is skipped (needsCatchUp=false) and
+      // the state:sync path below is the first thing to call getInitialState.
+      const q = new URLSearchParams({ token: auth, clientId: "sync-client", profileId: "default", sp: "2", rev: "0" });
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?${q.toString()}`);
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      await new Promise((r) => setTimeout(r, 80));
+      // rev=0 is not < coreRevision (0), so this only exercises the fire-and-forget
+      // `void sendCoreCatchUp(...)` branch once coreRevision has moved past what
+      // the client reports — simulate that by sending a stale rev.
+      ws.send(JSON.stringify({ type: "state:sync", rev: -1 }));
+      await new Promise((r) => setTimeout(r, 150));
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe("terminal streaming — subscription routing + backpressure", () => {
   // Runtime mock that captures event handlers so a test can drive terminal:data
   // / terminal:exit emissions, and serves per-session replay snapshots.

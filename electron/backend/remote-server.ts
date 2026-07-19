@@ -2816,18 +2816,31 @@ export async function startRemoteServer({
    * `?rev=`) and the `state:sync` message (first-connect [bootstrap, open] gap).
    */
   async function sendCoreCatchUp(socket: import("ws").WebSocket, wsSessionId: string): Promise<void> {
-    const baseInitial = await runtime.getInitialState();
-    if (socket.readyState !== socket.OPEN) return;
-    const socketProto = socketProtocol.get(socket) || 1;
-    const payload = adaptRemoteResponse(baseInitial, {
-      protocol: socketProto,
-      capabilities: socketCapabilities.get(socket) ?? selectCapabilities(null, socketProto),
-      coreRevision,
-      deliverCore: true, // a catch-up frame IS a core push, not a mutation ack
-      sessionId: wsSessionId || "",
-      registry,
-    });
-    sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload }));
+    // Both call sites either fire this without awaiting (the state:sync
+    // message handler) or await it from an async callback with no enclosing
+    // try/catch (the connection handler) — a rejection from getInitialState()
+    // (git/docker refreshes can throw) would otherwise be an unhandled
+    // rejection, and the client would silently never receive its catch-up
+    // core with no log tying the failure to this socket.
+    try {
+      const baseInitial = await runtime.getInitialState();
+      if (socket.readyState !== socket.OPEN) return;
+      const socketProto = socketProtocol.get(socket) || 1;
+      const payload = adaptRemoteResponse(baseInitial, {
+        protocol: socketProto,
+        capabilities: socketCapabilities.get(socket) ?? selectCapabilities(null, socketProto),
+        coreRevision,
+        deliverCore: true, // a catch-up frame IS a core push, not a mutation ack
+        sessionId: wsSessionId || "",
+        registry,
+      });
+      sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload }));
+    } catch (err) {
+      log.warn("WebSocket catch-up failed", {
+        sessionRef: remoteSessionRef(wsSessionId),
+        err: (err as Error)?.message || String(err),
+      });
+    }
   }
 
   function broadcast(message: unknown): void {
