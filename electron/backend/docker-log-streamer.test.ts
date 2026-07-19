@@ -107,6 +107,29 @@ describe("DockerLogSession", () => {
     expect(mockChild.lastSignal).toBe("SIGINT");
   });
 
+  test("start() called again before the old child closes (defensive restart) clears a pending WSL kill timer", () => {
+    const session = new DockerLogSession("s-defensive", wslBackend, "default", "abc123");
+    session.start();
+    session.stop(); // WSL: sends SIGTERM immediately, schedules a SIGINT follow-up in 500ms
+
+    // Simulate a fresh start() before the old child's "close" event fires —
+    // the "defensive restart" branch at the top of start(). It must cancel
+    // the stale kill timer, not just drop the reference to it.
+    const secondChild = new MockChild();
+    mockSpawn.mockReturnValueOnce(secondChild);
+    session.start();
+
+    mockChild.lastSignal = null;
+
+    // Advance past where the stale 500ms SIGINT timer would have fired.
+    vi.advanceTimersByTime(600);
+
+    // Nothing should receive a delayed SIGINT — the old child is gone and the
+    // newly-respawned child was never a valid target for that follow-up.
+    expect(mockChild.lastSignal).toBeNull();
+    expect(secondChild.lastSignal).toBeNull();
+  });
+
   test("stop() is a no-op when session not started", () => {
     const session = new DockerLogSession("s6", hostBackend, "default", "abc123");
     expect(() => session.stop()).not.toThrow();

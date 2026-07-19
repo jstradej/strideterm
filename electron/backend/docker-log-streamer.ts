@@ -64,7 +64,7 @@ export class DockerLogSession extends EventEmitter {
     if (this.child) {
       // Defensive: kill the old child before respawning. The new spawn happens
       // after the kill emits "close", so we don't leak fd's or double-stream.
-      this.killTimer = null;
+      this.clearKillTimer();
       try {
         this.child.kill("SIGTERM");
       } catch (err) {
