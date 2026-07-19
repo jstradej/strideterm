@@ -97,11 +97,15 @@ function createFetchStub({
   prsByNumber = {} as Record<number, unknown>,
   checkRunsByRef = {} as Record<string, unknown[]>,
   combinedStatusByRef = {} as Record<string, unknown>,
+  branches = [] as Array<{ name: string }>,
 } = {}) {
   return vi.fn(async (url: unknown, _options?: unknown) => {
     const href = String(url);
     if (href.includes("/search/issues")) {
       return jsonOk({ items: searchItems });
+    }
+    if (/\/repos\/[^/]+\/[^/]+\/branches/.test(href)) {
+      return jsonOk(branches);
     }
     if (href.includes("/requested_reviewers")) {
       return jsonOk({ users: [], teams: [] });
@@ -354,5 +358,20 @@ describe("GitHubManager inbox dedup", () => {
     expect(snapshot.inbox.recentlyUpdated).toHaveLength(1);
     const combinedRoleBuckets = [...snapshot.inbox.needsMyReview, ...snapshot.inbox.myPullRequests];
     expect(combinedRoleBuckets).toHaveLength(1);
+  });
+});
+
+describe("GitHubManager listRemoteBranches / listQuickFixBranches", () => {
+  test("listQuickFixBranches delegates to listRemoteBranches and returns the same branch names", async () => {
+    const { manager } = createManager({
+      fetchOverrides: { branches: [{ name: "main" }, { name: "feature/x" }] },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    const viaRemote = await manager.listRemoteBranches("gh-main", "acme", "web");
+    const viaQuickFix = await manager.listQuickFixBranches("gh-main", "acme", "web");
+
+    expect(viaRemote).toEqual(["main", "feature/x"]);
+    expect(viaQuickFix).toEqual(viaRemote);
   });
 });

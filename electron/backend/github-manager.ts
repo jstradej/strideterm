@@ -1322,13 +1322,10 @@ export class GitHubManager extends BaseProviderManager {
   }
 
   async listQuickFixBranches(connectionId: string, owner: string, repo: string): Promise<string[]> {
-    this.setAuditContext({ connectionId, userInitiated: true });
-    const { connection, token } = this.resolveConnectionAndToken(connectionId);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const api = this.api as any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const branches = (await api.listBranches(connection, token, owner, repo)) as any[];
-    return branches.map((b) => b.name);
+    // Identical to listRemoteBranches — kept as a separate name because it's
+    // called from the quick-fix workflow specifically; delegate to avoid
+    // duplicating the implementation.
+    return this.listRemoteBranches(connectionId, owner, repo);
   }
 
   async openQuickFixWorkspace({
