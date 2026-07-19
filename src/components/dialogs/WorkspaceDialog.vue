@@ -159,118 +159,22 @@
           </label>
         </div>
         <!-- Worker agent configuration -->
-        <div class="agent-config-section">
-          <div class="agent-config-section__header">
-            <span class="agent-config-section__label">Worker agent</span>
-            <button
-              type="button"
-              class="button button--ghost agent-config-section__advanced-btn"
-              @click="toggleWorkerOverride"
-            >
-              {{ draft.workerCommandOverride ? "Use provider picker" : "Advanced: custom command" }}
-            </button>
-          </div>
-          <template v-if="!draft.workerCommandOverride">
-            <div class="grid grid--2col">
-              <label>
-                <span>Provider</span>
-                <CustomSelect
-                  v-model="draft.workerProvider.providerId"
-                  :options="providerOptions"
-                  @change="onWorkerProviderChange"
-                />
-              </label>
-              <label
-                title="Leave empty for the CLI's own default, pick from the suggestion list, or type any model ID your CLI version supports — Codex and Gemini change their model catalog often and we don't want a rebuild every time."
-              >
-                <span>Model</span>
-                <input
-                  v-model="draft.workerProvider.model"
-                  :list="`worker-model-list-${draft.workerProvider.providerId}`"
-                  placeholder="Default"
-                  maxlength="100"
-                />
-                <datalist :id="`worker-model-list-${draft.workerProvider.providerId}`">
-                  <option
-                    v-for="m in workerModelChoices"
-                    :key="m.id || 'default'"
-                    :value="m.id"
-                    :label="m.name + (m.suggestedRole === 'worker' ? ' (suggested)' : '')"
-                  />
-                </datalist>
-              </label>
-            </div>
-            <label class="checkbox-inline">
-              <input v-model="draft.workerProvider.skipPermissions" type="checkbox" />
-              <span>Skip permission prompts (dangerous)</span>
-            </label>
-          </template>
-          <label v-else title="Full CLI command including flags">
-            <span>Worker command</span>
-            <input
-              v-model="workerPanel.command"
-              placeholder="claude --dangerously-skip-permissions --model sonnet"
-              maxlength="500"
-            />
-          </label>
-        </div>
+        <AgentProviderConfig
+          role="worker"
+          :provider="draft.workerProvider"
+          :panel="workerPanel"
+          v-model:command-override="draft.workerCommandOverride"
+          :provider-options="providerOptions"
+        />
 
         <!-- Judge agent configuration -->
-        <div class="agent-config-section">
-          <div class="agent-config-section__header">
-            <span class="agent-config-section__label">Judge agent</span>
-            <button
-              type="button"
-              class="button button--ghost agent-config-section__advanced-btn"
-              @click="toggleJudgeOverride"
-            >
-              {{ draft.judgeCommandOverride ? "Use provider picker" : "Advanced: custom command" }}
-            </button>
-          </div>
-          <template v-if="!draft.judgeCommandOverride">
-            <div class="grid grid--2col">
-              <label>
-                <span>Provider</span>
-                <CustomSelect
-                  v-model="draft.judgeProvider.providerId"
-                  :options="providerOptions"
-                  @change="onJudgeProviderChange"
-                />
-              </label>
-              <label
-                title="Leave empty for the CLI's own default, pick from the suggestion list, or type any model ID your CLI version supports — Codex and Gemini change their model catalog often and we don't want a rebuild every time."
-              >
-                <span>Model</span>
-                <input
-                  v-model="draft.judgeProvider.model"
-                  :list="`judge-model-list-${draft.judgeProvider.providerId}`"
-                  placeholder="Default"
-                  maxlength="100"
-                />
-                <datalist :id="`judge-model-list-${draft.judgeProvider.providerId}`">
-                  <option
-                    v-for="m in judgeModelChoices"
-                    :key="m.id || 'default'"
-                    :value="m.id"
-                    :label="m.name + (m.suggestedRole === 'judge' ? ' (suggested)' : '')"
-                  />
-                </datalist>
-              </label>
-            </div>
-            <label class="checkbox-inline">
-              <input v-model="draft.judgeProvider.skipPermissions" type="checkbox" />
-              <span>Skip permission prompts (dangerous)</span>
-            </label>
-          </template>
-          <label v-else title="Full CLI command including flags">
-            <span>Judge command</span>
-            <input
-              v-model="judgePanel.command"
-              placeholder="claude --dangerously-skip-permissions --model opus"
-              maxlength="500"
-            />
-          </label>
-        </div>
+        <AgentProviderConfig
+          role="judge"
+          :provider="draft.judgeProvider"
+          :panel="judgePanel"
+          v-model:command-override="draft.judgeCommandOverride"
+          :provider-options="providerOptions"
+        />
 
         <p v-if="isCreatingTask && !claudeAvailable && workerNeedsClaudeWarning" class="warning-box">
           Claude Code CLI (claude) was not found on your PATH. The selected provider requires it.
@@ -404,115 +308,12 @@ import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../..
 import { useAppStore } from "../../stores/app.js";
 import { pickPath } from "../../lib/pick-path.js";
 import { BADGE_ICONS } from "../../lib/badge-icons.js";
+import { PROVIDER_CHOICES, type ProviderConfig } from "../../lib/agent-providers.js";
 import PanelEditor from "./PanelEditor.vue";
 import CustomSelect from "../common/CustomSelect.vue";
-
-const PROVIDER_CHOICES = [
-  {
-    id: "claude",
-    name: "Claude Code",
-    defaultSkipPermissions: true,
-    models: [
-      { id: "", name: "Default", suggestedRole: null },
-      { id: "claude-fable-5", name: "Fable 5", suggestedRole: null },
-      { id: "sonnet", name: "Sonnet", suggestedRole: "worker" },
-      { id: "opus", name: "Opus", suggestedRole: "judge" },
-      { id: "haiku", name: "Haiku", suggestedRole: null },
-    ],
-  },
-  {
-    id: "codex",
-    name: "Codex CLI",
-    defaultSkipPermissions: true,
-    models: [
-      { id: "", name: "Default", suggestedRole: null },
-      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: "judge" },
-      { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: "worker" },
-      { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: null },
-      { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
-      { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
-    ],
-  },
-  {
-    id: "gemini",
-    name: "Gemini CLI",
-    defaultSkipPermissions: false,
-    models: [
-      { id: "", name: "Default", suggestedRole: null },
-      { id: "gemini-3.1-pro-preview", name: "3.1 Pro (preview)", suggestedRole: "judge" },
-      { id: "gemini-3-flash-preview", name: "3 Flash (preview)", suggestedRole: "worker" },
-      { id: "gemini-2.5-pro", name: "2.5 Pro", suggestedRole: null },
-      { id: "gemini-2.5-flash", name: "2.5 Flash", suggestedRole: null },
-    ],
-  },
-  {
-    id: "copilot",
-    name: "GitHub Copilot",
-    defaultSkipPermissions: true,
-    models: [
-      { id: "", name: "Default", suggestedRole: null },
-      { id: "claude-opus-4.8", name: "Claude Opus 4.8", suggestedRole: "judge" },
-      { id: "claude-sonnet-5", name: "Claude Sonnet 5", suggestedRole: "worker" },
-      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: null },
-      { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: null },
-      { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
-    ],
-  },
-  {
-    id: "opencode",
-    name: "OpenCode",
-    defaultSkipPermissions: true,
-    models: [
-      { id: "default", name: "Default", suggestedRole: null },
-      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7", suggestedRole: "judge" },
-      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
-      { id: "openai/gpt-5.4", name: "GPT-5.4", suggestedRole: null },
-      { id: "google/gemini-3-flash-preview", name: "Gemini 3 Flash (preview)", suggestedRole: null },
-    ],
-  },
-];
-
-function buildProviderCommand({ providerId, model, skipPermissions }: ProviderConfig) {
-  if (providerId === "claude") {
-    const parts = ["claude"];
-    if (skipPermissions) parts.push("--dangerously-skip-permissions");
-    if (model) parts.push("--model", model);
-    return parts.join(" ");
-  }
-  if (providerId === "codex") {
-    const parts = ["codex"];
-    if (skipPermissions) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
-    if (model) parts.push("--model", model);
-    return parts.join(" ");
-  }
-  if (providerId === "gemini") {
-    const parts = ["gemini"];
-    if (skipPermissions) parts.push("--yolo");
-    if (model) parts.push("-m", model);
-    return parts.join(" ");
-  }
-  if (providerId === "copilot") {
-    const parts = ["copilot"];
-    if (skipPermissions) parts.push("--allow-all-tools");
-    if (model) parts.push("--model", model);
-    return parts.join(" ");
-  }
-  if (providerId === "opencode") {
-    const parts = ["opencode"];
-    if (skipPermissions) parts.push("--yolo");
-    if (model && model !== "default") parts.push("--model", model);
-    return parts.join(" ");
-  }
-  return "";
-}
+import AgentProviderConfig from "./AgentProviderConfig.vue";
 
 defineOptions({ inheritAttrs: false });
-
-interface ProviderConfig {
-  providerId: string;
-  model: string;
-  skipPermissions?: boolean;
-}
 
 interface TaskConfig {
   description?: string;
@@ -853,16 +654,6 @@ onMounted(async () => {
   }
 });
 
-const workerModelChoices = computed(() => {
-  const p = PROVIDER_CHOICES.find((c) => c.id === draft.workerProvider?.providerId);
-  return p?.models || [];
-});
-
-const judgeModelChoices = computed(() => {
-  const p = PROVIDER_CHOICES.find((c) => c.id === draft.judgeProvider?.providerId);
-  return p?.models || [];
-});
-
 const workerNeedsClaudeWarning = computed(() => {
   const pid = draft.workerProvider?.providerId || draft.judgeProvider?.providerId;
   return pid === "claude" || !pid;
@@ -882,44 +673,6 @@ const repositoryForWorktreeOptions = computed(() =>
     label: `${root.split(/[\\/]/).filter(Boolean).at(-1)} — ${root}`,
   })),
 );
-
-function onWorkerProviderChange() {
-  // Auto-select suggested worker model + reset skipPermissions to provider default
-  const p = PROVIDER_CHOICES.find((c) => c.id === draft.workerProvider?.providerId);
-  const suggested = p?.models?.find((m) => m.suggestedRole === "worker") || p?.models?.[0];
-  if (suggested && draft.workerProvider) draft.workerProvider.model = suggested.id;
-  if (p && draft.workerProvider) draft.workerProvider.skipPermissions = p.defaultSkipPermissions ?? false;
-}
-
-function onJudgeProviderChange() {
-  const p = PROVIDER_CHOICES.find((c) => c.id === draft.judgeProvider?.providerId);
-  const suggested = p?.models?.find((m) => m.suggestedRole === "judge") || p?.models?.[0];
-  if (suggested && draft.judgeProvider) draft.judgeProvider.model = suggested.id;
-  if (p && draft.judgeProvider) draft.judgeProvider.skipPermissions = p.defaultSkipPermissions ?? false;
-}
-
-function toggleWorkerOverride() {
-  // When enabling advanced custom command, prefill with current picker state
-  if (!draft.workerCommandOverride && workerPanel.value && draft.workerProvider) {
-    workerPanel.value.command = buildProviderCommand({
-      providerId: draft.workerProvider.providerId,
-      model: draft.workerProvider.model,
-      skipPermissions: draft.workerProvider.skipPermissions,
-    });
-  }
-  draft.workerCommandOverride = !draft.workerCommandOverride;
-}
-
-function toggleJudgeOverride() {
-  if (!draft.judgeCommandOverride && judgePanel.value && draft.judgeProvider) {
-    judgePanel.value.command = buildProviderCommand({
-      providerId: draft.judgeProvider.providerId,
-      model: draft.judgeProvider.model,
-      skipPermissions: draft.judgeProvider.skipPermissions,
-    });
-  }
-  draft.judgeCommandOverride = !draft.judgeCommandOverride;
-}
 
 // For task workspaces: direct references to worker/judge panels for editing
 const workerPanel = computed(
@@ -1223,61 +976,6 @@ function extractErrorMessage(err: unknown): string {
 }
 .field-counter--near-limit {
   color: var(--accent, #ffa424);
-}
-.agent-config-section {
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 10px 12px;
-  margin-bottom: 0;
-}
-.agent-config-section__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.agent-config-section__label {
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.7;
-}
-.agent-config-section__advanced-btn {
-  font-size: 11px;
-  padding: 2px 8px;
-  opacity: 0.7;
-}
-.agent-config-section__advanced-btn:hover {
-  opacity: 1;
-}
-.grid--2col {
-  grid-template-columns: 1fr 1fr;
-}
-/* Force matching height for the Provider select and the Model input next to it
-   — browser defaults render native select / input at slightly different heights
-   which looked ragged in the agent config grid. */
-.agent-config-section input[type="text"],
-.agent-config-section input:not([type]),
-.agent-config-section select {
-  box-sizing: border-box;
-  height: 32px;
-  padding: 4px 8px;
-  line-height: 20px;
-}
-.checkbox-inline {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  cursor: pointer;
-  font-size: 12px;
-  opacity: 0.85;
-}
-.checkbox-inline input {
-  width: auto;
-  margin: 0;
 }
 .multi-repo-section {
   display: flex;
