@@ -591,6 +591,7 @@ import GitCommitContextMenu from "./GitCommitContextMenu.vue";
 import GitDiffStat from "./GitDiffStat.vue";
 import { isRemoteRef } from "./base-ref.js";
 import { buildBranchForest, type BranchForestNode } from "./branch-forest.js";
+import { submitPullRequest } from "./pull-request-submit.js";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
@@ -1810,25 +1811,27 @@ function openCreatePullRequestDialog(sourceBranchOverride = "") {
       void gitUiStore.azureListRemoteBranches(props.workspaceId);
     },
     onSubmit: async (payload: { title: string; description: string; targetBranch: string; isDraft: boolean }) => {
-      await gitUiStore.azureCreatePullRequest(props.workspaceId, {
-        title: payload.title,
-        description: payload.description,
-        sourceBranch,
-        targetBranch: payload.targetBranch,
-        isDraft: payload.isDraft,
-        connectionId: props.activeConnectionId || "",
-      });
-      const result = props.gitUi.lastResult;
-      if (!result?.ok) {
+      const result = await submitPullRequest(
+        gitUiStore,
+        props.workspaceId,
+        {
+          title: payload.title,
+          description: payload.description,
+          sourceBranch,
+          targetBranch: payload.targetBranch,
+          isDraft: payload.isDraft,
+          connectionId: props.activeConnectionId || "",
+        },
+        props.gitUi,
+      );
+      if (!result.ok) {
         // Throw so CreatePullRequestDialog's own try/catch shows the error
         // inline and leaves the dialog open for the user to correct title /
         // target and retry — the dialog owns its busy/error lifecycle now.
-        throw new Error(result?.summary || "Failed to create pull request.");
+        throw new Error(result.summary);
       }
       appStore.closeDialog();
-      const id = result.pullRequestId;
-      const url = result.url || "";
-      await showToast(`PR #${id ?? ""} created.` + (url ? " Open in browser:" : ""), "success", url);
+      await showToast(result.summary + (result.url ? " Open in browser:" : ""), "success", result.url);
     },
   });
 }

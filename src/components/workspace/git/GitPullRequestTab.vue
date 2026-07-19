@@ -99,6 +99,7 @@
 import { computed, ref, watch } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import CustomSelect from "../../common/CustomSelect.vue";
+import { submitPullRequest } from "./pull-request-submit.js";
 
 const props = withDefaults(
   defineProps<{
@@ -163,19 +164,18 @@ watch(
 
 async function onCreatePr() {
   prResult.value = null;
-  await gitUiStore.azureCreatePullRequest(props.workspaceId, {
-    title: prTitle.value.trim(),
-    description: prDescription.value.trim(),
-    sourceBranch: props.snapshot?.branch || "",
-    targetBranch: prTargetBranch.value,
-    connectionId: props.activeConnectionId || "",
-  });
-  const result = props.gitUi.lastResult;
-  if (result?.ok) {
-    prResult.value = { ok: true, summary: `PR #${result.pullRequestId || ""} created.`, url: result.url || "" };
-  } else {
-    prResult.value = { ok: false, summary: result?.summary || "Failed to create pull request." };
-  }
+  prResult.value = await submitPullRequest(
+    gitUiStore,
+    props.workspaceId,
+    {
+      title: prTitle.value.trim(),
+      description: prDescription.value.trim(),
+      sourceBranch: props.snapshot?.branch || "",
+      targetBranch: prTargetBranch.value,
+      connectionId: props.activeConnectionId || "",
+    },
+    props.gitUi,
+  );
 }
 
 function openExternal(url: string) {

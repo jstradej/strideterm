@@ -6,12 +6,16 @@ import { setActivePinia, createPinia } from "pinia";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakeApi: Record<string, any> = {};
 const showError = vi.fn();
+const addEvent = vi.fn();
+const openDialog = vi.fn();
+const closeDialog = vi.fn();
+const azureCreatePullRequest = vi.fn();
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
     getApi: () => fakeApi,
-    closeDialog: vi.fn(),
-    openDialog: vi.fn(),
+    closeDialog,
+    openDialog,
   }),
 }));
 vi.mock("../../../stores/git-ui.js", () => ({
@@ -35,11 +39,11 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitRemoveWorktree: vi.fn(),
     confirmRemoveWorktreeDeleteBranch: vi.fn(),
     azureListRemoteBranches: vi.fn(),
-    azureCreatePullRequest: vi.fn(),
+    azureCreatePullRequest,
   }),
 }));
 vi.mock("../../../stores/notifications.js", () => ({
-  useNotificationStore: () => ({ showError }),
+  useNotificationStore: () => ({ showError, addEvent }),
 }));
 vi.mock("../../../composables/useIsNarrow.js", () => ({
   useIsNarrow: () => ({ isNarrow: ref(false), isMobile: ref(false) }),
@@ -74,6 +78,10 @@ beforeEach(() => {
   setActivePinia(createPinia());
   for (const k of Object.keys(fakeApi)) delete fakeApi[k];
   showError.mockClear();
+  addEvent.mockClear();
+  openDialog.mockClear();
+  closeDialog.mockClear();
+  azureCreatePullRequest.mockReset();
   document.body.innerHTML = "";
 });
 
@@ -143,5 +151,89 @@ describe("GitBranchesTab — copyToClipboard surfaces a failure notification", (
     expect(showError).toHaveBeenCalledTimes(1);
     expect(showError.mock.calls[0][0]).toBe("Copy failed");
     expect(showError.mock.calls[0][1]).toContain("clipboard blocked");
+  });
+});
+
+/**
+ * §5.4(d): the CreatePullRequestDialog's onSubmit handler now goes through
+ * the same submitPullRequest() helper as GitPullRequestTab's inline form —
+ * this pins that both success (close + toast) and failure (throw, dialog
+ * stays open) behave the way CreatePullRequestDialog's own try/catch expects.
+ */
+describe("GitBranchesTab — create-pr dialog submission (shared submitPullRequest)", () => {
+  function mountForPrDialog(gitUi: Record<string, unknown>) {
+    const wrapper = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws1",
+        snapshot: { dirty: false, branch: "feature/x" },
+        gitUi,
+        activeRootPath: "/repo",
+        hasAzureConnection: true,
+        activeConnectionId: "conn-1",
+      },
+      attachTo: document.body,
+    });
+    mountedWrappers.push(wrapper);
+    return wrapper;
+  }
+
+  test("submits via submitPullRequest and closes + toasts on success", async () => {
+    const gitUi: Record<string, unknown> = {
+      branchList: { current: "feature/x", locals: [], remotes: [], defaultBranch: "", defaultRemote: "" },
+      graph: { commits: [], head: "", refs: {} },
+      selectedCommit: "",
+      remoteBranches: [],
+      lastResult: null,
+    };
+    azureCreatePullRequest.mockImplementation(async () => {
+      gitUi.lastResult = { ok: true, pullRequestId: 42, url: "https://dev.azure.com/pr/42" };
+    });
+
+    const wrapper = mountForPrDialog(gitUi);
+    await flushPromises();
+    const branchTree = wrapper.findComponent({ name: "BranchTreePane" });
+    expect(branchTree.exists()).toBe(true);
+    branchTree.vm.$emit("create-pr", "feature/x");
+    await flushPromises();
+
+    expect(openDialog).toHaveBeenCalledTimes(1);
+    const [dialogName, dialogConfig] = openDialog.mock.calls[0];
+    expect(dialogName).toBe("CreatePullRequestDialog");
+
+    await dialogConfig.onSubmit({ title: "My PR", description: "", targetBranch: "main", isDraft: false });
+
+    expect(azureCreatePullRequest).toHaveBeenCalledWith(
+      "ws1",
+      expect.objectContaining({ title: "My PR", sourceBranch: "feature/x", targetBranch: "main" }),
+    );
+    expect(closeDialog).toHaveBeenCalledTimes(1);
+    expect(addEvent).toHaveBeenCalledTimes(1);
+    expect(addEvent.mock.calls[0][0].body).toContain("PR #42 created.");
+  });
+
+  test("throws with the backend summary on failure, leaving the dialog open", async () => {
+    const gitUi: Record<string, unknown> = {
+      branchList: { current: "feature/x", locals: [], remotes: [], defaultBranch: "", defaultRemote: "" },
+      graph: { commits: [], head: "", refs: {} },
+      selectedCommit: "",
+      remoteBranches: [],
+      lastResult: null,
+    };
+    azureCreatePullRequest.mockImplementation(async () => {
+      gitUi.lastResult = { ok: false, summary: "A pull request already exists for this branch." };
+    });
+
+    const wrapper = mountForPrDialog(gitUi);
+    await flushPromises();
+    const branchTree = wrapper.findComponent({ name: "BranchTreePane" });
+    branchTree.vm.$emit("create-pr", "feature/x");
+    await flushPromises();
+
+    const [, dialogConfig] = openDialog.mock.calls[0];
+    await expect(
+      dialogConfig.onSubmit({ title: "My PR", description: "", targetBranch: "main", isDraft: false }),
+    ).rejects.toThrow("A pull request already exists for this branch.");
+
+    expect(closeDialog).not.toHaveBeenCalled();
   });
 });
