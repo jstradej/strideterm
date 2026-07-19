@@ -1,8 +1,10 @@
 /// <reference types="node" />
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { mkdir, rm } from "node:fs/promises";
 import { execFileText as defaultExecFileText } from "../process-utils.js";
-import { clone, createEmptySnapshot, stripRefsPrefix } from "./provider-utils.js";
+import { clone, createEmptySnapshot, stripRefsPrefix, exists, shortPathKey } from "./provider-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./git-auth-utils.js";
 import type { Logger } from "../logger.js";
 import { getLogger } from "../logger.js";
@@ -395,6 +397,72 @@ export class BaseProviderManager extends EventEmitter {
       wrapped.stderr = stderr;
       throw wrapped;
     }
+  }
+
+  /**
+   * Ensure a bare-ish cache clone of a repository exists under
+   * `<reviewRoot>/repos/<connection>/<repository>`, cloning it if not.
+   *
+   * Shared body of AzureDevOpsManager.ensureCacheRepo / GitHubManager.ensureCacheRepo
+   * — those methods differ only in how they derive `repoIdentifier` (Azure:
+   * repository.id||name; GitHub: `${owner}/${repo}`), `repoLabel` (used only in
+   * the fallback warn log), and `login` (Azure passes connection.login; GitHub
+   * omits it and relies on runGit's defaultGitLogin="x-access-token"). Each
+   * manager's own `ensureCacheRepo` keeps its existing public signature and
+   * delegates here.
+   *
+   * `reviewRoot` must already be normalized by the caller (each provider's
+   * `normalizeReviewRoot` bakes in a different default root — azure-pr vs
+   * github-pr — so that fallback can't live in this shared, provider-agnostic
+   * method).
+   *
+   * Partial clone (`--filter=blob:none`) keeps the first checkout fast on
+   * large repos — blobs are fetched lazily. Older/self-hosted servers may not
+   * support promisor filters, so fall back to a full clone if the filtered
+   * one fails.
+   */
+  async ensureCacheRepoAt({
+    connectionId,
+    repoIdentifier,
+    repoLabel,
+    remoteUrl,
+    reviewRoot,
+    token,
+    login,
+  }: {
+    connectionId: string;
+    repoIdentifier: string;
+    repoLabel: string;
+    remoteUrl: string;
+    reviewRoot: string;
+    token: string;
+    login?: string;
+  }): Promise<string> {
+    const repositoryRoot = path.join(
+      reviewRoot,
+      "repos",
+      shortPathKey(connectionId, "connection"),
+      shortPathKey(repoIdentifier, "repository"),
+    );
+    const repositoryExists = await exists(path.join(repositoryRoot, ".git"));
+    await mkdir(path.dirname(repositoryRoot), { recursive: true });
+    if (!repositoryExists) {
+      try {
+        await this.runGit(
+          process.cwd(),
+          ["clone", "--no-checkout", "--filter=blob:none", remoteUrl, repositoryRoot],
+          { login, token },
+        );
+      } catch (error) {
+        this.log.warn("partial clone failed, retrying with full clone", {
+          repository: repoLabel,
+          err: (error as Error)?.message || String(error),
+        });
+        await rm(repositoryRoot, { recursive: true, force: true }).catch(() => {});
+        await this.runGit(process.cwd(), ["clone", "--no-checkout", remoteUrl, repositoryRoot], { login, token });
+      }
+    }
+    return repositoryRoot;
   }
 }
 

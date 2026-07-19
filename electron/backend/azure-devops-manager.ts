@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
 import type {
@@ -1753,37 +1753,15 @@ export class AzureDevOpsManager extends BaseProviderManager {
     repository: { id?: string; name: string; remoteUrl?: string };
     reviewRoot: string;
   }): Promise<string> {
-    const repositoryRoot = path.join(
-      normalizeReviewRoot(reviewRoot),
-      "repos",
-      shortPathKey(connection.id, "connection"),
-      shortPathKey(repository.id || repository.name, "repository"),
-    );
-    const repositoryExists = await exists(path.join(repositoryRoot, ".git"));
-    await mkdir(path.dirname(repositoryRoot), { recursive: true });
-    if (!repositoryExists) {
-      // Partial clone keeps the first checkout fast on large repos — blobs are
-      // fetched lazily. Older on-prem servers may not support promisor
-      // filters, so fall back to a full clone if the filtered one fails.
-      try {
-        await this.runGit(
-          process.cwd(),
-          ["clone", "--no-checkout", "--filter=blob:none", repository.remoteUrl!, repositoryRoot],
-          { login: connection.login, token },
-        );
-      } catch (error) {
-        this.log.warn("partial clone failed, retrying with full clone", {
-          repository: repository.name,
-          err: (error as Error)?.message || String(error),
-        });
-        await rm(repositoryRoot, { recursive: true, force: true }).catch(() => {});
-        await this.runGit(process.cwd(), ["clone", "--no-checkout", repository.remoteUrl!, repositoryRoot], {
-          login: connection.login,
-          token,
-        });
-      }
-    }
-    return repositoryRoot;
+    return this.ensureCacheRepoAt({
+      connectionId: connection.id,
+      repoIdentifier: repository.id || repository.name,
+      repoLabel: repository.name,
+      remoteUrl: repository.remoteUrl!,
+      reviewRoot: normalizeReviewRoot(reviewRoot),
+      token,
+      login: connection.login,
+    });
   }
 
   async prepareManagedReviewCheckout({

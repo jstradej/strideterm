@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
@@ -838,32 +838,14 @@ export class GitHubManager extends BaseProviderManager {
     remoteUrl,
     reviewRoot,
   }: EnsureCacheRepoOptions): Promise<string> {
-    const repositoryRoot = path.join(
-      normalizeReviewRoot(reviewRoot),
-      "repos",
-      shortPathKey(connection.id, "connection"),
-      shortPathKey(`${owner}/${repo}`, "repository"),
-    );
-    const repoExists = await exists(path.join(repositoryRoot, ".git"));
-    await mkdir(path.dirname(repositoryRoot), { recursive: true });
-    if (!repoExists) {
-      // Partial clone keeps the first checkout fast on large repos — blobs are
-      // fetched lazily. Older self-hosted servers may not support promisor
-      // filters, so fall back to a full clone if the filtered one fails.
-      try {
-        await this.runGit(process.cwd(), ["clone", "--no-checkout", "--filter=blob:none", remoteUrl, repositoryRoot], {
-          token,
-        });
-      } catch (error) {
-        this.log.warn("partial clone failed, retrying with full clone", {
-          repository: `${owner}/${repo}`,
-          err: (error as Error)?.message || String(error),
-        });
-        await rm(repositoryRoot, { recursive: true, force: true }).catch(() => {});
-        await this.runGit(process.cwd(), ["clone", "--no-checkout", remoteUrl, repositoryRoot], { token });
-      }
-    }
-    return repositoryRoot;
+    return this.ensureCacheRepoAt({
+      connectionId: connection.id,
+      repoIdentifier: `${owner}/${repo}`,
+      repoLabel: `${owner}/${repo}`,
+      remoteUrl,
+      reviewRoot: normalizeReviewRoot(reviewRoot),
+      token,
+    });
   }
 
   async prepareManagedReviewCheckout({
