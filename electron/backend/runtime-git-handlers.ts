@@ -1,3 +1,4 @@
+import { resolveRootPath as resolveRootPathShared } from "./shared/runtime-provider-guards.js";
 import type { WorkspaceState } from "../shared/types/state.js";
 
 /**
@@ -39,9 +40,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
-    const validated = resolveGitRootPath(workspace, rawRootPath || "");
-    if (rawRootPath && !validated) throw new Error(`Root path not found in workspace gitRoots: ${rawRootPath}`);
-    return validated || "";
+    return resolveRootPathShared(resolveGitRootPath, workspace, rawRootPath);
   }
 
   return {

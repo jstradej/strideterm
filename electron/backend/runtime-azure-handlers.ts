@@ -3,6 +3,11 @@ import { findWorkspace } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { normalizeConnectionInput } from "./azure-devops-manager.js";
 import { insertWorkspace } from "./workspace-order.js";
+import {
+  resolveRootPath as resolveRootPathShared,
+  assertPrInViewerProfile as assertPrInViewerProfileShared,
+  mirrorActivationIntoSlot,
+} from "./shared/runtime-provider-guards.js";
 import type { WorkspaceState, AppState } from "../shared/types/state.js";
 
 /**
@@ -76,30 +81,18 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
-    const resolved = resolveGitRootPath(workspace, rawRootPath || "");
-    if (rawRootPath && !resolved) {
-      throw new Error(`Root path not found in workspace gitRoots: ${rawRootPath}`);
-    }
-    return resolved || "";
+    return resolveRootPathShared(resolveGitRootPath, workspace, rawRootPath);
   }
 
   /**
    * Refuse a per-PR mutation (comment / thread status / vote) when the PR does
-   * not belong to the calling VIEWER's profile. The remote client is a viewer:
-   * without this a mobile/browser client bound to profile B could comment on,
-   * resolve threads in, or vote on a profile-A PR it can see in the global
-   * snapshot. Desktop IPC passes no viewer id (getViewerProfileId → null) and is
-   * therefore unaffected; a cross-profile PR is rejected before any external
-   * (comment posted / vote cast) side effect runs.
+   * not belong to the calling VIEWER's profile. See
+   * shared/runtime-provider-guards.ts#assertPrInViewerProfile for the full
+   * rationale — this is a thin per-provider delegate pinned to the
+   * "azureDevops" payload slice.
    */
   function assertPrInViewerProfile(prKey: string, windowId?: string): void {
-    const callerProfileId = getViewerProfileId(windowId);
-    if (!callerProfileId) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pr = (getPayload() as any)?.azureDevops?.pullRequests?.[prKey] as { profileId?: string } | undefined;
-    if (pr && String(pr.profileId || "default") !== callerProfileId) {
-      throw new Error(`Cross-profile refused: pull request ${prKey} is not in profile ${callerProfileId}.`);
-    }
+    assertPrInViewerProfileShared({ getPayload, getViewerProfileId }, "azureDevops", prKey, windowId);
   }
 
   // Coalesces concurrent Azure refreshes. The desktop IPC path dedups via
@@ -288,25 +281,16 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         }
         draft.activeWorkspaceId = normalized.id;
         // Mirror activation into the calling window's slot ONLY when the
-        // review workspace lives in the same profile as the slot. The
-        // review's profile is decided by the connection (see
-        // openReviewWorkspace), so a remote client bound to profile B that
-        // requests a PR open for a profile-A connection would otherwise
-        // swap a profile-A workspace into slot B. Frontend selector prefers
-        // slot.activeWorkspaceId, so without the guard the user in window B
-        // would silently jump into profile A's review.
-        if (windowId) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
-          if (slot && (normalized.profileId || "default") === slot.profileId) {
-            slot.activeWorkspaceId = normalized.id;
-          } else if (slot) {
-            log.info("openAzurePullRequest: skipping slot mirror (cross-profile)", {
-              windowId,
-              slotProfileId: slot.profileId,
-              workspaceProfileId: normalized.profileId || "default",
-            });
-          }
+        // review workspace lives in the same profile as the slot — see
+        // shared/runtime-provider-guards.ts#mirrorActivationIntoSlot for the
+        // full cross-profile rationale.
+        const mirrorResult = mirrorActivationIntoSlot(draft, windowId, normalized);
+        if (mirrorResult && !mirrorResult.mirrored) {
+          log.info("openAzurePullRequest: skipping slot mirror (cross-profile)", {
+            windowId,
+            slotProfileId: mirrorResult.slotProfileId,
+            workspaceProfileId: mirrorResult.workspaceProfileId,
+          });
         }
       });
       // Remote viewer: activate the review in the CALLER's remote context —
@@ -655,18 +639,13 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = normalized.id;
         // See openAzurePullRequest for the cross-profile guard rationale.
-        if (windowId) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
-          if (slot && (normalized.profileId || "default") === slot.profileId) {
-            slot.activeWorkspaceId = normalized.id;
-          } else if (slot) {
-            log.info("azureQuickFixCreate: skipping slot mirror (cross-profile)", {
-              windowId,
-              slotProfileId: slot.profileId,
-              workspaceProfileId: normalized.profileId || "default",
-            });
-          }
+        const mirrorResult = mirrorActivationIntoSlot(draft, windowId, normalized);
+        if (mirrorResult && !mirrorResult.mirrored) {
+          log.info("azureQuickFixCreate: skipping slot mirror (cross-profile)", {
+            windowId,
+            slotProfileId: mirrorResult.slotProfileId,
+            workspaceProfileId: mirrorResult.workspaceProfileId,
+          });
         }
       });
       // Remote viewer: activate the quickfix in the CALLER's remote context.
