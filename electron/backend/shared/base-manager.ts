@@ -23,7 +23,22 @@ interface PrSummaryItem {
 interface SnapshotConnection {
   id: string;
   tokenRef?: string;
+  login?: string;
   [key: string]: unknown;
+}
+
+/** Minimal shape `fetch/rebase/pushReviewWorkspace` need — both AzureDevOpsManager's
+ * `ReviewWorkspace` and GitHubManager's `SyncWorkspace` satisfy this structurally. */
+interface ReviewWorkspaceRef {
+  id: string;
+  cwd?: string;
+  review?: {
+    connectionId?: string;
+    pullRequest?: {
+      sourceRefName?: string;
+      targetRefName?: string;
+    };
+  };
 }
 
 interface ProviderSnapshot {
@@ -118,6 +133,7 @@ export class BaseProviderManager extends EventEmitter {
   _seededConnections: Set<string>;
   providerLabel: string;
   defaultGitLogin: string;
+  connectionNotFoundMessage: string;
   _log: Logger | null;
 
   constructor({
@@ -153,6 +169,7 @@ export class BaseProviderManager extends EventEmitter {
 
     this.providerLabel = "provider";
     this.defaultGitLogin = "";
+    this.connectionNotFoundMessage = "Connection was not found.";
     this._log = null;
   }
 
@@ -463,6 +480,155 @@ export class BaseProviderManager extends EventEmitter {
       }
     }
     return repositoryRoot;
+  }
+
+  /**
+   * Fetch the PR's source/target refs into the cache repo and ensure a
+   * worktree checked out to `localBranch` exists at `worktreePath`.
+   *
+   * Shared body of AzureDevOpsManager.prepareManagedReviewCheckout /
+   * GitHubManager.prepareManagedReviewCheckout's worktree-ensure step — those
+   * methods differ only in how they derive `fetchRefspecs` (Azure fetches the
+   * PR's raw sourceRefName/targetRefName as-is; GitHub reconstructs
+   * `refs/heads/<branch>`) and `login` (Azure passes connection.login; GitHub
+   * relies on runGit's defaultGitLogin). Both providers now use the same
+   * worktree-reuse strategy: prune stale worktree metadata up front, and when
+   * (re)creating a worktree for a branch that already exists locally, reuse
+   * it and only hard-reset when it has no unpushed commits — this used to be
+   * Azure-only; GitHub's prior force-recreate (`-B`) had no such guard and
+   * could silently discard unpushed work from a previous session.
+   */
+  async ensureManagedWorktree({
+    cacheRepoPath,
+    worktreePath,
+    localBranch,
+    sourceBranch,
+    fetchRefspecs,
+    login,
+    token,
+  }: {
+    cacheRepoPath: string;
+    worktreePath: string;
+    localBranch: string;
+    sourceBranch: string;
+    fetchRefspecs: string[];
+    login?: string;
+    token: string;
+  }): Promise<void> {
+    await this.runGit(cacheRepoPath, ["fetch", "origin", ...fetchRefspecs], { login, token });
+
+    await mkdir(path.dirname(worktreePath), { recursive: true });
+    await this.runGit(cacheRepoPath, ["worktree", "prune"]).catch(() => {});
+    const worktreeExists = await exists(path.join(worktreePath, ".git"));
+
+    if (!worktreeExists) {
+      const branchExists = await this.runGit(cacheRepoPath, [
+        "show-ref",
+        "--verify",
+        "--quiet",
+        `refs/heads/${localBranch}`,
+      ])
+        .then(() => true)
+        .catch(() => false);
+
+      if (branchExists) {
+        await this.runGit(cacheRepoPath, ["worktree", "add", "--force", worktreePath, localBranch]);
+        const ahead = await this.runGit(worktreePath, [
+          "rev-list",
+          "--count",
+          `refs/remotes/origin/${sourceBranch}..HEAD`,
+        ]).catch(() => ({ stdout: "0" }));
+        if (Number(ahead.stdout.trim()) === 0) {
+          await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
+        }
+      } else {
+        await this.runGit(cacheRepoPath, [
+          "worktree",
+          "add",
+          "--force",
+          "-b",
+          localBranch,
+          worktreePath,
+          `refs/remotes/origin/${sourceBranch}`,
+        ]);
+      }
+    } else {
+      await this.runGit(worktreePath, ["checkout", localBranch]).catch(async () => {
+        await this.runGit(worktreePath, ["checkout", "-B", localBranch, `refs/remotes/origin/${sourceBranch}`]);
+      });
+      const status = await this.runGit(worktreePath, ["status", "--porcelain"]);
+      if (!status.stdout.trim()) {
+        // Only reset if local branch has no commits ahead of remote,
+        // to avoid discarding unpushed work from a previous session.
+        const ahead = await this.runGit(worktreePath, [
+          "rev-list",
+          "--count",
+          `refs/remotes/origin/${sourceBranch}..HEAD`,
+        ]).catch(() => ({ stdout: "0" }));
+        if (Number(ahead.stdout.trim()) === 0) {
+          await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
+        }
+      }
+    }
+  }
+
+  /**
+   * Shared body of AzureDevOpsManager.fetchReviewWorkspace /
+   * GitHubManager.fetchReviewWorkspace — identical except the connection's
+   * login is Azure-only (GitHub relies on runGit's defaultGitLogin).
+   */
+  async fetchReviewWorkspace({ workspace }: { workspace: ReviewWorkspaceRef }): Promise<void> {
+    const connection = this.findConnection(workspace.review?.connectionId || "");
+    if (!connection) throw new Error(this.connectionNotFoundMessage);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
+    if (!token) throw new Error("PAT is missing.");
+    this.log.info("fetch review workspace", { workspaceId: workspace.id });
+    await this.runAuditedGitOperation({ type: "fetch", connection, workspaceId: workspace.id }, () =>
+      this.runGit(workspace.cwd || "", ["fetch", "origin"], { login: connection.login, token }),
+    );
+  }
+
+  /** Shared body of AzureDevOpsManager.rebaseReviewWorkspace / GitHubManager.rebaseReviewWorkspace. */
+  async rebaseReviewWorkspace({ workspace }: { workspace: ReviewWorkspaceRef }): Promise<void> {
+    await this.fetchReviewWorkspace({ workspace });
+    const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName || "");
+    this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
+    // Token so partial-clone checkouts can lazily fetch blobs mid-rebase.
+    const connection = this.findConnection(workspace.review?.connectionId || "");
+    const token = connection ? this.credentialStore.getSecret(connection.tokenRef || "") : "";
+    await this.runAuditedGitOperation({ type: "rebase", connection, workspaceId: workspace.id }, () =>
+      this.runGit(workspace.cwd || "", ["rebase", `origin/${targetBranch}`], {
+        login: connection?.login,
+        token: token || undefined,
+      }),
+    );
+  }
+
+  /** Shared body of AzureDevOpsManager.pushReviewWorkspace / GitHubManager.pushReviewWorkspace. */
+  async pushReviewWorkspace({
+    workspace,
+    force = false,
+    branch = "",
+  }: {
+    workspace: ReviewWorkspaceRef;
+    force?: boolean;
+    branch?: string;
+  }): Promise<void> {
+    const connection = this.findConnection(workspace.review?.connectionId || "");
+    if (!connection) throw new Error(this.connectionNotFoundMessage);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
+    if (!token) throw new Error("PAT is missing.");
+    const sourceBranch = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName || "") || branch;
+    if (!sourceBranch) throw new Error("Cannot determine branch name for push.");
+    // Local branch may be named differently (e.g. pr-123-feature) so push HEAD to the remote branch name
+    const pushArgs = force
+      ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
+      : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
+    this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
+    await this.runAuditedGitOperation(
+      { type: force ? "force-push" : "push", connection, workspaceId: workspace.id },
+      () => this.runGit(workspace.cwd || "", pushArgs, { login: connection.login, token }),
+    );
   }
 }
 

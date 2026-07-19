@@ -1,6 +1,7 @@
 import path from "node:path";
 import os from "node:os";
-import { describe, expect, test, vi } from "vitest";
+import fs from "node:fs/promises";
+import { describe, expect, test, vi, afterEach } from "vitest";
 import { BaseProviderManager } from "./base-manager.js";
 
 const reviewRoot = path.join(os.tmpdir(), "strideterm-base-manager-tests");
@@ -20,14 +21,47 @@ function createReviewStore() {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: vi.fn() mock type doesn't structurally match execFileText's signature
-function createManager({ execFileTextImpl }: { execFileTextImpl: any }) {
+function createManager({
+  execFileTextImpl,
+  secrets = {},
+}: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  execFileTextImpl: any;
+  secrets?: Record<string, string>;
+}) {
   return new BaseProviderManager({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    credentialStore: createCredentialStore() as any,
+    credentialStore: createCredentialStore(secrets) as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     reviewStore: createReviewStore() as any,
     execFileTextImpl,
     createApi: () => ({}),
+  });
+}
+
+/** Fake `git` invocations for ensureManagedWorktree, keyed by subcommand rather than
+ * call order — extraArgs (-c core.longpaths=true, http.extraheader=...) are prepended
+ * by runGit, so matching on `args.includes(...)` is robust to that prefix. */
+function makeGitFake({
+  branchExists = false,
+  aheadCount = 0,
+  checkoutFails = false,
+}: {
+  branchExists?: boolean;
+  aheadCount?: number;
+  checkoutFails?: boolean;
+} = {}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test double for execFileText
+  return vi.fn(async (_bin: string, args: string[]): Promise<any> => {
+    if (args.includes("show-ref")) {
+      if (branchExists) return { stdout: "", stderr: "" };
+      throw new Error("not found");
+    }
+    if (args.includes("rev-list")) return { stdout: String(aheadCount), stderr: "" };
+    if (args.includes("checkout") && !args.includes("-B") && checkoutFails) {
+      throw new Error("checkout failed");
+    }
+    return { stdout: "", stderr: "" };
   });
 }
 
@@ -109,5 +143,224 @@ describe("BaseProviderManager.ensureCacheRepoAt", () => {
       "partial clone failed, retrying with full clone",
       expect.objectContaining({ repository: "acme/repo-1" }),
     );
+  });
+});
+
+describe("BaseProviderManager.ensureManagedWorktree", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(tmpDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  async function makeWorktreePath() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-worktree-"));
+    tmpDirs.push(dir);
+    return path.join(dir, "worktree");
+  }
+
+  test("fetches with the given refspecs and prunes stale worktree metadata before checking existence", async () => {
+    const execFileTextImpl = makeGitFake();
+    const manager = createManager({ execFileTextImpl });
+    const worktreePath = await makeWorktreePath();
+
+    await manager.ensureManagedWorktree({
+      cacheRepoPath: "/cache/repo",
+      worktreePath,
+      localBranch: "pr-1-feature",
+      sourceBranch: "feature",
+      fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      login: "me@example.com",
+      token: "tok-123",
+    });
+
+    const fetchCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("fetch"));
+    expect(fetchCall![1]).toEqual(
+      expect.arrayContaining(["fetch", "origin", "+refs/heads/feature:refs/remotes/origin/feature"]),
+    );
+    const pruneCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("prune"));
+    expect(pruneCall).toBeDefined();
+    // prune must run before the .git existence check that decides the branch —
+    // i.e. before any worktree "add"/"checkout" call.
+    const pruneIndex = execFileTextImpl.mock.calls.indexOf(pruneCall!);
+    const addOrCheckoutIndex = execFileTextImpl.mock.calls.findIndex(
+      (call) => call[1].includes("add") || call[1].includes("checkout"),
+    );
+    expect(pruneIndex).toBeLessThan(addOrCheckoutIndex);
+  });
+
+  test("creates a new worktree with -b when no worktree or local branch exists yet", async () => {
+    const execFileTextImpl = makeGitFake({ branchExists: false });
+    const manager = createManager({ execFileTextImpl });
+    const worktreePath = await makeWorktreePath();
+
+    await manager.ensureManagedWorktree({
+      cacheRepoPath: "/cache/repo",
+      worktreePath,
+      localBranch: "pr-1-feature",
+      sourceBranch: "feature",
+      fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      token: "tok-123",
+    });
+
+    const addCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("add"));
+    expect(addCall![1]).toEqual(
+      expect.arrayContaining([
+        "worktree",
+        "add",
+        "--force",
+        "-b",
+        "pr-1-feature",
+        worktreePath,
+        "refs/remotes/origin/feature",
+      ]),
+    );
+  });
+
+  test("reuses an existing local branch and hard-resets it when it has no unpushed commits", async () => {
+    const execFileTextImpl = makeGitFake({ branchExists: true, aheadCount: 0 });
+    const manager = createManager({ execFileTextImpl });
+    const worktreePath = await makeWorktreePath();
+
+    await manager.ensureManagedWorktree({
+      cacheRepoPath: "/cache/repo",
+      worktreePath,
+      localBranch: "pr-1-feature",
+      sourceBranch: "feature",
+      fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      token: "tok-123",
+    });
+
+    const addCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("add"));
+    expect(addCall![1]).toEqual(
+      expect.arrayContaining(["worktree", "add", "--force", worktreePath, "pr-1-feature"]),
+    );
+    expect(addCall![1]).not.toContain("-b");
+    const resetCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("reset"));
+    expect(resetCall).toBeDefined();
+  });
+
+  test("does NOT reset an existing local branch that has unpushed commits ahead of origin", async () => {
+    const execFileTextImpl = makeGitFake({ branchExists: true, aheadCount: 3 });
+    const manager = createManager({ execFileTextImpl });
+    const worktreePath = await makeWorktreePath();
+
+    await manager.ensureManagedWorktree({
+      cacheRepoPath: "/cache/repo",
+      worktreePath,
+      localBranch: "pr-1-feature",
+      sourceBranch: "feature",
+      fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      token: "tok-123",
+    });
+
+    const resetCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("reset"));
+    expect(resetCall).toBeUndefined();
+  });
+
+  test("when the worktree already exists, checks out the branch and falls back to -B on failure", async () => {
+    const execFileTextImpl = makeGitFake({ checkoutFails: true, aheadCount: 0 });
+    const manager = createManager({ execFileTextImpl });
+    const worktreePath = await makeWorktreePath();
+    await fs.mkdir(path.join(worktreePath, ".git"), { recursive: true });
+
+    await manager.ensureManagedWorktree({
+      cacheRepoPath: "/cache/repo",
+      worktreePath,
+      localBranch: "pr-1-feature",
+      sourceBranch: "feature",
+      fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      token: "tok-123",
+    });
+
+    const fallbackCheckout = execFileTextImpl.mock.calls.find(
+      (call) => call[1].includes("checkout") && call[1].includes("-B"),
+    );
+    expect(fallbackCheckout).toBeDefined();
+    // No "add"/"show-ref" calls — the existing-worktree branch never creates one.
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("show-ref"))).toBe(false);
+  });
+});
+
+describe("BaseProviderManager.fetchReviewWorkspace / rebaseReviewWorkspace / pushReviewWorkspace", () => {
+  function connectionSnapshot(overrides: Record<string, unknown> = {}) {
+    return { id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com", ...overrides };
+  }
+
+  test("fetchReviewWorkspace threads the connection's login through to runGit", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    await manager.fetchReviewWorkspace({ workspace: { id: "ws-1", cwd: "/repo", review: { connectionId: "conn-1" } } });
+
+    expect(execFileTextImpl).toHaveBeenCalledWith(
+      "git",
+      expect.arrayContaining(["fetch", "origin"]),
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+    const headerArg = execFileTextImpl.mock.calls[0][1].find((a: string) => a.startsWith("http.extraheader="));
+    const decoded = Buffer.from(
+      headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""),
+      "base64",
+    ).toString("utf8");
+    expect(decoded).toBe("me@example.com:tok-123");
+  });
+
+  test("fetchReviewWorkspace throws the provider-specific connection-not-found message", async () => {
+    const manager = createManager({ execFileTextImpl: vi.fn() });
+    manager.connectionNotFoundMessage = "GitHub connection was not found.";
+
+    await expect(
+      manager.fetchReviewWorkspace({ workspace: { id: "ws-1", review: { connectionId: "missing" } } }),
+    ).rejects.toThrow("GitHub connection was not found.");
+  });
+
+  test("rebaseReviewWorkspace fetches first, then rebases onto origin/<targetBranch>", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    await manager.rebaseReviewWorkspace({
+      workspace: {
+        id: "ws-1",
+        cwd: "/repo",
+        review: { connectionId: "conn-1", pullRequest: { targetRefName: "refs/heads/main" } },
+      },
+    });
+
+    const calls = execFileTextImpl.mock.calls;
+    expect(calls[0][1]).toEqual(expect.arrayContaining(["fetch", "origin"]));
+    expect(calls[1][1]).toEqual(expect.arrayContaining(["rebase", "origin/main"]));
+  });
+
+  test("pushReviewWorkspace pushes HEAD to the PR's source branch, with --force-with-lease when force=true", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    await manager.pushReviewWorkspace({
+      workspace: {
+        id: "ws-1",
+        cwd: "/repo",
+        review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" } },
+      },
+      force: true,
+    });
+
+    expect(execFileTextImpl).toHaveBeenCalledWith(
+      "git",
+      expect.arrayContaining(["push", "--force-with-lease", "-u", "origin", "HEAD:refs/heads/feature"]),
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+  });
+
+  test("pushReviewWorkspace throws when no branch can be determined", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    await expect(
+      manager.pushReviewWorkspace({ workspace: { id: "ws-1", cwd: "/repo", review: { connectionId: "conn-1" } } }),
+    ).rejects.toThrow("Cannot determine branch name for push.");
   });
 });

@@ -338,6 +338,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     });
     this.providerLabel = "azure-devops";
     this.defaultGitLogin = "";
+    this.connectionNotFoundMessage = "Azure DevOps connection was not found.";
   }
 
   /**
@@ -1810,75 +1811,22 @@ export class AzureDevOpsManager extends BaseProviderManager {
         shortPathKey(connection.id, "connection"),
         `pr-${summary.pullRequest!.id}`,
       );
+      const localBranch = `pr-${summary.pullRequest!.id}-${sanitizePathSegment(sourceBranch)}`;
 
-      await this.runGit(
+      await this.ensureManagedWorktree({
         cacheRepoPath,
-        [
-          "fetch",
-          "origin",
+        worktreePath,
+        localBranch,
+        sourceBranch,
+        // Azure fetches the PR's raw source/target ref names as-is (Azure's
+        // API can return refs in shapes other than refs/heads/*).
+        fetchRefspecs: [
           `+${summary.pullRequest!.sourceRefName}:refs/remotes/origin/${sourceBranch}`,
           `+${summary.pullRequest!.targetRefName}:refs/remotes/origin/${targetBranch}`,
         ],
-        {
-          login: connection.login,
-          token,
-        },
-      );
-
-      await mkdir(path.dirname(worktreePath), { recursive: true });
-      await this.runGit(cacheRepoPath, ["worktree", "prune"]).catch(() => {});
-      const worktreeExists = await exists(path.join(worktreePath, ".git"));
-      const localBranch = `pr-${summary.pullRequest!.id}-${sanitizePathSegment(sourceBranch)}`;
-
-      if (!worktreeExists) {
-        const branchExists = await this.runGit(cacheRepoPath, [
-          "show-ref",
-          "--verify",
-          "--quiet",
-          `refs/heads/${localBranch}`,
-        ])
-          .then(() => true)
-          .catch(() => false);
-
-        if (branchExists) {
-          await this.runGit(cacheRepoPath, ["worktree", "add", "--force", worktreePath, localBranch]);
-          const ahead = await this.runGit(worktreePath, [
-            "rev-list",
-            "--count",
-            `refs/remotes/origin/${sourceBranch}..HEAD`,
-          ]).catch(() => ({ stdout: "0" }));
-          if (Number(ahead.stdout.trim()) === 0) {
-            await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
-          }
-        } else {
-          await this.runGit(cacheRepoPath, [
-            "worktree",
-            "add",
-            "--force",
-            "-b",
-            localBranch,
-            worktreePath,
-            `refs/remotes/origin/${sourceBranch}`,
-          ]);
-        }
-      } else {
-        await this.runGit(worktreePath, ["checkout", localBranch]).catch(async () => {
-          await this.runGit(worktreePath, ["checkout", "-B", localBranch, `refs/remotes/origin/${sourceBranch}`]);
-        });
-        const status = await this.runGit(worktreePath, ["status", "--porcelain"]);
-        if (!status.stdout.trim()) {
-          // Only reset if local branch has no commits ahead of remote,
-          // to avoid discarding unpushed work from a previous session.
-          const ahead = await this.runGit(worktreePath, [
-            "rev-list",
-            "--count",
-            `refs/remotes/origin/${sourceBranch}..HEAD`,
-          ]).catch(() => ({ stdout: "0" }));
-          if (Number(ahead.stdout.trim()) === 0) {
-            await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
-          }
-        }
-      }
+        login: connection.login,
+        token,
+      });
 
       return {
         mode: "managed-worktree",
@@ -2210,39 +2158,6 @@ export class AzureDevOpsManager extends BaseProviderManager {
     );
   }
 
-  async fetchReviewWorkspace({ workspace }: { workspace: ReviewWorkspace }): Promise<void> {
-    const connection = this.findAzureConnection(workspace.review?.connectionId || "");
-    if (!connection) {
-      throw new Error("Azure DevOps connection was not found.");
-    }
-    const token = this.credentialStore.getSecret(connection.tokenRef);
-    if (!token) {
-      throw new Error("PAT is missing.");
-    }
-    this.log.info("fetch review workspace", { workspaceId: workspace.id });
-    await this.runAuditedGitOperation({ type: "fetch", connection, workspaceId: workspace.id }, () =>
-      this.runGit(workspace.cwd || "", ["fetch", "origin"], {
-        login: connection.login,
-        token,
-      }),
-    );
-  }
-
-  async rebaseReviewWorkspace({ workspace }: { workspace: ReviewWorkspace }): Promise<void> {
-    await this.fetchReviewWorkspace({ workspace });
-    const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName || "");
-    this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
-    // Token so partial-clone checkouts can lazily fetch blobs mid-rebase.
-    const connection = this.findAzureConnection(workspace.review?.connectionId || "");
-    const token = connection ? this.credentialStore.getSecret(connection.tokenRef) : "";
-    await this.runAuditedGitOperation({ type: "rebase", connection, workspaceId: workspace.id }, () =>
-      this.runGit(workspace.cwd || "", ["rebase", `origin/${targetBranch}`], {
-        login: connection?.login,
-        token: token || undefined,
-      }),
-    );
-  }
-
   findConnectionForRemote(remoteUrl: string): AzureConnection | null {
     const normalized = normalizeRemoteUrl(remoteUrl);
     if (!normalized) return null;
@@ -2352,43 +2267,6 @@ export class AzureDevOpsManager extends BaseProviderManager {
       url: result._links?.web?.href || "",
       title: result.title,
     };
-  }
-
-  async pushReviewWorkspace({
-    workspace,
-    force = false,
-    branch = "",
-  }: {
-    workspace: ReviewWorkspace;
-    force?: boolean;
-    branch?: string;
-  }): Promise<void> {
-    const connection = this.findAzureConnection(workspace.review?.connectionId || "");
-    if (!connection) {
-      throw new Error("Azure DevOps connection was not found.");
-    }
-    const token = this.credentialStore.getSecret(connection.tokenRef);
-    if (!token) {
-      throw new Error("PAT is missing.");
-    }
-    const prRef = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName || "");
-    const sourceBranch = prRef || branch;
-    if (!sourceBranch) {
-      throw new Error("Cannot determine branch name for push.");
-    }
-    // Local branch may be named differently (e.g. pr-123-feature) so push HEAD to the remote branch name
-    const pushArgs = force
-      ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
-      : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
-    this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
-    await this.runAuditedGitOperation(
-      { type: force ? "force-push" : "push", connection, workspaceId: workspace.id },
-      () =>
-        this.runGit(workspace.cwd || "", pushArgs, {
-          login: connection.login,
-          token,
-        }),
-    );
   }
 
   // ---------------------------------------------------------------------------
