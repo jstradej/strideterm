@@ -9,13 +9,11 @@ const providerOptions = [
 ];
 
 function mountConfig(role: "worker" | "judge", overrides: Record<string, unknown> = {}) {
-  const provider = { providerId: "claude", model: "sonnet", skipPermissions: true };
-  const panel = { command: "claude --model sonnet" };
   return mount(AgentProviderConfig, {
     props: {
       role,
-      provider,
-      panel,
+      provider: { providerId: "claude", model: "sonnet", skipPermissions: true },
+      panelCommand: "claude --model sonnet",
       commandOverride: false,
       providerOptions,
       ...overrides,
@@ -23,8 +21,13 @@ function mountConfig(role: "worker" | "judge", overrides: Record<string, unknown
   });
 }
 
+function lastEmitted<T>(wrapper: ReturnType<typeof mount>, event: string): T {
+  const calls = wrapper.emitted(event);
+  return calls![calls!.length - 1][0] as T;
+}
+
 describe("AgentProviderConfig", () => {
-  test("worker role shows the Worker agent label and worker-suggested placeholder", () => {
+  test("worker role shows the Worker agent label", () => {
     const wrapper = mountConfig("worker");
     expect(wrapper.find(".agent-config-section__label").text()).toBe("Worker agent");
   });
@@ -34,15 +37,19 @@ describe("AgentProviderConfig", () => {
     expect(wrapper.find(".agent-config-section__label").text()).toBe("Judge agent");
   });
 
-  test("toggling to advanced command prefills the panel command from the current provider picker state, then shows the command input", async () => {
-    const panel = { command: "" };
-    const provider = { providerId: "gemini", model: "gemini-3-flash-preview", skipPermissions: true };
+  test("toggling to advanced command emits the panel command built from the current provider picker state", async () => {
     const wrapper = mount(AgentProviderConfig, {
-      props: { role: "worker", provider, panel, commandOverride: false, providerOptions },
+      props: {
+        role: "worker",
+        provider: { providerId: "gemini", model: "gemini-3-flash-preview", skipPermissions: true },
+        panelCommand: "",
+        commandOverride: false,
+        providerOptions,
+      },
     });
     await wrapper.find(".agent-config-section__advanced-btn").trigger("click");
-    expect(panel.command).toBe("gemini --yolo -m gemini-3-flash-preview");
-    expect(wrapper.emitted("update:commandOverride")![0]).toEqual([true]);
+    expect(lastEmitted<string>(wrapper, "update:panelCommand")).toBe("gemini --yolo -m gemini-3-flash-preview");
+    expect(lastEmitted<boolean>(wrapper, "update:commandOverride")).toBe(true);
   });
 
   test("commandOverride=true renders the command input labeled for the role instead of the provider picker", () => {
@@ -52,27 +59,48 @@ describe("AgentProviderConfig", () => {
   });
 
   test("changing provider auto-selects the role-suggested model and resets skipPermissions to the provider default", async () => {
-    const provider = { providerId: "claude", model: "opus", skipPermissions: false };
     const wrapper = mount(AgentProviderConfig, {
-      props: { role: "worker", provider, panel: { command: "" }, commandOverride: false, providerOptions },
+      props: {
+        role: "worker",
+        provider: { providerId: "claude", model: "opus", skipPermissions: false },
+        panelCommand: "",
+        commandOverride: false,
+        providerOptions,
+      },
     });
-    const select = wrapper.findComponent(CustomSelect);
-    provider.providerId = "codex";
-    await select.vm.$emit("change");
+    // Simulate the CustomSelect's own v-model update having already flowed
+    // the new providerId into the prop (as it would synchronously in real
+    // usage) before its @change handler fires.
+    // setProps's typing is too strict on script-setup components; cast to
+    // accept the prop name the component does take (see
+    // TerminalSearchOverlay.test.ts for the same precedent).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (wrapper as any).setProps({ provider: { providerId: "codex", model: "opus", skipPermissions: false } });
+    await wrapper.findComponent(CustomSelect).vm.$emit("change");
     // codex's worker-suggested model is gpt-5.5 (see PROVIDER_CHOICES), and
     // codex defaults to skipPermissions: true.
-    expect(provider.model).toBe("gpt-5.5");
-    expect(provider.skipPermissions).toBe(true);
+    const updated = lastEmitted<{ providerId: string; model: string; skipPermissions: boolean }>(
+      wrapper,
+      "update:provider",
+    );
+    expect(updated.model).toBe("gpt-5.5");
+    expect(updated.skipPermissions).toBe(true);
   });
 
   test("judge role auto-selects the judge-suggested model on provider change", async () => {
-    const provider = { providerId: "claude", model: "", skipPermissions: true };
     const wrapper = mount(AgentProviderConfig, {
-      props: { role: "judge", provider, panel: { command: "" }, commandOverride: false, providerOptions },
+      props: {
+        role: "judge",
+        provider: { providerId: "claude", model: "", skipPermissions: true },
+        panelCommand: "",
+        commandOverride: false,
+        providerOptions,
+      },
     });
-    const select = wrapper.findComponent(CustomSelect);
-    provider.providerId = "codex";
-    await select.vm.$emit("change");
-    expect(provider.model).toBe("gpt-5.6-sol");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (wrapper as any).setProps({ provider: { providerId: "codex", model: "", skipPermissions: true } });
+    await wrapper.findComponent(CustomSelect).vm.$emit("change");
+    const updated = lastEmitted<{ model: string }>(wrapper, "update:provider");
+    expect(updated.model).toBe("gpt-5.6-sol");
   });
 });

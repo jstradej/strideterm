@@ -10,13 +10,13 @@
       <div class="grid grid--2col">
         <label>
           <span>Provider</span>
-          <CustomSelect v-model="provider.providerId" :options="providerOptions" @change="onProviderChange" />
+          <CustomSelect v-model="providerId" :options="providerOptions" @change="onProviderChange" />
         </label>
         <label
           title="Leave empty for the CLI's own default, pick from the suggestion list, or type any model ID your CLI version supports — Codex and Gemini change their model catalog often and we don't want a rebuild every time."
         >
           <span>Model</span>
-          <input v-model="provider.model" :list="modelListId" placeholder="Default" maxlength="100" />
+          <input v-model="model" :list="modelListId" placeholder="Default" maxlength="100" />
           <datalist :id="modelListId">
             <option
               v-for="m in modelChoices"
@@ -28,13 +28,13 @@
         </label>
       </div>
       <label class="checkbox-inline">
-        <input v-model="provider.skipPermissions" type="checkbox" />
+        <input v-model="skipPermissions" type="checkbox" />
         <span>Skip permission prompts (dangerous)</span>
       </label>
     </template>
     <label v-else title="Full CLI command including flags">
       <span>{{ commandLabel }}</span>
-      <input v-model="panel.command" :placeholder="commandPlaceholder" maxlength="500" />
+      <input v-model="panelCommandModel" :placeholder="commandPlaceholder" maxlength="500" />
     </label>
   </div>
 </template>
@@ -44,20 +44,18 @@ import { computed } from "vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import { PROVIDER_CHOICES, buildProviderCommand, type ProviderConfig } from "../../lib/agent-providers.js";
 
-interface PanelRef {
-  command: string;
-}
-
 interface Props {
   role: "worker" | "judge";
   provider: ProviderConfig;
-  panel: PanelRef;
+  panelCommand: string;
   commandOverride: boolean;
   providerOptions: Array<{ value: string; label: string; disabled?: boolean }>;
 }
 
 const props = defineProps<Props>();
 const emit = defineEmits<{
+  "update:provider": [provider: ProviderConfig];
+  "update:panelCommand": [command: string];
   "update:commandOverride": [value: boolean];
 }>();
 
@@ -75,22 +73,48 @@ const modelChoices = computed(() => {
   return p?.models || [];
 });
 
+// Per-field writable computeds so CustomSelect/input v-model bindings can
+// stay simple, without mutating the `provider` prop object directly
+// (vue/no-mutating-props) — each emits a merged copy via update:provider.
+const providerId = computed({
+  get: () => props.provider.providerId,
+  set: (v: string) => emit("update:provider", { ...props.provider, providerId: v }),
+});
+const model = computed({
+  get: () => props.provider.model,
+  set: (v: string) => emit("update:provider", { ...props.provider, model: v }),
+});
+const skipPermissions = computed({
+  get: () => props.provider.skipPermissions,
+  set: (v: boolean) => emit("update:provider", { ...props.provider, skipPermissions: v }),
+});
+const panelCommandModel = computed({
+  get: () => props.panelCommand,
+  set: (v: string) => emit("update:panelCommand", v),
+});
+
 function onProviderChange() {
   // Auto-select suggested model for this role + reset skipPermissions to provider default
   const p = PROVIDER_CHOICES.find((c) => c.id === props.provider.providerId);
   const suggested = p?.models?.find((m) => m.suggestedRole === props.role) || p?.models?.[0];
-  if (suggested) props.provider.model = suggested.id;
-  if (p) props.provider.skipPermissions = p.defaultSkipPermissions ?? false;
+  emit("update:provider", {
+    ...props.provider,
+    model: suggested ? suggested.id : props.provider.model,
+    skipPermissions: p ? (p.defaultSkipPermissions ?? false) : props.provider.skipPermissions,
+  });
 }
 
 function toggleOverride() {
   // When enabling advanced custom command, prefill with current picker state
   if (!props.commandOverride) {
-    props.panel.command = buildProviderCommand({
-      providerId: props.provider.providerId,
-      model: props.provider.model,
-      skipPermissions: props.provider.skipPermissions,
-    });
+    emit(
+      "update:panelCommand",
+      buildProviderCommand({
+        providerId: props.provider.providerId,
+        model: props.provider.model,
+        skipPermissions: props.provider.skipPermissions,
+      }),
+    );
   }
   emit("update:commandOverride", !props.commandOverride);
 }

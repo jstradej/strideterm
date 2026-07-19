@@ -160,19 +160,19 @@
         </div>
         <!-- Worker agent configuration -->
         <AgentProviderConfig
-          role="worker"
-          :provider="draft.workerProvider"
-          :panel="workerPanel"
+          v-model:provider="draft.workerProvider"
+          v-model:panel-command="workerPanel.command"
           v-model:command-override="draft.workerCommandOverride"
+          role="worker"
           :provider-options="providerOptions"
         />
 
         <!-- Judge agent configuration -->
         <AgentProviderConfig
-          role="judge"
-          :provider="draft.judgeProvider"
-          :panel="judgePanel"
+          v-model:provider="draft.judgeProvider"
+          v-model:panel-command="judgePanel.command"
           v-model:command-override="draft.judgeCommandOverride"
+          role="judge"
           :provider-options="providerOptions"
         />
 
