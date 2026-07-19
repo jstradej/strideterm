@@ -214,6 +214,7 @@ import { useNotificationStore } from "../../../stores/notifications.js";
 import GitDiffStat from "./GitDiffStat.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
+import { useMonacoDiffLoader } from "../../../composables/useMonacoDiffLoader.js";
 import { buildCommitSelection } from "./commit-selection.js";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
@@ -282,49 +283,31 @@ function onFileSelect(path: string, scope: string) {
   gitUiStore.gitSelectDiff(props.workspaceId, path, scope);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const monacoDiffPayload = ref<Record<string, any> | null>(null);
-const monacoDiffLoading = ref(false);
-let monacoDiffSeq = 0;
-
 function diffSourceForScope(scope: string) {
   return scope === "staged" ? "staged" : "head";
 }
 
-async function loadMonacoDiff(path: string, scope: string) {
+// Working-tree file diff — shared seq-guarded loader (see
+// useMonacoDiffLoader.ts), also used by GitBranchesTab.vue's commit diff.
+const diffLoader = useMonacoDiffLoader((path: string, scope: string) => {
+  const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
+  return api.fileGitDiff({
+    rootPath: props.activeRootPath,
+    relativePath: path,
+    source: diffSourceForScope(scope),
+    revisionRef: "",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as Promise<any>;
+}, "Failed to load diff");
+const monacoDiffPayload = diffLoader.payload;
+const monacoDiffLoading = diffLoader.loading;
+
+function loadMonacoDiff(path: string, scope: string) {
   if (!props.activeRootPath || !path) {
     monacoDiffPayload.value = null;
     return;
   }
-  const seq = ++monacoDiffSeq;
-  monacoDiffLoading.value = true;
-  try {
-    const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
-    const payload = (await api.fileGitDiff({
-      rootPath: props.activeRootPath,
-      relativePath: path,
-      source: diffSourceForScope(scope),
-      revisionRef: "",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    })) as any;
-    if (seq !== monacoDiffSeq) return;
-    monacoDiffPayload.value = payload;
-  } catch (err) {
-    if (seq !== monacoDiffSeq) return;
-    monacoDiffPayload.value = {
-      ok: false,
-      leftError: (err as Error)?.message || "Failed to load diff",
-      leftContent: "",
-      rightContent: "",
-      leftLabel: "",
-      rightLabel: "",
-      leftMissing: true,
-      rightMissing: true,
-      language: "plaintext",
-    };
-  } finally {
-    if (seq === monacoDiffSeq) monacoDiffLoading.value = false;
-  }
+  void diffLoader.load(path, scope);
 }
 
 // `immediate` so the diff loads when the tab mounts with a pre-selected

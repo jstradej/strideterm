@@ -579,6 +579,7 @@ import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 import { useCommitContextMenu } from "../../../composables/useCommitContextMenu.js";
+import { useMonacoDiffLoader } from "../../../composables/useMonacoDiffLoader.js";
 import GitOperationCard from "./GitOperationCard.vue";
 import GitTreeGraph from "./GitTreeGraph.vue";
 import GitCommitLog from "./GitCommitLog.vue";
@@ -1556,11 +1557,18 @@ const commitFiles = ref<any[]>([]);
 const commitFilesLoading = ref(false);
 const commitFilesError = ref("");
 const selectedCommitFile = ref("");
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const commitDiffPayload = ref<Record<string, any> | null>(null);
-const commitDiffLoading = ref(false);
 let commitFilesSeq = 0;
-let commitDiffSeq = 0;
+
+// Commit file diff — shared seq-guarded loader (see useMonacoDiffLoader.ts),
+// also used by GitChangesTab.vue's working-tree diff.
+const commitDiffLoader = useMonacoDiffLoader((hash: string, relativePath: string) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const api = appStore.getApi() as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return api.fileCommitDiff({ rootPath: props.activeRootPath, relativePath, hash }) as Promise<any>;
+}, "Failed to load commit diff");
+const commitDiffPayload = commitDiffLoader.payload;
+const commitDiffLoading = commitDiffLoader.loading;
 
 async function loadCommitFiles(hash: string) {
   if (!hash || !props.activeRootPath) {
@@ -1587,36 +1595,12 @@ async function loadCommitFiles(hash: string) {
   }
 }
 
-async function loadCommitFileDiff(hash: string, relativePath: string) {
+function loadCommitFileDiff(hash: string, relativePath: string) {
   if (!hash || !relativePath || !props.activeRootPath) {
     commitDiffPayload.value = null;
     return;
   }
-  const seq = ++commitDiffSeq;
-  commitDiffLoading.value = true;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const api = appStore.getApi() as any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const payload = (await api.fileCommitDiff({ rootPath: props.activeRootPath, relativePath, hash })) as any;
-    if (seq !== commitDiffSeq) return;
-    commitDiffPayload.value = payload;
-  } catch (err) {
-    if (seq !== commitDiffSeq) return;
-    commitDiffPayload.value = {
-      ok: false,
-      leftError: (err as Error)?.message || "Failed to load commit diff",
-      leftContent: "",
-      rightContent: "",
-      leftLabel: "",
-      rightLabel: "",
-      leftMissing: true,
-      rightMissing: true,
-      language: "plaintext",
-    };
-  } finally {
-    if (seq === commitDiffSeq) commitDiffLoading.value = false;
-  }
+  void commitDiffLoader.load(hash, relativePath);
 }
 
 // --- Multi-selection (Ctrl/Shift+click in the graph) ---------------------
