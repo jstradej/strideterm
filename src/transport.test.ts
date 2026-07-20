@@ -537,7 +537,7 @@ describe("remote transport API parity — no method silently missing its remote 
     if (start < 0 || end < 0) throw new Error("Could not locate the strideterm API object literal in preload.cts");
     const body = preloadSrc.slice(start, end);
     const keys = new Set<string>();
-    for (const m of body.matchAll(/^  ([a-zA-Z_$][\w$]*)[:,]/gm)) keys.add(m[1]);
+    for (const m of body.matchAll(/^ {2}([a-zA-Z_$][\w$]*)[:,]/gm)) keys.add(m[1]);
     return [...keys];
   }
 

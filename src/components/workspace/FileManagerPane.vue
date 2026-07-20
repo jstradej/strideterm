@@ -358,9 +358,9 @@ function onCtxOpen() {
 function onCtxEdit() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (entry?.kind === "file")
     store
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .selectEntry(entry as any)
       .then(() => store.startEdit())
       .catch((err: unknown) => {
@@ -512,8 +512,8 @@ async function confirmDelete() {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function onOpenEdit(entry: Record<string, any>) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   store
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .selectEntry(entry as any)
     .then(() => store.startEdit())
     .catch((err: unknown) => {
