@@ -5,7 +5,45 @@ vi.mock("./logger.js", () => ({
   getLogger: () => ({ info: vi.fn(), warn: vi.fn(), debug: debugSpy, error: vi.fn() }),
 }));
 
-import { parseJsonLines } from "./process-utils.js";
+import { parseJsonLines, spawnTextStreaming } from "./process-utils.js";
+
+// Portable across Windows/macOS/Linux — spawn the same node binary running the
+// tests, so no external command needs to exist on PATH.
+const NODE = process.execPath;
+
+describe("spawnTextStreaming", () => {
+  test("streams stdout chunks via onData and resolves with the full buffers", async () => {
+    const chunks: string[] = [];
+    const result = await spawnTextStreaming(
+      NODE,
+      ["-e", "process.stdout.write('hello'); process.stderr.write('warn');"],
+      { onData: (c) => chunks.push(c) },
+    );
+
+    expect(result.stdout).toContain("hello");
+    expect(result.stderr).toContain("warn");
+    // onData saw the output live (not just at the end).
+    expect(chunks.join("")).toContain("hello");
+    expect(chunks.join("")).toContain("warn");
+  });
+
+  test("rejects with stdout, stderr AND exitCode on a non-zero exit", async () => {
+    await expect(
+      spawnTextStreaming(NODE, [
+        "-e",
+        "process.stdout.write('out-part'); process.stderr.write('err-part'); process.exit(3);",
+      ]),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining("out-part"),
+      stderr: expect.stringContaining("err-part"),
+      exitCode: 3,
+    });
+  });
+
+  test("rejects with an error when the binary cannot be spawned", async () => {
+    await expect(spawnTextStreaming("definitely-not-a-real-binary-xyz", ["--version"])).rejects.toHaveProperty("error");
+  });
+});
 
 describe("parseJsonLines", () => {
   test("parses every line when all are valid JSON (regression guard)", () => {

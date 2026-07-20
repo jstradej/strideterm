@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { rm as fsRm, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import { Effect } from "effect";
-import { execFileText, quotePosixArg } from "./process-utils.js";
+import { execFileText, quotePosixArg, spawnTextStreaming } from "./process-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
@@ -253,26 +253,32 @@ export class GitManager extends EventEmitter {
    * `git -c http.extraheader=…` so the operation is audited under the
    * correct Azure DevOps / provider identity.
    */
-  async execAuthGit(
-    cwd: string,
-    args: string[],
-    { connection = null }: { connection?: Connection | null } = {},
-  ): Promise<GitExecResult> {
-    if (!connection?.tokenRef || !this.credentialStore) {
-      return this.execGit(cwd, args);
-    }
-
+  // Build the `git -c …` prefix args that inject token-based auth. Returns an
+  // empty prefix when there's no usable token, so callers fall back to plain
+  // (unauthenticated) git. Shared by execAuthGit and execAuthGitStreaming so
+  // both produce identical argument vectors.
+  buildAuthArgs(connection: Connection | null): string[] {
+    if (!connection?.tokenRef || !this.credentialStore) return [];
     const token = this.credentialStore.getSecret(connection.tokenRef);
-    if (!token) {
-      return this.execGit(cwd, args);
-    }
-
+    if (!token) return [];
     const extraArgs: string[] = [];
     if (process.platform === "win32") {
       extraArgs.push("-c", "core.longpaths=true");
     }
     const login = connection.login || connection.currentUserLogin || "x-access-token";
     extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(String(login), token)}`);
+    return extraArgs;
+  }
+
+  async execAuthGit(
+    cwd: string,
+    args: string[],
+    { connection = null }: { connection?: Connection | null } = {},
+  ): Promise<GitExecResult> {
+    const extraArgs = this.buildAuthArgs(connection);
+    if (!extraArgs.length) {
+      return this.execGit(cwd, args);
+    }
 
     if (this.execGitImpl) {
       return this.execGitImpl(cwd, [...extraArgs, ...args]);
@@ -280,22 +286,82 @@ export class GitManager extends EventEmitter {
     return execFileText("git", [...extraArgs, ...args], { cwd, env: sanitizeGitEnvironment() });
   }
 
+  /**
+   * Streaming counterpart to execAuthGit: forwards each output chunk to `onData`
+   * as it arrives (so a slow pre-push hook's output shows live) while still
+   * resolving/rejecting with the full buffers at the end. Honours the
+   * execGitImpl test seam — under test there is no real subprocess, so the
+   * mocked output is emitted once via `onData`.
+   */
+  async execAuthGitStreaming(
+    cwd: string,
+    args: string[],
+    { connection = null, onData }: { connection?: Connection | null; onData?: (chunk: string) => void } = {},
+  ): Promise<GitExecResult> {
+    const fullArgs = [...this.buildAuthArgs(connection), ...args];
+    if (this.execGitImpl) {
+      try {
+        const result = await this.execGitImpl(cwd, fullArgs);
+        if (result?.stdout) onData?.(result.stdout);
+        if (result?.stderr) onData?.(result.stderr);
+        return result;
+      } catch (e) {
+        const err = e as { stdout?: string; stderr?: string };
+        if (err?.stdout) onData?.(err.stdout);
+        if (err?.stderr) onData?.(err.stderr);
+        throw e;
+      }
+    }
+    return spawnTextStreaming("git", fullArgs, { cwd, env: sanitizeGitEnvironment(), onData });
+  }
+
+  // Map a rejected git-exec promise into a tagged error. Preserves BOTH stdout
+  // and stderr — a failing hook (e.g. pre-push `npm run check`) writes its real
+  // diagnostics to stdout, so dropping it hid the reason a push failed.
+  private toGitError(cwd: string, args: string[], e: unknown): GitCommandError | GitAuthError {
+    const err = e as { stdout?: string; stderr?: string; exitCode?: number };
+    const stderr = err.stderr ?? String(e);
+    if (/authentication failed|401|403|invalid credentials/i.test(stderr)) {
+      return new GitAuthError({ cwd, remote: cwd, cause: e });
+    }
+    return new GitCommandError({
+      cwd,
+      cmd: "git",
+      args,
+      stdout: err.stdout ?? "",
+      stderr,
+      exitCode: err.exitCode ?? 1,
+    });
+  }
+
   // Effect-based wrapper for git subprocess calls with tagged error typing.
   execGitEffect(cwd: string, args: string[]): Effect.Effect<GitExecResult, GitCommandError> {
     return Effect.tryPromise({
       try: () => this.execGit(cwd, args),
       catch: (e) => {
-        const err = e as { stderr?: string; exitCode?: number; message?: string };
+        const err = e as { stdout?: string; stderr?: string; exitCode?: number };
         return new GitCommandError({
           cwd,
           cmd: "git",
           args,
+          stdout: err.stdout ?? "",
           stderr: err.stderr ?? String(e),
           exitCode: err.exitCode ?? 1,
         });
       },
     });
   }
+
+  // Only retry transient/network-shaped failures. Deterministic failures
+  // (merge/rebase conflicts, bad refs, etc.) never succeed on retry — and for
+  // merge/rebase specifically, retrying re-runs the command against an
+  // already-started operation, turning a clear conflict message into a confusing
+  // "MERGE_HEAD exists" error after a pointless backoff delay.
+  private static readonly RETRY_TRANSIENT = {
+    schedule: httpRetry,
+    while: (error: GitCommandError | GitAuthError) =>
+      error._tag === "GitCommandError" && TRANSIENT_GIT_ERROR_RE.test(error.stderr),
+  };
 
   // Effect-based wrapper with auth support and HTTP retry policy.
   execAuthGitEffect(
@@ -306,24 +372,25 @@ export class GitManager extends EventEmitter {
     return Effect.retry(
       Effect.tryPromise({
         try: () => this.execAuthGit(cwd, args, { connection }),
-        catch: (e) => {
-          const err = e as { stderr?: string; exitCode?: number; message?: string };
-          const stderr = err.stderr ?? String(e);
-          if (/authentication failed|401|403|invalid credentials/i.test(stderr)) {
-            return new GitAuthError({ cwd, remote: cwd, cause: e });
-          }
-          return new GitCommandError({ cwd, cmd: "git", args, stderr, exitCode: err.exitCode ?? 1 });
-        },
+        catch: (e) => this.toGitError(cwd, args, e),
       }),
-      {
-        schedule: httpRetry,
-        // Only retry transient/network-shaped failures. Deterministic failures
-        // (merge/rebase conflicts, bad refs, etc.) never succeed on retry — and
-        // for merge/rebase specifically, retrying re-runs the command against an
-        // already-started operation, turning a clear conflict message into a
-        // confusing "MERGE_HEAD exists" error after a pointless backoff delay.
-        while: (error) => error._tag === "GitCommandError" && TRANSIENT_GIT_ERROR_RE.test(error.stderr),
-      },
+      GitManager.RETRY_TRANSIENT,
+    );
+  }
+
+  // Streaming counterpart to execAuthGitEffect: same auth + retry semantics, but
+  // forwards live output chunks to `onData` while the command runs.
+  execAuthGitStreamingEffect(
+    cwd: string,
+    args: string[],
+    { connection = null, onData }: { connection?: Connection | null; onData?: (chunk: string) => void } = {},
+  ): Effect.Effect<GitExecResult, GitCommandError | GitAuthError> {
+    return Effect.retry(
+      Effect.tryPromise({
+        try: () => this.execAuthGitStreaming(cwd, args, { connection, onData }),
+        catch: (e) => this.toGitError(cwd, args, e),
+      }),
+      GitManager.RETRY_TRANSIENT,
     );
   }
 
@@ -1228,7 +1295,11 @@ export class GitManager extends EventEmitter {
 
   async push(
     workspace: WorkspaceRef,
-    { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {},
+    {
+      connection = null,
+      rootPath = "",
+      onProgress,
+    }: { connection?: Connection | null; rootPath?: string; onProgress?: (chunk: string) => void } = {},
   ): Promise<Record<string, unknown>> {
     const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
@@ -1283,7 +1354,7 @@ export class GitManager extends EventEmitter {
       baseBranch: " ",
       allowDirty: true,
       skipPreflight: true,
-      run: (cwd) => runEffect(this.execAuthGitEffect(cwd, pushArgs, { connection })),
+      run: (cwd) => runEffect(this.execAuthGitStreamingEffect(cwd, pushArgs, { connection, onData: onProgress })),
       connection,
       rootPath,
       snapshot,
@@ -1292,7 +1363,11 @@ export class GitManager extends EventEmitter {
 
   async forcePushWithLease(
     workspace: WorkspaceRef,
-    { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {},
+    {
+      connection = null,
+      rootPath = "",
+      onProgress,
+    }: { connection?: Connection | null; rootPath?: string; onProgress?: (chunk: string) => void } = {},
   ): Promise<Record<string, unknown>> {
     const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
@@ -1349,7 +1424,12 @@ export class GitManager extends EventEmitter {
       allowDirty: true,
       skipPreflight: true,
       run: async (cwd) => {
-        const r = await runEffect(this.execAuthGitEffect(cwd, ["push", leaseArg, remote, pushRefspec], { connection }));
+        const r = await runEffect(
+          this.execAuthGitStreamingEffect(cwd, ["push", leaseArg, remote, pushRefspec], {
+            connection,
+            onData: onProgress,
+          }),
+        );
         try {
           const headResult = await this.execGit(cwd, ["rev-parse", "HEAD"]);
           extraAudit.newRemoteRef = headResult.stdout.trim();

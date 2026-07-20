@@ -3799,6 +3799,7 @@ export async function createRuntime({
     resolveGitConnection,
     resolveGitRootPath,
     runGitWorkspaceAction,
+    emitGitProgress: (payload) => events.emit("git:push-progress", payload),
     syncWorktrees: async () => {
       await syncWorktrees();
     },

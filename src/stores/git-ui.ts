@@ -49,6 +49,10 @@ interface GitUiState {
   /** Human-readable label for the action currently running (e.g. "Fetching origin/develop…").
    *  Drives the spinner banner; updated mid-run for multi-phase actions like fetch→rebase. */
   busyPhase?: string;
+  /** Live git output streamed while a push/force-push runs (incl. pre-push hook).
+   *  Shown under the spinner so a slow/blocking hook isn't an opaque wait. Reset
+   *  at the start of each push; the completed output ends up in lastResult.rawOutput. */
+  pushProgress?: string;
   lastResult?: {
     ok: boolean;
     summary: string;
@@ -188,6 +192,11 @@ function buildConfirmMessage({
 // its own. Refresh is still the instant manual escape hatch.
 const GIT_ACTION_TIMEOUT_MS = 120_000;
 
+// Cap on retained live push output (chars). Keeps the tail — where a failing
+// pre-push hook's error summary lands — and prevents a chatty hook from growing
+// the per-workspace buffer without bound.
+const PUSH_PROGRESS_MAX = 100_000;
+
 function withGitTimeout<T>(promise: Promise<T>, ms: number, action: string): Promise<T> {
   if (!ms || ms <= 0) return promise;
   return new Promise<T>((resolve, reject) => {
@@ -311,6 +320,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function init(api: Transport): void {
     _api = api;
+    // Live push output (streamed git stdout/stderr, incl. pre-push hook). Keyed
+    // by workspaceId — the busy banner is per-workspace, like busyAction. Kept
+    // bounded to the tail (where a hook's error summary lives) so a chatty hook
+    // can't grow this unboundedly.
+    api.onGitPushProgress?.(({ workspaceId, chunk }) => {
+      if (!workspaceId || !chunk) return;
+      const ui = ensure(workspaceId);
+      const next = (ui.pushProgress || "") + chunk;
+      ui.pushProgress = next.length > PUSH_PROGRESS_MAX ? next.slice(next.length - PUSH_PROGRESS_MAX) : next;
+    });
   }
 
   function ensure(workspaceId: string): GitUiState {
@@ -375,6 +394,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     ui.busyAction = busyAction;
     ui.busyPhase = opts.label || defaultBusyLabel(busyAction);
+    // Start each push/force-push with a clean live-output buffer; chunks stream
+    // in via onGitPushProgress while it runs.
+    if (busyAction === "push" || busyAction === "force-push") ui.pushProgress = "";
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

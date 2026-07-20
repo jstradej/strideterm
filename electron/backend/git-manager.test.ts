@@ -2660,6 +2660,65 @@ describe("GitManager", () => {
       });
     });
 
+    describe("push failure output + live progress", () => {
+      function makePushMgr(pushBehavior: (args: string[]) => Promise<{ stdout: string; stderr: string }>) {
+        const calls: string[][] = [];
+        const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+          calls.push(args);
+          if (args[0] === "push") return pushBehavior(args);
+          return { stdout: "", stderr: "" };
+        });
+        const mgr = new GitManager({ execGitImpl });
+        mgr.inspectWorkspace = vi.fn().mockResolvedValue({
+          available: true,
+          branch: "feature/foo",
+          baseBranch: "main",
+          upstream: "origin/feature/foo",
+          dirty: false,
+          aheadCount: 1,
+          behindCount: 1,
+          operationState: { kind: "idle", inProgress: false, conflicts: [] },
+          remotes: { origin: "https://example.com/repo.git" },
+        });
+        return { mgr, calls };
+      }
+
+      test("a failed pre-push hook surfaces its stdout (not just stderr) in rawOutput", async () => {
+        // The real reason a `npm run check` hook fails (test/lint output) is on
+        // stdout; git only adds a terse note on stderr. Both must survive.
+        const { mgr } = makePushMgr(async () => {
+          throw {
+            stdout: "FAIL src/foo.test.ts > bar\n  expected 1 to be 2\n",
+            stderr: "husky - pre-push hook exited with code 1\n",
+          };
+        });
+        const result = await mgr.push({ id: "ws-1", cwd: "/repo" });
+        expect(result.ok).toBe(false);
+        expect(result.rawOutput).toContain("FAIL src/foo.test.ts");
+        expect(result.rawOutput).toContain("expected 1 to be 2");
+        expect(result.rawOutput).toContain("husky - pre-push hook exited with code 1");
+      });
+
+      test("push forwards streamed git output to onProgress", async () => {
+        const { mgr } = makePushMgr(async () => ({ stdout: "Running pre-push hook…\n", stderr: "" }));
+        const chunks: string[] = [];
+        const result = await mgr.push({ id: "ws-1", cwd: "/repo" }, { onProgress: (c: string) => chunks.push(c) });
+        expect(result.ok).toBe(true);
+        expect(chunks.join("")).toContain("Running pre-push hook…");
+      });
+
+      test("forcePushWithLease forwards streamed git output to onProgress", async () => {
+        const { mgr } = makePushMgr(async () => ({ stdout: "hook running\n", stderr: "" }));
+        const chunks: string[] = [];
+        const result = await mgr.forcePushWithLease(
+          { id: "ws-1", cwd: "/repo" },
+          { onProgress: (c: string) => chunks.push(c) },
+        );
+        expect(result.ok).toBe(true);
+        expect(chunks.join("")).toContain("hook running");
+      });
+    });
+
     describe("commitAll (arg wiring)", () => {
       test("commits the whole tree with add -A when paths are omitted", async () => {
         const { mgr, calls } = makeMgr();

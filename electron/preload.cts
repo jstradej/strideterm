@@ -284,6 +284,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   onStateUpdated: (handler) => ipcRenderer.on("state:updated", (_event, payload) => handler(payload)),
   onTerminalData: (handler) => ipcRenderer.on("terminal:data", (_event, payload) => handler(payload)),
   onTerminalExit: (handler) => ipcRenderer.on("terminal:exit", (_event, payload) => handler(payload)),
+  onGitPushProgress: (handler) => ipcRenderer.on("git:push-progress", (_event, payload) => handler(payload)),
   onSshAuthPrompt: (handler) => ipcRenderer.on("ssh:auth-prompt", (_event, payload) => handler(payload)),
   onSshAuthPromptCancel: (handler) => ipcRenderer.on("ssh:auth-prompt-cancel", (_event, payload) => handler(payload)),
   onSshHostKeyChange: (handler) => ipcRenderer.on("ssh:host-key-change", (_event, payload) => handler(payload)),

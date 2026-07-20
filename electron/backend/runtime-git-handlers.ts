@@ -21,6 +21,8 @@ interface GitHandlerCtx {
   refreshGit: (projectId?: string | null) => Promise<void>;
   broadcastState: () => void;
   syncWorktrees: () => Promise<void>;
+  /** Emit a live push-progress frame (streamed git output, incl. pre-push hook) to connected clients. */
+  emitGitProgress: (payload: { workspaceId: string; rootPath: string; chunk: string }) => void;
 }
 
 /**
@@ -69,7 +71,8 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceAction(workspace, git.push(workspace, { connection, rootPath }));
+      const onProgress = (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk });
+      return runGitWorkspaceAction(workspace, git.push(workspace, { connection, rootPath, onProgress }));
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitCheckoutBranch(payload: any = {}, windowId?: string) {
@@ -314,7 +317,8 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceAction(workspace, git.forcePushWithLease(workspace, { connection, rootPath }));
+      const onProgress = (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk });
+      return runGitWorkspaceAction(workspace, git.forcePushWithLease(workspace, { connection, rootPath, onProgress }));
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitListBranches(payload: any = {}, windowId?: string) {

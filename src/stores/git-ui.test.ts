@@ -410,4 +410,59 @@ describe("git-ui store", () => {
       expect(dlg?.conflicts.every((c) => c.resolved === false)).toBe(true);
     });
   });
+
+  describe("live push progress (onGitPushProgress)", () => {
+    type ProgressHandler = (p: { workspaceId: string; rootPath: string; chunk: string }) => void;
+
+    test("init subscribes and streamed chunks accumulate on the workspace", () => {
+      let handler: ProgressHandler | null = null;
+      const mockApi = {
+        onGitPushProgress: vi.fn((h: ProgressHandler) => {
+          handler = h;
+        }),
+      } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+      expect(mockApi.onGitPushProgress).toHaveBeenCalledTimes(1);
+
+      handler!({ workspaceId: "ws1", rootPath: "/repo", chunk: "Running pre-push hook…\n" });
+      handler!({ workspaceId: "ws1", rootPath: "/repo", chunk: "✓ typecheck\n" });
+
+      expect(store.get("ws1").pushProgress).toBe("Running pre-push hook…\n✓ typecheck\n");
+    });
+
+    test("progress for one workspace does not leak into another", () => {
+      let handler: ProgressHandler | null = null;
+      const mockApi = {
+        onGitPushProgress: vi.fn((h: ProgressHandler) => {
+          handler = h;
+        }),
+      } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+
+      handler!({ workspaceId: "ws1", rootPath: "/repo", chunk: "ws1 output" });
+      expect(store.get("ws1").pushProgress).toBe("ws1 output");
+      expect(store.get("ws2").pushProgress).toBeUndefined();
+    });
+
+    test("a push clears any stale live output at the start", async () => {
+      let handler: ProgressHandler | null = null;
+      const mockApi = {
+        onGitPushProgress: vi.fn((h: ProgressHandler) => {
+          handler = h;
+        }),
+        gitPush: vi.fn().mockResolvedValue({ result: { ok: true, summary: "pushed" } }),
+      } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+
+      // A previous push left output behind.
+      handler!({ workspaceId: "ws1", rootPath: "/repo", chunk: "old output" });
+      expect(store.get("ws1").pushProgress).toBe("old output");
+
+      await store.gitPush("ws1");
+      expect(store.get("ws1").pushProgress).toBe("");
+    });
+  });
 });

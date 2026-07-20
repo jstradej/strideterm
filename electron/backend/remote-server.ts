@@ -918,7 +918,6 @@ function requestBootstrapRevision(requestUrl: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ResponseWithCtx = ServerResponse & { __remoteCtx?: RemoteAdaptContext };
 
 function json(response: ServerResponse, statusCode: number, body: unknown): void {
@@ -2785,6 +2784,10 @@ export async function startRemoteServer({
         }
       }
     }),
+    // Live push progress (streamed git output, incl. pre-push hook). Broadcast
+    // to all authed sockets like ssh:*/docker:* — the git state it mirrors is
+    // already pushed to every client via state:updated.
+    runtime.on("git:push-progress", (payload: unknown) => broadcast({ type: "git:push-progress", payload })),
     runtime.on("ssh:auth-prompt", (payload: unknown) => broadcast({ type: "ssh:auth-prompt", payload })),
     runtime.on("ssh:auth-prompt-cancel", (payload: unknown) => broadcast({ type: "ssh:auth-prompt-cancel", payload })),
     runtime.on("ssh:host-key-change", (payload: unknown) => broadcast({ type: "ssh:host-key-change", payload })),

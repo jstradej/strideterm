@@ -5,6 +5,7 @@ import type {
   TerminalDataPayload,
   TerminalReplayPayload,
   TerminalExitPayload,
+  GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { RemoteStateV2 } from "../electron/shared/types/state.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
@@ -55,6 +56,7 @@ interface EventHub {
   terminalReplay: Set<Handler<TerminalReplayPayload>>;
   terminalExit: Set<Handler<TerminalExitPayload>>;
   terminalRemoved: Set<Handler<{ sessionId: string }>>;
+  gitPushProgress: Set<Handler<GitPushProgressPayload>>;
   connectionState: Set<Handler<ConnectionStatePayload>>;
   sshAuthPrompt: Set<Handler<SshAuthRequest>>;
   sshAuthPromptCancel: Set<Handler<SshAuthPromptCancel>>;
@@ -133,6 +135,7 @@ function createEventHub(): EventHub {
     terminalReplay: new Set(),
     terminalExit: new Set(),
     terminalRemoved: new Set(),
+    gitPushProgress: new Set(),
     connectionState: new Set(),
     sshAuthPrompt: new Set(),
     sshAuthPromptCancel: new Set(),
@@ -451,6 +454,9 @@ export function createRemoteTransport(): Transport {
     }
     if (message.type === "terminal:exit") {
       safeDispatch(listeners.terminalExit, message.payload as TerminalExitPayload, "terminalExit");
+    }
+    if (message.type === "git:push-progress") {
+      safeDispatch(listeners.gitPushProgress, message.payload as GitPushProgressPayload, "gitPushProgress");
     }
     if (message.type === "terminal:removed") {
       const removedId = (message.payload as { sessionId?: string })?.sessionId || "";
@@ -1111,6 +1117,7 @@ export function createRemoteTransport(): Transport {
     onTerminalReplay: (handler: Handler<TerminalReplayPayload>) => listeners.terminalReplay.add(handler),
     onTerminalExit: (handler: Handler<TerminalExitPayload>) => listeners.terminalExit.add(handler),
     onTerminalRemoved: (handler: Handler<{ sessionId: string }>) => listeners.terminalRemoved.add(handler),
+    onGitPushProgress: (handler: Handler<GitPushProgressPayload>) => listeners.gitPushProgress.add(handler),
     subscribeTerminals: (sessionIds: string[]) => {
       // Idempotence at the source: the caller (attention sync) re-runs on
       // every bell/focus change, so an unchanged set would otherwise be

@@ -14,6 +14,14 @@
           <span class="git-spinner" aria-hidden="true"></span>
           <strong>{{ busyPhase }}</strong>
         </div>
+        <!-- Live streamed output (push/force-push, incl. pre-push hook) so a
+             slow/blocking hook shows what it's doing instead of a mute spinner. -->
+        <pre
+          v-if="isPushAction && pushProgress"
+          ref="pushProgressEl"
+          class="git-output git-output--live"
+          data-testid="push-progress"
+          >{{ pushProgress }}</pre>
       </div>
     </template>
 
@@ -73,7 +81,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 
 const props = withDefaults(
@@ -93,6 +101,16 @@ const operation = computed(() => props.snapshot.operationState || {});
 const result = computed(() => props.gitUi.lastResult || null);
 const busyAction = computed(() => String(props.gitUi.busyAction || ""));
 const busyPhase = computed(() => String(props.gitUi.busyPhase || "Working…"));
+const pushProgress = computed(() => String(props.gitUi.pushProgress || ""));
+const isPushAction = computed(() => busyAction.value === "push" || busyAction.value === "force-push");
+
+// Keep the live output pinned to the newest line as chunks stream in.
+const pushProgressEl = ref<HTMLElement | null>(null);
+watch(pushProgress, async () => {
+  await nextTick();
+  const el = pushProgressEl.value;
+  if (el) el.scrollTop = el.scrollHeight;
+});
 
 const shouldRender = computed(() => !!busyAction.value || operation.value.inProgress || !!result.value);
 

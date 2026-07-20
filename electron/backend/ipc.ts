@@ -147,6 +147,8 @@ export function registerIpc(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("terminal:exit", (payload: any) => emitToRenderer("terminal:exit", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("git:push-progress", (payload: any) => emitToRenderer("git:push-progress", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("ssh:auth-prompt", (payload: any) => emitToRenderer("ssh:auth-prompt", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("ssh:auth-prompt-cancel", (payload: any) => emitToRenderer("ssh:auth-prompt-cancel", payload)),

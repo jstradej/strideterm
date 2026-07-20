@@ -104,6 +104,18 @@ export interface TerminalDataPayload {
   seq?: number;
 }
 
+/**
+ * Live progress frame emitted while a `git push` / force-push runs. Carries a
+ * raw chunk of the git subprocess output (which includes any pre-push hook's
+ * stdout+stderr) so the UI can show what a slow/blocking hook is doing instead
+ * of a static "Pushing…" spinner.
+ */
+export interface GitPushProgressPayload {
+  workspaceId: string;
+  rootPath: string;
+  chunk: string;
+}
+
 export interface TerminalReplayPayload {
   data: string;
   /** Present on the pushed WS `terminal:replay`; absent on the HTTP snapshot. */
@@ -598,6 +610,7 @@ export interface StridetermAPI {
   onStateUpdated: (handler: (payload: StatePayload) => void) => void;
   onTerminalData: (handler: (payload: TerminalDataPayload) => void) => void;
   onTerminalExit: (handler: (payload: TerminalExitPayload) => void) => void;
+  onGitPushProgress: (handler: (payload: GitPushProgressPayload) => void) => void;
   onSshAuthPrompt: (handler: (payload: SshAuthRequest) => void) => void;
   onSshAuthPromptCancel: (handler: (payload: SshAuthPromptCancel) => void) => void;
   onSshHostKeyChange: (handler: (payload: Record<string, unknown>) => void) => void;
