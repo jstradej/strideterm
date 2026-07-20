@@ -51,9 +51,9 @@
 
     <h4>
       Example: TASK.md
-      <button class="td__copy-btn" @click="copyExample('task')">{{
-        copyFeedback?.which === "task" ? copyFeedback.text : "copy"
-      }}</button>
+      <button class="td__copy-btn" @click="copyExample('task')">
+        {{ copyFeedback?.which === "task" ? copyFeedback.text : "copy" }}
+      </button>
     </h4>
     <pre ref="exampleTask" class="td__example">
 # Task
@@ -76,9 +76,9 @@ and `currentPage` in the response. Add integration tests.
 
     <h4>
       Example: TODO.md
-      <button class="td__copy-btn" @click="copyExample('todo')">{{
-        copyFeedback?.which === "todo" ? copyFeedback.text : "copy"
-      }}</button>
+      <button class="td__copy-btn" @click="copyExample('todo')">
+        {{ copyFeedback?.which === "todo" ? copyFeedback.text : "copy" }}
+      </button>
     </h4>
     <pre ref="exampleTodo" class="td__example">
 # TODO
@@ -95,9 +95,9 @@ and `currentPage` in the response. Add integration tests.
 
     <h4>
       Example: verification checklist
-      <button class="td__copy-btn" @click="copyExample('criteria')">{{
-        copyFeedback?.which === "criteria" ? copyFeedback.text : "copy"
-      }}</button>
+      <button class="td__copy-btn" @click="copyExample('criteria')">
+        {{ copyFeedback?.which === "criteria" ? copyFeedback.text : "copy" }}
+      </button>
     </h4>
     <pre ref="exampleCriteria" class="td__example">
 ## Verification before completion

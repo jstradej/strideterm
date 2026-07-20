@@ -864,7 +864,7 @@ describe("API_ROUTES table — representative route coverage", () => {
     }
   });
 
-  test('POST /api/ssh/hosts/list (bracket-notation runtime call) returns 200 with the runtime\'s value', async () => {
+  test("POST /api/ssh/hosts/list (bracket-notation runtime call) returns 200 with the runtime's value", async () => {
     const port = await getFreePort();
     const auth = "test-token-ssh-hosts-list";
     const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {

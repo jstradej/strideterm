@@ -213,9 +213,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   function currentProfileId(): string {
     const windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
-    return (
-      ctx.resolveViewerProfileId(ctx.payload.value, { isRemote: ctx.getApi().isRemote, windowId }) || "default"
-    );
+    return ctx.resolveViewerProfileId(ctx.payload.value, { isRemote: ctx.getApi().isRemote, windowId }) || "default";
   }
 
   function openDialog(name: string, props: Record<string, unknown> = {}): void {

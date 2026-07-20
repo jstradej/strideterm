@@ -920,15 +920,13 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
         const workspaces = (appState?.workspaces || []).filter((w) => (w.profileId || "default") === profileId);
         const workspace = workspaces[parseInt(digit, 10) - 1];
         if (workspace) {
-          runtimeState.runtime
-            .activateWorkspaceInWindow(workspace.id, id)
-            .catch((err: unknown) =>
-              log.warn("Ctrl+digit activateWorkspaceInWindow failed", {
-                windowId: id,
-                workspaceId: workspace.id,
-                err: (err as Error)?.message,
-              }),
-            );
+          runtimeState.runtime.activateWorkspaceInWindow(workspace.id, id).catch((err: unknown) =>
+            log.warn("Ctrl+digit activateWorkspaceInWindow failed", {
+              windowId: id,
+              workspaceId: workspace.id,
+              err: (err as Error)?.message,
+            }),
+          );
         }
         return;
       }

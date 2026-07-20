@@ -155,7 +155,10 @@ describe("assertWorktreeCleanForPush", () => {
 
 describe("filterConnectionsByOpenProfiles", () => {
   test("returns all connections unfiltered when there are no open window slots", () => {
-    const connections = [{ id: "c1", profileId: "p1" }, { id: "c2", profileId: "p2" }];
+    const connections = [
+      { id: "c1", profileId: "p1" },
+      { id: "c2", profileId: "p2" },
+    ];
     expect(filterConnectionsByOpenProfiles(connections, [])).toEqual(connections);
     expect(filterConnectionsByOpenProfiles(connections, undefined)).toEqual(connections);
   });

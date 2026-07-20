@@ -29,7 +29,9 @@ describe("ReviewFileTree — shallow tree (regression guard matching the old han
 
     expect(wrapper.findAll(".review-tree-dir").length).toBe(2);
     const dirLabels = wrapper.findAll(".review-tree-dir__label").map((l) => l.text());
-    expect(dirLabels).toEqual(expect.arrayContaining([expect.stringContaining("src"), expect.stringContaining("docs")]));
+    expect(dirLabels).toEqual(
+      expect.arrayContaining([expect.stringContaining("src"), expect.stringContaining("docs")]),
+    );
     expect(wrapper.find('[title="src/a.ts"]').exists()).toBe(true);
     expect(wrapper.find('[title="src/b.ts"]').exists()).toBe(true);
     expect(wrapper.find('[title="docs/readme.md"]').exists()).toBe(true);
@@ -133,7 +135,12 @@ describe("ReviewFileTree — recursion at arbitrary depth (the fix: old hand-unr
                     name: "L4",
                     key: "L1/L2/L3/L4",
                     children: [
-                      { name: "deepest.ts", key: "L1/L2/L3/L4/deepest.ts", path: "L1/L2/L3/L4/deepest.ts", changeType: "add" },
+                      {
+                        name: "deepest.ts",
+                        key: "L1/L2/L3/L4/deepest.ts",
+                        path: "L1/L2/L3/L4/deepest.ts",
+                        changeType: "add",
+                      },
                     ],
                   },
                 ],

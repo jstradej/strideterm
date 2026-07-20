@@ -281,9 +281,7 @@ export async function detectHookEntriesStatus(
     extraCheck?: (
       data: Record<string, unknown>,
       ctx: { registered: string[]; missing: string[] },
-    ) =>
-      | Promise<{ status: string } | null>
-      | ({ status: string } | null);
+    ) => Promise<{ status: string } | null> | ({ status: string } | null);
   },
 ): Promise<DetectStatusResult> {
   const scriptExists = existsSync(scriptPath);

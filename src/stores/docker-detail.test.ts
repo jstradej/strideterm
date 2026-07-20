@@ -77,9 +77,7 @@ describe("useDockerDetail — closeTabAndSessions", () => {
     const appStore = useAppStore();
     const dockerLogsClose = vi.spyOn(appStore, "dockerLogsClose").mockResolvedValue(undefined);
     const dockerShellClose = vi.fn().mockResolvedValue(undefined);
-    vi.spyOn(appStore, "getApi").mockReturnValue({ dockerShellClose } as unknown as ReturnType<
-      typeof appStore.getApi
-    >);
+    vi.spyOn(appStore, "getApi").mockReturnValue({ dockerShellClose } as unknown as ReturnType<typeof appStore.getApi>);
 
     store.openContainer("ws", "c1", "host", "default", "my-container");
     const tab = store.getTabs("ws")[0];

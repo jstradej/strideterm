@@ -256,23 +256,25 @@ export class GitHubManager extends BaseProviderManager {
     gitSnapshots = {},
     activeProfileId = "default",
   }: SyncOptions = {}): Promise<Record<string, unknown>> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.syncCore({ connections: connections as any, workspaces, gitSnapshots, activeProfileId }, {
-      createConnectionSnapshot: (connection, persistedState) =>
-        createConnectionSnapshot(connection as unknown as SyncConnection, persistedState),
-      fetchConnectionPrs: (connection, token, ctx) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this._fetchGitHubConnectionPrs(connection as unknown as SyncConnection, token, ctx as any),
-      isPrResolved: (existing) =>
-        (existing?.pullRequest as Record<string, unknown> | undefined)?.state !== "open",
-      resolveStalePr: (ws, existing, conn, token) =>
-        this._resolveStaleGitHubPr(
-          ws as unknown as SyncWorkspace,
-          existing,
-          conn as unknown as SyncConnection,
-          token,
-        ),
-    }) as Promise<Record<string, unknown>>;
+    return this.syncCore(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { connections: connections as any, workspaces, gitSnapshots, activeProfileId },
+      {
+        createConnectionSnapshot: (connection, persistedState) =>
+          createConnectionSnapshot(connection as unknown as SyncConnection, persistedState),
+        fetchConnectionPrs: (connection, token, ctx) =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          this._fetchGitHubConnectionPrs(connection as unknown as SyncConnection, token, ctx as any),
+        isPrResolved: (existing) => (existing?.pullRequest as Record<string, unknown> | undefined)?.state !== "open",
+        resolveStalePr: (ws, existing, conn, token) =>
+          this._resolveStaleGitHubPr(
+            ws as unknown as SyncWorkspace,
+            existing,
+            conn as unknown as SyncConnection,
+            token,
+          ),
+      },
+    ) as Promise<Record<string, unknown>>;
   }
 
   /**
@@ -900,25 +902,26 @@ export class GitHubManager extends BaseProviderManager {
     created: boolean;
     attached: boolean;
   }> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.openReviewWorkspaceCore({ state: state as any, prKey, workspaceId, callerProfileId }, {
-      ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
-      prepareManagedReviewCheckout: (opts) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this.prepareManagedReviewCheckout(opts as any),
-      buildReviewMetadata: (summary, checkout, extra) =>
-         
-        this.buildReviewMetadata(summary as Record<string, unknown>, checkout as Record<string, unknown>, extra),
-      formatPrLabel: (summary) => {
-        const repo = summary.repository as Record<string, unknown>;
-        const pr = summary.pullRequest as Record<string, unknown>;
-        return `${repo.fullName} PR #${pr.number}`;
-      },
-      findWorkspaceForPullRequest: (workspaces, key) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        findWorkspaceForPullRequest(workspaces as any, key),
+    return this.openReviewWorkspaceCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    }) as any;
+      { state: state as any, prKey, workspaceId, callerProfileId },
+      {
+        ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
+        prepareManagedReviewCheckout: (opts) =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          this.prepareManagedReviewCheckout(opts as any),
+        buildReviewMetadata: (summary, checkout, extra) =>
+          this.buildReviewMetadata(summary as Record<string, unknown>, checkout as Record<string, unknown>, extra),
+        formatPrLabel: (summary) => {
+          const repo = summary.repository as Record<string, unknown>;
+          const pr = summary.pullRequest as Record<string, unknown>;
+          return `${repo.fullName} PR #${pr.number}`;
+        },
+        findWorkspaceForPullRequest: (workspaces, key) =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          findWorkspaceForPullRequest(workspaces as any, key),
+      },
+    ) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
   }
 
   // ---------------------------------------------------------------------------
@@ -1089,7 +1092,6 @@ export class GitHubManager extends BaseProviderManager {
     workspace: Record<string, unknown>;
     parentWorkspaceId: string;
   }> {
-     
     const result = await this.openQuickFixWorkspaceCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { state: state as any, connectionId, baseBranch, newBranchName, callerProfileId },

@@ -98,7 +98,11 @@
           <button
             type="button"
             class="button button--ghost"
-            :title="isGitHub ? undefined : 'Add a new Azure DevOps connection (organization URL, login, PAT, project filters).'"
+            :title="
+              isGitHub
+                ? undefined
+                : 'Add a new Azure DevOps connection (organization URL, login, PAT, project filters).'
+            "
             @click="openConnectionDialog('')"
           >
             Add connection
@@ -400,7 +404,9 @@
               </div>
             </template>
             <div v-else class="azure-empty">
-              <p>{{ !isGitHub && hasActiveFilters ? "No pull requests match the selected filters." : tab.emptyMessage }}</p>
+              <p>
+                {{ !isGitHub && hasActiveFilters ? "No pull requests match the selected filters." : tab.emptyMessage }}
+              </p>
             </div>
           </template>
         </section>
@@ -489,7 +495,8 @@ const inbox = computed(() => {
   };
 });
 const reviewRoot = computed(
-  () => appStore.payload?.appState?.settings?.integrations?.[isGitHub.value ? "github" : "azureDevops"]?.reviewRoot || "",
+  () =>
+    appStore.payload?.appState?.settings?.integrations?.[isGitHub.value ? "github" : "azureDevops"]?.reviewRoot || "",
 );
 
 // Deep-link: when the user clicks a "connection error" notification, the
@@ -604,7 +611,8 @@ function repoKey(item: { project?: { name?: string }; repository?: { name?: stri
 const repoNames = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const all: any[] = inbox.value.recentlyUpdated || [];
-  const items = !isGitHub.value && authorFilter.value ? all.filter((item) => authorKey(item) === authorFilter.value) : all;
+  const items =
+    !isGitHub.value && authorFilter.value ? all.filter((item) => authorKey(item) === authorFilter.value) : all;
   const names = [...new Set(items.map(repoKey))];
   return names.sort();
 });

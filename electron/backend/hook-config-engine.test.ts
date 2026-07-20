@@ -97,7 +97,7 @@ describe("readJsonConfig", () => {
 
   test("uses a custom parser when provided", async () => {
     const configPath = path.join(tempDir, "jsonc.json");
-    await fs.writeFile(configPath, "// comment\n{ \"a\": 1 }");
+    await fs.writeFile(configPath, '// comment\n{ "a": 1 }');
     const result = await readJsonConfig(configPath, (raw) => JSON.parse(raw.replace(/^\/\/.*\n/, "")));
     expect(result.ok).toBe(true);
     expect(result.data).toEqual({ a: 1 });

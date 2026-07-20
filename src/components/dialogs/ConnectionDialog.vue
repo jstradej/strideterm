@@ -171,9 +171,7 @@
         <template v-if="isGitHub">
           <small style="color: var(--muted)"
             >Authenticated as <strong>{{ verification.login }}</strong
-            >{{
-              verification.name && verification.name !== verification.login ? ` (${verification.name})` : ""
-            }}</small
+            >{{ verification.name && verification.name !== verification.login ? ` (${verification.name})` : "" }}</small
           >
         </template>
         <template v-else>
@@ -338,8 +336,7 @@ const { busy, errorMessage, verification, browseReviewRoot, testConnection, hand
   buildPayload: buildDraftPayload,
   verify: (payload) =>
     (isGitHub.value ? api?.verifyGitHubConnection?.(payload) : api?.verifyAzureConnection?.(payload)) as
-      | Promise<VerificationResult | null>
-      | undefined,
+      Promise<VerificationResult | null> | undefined,
   onSave: (payload) => (attrs.onSave as ((payload: unknown) => Promise<void>) | undefined)?.(payload),
   providerLabel: isGitHub.value ? "GitHub" : "Azure DevOps",
 });

@@ -392,9 +392,7 @@ describe("remote transport endpoint routing", () => {
     });
     transport.onTerminalData((payload) => seenBySecond.push(payload));
 
-    expect(() =>
-      first.message({ type: "terminal:data", payload: { sessionId: "ws1:a", data: "hi" } }),
-    ).not.toThrow();
+    expect(() => first.message({ type: "terminal:data", payload: { sessionId: "ws1:a", data: "hi" } })).not.toThrow();
     expect(seenBySecond).toContainEqual({ sessionId: "ws1:a", data: "hi" });
   });
 

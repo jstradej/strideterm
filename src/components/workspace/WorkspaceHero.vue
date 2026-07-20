@@ -56,9 +56,7 @@
               activeWorkspace.cwd ? 'Click to copy this workspace’s working-directory path to the clipboard.' : ''
             "
             @click="copyPath"
-            >{{
-              pathCopied ? "Copied!" : pathCopyFailed ? "Copy failed" : activeWorkspace.cwd || "Not set"
-            }}</span
+            >{{ pathCopied ? "Copied!" : pathCopyFailed ? "Copy failed" : activeWorkspace.cwd || "Not set" }}</span
           >
         </div>
         <div class="workspace-meta__stats">

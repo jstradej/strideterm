@@ -228,8 +228,7 @@ describe("file-manager store", () => {
   // stub isn't independently asserted; see report for rationale).
   it("expandTreeNode leaves prior tree state intact when fileTree rejects", async () => {
     const { api } = makeFakeApi({
-      fileTree: async (p: AnyObj) =>
-        p.relativePath === "src" ? Promise.reject(new Error("EACCES")) : { entries: [] },
+      fileTree: async (p: AnyObj) => (p.relativePath === "src" ? Promise.reject(new Error("EACCES")) : { entries: [] }),
     });
     const store = useFileManagerStore();
     store.setApi(api);

@@ -2106,7 +2106,9 @@ export class GitManager extends EventEmitter {
       // The 12th field is %B (full body); re-join indices ≥12 in case anyone
       // ever sneaks SEP into a commit message.
       const body = parts.slice(12).join(SEP).trim();
-      const stat = String(statResult.stdout || "").replace(/\r\n/g, "\n").trim();
+      const stat = String(statResult.stdout || "")
+        .replace(/\r\n/g, "\n")
+        .trim();
       return {
         ok: true,
         hash: parts[0] || hash,

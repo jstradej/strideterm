@@ -369,7 +369,10 @@ describe("GitHubManager openReviewWorkspace", () => {
   test("creates a managed review workspace when none exists", async () => {
     const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
     const { manager } = createManager({
-      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: defaultPr("acme", "web", 42) } },
+      fetchOverrides: {
+        searchItems: [searchItem("acme", "web", 42)],
+        prsByNumber: { 42: defaultPr("acme", "web", 42) },
+      },
     });
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
 
@@ -433,7 +436,10 @@ describe("GitHubManager openReviewWorkspace", () => {
     const prKey = createPullRequestKey("gh-b", "acme", "web", 42);
     const { manager } = createManager({
       secrets: { "cred:gh-b": "ghp-b" } as unknown as Record<string, string>,
-      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: defaultPr("acme", "web", 42) } },
+      fetchOverrides: {
+        searchItems: [searchItem("acme", "web", 42)],
+        prsByNumber: { 42: defaultPr("acme", "web", 42) },
+      },
     });
     await manager.sync({ connections: [profileBConnection], workspaces: [], gitSnapshots: {} });
 
@@ -441,9 +447,7 @@ describe("GitHubManager openReviewWorkspace", () => {
       state: {
         tabTemplates: [],
         windowSlots: [{ profileId: "default" }, { profileId: "profile-b" }],
-        workspaces: [
-          { id: "github-root-b", kind: "github", profileId: "profile-b", cwd: "C:/reviews-b", panels: [] },
-        ],
+        workspaces: [{ id: "github-root-b", kind: "github", profileId: "profile-b", cwd: "C:/reviews-b", panels: [] }],
       },
       prKey,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
@@ -572,10 +576,9 @@ describe("GitHubManager fetchReviewWorkspace / rebaseReviewWorkspace / pushRevie
     expect(fetchCall).toBeDefined();
     expect(fetchCall![2]).toMatchObject({ cwd: "/repo" });
     const headerArg = fetchCall![1].find((a: string) => a.startsWith("http.extraheader="));
-    const decoded = Buffer.from(
-      headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""),
-      "base64",
-    ).toString("utf8");
+    const decoded = Buffer.from(headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""), "base64").toString(
+      "utf8",
+    );
     expect(decoded).toBe("x-access-token:ghp-token");
   });
 

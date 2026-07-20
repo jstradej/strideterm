@@ -6143,8 +6143,7 @@ export async function createRuntime({
 
       const panelId = `${mode}-${containerId}`;
       const title = mode === "logs" ? `${container.Names} logs` : `${container.Names} shell`;
-      const command =
-        mode === "logs" ? `docker logs -f ${container.Names}` : `docker exec -it ${container.Names} sh`;
+      const command = mode === "logs" ? `docker logs -f ${container.Names}` : `docker exec -it ${container.Names} sh`;
 
       return openLaunchPanel(targetWorkspaceId, panelId, {
         title,

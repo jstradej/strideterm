@@ -1018,5 +1018,4 @@ export class DockerManager extends EventEmitter {
     }
     return { file: ldBackend.file, args: [...ldBackend.argsPrefix, "lazydocker"] };
   }
-
 }

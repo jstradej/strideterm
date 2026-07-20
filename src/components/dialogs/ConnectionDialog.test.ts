@@ -61,7 +61,10 @@ describe("ConnectionDialog — provider defaults to azure", () => {
 
     await wrapper.find('input[placeholder="https://dev.azure.com/your-org"]').setValue("https://dev.azure.com/org");
     await wrapper.find('input[placeholder="me@company.com"]').setValue("me@company.com");
-    await wrapper.findAll("button").find((b) => b.text().includes("Test connection"))!.trigger("click");
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Test connection"))!
+      .trigger("click");
     await flushPromises();
 
     expect(verifyAzureConnection).toHaveBeenCalled();
@@ -128,7 +131,10 @@ describe("ConnectionDialog — provider=github", () => {
     const verifyGitHubConnection = vi.fn().mockResolvedValue({ login: "octocat", name: "The Octocat" });
     const wrapper = mountGitHub({}, { api: { verifyGitHubConnection } });
 
-    await wrapper.findAll("button").find((b) => b.text().includes("Test connection"))!.trigger("click");
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Test connection"))!
+      .trigger("click");
     await flushPromises();
 
     expect(verifyGitHubConnection).toHaveBeenCalled();

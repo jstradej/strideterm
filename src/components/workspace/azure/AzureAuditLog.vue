@@ -153,9 +153,7 @@
                     class="button button--ghost azure-audit-log__copy-btn"
                     @click.stop="copyEntry(entry)"
                   >
-                    {{
-                      copiedId === entry.id ? "Copied!" : copyFailedId === entry.id ? "Failed" : "Copy to clipboard"
-                    }}
+                    {{ copiedId === entry.id ? "Copied!" : copyFailedId === entry.id ? "Failed" : "Copy to clipboard" }}
                   </button>
                 </div>
               </td>

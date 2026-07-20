@@ -536,11 +536,9 @@ async function confirmDelete() {
     }
   }
   if (failed > 0) {
-    notifications.showError(
-      "Some files could not be deleted",
-      `${failed} of ${target.paths.length} failed.`,
-      { workspaceId: props.workspaceId },
-    );
+    notifications.showError("Some files could not be deleted", `${failed} of ${target.paths.length} failed.`, {
+      workspaceId: props.workspaceId,
+    });
   }
   // Drop the diff preview if the deleted file (or, for a folder, anything
   // inside it) was the one being viewed.

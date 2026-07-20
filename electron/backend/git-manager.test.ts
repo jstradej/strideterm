@@ -522,9 +522,9 @@ describe("GitManager", () => {
       });
       const manager = new GitManager({ execGitImpl });
 
-      await expect(
-        runEffect(manager.execAuthGitEffect(root, ["merge", "--no-edit", "main"])),
-      ).rejects.toMatchObject({ _tag: "GitCommandError" });
+      await expect(runEffect(manager.execAuthGitEffect(root, ["merge", "--no-edit", "main"]))).rejects.toMatchObject({
+        _tag: "GitCommandError",
+      });
       expect(execGitImpl).toHaveBeenCalledTimes(1);
     });
 
@@ -553,9 +553,9 @@ describe("GitManager", () => {
       });
       const manager = new GitManager({ execGitImpl });
 
-      await expect(
-        runEffect(manager.execAuthGitEffect(root, ["fetch", "--all", "--prune"])),
-      ).rejects.toMatchObject({ _tag: "GitCommandError" });
+      await expect(runEffect(manager.execAuthGitEffect(root, ["fetch", "--all", "--prune"]))).rejects.toMatchObject({
+        _tag: "GitCommandError",
+      });
       expect(execGitImpl).toHaveBeenCalledTimes(1);
     });
   });

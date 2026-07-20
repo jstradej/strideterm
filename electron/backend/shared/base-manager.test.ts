@@ -231,9 +231,7 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
     });
 
     const addCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("add"));
-    expect(addCall![1]).toEqual(
-      expect.arrayContaining(["worktree", "add", "--force", worktreePath, "pr-1-feature"]),
-    );
+    expect(addCall![1]).toEqual(expect.arrayContaining(["worktree", "add", "--force", worktreePath, "pr-1-feature"]));
     expect(addCall![1]).not.toContain("-b");
     const resetCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("reset"));
     expect(resetCall).toBeDefined();
@@ -299,10 +297,9 @@ describe("BaseProviderManager.fetchReviewWorkspace / rebaseReviewWorkspace / pus
       expect.objectContaining({ cwd: "/repo" }),
     );
     const headerArg = execFileTextImpl.mock.calls[0][1].find((a: string) => a.startsWith("http.extraheader="));
-    const decoded = Buffer.from(
-      headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""),
-      "base64",
-    ).toString("utf8");
+    const decoded = Buffer.from(headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""), "base64").toString(
+      "utf8",
+    );
     expect(decoded).toBe("me@example.com:tok-123");
   });
 
@@ -424,10 +421,7 @@ describe("BaseProviderManager.syncCore", () => {
     const fetchConnectionPrs = vi.fn(async () => {});
     const manager = createSyncManager();
 
-    const snapshot = await manager.syncCore(
-      { connections: [{ id: "conn-1" }] },
-      baseHooks({ fetchConnectionPrs }),
-    );
+    const snapshot = await manager.syncCore({ connections: [{ id: "conn-1" }] }, baseHooks({ fetchConnectionPrs }));
 
     expect(fetchConnectionPrs).not.toHaveBeenCalled();
     expect(snapshot.connections[0]).toMatchObject({ status: "error", lastError: "PAT is missing." });
@@ -543,10 +537,7 @@ describe("BaseProviderManager.syncCore", () => {
     manager.snapshot.pullRequests = { "stale-pr": { prKey: "stale-pr" } };
     manager.snapshot.connections = [{ id: "conn-0" }];
 
-    const snapshot = await manager.syncCore(
-      { connections: [{ id: "conn-1", tokenRef: "tok-1" }] },
-      baseHooks(),
-    );
+    const snapshot = await manager.syncCore({ connections: [{ id: "conn-1", tokenRef: "tok-1" }] }, baseHooks());
 
     expect(snapshot.pullRequests["stale-pr"]).toBeUndefined();
   });
@@ -556,10 +547,7 @@ describe("BaseProviderManager.syncCore", () => {
     manager.snapshot.pullRequests = { "kept-pr": { prKey: "kept-pr" } };
     manager.snapshot.connections = [{ id: "conn-1" }];
 
-    const snapshot = await manager.syncCore(
-      { connections: [{ id: "conn-1", tokenRef: "tok-1" }] },
-      baseHooks(),
-    );
+    const snapshot = await manager.syncCore({ connections: [{ id: "conn-1", tokenRef: "tok-1" }] }, baseHooks());
 
     expect(snapshot.pullRequests["kept-pr"]).toEqual({ prKey: "kept-pr" });
   });

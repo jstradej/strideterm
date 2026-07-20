@@ -134,9 +134,7 @@ describe("Azure DevOps API - ETag caching", () => {
 
 describe("Azure DevOps API - fetchBuildErrors / fetchBuildDetail error logging", () => {
   test("fetchBuildErrors returns an empty string and logs the failure", async () => {
-    const fetchImpl = createMockFetch([
-      { status: 403, body: { message: "Access denied due to missing PAT scope" } },
-    ]);
+    const fetchImpl = createMockFetch([{ status: 403, body: { message: "Access denied due to missing PAT scope" } }]);
     const auditLogger = vi.fn();
     const api = createAzureApi(fetchImpl as unknown as typeof fetch, { auditLogger });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test connection stub
@@ -153,9 +151,7 @@ describe("Azure DevOps API - fetchBuildErrors / fetchBuildDetail error logging",
   });
 
   test("fetchBuildDetail returns null and logs the failure", async () => {
-    const fetchImpl = createMockFetch([
-      { status: 403, body: { message: "Access denied due to missing PAT scope" } },
-    ]);
+    const fetchImpl = createMockFetch([{ status: 403, body: { message: "Access denied due to missing PAT scope" } }]);
     const auditLogger = vi.fn();
     const api = createAzureApi(fetchImpl as unknown as typeof fetch, { auditLogger });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test connection stub

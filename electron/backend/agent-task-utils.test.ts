@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { defaultJudgeEvaluationSteps, JUDGE_TODO_FILE, TASK_FILE, VERDICT_FILE, WORKER_FILE } from "./agent-task-utils.js";
+import {
+  defaultJudgeEvaluationSteps,
+  JUDGE_TODO_FILE,
+  TASK_FILE,
+  VERDICT_FILE,
+  WORKER_FILE,
+} from "./agent-task-utils.js";
 
 // These two "golden" builders are verbatim copies of the pre-refactor inline
 // text from agent-task-files.ts's writeTaskFiles (the on-disk JUDGE_PROMPT.md

@@ -158,9 +158,13 @@ const expanded = ref(false);
 
 const pullRequest = computed(() => props.item.pullRequest || {});
 
-const prNumber = computed(() => (isGitHub.value ? pullRequest.value.number || pullRequest.value.id : pullRequest.value.id));
+const prNumber = computed(() =>
+  isGitHub.value ? pullRequest.value.number || pullRequest.value.id : pullRequest.value.id,
+);
 
-const isDraft = computed(() => (isGitHub.value ? pullRequest.value.draft || pullRequest.value.isDraft : pullRequest.value.isDraft));
+const isDraft = computed(() =>
+  isGitHub.value ? pullRequest.value.draft || pullRequest.value.isDraft : pullRequest.value.isDraft,
+);
 
 const repoMeta = computed(() =>
   isGitHub.value

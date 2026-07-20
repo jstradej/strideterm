@@ -119,8 +119,7 @@ describe("makeProviderApiActions", () => {
       const rebaseMethod = provider === "azure" ? api.rebaseAzureReviewWorkspace : api.rebaseGitHubReviewWorkspace;
       const pushMethod = provider === "azure" ? api.pushAzureReviewWorkspace : api.pushGitHubReviewWorkspace;
       const saveMethod = provider === "azure" ? api.saveAzureConnection : api.saveGitHubConnection;
-      const otherMarkPrSeenMethod =
-        provider === "azure" ? api.markGitHubPullRequestSeen : api.markAzurePullRequestSeen;
+      const otherMarkPrSeenMethod = provider === "azure" ? api.markGitHubPullRequestSeen : api.markAzurePullRequestSeen;
 
       expect(markPrSeenMethod).toHaveBeenCalledWith("pr-1");
       expect(openPrMethod).toHaveBeenCalledWith({ prKey: "pr-1", workspaceId: "ws-1" });

@@ -29,7 +29,10 @@ describe("NewWindowModal", () => {
     const wrapper = mountDialog(onCreateAndOpen);
 
     await wrapper.find(".new-profile-input").setValue("Team A");
-    await wrapper.findAll("button").find((b) => b.text() === "+ Add")!.trigger("click");
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === "+ Add")!
+      .trigger("click");
     await flushPromises();
 
     expect(onCreateAndOpen).toHaveBeenCalledTimes(1);
@@ -46,7 +49,10 @@ describe("NewWindowModal", () => {
     const wrapper = mountDialog(onCreateAndOpen);
 
     await wrapper.find(".new-profile-input").setValue("Team A");
-    await wrapper.findAll("button").find((b) => b.text() === "+ Add")!.trigger("click");
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === "+ Add")!
+      .trigger("click");
     await flushPromises();
 
     expect(onCreateAndOpen).toHaveBeenCalledTimes(1);

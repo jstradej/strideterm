@@ -997,23 +997,26 @@ export class AzureDevOpsManager extends BaseProviderManager {
     gitSnapshots = {} as Record<string, unknown>,
     activeProfileId = "default",
   } = {}) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.syncCore({ connections: connections as any, workspaces, gitSnapshots, activeProfileId }, {
-      createConnectionSnapshot: (connection, persistedState) =>
-        createConnectionSnapshot(connection as unknown as AzureConnection, persistedState),
-      fetchConnectionPrs: (connection, token, ctx) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this._fetchAzureConnectionPrs(connection as unknown as AzureConnection, token, ctx as any),
-      isPrResolved: (existing) => (existing as AzurePrSummary | undefined)?.pullRequest?.status !== "active",
-      resolveStalePr: (ws, existing, conn, token) =>
-        this._resolveStaleAzurePr(
+    return this.syncCore(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { connections: connections as any, workspaces, gitSnapshots, activeProfileId },
+      {
+        createConnectionSnapshot: (connection, persistedState) =>
+          createConnectionSnapshot(connection as unknown as AzureConnection, persistedState),
+        fetchConnectionPrs: (connection, token, ctx) =>
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ws as any,
-          existing as AzurePrSummary | undefined,
-          conn as unknown as AzureConnection,
-          token,
-        ),
-    });
+          this._fetchAzureConnectionPrs(connection as unknown as AzureConnection, token, ctx as any),
+        isPrResolved: (existing) => (existing as AzurePrSummary | undefined)?.pullRequest?.status !== "active",
+        resolveStalePr: (ws, existing, conn, token) =>
+          this._resolveStaleAzurePr(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ws as any,
+            existing as AzurePrSummary | undefined,
+            conn as unknown as AzureConnection,
+            token,
+          ),
+      },
+    );
   }
 
   /**
@@ -1838,20 +1841,22 @@ export class AzureDevOpsManager extends BaseProviderManager {
      * fallback when the connection has no profileId (legacy/pre-migration). */
     callerProfileId?: string;
   }) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.openReviewWorkspaceCore({ state: state as any, prKey, workspaceId, callerProfileId }, {
-      ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
-      prepareManagedReviewCheckout: (opts) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this.prepareManagedReviewCheckout(opts as any),
-      buildReviewMetadata: (summary, checkout, extra) =>
-         
-        this.buildReviewMetadata(summary as AzurePrSummary, checkout as ReviewCheckout, extra),
-      formatPrLabel: (summary) => `${summary.repository?.name} PR #${summary.pullRequest?.id}`,
-      findWorkspaceForPullRequest: (workspaces, key) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        findWorkspaceForPullRequest(workspaces as any, key),
-    });
+    return this.openReviewWorkspaceCore(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { state: state as any, prKey, workspaceId, callerProfileId },
+      {
+        ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
+        prepareManagedReviewCheckout: (opts) =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          this.prepareManagedReviewCheckout(opts as any),
+        buildReviewMetadata: (summary, checkout, extra) =>
+          this.buildReviewMetadata(summary as AzurePrSummary, checkout as ReviewCheckout, extra),
+        formatPrLabel: (summary) => `${summary.repository?.name} PR #${summary.pullRequest?.id}`,
+        findWorkspaceForPullRequest: (workspaces, key) =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          findWorkspaceForPullRequest(workspaces as any, key),
+      },
+    );
   }
 
   async addPullRequestComment({
@@ -2169,7 +2174,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     callerProfileId?: string;
   }): Promise<{ workspace: ReviewWorkspace; parentWorkspaceId: string }> {
     const repository = { id: repositoryId, name: repositoryName, remoteUrl };
-     
+
     const result = await this.openQuickFixWorkspaceCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { state: state as any, connectionId, baseBranch, newBranchName, callerProfileId },

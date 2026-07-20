@@ -86,7 +86,11 @@ describe("SessionMap", () => {
 
   it("stop() failures propagate out of stopAll() (no swallowing)", () => {
     const map = new SessionMap<{ stop(): void }>();
-    const throwing = { stop: vi.fn(() => { throw new Error("boom"); }) };
+    const throwing = {
+      stop: vi.fn(() => {
+        throw new Error("boom");
+      }),
+    };
     map.set("a", throwing);
 
     expect(() => map.stopAll()).toThrow("boom");

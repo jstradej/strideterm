@@ -132,7 +132,9 @@ export function useCommitContextMenu<TCommit extends CommitContextMenuCommit>(
         icon: "🍒",
         group: "apply",
         disabled: isMerge,
-        title: isMerge ? "Cherry-pick of a merge commit is not supported." : "Apply this commit onto the current branch.",
+        title: isMerge
+          ? "Cherry-pick of a merge commit is not supported."
+          : "Apply this commit onto the current branch.",
       },
       {
         id: "checkout",

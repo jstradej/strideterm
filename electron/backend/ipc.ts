@@ -175,9 +175,7 @@ export function registerIpc(
   }
 
   if (includeStateGet) {
-    handle("state:get", async () =>
-      withOperationPromise({ opId: "state:get" }, () => runtime.getInitialState()),
-    );
+    handle("state:get", async () => withOperationPromise({ opId: "state:get" }, () => runtime.getInitialState()));
   }
   handle("shell:open-external", async (_event, url) =>
     withOperationPromise({ opId: "shell:open-external" }, async () => {
@@ -1544,9 +1542,7 @@ export function registerIpc(
       runtime.createWorktree(validateIpc(worktreeSchema, payload, "git:create-worktree") as any, windowId),
     );
   });
-  handle("plugins:list", async () =>
-    withOperationPromise({ opId: "plugins:list" }, () => runtime.getPlugins()),
-  );
+  handle("plugins:list", async () => withOperationPromise({ opId: "plugins:list" }, () => runtime.getPlugins()));
   handle("plugins:workspace-template", async (_event, pluginId) =>
     withOperationPromise({ opId: "plugins:workspace-template" }, () => runtime.getPluginWorkspaceTemplate(pluginId)),
   );

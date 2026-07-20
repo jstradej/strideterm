@@ -501,7 +501,10 @@ describe("InboxPane (azure) show-seen gates the Seen button per tab", () => {
     expect(wrapper.findAll("button").some((b) => b.text() === "Seen")).toBe(true);
 
     // "All" tab: azure show-seen = activeTab !== 'all' -> false.
-    await wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("All"))!.trigger("click");
+    await wrapper
+      .findAll(".azure-tab")
+      .find((b) => b.text().startsWith("All"))!
+      .trigger("click");
     await flushPromises();
     expect(wrapper.findAll("button").some((b) => b.text() === "Seen")).toBe(false);
 

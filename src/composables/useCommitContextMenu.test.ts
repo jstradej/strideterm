@@ -90,7 +90,16 @@ describe("useCommitContextMenu — single-commit menu", () => {
     expect(api.ctxMenu.value?.hash).toBe("c2");
     expect(api.ctxMenu.value?.hashes).toEqual(["c2"]);
     const ids = api.ctxMenu.value?.items.map((i) => i.id) || [];
-    expect(ids).toEqual(["details", "copyHash", "copyShort", "copySubject", "cherryPick", "checkout", "newBranch", "newTag"]);
+    expect(ids).toEqual([
+      "details",
+      "copyHash",
+      "copyShort",
+      "copySubject",
+      "cherryPick",
+      "checkout",
+      "newBranch",
+      "newTag",
+    ]);
     expect(api.ctxMenu.value?.items.find((i) => i.id === "cherryPick")?.disabled).toBe(false);
   });
 

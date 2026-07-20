@@ -193,7 +193,12 @@ describe("createEtagJsonClient - audit logging", () => {
 
     expect(auditLogger).toHaveBeenCalledTimes(1);
     const entry = auditLogger.mock.calls[0][0];
-    expect(entry).toMatchObject({ method: "GET", url: "https://widgets.example/things", statusCode: 200, success: true });
+    expect(entry).toMatchObject({
+      method: "GET",
+      url: "https://widgets.example/things",
+      statusCode: 200,
+      success: true,
+    });
     expect(entry.durationMs).toBeGreaterThanOrEqual(0);
   });
 

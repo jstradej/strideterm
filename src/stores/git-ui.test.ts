@@ -99,7 +99,12 @@ describe("git-ui store", () => {
 
       await pending;
       expect(gitCommitDiff).toHaveBeenCalledWith({ workspaceId: "ws1", hash: "abc123" });
-      expect(store.get("ws1").commitDiffPreview).toEqual({ ok: true, hash: "abc123", diff: "+line", summary: "1 file" });
+      expect(store.get("ws1").commitDiffPreview).toEqual({
+        ok: true,
+        hash: "abc123",
+        diff: "+line",
+        summary: "1 file",
+      });
     });
 
     test("gitSelectCommit falls back to an error-shaped result carrying the hash when the fetch rejects", async () => {

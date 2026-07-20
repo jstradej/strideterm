@@ -69,10 +69,7 @@ function buildPayload(opts: {
   } as unknown as StatePayload;
 }
 
-function mountWizard(
-  payloadOpts: Parameters<typeof buildPayload>[0],
-  api: Record<string, unknown> = {},
-) {
+function mountWizard(payloadOpts: Parameters<typeof buildPayload>[0], api: Record<string, unknown> = {}) {
   const appStore = useAppStore();
   appStore.payload = buildPayload(payloadOpts);
   const defaultApi = {

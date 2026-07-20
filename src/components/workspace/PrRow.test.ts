@@ -185,10 +185,13 @@ describe("PrRow — provider=github", () => {
   });
 
   test("draft flag also honors the legacy isDraft field", () => {
-    const wrapper = mountRow({
-      ...githubItem,
-      pullRequest: { ...githubItem.pullRequest, draft: false, isDraft: true },
-    }, { provider: "github" });
+    const wrapper = mountRow(
+      {
+        ...githubItem,
+        pullRequest: { ...githubItem.pullRequest, draft: false, isDraft: true },
+      },
+      { provider: "github" },
+    );
     expect(wrapper.text()).toContain("Draft");
   });
 

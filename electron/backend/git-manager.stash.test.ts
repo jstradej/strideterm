@@ -537,7 +537,9 @@ describe("GitManager stash lifecycle (real git)", () => {
     expect(res.warnings).toEqual(["Your existing changes were stashed before importing."]);
 
     // The auto-stash pop was attempted after the simulated failure.
-    const poppedAutoStash = execGitSpy.mock.calls.some(([, callArgs]) => callArgs[0] === "stash" && callArgs[1] === "pop");
+    const poppedAutoStash = execGitSpy.mock.calls.some(
+      ([, callArgs]) => callArgs[0] === "stash" && callArgs[1] === "pop",
+    );
     expect(poppedAutoStash).toBe(true);
 
     execGitSpy.mockRestore();

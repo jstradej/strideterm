@@ -793,11 +793,10 @@ export class BaseProviderManager extends EventEmitter {
     await mkdir(path.dirname(repositoryRoot), { recursive: true });
     if (!repositoryExists) {
       try {
-        await this.runGit(
-          process.cwd(),
-          ["clone", "--no-checkout", "--filter=blob:none", remoteUrl, repositoryRoot],
-          { login, token },
-        );
+        await this.runGit(process.cwd(), ["clone", "--no-checkout", "--filter=blob:none", remoteUrl, repositoryRoot], {
+          login,
+          token,
+        });
       } catch (error) {
         this.log.warn("partial clone failed, retrying with full clone", {
           repository: repoLabel,
@@ -995,7 +994,6 @@ export class BaseProviderManager extends EventEmitter {
     const activeProfile = connectionProfileId || callerProfileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace =
-       
       (workspaceId
         ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
         : hooks.findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
@@ -1006,7 +1004,8 @@ export class BaseProviderManager extends EventEmitter {
     const reviewProfileId = existingWorkspace?.profileId || activeProfile;
     const parentWorkspace =
       state.workspaces.find(
-        (workspace) => workspace.kind === this.parentWorkspaceKind && (workspace.profileId || "default") === reviewProfileId,
+        (workspace) =>
+          workspace.kind === this.parentWorkspaceKind && (workspace.profileId || "default") === reviewProfileId,
       ) || null;
     const parentWorkspaceId = parentWorkspace?.id || existingWorkspace?.review?.parentWorkspaceId || "";
 
@@ -1017,7 +1016,8 @@ export class BaseProviderManager extends EventEmitter {
         );
       }
       const checkout = existingWorkspace.review?.checkout || {
-        mode: existingWorkspace.review?.provider === this.providerLabel ? "managed-worktree" : "linked-existing-workspace",
+        mode:
+          existingWorkspace.review?.provider === this.providerLabel ? "managed-worktree" : "linked-existing-workspace",
         rootPath: existingWorkspace.cwd || "",
         cacheRepoPath: "",
       };
@@ -1043,10 +1043,10 @@ export class BaseProviderManager extends EventEmitter {
       summary,
       connection,
       token,
-      reviewRoot: parentWorkspace?.cwd || (connection as { reviewRoot?: string }).reviewRoot || this.getDefaultReviewRoot(),
+      reviewRoot:
+        parentWorkspace?.cwd || (connection as { reviewRoot?: string }).reviewRoot || this.getDefaultReviewRoot(),
     });
     const panels = createReviewWorkspacePanels(
-       
       (parentWorkspace?.panels || []) as PanelTemplate[],
       (state.tabTemplates || []) as PanelTemplate[],
     );
@@ -1183,9 +1183,17 @@ export class BaseProviderManager extends EventEmitter {
       state.workspaces.find(
         (ws) => ws.kind === this.parentWorkspaceKind && (ws.profileId || "default") === activeProfile,
       ) || null;
-    const reviewRoot = parentWorkspace?.cwd || (connection as { reviewRoot?: string }).reviewRoot || this.getDefaultReviewRoot();
+    const reviewRoot =
+      parentWorkspace?.cwd || (connection as { reviewRoot?: string }).reviewRoot || this.getDefaultReviewRoot();
 
-    const checkout = await hooks.prepareQuickFixCheckout({ connection, token, reviewRoot, baseBranch, newBranchName, options });
+    const checkout = await hooks.prepareQuickFixCheckout({
+      connection,
+      token,
+      reviewRoot,
+      baseBranch,
+      newBranchName,
+      options,
+    });
 
     const panels = createReviewWorkspacePanels(
       (parentWorkspace?.panels || []) as PanelTemplate[],

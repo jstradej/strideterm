@@ -194,7 +194,10 @@ describe("AzurePipelinesTab", () => {
     const wrapper = mountTab();
     await flushPromises();
 
-    const logButton = wrapper.findAll("tbody tr")[0].findAll("button").find((b) => b.text() === "↓ Log")!;
+    const logButton = wrapper
+      .findAll("tbody tr")[0]
+      .findAll("button")
+      .find((b) => b.text() === "↓ Log")!;
     await logButton.trigger("click");
     await flushPromises();
 

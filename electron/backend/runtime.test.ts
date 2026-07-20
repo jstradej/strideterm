@@ -8919,11 +8919,9 @@ describe("ensureSessionSafe — fire-and-forget ensureSession failures are logge
 
 describe("suspectRateLimit — confirm-timer failures are caught, not unhandled", () => {
   test("a throw from taskRunner.onAgentRateLimited inside the confirm timer is caught and logged via log.warn", async () => {
-    const onAgentRateLimitedSpy = vi
-      .spyOn(AgentTaskRunner.prototype, "onAgentRateLimited")
-      .mockImplementation(() => {
-        throw new Error("boom: onAgentRateLimited");
-      });
+    const onAgentRateLimitedSpy = vi.spyOn(AgentTaskRunner.prototype, "onAgentRateLimited").mockImplementation(() => {
+      throw new Error("boom: onAgentRateLimited");
+    });
     vi.useFakeTimers();
     try {
       const fixture = await createFixture({

@@ -629,9 +629,13 @@ export function createTelegramDispatch(ctx: TelegramDispatchCtx) {
       // Still try to switch back so user's UI returns to where they left it.
       if (targetWsId && originalActiveId && targetWsId !== originalActiveId) {
         if (targetWindowId) {
-          await getRt()?.activateWorkspaceInWindow(originalActiveId, targetWindowId).catch(() => {});
+          await getRt()
+            ?.activateWorkspaceInWindow(originalActiveId, targetWindowId)
+            .catch(() => {});
         } else {
-          await getRt()?.activateWorkspace(originalActiveId).catch(() => {});
+          await getRt()
+            ?.activateWorkspace(originalActiveId)
+            .catch(() => {});
         }
       }
       return;

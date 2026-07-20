@@ -22,7 +22,10 @@ describe("parseJsonLines", () => {
 
     expect(result).toEqual([{ a: 1 }, { c: 3 }]);
     expect(debugSpy).toHaveBeenCalledTimes(1);
-    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining("skipped 1"), expect.objectContaining({ skipped: 1 }));
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("skipped 1"),
+      expect.objectContaining({ skipped: 1 }),
+    );
   });
 
   test("ignores blank lines without counting them as skipped", () => {

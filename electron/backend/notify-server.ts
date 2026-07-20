@@ -65,10 +65,7 @@ export function buildNotifyUrl(port: number, sessionId: string, secret: string):
   return `http://127.0.0.1:${port}/notify?sid=${encodeURIComponent(sessionId)}&secret=${encodeURIComponent(secret)}`;
 }
 
-export function startNotifyServer({
-  onNotification,
-  secret,
-}: StartNotifyServerOptions): Promise<NotifyServerHandle> {
+export function startNotifyServer({ onNotification, secret }: StartNotifyServerOptions): Promise<NotifyServerHandle> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((request: IncomingMessage, response: ServerResponse) => {
       if (request.method === "OPTIONS") {

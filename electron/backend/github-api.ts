@@ -245,7 +245,11 @@ export function createGitHubApi(
     pullNumber: number | string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    return paginate((page) => `${buildPullRequestFilesUrl(connection, owner, repo, pullNumber)}&page=${page}`, token, 100);
+    return paginate(
+      (page) => `${buildPullRequestFilesUrl(connection, owner, repo, pullNumber)}&page=${page}`,
+      token,
+      100,
+    );
   }
 
   async function listReviews(
@@ -268,7 +272,11 @@ export function createGitHubApi(
     pullNumber: number | string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    return paginate((page) => `${buildReviewCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`, token, 100);
+    return paginate(
+      (page) => `${buildReviewCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`,
+      token,
+      100,
+    );
   }
 
   async function listIssueComments(

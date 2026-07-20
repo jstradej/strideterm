@@ -183,8 +183,7 @@ async function createProfileAndOpen(): Promise<void> {
     // profile + opening the window + closing the dialog on success.
     await (
       attrs["onCreate-and-open"] as
-        | ((profile: { id: string; name: string; color: string }) => Promise<void>)
-        | undefined
+        ((profile: { id: string; name: string; color: string }) => Promise<void>) | undefined
     )?.(newProfile);
   } catch (err) {
     errorMessage.value = (err as Error)?.message || "Failed to create profile";

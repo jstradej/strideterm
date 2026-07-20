@@ -1163,7 +1163,9 @@ export function normalizeState(
     git: {
       ui: {
         showAllActions:
-          typeof rawGit.ui?.showAllActions === "boolean" ? rawGit.ui.showAllActions : defaults.settings.git.ui.showAllActions,
+          typeof rawGit.ui?.showAllActions === "boolean"
+            ? rawGit.ui.showAllActions
+            : defaults.settings.git.ui.showAllActions,
       },
     },
     externalPathOpener: {

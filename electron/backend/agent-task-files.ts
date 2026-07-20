@@ -346,11 +346,11 @@ close" is an argument for "continue", not for "complete".
 ## Evaluation steps
 
 ${defaultJudgeEvaluationSteps({
-    dir: relDir,
-    readSources: `${relDir}/${TASK_FILE} (the user's brief) and ${relDir}/${WORKER_FILE} (operational rules + verification checklist)`,
-    verificationFileRef: `${relDir}/${WORKER_FILE} (or ${relDir}/${TASK_FILE} for older tasks created before the split)`,
-    variant: "file-template",
-  })}
+  dir: relDir,
+  readSources: `${relDir}/${TASK_FILE} (the user's brief) and ${relDir}/${WORKER_FILE} (operational rules + verification checklist)`,
+  verificationFileRef: `${relDir}/${WORKER_FILE} (or ${relDir}/${TASK_FILE} for older tasks created before the split)`,
+  variant: "file-template",
+})}
 
 ## Severity guide (informational — does NOT soften the completion rule)
 

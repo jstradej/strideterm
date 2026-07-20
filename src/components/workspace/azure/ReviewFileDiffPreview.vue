@@ -8,7 +8,12 @@
 -->
 <template>
   <template v-if="diffPreview">
-    <MonacoDiffPanel v-if="monacoPayload" :payload="monacoPayload" :loading="monacoLoading" class="review-diff-monaco" />
+    <MonacoDiffPanel
+      v-if="monacoPayload"
+      :payload="monacoPayload"
+      :loading="monacoLoading"
+      class="review-diff-monaco"
+    />
     <DiffViewer v-else-if="diffPreview.diff" :diff="diffPreview.diff" />
     <p v-else class="git-card__hint" style="padding: 6px">{{ diffPreview.summary || "No diff available." }}</p>
   </template>

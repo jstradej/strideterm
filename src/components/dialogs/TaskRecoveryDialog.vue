@@ -169,7 +169,9 @@ async function decide(choice: "continue" | "fresh" | "skip"): Promise<void> {
   const id = current.value.workspaceId;
   busy.value = true;
   try {
-    await notifications.runWithToast("Task recovery decision failed", () => store.resolveTaskRecovery({ [id]: choice }));
+    await notifications.runWithToast("Task recovery decision failed", () =>
+      store.resolveTaskRecovery({ [id]: choice }),
+    );
   } finally {
     busy.value = false;
   }

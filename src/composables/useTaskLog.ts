@@ -36,18 +36,20 @@ export function useTaskLog(api: Transport | null | undefined, props: TaskLogProp
 
   const logEntries = computed(() => {
     if (!logRaw.value) return [];
-    return logRaw.value
-      .split("\n")
-      .filter((line) => line.trim())
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter(Boolean) as Record<string, any>[];
+    return (
+      logRaw.value
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .filter(Boolean) as Record<string, any>[]
+    );
   });
 
   // Single watch covering every trigger the two tabs previously polled via
