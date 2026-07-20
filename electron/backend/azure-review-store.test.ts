@@ -20,6 +20,12 @@ const readFileOverride = vi.hoisted(() => ({
   current: null as ((...args: unknown[]) => Promise<unknown>) | null,
 }));
 
+// Same escape hatch for fs.rename, so a test can force the corrupt-file
+// quarantine to fail without disturbing any other filesystem call.
+const renameOverride = vi.hoisted(() => ({
+  current: null as ((...args: unknown[]) => Promise<unknown>) | null,
+}));
+
 vi.mock("./logger.js", () => ({
   getLogger: () => mockLogger,
 }));
@@ -32,7 +38,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     }
     return (actual.readFile as unknown as (...a: unknown[]) => Promise<unknown>)(...args);
   }) as unknown as typeof actual.readFile;
-  const mocked = { ...actual, readFile };
+  const rename = (async (...args: unknown[]) => {
+    if (renameOverride.current) {
+      return renameOverride.current(...args);
+    }
+    return (actual.rename as unknown as (...a: unknown[]) => Promise<unknown>)(...args);
+  }) as unknown as typeof actual.rename;
+  const mocked = { ...actual, readFile, rename };
   return { ...mocked, default: mocked };
 });
 
@@ -48,6 +60,7 @@ async function createTempPath() {
 
 afterEach(async () => {
   readFileOverride.current = null;
+  renameOverride.current = null;
   mockLogger.error.mockClear();
   mockLogger.warn.mockClear();
   mockLogger.info.mockClear();
@@ -164,5 +177,26 @@ describe("azure review store", () => {
 
     const persisted = JSON.parse(readFileSync(filePath, "utf8"));
     expect(persisted).toEqual({ version: 1, trackedPullRequests: {}, connections: {} });
+  });
+
+  test("rethrows and leaves the corrupt file untouched when quarantine (rename) fails", async () => {
+    const filePath = await createTempPath();
+    const corruptContent = "{ not valid json";
+    await fs.writeFile(filePath, corruptContent);
+
+    // JSON.parse fails, so the store tries to quarantine the corrupt file — but
+    // the rename itself fails (e.g. EPERM). It must rethrow instead of falling
+    // back to defaults; otherwise the immediate persist() would overwrite the
+    // (still recoverable) corrupt original with empty state.
+    renameOverride.current = async () => {
+      throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    };
+
+    await expect(createAzureReviewStore(filePath)).rejects.toMatchObject({ code: "EPERM" });
+    expect(mockLogger.error).toHaveBeenCalled();
+
+    renameOverride.current = null;
+    const untouched = readFileSync(filePath, "utf8");
+    expect(untouched).toBe(corruptContent);
   });
 });

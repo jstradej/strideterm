@@ -279,6 +279,60 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect(errorSession.events[0].body).toBe("grid busy");
   });
 
+  it("jump: surfaces a toast and leaves the session unresolved when activateView (open tab) rejects", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+
+    appStore.payload = makePayload({
+      appState: {
+        activeWorkspaceId: "ws-a",
+        profiles: [{ id: "p1", name: "Profile Alpha", color: "#fff", workspaceIds: ["ws-a"] }],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a", activeSessionId: "" }],
+        workspaces: [
+          {
+            id: "ws-a",
+            name: "WsA",
+            profileId: "p1",
+            panels: [{ id: "sh", title: "Shell", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp/a",
+          },
+        ],
+      },
+    }) as AnyApi;
+    notifStore.panelOpen = true;
+
+    // Target the already-active workspace so the jump skips workspace activation
+    // and goes straight to opening the tab (activateView).
+    notifStore.add({
+      title: "Needs input",
+      kind: "waiting",
+      workspaceId: "ws-a",
+      viewId: "ws-a:sh",
+      meta: { profileId: "p1" },
+    });
+
+    (appStore as AnyApi).activateView = vi.fn(() => Promise.reject(new Error("tab boom")));
+    const clearSpy = vi.spyOn(notifStore, "clearOnBackend");
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    await wrapper.find(".quick-action").trigger("click"); // Jump is the first quick action
+    await nextTick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((appStore as AnyApi).activateView).toHaveBeenCalledWith("ws-a:sh");
+    // A failed tab open must not be treated as "cleared" — session stays waiting.
+    expect(clearSpy).not.toHaveBeenCalled();
+    expect(notifStore.sessions[0].state).toBe("waiting");
+    const errorSession = notifStore.sessions.find((s) => s.category === "error")!;
+    expect(errorSession.events[0].title).toBe("Open tab failed");
+    expect(errorSession.events[0].body).toBe("tab boom");
+  });
+
   it("dismiss: surfaces a toast when clearOnBackend rejects but still resolves the session (best-effort)", async () => {
     const appStore = useAppStore();
     const notifStore = useNotificationStore();

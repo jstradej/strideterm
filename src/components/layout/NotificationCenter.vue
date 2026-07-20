@@ -780,7 +780,9 @@ async function jump(s: NotificationSession): Promise<void> {
       cancelLabel: "Cancel",
     });
     if (!confirmed) return;
-    const switched = await notifStore.runWithToast("Switch profile failed", () => appStore.activateProfile(targetProfileId));
+    const switched = await notifStore.runWithToast("Switch profile failed", () =>
+      appStore.activateProfile(targetProfileId),
+    );
     if (!switched) return;
   }
 
@@ -793,7 +795,10 @@ async function jump(s: NotificationSession): Promise<void> {
     );
     if (!opened) return;
   }
-  if (target.viewId) notifStore.runWithToast("Open tab failed", () => appStore.activateView(target.viewId));
+  if (target.viewId) {
+    const opened = await notifStore.runWithToast("Open tab failed", () => appStore.activateView(target.viewId));
+    if (!opened) return;
+  }
   // Connection-error notifications have no PR / review workspace to land on —
   // resolveJumpTarget routed us to the provider inbox above. Ask that inbox to
   // switch to its Connections tab and highlight the failing connection so the

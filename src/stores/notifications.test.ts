@@ -312,6 +312,20 @@ describe("notification store (session-grouped)", () => {
     await expect(store.clearOnBackend("ws1:panel2", { dismissed: false })).resolves.toBeUndefined();
     await expect(store.clearOnBackend("ws1:panel3")).resolves.toBeUndefined();
   });
+
+  it("clearOnBackend propagates a real RPC failure so callers can surface it", async () => {
+    const store = useNotificationStore();
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+    // A wired RPC that actually rejects must NOT be swallowed — otherwise the
+    // caller's runWithToast never fires and the UI resolves a notification
+    // whose backend alert is still active.
+    vi.spyOn(appStore, "getApi").mockReturnValue(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { clearAlertForSession: () => Promise.reject(new Error("backend unreachable")) } as any,
+    );
+    await expect(store.clearOnBackend("ws1:panel1", { dismissed: false })).rejects.toThrow("backend unreachable");
+  });
 });
 
 describe("notification store — profile label in session meta", () => {

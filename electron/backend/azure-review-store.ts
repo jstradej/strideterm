@@ -79,10 +79,15 @@ async function loadState(filePath: string): Promise<AzureReviewState> {
     try {
       await fs.rename(filePath, corruptPathFor(filePath));
     } catch (renameError) {
-      log.warn("failed to quarantine corrupt azure review state file", {
+      // Quarantine failed, so the corrupt file is still at `filePath`.
+      // Returning defaults here would let the persist() call in
+      // createAzureReviewStore immediately overwrite the (possibly
+      // recoverable) original — rethrow so startup fails loudly instead.
+      log.error("failed to quarantine corrupt azure review state file", {
         filePath,
         err: (renameError as Error)?.message || String(renameError),
       });
+      throw renameError;
     }
     return createDefaultState();
   }

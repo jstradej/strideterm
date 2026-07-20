@@ -494,21 +494,20 @@ export const useNotificationStore = defineStore("notifications", () => {
    * Backend uses the flag to feed adaptive suppression (plan § 3.2.6).
    */
   async function clearOnBackend(sessionId: string, { dismissed = false } = {}): Promise<void> {
-    try {
-      const { useAppStore } = await import("./app.js");
-      const appStore = useAppStore();
-      const api = appStore.getApi();
-      if (api?.clearAlertForSession) {
-        const next = await (api.clearAlertForSession as (id: string, opts: { dismissed: boolean }) => Promise<unknown>)(
-          sessionId,
-          { dismissed },
-        );
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (next) appStore.payload = next as any;
-      }
-    } catch {
-      // Ignore — clearing backend state is best-effort.
-    }
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+    const api = appStore.getApi();
+    // A missing RPC (older backend / transport without this method) is a
+    // genuine no-op — nothing to clear. But a real RPC failure must propagate
+    // so the caller's runWithToast can surface it; swallowing it would let the
+    // UI mark the notification resolved while the backend alert stays active.
+    if (!api?.clearAlertForSession) return;
+    const next = await (api.clearAlertForSession as (id: string, opts: { dismissed: boolean }) => Promise<unknown>)(
+      sessionId,
+      { dismissed },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (next) appStore.payload = next as any;
   }
 
   function togglePanel(): void {
