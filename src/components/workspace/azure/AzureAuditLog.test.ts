@@ -121,3 +121,130 @@ describe("AzureAuditLog — copyEntry feedback", () => {
     expect(copyBtn.text()).toBe("Failed");
   });
 });
+
+describe("AzureAuditLog — exportLog uses the shared downloadTextFile helper", () => {
+  const ENTRY = {
+    id: 1,
+    timestamp: "2026-07-01T00:00:00.000Z",
+    operation: "GET /repos",
+    category: "read",
+    method: "GET",
+    statusCode: 200,
+    success: true,
+    durationMs: 42,
+    userInitiated: true,
+    project: "MyProject",
+  };
+
+  function mountWithEntry() {
+    return mountLog({
+      queryAzureAuditLog: vi.fn().mockResolvedValue({ entries: [ENTRY], total: 1 }),
+    });
+  }
+
+  function findExportButton(wrapper: ReturnType<typeof mountWithEntry>["wrapper"], label: string) {
+    return wrapper.findAll("button").find((b) => b.text() === label)!;
+  }
+
+  it("downloads a CSV blob containing the loaded entries", async () => {
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mock-url");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    let capturedDownload = "";
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      capturedDownload = this.download;
+    });
+
+    const { wrapper } = mountWithEntry();
+    await flushPromises();
+
+    await findExportButton(wrapper, "⬇ CSV").trigger("click");
+    await flushPromises();
+
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    expect(blob.type).toBe("text/csv;charset=utf-8");
+    const text = await blob.text();
+    expect(text).toContain("GET /repos");
+    expect(capturedDownload).toMatch(/^azure-audit-log-.*\.csv$/);
+
+    vi.restoreAllMocks();
+  });
+
+  it("downloads a JSON blob containing the loaded entries", async () => {
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mock-url");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    let capturedDownload = "";
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      capturedDownload = this.download;
+    });
+
+    const { wrapper } = mountWithEntry();
+    await flushPromises();
+
+    await findExportButton(wrapper, "⬇ JSON").trigger("click");
+    await flushPromises();
+
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    expect(blob.type).toBe("application/json");
+    const text = await blob.text();
+    expect(JSON.parse(text)).toMatchObject([{ operation: "GET /repos" }]);
+    expect(capturedDownload).toMatch(/^azure-audit-log-.*\.json$/);
+
+    vi.restoreAllMocks();
+  });
+});
+
+/**
+ * formatTime() (which wraps the shared formatRelativeUntil) is rendered per
+ * row in the Time column — this exercises it through the real component
+ * template rather than as a standalone unit, covering both its recent
+ * relative-time branch and its own 24h absolute-date fallback. No fake
+ * timers: mirrors azurePipelineFormat.test.ts's isoAgo(ms) helper against
+ * the real Date.now() at test-run time.
+ */
+describe("AzureAuditLog — formatTime relative/fallback rendering", () => {
+  function isoAgo(ms: number): string {
+    return new Date(Date.now() - ms).toISOString();
+  }
+
+  function expectedAbsolute(dateStr: string): string {
+    const d = new Date(dateStr);
+    return (
+      d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+      " " +
+      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    );
+  }
+
+  const BASE_ENTRY = {
+    operation: "GET /repos",
+    category: "read",
+    method: "GET",
+    statusCode: 200,
+    success: true,
+    durationMs: 42,
+    userInitiated: true,
+    project: "MyProject",
+  };
+
+  it("renders the recent-branch relative text for a timestamp under 24h old", async () => {
+    const timestamp = isoAgo(5 * 60_000);
+    const { wrapper } = mountLog({
+      queryAzureAuditLog: vi.fn().mockResolvedValue({ entries: [{ id: 1, timestamp, ...BASE_ENTRY }], total: 1 }),
+    });
+    await flushPromises();
+
+    expect(wrapper.find(".azure-audit-log__cell-time").text()).toBe("5m ago");
+  });
+
+  it("renders the absolute-date fallback for a timestamp at/beyond the 24h threshold", async () => {
+    const timestamp = isoAgo(2 * 86_400_000);
+    const { wrapper } = mountLog({
+      queryAzureAuditLog: vi.fn().mockResolvedValue({ entries: [{ id: 2, timestamp, ...BASE_ENTRY }], total: 1 }),
+    });
+    await flushPromises();
+
+    expect(wrapper.find(".azure-audit-log__cell-time").text()).toBe(expectedAbsolute(timestamp));
+  });
+});

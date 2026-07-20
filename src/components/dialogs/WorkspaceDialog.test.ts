@@ -1,8 +1,10 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
 import WorkspaceDialog from "./WorkspaceDialog.vue";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { BADGE_ICONS } from "../../lib/badge-icons.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -400,6 +402,88 @@ describe("WorkspaceDialog", () => {
       expect(warnCalls.some((c) => c[1].includes("checkProviders"))).toBe(true);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       delete (window as any).strideterm;
+    });
+  });
+
+  // §3.5: BADGE_ICONS (badge-icons.ts) and AgentProviderConfig.vue are both
+  // shared/extracted building blocks with their own isolated tests, but
+  // neither was ever exercised through this real consumer's wiring.
+  describe("badge icon picker + AgentProviderConfig wiring", () => {
+    test("clicking a badge icon sets draft.icon, reflected in the icon input", async () => {
+      const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
+      const iconButtons = wrapper.findAll(".icon-picker__btn");
+      expect(iconButtons.length).toBe(BADGE_ICONS.length);
+      const target = BADGE_ICONS[10];
+      const targetBtn = iconButtons.find((b) => b.text() === target)!;
+      expect(targetBtn).toBeTruthy();
+
+      await targetBtn.trigger("click");
+
+      expect((wrapper.find('input[name="icon"]').element as HTMLInputElement).value).toBe(target);
+    });
+
+    test("switching the worker's provider auto-selects that provider's suggested model, without touching the judge section", async () => {
+      const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
+      const sections = wrapper.findAll(".agent-config-section");
+      expect(sections).toHaveLength(2);
+      const [workerSection, judgeSection] = sections;
+
+      const workerModelInput = () => workerSection.find('input[placeholder="Default"]').element as HTMLInputElement;
+      const judgeModelInput = () => judgeSection.find('input[placeholder="Default"]').element as HTMLInputElement;
+      // Defaults backfilled by WorkspaceDialog when the draft has no provider yet.
+      expect(workerModelInput().value).toBe("sonnet");
+      expect(judgeModelInput().value).toBe("opus");
+
+      const workerProviderSelect = workerSection.findComponent({ name: "CustomSelect" });
+      await workerProviderSelect.vm.$emit("update:modelValue", "codex");
+      await workerProviderSelect.vm.$emit("change");
+      await nextTick();
+
+      // codex's worker-suggested model, per PROVIDER_CHOICES in agent-providers.ts.
+      expect(workerModelInput().value).toBe("gpt-5.5");
+      // Judge section is untouched by the worker's provider switch.
+      expect(judgeModelInput().value).toBe("opus");
+    });
+
+    test("toggling advanced mode on the worker section swaps to a raw command input, independent of the judge section", async () => {
+      const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
+      const [workerSection, judgeSection] = wrapper.findAll(".agent-config-section");
+
+      await workerSection.find(".agent-config-section__advanced-btn").trigger("click");
+
+      expect(workerSection.find(".agent-config-section__advanced-btn").text()).toBe("Use provider picker");
+      const workerCommandInput = workerSection.find('input[placeholder*="claude --dangerously-skip-permissions"]');
+      expect(workerCommandInput.exists()).toBe(true);
+      // Prefilled from the picker's prior state (buildProviderCommand of the claude/sonnet default).
+      expect((workerCommandInput.element as HTMLInputElement).value).toBe(
+        "claude --dangerously-skip-permissions --model sonnet",
+      );
+      // The judge section is a separate AgentProviderConfig instance — still in picker mode.
+      expect(judgeSection.find(".agent-config-section__advanced-btn").text()).toBe("Advanced: custom command");
+      expect(judgeSection.findComponent({ name: "CustomSelect" }).exists()).toBe(true);
+    });
+
+    test("editing the worker's advanced command flows through to the submitted workspace panel", async () => {
+      const onSubmit = vi.fn();
+      const draft = buildTaskDraft();
+      const wrapper = mountDialog({ workspace: draft, creating: true, onSubmit });
+      const workerSection = wrapper.findAll(".agent-config-section")[0];
+
+      await workerSection.find(".agent-config-section__advanced-btn").trigger("click");
+      const workerCommandInput = workerSection.find('input[placeholder*="claude --dangerously-skip-permissions"]');
+      await workerCommandInput.setValue("claude --model opus --dangerously-skip-permissions");
+
+      await wrapper.find("form").trigger("submit");
+      await flushPromises();
+
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      const submitted = onSubmit.mock.calls[0][0];
+      const workerPanel = submitted.panels.find((p: { id: string }) => p.id === submitted.task.workerPanelId);
+      expect(workerPanel.command).toBe("claude --model opus --dangerously-skip-permissions");
+      expect(submitted.workerCommandOverride).toBe(true);
+      // Judge panel's command is untouched by the worker-only edit.
+      const judgePanel = submitted.panels.find((p: { id: string }) => p.id === submitted.task.judgePanelId);
+      expect(judgePanel.command).toBe("claude --model opus");
     });
   });
 });

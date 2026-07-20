@@ -156,3 +156,57 @@ describe("ReviewCommentsTab — draft/thread/comment mutations surface failures 
     expect(deleteBtn.attributes("disabled")).toBeUndefined();
   });
 });
+
+/**
+ * formatRelativeTime() (which wraps the shared formatRelativeUntil) is
+ * rendered both for the thread header's timestamp and per-comment — this
+ * exercises it through the real component template, covering the recent
+ * relative-time branch and this component's own 2-week "Xw ago" fallback.
+ * No fake timers: mirrors azurePipelineFormat.test.ts's isoAgo(ms) helper
+ * against the real Date.now() at test-run time.
+ */
+describe("ReviewCommentsTab — formatRelativeTime relative/fallback rendering", () => {
+  function isoAgo(ms: number): string {
+    return new Date(Date.now() - ms).toISOString();
+  }
+
+  test("renders the recent-branch relative text for a comment under 14 days old", async () => {
+    const publishedDate = isoAgo(5 * 60_000);
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        filteredThreads: [
+          {
+            id: "t1",
+            status: "active",
+            comments: [{ id: "c1", publishedDate, author: { displayName: "Alice" }, content: "hi" }],
+          },
+        ],
+      }),
+    });
+    await flushPromises();
+
+    const dates = wrapper.findAll(".review-comment__date");
+    expect(dates.length).toBeGreaterThan(0);
+    for (const d of dates) expect(d.text()).toBe("5m ago");
+  });
+
+  test("renders the 'Xw ago' fallback for a comment past the 14-day threshold", async () => {
+    const publishedDate = isoAgo(20 * 86_400_000);
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        filteredThreads: [
+          {
+            id: "t1",
+            status: "active",
+            comments: [{ id: "c1", publishedDate, author: { displayName: "Alice" }, content: "hi" }],
+          },
+        ],
+      }),
+    });
+    await flushPromises();
+
+    const dates = wrapper.findAll(".review-comment__date");
+    expect(dates.length).toBeGreaterThan(0);
+    for (const d of dates) expect(d.text()).toBe("2w ago");
+  });
+});

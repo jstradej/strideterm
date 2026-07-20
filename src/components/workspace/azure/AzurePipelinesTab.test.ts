@@ -66,6 +66,7 @@ function makeApi() {
     getAzurePipelineRunDetail: vi.fn(async () => ({ stages: [], errors: [] })),
     runAzurePipeline: vi.fn(async () => ({ id: 999, state: "inProgress", webUrl: "https://web/run/999" })),
     openExternal: vi.fn(),
+    getAzureBuildLog: vi.fn(async () => ""),
   };
 }
 
@@ -179,5 +180,35 @@ describe("AzurePipelinesTab", () => {
       pipelineName: "ci-build",
       runId: 555,
     });
+  });
+
+  test("clicking ↓ Log downloads the run's build log via the shared downloadTextFile helper", async () => {
+    api.getAzureBuildLog = vi.fn().mockResolvedValue("line 1\nline 2\n");
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mock-url");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    let capturedDownload = "";
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      capturedDownload = this.download;
+    });
+
+    const wrapper = mountTab();
+    await flushPromises();
+
+    const logButton = wrapper.findAll("tbody tr")[0].findAll("button").find((b) => b.text() === "↓ Log")!;
+    await logButton.trigger("click");
+    await flushPromises();
+
+    expect(api.getAzureBuildLog).toHaveBeenCalledWith({
+      connectionId: "ado-1",
+      projectName: "Platform",
+      buildId: 555,
+    });
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    expect(blob.type).toBe("text/plain;charset=utf-8");
+    expect(await blob.text()).toBe("line 1\nline 2\n");
+    expect(capturedDownload).toBe("ci-build-run-555.log");
+
+    vi.restoreAllMocks();
   });
 });

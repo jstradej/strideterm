@@ -1,10 +1,12 @@
 import { describe, expect, test, beforeEach } from "vitest";
-import { shallowMount } from "@vue/test-utils";
+import { shallowMount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import GitPane from "./GitPane.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import type { StatePayload, GitSnapshot } from "../../../electron/shared/types/state.js";
+
+declare const setMatchMediaResult: (query: string, matches: boolean) => void;
 
 function buildWorkspace(overrides: Record<string, unknown> = {}) {
   return {
@@ -225,5 +227,99 @@ describe("GitPane repo picker", () => {
 
     // Root should be unchanged
     expect(gitUiStore.getActiveRoot("ws-tabs")).toBe("/ms/api");
+  });
+});
+
+// §3.5 useMobileShellMenus wiring — GitPane is one of 3 consumers (with
+// InboxPane and AzureReviewPane) of the shared composable, but unlike them
+// wires onSelectTab straight to gitSwitchTab and reuses the same tab-nav
+// buttons for both desktop and the mobile popover (no separate tab list).
+describe("GitPane mobile shell menus (useMobileShellMenus wiring)", () => {
+  beforeEach(() => {
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+  });
+
+  test("on desktop viewport the popover triggers do not render", async () => {
+    const ws = buildWorkspace({ id: "ws-desktop" });
+    const wrapper = mountPane("ws-desktop", [ws]);
+    await flushPromises();
+
+    expect(wrapper.find(".git-view__tabs-trigger").exists()).toBe(false);
+    expect(wrapper.find(".git-view__menu-trigger").exists()).toBe(false);
+    expect(wrapper.find(".git-view__menu-backdrop").exists()).toBe(false);
+  });
+
+  test("on mobile viewport the popover triggers render, showing the active tab's label", async () => {
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", true);
+    const ws = buildWorkspace({ id: "ws-mobile" });
+    const wrapper = mountPane("ws-mobile", [ws]);
+    await flushPromises();
+
+    expect(wrapper.find(".git-view__tabs-trigger").exists()).toBe(true);
+    expect(wrapper.find(".git-view__menu-trigger").exists()).toBe(true);
+    // Default activeTab is "branch" -> Overview (see GitPane.vue's `tabs` computed).
+    expect(wrapper.find(".git-view__tabs-trigger__label").text()).toBe("Overview");
+  });
+
+  test("toggling the tabs trigger flips the git-view--tabs-menu-open class", async () => {
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", true);
+    const ws = buildWorkspace({ id: "ws-mobile-tabs" });
+    const wrapper = mountPane("ws-mobile-tabs", [ws]);
+    await flushPromises();
+
+    await wrapper.find(".git-view__tabs-trigger").trigger("click");
+    expect(wrapper.find(".git-view").classes()).toContain("git-view--tabs-menu-open");
+    expect(wrapper.find(".git-view__tabs-trigger").attributes("aria-expanded")).toBe("true");
+
+    await wrapper.find(".git-view__tabs-trigger").trigger("click");
+    expect(wrapper.find(".git-view").classes()).not.toContain("git-view--tabs-menu-open");
+  });
+
+  test("toggling the actions trigger flips the git-view--menu-open class, mutually exclusive with the tabs menu", async () => {
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", true);
+    const ws = buildWorkspace({ id: "ws-mobile-actions" });
+    const wrapper = mountPane("ws-mobile-actions", [ws]);
+    await flushPromises();
+
+    await wrapper.find(".git-view__tabs-trigger").trigger("click");
+    expect(wrapper.find(".git-view").classes()).toContain("git-view--tabs-menu-open");
+
+    await wrapper.find(".git-view__menu-trigger").trigger("click");
+    expect(wrapper.find(".git-view").classes()).toContain("git-view--menu-open");
+    expect(wrapper.find(".git-view").classes()).not.toContain("git-view--tabs-menu-open");
+  });
+
+  test("clicking a tab item switches gitUiStore's active tab AND closes the tabs popover (onSelectTab wiring)", async () => {
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", true);
+    const ws = buildWorkspace({ id: "ws-mobile-switch", gitRoots: ["/ms/api", "/ms/web"] });
+    const wrapper = mountPane("ws-mobile-switch", [ws]);
+    await flushPromises();
+    const gitUiStore = useGitUiStore();
+
+    await wrapper.find(".git-view__tabs-trigger").trigger("click");
+    expect(wrapper.find(".git-view").classes()).toContain("git-view--tabs-menu-open");
+
+    const branchesTab = wrapper.findAll(".git-tabs__item").find((btn) => btn.text() === "Branches");
+    expect(branchesTab).toBeTruthy();
+    await branchesTab!.trigger("click");
+
+    expect(gitUiStore.get("ws-mobile-switch").activeTab).toBe("branches");
+    // useMobileShellMenus.onTabClick closes the tabs popover after selecting.
+    expect(wrapper.find(".git-view").classes()).not.toContain("git-view--tabs-menu-open");
+    expect(wrapper.find(".git-view__tabs-trigger__label").text()).toBe("Branches");
+  });
+
+  test("the backdrop closes both popovers", async () => {
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", true);
+    const ws = buildWorkspace({ id: "ws-mobile-backdrop" });
+    const wrapper = mountPane("ws-mobile-backdrop", [ws]);
+    await flushPromises();
+
+    await wrapper.find(".git-view__menu-trigger").trigger("click");
+    expect(wrapper.find(".git-view__menu-backdrop").exists()).toBe(true);
+
+    await wrapper.find(".git-view__menu-backdrop").trigger("click");
+    expect(wrapper.find(".git-view").classes()).not.toContain("git-view--menu-open");
+    expect(wrapper.find(".git-view__menu-backdrop").exists()).toBe(false);
   });
 });

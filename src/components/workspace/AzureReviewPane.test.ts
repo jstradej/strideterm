@@ -14,6 +14,7 @@ import AzureReviewPane from "./AzureReviewPane.vue";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { useGitUiStore } from "../../stores/git-ui.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 declare const setMatchMediaResult: (query: string, matches: boolean) => void;
@@ -531,5 +532,171 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
     expect(preview.props("monacoPayload")).toEqual(
       expect.objectContaining({ ok: false, leftError: "git show failed", leftMissing: true, rightMissing: true }),
     );
+  });
+});
+
+/**
+ * §3.5 ReviewFileTree is shared by two call sites in this component: the
+ * Files tab (exercised above, via "Monaco diff loading") and the Conflicts
+ * tab's "has conflicts" branch (AzureReviewPane.vue:357), which had zero
+ * coverage — no existing test ever drove pullRequest.mergeStatus into a
+ * conflict state. This closes that gap through the real component.
+ */
+describe("AzureReviewPane — Conflicts tab (ReviewFileTree's second call site)", () => {
+  function buildConflictsPayload(mergeStatus: string): StatePayload {
+    const prKey = "ado:1";
+    const detail = {
+      pullRequest: {
+        id: 1,
+        title: "Sample review PR",
+        isDraft: false,
+        sourceRefName: "refs/heads/feature/x",
+        targetRefName: "refs/heads/main",
+        url: "",
+        webUrl: "",
+        mergeStatus,
+      },
+      project: { name: "MockProject" },
+      repository: { name: "platform-api" },
+      role: "reviewer",
+      hasAttention: false,
+      attentionReason: "",
+      reviewerSummary: { reviewers: [] },
+      checks: { failedCount: 0, pendingCount: 0, passedCount: 1, checks: [] },
+      changedFiles: [
+        { path: "src/app/foo.ts", changeType: "edit" },
+        { path: "src/app/nested/bar.ts", changeType: "add" },
+      ],
+      threads: [],
+      issueComments: [],
+    };
+    return {
+      appState: {
+        activeWorkspaceId: "ws-review",
+        activeViewId: "review:ws-review",
+        activeProfileId: "default",
+        workspaces: [
+          {
+            id: "ws-review",
+            name: "Review WS",
+            kind: "terminal",
+            cwd: "/repo",
+            activeViewId: "review:ws-review",
+            panels: [],
+            review: { provider: "azure-devops", prKey },
+          },
+        ],
+        profiles: [{ id: "default", name: "Default", color: "", workspaceIds: ["ws-review"] }],
+      },
+      workspace: {
+        workspace: {
+          id: "ws-review",
+          name: "Review WS",
+          kind: "terminal",
+          cwd: "/repo",
+          panels: [],
+          review: { provider: "azure-devops", prKey },
+        },
+        project: null,
+        sessions: [],
+      },
+      azureDevops: { pullRequests: { [prKey]: detail } },
+      github: { pullRequests: {} },
+      reviewBridge: { pullRequests: {}, agentPrompts: [], syncQueue: [] },
+      git: { workspaces: {} },
+    } as unknown as StatePayload;
+  }
+
+  function mountWithMergeStatus(mergeStatus: string) {
+    const appStore = useAppStore();
+    appStore.payload = buildConflictsPayload(mergeStatus);
+    for (const fn of ["refreshAzure", "markAzurePrSeen", "markAzurePullRequestSeen"]) {
+      if (typeof (appStore as unknown as Record<string, unknown>)[fn] === "function") {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (vi.spyOn(appStore as any, fn as any) as any).mockImplementation(() => Promise.resolve());
+      }
+    }
+    return mount(AzureReviewPane, {
+      props: { workspaceId: "ws-review" },
+      global: {
+        stubs: {
+          PaneShell: true,
+          DiffViewer: true,
+          GitCommitLog: true,
+          MonacoDiffPanel: true,
+          ReviewSummaryTab: true,
+          ReviewCommentsTab: true,
+          ReviewAgentTab: true,
+          ReviewPipelinesTab: true,
+          CustomSelect: true,
+        },
+        provide: {
+          api: {
+            azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+          },
+        },
+      },
+    });
+  }
+
+  test("mergeStatus:conflicts renders the real ReviewFileTree with the affected files", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithMergeStatus("conflicts");
+    await flushPromises();
+
+    const conflictsTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Conflicts"))!;
+    expect(conflictsTabBtn.text()).toContain("2"); // conflictInfo.hasConflicts -> count = changedFiles.length
+    await conflictsTabBtn.trigger("click");
+    await flushPromises();
+
+    // The "no conflicts" simple card must NOT render...
+    expect(wrapper.text()).not.toContain("No conflicts");
+    // ...the real ReviewFileTree renders both changed files (nested dir included)...
+    const fileButtons = wrapper.findAll(".review-tree-file");
+    expect(fileButtons).toHaveLength(2);
+    expect(wrapper.text()).toContain("foo.ts");
+    expect(wrapper.text()).toContain("bar.ts");
+
+    // ...and clicking one wires through onSelectFile -> gitUiStore.reviewSelectFileDiff,
+    // which records the selection (after its internal `await import("./app.js")`)
+    // before the (unmocked) diff fetch settles into its error-fallback shape.
+    const gitUiStore = useGitUiStore();
+    await fileButtons[0].trigger("click");
+    await flushPromises();
+    expect(gitUiStore.get("ws-review").reviewSelectedFile).toBe("src/app/foo.ts");
+  });
+
+  test.each(["rejectedByPolicy", "renamedSourceBranch", "manualMergeRequired"])(
+    "mergeStatus:%s is also treated as a conflict state",
+    async (mergeStatus) => {
+      setMatchMediaResult("(max-width: 768px)", false);
+      setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+      const wrapper = mountWithMergeStatus(mergeStatus);
+      await flushPromises();
+
+      const conflictsTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Conflicts"))!;
+      await conflictsTabBtn.trigger("click");
+      await flushPromises();
+
+      expect(wrapper.find(".review-tree-file").exists()).toBe(true);
+      expect(wrapper.text()).toContain("Conflicts detected");
+    },
+  );
+
+  test("mergeStatus:succeeded shows the no-conflicts card instead of the file tree", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithMergeStatus("succeeded");
+    await flushPromises();
+
+    const conflictsTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Conflicts"))!;
+    expect(conflictsTabBtn.text()).toBe("Conflicts0"); // count is 0 (still rendered, since 0 !== null)
+    await conflictsTabBtn.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("No conflicts");
+    expect(wrapper.find(".review-tree-file").exists()).toBe(false);
   });
 });

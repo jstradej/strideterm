@@ -300,6 +300,81 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
   });
 
+  it("forceRemoveWorkspace removes the workspace from the local payload synchronously (no waiting on the IPC)", async () => {
+    // Mirrors deleteWorkspace's own "removes...synchronously" test above —
+    // forceRemoveWorkspace shares the same optimistic core, but until now had
+    // no test proving its own happy path (only the IPC-throw error path below).
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    let releaseIpc: (v: AnyApi) => void = () => {};
+    const ipcCall = new Promise<AnyApi>((resolve) => (releaseIpc = resolve));
+    const { ctx, payload, optimisticallyDeletedIds } = makeCtx(initial, {
+      deleteWorkspace: vi.fn(() => ipcCall),
+    });
+    const actions = createWorkspaceActions(ctx);
+
+    const finished = actions.forceRemoveWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await Promise.resolve();
+
+    expect(payload.value.appState.workspaces.find((w: AnyApi) => w.id === "ws-B")).toBeUndefined();
+    expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(true);
+
+    releaseIpc({
+      ...initial,
+      appState: { ...initial.appState, workspaces: initial.appState.workspaces.filter((w) => w.id !== "ws-B") },
+    });
+    await finished;
+  });
+
+  it("forceRemoveWorkspace switches the active workspace if the removed one was active", async () => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, payload } = makeCtx(initial);
+    const actions = createWorkspaceActions(ctx);
+
+    const finished = actions.forceRemoveWorkspace("ws-A");
+    await answerConfirm(ctx, true);
+    await finished;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(payload.value.appState.activeWorkspaceId).toBe("ws-B");
+    expect(payload.value.appState.workspaces.find((w: AnyApi) => w.id === "ws-A")).toBeUndefined();
+  });
+
+  it("forceRemoveWorkspace does nothing if the user declines the confirm prompt", async () => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, payload, api } = makeCtx(initial);
+    const actions = createWorkspaceActions(ctx);
+
+    const finished = actions.forceRemoveWorkspace("ws-B");
+    await answerConfirm(ctx, false);
+    await finished;
+
+    expect(payload.value.appState.workspaces.find((w: AnyApi) => w.id === "ws-B")).toBeDefined();
+    expect(api.deleteWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("forceRemoveWorkspace calls the backend with only deleteFromDisk:false — no diskPath key at all (vs. deleteWorkspace's disk-aware variant)", async () => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, api } = makeCtx(initial);
+    const actions = createWorkspaceActions(ctx);
+
+    const finished = actions.forceRemoveWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await finished;
+    await Promise.resolve();
+
+    expect(api.deleteWorkspace).toHaveBeenCalledWith("ws-B", { deleteFromDisk: false });
+  });
+
   it("forceRemoveWorkspace shows the same error-toast behavior as deleteWorkspace when the IPC throws (shared optimisticallyRemoveWorkspace)", async () => {
     // deleteWorkspace and forceRemoveWorkspace both route their optimistic
     // removal + failure handling through the shared optimisticallyRemoveWorkspace
