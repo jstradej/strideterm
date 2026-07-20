@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { mount } from "@vue/test-utils";
 import BootstrapError from "./BootstrapError.vue";
+import { apiKey } from "../../types/keys.js";
 
 describe("BootstrapError", () => {
   test("renders remote auth form when api.isRemote is true", () => {
@@ -8,7 +9,7 @@ describe("BootstrapError", () => {
       props: { message: "Could not connect to server" },
       global: {
         provide: {
-          api: { isRemote: true, getRemoteToken: () => "", setRemoteToken: () => {} },
+          [apiKey]: { isRemote: true, getRemoteToken: () => "", setRemoteToken: () => {} },
         },
       },
     });
@@ -23,7 +24,7 @@ describe("BootstrapError", () => {
     const wrapper = mount(BootstrapError, {
       props: { message: "Startup error details" },
       global: {
-        provide: { api: { isRemote: false } },
+        provide: { [apiKey]: { isRemote: false } },
       },
     });
 

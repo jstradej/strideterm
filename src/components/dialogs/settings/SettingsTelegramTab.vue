@@ -121,6 +121,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, inject, watch } from "vue";
+import { apiKey } from "../../../types/keys.js";
 import type { Transport } from "../../../transport.js";
 import { useAppStore } from "../../../stores/app.js";
 
@@ -157,7 +158,7 @@ const props = withDefaults(defineProps<Props>(), {
   profiles: () => [],
 });
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 const appStore = useAppStore();
 
 const connections = ref<TelegramConnection[]>([...(props.telegramSettings?.connections || [])]);

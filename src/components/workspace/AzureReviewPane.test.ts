@@ -11,6 +11,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AzureReviewPane from "./AzureReviewPane.vue";
+import { apiKey } from "../../types/keys.js";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -113,7 +114,7 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
         CustomSelect: true,
       },
       provide: {
-        api: {
+        [apiKey]: {
           azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
           githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
         },
@@ -226,7 +227,7 @@ describe("AzureReviewPane responsive chrome", () => {
           CustomSelect: true,
         },
         provide: {
-          api: {
+          [apiKey]: {
             azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
             githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
           },
@@ -360,7 +361,7 @@ describe("AzureReviewPane — loadPrBranches surfaces a load failure", () => {
           CustomSelect: true,
         },
         provide: {
-          api: {
+          [apiKey]: {
             azureListRemoteBranches: () => Promise.reject(new Error("network down")),
             githubListRemoteBranches: () => Promise.reject(new Error("network down")),
           },
@@ -468,7 +469,7 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
           // read its monaco-payload prop to confirm the loader actually wired.
         },
         provide: {
-          api: {
+          [apiKey]: {
             azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
             githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
           },
@@ -631,7 +632,7 @@ describe("AzureReviewPane — Conflicts tab (ReviewFileTree's second call site)"
           CustomSelect: true,
         },
         provide: {
-          api: {
+          [apiKey]: {
             azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
             githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
           },

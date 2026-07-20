@@ -405,6 +405,7 @@
 
 <script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
+import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -538,7 +539,7 @@ const isPrePrWorkspace = computed(
   () => !workspace.value?.review?.prKey && ["azure-devops", "github"].includes(workspace.value?.review?.provider || ""),
 );
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api");
+const api = inject<any>(apiKey);
 
 function openExternal(url: string) {
   if (api?.openExternal) api.openExternal(url);

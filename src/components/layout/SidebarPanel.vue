@@ -167,6 +167,7 @@
 
 <script setup lang="ts">
 import { computed, ref, inject, watch, nextTick } from "vue";
+import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
@@ -418,7 +419,7 @@ async function onActivate(workspaceId: string): Promise<void> {
   }
 }
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function handleToggleStar(ws: any): void {

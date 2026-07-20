@@ -10,6 +10,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AzurePipelinesTab from "./AzurePipelinesTab.vue";
+import { apiKey } from "../../../types/keys.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useAzurePipelinesStore } from "../../../stores/azure-pipelines.js";
 import type { Transport } from "../../../transport.js";
@@ -77,7 +78,7 @@ function mountTab() {
   store.init(api as unknown as Transport);
   return mount(AzurePipelinesTab, {
     props: { connections: [{ id: "ado-1", label: "Mock org" }] },
-    global: { provide: { api } },
+    global: { provide: { [apiKey]: api } },
   });
 }
 

@@ -9,6 +9,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import PrePrWorkspaceView from "./PrePrWorkspaceView.vue";
+import { apiKey } from "../../../types/keys.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
@@ -83,7 +84,7 @@ function mountWizard(payloadOpts: Parameters<typeof buildPayload>[0], api: Recor
     props: { workspaceId: "ws-review" },
     global: {
       stubs: { GitCommitLog: true },
-      provide: { api: defaultApi },
+      provide: { [apiKey]: defaultApi },
     },
   });
 }

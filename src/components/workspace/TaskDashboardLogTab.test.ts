@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import TaskDashboardLogTab from "./TaskDashboardLogTab.vue";
+import { apiKey } from "../../types/keys.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -15,7 +16,7 @@ function mountTab(apiOverrides: Record<string, unknown> = {}) {
   const api: AnyApi = { fileRead, ...apiOverrides };
   const wrapper = mount(TaskDashboardLogTab, {
     props: { taskState, workspaceCwd: "/repo", taskId: "task-1" },
-    global: { provide: { api } },
+    global: { provide: { [apiKey]: api } },
   });
   return { wrapper, fileRead };
 }

@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { shallowMount, mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TaskDashboardPane from "./TaskDashboardPane.vue";
+import { apiKey } from "../../types/keys.js";
 import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -98,7 +99,7 @@ function mountDashboard(
   return mountFn(TaskDashboardPane, {
     props: { workspaceId: ws.id },
     global: {
-      provide: { api: apiStub },
+      provide: { [apiKey]: apiStub },
     },
   });
 }

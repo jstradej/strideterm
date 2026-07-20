@@ -141,6 +141,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch, inject } from "vue";
+import { apiKey } from "../../../types/keys.js";
 import DockerResourceTable, { type Column } from "../docker/DockerResourceTable.vue";
 import AzurePipelineDetailPanel from "./AzurePipelineDetailPanel.vue";
 import {
@@ -169,7 +170,7 @@ const appStore = useAppStore();
 const store = useAzurePipelinesStore();
 const notify = useNotificationStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api", null);
+const api = inject<any>(apiKey, null);
 
 const selectedKey = ref<string | null>(null);
 const downloadingRunId = ref<number | string | null>(null);

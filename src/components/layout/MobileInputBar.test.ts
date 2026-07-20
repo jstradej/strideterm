@@ -8,6 +8,7 @@ import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 import { nextTick } from "vue";
 import MobileInputBar from "./MobileInputBar.vue";
+import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,7 +30,7 @@ function mountBar({
   const writeTerminal = vi.fn();
   const wrapper = mount(MobileInputBar, {
     global: {
-      provide: { api: { isRemote, writeTerminal } as AnyApi },
+      provide: { [apiKey]: { isRemote, writeTerminal } as AnyApi },
     },
   });
   return { wrapper, writeTerminal };
@@ -94,7 +95,7 @@ describe("MobileInputBar", () => {
       store.activeViewId = SESSION_ID;
       const writeTerminal = vi.fn();
       const wrapper = mount(MobileInputBar, {
-        global: { provide: { api: { isRemote: true, writeTerminal } as AnyApi } },
+        global: { provide: { [apiKey]: { isRemote: true, writeTerminal } as AnyApi } },
       });
 
       expect(wrapper.find("[data-role='mobile-input-bar']").exists()).toBe(true);
@@ -117,7 +118,7 @@ describe("MobileInputBar", () => {
       store.activeSessionId = null;
       store.activeViewId = viewId;
       const wrapper = mount(MobileInputBar, {
-        global: { provide: { api: { isRemote: true, writeTerminal: vi.fn() } as AnyApi } },
+        global: { provide: { [apiKey]: { isRemote: true, writeTerminal: vi.fn() } as AnyApi } },
       });
       expect(wrapper.find("[data-role='mobile-input-bar']").exists()).toBe(false);
     });
@@ -138,7 +139,7 @@ describe("MobileInputBar", () => {
         },
       } as AnyApi;
       const wrapper = mount(MobileInputBar, {
-        global: { provide: { api: { isRemote: true, writeTerminal: vi.fn() } as AnyApi } },
+        global: { provide: { [apiKey]: { isRemote: true, writeTerminal: vi.fn() } as AnyApi } },
       });
       expect(wrapper.find("[data-role='mobile-input-bar']").exists()).toBe(false);
     });

@@ -8,6 +8,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import RemoteAccessDialog from "./RemoteAccessDialog.vue";
+import { apiKey } from "../../types/keys.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 
 beforeEach(() => {
@@ -18,7 +19,7 @@ describe("RemoteAccessDialog — browseCloudflared", () => {
   test("a rejecting browseFile shows an error notification instead of throwing", async () => {
     const browseFile = vi.fn().mockRejectedValueOnce(new Error("picker crashed"));
     const wrapper = mount(RemoteAccessDialog, {
-      global: { provide: { api: { browseFile } } },
+      global: { provide: { [apiKey]: { browseFile } } },
     });
 
     const browseBtn = wrapper.findAll("button").find((b) => b.text() === "Browse")!;

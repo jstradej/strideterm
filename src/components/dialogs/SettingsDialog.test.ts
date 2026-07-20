@@ -1,6 +1,7 @@
 import { mount, type VueWrapper } from "@vue/test-utils";
 import { describe, expect, test } from "vitest";
 import SettingsDialog from "./SettingsDialog.vue";
+import { apiKey } from "../../types/keys.js";
 
 type AnySettings = Record<string, unknown>;
 
@@ -9,7 +10,7 @@ async function mountDialog(settings: AnySettings = {}) {
     props: { settings },
     global: {
       provide: {
-        api: {
+        [apiKey]: {
           getAgentNotifyHookStatus: async () => ({}),
           getAgentNotifyHookMetrics: async () => null,
         },
@@ -166,7 +167,7 @@ async function mountWithTransport(settings: AnySettings, isRemote: boolean) {
     props: { settings },
     global: {
       provide: {
-        api: {
+        [apiKey]: {
           isRemote,
           getAgentNotifyHookStatus: async () => ({}),
           getAgentNotifyHookMetrics: async () => null,

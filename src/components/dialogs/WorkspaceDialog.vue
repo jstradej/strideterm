@@ -300,6 +300,7 @@
 
 <script setup lang="ts">
 import { reactive, computed, inject, ref, watch, onMounted, useAttrs } from "vue";
+import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import { cloneWorkspace, createEmptyWorkspace } from "../../workspace-state.js";
 import { APP_CONFIG } from "../../../config/app-config.js";
@@ -394,7 +395,7 @@ const emit = defineEmits<{
 }>();
 const attrs = useAttrs();
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 
 const cwdPlaceholder = APP_CONFIG.ui.defaultProjectCwdPlaceholder;
 

@@ -205,6 +205,7 @@
 
 <script setup lang="ts">
 import { ref, computed, inject, onMounted, nextTick, useAttrs } from "vue";
+import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 
 defineOptions({ inheritAttrs: false });
@@ -246,7 +247,7 @@ const emit = defineEmits<{
 }>();
 const attrs = useAttrs();
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 
 const isAzure = computed(() => props.provider === "azure");
 const providerLabel = computed(() => (isAzure.value ? "Azure DevOps" : "GitHub"));

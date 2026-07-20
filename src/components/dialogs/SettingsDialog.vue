@@ -79,6 +79,7 @@
 
 <script setup lang="ts">
 import { computed, inject, provide, reactive, ref, toRaw } from "vue";
+import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import SettingsAboutTab from "./settings/SettingsAboutTab.vue";
 import SettingsGeneralTab from "./settings/SettingsGeneralTab.vue";
@@ -195,7 +196,7 @@ const emit = defineEmits<{
   save: [settings: unknown];
 }>();
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 const hookSettings = reactive(useAgentHookSettings(api));
 
 const activeTab = ref(props.initialTab || "general");

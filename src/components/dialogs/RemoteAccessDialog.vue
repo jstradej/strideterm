@@ -267,6 +267,7 @@
 
 <script setup lang="ts">
 import { ref, computed, inject } from "vue";
+import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useRemoteConnection } from "../../composables/useRemoteConnection.js";
 import { useQrCode } from "../../composables/useQrCode.js";
@@ -275,7 +276,7 @@ import { pickPath } from "../../lib/pick-path.js";
 
 const emit = defineEmits<{ close: [] }>();
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 const store = useAppStore();
 const isRemote = api?.isRemote || false;
 

@@ -154,13 +154,14 @@
 
 <script setup lang="ts">
 import { computed, inject, nextTick, ref, watch } from "vue";
+import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { readMobileInputBarCollapsed, writeMobileInputBarCollapsed } from "../../app/helpers.js";
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 const store = useAppStore();
 const termStore = useTerminalStore();
 const notifications = useNotificationStore();

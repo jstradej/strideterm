@@ -188,6 +188,7 @@
 
 <script setup lang="ts">
 import { ref, computed, inject, watch, onUnmounted } from "vue";
+import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useTaskFiles } from "../../composables/useTaskFiles.js";
 import TaskDashboardHelpTab from "./TaskDashboardHelpTab.vue";
@@ -202,7 +203,7 @@ withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean; compact?: 
 
 const store = useAppStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api");
+const api = inject<any>(apiKey);
 const activeTab = ref<string>("status");
 const statusTabRef = ref<InstanceType<typeof TaskDashboardStatusTab> | null>(null);
 

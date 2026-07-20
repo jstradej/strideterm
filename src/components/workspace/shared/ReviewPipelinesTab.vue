@@ -119,6 +119,7 @@
 
 <script setup lang="ts">
 import { ref, inject, watch, computed, onUnmounted } from "vue";
+import { apiKey } from "../../../types/keys.js";
 import { formatRelative, formatFull, formatDuration } from "../azure/azurePipelineFormat.js";
 
 interface ChecksData {
@@ -143,7 +144,7 @@ const props = withDefaults(
 const emit = defineEmits<{ (e: "refresh"): void }>();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api", null);
+const api = inject<any>(apiKey, null);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const expandedId = ref<any>(null);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

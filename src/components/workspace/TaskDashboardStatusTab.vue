@@ -277,6 +277,7 @@
 
 <script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
+import { apiKey } from "../../types/keys.js";
 import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
 import { useTaskLog, formatTime } from "../../composables/useTaskLog.js";
 import { eventLabel, eventCategory } from "../../lib/task-log-labels.js";
@@ -338,7 +339,7 @@ function onStartNew() {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api");
+const api = inject<any>(apiKey);
 const selectedRound = ref<number | null>(null);
 
 // ── Rounds ────────────────────────────────────────────────────────

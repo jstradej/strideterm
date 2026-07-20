@@ -2,6 +2,7 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import SettingsTelegramTab from "./SettingsTelegramTab.vue";
+import { apiKey } from "../../../types/keys.js";
 
 describe("SettingsTelegramTab", () => {
   beforeEach(() => {
@@ -47,7 +48,7 @@ describe("SettingsTelegramTab", () => {
       },
       global: {
         provide: {
-          api: {
+          [apiKey]: {
             saveTelegramConnection,
             refreshTelegram: vi.fn(),
           },
@@ -82,7 +83,7 @@ describe("SettingsTelegramTab", () => {
       },
       global: {
         provide: {
-          api: { saveTelegramConnection: vi.fn(), refreshTelegram: vi.fn() },
+          [apiKey]: { saveTelegramConnection: vi.fn(), refreshTelegram: vi.fn() },
         },
       },
     });

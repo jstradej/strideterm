@@ -32,13 +32,14 @@
 
 <script setup lang="ts">
 import { ref, inject } from "vue";
+import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 
 defineProps<{
   message: string;
 }>();
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 const isRemote = api?.isRemote || false;
 const tokenInput = ref(api?.getRemoteToken?.() || "");
 

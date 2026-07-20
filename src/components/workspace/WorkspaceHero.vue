@@ -99,13 +99,14 @@
 
 <script setup lang="ts">
 import { computed, inject, ref } from "vue";
+import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention } from "../../app/helpers.js";
 import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
 import NotificationBell from "../layout/NotificationBell.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api");
+const api = inject<any>(apiKey);
 const store = useAppStore();
 
 const pathCopied = ref(false);

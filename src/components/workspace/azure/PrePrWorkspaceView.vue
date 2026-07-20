@@ -139,6 +139,7 @@
 
 <script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
+import { apiKey } from "../../../types/keys.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import GitCommitLog from "../git/GitCommitLog.vue";
@@ -150,7 +151,7 @@ const appStore = useAppStore();
 const notifications = useNotificationStore();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api");
+const api = inject<any>(apiKey);
 
 const workspace = computed(() =>
   (appStore.payload?.appState?.workspaces || []).find((ws) => ws.id === props.workspaceId),

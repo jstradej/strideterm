@@ -9,6 +9,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import ConnectionDialog from "./ConnectionDialog.vue";
+import { apiKey } from "../../types/keys.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 
 beforeEach(() => {
@@ -22,7 +23,7 @@ describe("ConnectionDialog — browseReviewRoot", () => {
       const browseDirectory = vi.fn().mockRejectedValueOnce(new Error("picker crashed"));
       const wrapper = mount(ConnectionDialog, {
         props: { provider },
-        global: { provide: { api: { browseDirectory } } },
+        global: { provide: { [apiKey]: { browseDirectory } } },
       });
 
       const browseBtn = wrapper.findAll("button").find((b) => b.text() === "Browse")!;
@@ -56,7 +57,7 @@ describe("ConnectionDialog — provider defaults to azure", () => {
   test("Test connection calls verifyAzureConnection and renders the project-chip verification panel", async () => {
     const verifyAzureConnection = vi.fn().mockResolvedValue({ projectCount: 2, projects: [{ name: "Alpha" }] });
     const wrapper = mount(ConnectionDialog, {
-      global: { provide: { api: { verifyAzureConnection } } },
+      global: { provide: { [apiKey]: { verifyAzureConnection } } },
     });
 
     await wrapper.find('input[placeholder="https://dev.azure.com/your-org"]').setValue("https://dev.azure.com/org");
@@ -129,7 +130,7 @@ describe("ConnectionDialog — provider=github", () => {
 
   test("shows GitHub-only reviewer-count-style inline reviewer badges are not applicable here — verification panel renders an identity sentence instead", async () => {
     const verifyGitHubConnection = vi.fn().mockResolvedValue({ login: "octocat", name: "The Octocat" });
-    const wrapper = mountGitHub({}, { api: { verifyGitHubConnection } });
+    const wrapper = mountGitHub({}, { [apiKey]: { verifyGitHubConnection } });
 
     await wrapper
       .findAll("button")

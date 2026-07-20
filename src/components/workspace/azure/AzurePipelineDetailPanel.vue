@@ -161,6 +161,7 @@
 
 <script setup lang="ts">
 import { computed, inject, ref, watch } from "vue";
+import { apiKey } from "../../../types/keys.js";
 import { useAzurePipelinesStore } from "../../../stores/azure-pipelines.js";
 import {
   statusVisual,
@@ -188,7 +189,7 @@ defineEmits<{
 }>();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api", null);
+const api = inject<any>(apiKey, null);
 const store = useAzurePipelinesStore();
 
 /** Per-run inline detail open state, keyed by run id (string). */

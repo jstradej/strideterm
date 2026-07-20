@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import WorkspaceDialog from "./WorkspaceDialog.vue";
+import { apiKey } from "../../types/keys.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { BADGE_ICONS } from "../../lib/badge-icons.js";
 
@@ -49,7 +50,7 @@ function mountDialog(props = {}) {
       ...props,
     },
     global: {
-      provide: { api: {} },
+      provide: { [apiKey]: {} },
     },
   });
 }
@@ -212,7 +213,7 @@ describe("WorkspaceDialog", () => {
       // No API provided — cwdProbeResult stays null, section should not appear
       const wrapper = mount(WorkspaceDialog, {
         props: { onCancel: vi.fn(), onSubmit: vi.fn(), workspace: buildProjectDraft({ cwd: "" }) },
-        global: { provide: { api: {} } },
+        global: { provide: { [apiKey]: {} } },
       });
       expect(wrapper.find(".multi-repo-section").exists()).toBe(false);
     });
@@ -231,7 +232,7 @@ describe("WorkspaceDialog", () => {
           workspace: buildTaskDraft({ cwd: "" }),
           creating: true,
         },
-        global: { provide: { api: { probeDirectory, checkIsGitRepo } } },
+        global: { provide: { [apiKey]: { probeDirectory, checkIsGitRepo } } },
       });
       // Trigger the cwd watcher — set a value so the debounced probe fires
       await wrapper.find('input[name="cwd"]').setValue("/tmp/monorepo");
@@ -255,7 +256,7 @@ describe("WorkspaceDialog", () => {
           onSubmit: vi.fn(),
           workspace: buildProjectDraft({ cwd: "" }),
         },
-        global: { provide: { api: { probeDirectory, checkIsGitRepo } } },
+        global: { provide: { [apiKey]: { probeDirectory, checkIsGitRepo } } },
       });
       await wrapper.find('input[name="cwd"]').setValue("/tmp/monorepo");
       await new Promise((r) => setTimeout(r, 400));
@@ -276,7 +277,7 @@ describe("WorkspaceDialog", () => {
           onSubmit: vi.fn(),
           workspace: buildProjectDraft({ cwd: "" }),
         },
-        global: { provide: { api: { probeDirectory, checkIsGitRepo } } },
+        global: { provide: { [apiKey]: { probeDirectory, checkIsGitRepo } } },
       });
       await wrapper.find('input[name="cwd"]').setValue("/tmp/monorepo");
       await new Promise((r) => setTimeout(r, 400));
@@ -301,7 +302,7 @@ describe("WorkspaceDialog", () => {
           onSubmit: vi.fn(),
           workspace: buildProjectDraft({ cwd: "" }),
         },
-        global: { provide: { api: { probeDirectory, checkIsGitRepo } } },
+        global: { provide: { [apiKey]: { probeDirectory, checkIsGitRepo } } },
       });
       await wrapper.find('input[name="cwd"]').setValue("/tmp/monorepo");
       await new Promise((r) => setTimeout(r, 400));
@@ -331,7 +332,7 @@ describe("WorkspaceDialog", () => {
           onSubmit: vi.fn(),
           workspace: buildProjectDraft({ cwd: "" }),
         },
-        global: { provide: { api: { probeDirectory, checkIsGitRepo } } },
+        global: { provide: { [apiKey]: { probeDirectory, checkIsGitRepo } } },
       });
       await wrapper.find('input[name="cwd"]').setValue("/tmp/monorepo");
       await new Promise((r) => setTimeout(r, 400));
@@ -356,7 +357,7 @@ describe("WorkspaceDialog", () => {
       // gitRoots.length >= 2. Without seeding the store the section is absent — confirm absence here.
       const wrapper = mount(WorkspaceDialog, {
         props: { onCancel: vi.fn(), onSubmit: vi.fn(), workspace: draft, creating: true },
-        global: { provide: { api: {} } },
+        global: { provide: { [apiKey]: {} } },
       });
       // Without a seeded store the parent lookup returns null → parentIsMultiRepo = false
       // so the select should NOT be present (guard test).
@@ -369,7 +370,7 @@ describe("WorkspaceDialog", () => {
       const browseDirectory = vi.fn().mockRejectedValueOnce(new Error("dialog picker crashed"));
       const wrapper = mount(WorkspaceDialog, {
         props: { onCancel: vi.fn(), onSubmit: vi.fn(), workspace: buildTaskDraft() },
-        global: { provide: { api: { browseDirectory } } },
+        global: { provide: { [apiKey]: { browseDirectory } } },
       });
 
       const browseBtn = wrapper.findAll("button").find((b) => b.text() === "Browse")!;
@@ -385,7 +386,6 @@ describe("WorkspaceDialog", () => {
 
   describe("checkProviders — a rejected background refresh logs a warning instead of failing silently", () => {
     test("a rejecting checkProviders logs via rlog instead of swallowing the error", async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const logRenderer = vi.fn();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).strideterm = { logRenderer };
@@ -393,7 +393,7 @@ describe("WorkspaceDialog", () => {
 
       mount(WorkspaceDialog, {
         props: { onCancel: vi.fn(), onSubmit: vi.fn(), workspace: buildTaskDraft() },
-        global: { provide: { api: { checkProviders } } },
+        global: { provide: { [apiKey]: { checkProviders } } },
       });
       await flushPromises();
 

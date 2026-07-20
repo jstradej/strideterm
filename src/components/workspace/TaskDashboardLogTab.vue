@@ -54,6 +54,7 @@
 
 <script setup lang="ts">
 import { inject, ref } from "vue";
+import { apiKey } from "../../types/keys.js";
 import { useTaskLog, formatTime } from "../../composables/useTaskLog.js";
 import { eventLabel, eventCategory } from "../../lib/task-log-labels.js";
 import { downloadTextFile } from "../../app/helpers.js";
@@ -69,7 +70,7 @@ const props = withDefaults(
 );
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api = inject<any>("api");
+const api = inject<any>(apiKey);
 const copyFeedback = ref<string>("");
 
 // ── Event log from TASK_LOG.jsonl ─────────────────────────────────

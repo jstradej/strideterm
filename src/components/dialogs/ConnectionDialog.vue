@@ -227,6 +227,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, inject, onMounted, useAttrs } from "vue";
+import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import { useConnectionDialogForm } from "../../composables/useConnectionDialogForm.js";
 
@@ -272,7 +273,7 @@ const attrs = useAttrs();
 
 const isGitHub = computed(() => props.provider === "github");
 
-const api = inject<Transport>("api");
+const api = inject<Transport>(apiKey);
 const labelRef = ref<HTMLInputElement | null>(null);
 
 const draft = reactive({
