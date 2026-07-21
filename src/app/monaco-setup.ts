@@ -13,11 +13,15 @@
 // Vite emits each as a separate chunk; they're loaded lazily on first use of
 // the matching language, so unused workers cost nothing at runtime.
 
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
-import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+// monaco-editor 0.56 reworked its "exports" map so that the "./*" subpath
+// pattern maps to "./esm/vs/*.js" — i.e. the "esm/vs/" prefix (and ".js") are
+// injected by the package itself. The old "monaco-editor/esm/vs/..." specifiers
+// now double up to "esm/vs/esm/vs/..." and fail to resolve, so drop the prefix.
+import EditorWorker from "monaco-editor/editor/editor.worker?worker";
+import JsonWorker from "monaco-editor/language/json/json.worker?worker";
+import CssWorker from "monaco-editor/language/css/css.worker?worker";
+import HtmlWorker from "monaco-editor/language/html/html.worker?worker";
+import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 
 if (typeof self !== "undefined" && !self.MonacoEnvironment) {
   self.MonacoEnvironment = {
