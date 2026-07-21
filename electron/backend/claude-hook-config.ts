@@ -22,18 +22,21 @@ const log = getLogger("claude-hook");
  * Provides configure/remove/detect operations that safely merge with
  * existing user settings without overwriting other hooks or config.
  *
- * Registers four hook types against the same notify.mjs script:
+ * Registers five hook types against the same notify.mjs script:
  * - Notification   — idle_prompt / permission_prompt / elicitation / auth
  * - Stop           — end of each assistant turn
  * - SubagentStop   — sub-agent completion
  * - UserPromptSubmit — user submitted a new prompt (resets idle state)
+ * - PreToolUse     — a subagent was launched (matcher-scoped to the Agent/Task
+ *                    tool) so the tab/dot can show "running" while background
+ *                    agents work after the turn's Stop
  *
  * The script receives the hook name as argv[2] and POSTs it to notify-server.js
  * in the body as the `hook` field; dispatcher.js routes from there.
  */
 
 // Hook types to register. Order matters only for log readability.
-export const HOOKS_TO_REGISTER = ["Notification", "Stop", "SubagentStop", "UserPromptSubmit"];
+export const HOOKS_TO_REGISTER = ["Notification", "Stop", "SubagentStop", "UserPromptSubmit", "PreToolUse"];
 // Registration key === canonical hook name for Claude (no aliasing needed).
 const CLAUDE_EVENT_MAP: Record<string, string> = Object.fromEntries(HOOKS_TO_REGISTER.map((h) => [h, h]));
 
@@ -197,6 +200,18 @@ function getClaudeSettingsPath(): string {
   return path.join(os.homedir(), ".claude", "settings.json");
 }
 
+// PreToolUse fires on EVERY tool call, so it must be matcher-scoped to the
+// subagent-launching tool — otherwise every Read/Edit/Bash would spawn notify.mjs
+// and POST. The tool is "Agent" in current Claude Code and "Task" in older
+// builds; "Agent|Task" is an exact-match list (Claude treats a matcher of only
+// [A-Za-z0-9_|-] as exact strings, not a regex). Every other hook keeps the
+// shared empty-matcher entry (fires unconditionally).
+function buildClaudeHookEntry(notifyScriptPath: string, canonicalName: string) {
+  const entry = buildNestedCommandEntry(notifyScriptPath, canonicalName) as { matcher: string; hooks: unknown[] };
+  if (canonicalName === "PreToolUse") entry.matcher = "Agent|Task";
+  return entry;
+}
+
 /**
  * Ensures the notify.mjs hook script exists at ~/.strideterm/hooks/notify.mjs.
  * Overwrites on every startup to keep it up to date.
@@ -258,7 +273,7 @@ export async function configureClaudeHook(userDataPath: string): Promise<{
   const settingsPath = getClaudeSettingsPath();
   const result = await configureHookEntries(settingsPath, CLAUDE_EVENT_MAP, scriptResult.path, {
     hookMarkers: HOOK_MARKERS,
-    buildEntry: buildNestedCommandEntry,
+    buildEntry: buildClaudeHookEntry,
     matchesEntry: matchesNestedCommandEntry,
     readFailedDetail: "settings-read-failed",
     writeFailedDetail: "settings-write-failed",

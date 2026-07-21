@@ -1095,7 +1095,11 @@ export async function createRuntime({
     });
 
     // --- 4. Side-effects for system-only events (applied regardless of gating) ---
-    applyHookSideEffects(signal, hook, subtype);
+    // Task workspaces run their own state machine (taskState) and are excluded
+    // from the agent-activity dot, so the subagent counter must not touch them —
+    // they also consume SubagentStop before this point, which would strand the
+    // count. Interactive (non-task) agent sessions get the full treatment.
+    applyHookSideEffects(signal, hook, subtype, event?.payload, project?.kind === "task");
 
     if (!classification.userFacing) {
       log.trace("hook system-only — no user alert", { sessionId, hook, subtype });
@@ -1198,9 +1202,19 @@ export async function createRuntime({
   /**
    * Side-effects applied to a session signal based on hook type.
    * Runs whether the event is user-facing or system-only.
+   *
+   * `isTaskWorkspace` gates the subagent-activity counter off for task
+   * workspaces (they have their own state machine and consume SubagentStop
+   * upstream, which would otherwise leave the count stranded).
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function applyHookSideEffects(signal: any, hook: string, subtype: string) {
+  function applyHookSideEffects(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    signal: any,
+    hook: string,
+    subtype: string,
+    payload?: Record<string, unknown>,
+    isTaskWorkspace = false,
+  ) {
     if (!signal) return;
     if (hook === "UserPromptSubmit") {
       // User started new work — prior idle state is stale.
@@ -1211,12 +1225,47 @@ export async function createRuntime({
       signal.busy = false;
       signal.outputBursts = 0;
       signal.waitingRaised = false;
+      // Fresh turn. Drop any leftover subagent count so a SubagentStop that
+      // never arrived (crashed agent, dropped hook) can't strand the session
+      // in "running" forever — the new turn re-counts its own subagents.
+      signal.turnActive = true;
+      signal.activeSubagents = 0;
       cancelPromptTimer(signal);
       setSessionActivity(signal, "running");
       log.trace("UserPromptSubmit: reset busy/waitingRaised", { sessionId: signal.sessionId });
     } else if (hook === "Stop") {
-      // Agent finished its turn — flash a "done" chip then fade to idle.
-      setSessionActivity(signal, "done", { exitCode: 0 });
+      // Agent finished its turn. But a BACKGROUND subagent launched this turn
+      // keeps working after Stop (Claude sits at its prompt "waiting for N
+      // background agents") — keep the "running" chip/dot until the last
+      // SubagentStop instead of flashing "done" while work is still happening.
+      signal.turnActive = false;
+      if (!isTaskWorkspace && signal.activeSubagents > 0) {
+        setSessionActivity(signal, "running");
+      } else {
+        setSessionActivity(signal, "done", { exitCode: 0 });
+      }
+    } else if (!isTaskWorkspace && hook === "PreToolUse") {
+      // Our PreToolUse hook is registered with a matcher scoped to the
+      // subagent-launching tool ("Agent" in current Claude Code, "Task" in
+      // older builds), so any PreToolUse reaching us is a subagent start. The
+      // tool_name check is defensive for the case a broader matcher is ever
+      // installed. Reflects the subagent as "running" — including background
+      // agents that outlive the turn's Stop (handled above).
+      const toolName = typeof payload?.tool_name === "string" ? payload.tool_name : "";
+      if (!toolName || toolName === "Agent" || toolName === "Task") {
+        signal.activeSubagents = (signal.activeSubagents || 0) + 1;
+        setSessionActivity(signal, "running");
+      }
+    } else if (!isTaskWorkspace && hook === "SubagentStop") {
+      // A subagent finished. When the last one ends AND the turn is already
+      // over, flash "done"; if the turn is still active, leave the chip as the
+      // turn's own "running" — a mid-turn subagent finishing is not a turn
+      // boundary (preserves the "SubagentStop does not mark the main agent
+      // session done" behavior).
+      signal.activeSubagents = Math.max(0, (signal.activeSubagents || 0) - 1);
+      if (signal.activeSubagents === 0 && !signal.turnActive) {
+        setSessionActivity(signal, "done", { exitCode: 0 });
+      }
     }
     // Notification is informational only — leave chip state untouched; it
     // typically means "waiting for input" mid-turn, not a turn boundary.

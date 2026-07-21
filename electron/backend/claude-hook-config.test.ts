@@ -197,8 +197,11 @@ describe("configureClaudeHook", () => {
     expect(settings.model).toBe("claude-sonnet-4-6");
     expect(settings.customSetting).toBe(true);
 
-    // Existing hooks preserved
-    expect(settings.hooks.PreToolUse).toHaveLength(1);
+    // Existing hooks preserved; strIDEterm's own PreToolUse entry is appended.
+    expect(settings.hooks.PreToolUse).toHaveLength(2); // existing Bash + strIDEterm's Agent/Task
+    expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe("echo pre");
+    expect(settings.hooks.PreToolUse[1].hooks[0].command).toContain("notify.mjs");
+    expect(settings.hooks.PreToolUse[1].matcher).toBe("Agent|Task");
     expect(settings.hooks.Notification).toHaveLength(2); // existing + new
 
     // Existing notification hook still there
@@ -254,7 +257,7 @@ describe("configureClaudeHook", () => {
     expect(command).toContain("/");
   });
 
-  test("registers all four hook types (Notification, Stop, SubagentStop, UserPromptSubmit)", async () => {
+  test("registers all hook types (Notification, Stop, SubagentStop, UserPromptSubmit, PreToolUse)", async () => {
     const userDataPath = path.join(tempDir, "strideterm-data");
     await fs.mkdir(userDataPath, { recursive: true });
 
@@ -269,6 +272,12 @@ describe("configureClaudeHook", () => {
       // Hook name is passed as argv so the same script handles all types
       expect(settings.hooks[hookName][0].hooks[0].command).toContain(hookName);
     }
+
+    // PreToolUse is matcher-scoped to the subagent-launching tool so it does
+    // not fire on every Read/Edit/Bash; all others fire unconditionally.
+    expect(settings.hooks.PreToolUse[0].matcher).toBe("Agent|Task");
+    expect(settings.hooks.Notification[0].matcher).toBe("");
+    expect(settings.hooks.SubagentStop[0].matcher).toBe("");
   });
 
   test("hook command includes hook name as argv[2]", async () => {
@@ -524,7 +533,7 @@ describe("detectClaudeHookStatus", () => {
     expect(result.missingHooks).toEqual(expect.arrayContaining(["Stop", "SubagentStop", "UserPromptSubmit"]));
   });
 
-  test('returns "configured" when all four hooks are registered', async () => {
+  test('returns "configured" when all hooks are registered', async () => {
     const userDataPath = path.join(tempDir, "strideterm-data");
     await fs.mkdir(userDataPath, { recursive: true });
 

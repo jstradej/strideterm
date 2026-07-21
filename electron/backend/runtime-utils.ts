@@ -395,6 +395,8 @@ export function createSessionSignal(sessionId: string): {
   activity: string;
   lastExitCode: number | null;
   lastCommandFinishedAt: number;
+  activeSubagents: number;
+  turnActive: boolean;
 } {
   return {
     sessionId,
@@ -445,6 +447,13 @@ export function createSessionSignal(sessionId: string): {
     activity: "idle",
     lastExitCode: null,
     lastCommandFinishedAt: 0,
+    // Number of agent subagents (Claude "Agent"/"Task" tool) currently running,
+    // counted up on PreToolUse(Agent) and down on SubagentStop. Keeps the chip
+    // "running" while BACKGROUND agents keep working after the turn's Stop.
+    activeSubagents: 0,
+    // Whether the agent is mid-turn (UserPromptSubmit seen, Stop not yet). Lets
+    // a subagent finishing mid-turn avoid flashing a premature "done".
+    turnActive: false,
   };
 }
 

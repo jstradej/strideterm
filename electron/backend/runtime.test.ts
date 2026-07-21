@@ -1805,6 +1805,90 @@ describe("runtime integration", () => {
     });
   });
 
+  test("PreToolUse(Agent) keeps the session running while a background subagent outlives Stop", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "backend",
+          projects: [
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude", command: "claude", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      // A subagent is launched (PreToolUse scoped to the Agent tool), then the
+      // main turn ends (Stop) while the background agent is still running.
+      fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+      fixture.runtime.notifyAgentHook("backend:claude", "", "PreToolUse");
+      fixture.runtime.notifyAgentHook("backend:claude", "", "Stop");
+
+      // Stop would normally flash "done", but background work continues — the
+      // chip/dot must stay "running" (this is the reported bug).
+      expect(fixture.runtime.getPayload().attention.sessions["backend:claude"]).toMatchObject({
+        activity: "running",
+      });
+
+      // The background subagent finishes — now the turn is genuinely idle.
+      fixture.runtime.notifyAgentHook("backend:claude", "", "SubagentStop");
+      expect(fixture.runtime.getPayload().attention.sessions["backend:claude"]).toMatchObject({
+        activity: "done",
+      });
+
+      // ...and fades back to idle after the chip-fade window.
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(fixture.runtime.getPayload().attention.sessions["backend:claude"]).toMatchObject({
+        activity: "idle",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a subagent finishing mid-turn does not flash a premature done", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "backend",
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "claude",
+            panels: [{ id: "claude", title: "Claude", command: "claude", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Synchronous subagent: launched and finished while the turn is still open.
+    fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+    fixture.runtime.notifyAgentHook("backend:claude", "", "PreToolUse");
+    fixture.runtime.notifyAgentHook("backend:claude", "", "SubagentStop");
+
+    // The turn hasn't ended (no Stop yet), so the chip stays "running" — a
+    // mid-turn subagent finishing is not a turn boundary.
+    expect(fixture.runtime.getPayload().attention.sessions["backend:claude"]).toMatchObject({
+      activity: "running",
+    });
+
+    // The turn actually ends now, with no subagents left — "done".
+    fixture.runtime.notifyAgentHook("backend:claude", "", "Stop");
+    expect(fixture.runtime.getPayload().attention.sessions["backend:claude"]).toMatchObject({
+      activity: "done",
+    });
+  });
+
   test("SubagentStop does not raise a user alert by default (only the turn-end Stop does)", async () => {
     vi.useFakeTimers();
     try {

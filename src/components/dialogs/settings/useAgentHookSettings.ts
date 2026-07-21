@@ -224,7 +224,7 @@ export function useAgentHookSettings(api: any) {
       testMethod: "testClaudeHook",
       configureLabel: "Configure Claude Code",
       configureTitle:
-        "Install strIDEterm hook entries into ~/.claude/settings.json so Claude Code fires Notification/Stop/SubagentStop/UserPromptSubmit events to the local listener. Merges with existing user hooks.",
+        "Install strIDEterm hook entries into ~/.claude/settings.json so Claude Code fires Notification/Stop/SubagentStop/UserPromptSubmit events (plus a Task/Agent-scoped PreToolUse so subagents show as running) to the local listener. Merges with existing user hooks.",
       removeTitle: "Remove only strIDEterm's hook entries from ~/.claude/settings.json. Your own hooks stay intact.",
       testTitle:
         "End-to-end probe: spawns notify.mjs with a synthetic payload and measures round-trip latency to confirm the full pipeline (hook → HTTP listener → dispatcher) is live.",
