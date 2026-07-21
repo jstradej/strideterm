@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import vue from "@vitejs/plugin-vue";
 import { APP_CONFIG } from "./config/app-config.js";
@@ -10,7 +10,10 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 // Resolve where node_modules actually lives — in worktrees it's typically
 // shared from the parent repo, outside Vite's default fs.allow scope.
 const require = createRequire(import.meta.url);
-const sharedNodeModules = resolve(dirname(require.resolve("monaco-editor/package.json")), "..");
+// monaco-editor stopped exposing ./package.json via its "exports" map (0.56+),
+// so resolve its entry point and walk back to the enclosing node_modules dir.
+const monacoPathParts = require.resolve("monaco-editor").split(sep);
+const sharedNodeModules = monacoPathParts.slice(0, monacoPathParts.lastIndexOf("node_modules") + 1).join(sep);
 
 export default defineConfig({
   plugins: [vue()],

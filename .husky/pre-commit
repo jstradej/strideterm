@@ -4,6 +4,6 @@ npx lint-staged
 if git diff --cached --name-only | grep -q "package-lock.json"; then
   echo "package-lock.json changed — running security checks..."
   npm audit --audit-level=high
-  npx tsx scripts/check-package-age.mts --allow=follow-redirects@1.16.0,electron@42.0.0,tmp@0.2.6
+  npx tsx scripts/check-package-age.mts --allow=follow-redirects@1.16.0,electron@42.0.0,tmp@0.2.6,eslint-plugin-vue@10.10.0,monaco-editor@0.56.0
   npm audit signatures || echo "Warning: signature verification failed (non-blocking)"
 fi
