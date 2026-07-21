@@ -292,6 +292,13 @@ const menuKeys: AccessoryKey[] = [
     title: "Send Ctrl+C — interrupt the running command or cancel the current input line.",
   },
   {
+    label: "^U",
+    menuLabel: "^U  Ctrl+U  (clear line)",
+    seq: "\x15",
+    flushDraft: false,
+    title: "Send Ctrl+U — clear the current input line (deletes from the cursor back to the start).",
+  },
+  {
     label: "^R",
     menuLabel: "⌕  Ctrl+R  (history search)",
     seq: "\x12",
