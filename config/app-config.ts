@@ -20,8 +20,6 @@ function envBoolean(name: string, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-const isWindows = typeof process !== "undefined" && process.platform === "win32";
-
 export const APP_CONFIG = {
   renderer: {
     devHost: envString("STRIDETERM_RENDERER_HOST", "127.0.0.1"),
@@ -97,12 +95,16 @@ export const APP_CONFIG = {
     posixShellArgs: Object.freeze(["-l"] as const),
   },
   terminal: {
-    // Windows GPU drivers have produced native Electron access violations
-    // while disposing xterm's WebGL renderer during rapid workspace deletion.
-    // Keep the safer DOM renderer by default on Windows; users can opt back
-    // in with STRIDETERM_DISABLE_WEBGL=0. Other platforms keep WebGL enabled
-    // unless the env var or --no-webgl disables it.
-    disableWebgl: envBoolean("STRIDETERM_DISABLE_WEBGL", isWindows),
+    // WebGL terminal renderer, enabled by default on every platform. It offloads
+    // glyph rendering to the GPU; the DOM-renderer fallback runs on the renderer's
+    // main thread and its per-row cost scales with live terminals — long-running /
+    // many concurrent agents can saturate a core and jank the whole UI. The real
+    // xterm WebglAddon activation is the capability check and falls back to DOM
+    // when it fails; remote/mobile clients skip WebGL separately (isRemote guard).
+    // Opt out with STRIDETERM_DISABLE_WEBGL=1 / --no-webgl.
+    // The historical Windows access violation on rapid workspace deletion is
+    // mitigated by disposing the addon in a controlled order (see pruneTerminalViews).
+    disableWebgl: envBoolean("STRIDETERM_DISABLE_WEBGL", false),
   },
   ssh: {
     defaultKeepaliveMs: envNumber("STRIDETERM_SSH_KEEPALIVE_MS", 30000),
