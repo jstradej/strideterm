@@ -319,6 +319,31 @@ export function writeSidebarWidth(value: number): void {
   }
 }
 
+/**
+ * Performance panel refresh interval (ms). Panel-local like the dock width —
+ * it is a per-client UI preference, deliberately NOT part of authoritative
+ * runtime state or the settings store (the diagnostics feature never touches
+ * persisted state or state broadcasts). Clamped to a sane polling range.
+ */
+export function readPerfRefreshInterval(): number {
+  try {
+    const raw = window.localStorage.getItem("strideterm-perf-refresh-ms");
+    if (!raw) return 2000;
+    const value = Number.parseInt(raw, 10);
+    return Number.isFinite(value) && value >= 1000 && value <= 30000 ? value : 2000;
+  } catch {
+    return 2000;
+  }
+}
+
+export function writePerfRefreshInterval(value: number): void {
+  try {
+    window.localStorage.setItem("strideterm-perf-refresh-ms", String(value));
+  } catch {
+    // Ignore localStorage failures in restricted browser contexts.
+  }
+}
+
 export function readNotificationDockWidth(): number | null {
   try {
     const raw = window.localStorage.getItem("strideterm-notif-dock-width");

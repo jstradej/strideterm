@@ -275,6 +275,15 @@
   padding: 0;
 }
 
+/* The Performance panel manages its own internal scroll + layout, so this body
+   only provides the flex slot and clips (no nested scrollbars). */
+.notification-center__body--perf {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .notification-center__empty {
   padding: 40px 20px;
   text-align: center;
