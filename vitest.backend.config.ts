@@ -11,6 +11,10 @@ export default defineConfig({
       // a separate vitest config for a handful of pure-function tests.
       "electron/shared/**/*.test.js",
       "electron/shared/**/*.test.ts",
+      // Electron-adapter modules that sit beside main.ts (e.g. the
+      // performance-metrics sampler). Pure, node-env-friendly logic.
+      "electron/*.test.js",
+      "electron/*.test.ts",
     ],
     // Windows CI runners hit the default 5000ms ceiling on a few runtime
     // tests that exercise the full createRuntime → stop lifecycle (e.g.
