@@ -36,6 +36,37 @@ export interface TerminalView {
   webglAttachPending: boolean;
   webglContextLosses: number;
   webglRetryTimer: number | null;
+  /** Disposer for the (always-registered, gated) diagnostics onRender hook. */
+  diagRenderDisposer: { dispose(): void } | null;
+}
+
+/**
+ * Renderer-local terminal diagnostics. Never crosses IPC or the remote
+ * WebSocket and never enters Pinia server state — the Performance panel holds
+ * the history itself. Delta fields (`data*`, `render*`, `resize*`,
+ * `fullRefreshes`, `webgl*Failures`/`Losses`/`Fallbacks`) accumulate since the
+ * previous snapshot and reset on read; instantaneous fields (`liveViews`,
+ * `webglRenderers`, `domRenderers`) reflect the current view set.
+ */
+export interface TerminalDiagnosticsSnapshot {
+  enabled: boolean;
+  sampledAt: number;
+  /** ms since the counters were last reset (enable or previous snapshot). */
+  intervalMs: number | null;
+  dataChunks: number;
+  dataBytes: number;
+  renderEvents: number;
+  renderedRows: number;
+  resizeCallbacks: number;
+  resizeChanges: number;
+  fullRefreshes: number;
+  webglAttachFailures: number;
+  webglContextLosses: number;
+  webglFallbacks: number;
+  liveViews: number;
+  webglRenderers: number;
+  domRenderers: number;
+  topSessions: Array<{ sessionId: string; dataChunks: number; dataBytes: number; renderEvents: number }>;
 }
 
 type LogLevel = "info" | "warn" | "error" | "debug";
@@ -258,6 +289,110 @@ export function createTerminalController({
   // transport; on Electron no replay arrives so the guard never engages.
   const throughSeqBySession = new Map<string, number>();
 
+  // --- Performance diagnostics (gated; off unless the Performance panel is
+  // open) --------------------------------------------------------------------
+  // When disabled the only hot-path cost is a single boolean check with zero
+  // allocation. Counters are interval deltas: getDiagnosticsSnapshot() returns
+  // the accumulated values and resets them so the next interval starts clean.
+  let diagnosticsEnabled = false;
+  interface SessionCounter {
+    dataChunks: number;
+    dataBytes: number;
+    renderEvents: number;
+  }
+  const diag = {
+    intervalStart: 0,
+    dataChunks: 0,
+    dataBytes: 0,
+    renderEvents: 0,
+    renderedRows: 0,
+    resizeCallbacks: 0,
+    resizeChanges: 0,
+    fullRefreshes: 0,
+    webglAttachFailures: 0,
+    webglContextLosses: 0,
+    webglFallbacks: 0,
+    perSession: new Map<string, SessionCounter>(),
+  };
+
+  function resetDiagnosticsInterval(now: number): void {
+    diag.intervalStart = now;
+    diag.dataChunks = 0;
+    diag.dataBytes = 0;
+    diag.renderEvents = 0;
+    diag.renderedRows = 0;
+    diag.resizeCallbacks = 0;
+    diag.resizeChanges = 0;
+    diag.fullRefreshes = 0;
+    diag.webglAttachFailures = 0;
+    diag.webglContextLosses = 0;
+    diag.webglFallbacks = 0;
+    diag.perSession.clear();
+  }
+
+  /** Get-or-create the per-session counter. Only ever called behind the
+   *  `diagnosticsEnabled` gate, so the small object alloc happens at most once
+   *  per active session per interval — never per data chunk. */
+  function sessionCounter(sessionId: string): SessionCounter {
+    let c = diag.perSession.get(sessionId);
+    if (!c) {
+      c = { dataChunks: 0, dataBytes: 0, renderEvents: 0 };
+      diag.perSession.set(sessionId, c);
+    }
+    return c;
+  }
+
+  function setDiagnosticsEnabled(enabled: boolean): void {
+    if (enabled === diagnosticsEnabled) return;
+    diagnosticsEnabled = enabled;
+    // Fresh baseline on enable so the first snapshot doesn't report a delta
+    // accumulated against a stale interval start.
+    if (enabled) resetDiagnosticsInterval(Date.now());
+  }
+
+  function getDiagnosticsSnapshot(): TerminalDiagnosticsSnapshot {
+    const now = Date.now();
+    let liveViews = 0;
+    let webglRenderers = 0;
+    let domRenderers = 0;
+    for (const view of views.value.values()) {
+      liveViews++;
+      if (view.webglAttached) webglRenderers++;
+      else domRenderers++;
+    }
+    const topSessions = [...diag.perSession.entries()]
+      .map(([sessionId, c]) => ({
+        sessionId,
+        dataChunks: c.dataChunks,
+        dataBytes: c.dataBytes,
+        renderEvents: c.renderEvents,
+      }))
+      .sort((a, b) => b.dataBytes - a.dataBytes)
+      .slice(0, 5);
+    const snapshot: TerminalDiagnosticsSnapshot = {
+      enabled: diagnosticsEnabled,
+      sampledAt: now,
+      intervalMs: diagnosticsEnabled ? now - diag.intervalStart : null,
+      dataChunks: diag.dataChunks,
+      dataBytes: diag.dataBytes,
+      renderEvents: diag.renderEvents,
+      renderedRows: diag.renderedRows,
+      resizeCallbacks: diag.resizeCallbacks,
+      resizeChanges: diag.resizeChanges,
+      fullRefreshes: diag.fullRefreshes,
+      webglAttachFailures: diag.webglAttachFailures,
+      webglContextLosses: diag.webglContextLosses,
+      webglFallbacks: diag.webglFallbacks,
+      liveViews,
+      webglRenderers,
+      domRenderers,
+      topSessions,
+    };
+    // Atomically hand back the deltas and start the next interval.
+    if (diagnosticsEnabled) resetDiagnosticsInterval(now);
+    return snapshot;
+  }
+
   function focusActiveTerminal(): void {
     if (getOverlay()) return;
     const activeSessionId = getActiveSessionId();
@@ -300,6 +435,8 @@ export function createTerminalController({
       window.cancelAnimationFrame(view.resizeFrame || 0);
       view.resizeObserver?.disconnect();
       cancelWebglRetry(view);
+      view.diagRenderDisposer?.dispose();
+      view.diagRenderDisposer = null;
       // Dispose the WebGL addon explicitly, before term.dispose(), so the GL
       // context/canvas tears down in a controlled order. Disposing it implicitly
       // via term.dispose() during rapid workspace deletion is what historically
@@ -327,18 +464,23 @@ export function createTerminalController({
       if (!view.mount.isConnected) {
         return;
       }
+      if (diagnosticsEnabled) diag.resizeCallbacks++;
 
       view.fitAddon.fit();
       const nextSizeKey = `${view.term.cols}x${view.term.rows}`;
       if (!force && nextSizeKey === view.lastSizeKey) {
         return;
       }
+      // Distinguish a real dimension change from a callback that only fired
+      // because of a forced refresh at the same size.
+      if (diagnosticsEnabled && nextSizeKey !== view.lastSizeKey) diag.resizeChanges++;
 
       // FitAddon already repaints when cols/rows change. A forced resize is
       // also used after attach and mobile viewport transitions where fit() can
       // be a no-op, so only that recovery path needs an explicit full redraw.
       if (force) {
         view.term.refresh(0, Math.max(0, view.term.rows - 1));
+        if (diagnosticsEnabled) diag.fullRefreshes++;
       }
       view.lastSizeKey = nextSizeKey;
       api.resizeTerminal(sessionId, { cols: view.term.cols, rows: view.term.rows });
@@ -1007,6 +1149,15 @@ export function createTerminalController({
     );
 
     term.onData((data) => api.writeTerminal(sessionId, data));
+    // Diagnostics render hook, registered exactly once with the view (not on
+    // every panel open, which would leak duplicate listeners and double-count).
+    // Gated: a no-op boolean check per render while the panel is closed.
+    const diagRenderDisposer = term.onRender((e: { start: number; end: number }) => {
+      if (!diagnosticsEnabled) return;
+      diag.renderEvents++;
+      diag.renderedRows += e.end - e.start + 1;
+      sessionCounter(sessionId).renderEvents++;
+    });
     views.value.set(sessionId, {
       mount,
       term,
@@ -1021,6 +1172,7 @@ export function createTerminalController({
       webglAttachPending: false,
       webglContextLosses: 0,
       webglRetryTimer: null,
+      diagRenderDisposer,
     });
 
     return views.value.get(sessionId)!;
@@ -1060,6 +1212,11 @@ export function createTerminalController({
         addon.onContextLoss(() => {
           if (view.webglAddon !== addon) return;
           view.webglContextLosses += 1;
+          if (diagnosticsEnabled) {
+            diag.webglContextLosses++;
+            // The live view just dropped from WebGL to the DOM renderer.
+            diag.webglFallbacks++;
+          }
           disposeWebglAddon(view, addon);
           if (
             view.webglContextLosses <= WEBGL_CONTEXT_LOSS_RETRIES &&
@@ -1088,6 +1245,7 @@ export function createTerminalController({
         log("info", `[webgl] renderer enabled (${reason})`);
       } catch (err) {
         if (webglAddon) disposeWebglAddon(view, webglAddon);
+        if (diagnosticsEnabled) diag.webglAttachFailures++;
         log("warn", "[webgl] unavailable; using DOM renderer", {
           error: (err as Error)?.message || String(err),
         });
@@ -1166,6 +1324,7 @@ export function createTerminalController({
       tryAttachWebglAddon(view, "reattach");
       try {
         view.term.refresh(0, Math.max(0, view.term.rows - 1));
+        if (diagnosticsEnabled) diag.fullRefreshes++;
       } catch {
         // refresh throws if the renderer is in a transient bad state; the
         // resize that follows will paint the canvas anyway, so swallow.
@@ -1287,6 +1446,16 @@ export function createTerminalController({
       return;
     }
     sessionsWithRendererData.add(sessionId);
+    // Count received data (chunks + approx bytes via string length) regardless
+    // of whether the view is open yet, so "high PTY volume" is measured even
+    // while buffered. Gated: zero cost when the Performance panel is closed.
+    if (diagnosticsEnabled) {
+      diag.dataChunks++;
+      diag.dataBytes += data.length;
+      const c = sessionCounter(sessionId);
+      c.dataChunks++;
+      c.dataBytes += data.length;
+    }
     const view = views.value.get(sessionId);
     if (!view || !view.opened) {
       appendToSessionBuffer(sessionId, data);
@@ -1364,6 +1533,8 @@ export function createTerminalController({
     handleTerminalData,
     handleTerminalReplay,
     handleTerminalExit,
+    getDiagnosticsSnapshot,
+    setDiagnosticsEnabled,
     pruneTerminalViews,
     scheduleActiveResize,
     scheduleAllVisibleResize,

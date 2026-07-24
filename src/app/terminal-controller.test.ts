@@ -65,6 +65,16 @@ vi.mock("@xterm/xterm", () => ({
     scrollLines = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     onSelectionChange = vi.fn(() => ({ dispose: vi.fn() }));
+    _renderHandler: ((e: { start: number; end: number }) => void) | null = null;
+    onRender = vi.fn((handler: (e: { start: number; end: number }) => void) => {
+      this._renderHandler = handler;
+      return {
+        dispose: vi.fn(() => {
+          this._renderHandler = null;
+        }),
+      };
+    });
+    triggerRender = (start: number, end: number) => this._renderHandler?.({ start, end });
     dispose = vi.fn();
     buffer = { active: { type: "normal", viewportY: 0, baseY: 0, length: 0 } };
     options = { fontSize: 13, lineHeight: 1 };
@@ -1264,5 +1274,140 @@ describe("path-link providers — shared error reporting (reportOpenPathError)",
       expect(call[0]).toBe("Open path failed");
       expect(call[2]).toEqual({ profileId: "test-profile" });
     }
+  });
+});
+
+describe("terminal performance diagnostics", () => {
+  test("does not collect interval counters while diagnostics are disabled", () => {
+    const { controller } = buildAttachController();
+    const sessionId = "diag:shell-1";
+    controller.handleTerminalData({ sessionId, data: "hello world" });
+    const snap = controller.getDiagnosticsSnapshot();
+    expect(snap.enabled).toBe(false);
+    expect(snap.intervalMs).toBeNull();
+    expect(snap.dataChunks).toBe(0);
+    expect(snap.dataBytes).toBe(0);
+  });
+
+  test("counts received data chunks and bytes, with per-session breakdown", () => {
+    const { controller } = buildAttachController();
+    controller.setDiagnosticsEnabled(true);
+    controller.handleTerminalData({ sessionId: "diag:a", data: "abc" });
+    controller.handleTerminalData({ sessionId: "diag:a", data: "de" });
+    controller.handleTerminalData({ sessionId: "diag:b", data: "z" });
+    const snap = controller.getDiagnosticsSnapshot();
+    expect(snap.enabled).toBe(true);
+    expect(snap.dataChunks).toBe(3);
+    expect(snap.dataBytes).toBe(6);
+    const a = snap.topSessions.find((s) => s.sessionId === "diag:a");
+    expect(a).toMatchObject({ dataChunks: 2, dataBytes: 5 });
+  });
+
+  test("counts render events and rows exactly once (single onRender listener)", () => {
+    const { controller, views } = buildAttachController();
+    const sessionId = "diag:render";
+    controller.ensureTerminal(sessionId);
+    controller.setDiagnosticsEnabled(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const term = (views.value as any).get(sessionId)!.term;
+    // A single onRender registration means one increment per render, not N.
+    expect(term.onRender).toHaveBeenCalledTimes(1);
+    term.triggerRender(0, 4); // 5 rows
+    term.triggerRender(2, 2); // 1 row
+    const snap = controller.getDiagnosticsSnapshot();
+    expect(snap.renderEvents).toBe(2);
+    expect(snap.renderedRows).toBe(6);
+  });
+
+  test("snapshot returns deltas then resets the interval", () => {
+    const { controller } = buildAttachController();
+    controller.setDiagnosticsEnabled(true);
+    controller.handleTerminalData({ sessionId: "diag:a", data: "abcd" });
+    const first = controller.getDiagnosticsSnapshot();
+    expect(first.dataBytes).toBe(4);
+    // Nothing new since the reset → the next snapshot starts clean.
+    const second = controller.getDiagnosticsSnapshot();
+    expect(second.dataChunks).toBe(0);
+    expect(second.dataBytes).toBe(0);
+  });
+
+  test("disposing the terminal removes the diagnostic render listener", () => {
+    const { controller, views } = buildAttachController();
+    const sessionId = "diag:dispose";
+    controller.ensureTerminal(sessionId);
+    controller.setDiagnosticsEnabled(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const term = (views.value as any).get(sessionId)!.term;
+    controller.pruneTerminalViews(new Set());
+    // Handler was disposed → further renders on the (removed) term are ignored.
+    term.triggerRender(0, 9);
+    const snap = controller.getDiagnosticsSnapshot();
+    expect(snap.renderEvents).toBe(0);
+    expect(snap.liveViews).toBe(0);
+  });
+
+  test("distinguishes a resize callback without a size change from a real resize", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    const animationFrames = installFakeAnimationFrames();
+    try {
+      installFontLoader();
+      const { controller, views } = buildAttachController();
+      const sessionId = "diag:resize";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+      controller.attachTerminalPane(sessionId, paneBody);
+      await flushPromises();
+      animationFrames.flush();
+      controller.setDiagnosticsEnabled(true); // fresh baseline after attach
+
+      // Same fitted size → callback fires but is not a real dimension change.
+      resizeObserver.instances.at(-1)!.trigger(800, 600);
+      animationFrames.flush();
+      let snap = controller.getDiagnosticsSnapshot();
+      expect(snap.resizeCallbacks).toBeGreaterThanOrEqual(1);
+      expect(snap.resizeChanges).toBe(0);
+
+      // Now the fitted dimensions actually change → counted as a real resize.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (views.value as any).get(sessionId)!.term.cols = 100;
+      resizeObserver.instances.at(-1)!.trigger(1000, 600);
+      animationFrames.flush();
+      snap = controller.getDiagnosticsSnapshot();
+      expect(snap.resizeChanges).toBe(1);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("increments WebGL attach-failure counter on the DOM fallback", async () => {
+    installFontLoader();
+    webglMockState.failLoad = true;
+    const { controller } = buildAttachController({ isRemote: false });
+    const sessionId = "diag:webgl-fail";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+    controller.setDiagnosticsEnabled(true);
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    const snap = controller.getDiagnosticsSnapshot();
+    expect(snap.webglAttachFailures).toBe(1);
+    expect(snap.domRenderers).toBe(1);
+    expect(snap.webglRenderers).toBe(0);
+  });
+
+  test("increments context-loss and fallback counters when the GL context is lost", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller } = buildAttachController({ isRemote: false });
+    const sessionId = "diag:webgl-loss";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+    controller.setDiagnosticsEnabled(true);
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    webglMockState.instances[0].triggerContextLoss();
+    const snap = controller.getDiagnosticsSnapshot();
+    expect(snap.webglContextLosses).toBe(1);
+    expect(snap.webglFallbacks).toBe(1);
   });
 });
