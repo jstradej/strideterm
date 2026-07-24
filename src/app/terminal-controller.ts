@@ -31,12 +31,19 @@ export interface TerminalView {
    * fallback (or worse, a black canvas) until the session is restarted.
    */
   webglAttached: boolean;
+  /** Live `WebglAddon` instance, or null on the DOM fallback. */
+  webglAddon: WebglAddon | null;
+  webglAttachPending: boolean;
+  webglContextLosses: number;
+  webglRetryTimer: number | null;
 }
 
 type LogLevel = "info" | "warn" | "error" | "debug";
 
 const IS_MAC = typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("mac");
 const OSC52_MAX_ENCODED_CHARS = 4 * 1024 * 1024;
+const WEBGL_CONTEXT_LOSS_RETRY_MS = 1_000;
+const WEBGL_CONTEXT_LOSS_RETRIES = 1;
 
 function decodeOsc52Clipboard(data: string): string | null {
   const separator = data.indexOf(";");
@@ -156,99 +163,6 @@ async function openInInternalViewer(absPath: string): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// WebGL pre-flight
-// ---------------------------------------------------------------------------
-// xterm.js's WebglAddon constructor only fails (throws) when WebGL2 context
-// creation outright errors. On certain older Macs / Intel iGPUs the context
-// is created successfully but rendering produces broken output (giant
-// glyphs, blank canvas) — the addon never sees an error so we never fall
-// back. Mitigation: probe WebGL2 capability ourselves before instantiating
-// the addon. Probe runs once per session and is cached because the result
-// can't change at runtime (context loss is handled separately via
-// onContextLoss).
-type WebglProbe = { ok: boolean; reason: string };
-let cachedWebglProbe: WebglProbe | null = null;
-
-function probeWebgl2(): WebglProbe {
-  if (cachedWebglProbe) return cachedWebglProbe;
-
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = 16;
-    canvas.height = 16;
-
-    let gl: WebGL2RenderingContext | null = null;
-    try {
-      gl = canvas.getContext("webgl2", {
-        antialias: false,
-        preserveDrawingBuffer: false,
-        // Prefer the discrete GPU on multi-GPU systems (laptops with
-        // integrated + discrete). We intentionally do NOT set
-        // failIfMajorPerformanceCaveat:true — that flag is too aggressive in
-        // Electron: it returns null for integrated GPUs that are perfectly
-        // capable of hardware rendering, forcing the CPU-heavy DOM renderer.
-        // Software renderers are caught below via the renderer-string
-        // blacklist and the shader-compile probe.
-        powerPreference: "high-performance",
-      }) as WebGL2RenderingContext | null;
-    } catch (err) {
-      cachedWebglProbe = { ok: false, reason: `getContext-threw:${(err as Error)?.message || "unknown"}` };
-      return cachedWebglProbe;
-    }
-
-    if (!gl) {
-      cachedWebglProbe = { ok: false, reason: "no-webgl2-context" };
-      return cachedWebglProbe;
-    }
-
-    // Software-renderer blacklist. Apple hides WEBGL_debug_renderer_info on
-    // macOS so this branch is mostly a Windows/Linux safety net; on macOS
-    // the shader-compile probe below is the primary guard.
-    let renderer = "";
-    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
-    if (dbg) {
-      try {
-        renderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
-      } catch {
-        renderer = "";
-      }
-      if (renderer && /SwiftShader|llvmpipe|software|Microsoft Basic Render/i.test(renderer)) {
-        gl.getExtension("WEBGL_lose_context")?.loseContext();
-        cachedWebglProbe = { ok: false, reason: `software-renderer:${renderer}` };
-        return cachedWebglProbe;
-      }
-    }
-
-    // Compile a trivial vertex shader. WebglAddon compiles its own shaders
-    // on construction; if the GPU's shader compiler is broken (rare but
-    // observed on some macOS setups) the addon's shaders fail too. Probing
-    // here lets us short-circuit to DOM before the addon paints garbage.
-    const vs = gl.createShader(gl.VERTEX_SHADER);
-    if (!vs) {
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
-      cachedWebglProbe = { ok: false, reason: "shader-create-failed" };
-      return cachedWebglProbe;
-    }
-    gl.shaderSource(vs, "#version 300 es\nvoid main(){ gl_Position = vec4(0); }");
-    gl.compileShader(vs);
-    const compiled = gl.getShaderParameter(vs, gl.COMPILE_STATUS);
-    gl.deleteShader(vs);
-    if (!compiled) {
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
-      cachedWebglProbe = { ok: false, reason: "vertex-shader-compile-failed" };
-      return cachedWebglProbe;
-    }
-
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-    cachedWebglProbe = { ok: true, reason: renderer ? `ok:${renderer}` : "ok" };
-    return cachedWebglProbe;
-  } catch (err) {
-    cachedWebglProbe = { ok: false, reason: `probe-threw:${(err as Error)?.message || "unknown"}` };
-    return cachedWebglProbe;
-  }
-}
-
 type AppConfig = typeof APP_CONFIG;
 
 // ---------------------------------------------------------------------------
@@ -357,6 +271,26 @@ export function createTerminalController({
     });
   }
 
+  function cancelWebglRetry(view: TerminalView): void {
+    if (view.webglRetryTimer === null) return;
+    window.clearTimeout(view.webglRetryTimer);
+    view.webglRetryTimer = null;
+  }
+
+  function disposeWebglAddon(view: TerminalView, addon: WebglAddon): void {
+    if (view.webglAddon === addon) {
+      view.webglAddon = null;
+      view.webglAttached = false;
+    }
+    try {
+      addon.dispose();
+    } catch (err) {
+      api.logRenderer?.("warn", "[webgl] addon dispose failed", {
+        error: (err as Error)?.message || String(err),
+      });
+    }
+  }
+
   function pruneTerminalViews(validSessionIds: Set<string>): void {
     for (const [sessionId, view] of views.value.entries()) {
       if (validSessionIds.has(sessionId)) {
@@ -365,6 +299,14 @@ export function createTerminalController({
 
       window.cancelAnimationFrame(view.resizeFrame || 0);
       view.resizeObserver?.disconnect();
+      cancelWebglRetry(view);
+      // Dispose the WebGL addon explicitly, before term.dispose(), so the GL
+      // context/canvas tears down in a controlled order. Disposing it implicitly
+      // via term.dispose() during rapid workspace deletion is what historically
+      // tripped a native GPU-driver access violation on Windows.
+      if (view.webglAddon) {
+        disposeWebglAddon(view, view.webglAddon);
+      }
       view.term.dispose();
       view.mount.remove();
       views.value.delete(sessionId);
@@ -387,20 +329,17 @@ export function createTerminalController({
       }
 
       view.fitAddon.fit();
-      // Force a repaint after fit(). fit() is a no-op when proposed
-      // dimensions match the current ones (and FitAddon also no-ops on a
-      // 0×0 container), so the internal xterm resize callback that would
-      // normally render the buffer never fires. On mobile, a viewport
-      // transition (orientation flip, iOS chrome bar toggle, breakpoint
-      // cross) can briefly hide the host and leave it blank afterwards;
-      // forcing refresh here is the standard xterm workaround for that
-      // class of bug (xterm.js issues #3029, #3653).
-      view.term.refresh(0, Math.max(0, view.term.rows - 1));
       const nextSizeKey = `${view.term.cols}x${view.term.rows}`;
       if (!force && nextSizeKey === view.lastSizeKey) {
         return;
       }
 
+      // FitAddon already repaints when cols/rows change. A forced resize is
+      // also used after attach and mobile viewport transitions where fit() can
+      // be a no-op, so only that recovery path needs an explicit full redraw.
+      if (force) {
+        view.term.refresh(0, Math.max(0, view.term.rows - 1));
+      }
       view.lastSizeKey = nextSizeKey;
       api.resizeTerminal(sessionId, { cols: view.term.cols, rows: view.term.rows });
     });
@@ -421,16 +360,22 @@ export function createTerminalController({
     view.term.options.fontSize = size;
   }
 
+  function loadTerminalFont(view: TerminalView): Promise<unknown> {
+    const fontSize = Number(view.term.options.fontSize) || 13;
+    const fontFamily = String(view.term.options.fontFamily || '"JetBrainsMono NFM"');
+    try {
+      return document.fonts?.load ? document.fonts.load(`${fontSize}px ${fontFamily}`) : Promise.resolve();
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
   function scheduleDeferredTerminalFits(sessionId: string): void {
     window.requestAnimationFrame(() => {
       scheduleSessionResize(sessionId, { force: true });
-      const view = views.value.get(sessionId);
-      view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
     });
     window.setTimeout(() => {
       scheduleSessionResize(sessionId, { force: true });
-      const view = views.value.get(sessionId);
-      view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
     }, 120);
 
     // Wait for the real terminal font to load, then re-measure + refit so the
@@ -440,15 +385,13 @@ export function createTerminalController({
     // load, in which case the callback would run against the still-unloaded
     // fallback and the garble would persist. `.load()` resolves only once the
     // matching FontFace is actually available.
-    const fontLoad = document.fonts?.load
-      ? document.fonts.load('16px "JetBrainsMono NFM"').catch(() => [])
-      : Promise.resolve([]);
+    const initialView = views.value.get(sessionId);
+    const fontLoad = initialView ? loadTerminalFont(initialView).catch(() => []) : Promise.resolve([]);
     void fontLoad.then(() => {
       const view = views.value.get(sessionId);
       if (!view) return;
       forceCharRemeasure(view);
       scheduleSessionResize(sessionId, { force: true });
-      view.term.refresh(0, Math.max(0, view.term.rows - 1));
     });
   }
 
@@ -1074,6 +1017,10 @@ export function createTerminalController({
       resizeObserver: null,
       opened: false,
       webglAttached: false,
+      webglAddon: null,
+      webglAttachPending: false,
+      webglContextLosses: 0,
+      webglRetryTimer: null,
     });
 
     return views.value.get(sessionId)!;
@@ -1089,53 +1036,72 @@ export function createTerminalController({
     }
   }
 
-  /**
-   * Best-effort attach of the WebGL renderer for one terminal view.
-   * Idempotent — if `view.webglAttached` is already true the call is a
-   * no-op. Used by both the first-open and re-attach paths so a
-   * WebGL-context-lost terminal can recover after a workspace switch
-   * without restarting the session (the macOS integrated-GPU symptom
-   * where panes come back black after switching away).
-   */
-  function tryAttachWebglAddon(view: TerminalView, reason: "open" | "reattach"): void {
-    if (view.webglAttached) return;
+  function tryAttachWebglAddon(view: TerminalView, reason: "open" | "reattach" | "context-loss-retry"): void {
+    if (view.webglAttached || view.webglAttachPending) return;
     if (api.isRemote) return;
     const log = api.logRenderer ?? (() => {});
     if (api.startupFlags?.disableWebgl) {
       if (reason === "open") log("info", "[webgl] skipped: disabled by --no-webgl / STRIDETERM_DISABLE_WEBGL");
       return;
     }
-    const probe = probeWebgl2();
-    if (!probe.ok) {
-      if (reason === "open")
-        log("warn", "[webgl] skipped: pre-flight failed, using DOM renderer", { reason: probe.reason });
-      return;
-    }
+    const sessionId = view.mount.dataset.sessionId || "";
     const loadWebgl = (): void => {
-      if (!view.mount.isConnected || view.term.cols === 0 || view.term.rows === 0) return;
-      if (view.webglAttached) return;
+      view.webglAttachPending = false;
+      if (views.value.get(sessionId) !== view) return;
+      if (!view.mount.isConnected) return;
+      let webglAddon: WebglAddon | null = null;
       try {
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
-          log("warn", `[webgl] context lost (${reason}); disposing addon, will retry on next reattach`);
-          webglAddon.dispose();
-          view.webglAttached = false;
+        const proposed = view.fitAddon.proposeDimensions();
+        if (!proposed || proposed.cols <= 0 || proposed.rows <= 0) return;
+        view.fitAddon.fit();
+        if (view.webglAttached) return;
+        const addon = new WebglAddon();
+        webglAddon = addon;
+        addon.onContextLoss(() => {
+          if (view.webglAddon !== addon) return;
+          view.webglContextLosses += 1;
+          disposeWebglAddon(view, addon);
+          if (
+            view.webglContextLosses <= WEBGL_CONTEXT_LOSS_RETRIES &&
+            views.value.get(sessionId) === view &&
+            view.mount.isConnected
+          ) {
+            log("warn", "[webgl] context lost; using DOM renderer and scheduling one retry", {
+              sessionId,
+              attempt: view.webglContextLosses,
+            });
+            cancelWebglRetry(view);
+            view.webglRetryTimer = window.setTimeout(() => {
+              view.webglRetryTimer = null;
+              tryAttachWebglAddon(view, "context-loss-retry");
+            }, WEBGL_CONTEXT_LOSS_RETRY_MS);
+            return;
+          }
+          log("warn", "[webgl] context lost; using DOM renderer until the pane is reattached", {
+            sessionId,
+            losses: view.webglContextLosses,
+          });
         });
-        view.term.loadAddon(webglAddon);
+        view.term.loadAddon(addon);
         view.webglAttached = true;
-        log("info", `[webgl] renderer enabled (${reason})`, { probe: probe.reason });
+        view.webglAddon = addon;
+        log("info", `[webgl] renderer enabled (${reason})`);
       } catch (err) {
-        log("error", "[webgl] addon load threw; falling back to DOM renderer", {
+        if (webglAddon) disposeWebglAddon(view, webglAddon);
+        log("warn", "[webgl] unavailable; using DOM renderer", {
           error: (err as Error)?.message || String(err),
         });
       }
     };
-    // Wait for fonts on first open (WebglAddon caches glyph dimensions
-    // at load time, so it has to see real font metrics). Reattach already
-    // has the fonts ready and the term sized — but the same gated path is
-    // safe and keeps the diff narrow.
-    const ready = document.fonts?.ready ?? Promise.resolve();
-    ready.then(() => window.setTimeout(loadWebgl, 50)).catch(() => {});
+
+    view.webglAttachPending = true;
+    void loadTerminalFont(view)
+      .catch((err: unknown) => {
+        log("warn", "[webgl] terminal font load failed; trying renderer with current metrics", {
+          error: (err as Error)?.message || String(err),
+        });
+      })
+      .then(loadWebgl);
   }
 
   function attachTerminalPane(sessionId: string, paneBody: Element): TerminalView {
@@ -1181,7 +1147,7 @@ export function createTerminalController({
       // Switch to the GPU renderer for smooth scrolling under heavy TUI traffic
       // (e.g. Claude Code) on the desktop. We skip it on remote clients (web,
       // mobile) because mobile WebGL is unreliable and we can't validate the
-      // result. On the desktop we wait for fonts.ready + an initial fit before
+      // result. On the desktop we explicitly load the configured font before
       // loading the addon — WebglAddon caches glyph dimensions at load time, so
       // attaching it before the font is ready or while the canvas is 0×0
       // produces a permanently broken renderer (giant glyphs, blank screen)
@@ -1224,6 +1190,7 @@ export function createTerminalController({
     }
     window.cancelAnimationFrame(view.resizeFrame || 0);
     view.resizeFrame = null;
+    cancelWebglRetry(view);
     view.resizeObserver?.disconnect();
     view.resizeObserver = null;
     view.mount.remove();

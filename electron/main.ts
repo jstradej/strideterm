@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, Men
 import os from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createRuntime } from "./backend/runtime.js";
@@ -14,7 +14,7 @@ import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
 import { inheritShellPath } from "./backend/fix-path.js";
 import { startFreezeWatchdog } from "./backend/freeze-watchdog.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
-import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
+import { getLogger, getLogDir, setLogDir, shutdownLogger } from "./backend/logger.js";
 import { SMOKE_READY_MARKER } from "./shared/smoke-protocol.js";
 import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
 import type { TaskExecutionState } from "./shared/types/task.js";
@@ -687,6 +687,51 @@ function resolveSafeBounds(slot?: Partial<WindowSlot>): { x?: number; y?: number
   return { x: cx, y: cy, width: Math.min(w, wa.width), height: Math.min(h, wa.height) };
 }
 
+// --- On-demand renderer CPU profiler (Ctrl+Shift+F12) -----------------------
+// Renderer-side analog of the main-thread freeze-watchdog. When the desktop
+// renderer pegs a core in a JS loop (e.g. a reactive oscillation), DevTools may
+// be unavailable — it's not auto-opened in the packaged build. This records a
+// V8 CPU profile through webContents.debugger (no --remote-debugging-port
+// needed) and writes a .cpuprofile to the logs dir for offline analysis. The
+// V8 sampling profiler captures a saturated-but-still-yielding main thread; a
+// truly wedged (never-yielding) renderer can't service the protocol, which is
+// itself a useful signal. In dev, DevTools is already attached, so attach()
+// throws — the log line then points the user at the Performance tab instead.
+let rendererProfileInFlight = false;
+async function captureRendererCpuProfile(win: BrowserWindow, durationMs = 6000): Promise<void> {
+  if (rendererProfileInFlight) return;
+  rendererProfileInFlight = true;
+  const dbg = win.webContents.debugger;
+  let attachedHere = false;
+  try {
+    if (!dbg.isAttached()) {
+      dbg.attach("1.3");
+      attachedHere = true;
+    }
+    await dbg.sendCommand("Profiler.enable");
+    await dbg.sendCommand("Profiler.setSamplingInterval", { interval: 200 });
+    await dbg.sendCommand("Profiler.start");
+    log.info("renderer CPU profile: recording", { durationMs });
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
+    const { profile } = (await dbg.sendCommand("Profiler.stop")) as { profile: unknown };
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const outPath = path.join(getLogDir(), `renderer-cpu-${stamp}.cpuprofile`);
+    await writeFile(outPath, JSON.stringify(profile), "utf8");
+    log.info("renderer CPU profile written", { path: outPath });
+  } catch (err) {
+    log.warn("renderer CPU profile failed (in dev, close DevTools / use its Performance tab instead)", {
+      err: (err as Error)?.message,
+    });
+  } finally {
+    try {
+      if (attachedHere && dbg.isAttached()) dbg.detach();
+    } catch {
+      /* ignore */
+    }
+    rendererProfileInFlight = false;
+  }
+}
+
 function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   const id = windowId || randomUUID();
   const windowIconPath =
@@ -936,6 +981,14 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     if (input.control && input.shift && (input.key === "N" || input.key === "n")) {
       event.preventDefault();
       win.webContents.send("shortcut:new-window");
+      return;
+    }
+
+    // Ctrl+Shift+F12 — capture a renderer CPU profile to the logs dir. Diagnostic
+    // escape hatch for a pegged/looping renderer when DevTools isn't available.
+    if (input.control && input.shift && input.code === "F12") {
+      event.preventDefault();
+      void captureRendererCpuProfile(win);
       return;
     }
   });

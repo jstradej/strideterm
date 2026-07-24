@@ -5,7 +5,16 @@ import { createTerminalController } from "./terminal-controller.js";
 // Backing spy for the path-link providers' shared error-reporting helper
 // (reportOpenPathError). Declared via vi.hoisted so it's safe to reference
 // from the vi.mock factories below.
-const { mockShowError } = vi.hoisted(() => ({ mockShowError: vi.fn() }));
+const { mockShowError, webglMockState } = vi.hoisted(() => ({
+  mockShowError: vi.fn(),
+  webglMockState: {
+    failLoad: false,
+    instances: [] as Array<{
+      dispose: ReturnType<typeof vi.fn>;
+      triggerContextLoss: () => void;
+    }>,
+  },
+}));
 vi.mock("../stores/notifications.js", () => ({
   useNotificationStore: () => ({ showError: mockShowError }),
 }));
@@ -29,7 +38,11 @@ beforeAll(() => {
 // vi.fn() can't be used with `new`, so we use classes with instance-level spies.
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
-    loadAddon = vi.fn();
+    loadAddon = vi.fn((addon: { isWebglAddon?: boolean }) => {
+      if (addon.isWebglAddon && webglMockState.failLoad) {
+        throw new Error("WebGL2 unavailable");
+      }
+    });
     registerLinkProvider = vi.fn();
     attachCustomKeyEventHandler = vi.fn();
     attachCustomWheelEventHandler = vi.fn();
@@ -73,8 +86,17 @@ vi.mock("@xterm/addon-web-links", () => ({
 }));
 vi.mock("@xterm/addon-webgl", () => ({
   WebglAddon: class {
-    onContextLoss = vi.fn(() => ({ dispose: vi.fn() }));
+    isWebglAddon = true;
+    private _contextLossHandler: (() => void) | null = null;
+    onContextLoss = vi.fn((handler: () => void) => {
+      this._contextLossHandler = handler;
+      return { dispose: vi.fn() };
+    });
     dispose = vi.fn();
+    triggerContextLoss = () => this._contextLossHandler?.();
+    constructor() {
+      webglMockState.instances.push(this);
+    }
   },
 }));
 vi.mock("@xterm/addon-search", () => ({
@@ -127,7 +149,11 @@ function buildController({ getOverlay }: { getOverlay: () => unknown }) {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  webglMockState.failLoad = false;
+  webglMockState.instances.length = 0;
   document.body.innerHTML = "";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  delete (document as any).fonts;
 });
 
 describe("createTerminalController", () => {
@@ -316,6 +342,36 @@ function installFakeResizeObserver() {
   };
 }
 
+function installFontLoader(load: FontFaceSet["load"] = vi.fn(() => Promise.resolve([]))) {
+  Object.defineProperty(document, "fonts", {
+    configurable: true,
+    value: { load },
+  });
+  return load;
+}
+
+function installFakeAnimationFrames() {
+  let nextId = 1;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback: FrameRequestCallback) => {
+    const id = nextId++;
+    callbacks.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id: number) => {
+    callbacks.delete(id);
+  });
+  return {
+    flush() {
+      while (callbacks.size) {
+        const queued = [...callbacks.entries()];
+        callbacks.clear();
+        for (const [, callback] of queued) callback(performance.now());
+      }
+    },
+  };
+}
+
 describe("terminal pane reattach", () => {
   test("removes the previous terminal host when the pane rebinds to another session", () => {
     const resizeObserver = installFakeResizeObserver();
@@ -473,6 +529,247 @@ describe("terminal pane reattach", () => {
       controller.handleTerminalData({ sessionId, data: "fresh", seq: 6 }); // > throughSeq → written
       expect(view.term.write).toHaveBeenCalledTimes(1);
       expect(view.term.write).toHaveBeenCalledWith("fresh");
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+});
+
+describe("desktop WebGL renderer selection", () => {
+  test("waits for the configured font and uses successful WebglAddon activation as the capability check", async () => {
+    let resolveFont: (value: FontFace[]) => void = () => {};
+    const fontPromise = new Promise<FontFace[]>((resolve) => {
+      resolveFont = resolve;
+    });
+    const fontLoad = installFontLoader(vi.fn(() => fontPromise));
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    expect(webglMockState.instances).toHaveLength(0);
+
+    resolveFont([]);
+    await flushPromises();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    expect(fontLoad).toHaveBeenCalledWith(expect.stringContaining('"JetBrainsMono NFM"'));
+    expect(webglMockState.instances).toHaveLength(1);
+    expect(view.term.loadAddon).toHaveBeenCalledWith(webglMockState.instances[0]);
+    expect(view.webglAttached).toBe(true);
+    expect(view.webglAddon).toBe(webglMockState.instances[0]);
+  });
+
+  test("does not attempt WebGL for remote clients or when explicitly disabled", async () => {
+    installFontLoader();
+    const remote = buildAttachController({ isRemote: true });
+    const disabled = buildAttachController({
+      isRemote: false,
+      startupFlags: { disableWebgl: true },
+    });
+    const remotePane = document.createElement("div");
+    const disabledPane = document.createElement("div");
+    document.body.append(remotePane, disabledPane);
+
+    remote.controller.attachTerminalPane("remote:shell", remotePane);
+    disabled.controller.attachTerminalPane("disabled:shell", disabledPane);
+    await flushPromises();
+
+    expect(webglMockState.instances).toHaveLength(0);
+  });
+
+  test("does not activate WebGL until FitAddon reports positive pane dimensions", async () => {
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    view.fitAddon.proposeDimensions.mockReturnValue(undefined);
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+
+    expect(webglMockState.instances).toHaveLength(0);
+    expect(view.webglAttachPending).toBe(false);
+  });
+
+  test("disposes a partially loaded addon and stays on DOM when activation throws", async () => {
+    installFontLoader();
+    webglMockState.failLoad = true;
+    const logRenderer = vi.fn();
+    const { controller, views } = buildAttachController({ isRemote: false, logRenderer });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    expect(webglMockState.instances).toHaveLength(1);
+    expect(webglMockState.instances[0].dispose).toHaveBeenCalledTimes(1);
+    expect(view.webglAttached).toBe(false);
+    expect(view.webglAddon).toBeNull();
+    expect(logRenderer).toHaveBeenCalledWith(
+      "warn",
+      "[webgl] unavailable; using DOM renderer",
+      expect.objectContaining({ error: "WebGL2 unavailable" }),
+    );
+  });
+
+  test("does not activate WebGL after the terminal view was pruned while its font was loading", async () => {
+    let resolveFont: (value: FontFace[]) => void = () => {};
+    installFontLoader(
+      vi.fn(
+        () =>
+          new Promise<FontFace[]>((resolve) => {
+            resolveFont = resolve;
+          }),
+      ),
+    );
+    const { controller } = buildAttachController({ isRemote: false });
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane("workspace-1:shell-1", paneBody);
+    controller.pruneTerminalViews(new Set());
+    resolveFont([]);
+    await flushPromises();
+
+    expect(webglMockState.instances).toHaveLength(0);
+  });
+
+  test("falls back on context loss, retries once, and does not enter a retry loop", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const firstAddon = webglMockState.instances[0];
+
+    firstAddon.triggerContextLoss();
+    expect(firstAddon.dispose).toHaveBeenCalledTimes(1);
+    expect(view.webglAttached).toBe(false);
+    expect(view.webglAddon).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(2);
+    expect(view.webglAttached).toBe(true);
+
+    webglMockState.instances[1].triggerContextLoss();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(2);
+    expect(view.webglAttached).toBe(false);
+  });
+
+  test("cancels a pending context-loss retry when the pane is detached", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    webglMockState.instances[0].triggerContextLoss();
+    controller.detachTerminalPane(sessionId, paneBody);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(1);
+  });
+
+  test("prunes the WebGL addon before disposing the terminal", async () => {
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const order: string[] = [];
+    webglMockState.instances[0].dispose.mockImplementation(() => order.push("webgl"));
+    view.term.dispose.mockImplementation(() => order.push("terminal"));
+
+    controller.pruneTerminalViews(new Set());
+
+    expect(order).toEqual(["webgl", "terminal"]);
+  });
+});
+
+describe("terminal resize rendering", () => {
+  test("does not full-refresh or send a PTY resize when fitted dimensions are unchanged", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    const animationFrames = installFakeAnimationFrames();
+    try {
+      installFontLoader();
+      const { controller, views, api } = buildAttachController();
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+      controller.attachTerminalPane(sessionId, paneBody);
+      await flushPromises();
+      animationFrames.flush();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId);
+      view.term.refresh.mockClear();
+      api.resizeTerminal.mockClear();
+
+      resizeObserver.instances.at(-1)!.trigger(800, 600);
+      animationFrames.flush();
+
+      expect(view.term.refresh).not.toHaveBeenCalled();
+      expect(api.resizeTerminal).not.toHaveBeenCalled();
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("relies on FitAddon repaint when dimensions change instead of forcing a second full refresh", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    const animationFrames = installFakeAnimationFrames();
+    try {
+      installFontLoader();
+      const { controller, views, api } = buildAttachController();
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+      controller.attachTerminalPane(sessionId, paneBody);
+      await flushPromises();
+      animationFrames.flush();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId);
+      view.term.refresh.mockClear();
+      api.resizeTerminal.mockClear();
+      view.fitAddon.fit.mockImplementationOnce(() => {
+        view.term.cols = 100;
+      });
+
+      resizeObserver.instances.at(-1)!.trigger(1_000, 600);
+      animationFrames.flush();
+
+      expect(view.term.refresh).not.toHaveBeenCalled();
+      expect(api.resizeTerminal).toHaveBeenCalledWith(sessionId, { cols: 100, rows: 24 });
     } finally {
       resizeObserver.restore();
     }
