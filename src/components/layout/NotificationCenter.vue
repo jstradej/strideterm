@@ -42,6 +42,16 @@
           >
             Telegram
           </button>
+          <button
+            v-if="supportsPerformance"
+            type="button"
+            class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'performance' }"
+            title="Live CPU / memory of the Electron processes and this window's terminal rendering activity. Diagnostics only run while this tab is open."
+            @click="activeTab = 'performance'"
+          >
+            Performance
+          </button>
         </div>
         <div class="notification-center__actions">
           <button
@@ -274,6 +284,11 @@
           </template>
         </div>
       </div>
+
+      <!-- Performance diagnostics tab -->
+      <div v-if="activeTab === 'performance'" class="notification-center__body notification-center__body--perf">
+        <PerformancePanel />
+      </div>
     </aside>
   </Transition>
 </template>
@@ -284,6 +299,7 @@ import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationProfileScope } from "../../composables/useNotificationProfileScope.js";
 import { useDismissable } from "../../composables/useDismissable.js";
+import PerformancePanel from "./PerformancePanel.vue";
 
 interface NotificationSession {
   id: string;
@@ -319,7 +335,10 @@ function clearAllInProfile(): void {
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
-const activeTab = ref<"alerts" | "telegram">("alerts");
+const activeTab = ref<"alerts" | "telegram" | "performance">("alerts");
+// The Performance tab needs Electron process metrics — only shown when the
+// transport advertises them (desktop), never on the remote/mobile client.
+const supportsPerformance = computed(() => appStore.supportsPerformanceMetrics);
 
 // Telegram connection statuses from live snapshot
 interface TelegramConnectionView {
