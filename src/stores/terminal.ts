@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { shallowRef, watch } from "vue";
 import type { SearchAddon } from "@xterm/addon-search";
 import { createTerminalController } from "../app/terminal-controller.js";
-import type { TerminalView } from "../app/terminal-controller.js";
+import type { TerminalView, TerminalDiagnosticsSnapshot } from "../app/terminal-controller.js";
 import {
   openTerminalLink,
   getWindowsPtyOptions,
@@ -186,6 +186,17 @@ export const useTerminalStore = defineStore("terminal", () => {
     return controller?.getVisibleTerminalText(sessionId) ?? "";
   }
 
+  // Renderer-local performance diagnostics. Enabled only while the Performance
+  // panel is open + visible; the panel polls getTerminalDiagnostics() which
+  // returns interval deltas and resets. Never enters server state.
+  function setTerminalDiagnosticsEnabled(enabled: boolean): void {
+    controller?.setDiagnosticsEnabled(enabled);
+  }
+
+  function getTerminalDiagnostics(): TerminalDiagnosticsSnapshot | null {
+    return controller?.getDiagnosticsSnapshot() ?? null;
+  }
+
   // Programmatic equivalent of pressing Ctrl/Cmd+F — used by the header
   // button and the "Find in terminal" context-menu entry. Routes through
   // the same window event so the overlay open path is single-sourced.
@@ -211,6 +222,8 @@ export const useTerminalStore = defineStore("terminal", () => {
     syncFontSize,
     getSearchAddon,
     getVisibleTerminalText,
+    setTerminalDiagnosticsEnabled,
+    getTerminalDiagnostics,
     requestSearch,
   };
 });

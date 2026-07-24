@@ -39,6 +39,7 @@ vi.mock("@xterm/xterm", () => ({
     scrollLines = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     onSelectionChange = vi.fn(() => ({ dispose: vi.fn() }));
+    onRender = vi.fn(() => ({ dispose: vi.fn() }));
     dispose = vi.fn();
     buffer = { active: { type: "normal", viewportY: 0, baseY: 0, length: 0 } };
     options = { fontSize: 13, lineHeight: 1 };
