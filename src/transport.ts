@@ -10,6 +10,11 @@ import type {
 import type { RemoteStateV2 } from "../electron/shared/types/state.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "../electron/shared/types/ssh.js";
+import {
+  performanceSnapshotSchema,
+  cpuProfileCaptureResultSchema,
+  revealResultSchema,
+} from "../electron/shared/performance.js";
 import { rlog } from "./lib/renderer-log.js";
 
 /**
@@ -210,6 +215,15 @@ function bindElectronTransport(): Transport {
       window.strideterm.deleteProfile(profileId, options),
     activateProfile: (profileId: string) => window.strideterm.activateProfile(profileId),
     onConnectionState: () => {},
+    // Performance diagnostics: validate the main-process response at the IPC
+    // boundary so a malformed snapshot surfaces as a controlled error instead
+    // of a runtime crash deep in the panel's chart code.
+    getPerformanceSnapshot: async () =>
+      performanceSnapshotSchema.parse(await window.strideterm.getPerformanceSnapshot()),
+    captureRendererCpuProfile: async () =>
+      cpuProfileCaptureResultSchema.parse(await window.strideterm.captureRendererCpuProfile()),
+    revealCpuProfile: async (filePath: string) =>
+      revealResultSchema.parse(await window.strideterm.revealCpuProfile(filePath)),
     // Electron streams every session over IPC and repaints on attach via the
     // IPC getTerminalReplay; the WS subscribe/replay handshake is remote-only.
     onTerminalReplay: () => {},

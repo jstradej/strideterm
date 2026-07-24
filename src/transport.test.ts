@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, test } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createRemoteTransport } from "./transport.js";
+import { createRemoteTransport, createTransport } from "./transport.js";
 
 interface MockWebSocketEvent {
   code?: number;
@@ -526,6 +526,13 @@ describe("remote transport API parity — no method silently missing its remote 
     // hides the edit/delete affordance when the transport is remote.
     "saveAgentPrompt",
     "deleteAgentPrompt",
+    // Performance diagnostics rely on Electron process metrics
+    // (app.getAppMetrics) and the webContents CPU profiler, which have no
+    // remote-browser equivalent. The Performance panel is gated on the
+    // transport advertising these, so it stays hidden on remote clients.
+    "getPerformanceSnapshot",
+    "captureRendererCpuProfile",
+    "revealCpuProfile",
   ]);
 
   function extractDesktopApiKeys(): string[] {
@@ -555,5 +562,52 @@ describe("remote transport API parity — no method silently missing its remote 
     const remoteKeys = new Set(Object.keys(transport));
     const stale = [...KNOWN_DESKTOP_ONLY_METHODS].filter((key) => remoteKeys.has(key));
     expect(stale).toEqual([]);
+  });
+});
+
+describe("electron transport — performance diagnostics validation", () => {
+  const validSnapshot = {
+    sampledAt: 1,
+    intervalMs: 2000,
+    warmingUp: false,
+    currentRendererPid: 10,
+    totalCpuPercent: 12,
+    totalWorkingSetKb: 100,
+    systemMemory: { totalKb: 16000, freeKb: 4000 },
+    processes: [{ pid: 10, type: "Tab", creationTime: 5, cpuPercent: 12, workingSetKb: 100, isCurrentRenderer: true }],
+  };
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).strideterm;
+  });
+
+  function stubElectron(overrides: Record<string, unknown>): void {
+    (window as unknown as Record<string, unknown>).strideterm = overrides;
+  }
+
+  it("passes a valid snapshot through unchanged", async () => {
+    stubElectron({ getPerformanceSnapshot: async () => validSnapshot });
+    const transport = createTransport();
+    expect(transport.isRemote).toBe(false);
+    await expect(transport.getPerformanceSnapshot!()).resolves.toEqual(validSnapshot);
+  });
+
+  it("rejects a malformed snapshot with a controlled error", async () => {
+    // Missing required `processes` / wrong types → schema.parse throws.
+    stubElectron({ getPerformanceSnapshot: async () => ({ sampledAt: "nope" }) });
+    const transport = createTransport();
+    await expect(transport.getPerformanceSnapshot!()).rejects.toThrow();
+  });
+
+  it("validates the CPU profile capture result", async () => {
+    stubElectron({
+      captureRendererCpuProfile: async () => ({ ok: true, path: "/logs/x.cpuprofile", durationMs: 6000 }),
+    });
+    const transport = createTransport();
+    await expect(transport.captureRendererCpuProfile!()).resolves.toEqual({
+      ok: true,
+      path: "/logs/x.cpuprofile",
+      durationMs: 6000,
+    });
   });
 });

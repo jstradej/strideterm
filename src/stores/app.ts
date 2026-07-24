@@ -30,6 +30,7 @@ import { useGitUiStore } from "./git-ui.js";
 import { useRemoteDetailsStore } from "./remote-details.js";
 import type { StatePayload, RecoveryCandidate } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
+import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "../../electron/shared/performance.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -192,6 +193,10 @@ export const useAppStore = defineStore("app", () => {
   // --- Internal api reference (set in init) ---
   let _api: Transport | null = null;
   const isRemoteTransport = ref(false);
+  // True only when the transport exposes Electron process metrics — i.e. the
+  // desktop transport. The Performance panel/tab is gated on this so the remote
+  // client never shows a dead tab. Set once in init(); never changes after.
+  const supportsPerformanceMetrics = ref(false);
 
   /** Getter so action modules can access _api after init(). */
   function getApi(): Transport {
@@ -1284,6 +1289,7 @@ export const useAppStore = defineStore("app", () => {
   function init(api: Transport): void {
     _api = api;
     isRemoteTransport.value = !!api.isRemote;
+    supportsPerformanceMetrics.value = typeof (api as AnyApi).getPerformanceSnapshot === "function";
     // Wire the slim-core detail cache (remote-only; a no-op on desktop). Must
     // run before any pane mounts so interest declarations reach the transport.
     useRemoteDetailsStore().init(api);
@@ -1388,6 +1394,28 @@ export const useAppStore = defineStore("app", () => {
     resolveViewerProfileId,
   });
 
+  /** Fetch a process-metrics snapshot. Returns null on transports that don't
+   *  support it (remote), so callers can no-op gracefully. */
+  async function getPerformanceSnapshot(): Promise<PerformanceSnapshot | null> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.getPerformanceSnapshot !== "function") return null;
+    return api.getPerformanceSnapshot();
+  }
+
+  /** Trigger a renderer CPU-profile capture (Ctrl+Shift+F12 equivalent). */
+  async function captureRendererCpuProfile(): Promise<CpuProfileCaptureResult | null> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.captureRendererCpuProfile !== "function") return null;
+    return api.captureRendererCpuProfile();
+  }
+
+  /** Reveal a captured .cpuprofile in the OS file manager. */
+  async function revealCpuProfile(filePath: string): Promise<RevealResult | null> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.revealCpuProfile !== "function") return null;
+    return api.revealCpuProfile(filePath);
+  }
+
   async function resolveTaskRecovery(decisions: Record<string, "continue" | "fresh" | "skip">): Promise<void> {
     const api = getApi();
     await api.resolveTaskRecovery?.({ decisions });
@@ -1428,6 +1456,7 @@ export const useAppStore = defineStore("app", () => {
     myActiveWorkspaceId,
     myActiveProfileId,
     isRemoteTransport,
+    supportsPerformanceMetrics,
     // Computed
     activeWorkspace,
     filteredWorkspaces,
@@ -1450,6 +1479,9 @@ export const useAppStore = defineStore("app", () => {
     clearRemoteConnectionIssue,
     getApi,
     resolveTaskRecovery,
+    getPerformanceSnapshot,
+    captureRendererCpuProfile,
+    revealCpuProfile,
     // Grid actions
     enableWorkspaceGrid,
     disableWorkspaceGrid,

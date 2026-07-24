@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, Menu, screen } from "electron";
+import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, shell, Menu, screen } from "electron";
 import os from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -16,8 +16,10 @@ import { startFreezeWatchdog } from "./backend/freeze-watchdog.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 import { getLogger, getLogDir, setLogDir, shutdownLogger } from "./backend/logger.js";
 import { SMOKE_READY_MARKER } from "./shared/smoke-protocol.js";
+import { createPerformanceSampler } from "./performance-metrics.js";
 import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
 import type { TaskExecutionState } from "./shared/types/task.js";
+import type { CpuProfileCaptureResult, RevealResult } from "./shared/performance.js";
 
 // --- Custom data directory (--data-dir <path> or STRIDETERM_DATA_DIR env) ---
 function resolveDataDir(): string {
@@ -698,8 +700,10 @@ function resolveSafeBounds(slot?: Partial<WindowSlot>): { x?: number; y?: number
 // itself a useful signal. In dev, DevTools is already attached, so attach()
 // throws — the log line then points the user at the Performance tab instead.
 let rendererProfileInFlight = false;
-async function captureRendererCpuProfile(win: BrowserWindow, durationMs = 6000): Promise<void> {
-  if (rendererProfileInFlight) return;
+async function captureRendererCpuProfile(win: BrowserWindow, durationMs = 6000): Promise<CpuProfileCaptureResult> {
+  if (rendererProfileInFlight) {
+    return { ok: false, error: "A CPU profile capture is already in progress." };
+  }
   rendererProfileInFlight = true;
   const dbg = win.webContents.debugger;
   let attachedHere = false;
@@ -718,10 +722,16 @@ async function captureRendererCpuProfile(win: BrowserWindow, durationMs = 6000):
     const outPath = path.join(getLogDir(), `renderer-cpu-${stamp}.cpuprofile`);
     await writeFile(outPath, JSON.stringify(profile), "utf8");
     log.info("renderer CPU profile written", { path: outPath });
+    return { ok: true, path: outPath, durationMs };
   } catch (err) {
+    const message = (err as Error)?.message || String(err);
     log.warn("renderer CPU profile failed (in dev, close DevTools / use its Performance tab instead)", {
-      err: (err as Error)?.message,
+      err: message,
     });
+    return {
+      ok: false,
+      error: `Profile capture failed: ${message}. In dev, close DevTools (or use its own Performance tab) first.`,
+    };
   } finally {
     try {
       if (attachedHere && dbg.isAttached()) dbg.detach();
@@ -731,6 +741,15 @@ async function captureRendererCpuProfile(win: BrowserWindow, durationMs = 6000):
     rendererProfileInFlight = false;
   }
 }
+
+// Shared performance-metrics sampler. A single cached instance so concurrent
+// requests from multiple windows share one `app.getAppMetrics()` reading and
+// therefore a consistent CPU interval (see performance-metrics.ts).
+const performanceSampler = createPerformanceSampler({
+  getAppMetrics: () => app.getAppMetrics(),
+  getSystemMemoryInfo: () => process.getSystemMemoryInfo(),
+  now: () => Date.now(),
+});
 
 function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   const id = windowId || randomUUID();
@@ -1575,6 +1594,51 @@ if (mcpMode) {
     if (!resolver) return;
     pendingCloseConfirmations.delete(windowId);
     resolver(!!confirmed);
+  });
+
+  // IPC: Performance panel requests a process-metrics snapshot. The current
+  // renderer is identified by the caller's OS process id so the panel can
+  // highlight "this window" among sibling Tab processes. The sampler caches a
+  // single reading briefly so multiple windows polling at once don't corrupt
+  // each other's CPU interval.
+  ipcMain.handle("perf:get-snapshot", (event) => {
+    const rendererPid = event.sender.getOSProcessId() ?? null;
+    return performanceSampler.sample(rendererPid);
+  });
+
+  // IPC: Performance panel's "Capture CPU profile" button. Always derives the
+  // BrowserWindow from event.sender so it profiles the calling window (not
+  // whichever window happens to be focused), reusing the same mechanism as
+  // Ctrl+Shift+F12. Returns the written path or a structured error.
+  ipcMain.handle("perf:capture-cpu-profile", async (event): Promise<CpuProfileCaptureResult> => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) {
+      return { ok: false, error: "No window available to profile." };
+    }
+    return captureRendererCpuProfile(win);
+  });
+
+  // IPC: reveal a captured profile in the OS file manager. Cross-platform via
+  // shell.showItemInFolder (Explorer / Finder / default Linux file manager).
+  // Hardened: only a .cpuprofile that lives inside our own logs dir may be
+  // revealed, so a compromised renderer can't open an arbitrary filesystem
+  // location in the user's file manager.
+  ipcMain.handle("perf:reveal-cpu-profile", (_event, filePath: unknown): RevealResult => {
+    if (typeof filePath !== "string" || !filePath) {
+      return { ok: false, error: "No profile path provided." };
+    }
+    const resolved = path.resolve(filePath);
+    const logDir = path.resolve(getLogDir());
+    const withinLogDir = resolved === logDir || resolved.startsWith(logDir + path.sep);
+    if (!withinLogDir || !resolved.toLowerCase().endsWith(".cpuprofile")) {
+      log.warn("perf:reveal-cpu-profile rejected path outside logs dir", { resolved });
+      return { ok: false, error: "Refused to reveal a path outside the logs directory." };
+    }
+    if (!existsSync(resolved)) {
+      return { ok: false, error: "Profile file no longer exists." };
+    }
+    shell.showItemInFolder(resolved);
+    return { ok: true };
   });
 
   // IPC: renderer requests a new "diff popout" window. The payload is a
