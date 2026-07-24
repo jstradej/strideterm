@@ -167,6 +167,10 @@
   display: flex;
   gap: 6px;
   align-items: center;
+  /* Never shrink or clip: the right-aligned pin + close must stay visible even
+     when the three tabs and the action buttons together exceed the header
+     width. The tab bar yields instead (see .notification-center__tabs). */
+  flex-shrink: 0;
 }
 
 .notification-center__action {
@@ -197,10 +201,12 @@
   line-height: 1;
 }
 
-/* Narrow dock: collapse text labels into icons so the header stops wrapping
-   when the user shrinks the panel. Threshold picked just above the point
-   where "Ack finished" starts to break onto two lines. */
-@container notif-dock (max-width: 320px) {
+/* Narrow dock: collapse the Ack/Clear text labels into icons so the three tabs
+   (Alerts · Telegram · Performance) plus the action buttons and the right-
+   aligned pin/close controls all fit on one line. At the default 360px panel
+   width the full labels no longer fit once the Performance tab is present, so
+   the threshold sits above 360. Wider (resized) pinned docks still show labels. */
+@container notif-dock (max-width: 440px) {
   .notification-center__action-label {
     display: none;
   }
@@ -865,6 +871,12 @@
   display: flex;
   gap: 2px;
   align-items: center;
+  /* Yield space to __actions when the header is tight: the tab bar shrinks
+     (clipping its trailing edge) rather than pushing the right-aligned
+     pin/close controls off the panel. overflow: hidden lets the flex item
+     shrink below its content min-size. */
+  min-width: 0;
+  overflow: hidden;
 }
 
 .notification-center__tab {
@@ -892,6 +904,123 @@
 .notification-center__tab--active {
   color: var(--text);
   background: rgba(255, 255, 255, 0.08);
+}
+
+/* Per-tab icon — hidden while labels fit, revealed in the icon-tab mode below. */
+.notification-center__tab-icon {
+  display: none;
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* Hamburger tab switcher — hidden until the panel is too narrow for even the
+   icon tabs (revealed by the ≤240px container query below). */
+.notification-center__tabmenu {
+  position: relative;
+  display: none;
+  min-width: 0;
+}
+
+.notification-center__tabmenu-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.notification-center__tabmenu-toggle:hover,
+.notification-center__tabmenu-toggle--open {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.notification-center__tabmenu-hamburger {
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.notification-center__tabmenu-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-center__tabmenu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--panel-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.notification-center__tabmenu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.notification-center__tabmenu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.notification-center__tabmenu-item--active {
+  background: rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+}
+
+/* Icon tabs: below 440px the three tab labels + action buttons + pin/close no
+   longer fit, so drop each tab to just its icon. Placed after the base
+   .notification-center__tab rules so these win on equal specificity. */
+@container notif-dock (max-width: 440px) {
+  .notification-center__tab-label {
+    display: none;
+  }
+  .notification-center__tab-icon {
+    display: inline-flex;
+  }
+  .notification-center__tab {
+    padding: 4px 8px;
+  }
+}
+
+/* Hamburger: below 240px even the icon tabs crowd the action buttons, so
+   collapse the whole tab bar into the dropdown switcher. */
+@container notif-dock (max-width: 240px) {
+  .notification-center__tabs {
+    display: none;
+  }
+  .notification-center__tabmenu {
+    display: flex;
+  }
 }
 
 /* ── Telegram status list ── */

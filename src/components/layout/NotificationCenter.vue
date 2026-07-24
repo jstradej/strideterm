@@ -23,9 +23,11 @@
             type="button"
             class="notification-center__tab"
             :class="{ 'notification-center__tab--active': activeTab === 'alerts' }"
+            title="Alerts — notification history for this profile."
             @click="activeTab = 'alerts'"
           >
-            Alerts
+            <span class="notification-center__tab-icon" aria-hidden="true">🔔</span>
+            <span class="notification-center__tab-label">Alerts</span>
             <span
               v-if="profileUnreadCount > 0"
               class="notification-center__title-badge"
@@ -40,7 +42,8 @@
             title="Status of all configured Telegram bot connections (polling state, missing tokens). Configure them in Settings → Telegram."
             @click="activeTab = 'telegram'"
           >
-            Telegram
+            <span class="notification-center__tab-icon" aria-hidden="true">✈️</span>
+            <span class="notification-center__tab-label">Telegram</span>
           </button>
           <button
             v-if="supportsPerformance"
@@ -50,8 +53,48 @@
             title="Live CPU / memory of the Electron processes and this window's terminal rendering activity. Diagnostics only run while this tab is open."
             @click="activeTab = 'performance'"
           >
-            Performance
+            <span class="notification-center__tab-icon" aria-hidden="true">📈</span>
+            <span class="notification-center__tab-label">Performance</span>
           </button>
+        </div>
+        <!-- Very-narrow fallback: below the icon-tab threshold even the icons
+             crowd the action buttons, so the tab bar collapses into this
+             dropdown (CSS toggles which of the two is displayed). -->
+        <div ref="tabMenuRef" class="notification-center__tabmenu">
+          <button
+            type="button"
+            class="notification-center__tabmenu-toggle"
+            :class="{ 'notification-center__tabmenu-toggle--open': tabMenuOpen }"
+            :aria-expanded="tabMenuOpen ? 'true' : 'false'"
+            aria-haspopup="menu"
+            title="Switch section (Alerts · Telegram · Performance)"
+            @click="tabMenuOpen = !tabMenuOpen"
+          >
+            <span class="notification-center__tabmenu-hamburger" aria-hidden="true">☰</span>
+            <span class="notification-center__tabmenu-current">{{ activeTabLabel }}</span>
+            <span
+              v-if="activeTab === 'alerts' && profileUnreadCount > 0"
+              class="notification-center__title-badge"
+              :title="`${profileUnreadCount} unread in this profile`"
+              >{{ profileUnreadCount > 99 ? "99+" : profileUnreadCount }}</span
+            >
+          </button>
+          <div v-if="tabMenuOpen" class="notification-center__tabmenu-list" role="menu">
+            <button
+              v-for="t in menuTabs"
+              :key="t.id"
+              type="button"
+              role="menuitem"
+              class="notification-center__tabmenu-item"
+              :class="{ 'notification-center__tabmenu-item--active': activeTab === t.id }"
+              @click="selectTab(t.id)"
+            >
+              <span>{{ t.label }}</span>
+              <span v-if="t.id === 'alerts' && profileUnreadCount > 0" class="notification-center__title-badge">{{
+                profileUnreadCount > 99 ? "99+" : profileUnreadCount
+              }}</span>
+            </button>
+          </div>
         </div>
         <div class="notification-center__actions">
           <button
@@ -335,10 +378,31 @@ function clearAllInProfile(): void {
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
-const activeTab = ref<"alerts" | "telegram" | "performance">("alerts");
+type TabId = "alerts" | "telegram" | "performance";
+const activeTab = ref<TabId>("alerts");
 // The Performance tab needs Electron process metrics — only shown when the
 // transport advertises them (desktop), never on the remote/mobile client.
 const supportsPerformance = computed(() => appStore.supportsPerformanceMetrics);
+
+// Narrow-panel tab switcher. The tab bar and this dropdown are both rendered;
+// a container query decides which one is visible (see notifications.css). The
+// open/close state is JS-driven so the dropdown can be dismissed by clicking
+// away just like the panel itself.
+const tabMenuOpen = ref(false);
+const tabMenuRef = ref<HTMLElement | null>(null);
+const menuTabs = computed<{ id: TabId; label: string }[]>(() => {
+  const tabs: { id: TabId; label: string }[] = [
+    { id: "alerts", label: "Alerts" },
+    { id: "telegram", label: "Telegram" },
+  ];
+  if (supportsPerformance.value) tabs.push({ id: "performance", label: "Performance" });
+  return tabs;
+});
+const activeTabLabel = computed(() => menuTabs.value.find((t) => t.id === activeTab.value)?.label ?? "Alerts");
+function selectTab(id: TabId): void {
+  activeTab.value = id;
+  tabMenuOpen.value = false;
+}
 
 // Telegram connection statuses from live snapshot
 interface TelegramConnectionView {
@@ -909,5 +973,13 @@ useDismissable(() => notifStore.panelOpen && !notifStore.pinned, panelRef, {
   onDismiss: () => notifStore.closePanel(),
   eventName: "pointerdown",
   ignoreSelector: "[data-role='notification-bell']",
+});
+
+// Close the narrow-panel tab dropdown on any pointer-down outside it. Runs
+// independently of the panel dismissable above: a click on the panel body
+// closes just the menu; a click outside the whole panel closes both.
+useDismissable(tabMenuOpen, tabMenuRef, {
+  onDismiss: () => (tabMenuOpen.value = false),
+  eventName: "pointerdown",
 });
 </script>
