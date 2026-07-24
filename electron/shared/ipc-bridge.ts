@@ -85,6 +85,7 @@ import type {
   WorkspacePushOptions,
 } from "../backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "./types/ssh.js";
+import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "./performance.js";
 
 export type { StatePayload };
 
@@ -355,6 +356,15 @@ export interface StridetermAPI {
   takeSessionControl: (sessionId: string) => Promise<{ ok: boolean }>;
   /** Fired when typed input was blocked because another viewer holds the input lease. */
   onTerminalInputBlocked: (handler: (payload: { sessionId: string; ownerLabel: string }) => void) => void;
+
+  // Performance diagnostics (Electron-only; the remote transport does not
+  // advertise these, so the Performance panel is hidden on remote clients).
+  /** Point-in-time snapshot of Electron process CPU/memory metrics. */
+  getPerformanceSnapshot: () => Promise<PerformanceSnapshot>;
+  /** Capture a renderer CPU profile (same mechanism as Ctrl+Shift+F12). */
+  captureRendererCpuProfile: () => Promise<CpuProfileCaptureResult>;
+  /** Reveal a captured .cpuprofile in the OS file manager (Explorer/Finder/Files). */
+  revealCpuProfile: (filePath: string) => Promise<RevealResult>;
 
   // Docker
   refreshDocker: () => Promise<unknown>;
