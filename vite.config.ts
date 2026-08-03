@@ -15,6 +15,20 @@ const require = createRequire(import.meta.url);
 const monacoPathParts = require.resolve("monaco-editor").split(sep);
 const sharedNodeModules = monacoPathParts.slice(0, monacoPathParts.lastIndexOf("node_modules") + 1).join(sep);
 
+// Node 26 ships its own `localStorage`/`sessionStorage` globals. Without
+// `--localstorage-file` they read back as `undefined`, and vitest's jsdom
+// environment only copies a jsdom window key onto `globalThis` when the key
+// isn't there already or sits on its hardcoded allowlist — that list covers
+// `Storage`, not the two instances. So Node's empty built-ins win and every
+// test touching `window.localStorage` fails with "Cannot read properties of
+// undefined (reading 'removeItem')". Turning the built-ins off in the test
+// workers lets jsdom install its real Storage.
+//
+// Probed rather than passed unconditionally: the flag only exists on Node
+// versions that have Web Storage, and CI still runs Node 22. `in` doesn't
+// invoke the getter, so this doesn't trip Node's ExperimentalWarning.
+const testExecArgv = "localStorage" in globalThis ? ["--no-experimental-webstorage"] : [];
+
 export default defineConfig({
   plugins: [vue()],
   root: resolve(__dirname, "src"),
@@ -76,5 +90,6 @@ export default defineConfig({
     // useIsNarrow / responsive composables don't crash with "matchMedia
     // is not a function" the moment they hit onMounted.
     setupFiles: [resolve(__dirname, "test/vitest-setup.ts")],
+    execArgv: testExecArgv,
   },
 });
