@@ -362,7 +362,7 @@ const GETUPDATES_HTTP_TIMEOUT_MS = 35_000;
 const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
 
 // HTTP retry: 200 ms exponential, max 3 retries; skipped for auth/rate-limit/4xx errors.
-const telegramRetry = Schedule.both(Schedule.exponential("200 millis"), Schedule.recurs(3));
+const telegramRetry = Schedule.max([Schedule.exponential("200 millis"), Schedule.recurs(3)]);
 
 /**
  * Detect a deliberate AbortController.abort() result — either a native
