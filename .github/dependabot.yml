@@ -13,6 +13,19 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
+    ignore:
+      # TypeScript 7 ships without a programmatic compiler API —
+      # `require("typescript")` exposes only `version`/`versionMajorMinor` — and
+      # typescript-eslint's type-aware rules are built straight against that API.
+      # So its peer range pins `typescript ">=4.8.4 <6.1.0"` (same on the canary
+      # channel) and a major bump can't even install: `npm ci` dies on ERESOLVE
+      # before any of our code is compiled. Upstream closed the support request
+      # as not-planned ("there is nothing we can do about this until TS 7
+      # provides an API"); that API is expected in TypeScript 7.1.
+      # Tracking: typescript-eslint/typescript-eslint#10940.
+      # Drop this ignore once typescript-eslint supports TypeScript 7.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions — keep CI actions up to date (monthly is fine)
   - package-ecosystem: github-actions
