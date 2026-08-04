@@ -79,20 +79,68 @@ export class RemoteClientRegistry {
   }
 
   /**
-   * Seed a client's view state when it (re)binds to a profile — mirror of the
-   * runtime's resolveProfileRestoreTarget plus the legacy profile grid as the
-   * default layout.
+   * The desktop window a freshly-bound client should adopt its view from: the
+   * most recently focused slot in `profileId`, or null when the profile has no
+   * desktop window. Focus ordering follows the same convention as main.ts's
+   * primary-window pick (`lastFocusedAt || 0`, highest wins); ties keep the
+   * earlier slot so the result is deterministic.
+   */
+  private primarySlotForProfile(appState: AnyState, profileId: string): AnyState | null {
+    const slots: AnyState[] = appState?.windowSlots || [];
+    const inProfile = slots.filter((slot: AnyState) => String(slot?.profileId || "") === profileId);
+    if (inProfile.length === 0) return null;
+    return inProfile.reduce((best: AnyState, slot: AnyState) =>
+      Number(slot?.lastFocusedAt || 0) > Number(best?.lastFocusedAt || 0) ? slot : best,
+    );
+  }
+
+  /**
+   * Seed a client's view state when it (re)binds to a profile.
+   *
+   * Precedence: the profile's live desktop window, then the profile's
+   * lastActive mirror, then its first workspace.
+   *
+   * The desktop window comes first because the mirror
+   * (`profile.lastActiveWorkspaceId`) is only written on deactivation-ish
+   * events — workspace/session switch, profile switch, window close — so it
+   * drifts from what the user is actually looking at: two windows in one
+   * profile overwrite each other's value, and a mirror that survived a kill
+   * is never corrected on load (the windowSlot seed in normalizeState only
+   * fills a MISSING one). Reading the slot here makes "connect from the phone"
+   * land on the desktop's current view.
+   *
+   * This runs on (re)bind only — fresh session, profile switch, or a profile
+   * that ceased to exist — never on the broadcast path, so the desktop cannot
+   * drag an established remote view around mid-session. `composePayload` ->
+   * `revalidate` still only touches an INVALID selection.
    */
   private seedViewState(client: RemoteClientContext, appState: AnyState): void {
     const profiles: AnyState[] = appState?.profiles || [];
     const profile = profiles.find((p: AnyState) => p.id === client.profileId);
     const wsList = this.profileWorkspaces(appState, client.profileId);
+    const inProfile = (id: string): boolean => Boolean(id) && wsList.some((ws: AnyState) => ws.id === id);
+
+    const slot = this.primarySlotForProfile(appState, client.profileId);
+    const slotWsId = String(slot?.activeWorkspaceId || "");
     const savedWsId = String(profile?.lastActiveWorkspaceId || "");
-    client.activeWorkspaceId =
-      savedWsId && wsList.some((ws: AnyState) => ws.id === savedWsId) ? savedWsId : String(wsList[0]?.id || "");
-    const savedSessionId = String(profile?.lastActiveSessionId || "");
-    client.activeSessionId =
-      client.activeWorkspaceId && savedSessionId.startsWith(`${client.activeWorkspaceId}:`) ? savedSessionId : "";
+
+    // Each source contributes workspace AND session together. Pairing a slot
+    // workspace with a mirrored session would synthesise a view neither the
+    // desktop nor the previous remote client ever had.
+    let workspaceId: string;
+    let sessionId = "";
+    if (inProfile(slotWsId)) {
+      workspaceId = slotWsId;
+      sessionId = String(slot?.activeSessionId || "");
+    } else if (inProfile(savedWsId)) {
+      workspaceId = savedWsId;
+      sessionId = String(profile?.lastActiveSessionId || "");
+    } else {
+      workspaceId = String(wsList[0]?.id || "");
+    }
+
+    client.activeWorkspaceId = workspaceId;
+    client.activeSessionId = workspaceId && sessionId.startsWith(`${workspaceId}:`) ? sessionId : "";
     client.workspaceGrid = this.sanitizeGrid(profile?.workspaceGrid, appState, client.profileId);
   }
 
