@@ -930,7 +930,11 @@ function json(response: ServerResponse, statusCode: number, body: unknown): void
   // client that already holds the current body sends If-None-Match and we skip
   // re-sending it. Supplementary — correctness never depends on it.
   if (ctx?.method === "GET" && statusCode === 200) {
-    const etag = `"${createHash("sha1").update(raw).digest("base64")}"`;
+    // sha256, not sha1: the ETag is only a cache validator, but the body it
+    // digests carries workspace/session identifiers, and CodeQL's
+    // weak-cryptographic-algorithm rule flags sha1 over that data as a high
+    // alert. Nothing here depends on the digest being short.
+    const etag = `"${createHash("sha256").update(raw).digest("base64")}"`;
     headers.ETag = etag;
     headers["Cache-Control"] = "no-cache"; // must revalidate, but 304 is allowed
     if (ctx.ifNoneMatch && ctx.ifNoneMatch === etag) {
