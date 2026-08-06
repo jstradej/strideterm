@@ -61,7 +61,7 @@ Choose **Default** as the model to let the CLI use its own default without passi
 
 ### Idle detection per provider
 
-Each CLI signals end-of-turn differently. Notification hooks are the primary signal for all five — they're instant, reliable, and don't depend on the agent emitting any particular terminal sequence between turns. Without hooks configured, the Task Runner falls back to a silence-based heuristic.
+Each CLI signals end-of-turn differently. An event-driven notification is the primary signal for all five — a hook for four of them, a native plugin for OpenCode — instant, reliable, and independent of the agent emitting any particular terminal sequence between turns. Without it configured, the Task Runner falls back to a silence-based heuristic.
 
 | Provider       | Primary signal (with hooks)                        | Fallback (no hooks)         |
 | -------------- | -------------------------------------------------- | --------------------------- |
@@ -69,11 +69,11 @@ Each CLI signals end-of-turn differently. Notification hooks are the primary sig
 | Codex CLI      | Stop / UserPromptSubmit hooks (instant)            | Silence timer (8 s)         |
 | Gemini CLI     | AfterAgent / Notification hooks (instant)          | Silence timer (8 s)         |
 | GitHub Copilot | sessionEnd / userPromptSubmitted hooks (instant)   | Silence timer (8 s)         |
-| OpenCode       | Stop / UserPromptSubmit hooks (instant)            | Silence timer (8 s)         |
+| OpenCode       | session.idle / chat.message plugin (instant)       | Silence timer (8 s)         |
 
 Enable hooks for all five providers in **Settings → General** (under _Agent notification hook_) — one click each. Without hooks the silence heuristic still works but introduces an 8-second delay per handoff (and longer if the CLI reasons for a while), and is more prone to false positives during long turns. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it's effectively silent — hooks are what carries the signal.
 
-Codex hooks require **Codex CLI 0.121.0+** on Windows — older Windows builds ship with hooks gated off. Current Codex builds use `[features] hooks = true`; older `codex_hooks = true` configs are legacy and may produce a deprecation warning. After strIDEterm writes Codex hooks, Codex can still require a one-time `/hooks` review before those commands are allowed to run. Copilot hooks require **GitHub Copilot CLI 1.0.32+** and honor `COPILOT_HOME` for config-path overrides; if `disableAllHooks: true` is set in `~/.copilot/config.json`, strIDEterm surfaces a distinct _"Configured — hooks disabled"_ state in Settings. OpenCode hooks honor `OPENCODE_HOME` for config-path overrides.
+Codex hooks require **Codex CLI 0.121.0+** on Windows — older Windows builds ship with hooks gated off. Current Codex builds use `[features] hooks = true`; older `codex_hooks = true` configs are legacy and may produce a deprecation warning. After strIDEterm writes Codex hooks, Codex can still require a one-time `/hooks` review before those commands are allowed to run. Copilot hooks require **GitHub Copilot CLI 1.0.32+** and honor `COPILOT_HOME` for config-path overrides; if `disableAllHooks: true` is set in `~/.copilot/config.json`, strIDEterm surfaces a distinct _"Configured — hooks disabled"_ state in Settings. OpenCode is wired up differently: its config schema has no `hooks` key and OpenCode refuses to start when one is present, so strIDEterm installs a native OpenCode plugin instead — `~/.config/opencode/plugins/strideterm-notify.js`, the same path on Windows (OpenCode resolves its config dir XDG-style everywhere; `XDG_CONFIG_HOME` is honored, `OPENCODE_HOME` is not read at all). Restart any running `opencode` after configuring so it picks the plugin up. If an older strIDEterm had written the rejected `hooks` block into your OpenCode config, startup strips it and — because writing it meant you had opted in — installs the plugin in its place, so the integration keeps working instead of quietly disappearing.
 
 ## Writing Good Task Descriptions
 

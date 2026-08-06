@@ -372,7 +372,12 @@ describe("review bridge agent launch", () => {
         argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
         defaultApp: false,
         platform: "win32",
+        // `pathEnv: ""` alone is NOT enough: it's falsy, so the resolver falls
+        // back to the real process.env.PATH and this test would resolve a real
+        // opencode.cmd on any machine that has OpenCode installed. Stub the
+        // existence check so "not resolvable" actually means that.
         pathEnv: "",
+        pathExists: () => false,
       },
     });
 

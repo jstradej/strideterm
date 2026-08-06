@@ -29,6 +29,62 @@ export async function atomicWriteFile(filePath: string, data: string, tmpSuffix 
   await fs.rename(tmpPath, filePath);
 }
 
+// ---- JSONC ----
+
+/**
+ * Strips `//` and block comments outside string literals, plus trailing commas.
+ *
+ * Two of the providers keep a JSONC config that strict JSON.parse rejects:
+ * Copilot ships `// User settings ...` header comments, and OpenCode writes a
+ * trailing comma of its own accord (verified on 1.18.14, which emits
+ * `{ "$schema": "...", }`). Comments are not preserved on write — a config is
+ * only rewritten when strIDEterm actually removed one of its own entries.
+ */
+export function stripJsoncComments(input: string): string {
+  let out = "";
+  let i = 0;
+  let inString = false;
+  let stringChar = "";
+  let escape = false;
+  while (i < input.length) {
+    const ch = input[i];
+    const next = input[i + 1];
+    if (inString) {
+      out += ch;
+      if (escape) escape = false;
+      else if (ch === "\\") escape = true;
+      else if (ch === stringChar) inString = false;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      stringChar = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < input.length && input[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < input.length - 1 && !(input[i] === "*" && input[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+
+/** `parseConfig` implementation for providers whose config file is JSONC. */
+export function parseJsoncConfig(raw: string): Record<string, unknown> {
+  return JSON.parse(stripJsoncComments(raw)) as Record<string, unknown>;
+}
+
 // ---- JSON config read/write ----
 
 export interface ReadConfigResult {
@@ -99,8 +155,9 @@ export function findHookIndex(
 }
 
 /**
- * Shared entry-matcher for the Claude-style nested shape used by Claude,
- * Codex, and OpenCode: `{ matcher, hooks: [{ command, ... }] }`.
+ * Shared entry-matcher for the Claude-style nested shape used by Claude and
+ * Codex: `{ matcher, hooks: [{ command, ... }] }`. The OpenCode module also
+ * uses it, but only to recognize the legacy entries it now cleans up.
  */
 export function matchesNestedCommandEntry(entry: unknown, markers: readonly string[]): boolean {
   const e = entry as Record<string, unknown>;
@@ -115,9 +172,9 @@ export function matchesNestedCommandEntry(entry: unknown, markers: readonly stri
 }
 
 /**
- * Builds the shared nested hook-entry shape used by Claude, Codex, and
- * OpenCode. The hook/event name is passed as argv[2] so one notify.mjs
- * script handles every hook type.
+ * Builds the shared nested hook-entry shape used by Claude and Codex. The
+ * hook/event name is passed as argv[2] so one notify.mjs script handles every
+ * hook type.
  */
 export function buildNestedCommandEntry(notifyScriptPath: string, canonicalName: string) {
   const normalized = notifyScriptPath.replace(/\\/g, "/");

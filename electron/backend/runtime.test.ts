@@ -75,6 +75,15 @@ vi.mock("./claude-hook-config.js", async (importOriginal) => {
   };
 });
 
+// createRuntime() runs the legacy OpenCode migration at startup, and that path
+// resolves to the REAL ~/.config/opencode — no fixture indirection. Stub it so
+// the suite can't rewrite the developer's own OpenCode config or drop a plugin
+// into their plugins directory.
+vi.mock("./opencode-hook-config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./opencode-hook-config.js")>();
+  return { ...actual, migrateLegacyOpencodeHooks: async () => ({ cleaned: [], pluginInstalled: false }) };
+});
+
 // Starts capturing getLogger(...) calls (see the "./logger.js" mock above)
 // and returns the array they land in. Always pair with `logCallCapture.current
 // = null;` in a `finally` so a forgotten reset can't leak into later tests.
