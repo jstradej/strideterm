@@ -9,6 +9,7 @@ import {
   configureHookEntries,
   removeHookEntries,
   detectHookEntriesStatus,
+  parseJsoncConfig,
 } from "./hook-config-engine.js";
 
 const log = getLogger("copilot-hook");
@@ -85,52 +86,9 @@ export function findExistingHook(config: Record<string, unknown>, copilotEventNa
 }
 
 // Copilot's config.json is JSONC — it ships with `// User settings ...`
-// header comments and may pick up trailing commas. JSON.parse rejects both,
-// so we strip line/block comments outside strings before parsing. We do not
-// preserve comments on write; Copilot regenerates them as needed.
-function stripJsoncComments(input: string): string {
-  let out = "";
-  let i = 0;
-  let inString = false;
-  let stringChar = "";
-  let escape = false;
-  while (i < input.length) {
-    const ch = input[i];
-    const next = input[i + 1];
-    if (inString) {
-      out += ch;
-      if (escape) escape = false;
-      else if (ch === "\\") escape = true;
-      else if (ch === stringChar) inString = false;
-      i++;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      inString = true;
-      stringChar = ch;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (ch === "/" && next === "/") {
-      while (i < input.length && input[i] !== "\n") i++;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      i += 2;
-      while (i < input.length - 1 && !(input[i] === "*" && input[i + 1] === "/")) i++;
-      i += 2;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out.replace(/,(\s*[}\]])/g, "$1");
-}
-
-function parseCopilotConfig(raw: string): Record<string, unknown> {
-  return JSON.parse(stripJsoncComments(raw)) as Record<string, unknown>;
-}
+// header comments and may pick up trailing commas, both of which JSON.parse
+// rejects. Shared with the OpenCode module, whose config is JSONC too.
+const parseCopilotConfig = parseJsoncConfig;
 
 /**
  * Configure GitHub Copilot CLI lifecycle hooks in ~/.copilot/config.json.

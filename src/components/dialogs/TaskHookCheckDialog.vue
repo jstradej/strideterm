@@ -18,8 +18,7 @@
         {{ providerDisplayName }}.
       </p>
       <p v-else style="font-size: 13px; color: var(--text-muted); margin: 0">
-        The hook notification script needs to be registered in {{ providerDisplayName }}'s settings. This is a one-time
-        setup.
+        strIDEterm needs to register its notification hook with {{ providerDisplayName }}. This is a one-time setup.
       </p>
       <footer class="dialog__footer" style="gap: 8px">
         <button
@@ -41,7 +40,7 @@
         <button
           type="button"
           class="button"
-          :title="`Install the strIDEterm notification hook into ${providerDisplayName}'s settings file (one-time setup) and immediately start the task. Recommended.`"
+          :title="`Register the strIDEterm notification hook with ${providerDisplayName} (one-time setup) and immediately start the task. Recommended.`"
           @click="emit('configure')"
         >
           Configure &amp; start

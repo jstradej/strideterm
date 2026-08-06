@@ -50,7 +50,12 @@ import {
 import { configureGeminiHook, removeGeminiHook, detectGeminiHookStatus } from "./gemini-hook-config.js";
 import { configureCodexHook, removeCodexHook, detectCodexHookStatus } from "./codex-hook-config.js";
 import { configureCopilotHook, removeCopilotHook, detectCopilotHookStatus } from "./copilot-hook-config.js";
-import { configureOpencodeHook, removeOpencodeHook, detectOpencodeHookStatus } from "./opencode-hook-config.js";
+import {
+  configureOpencodeHook,
+  removeOpencodeHook,
+  detectOpencodeHookStatus,
+  migrateLegacyOpencodeHooks,
+} from "./opencode-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import type { RecoveryCandidate } from "../shared/types/state.js";
 import { getProvider } from "./providers/provider-registry.js";
@@ -3780,6 +3785,12 @@ export async function createRuntime({
       err: notifyScriptResult.error,
     });
   }
+  // strIDEterm <= 2.4.20 wrote a Claude-style `hooks` block into the OpenCode
+  // config. OpenCode rejects the unrecognized key and refuses to start, so a
+  // user hit by this can't reach the Settings dialog's Remove button through
+  // a working opencode — heal it here instead, and move anyone who had opted
+  // in over to the plugin. No-op for everyone else.
+  await migrateLegacyOpencodeHooks();
   await startAgentNotifyServer();
   ensureDockerPolling();
   ensureGitPolling();

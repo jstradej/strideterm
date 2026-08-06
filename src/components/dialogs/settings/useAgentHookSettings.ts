@@ -174,10 +174,12 @@ function hookTestFailLabel(reason: string | undefined): string {
       return "Hook did not arrive within 2s";
     case "notify-server-unavailable":
       return "Notify server is not running — enable Agent hook first";
+    // Provider-neutral: this label is rendered for all five providers, only
+    // one of which is Claude Code.
     case "configure-failed":
-      return "Could not configure Claude Code settings";
+      return "Could not write the provider's hook configuration";
     case "config-error":
-      return "Error reading Claude Code settings";
+      return "Could not read the provider's hook configuration";
     case "spawn-failed":
     case "spawn-error":
       return "Could not launch notify.mjs — Node.js may be missing";
@@ -423,45 +425,44 @@ export function useAgentHookSettings(api: any) {
       testMethod: "testOpencodeHook",
       configureLabel: "Configure OpenCode",
       configureTitle:
-        "Install strIDEterm hook entries into the OpenCode config file (~/.config/opencode/config.json on Linux/macOS, %AppData%\\opencode\\config.json on Windows). Registers Stop and UserPromptSubmit events for the shared notify dispatcher. Preserves your existing OpenCode settings.",
+        "Install the strIDEterm plugin into OpenCode's plugin directory (~/.config/opencode/plugins/ on every platform, Windows included; honors XDG_CONFIG_HOME). Subscribes to session.idle and chat.message. OpenCode has no hooks key in its config, so nothing in your OpenCode settings is touched.",
       removeTitle:
-        "Remove only strIDEterm's hook entries from the OpenCode config file. All other OpenCode settings stay intact.",
+        "Delete strIDEterm's plugin file from OpenCode's plugin directory. All other OpenCode settings and plugins stay intact.",
       testTitle:
-        "End-to-end probe through the shared notify.mjs. Confirms the OpenCode hook → listener → dispatcher pipeline delivers events within 2 s.",
-      configJson: `{
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" Stop",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" UserPromptSubmit",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
-}`,
+        "Probes the listener → dispatcher half of the pipeline via notify.mjs. The OpenCode plugin posts directly to the same listener, so a green result means strIDEterm is ready to receive its events.",
+      configJson: `// ~/.config/opencode/plugins/strideterm-notify.js
+const NOTIFY_URL = process.env.STRIDETERM_NOTIFY_URL || "";
+
+async function send(hook) {
+  try {
+    await fetch(NOTIFY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hook, source: "opencode-plugin" }),
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch {}
+}
+
+export const StridetermNotify = async () => {
+  if (!NOTIFY_URL) return {};
+  return {
+    event: async ({ event }) => {
+      if (event?.type === "session.idle") await send("Stop");
+    },
+    "chat.message": async () => {
+      await send("UserPromptSubmit");
+    },
+  };
+};`,
       manual: {
         type: "single-path",
-        before: "If auto-configure fails, add this to",
-        path: "~/.config/opencode/config.json",
-        after: ":",
+        before: "If auto-configure fails, save this as",
+        path: "~/.config/opencode/plugins/strideterm-notify.js",
+        after: " (OpenCode loads it on its next start):",
       },
+      infoText:
+        "Uses OpenCode's native plugin API — OpenCode's config has no hooks key and refuses to start if one is present. Restart any running opencode session after configuring.",
     }),
   ];
 
