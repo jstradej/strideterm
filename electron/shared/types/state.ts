@@ -267,6 +267,11 @@ export interface PanelState {
    * Default false → panel inherits the global setting.
    */
   alertsForceOn?: boolean;
+  /**
+   * Free-text scratchpad for this tab. Purely a note to self — nothing reads
+   * it but the notes dialog, and an empty string is stored as absent.
+   */
+  notes?: string;
 }
 
 export interface ReviewPrInfo {

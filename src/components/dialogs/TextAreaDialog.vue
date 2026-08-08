@@ -33,6 +33,12 @@ interface Props {
   placeholder?: string;
   submitLabel?: string;
   secondarySubmitLabel?: string;
+  /**
+   * Let an empty value through. Off by default because most callers post the
+   * text somewhere (PR comments, commit messages) where blank is meaningless;
+   * tab notes need it so clearing the box deletes the note.
+   */
+  allowEmpty?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -41,6 +47,7 @@ const props = withDefaults(defineProps<Props>(), {
   placeholder: "",
   submitLabel: "Save",
   secondarySubmitLabel: "",
+  allowEmpty: false,
 });
 
 const emit = defineEmits<{
@@ -56,7 +63,7 @@ onMounted(() => requestAnimationFrame(() => textareaRef.value?.focus()));
 
 function handleSubmit() {
   const val = textValue.value.trim();
-  if (!val) return;
+  if (!val && !props.allowEmpty) return;
   emit("submit", val);
 }
 

@@ -160,6 +160,7 @@ function normalizePanel(panel: any, panelIndex = 0): any {
     startup: panel.startup || (panelIndex === 0 ? APP_CONFIG.ui.defaultPanelStartup : APP_CONFIG.ui.manualPanelStartup),
     cwd: panel.cwd || "",
     alertsForceOn: panel.alertsForceOn === true,
+    notes: typeof panel.notes === "string" ? panel.notes : "",
   };
 }
 

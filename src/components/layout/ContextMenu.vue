@@ -83,6 +83,16 @@
       </template>
 
       <button
+        v-if="hasPersistentPanel"
+        type="button"
+        class="context-menu__item"
+        title="Open a scratchpad for this tab — free text for whatever you want to remember about it. Nothing acts on it; the note is saved with the workspace and marks the tab with 📝."
+        @click="onNotes"
+      >
+        <span class="context-menu__icon">&#x1F4DD;</span><span>{{ hasNotes ? "Edit notes" : "Add notes" }}</span>
+      </button>
+
+      <button
         v-if="refreshKind"
         type="button"
         class="context-menu__item"
@@ -205,6 +215,11 @@ const hasPersistentPanel = computed(() => {
 const isSshPanel = computed(() => {
   const target = store.getPanelByViewId(viewId.value) as { panel?: { launch?: { kind?: string } } } | undefined;
   return target?.panel?.launch?.kind === "ssh";
+});
+
+const hasNotes = computed(() => {
+  const target = store.getPanelByViewId(viewId.value) as { panel?: { notes?: string } } | undefined;
+  return Boolean(target?.panel?.notes);
 });
 
 const canClose = computed(() => (currentTab.value ? currentTab.value.closable !== false : false));
@@ -371,6 +386,12 @@ function onEdit() {
   const id = viewId.value;
   store.hideContextMenu();
   store.editTabWithDialog(id);
+}
+
+function onNotes() {
+  const id = viewId.value;
+  store.hideContextMenu();
+  store.openTabNotesDialog(id);
 }
 
 function onEditSshHost() {

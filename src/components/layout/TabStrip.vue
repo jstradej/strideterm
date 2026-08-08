@@ -36,6 +36,7 @@
       <small v-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
       <small v-else>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
+      <span v-if="tab.notes" class="tab__notes" :title="tab.notes">📝</span>
       <span
         v-if="!compact"
         class="tab__menu"
@@ -75,6 +76,7 @@
           <span class="tab-strip-compact-picker__item-title">{{ tab.title }}</span>
           <small v-if="tab.taskBadge" class="tab-strip-compact-picker__item-status">{{ tab.taskBadge }}</small>
           <small v-else class="tab-strip-compact-picker__item-status">{{ tab.status }}</small>
+          <span v-if="tab.notes" :title="tab.notes">📝</span>
           <span
             class="tab-strip-compact-picker__item-menu"
             title="Open the tab actions menu."
@@ -172,6 +174,7 @@ const compactTabModels = computed(() => {
       attentionTooltip: "",
       taskBadge: "",
       taskTooltip: "",
+      notes: (p.notes as string) || "",
       titleTooltip: p.title || p.id,
     };
   });
@@ -229,6 +232,11 @@ const tabModels = computed(() => {
       attentionTooltip: tabAttentionTitle(tabAttention),
       taskBadge,
       taskTooltip,
+      // Free-text scratchpad from the tab's context menu. Surfaced as a 📝
+      // marker so a workspace full of tabs shows which ones carry a note
+      // without opening each one.
+      notes:
+        ((store.getPanelByViewId(tab.id) as { panel?: { notes?: string } } | undefined)?.panel?.notes as string) || "",
       titleTooltip:
         taskTooltip ||
         tabAttentionTitle(tabAttention) ||

@@ -325,6 +325,43 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     });
   }
 
+  /**
+   * Per-tab scratchpad. Nothing acts on the text — it exists so a user running
+   * several tasks side by side can jot down what's done and what's left in a
+   * given tab instead of holding it in their head.
+   *
+   * Stored on the panel, so it rides along with the rest of the workspace
+   * state (persisted, and visible from a remote client). Clearing the box
+   * saves an empty string, which every consumer treats as "no note".
+   */
+  function openTabNotesDialog(viewId: string): void {
+    const target = ctx.getPanelByViewId(viewId);
+    if (!target) return;
+    const existing = (target.panel.notes || "") as string;
+    openDialog("TextAreaDialog", {
+      eyebrow: "Tab",
+      title: `Notes — ${target.panel.title || "tab"}`,
+      label: "Anything you want to remember about this tab",
+      value: existing,
+      placeholder: "e.g. waiting on review, TODO: wire up the retry path…",
+      allowEmpty: true,
+      onCancel: closeDialog,
+      onSubmit: async (value: string) => {
+        const next = (value || "").trim();
+        if (next === existing.trim()) {
+          closeDialog();
+          return;
+        }
+        const nextWorkspace = cloneWorkspace(target.workspace);
+        nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
+          p.id === target.panel.id ? { ...p, notes: next } : p,
+        );
+        ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
+        closeDialog();
+      },
+    });
+  }
+
   function openNewTabDialog(
     cwdOverride = "",
     presetTitle = "",
@@ -1040,6 +1077,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     showLayoutPicker,
     hideLayoutPicker,
     editTabWithDialog,
+    openTabNotesDialog,
     openNewTabDialog,
     openWorkspaceDialog,
     openNewWorkspaceFlow,

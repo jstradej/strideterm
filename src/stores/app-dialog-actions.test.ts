@@ -608,3 +608,74 @@ describe("makeOpenQuickFixWizard", () => {
     expect(closeDialog).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("createDialogActions.openTabNotesDialog", () => {
+  function makeNotesCtx(panel: AnyApi) {
+    const workspace = { id: "ws-a", panels: [{ id: "other" }, panel] };
+    const ctx = makeCtx({ appState: { workspaces: [workspace] }, workspace });
+    const saveWorkspace = vi.fn(async (ws: AnyApi) => ({ appState: { workspaces: [ws] }, workspace: ws }));
+    ctx.getApi = () => ({ saveWorkspace });
+    ctx.getPanelByViewId = () => ({ workspace, panel });
+    return { ctx, saveWorkspace };
+  }
+
+  function savedPanels(saveWorkspace: AnyApi) {
+    return saveWorkspace.mock.calls[0][0].panels;
+  }
+
+  it("seeds the dialog with the panel's existing note", () => {
+    const { ctx } = makeNotesCtx({ id: "p1", title: "Bug Jana", notes: "waiting on review" });
+
+    createDialogActions(ctx).openTabNotesDialog("ws-a:p1");
+
+    expect(ctx.overlay.value).toBe("TextAreaDialog");
+    expect(ctx.overlayProps.value.value).toBe("waiting on review");
+    expect(ctx.overlayProps.value.title).toBe("Notes — Bug Jana");
+    // Without this the dialog refuses to submit a cleared box.
+    expect(ctx.overlayProps.value.allowEmpty).toBe(true);
+  });
+
+  it("saves the note onto the matching panel only", async () => {
+    const { ctx, saveWorkspace } = makeNotesCtx({ id: "p1", title: "Bug Jana" });
+    const actions = createDialogActions(ctx);
+
+    actions.openTabNotesDialog("ws-a:p1");
+    await (ctx.overlayProps.value.onSubmit as AnyApi)("  TODO: wire up retry  ");
+
+    expect(savedPanels(saveWorkspace)).toEqual([
+      { id: "other" },
+      { id: "p1", title: "Bug Jana", notes: "TODO: wire up retry" },
+    ]);
+    expect(ctx.overlay.value).toBe(null);
+  });
+
+  it("clears the note when the box is emptied", async () => {
+    const { ctx, saveWorkspace } = makeNotesCtx({ id: "p1", title: "Bug Jana", notes: "old note" });
+    const actions = createDialogActions(ctx);
+
+    actions.openTabNotesDialog("ws-a:p1");
+    await (ctx.overlayProps.value.onSubmit as AnyApi)("");
+
+    expect(savedPanels(saveWorkspace)[1].notes).toBe("");
+  });
+
+  it("skips the save when the note is unchanged", async () => {
+    const { ctx, saveWorkspace } = makeNotesCtx({ id: "p1", title: "Bug Jana", notes: "same" });
+    const actions = createDialogActions(ctx);
+
+    actions.openTabNotesDialog("ws-a:p1");
+    await (ctx.overlayProps.value.onSubmit as AnyApi)("same");
+
+    expect(saveWorkspace).not.toHaveBeenCalled();
+    expect(ctx.overlay.value).toBe(null);
+  });
+
+  it("does nothing for a view id with no panel", () => {
+    const { ctx } = makeNotesCtx({ id: "p1" });
+    ctx.getPanelByViewId = () => null;
+
+    createDialogActions(ctx).openTabNotesDialog("ws-a:nope");
+
+    expect(ctx.overlay.value).toBe(null);
+  });
+});

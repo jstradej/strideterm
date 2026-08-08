@@ -384,6 +384,19 @@
   opacity: 0.95;
 }
 
+/* Marks a tab carrying a user note. Sits in the second row of the tab grid,
+   under the attention slot, so it needs no extra column and never shifts the
+   title. Hovering shows the note itself via the title attribute. */
+.tab__notes {
+  grid-row: 2;
+  grid-column: 3;
+  align-self: center;
+  justify-self: end;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
 .tab--attention-fresh .tab__attention {
   animation: project-bell-ring 0.5s ease-out 6;
   transform-origin: 68% 12%;
