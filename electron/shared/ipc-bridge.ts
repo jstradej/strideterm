@@ -136,7 +136,18 @@ export interface TerminalExitPayload {
 export interface StridetermAPI {
   // Core app
   openExternal: (url: string) => Promise<unknown>;
-  openTerminalPath: (request: { path: string; workspaceCwd?: string; line?: number; column?: number }) => Promise<{
+  openTerminalPath: (request: {
+    path: string;
+    workspaceCwd?: string;
+    line?: number;
+    column?: number;
+    /**
+     * Skip the configured opener and hand the path to the OS. Set by the
+     * renderer when "internal" mode resolved a path the in-app Files pane
+     * can't reach (anything outside the workspace root).
+     */
+    forceSystem?: boolean;
+  }) => Promise<{
     ok: boolean;
     absPath?: string;
     error?: string;

@@ -1,11 +1,11 @@
-import { describe, expect, test, vi, afterEach, beforeAll } from "vitest";
+import { describe, expect, test, vi, afterEach, beforeAll, beforeEach } from "vitest";
 import { flushPromises } from "@vue/test-utils";
 import { createTerminalController } from "./terminal-controller.js";
 
 // Backing spy for the path-link providers' shared error-reporting helper
 // (reportOpenPathError). Declared via vi.hoisted so it's safe to reference
 // from the vi.mock factories below.
-const { mockShowError, webglMockState } = vi.hoisted(() => ({
+const { mockShowError, webglMockState, internalViewer } = vi.hoisted(() => ({
   mockShowError: vi.fn(),
   webglMockState: {
     failLoad: false,
@@ -14,12 +14,33 @@ const { mockShowError, webglMockState } = vi.hoisted(() => ({
       triggerContextLoss: () => void;
     }>,
   },
+  // Drives openInInternalViewer: `workspace` stays null for every test that
+  // never reaches internal mode (the default), so those keep bailing at the
+  // "no active workspace" guard exactly as before.
+  internalViewer: {
+    workspace: null as Record<string, unknown> | null,
+    activateView: vi.fn(async () => {}),
+    init: vi.fn(async () => {}),
+    openFileAbsPath: vi.fn(async () => true),
+  },
 }));
 vi.mock("../stores/notifications.js", () => ({
   useNotificationStore: () => ({ showError: mockShowError }),
 }));
 vi.mock("../stores/app.js", () => ({
-  useAppStore: () => ({ activeProfile: { id: "test-profile" } }),
+  useAppStore: () => ({
+    activeProfile: { id: "test-profile" },
+    get activeWorkspace() {
+      return internalViewer.workspace;
+    },
+    activateView: internalViewer.activateView,
+  }),
+}));
+vi.mock("../stores/file-manager.js", () => ({
+  useFileManagerStore: () => ({
+    init: internalViewer.init,
+    openFileAbsPath: internalViewer.openFileAbsPath,
+  }),
 }));
 
 // jsdom doesn't implement ResizeObserver — stub it so attachTerminalPane tests pass.
@@ -1503,5 +1524,86 @@ describe("path-link providers — soft-wrapped lines", () => {
     expect(links).toHaveLength(1);
     // "/usr/local/bin/mytool" is 21 cells starting at column 17.
     expect(links[0].range).toEqual({ start: { x: 17, y: 1 }, end: { x: 37, y: 1 } });
+  });
+});
+
+describe("internal path opener — out-of-workspace fallback", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function openLink(view: any, line: string) {
+    view.term.buffer.active.getLine = () => ({ translateToString: () => line });
+    const callback = vi.fn();
+    view.term.registerLinkProvider.mock.calls[0][0].provideLinks(1, callback);
+    callback.mock.calls[0][0][0].activate();
+  }
+
+  function buildInternalOpener() {
+    // First call answers as internal mode does; the retry carries forceSystem.
+    const openTerminalPath = vi.fn(async (req: { path: string; forceSystem?: boolean }) =>
+      req.forceSystem
+        ? { ok: true, absPath: req.path }
+        : { ok: true, internal: true, absPath: "/tmp/scratch/notes.md" },
+    );
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    controller.ensureTerminal("ws-a:sh");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return { view: (views.value as any).get("ws-a:sh"), openTerminalPath };
+  }
+
+  // mockShowError is shared with the describes above, which clear it on entry
+  // rather than on exit — so reset before, not after.
+  beforeEach(() => {
+    internalViewer.openFileAbsPath.mockClear();
+    internalViewer.openFileAbsPath.mockResolvedValue(true);
+    mockShowError.mockClear();
+  });
+
+  afterEach(() => {
+    internalViewer.workspace = null;
+  });
+
+  test("hands a path the Files pane can't reach to the OS opener", async () => {
+    internalViewer.workspace = { cwd: "/repo", panels: [{ id: "p1", command: "__files__" }] };
+    // The Files pane is rooted at /repo, so /tmp/scratch/notes.md is out of reach.
+    internalViewer.openFileAbsPath.mockResolvedValue(false);
+    const { view, openTerminalPath } = buildInternalOpener();
+
+    openLink(view, "wrote /tmp/scratch/notes.md");
+    for (let i = 0; i < 4; i++) await flushPromises();
+
+    expect(openTerminalPath).toHaveBeenLastCalledWith({ path: "/tmp/scratch/notes.md", forceSystem: true });
+    expect(mockShowError).not.toHaveBeenCalled();
+  });
+
+  test("stays in the Files pane for a path inside the workspace", async () => {
+    internalViewer.workspace = { cwd: "/repo", panels: [{ id: "p1", command: "__files__" }] };
+    const { view, openTerminalPath } = buildInternalOpener();
+
+    openLink(view, "wrote /tmp/scratch/notes.md");
+    for (let i = 0; i < 4; i++) await flushPromises();
+
+    expect(openTerminalPath).toHaveBeenCalledTimes(1);
+    expect(mockShowError).not.toHaveBeenCalled();
+  });
+
+  test("surfaces an error when the OS opener also fails", async () => {
+    internalViewer.workspace = { cwd: "/repo", panels: [{ id: "p1", command: "__files__" }] };
+    internalViewer.openFileAbsPath.mockResolvedValue(false);
+    const openTerminalPath = vi.fn(async (req: { path: string; forceSystem?: boolean }) =>
+      req.forceSystem
+        ? { ok: false, error: "no application knows how to open this" }
+        : { ok: true, internal: true, absPath: "/tmp/scratch/notes.md" },
+    );
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    controller.ensureTerminal("ws-a:sh");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    openLink((views.value as any).get("ws-a:sh"), "wrote /tmp/scratch/notes.md");
+    for (let i = 0; i < 5; i++) await flushPromises();
+
+    expect(mockShowError).toHaveBeenCalledWith(
+      "Open path failed",
+      "Couldn't open /tmp/scratch/notes.md: no application knows how to open this",
+      { profileId: "test-profile" },
+    );
   });
 });

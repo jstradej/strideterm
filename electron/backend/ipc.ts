@@ -9,6 +9,7 @@ import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
 import { parseCommandTemplate, substituteCommandArg } from "./command-template.js";
 import { resolveTerminalOpenAction } from "./terminal-open-action.js";
+import type { TerminalOpenAction } from "./terminal-open-action.js";
 import { getLogger } from "./logger.js";
 import {
   validateIpc,
@@ -221,6 +222,11 @@ export function registerIpc(
       const workspaceCwd = typeof payload?.workspaceCwd === "string" ? payload.workspaceCwd : "";
       const lineNum = typeof payload?.line === "number" ? payload.line : 0;
       const columnNum = typeof payload?.column === "number" ? payload.column : 0;
+      // Set by the renderer when it retries a path the in-app Files pane
+      // refused. That pane is rooted at the workspace, so a file on the
+      // desktop or in another checkout can't be shown there — the OS opener
+      // is the only thing left that can do something useful with it.
+      const forceSystem = payload?.forceSystem === true;
 
       let resolved = rawPath;
       if (resolved === "~") {
@@ -241,11 +247,13 @@ export function registerIpc(
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime payload type is open by design
       const settings = (runtime.getPayload() as any)?.appState?.settings || {};
-      const action = resolveTerminalOpenAction({
-        isDirectory: statResult.isDirectory(),
-        externalEditor: typeof settings.externalEditor === "string" ? settings.externalEditor : "",
-        externalPathOpener: settings.externalPathOpener || {},
-      });
+      const action: TerminalOpenAction = forceSystem
+        ? { kind: "system" }
+        : resolveTerminalOpenAction({
+            isDirectory: statResult.isDirectory(),
+            externalEditor: typeof settings.externalEditor === "string" ? settings.externalEditor : "",
+            externalPathOpener: settings.externalPathOpener || {},
+          });
 
       // Internal mode: just resolve and let the renderer navigate to its
       // FileManager pane. We don't have a direct way to drive the renderer

@@ -95,7 +95,14 @@ interface TerminalControllerApi {
   writeTerminal: (sessionId: string, data: string) => void;
   getTerminalReplay?: (sessionId: string) => Promise<{ data: string }>;
   /** Optional — desktop only. Path link clicks are no-ops in remote mode. */
-  openTerminalPath?: (request: { path: string; workspaceCwd?: string; line?: number; column?: number }) => Promise<{
+  openTerminalPath?: (request: {
+    path: string;
+    workspaceCwd?: string;
+    line?: number;
+    column?: number;
+    /** Bypass the configured opener and hand the path straight to the OS. */
+    forceSystem?: boolean;
+  }) => Promise<{
     ok: boolean;
     absPath?: string;
     error?: string;
@@ -205,15 +212,21 @@ function offsetToBufferPos(line: LogicalLine, offset: number): { x: number; y: n
  * the "internal" external-path-opener mode.
  *
  * Requires the active workspace to expose a Files tab (a panel with
- * `command: "__files__"`). If no Files tab exists or the path is outside
- * the workspace root, surfaces a hint toast and bails — the user can then
- * either open a Files tab or switch the opener mode in Settings.
+ * `command: "__files__"`). If no Files tab exists, surfaces a hint toast and
+ * bails — the user can then either open a Files tab or switch the opener mode
+ * in Settings.
+ *
+ * The Files pane is rooted at the workspace cwd, so it can't display a path
+ * outside it. Agents routinely print paths that live elsewhere (a scratch file
+ * in /tmp, something on the desktop, a sibling checkout); rather than
+ * dead-ending those, `retryViaSystem` hands them back to the backend with
+ * `forceSystem` so the OS opener takes over.
  *
  * Imports are deferred so this module doesn't pull the renderer stores into
  * its own load graph (terminal-controller is loaded eagerly; the stores
  * shouldn't be).
  */
-async function openInInternalViewer(absPath: string): Promise<void> {
+async function openInInternalViewer(absPath: string, retryViaSystem: () => Promise<void>): Promise<void> {
   const [appMod, fmMod, notifMod] = await Promise.all([
     import("../stores/app.js"),
     import("../stores/file-manager.js"),
@@ -247,15 +260,7 @@ async function openInInternalViewer(absPath: string): Promise<void> {
     await fmStore.init(ws.cwd);
   }
   const ok = await fmStore.openFileAbsPath(absPath);
-  if (!ok) {
-    notifMod
-      .useNotificationStore()
-      .showError(
-        "Open in Files failed",
-        `Couldn't navigate to ${absPath} — the file may be outside the workspace root.`,
-        { profileId },
-      );
-  }
+  if (!ok) await retryViaSystem();
 }
 
 type AppConfig = typeof APP_CONFIG;
@@ -698,6 +703,18 @@ export function createTerminalController({
         const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
         useNotificationStore().showError("Open path failed", `Couldn't open ${path}: ${message}`, { profileId });
       }
+      // Second chance for a path the in-app Files pane refused. That pane is
+      // rooted at the workspace, so a path outside it — /tmp, the desktop, a
+      // sibling checkout — can never be shown there. `forceSystem` tells the
+      // backend to skip the configured opener and use the OS one instead.
+      async function openViaSystem(absPath: string): Promise<void> {
+        try {
+          const result = await openPath({ path: absPath, forceSystem: true });
+          if (!result?.ok) await reportOpenPathError(absPath, result?.error || "unknown error");
+        } catch (err) {
+          await reportOpenPathError(absPath, (err as Error)?.message || String(err));
+        }
+      }
       term.registerLinkProvider({
         provideLinks(bufferLineNumber, callback) {
           const logical = readLogicalLine(term, bufferLineNumber);
@@ -731,7 +748,8 @@ export function createTerminalController({
                   // FileManager pane from here. Falls back to a toast hint if
                   // the workspace doesn't expose a Files tab yet.
                   if (result.internal === true && result.absPath) {
-                    await openInInternalViewer(result.absPath);
+                    const absPath = result.absPath;
+                    await openInInternalViewer(absPath, () => openViaSystem(absPath));
                   }
                 })
                 .catch((err: unknown) => {
@@ -804,7 +822,8 @@ export function createTerminalController({
                       return;
                     }
                     if (result.internal === true && result.absPath) {
-                      await openInInternalViewer(result.absPath);
+                      const absPath = result.absPath;
+                      await openInInternalViewer(absPath, () => openViaSystem(absPath));
                     }
                   })
                   .catch((err: unknown) => {
