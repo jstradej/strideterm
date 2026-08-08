@@ -63,7 +63,7 @@
             type="button"
             class="mobile-input-bar__key mobile-input-bar__key--more"
             :class="{ 'mobile-input-bar__key--active': menuOpen }"
-            title="More keys and actions — arrows, Home/End, Ctrl+C, Ctrl+R, Ctrl+L, slash commands, and copy the visible screen."
+            title="More keys and actions — arrows, Home/End, Ctrl+Home/Ctrl+End, Ctrl+C, Ctrl+R, Ctrl+L, slash commands, and copy the visible screen."
             aria-haspopup="true"
             :aria-expanded="menuOpen"
             @mousedown.prevent
@@ -283,6 +283,20 @@ const menuKeys: AccessoryKey[] = [
     seq: "\x1b[F",
     flushDraft: true,
     title: "Send End — jump to the end of the line.",
+  },
+  {
+    label: "^⇤",
+    menuLabel: "^⇤  Ctrl+Home",
+    seq: "\x1b[1;5H",
+    flushDraft: true,
+    title: "Send Ctrl+Home — jump to the top of the buffer or list in TUI apps.",
+  },
+  {
+    label: "^⇥",
+    menuLabel: "^⇥  Ctrl+End",
+    seq: "\x1b[1;5F",
+    flushDraft: true,
+    title: "Send Ctrl+End — jump to the bottom of the buffer or list in TUI apps.",
   },
   {
     label: "^C",
