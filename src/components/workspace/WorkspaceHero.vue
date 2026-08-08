@@ -69,9 +69,12 @@
           <span
             v-if="gitSnapshot?.available"
             class="workspace-chip"
+            :title="gitSnapshot.branch"
             :style="gitSnapshot.dirty ? 'border-color:rgba(255,111,141,0.4)' : 'border-color:rgba(110,223,182,0.4)'"
           >
-            <strong :style="gitSnapshot.dirty ? 'color:#ff6f8d' : 'color:#6edfb6'">{{ gitSnapshot.branch }}</strong>
+            <strong class="workspace-chip__branch" :style="gitSnapshot.dirty ? 'color:#ff6f8d' : 'color:#6edfb6'">{{
+              gitSnapshot.branch
+            }}</strong>
             <span v-if="gitSnapshot.dirty" style="color: #ff6f8d; margin-left: 4px"
               >{{ gitSnapshot.dirtyCount }} uncommitted</span
             >

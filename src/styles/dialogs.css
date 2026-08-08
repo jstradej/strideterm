@@ -50,7 +50,12 @@
   flex: 1;
 }
 
+/* `display: block` is load-bearing: this is a <span>, and overflow /
+   text-overflow / max-width are all inert on an inline box. Without it a long
+   cwd ignored the ellipsis rules below and painted straight through the stats
+   chips sitting next to it. */
 .workspace-meta__path {
+  display: block;
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
@@ -91,6 +96,20 @@
 
 .workspace-chip strong {
   margin-right: 3px;
+}
+
+/* Feature branch names routinely run past 60 characters. The chip never
+   shrinks (.workspace-meta__stats is flex-shrink: 0), so an uncapped branch
+   grew the whole row until it ran off the window edge. inline-block is
+   required for the ellipsis; vertical-align keeps the taller inline-block
+   from adding a descender gap inside the chip. Full name stays on the chip's
+   title attribute. */
+.workspace-chip__branch {
+  display: inline-block;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 
 .workspace-chip--btn {
