@@ -136,6 +136,70 @@ function resolveWorkspaceCwdForSession(sessionId: string, payload: StatePayload 
 }
 
 /**
+ * Read one *logical* line out of the terminal buffer — i.e. a row plus every
+ * soft-wrap continuation row that belongs with it — as an array of row
+ * strings, along with the 1-based buffer line number the group starts at.
+ *
+ * xterm hands link providers one buffer row at a time. A path long enough to
+ * soft-wrap therefore arrived as two unrelated fragments, and the tail row
+ * (`epo/acf-mobile-bff/…`, the remains of `…acfspa-mono-repo/acf-mobile-bff/…`)
+ * got read as a bogus relative path that failed to open. Re-joining the group
+ * before running the detector is what makes the whole path one match.
+ *
+ * Rows are kept separate rather than pre-joined so `offsetToBufferPos` can map
+ * a match offset back to a buffer cell. Only the final row is right-trimmed:
+ * continuation rows are full by construction, and trimming them would shift
+ * every subsequent offset.
+ */
+const MAX_WRAPPED_LINE_CHARS = 2048;
+
+interface LogicalLine {
+  rows: string[];
+  /** 1-based buffer line number of `rows[0]`. */
+  startLine: number;
+}
+
+function readLogicalLine(term: Terminal, bufferLineNumber: number): LogicalLine | null {
+  const buffer = term.buffer.active;
+  if (!buffer.getLine(bufferLineNumber - 1)) return null;
+
+  // Walk back to the row that started the wrap group.
+  let startIdx = bufferLineNumber - 1;
+  let budget = MAX_WRAPPED_LINE_CHARS;
+  while (budget > 0 && buffer.getLine(startIdx)?.isWrapped && buffer.getLine(startIdx - 1)) {
+    startIdx--;
+    budget -= term.cols;
+  }
+
+  const rows: string[] = [];
+  budget = MAX_WRAPPED_LINE_CHARS;
+  for (let idx = startIdx; ; idx++) {
+    const line = buffer.getLine(idx);
+    if (!line) break;
+    const wrapsToNext = !!buffer.getLine(idx + 1)?.isWrapped;
+    rows.push(line.translateToString(!wrapsToNext));
+    budget -= term.cols;
+    if (!wrapsToNext || budget <= 0) break;
+  }
+  return rows.length ? { rows, startLine: startIdx + 1 } : null;
+}
+
+/**
+ * Map a character offset within `rows.join("")` back to a 1-based buffer
+ * position. Offsets past the end clamp to the last known cell so a range can
+ * never point outside the group.
+ */
+function offsetToBufferPos(line: LogicalLine, offset: number): { x: number; y: number } {
+  let remaining = offset;
+  for (let i = 0; i < line.rows.length; i++) {
+    if (remaining < line.rows[i].length) return { x: remaining + 1, y: line.startLine + i };
+    remaining -= line.rows[i].length;
+  }
+  const last = line.rows.length - 1;
+  return { x: Math.max(1, line.rows[last].length), y: line.startLine + last };
+}
+
+/**
  * Drive the in-app FileManager pane to a path resolved from a terminal
  * link. Used by the path-link `activate` handler when the user has chosen
  * the "internal" external-path-opener mode.
@@ -636,10 +700,9 @@ export function createTerminalController({
       }
       term.registerLinkProvider({
         provideLinks(bufferLineNumber, callback) {
-          const buffer = term.buffer.active;
-          const line = buffer.getLine(bufferLineNumber - 1);
-          const text = line ? line.translateToString(true) : "";
-          if (!text) {
+          const logical = readLogicalLine(term, bufferLineNumber);
+          const text = logical ? logical.rows.join("") : "";
+          if (!logical || !text) {
             callback(undefined);
             return;
           }
@@ -651,8 +714,9 @@ export function createTerminalController({
           const workspaceCwd = resolveWorkspaceCwdForSession(sessionId, getPayload());
           const links = matches.map((m) => ({
             range: {
-              start: { x: m.start + 1, y: bufferLineNumber },
-              end: { x: m.start + m.length, y: bufferLineNumber },
+              start: offsetToBufferPos(logical, m.start),
+              // `end` is inclusive, so it addresses the match's last character.
+              end: offsetToBufferPos(logical, m.start + m.length - 1),
             },
             text: text.substring(m.start, m.start + m.length),
             activate: () => {
@@ -695,10 +759,9 @@ export function createTerminalController({
       const FILE_URL_TRAILING_PUNCT_RE = /[.,;:!?'"]+$/;
       term.registerLinkProvider({
         provideLinks(bufferLineNumber, callback) {
-          const buffer = term.buffer.active;
-          const line = buffer.getLine(bufferLineNumber - 1);
-          const text = line ? line.translateToString(true) : "";
-          if (!text || !text.includes("file://")) {
+          const logical = readLogicalLine(term, bufferLineNumber);
+          const text = logical ? logical.rows.join("") : "";
+          if (!logical || !text.includes("file://")) {
             callback(undefined);
             return;
           }
@@ -729,8 +792,8 @@ export function createTerminalController({
             const matchStart = match.index;
             links.push({
               range: {
-                start: { x: matchStart + 1, y: bufferLineNumber },
-                end: { x: matchStart + raw.length, y: bufferLineNumber },
+                start: offsetToBufferPos(logical, matchStart),
+                end: offsetToBufferPos(logical, matchStart + raw.length - 1),
               },
               text: raw,
               activate: () => {

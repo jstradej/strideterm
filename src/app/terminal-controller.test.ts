@@ -1411,3 +1411,97 @@ describe("terminal performance diagnostics", () => {
     expect(snap.webglFallbacks).toBe(1);
   });
 });
+
+describe("path-link providers — soft-wrapped lines", () => {
+  // Models an xterm buffer where every row after the first is a soft-wrap
+  // continuation: `isWrapped` is true and only the final row is right-trimmed,
+  // exactly as the real buffer reports it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setWrappedLines(view: any, rows: string[]) {
+    view.term.buffer.active.getLine = (idx: number) =>
+      idx < 0 || idx >= rows.length
+        ? undefined
+        : {
+            isWrapped: idx > 0,
+            translateToString: (trimRight: boolean) => (trimRight ? rows[idx].replace(/\s+$/, "") : rows[idx]),
+          };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function getProviders(view: any) {
+    const calls = view.term.registerLinkProvider.mock.calls;
+    return { pathProvider: calls[0][0], fileUrlProvider: calls[1][0] };
+  }
+
+  function buildView() {
+    const openTerminalPath = vi.fn(async () => ({ ok: true }));
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    controller.ensureTerminal("ws-a:sh");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return { view: (views.value as any).get("ws-a:sh"), openTerminalPath };
+  }
+
+  // The regression from the bug report: a path wrapped mid-way was detected as
+  // two fragments, and clicking the tail row tried to open the meaningless
+  // relative path "epo/acf-mobile-bff/..." — which the backend then rejected.
+  const HEAD = "see /Users/petr/_Development/acfspa-mono-r";
+  const TAIL = "epo/acf-mobile-bff/ResponseMapper.kt:117";
+  const FULL_PATH = "/Users/petr/_Development/acfspa-mono-repo/acf-mobile-bff/ResponseMapper.kt";
+
+  test.each([
+    ["the head row", 1],
+    ["the tail row", 2],
+  ])("path-link provider: rejoins a wrapped path when hovering %s", (_label, hoveredRow) => {
+    const { view } = buildView();
+    setWrappedLines(view, [HEAD, TAIL]);
+
+    const callback = vi.fn();
+    getProviders(view).pathProvider.provideLinks(hoveredRow, callback);
+    const links = callback.mock.calls[0][0];
+
+    expect(links).toHaveLength(1);
+    expect(links[0].text).toBe(`${FULL_PATH}:117`);
+    // Starts right after "see " on row 1, ends on the last cell of row 2.
+    expect(links[0].range.start).toEqual({ x: 5, y: 1 });
+    expect(links[0].range.end).toEqual({ x: TAIL.length, y: 2 });
+  });
+
+  test("path-link provider: opens the rejoined path, not the wrapped fragment", async () => {
+    const { view, openTerminalPath } = buildView();
+    setWrappedLines(view, [HEAD, TAIL]);
+
+    const callback = vi.fn();
+    getProviders(view).pathProvider.provideLinks(2, callback);
+    callback.mock.calls[0][0][0].activate();
+    await flushPromises();
+
+    expect(openTerminalPath).toHaveBeenCalledWith(expect.objectContaining({ path: FULL_PATH, line: 117 }));
+  });
+
+  test("file:// provider: rejoins a wrapped URL", () => {
+    const { view } = buildView();
+    setWrappedLines(view, ["open file:///Users/petr/very-lo", "ng-name/report.html now"]);
+
+    const callback = vi.fn();
+    getProviders(view).fileUrlProvider.provideLinks(2, callback);
+    const links = callback.mock.calls[0][0];
+
+    expect(links).toHaveLength(1);
+    expect(links[0].text).toBe("file:///Users/petr/very-long-name/report.html");
+    expect(links[0].range.start).toEqual({ x: 6, y: 1 });
+    expect(links[0].range.end).toEqual({ x: 19, y: 2 });
+  });
+
+  test("an unwrapped line still yields a single-row range", () => {
+    const { view } = buildView();
+    setWrappedLines(view, ["build failed at /usr/local/bin/mytool"]);
+
+    const callback = vi.fn();
+    getProviders(view).pathProvider.provideLinks(1, callback);
+    const links = callback.mock.calls[0][0];
+
+    expect(links).toHaveLength(1);
+    // "/usr/local/bin/mytool" is 21 cells starting at column 17.
+    expect(links[0].range).toEqual({ start: { x: 17, y: 1 }, end: { x: 37, y: 1 } });
+  });
+});
