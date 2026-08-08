@@ -1009,44 +1009,6 @@ export function createTerminalController({
           });
       });
     });
-    // Alt/Option + click repositions the text cursor at the clicked cell by
-    // emitting that many horizontal arrows — the convention iTerm2, WezTerm and
-    // Kitty share, and the only way to edit the middle of a long prompt without
-    // arrowing across the whole thing.
-    //
-    // Horizontal only, on purpose: Up/Down at a shell prompt recalls history
-    // and would replace what the user typed, while a wrong Left/Right count
-    // merely parks the cursor in the wrong column — recoverable with a few key
-    // presses. A wrapped line still works, because readline-style editors treat
-    // Left/Right as crossing the wrap boundary.
-    //
-    // Gates:
-    //   - normal buffer only, so full-screen TUIs (vim, less, fzf, htop — all
-    //     alternate-buffer) never receive synthetic arrows;
-    //   - viewport scrolled to the bottom, since cursorX/cursorY are viewport
-    //     relative and meaningless while the user is reading scrollback;
-    //   - no active selection, so macOS Option+drag (force-selection) still
-    //     behaves as a selection gesture.
-    //
-    // Best-effort by nature: apps that draw a bordered composer reserve columns
-    // per row, so a jump spanning rows can land a few cells off inside one.
-    mount.addEventListener("click", (event) => {
-      if (!event.altKey || event.button !== 0) return;
-      const buffer = term.buffer.active;
-      if (buffer.type !== "normal" || buffer.viewportY !== buffer.baseY) return;
-      if (term.hasSelection()) return;
-      const screen = mount.querySelector(".xterm-screen") as HTMLElement | null;
-      if (!screen) return;
-      const rect = screen.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
-      const col = Math.floor(((event.clientX - rect.left) / rect.width) * term.cols);
-      const row = Math.floor(((event.clientY - rect.top) / rect.height) * term.rows);
-      if (col < 0 || row < 0 || col >= term.cols || row >= term.rows) return;
-      const delta = (row - buffer.cursorY) * term.cols + (col - buffer.cursorX);
-      if (!Number.isFinite(delta) || delta === 0) return;
-      api.writeTerminal(sessionId, (delta > 0 ? "\x1b[C" : "\x1b[D").repeat(Math.abs(delta)));
-    });
-
     // Copy-on-select: a constantly repainting TUI (Claude Code's spinner and
     // status line, fzf, vim, …) makes xterm clear the visual selection on its
     // next redraw — usually before the user can press Ctrl+C — so a classic
