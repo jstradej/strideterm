@@ -1607,3 +1607,97 @@ describe("internal path opener — out-of-workspace fallback", () => {
     );
   });
 });
+
+describe("alt+click cursor positioning", () => {
+  // 80x24 over an 800x480 screen — 10px wide, 20px tall cells.
+  const CELL_W = 10;
+  const CELL_H = 20;
+
+  function setup(bufferOverrides: Record<string, unknown> = {}) {
+    const { controller, views, api } = buildAttachController({ isRemote: false });
+    controller.ensureTerminal("ws-a:sh");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get("ws-a:sh");
+    Object.assign(view.term.buffer.active, { cursorX: 5, cursorY: 10, ...bufferOverrides });
+    // Stands in for the element xterm builds during open(), which the mocked
+    // Terminal never creates.
+    const screen = document.createElement("div");
+    screen.className = "xterm-screen";
+    screen.getBoundingClientRect = () => ({ left: 0, top: 0, width: CELL_W * 80, height: CELL_H * 24 }) as DOMRect;
+    view.mount.append(screen);
+    (api.writeTerminal as ReturnType<typeof vi.fn>).mockClear();
+    return { view, api };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function altClickCell(view: any, col: number, row: number, init: MouseEventInit = {}) {
+    view.mount.dispatchEvent(
+      new MouseEvent("click", {
+        altKey: true,
+        // Aim at the middle of the target cell.
+        clientX: col * CELL_W + CELL_W / 2,
+        clientY: row * CELL_H + CELL_H / 2,
+        ...init,
+      }),
+    );
+  }
+
+  test("moves right across the same row", () => {
+    const { view, api } = setup();
+    altClickCell(view, 20, 10);
+    expect(api.writeTerminal).toHaveBeenCalledWith("ws-a:sh", "\x1b[C".repeat(15));
+  });
+
+  test("moves left across the same row", () => {
+    const { view, api } = setup();
+    altClickCell(view, 2, 10);
+    expect(api.writeTerminal).toHaveBeenCalledWith("ws-a:sh", "\x1b[D".repeat(3));
+  });
+
+  // A wrapped prompt spans rows, but readline-style editors cross the wrap on
+  // Left/Right — so the whole jump stays horizontal.
+  test("counts whole rows when the target is on a later row", () => {
+    const { view, api } = setup();
+    altClickCell(view, 5, 12);
+    expect(api.writeTerminal).toHaveBeenCalledWith("ws-a:sh", "\x1b[C".repeat(160));
+  });
+
+  test("never emits vertical arrows", () => {
+    const { view, api } = setup();
+    altClickCell(view, 40, 3);
+    const sent = (api.writeTerminal as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(sent).not.toContain("\x1b[A");
+    expect(sent).not.toContain("\x1b[B");
+  });
+
+  test("does nothing when the click lands on the cursor", () => {
+    const { view, api } = setup();
+    altClickCell(view, 5, 10);
+    expect(api.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("does nothing without Alt held", () => {
+    const { view, api } = setup();
+    altClickCell(view, 20, 10, { altKey: false });
+    expect(api.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("does nothing in the alternate buffer (full-screen TUIs)", () => {
+    const { view, api } = setup({ type: "alternate" });
+    altClickCell(view, 20, 10);
+    expect(api.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("does nothing while the viewport is scrolled up", () => {
+    const { view, api } = setup({ viewportY: 0, baseY: 40 });
+    altClickCell(view, 20, 10);
+    expect(api.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("leaves an Alt+drag selection alone", () => {
+    const { view, api } = setup();
+    view.term.hasSelection.mockReturnValue(true);
+    altClickCell(view, 20, 10);
+    expect(api.writeTerminal).not.toHaveBeenCalled();
+  });
+});
