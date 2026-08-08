@@ -231,6 +231,23 @@ describe("default state", () => {
     expect(logsPanel!.launch!.args![3]).toContain("docker logs -f api");
   });
 
+  // normalizePanel rebuilds panels from a fixed field list, so anything not
+  // named there is dropped on every save. Tab notes went missing exactly that
+  // way before the field was added — keep it pinned.
+  test("normalizeWorkspace preserves per-tab notes", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-a",
+      panels: [
+        { id: "p1", title: "Bug Jana", notes: "waiting on review" },
+        { id: "p2", title: "Plain" },
+      ],
+    });
+
+    expect(workspace.panels.find((panel) => panel.id === "p1")!.notes).toBe("waiting on review");
+    // Panels that never got a note normalize to the empty string, not undefined.
+    expect(workspace.panels.find((panel) => panel.id === "p2")!.notes).toBe("");
+  });
+
   test("normalizeWorkspace preserves plugin workspace metadata", () => {
     const workspace = normalizeWorkspace({
       id: "system-monitor",
