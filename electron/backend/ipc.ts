@@ -10,6 +10,7 @@ import * as fm from "./file-manager.js";
 import { parseCommandTemplate, substituteCommandArg } from "./command-template.js";
 import { resolveTerminalOpenAction } from "./terminal-open-action.js";
 import type { TerminalOpenAction } from "./terminal-open-action.js";
+import { isRiskyExecutable } from "./executable-paths.js";
 import { getLogger } from "./logger.js";
 import {
   validateIpc,
@@ -172,6 +173,41 @@ export function registerIpc(
     ipcMain.handle(channel, listener);
     registeredHandleChannels.push(channel);
   }
+
+  /**
+   * Ask before letting the OS run a file (see executable-paths.ts for which
+   * ones qualify). Native rather than an in-app dialog on purpose: this is a
+   * security decision, and a main-process message box can't be dressed up or
+   * pre-clicked by anything rendering in the page.
+   *
+   * Always asks. There is deliberately no "don't ask again" — that setting is
+   * how a prompt stops being read. "Show in folder" is the default button so
+   * the safe useful action is one Enter away, and the link stays worth
+   * clicking even when the answer is "not this".
+   */
+  async function confirmRiskyOpen(
+    event: Electron.IpcMainInvokeEvent,
+    absPath: string,
+  ): Promise<"open" | "reveal" | "cancel"> {
+    const options = {
+      type: "warning" as const,
+      buttons: ["Cancel", "Show in folder", "Run anyway"],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+      title: "Run this file?",
+      message: `${path.basename(absPath)} is an executable file.`,
+      detail:
+        `${absPath}\n\n` +
+        `Opening this hands it to the operating system, which will run it rather than show it. ` +
+        `Paths in terminal output can come from anywhere — only continue if you know what this file is.`,
+    };
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+    if (response === 2) return "open";
+    if (response === 1) return "reveal";
+    return "cancel";
+  }
   function on(channel: string, listener: Parameters<typeof ipcMain.on>[1]): void {
     ipcMain.on(channel, listener);
     registeredListenerChannels.push(channel);
@@ -215,7 +251,7 @@ export function registerIpc(
   //   { ok: true, absPath }                              — opened externally (system / command modes)
   //   { ok: true, absPath, internal: true, line, column } — caller handles in-app navigation
   //   { ok: false, error, absPath? }                      — surface to user via toast
-  handle("terminal:open-path", async (_event, payload) =>
+  handle("terminal:open-path", async (event, payload) =>
     withOperationPromise({ opId: "terminal:open-path" }, async () => {
       const rawPath = typeof payload?.path === "string" ? payload.path : "";
       if (!rawPath) return { ok: false, error: "Missing path" };
@@ -306,7 +342,19 @@ export function registerIpc(
         }
       }
 
-      // System default: hand to the OS opener.
+      // System default: hand to the OS opener. Executables get a confirmation
+      // first — this is the branch where the OS decides to *run* the file, and
+      // the path came from terminal output we don't control.
+      if (isRiskyExecutable(resolved)) {
+        const choice = await confirmRiskyOpen(event, resolved);
+        // Declining is a deliberate user action, not a failure — returning ok
+        // keeps it from surfacing as an error toast.
+        if (choice === "cancel") return { ok: true, absPath: resolved };
+        if (choice === "reveal") {
+          shell.showItemInFolder(resolved);
+          return { ok: true, absPath: resolved };
+        }
+      }
       try {
         const result = await shell.openPath(resolved);
         // shell.openPath returns "" on success and the error string on failure.
@@ -1859,7 +1907,7 @@ export function registerIpc(
       return { ok: true, path: dest, source: "saved" };
     }),
   );
-  handle("file:open-in-editor", async (_event, payload) =>
+  handle("file:open-in-editor", async (event, payload) =>
     withOperationPromise({ opId: "file:open-in-editor" }, async () => {
       const { absPath, editor } = payload || {};
       if (typeof absPath !== "string" || !absPath) return { ok: false, error: "Missing absPath" };
@@ -1879,9 +1927,20 @@ export function registerIpc(
       const { spawn } = await import("node:child_process");
       try {
         if (editorCmd) {
+          // Passing the path as an argument to the user's own editor never
+          // runs it, so this branch needs no confirmation.
           spawn(editorCmd, [absPath], { detached: true, stdio: "ignore" }).unref();
         } else {
-          // Fallback: open with OS default application
+          // Fallback: open with OS default application — same confirmation as
+          // terminal path links, so Files can't be used to sidestep it.
+          if (isRiskyExecutable(absPath)) {
+            const choice = await confirmRiskyOpen(event, absPath);
+            if (choice === "cancel") return { ok: true };
+            if (choice === "reveal") {
+              shell.showItemInFolder(absPath);
+              return { ok: true };
+            }
+          }
           await shell.openPath(absPath);
         }
         return { ok: true };

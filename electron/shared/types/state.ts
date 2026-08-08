@@ -103,7 +103,10 @@ export interface GitSettings {
  *
  * - `system`: hand it to the OS default opener (`shell.openPath` —
  *   Finder/Explorer/xdg-open). Always works, never blocks the user on
- *   editor configuration, which is why it's the default.
+ *   editor configuration, which is why it's the default. Executables (see
+ *   `executable-paths.ts`) prompt first, because this is the one mode where
+ *   the OS runs the target instead of showing it, and terminal output is not
+ *   a trusted source of paths.
  * - `command`: run a user-supplied command template, e.g.
  *   `code -g \${path}:\${line}:\${column}` for VS Code or
  *   `nvim +\${line} \${path}` for Neovim. The template is parsed argv-style
