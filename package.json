@@ -202,7 +202,7 @@
     "wait-on": "^9.1.0"
   },
   "overrides": {
-    "dompurify": "3.4.12",
+    "dompurify": "3.4.13",
     "uuid": "^14.0.0",
     "fast-uri": "^3.1.5",
     "hono": "4.12.34",
