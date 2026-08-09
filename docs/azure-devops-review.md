@@ -45,7 +45,15 @@ Clicking **Review** on a PR creates a local workspace:
 3. Checks out the PR source branch
 4. Opens the workspace with terminal tabs (Claude Code, Codex, GitHub Copilot, Shell) and review pane
 
-For PRs you authored, strIDEterm can attach to your existing workspace instead of creating a duplicate.
+For PRs you authored, strIDEterm can attach to your existing workspace instead of creating a duplicate — the action button reads **Attach** in that case. This only happens when that workspace's checkout is on the PR's source branch.
+
+### Detach from a Review
+
+An attached (or managed) workspace stays linked to its PR until you unlink it. To get out, use **Detach from PR review** from the workspace's ⋯ menu in the sidebar. The same action is also available in the workspace editor and — for review-locked reviewer checkouts — in the Git tab's banner.
+
+Detaching removes the Review tab, stops agent tabs from being launched with the review MCP bridge, and restores normal git operations. The PR on the server is not touched.
+
+**Attached workspaces unlink themselves** once the PR reaches a terminal state (completed / abandoned; closed on GitHub). The attach is made while your checkout sits on the PR's source branch — after the merge that branch is usually gone and the link is dead weight, so the next poll clears it. Managed review worktrees are left linked: they exist only for the review, so there is nothing to restore.
 
 ---
 
@@ -131,7 +139,7 @@ After completion, a green banner shows the result:
 
 1. Open a Claude Code, Codex, or GitHub Copilot tab in the review workspace
 2. The agent automatically gets MCP tools for the review bridge (Copilot uses `--additional-mcp-config` with inline JSON; Claude uses `--mcp-config`; Codex uses `-c mcp_servers.review.*`)
-3. Use a prompt template from the Agent tab, or give custom instructions
+3. Use a prompt template from the Agent tab, or give custom instructions — the agent does not start on its own. Claude additionally gets a short review briefing via `--append-system-prompt`; Codex, Copilot and OpenCode get the MCP wiring only, because their prompt flags submit immediately and would kick off an unrequested run
 4. The agent reads comments via MCP, analyzes code, writes draft replies
 5. Drafts appear instantly in the Comments tab
 6. Review, edit, or delete drafts

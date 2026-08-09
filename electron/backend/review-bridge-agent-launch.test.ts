@@ -125,7 +125,11 @@ describe("review bridge agent launch", () => {
     expect(commandConfig).toBe('mcp_servers.review.command="C:/Program Files/strIDEterm/strIDEterm.exe"');
     expect(argsConfig).toContain("mcp_servers.review.args=");
     expect(argsConfig).toContain("--review-bridge-mcp");
-    expect(launch.args.at(-1)).toContain("list_review_comments");
+    // No trailing [PROMPT] positional: codex submits it immediately, which would
+    // start an unrequested review run the moment the tab opens.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped launch args
+    expect((launch.args as any[]).some((arg: any) => String(arg).includes("list_review_comments"))).toBe(false);
+    expect(launch.args.at(-1)).toContain("mcp_servers.review.args=");
   });
 
   test("defaults review codex sessions to workspace-write when no sandbox is specified", () => {
@@ -229,7 +233,8 @@ describe("review bridge agent launch", () => {
     expect(launch.args).toContain("--additional-mcp-config");
     expect(launch.args).toContain("--add-dir");
     expect(launch.args).toContain("C:/reviews/pr-123");
-    expect(launch.args).toContain("-i");
+    // No -i/--interactive prompt: it auto-submits, starting an unrequested run.
+    expect(launch.args).not.toContain("-i");
 
     // MCP config is inline JSON (same pattern as Claude's --mcp-config)
     const configArg = launch.args[launch.args.indexOf("--additional-mcp-config") + 1];
@@ -302,7 +307,8 @@ describe("review bridge agent launch", () => {
     // Panel args are inherited (everything after "opencode")
     expect(launch.args).toContain("--model");
     expect(launch.args).toContain("anthropic/claude-sonnet-4-6");
-    expect(launch.args).toContain("--prompt");
+    // No --prompt: it auto-submits, starting an unrequested run.
+    expect(launch.args).not.toContain("--prompt");
 
     expect(launch.env).toBeDefined();
     const configContent = launch.env.OPENCODE_CONFIG_CONTENT;

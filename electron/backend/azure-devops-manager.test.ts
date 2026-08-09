@@ -722,6 +722,45 @@ describe("AzureDevOpsManager", () => {
     expect(summary.existingWorkspaceId).toBe("workspace-main");
   });
 
+  test("does not offer an author PR attach target when the checkout is on another branch", async () => {
+    createManager({
+      secrets: { "cred:ado-main": "pat-123" },
+    });
+    const { summary } = buildPullRequestSummary({
+      connection,
+      pr: {
+        pullRequestId: 123,
+        title: "Fix login redirect",
+        status: "active",
+        sourceRefName: "refs/heads/feature/login-fix",
+        targetRefName: "refs/heads/main",
+        createdBy: { id: "me-1", displayName: "Me", uniqueName: "me@example.com" },
+        repository: {
+          id: "repo-1",
+          name: "web-app",
+          remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+          project: { id: "project-1", name: "Platform" },
+        },
+        reviewers: [],
+      },
+      projectName: "Platform",
+      threads: [],
+      tracked: {},
+      workspaces: [{ id: "workspace-main", cwd: "/repo" }],
+      gitSnapshots: {
+        "workspace-main": {
+          // Same repository, unrelated branch — attaching here would turn a
+          // normal dev workspace into a PR review workspace.
+          branch: "feature/something-else",
+          remotes: { origin: "https://dev.azure.com/acme/Platform/_git/web-app" },
+        },
+      },
+    });
+
+    expect(summary.role).toBe("author");
+    expect(summary.existingWorkspaceId).toBe("");
+  });
+
   test("fails clearly when a matched workspace has no cwd", async () => {
     const { manager } = createManager();
 
@@ -868,6 +907,10 @@ describe("AzureDevOpsManager", () => {
     })) as any;
 
     expect(snapshot.pullRequests[prKey].pullRequest.status).toBe("completed");
+    // The workspace's own review metadata is the only id source here (no prior
+    // summary existed). Dropping it makes the review pane render "PR #" and
+    // files every terminal PR under a shared "pr-unknown" export directory.
+    expect(snapshot.pullRequests[prKey].pullRequest.id).toBe(999);
   });
 
   test("stale PR resolution leaves a PR unresolved when the detail check fails transiently", async () => {

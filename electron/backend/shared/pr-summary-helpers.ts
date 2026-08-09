@@ -52,8 +52,13 @@ export function findMatchingWorkspace(
       const snapshot = gitSnapshots?.[workspace.id];
       const origin = normalizeRemoteUrl(snapshot?.remotes?.origin || "");
       if (targetRemote && origin && origin !== targetRemote) return false;
-      if (summary.role === "author" && snapshot?.branch && targetBranch) {
-        return snapshot.branch === targetBranch;
+      if (summary.role === "author" && targetBranch) {
+        // Author matches are branch-exact on purpose: this workspace is offered
+        // as the "Attach" target for the PR, which stamps review metadata onto
+        // an existing checkout. Falling through to the remote-only match below
+        // when the branch is unknown (snapshot still loading) or different
+        // links an unrelated workspace on the same repository to the PR.
+        return snapshot?.branch === targetBranch;
       }
       return origin && origin === targetRemote;
     }) || null

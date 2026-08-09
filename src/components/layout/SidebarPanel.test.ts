@@ -258,6 +258,96 @@ describe("SidebarPanel — workspace activate failure surfaces a toast", () => {
   });
 });
 
+describe("SidebarPanel — detach from PR review menu entry", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+  });
+
+  function menuItemLabels(): string[] {
+    return [...document.querySelectorAll(".context-menu .context-menu__item")].map((el) =>
+      (el.textContent || "").trim(),
+    );
+  }
+
+  async function openMenuFor(wrapper: AnyApi, workspaceId: string): Promise<void> {
+    await wrapper.find(`[data-workspace-id="${workspaceId}"] .workspace-card__action--menu`).trigger("click");
+    await nextTick();
+  }
+
+  it("offers detach for a PR-linked workspace and hides it for a plain one", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({
+      workspaces: [
+        // Attached to a PR as the author — GitPane treats author links as
+        // unlocked, so the Git tab shows no detach banner for this one.
+        {
+          ...BASE_WORKSPACES[0],
+          review: {
+            provider: "azure-devops",
+            prKey: "ado-main:repo-1:29456",
+            role: "author",
+            checkout: { mode: "linked-existing-workspace", rootPath: "/a", cacheRepoPath: "" },
+          },
+        },
+        BASE_WORKSPACES[1],
+      ],
+    });
+
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
+
+    await openMenuFor(wrapper, "ws-A");
+    expect(menuItemLabels()).toContain("🔗 Detach from PR review");
+
+    // "✎ Edit" is unconditional, so asserting on it proves the menu really
+    // reopened for ws-B rather than the detach entry being absent because the
+    // whole menu was dismissed.
+    await openMenuFor(wrapper, "ws-B");
+    expect(menuItemLabels()).toContain("✎ Edit");
+    expect(menuItemLabels()).not.toContain("🔗 Detach from PR review");
+
+    wrapper.unmount();
+  });
+
+  it("detaches only after the confirm is accepted", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({
+      workspaces: [
+        { ...BASE_WORKSPACES[0], review: { provider: "azure-devops", prKey: "ado-main:repo-1:29456" } },
+        BASE_WORKSPACES[1],
+      ],
+    });
+    const detach = vi.spyOn(store, "detachWorkspaceReview").mockResolvedValue(undefined);
+    const confirm = vi.spyOn(store, "confirmInApp").mockResolvedValue(false);
+
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
+    await openMenuFor(wrapper, "ws-A");
+
+    const detachButton = [...document.querySelectorAll(".context-menu .context-menu__item")].find((el) =>
+      (el.textContent || "").includes("Detach from PR review"),
+    ) as HTMLElement;
+    detachButton.click();
+    await flushPromises();
+
+    expect(confirm).toHaveBeenCalled();
+    expect(detach).not.toHaveBeenCalled();
+
+    // Accepting the confirm goes through to the store action.
+    confirm.mockResolvedValue(true);
+    await openMenuFor(wrapper, "ws-A");
+    (
+      [...document.querySelectorAll(".context-menu .context-menu__item")].find((el) =>
+        (el.textContent || "").includes("Detach from PR review"),
+      ) as HTMLElement
+    ).click();
+    await flushPromises();
+
+    expect(detach).toHaveBeenCalledWith("ws-A");
+
+    wrapper.unmount();
+  });
+});
+
 describe("SidebarPanel — remote profile fallback", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

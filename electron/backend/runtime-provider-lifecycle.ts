@@ -185,6 +185,78 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
     return { getWorkspace, ensureWorkspace, refresh, schedulePolling };
   }
 
+  // A pull request nobody can push to again. Both checks are deliberately
+  // positive: an unknown/missing state must never read as terminal, or a poll
+  // that returned nothing would unlink every attached workspace at once.
+  const isTerminalPullRequest: Record<
+    string,
+    (pullRequest: { status?: string; state?: string } | undefined) => boolean
+  > = {
+    "azure-devops": (pullRequest) =>
+      ["completed", "abandoned"].includes(String(pullRequest?.status || "").toLowerCase()),
+    github: (pullRequest) => {
+      const state = String(pullRequest?.state || "").toLowerCase();
+      return !!state && state !== "open";
+    },
+  };
+
+  /**
+   * Drop the review marker from workspaces that were *attached* to a PR — the
+   * user's own long-lived checkout, `checkout.mode === "linked-existing-workspace"`
+   * — once that PR reaches a terminal state.
+   *
+   * Managed review worktrees are deliberately left alone: they exist only for
+   * the review, so staying linked after the merge is still correct there.
+   *
+   * Without this the marker outlives the PR indefinitely. The attach is made
+   * while the checkout sits on the PR's source branch; once the PR merges and
+   * that branch is deleted, the checkout moves on but keeps a dead Review tab,
+   * git write operations stay gated, and every agent tab opened in it is
+   * launched with the review MCP bridge wired in.
+   */
+  async function detachTerminalAttachedReviews(providerKey: string, manager: AnyManager): Promise<void> {
+    const isTerminal = isTerminalPullRequest[providerKey];
+    if (!isTerminal) return;
+    const summaries = manager.getSnapshot()?.pullRequests || {};
+
+    // prKey is captured up front: store.mutate clears workspace.review, and
+    // the tracked-store cleanup below still needs the key.
+    const detached: Array<{ workspaceId: string; prKey: string }> = [];
+    for (const workspace of getState().workspaces || []) {
+      const review = workspace.review;
+      if (review?.provider !== providerKey || !review.prKey) continue;
+      if (review.checkout?.mode !== "linked-existing-workspace") continue;
+      if (!isTerminal(summaries[review.prKey]?.pullRequest)) continue;
+      detached.push({ workspaceId: workspace.id, prKey: review.prKey });
+    }
+    if (!detached.length) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await store.mutate((draft: any) => {
+      for (const { workspaceId } of detached) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const workspace = draft.workspaces.find((entry: any) => entry.id === workspaceId);
+        if (workspace) {
+          workspace.review = null;
+        }
+      }
+    });
+
+    for (const { workspaceId, prKey } of detached) {
+      log.info("detached attached review workspace from a terminal pull request", { workspaceId, prKey });
+      // Without this the inbox row still resolves to the workspace we just
+      // unlinked and offers "Open" on it.
+      try {
+        await manager.reviewStore?.upsertTrackedPullRequest(prKey, { reviewWorkspaceId: "" });
+      } catch (error) {
+        log.warn("could not clear the tracked review workspace after detaching", {
+          prKey,
+          err: (error as Error)?.message || String(error),
+        });
+      }
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function repairAzureReviewWorkspaceMetadata(snapshot: any = azure.getSnapshot()): Promise<boolean> {
     const state = getState();
@@ -354,7 +426,10 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
     reviewRootDirName: "azure-pr",
     getSettings: getAzureSettings,
     getConnections: getAzureConnections,
-    afterSync: repairAzureReviewWorkspaceMetadata,
+    afterSync: async () => {
+      await repairAzureReviewWorkspaceMetadata();
+      await detachTerminalAttachedReviews("azure-devops", azure);
+    },
   });
 
   const githubLifecycle = makeProviderLifecycle({
@@ -369,6 +444,7 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
     reviewRootDirName: "github-pr",
     getSettings: getGitHubSettings,
     getConnections: getGitHubConnections,
+    afterSync: () => detachTerminalAttachedReviews("github", github),
   });
 
   return {

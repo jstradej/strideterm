@@ -1170,7 +1170,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
         prKey: key,
         pullRequest: {
           ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
-          id: existing?.pullRequest?.id ?? "",
+          // Truthiness, not ??: a previous pass in this session may have left an
+          // empty id on the snapshot, and "" would satisfy ?? and stay stuck.
+          id: existing?.pullRequest?.id || ws.review!.pullRequest?.id || "",
           status: pr.status || "completed",
           closedDate: pr.closedDate ?? undefined,
         },
@@ -1198,7 +1200,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
         prKey: key,
         pullRequest: {
           ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
-          id: existing?.pullRequest?.id ?? "",
+          id: existing?.pullRequest?.id || ws.review!.pullRequest?.id || "",
           status: "completed",
         },
       };

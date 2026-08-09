@@ -2,7 +2,7 @@ import { describe, expect, test, vi, beforeEach } from "vitest";
 import path from "node:path";
 import { createProviderLifecycle } from "./runtime-provider-lifecycle.js";
 import { strideDataDir } from "./default-state.js";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -22,6 +22,13 @@ function makeState(overrides: Record<string, any> = {}): any {
 }
 
 function makeCtx(state: ReturnType<typeof makeState>) {
+  const azureReviewStore = {
+    getState: vi.fn().mockReturnValue({ trackedPullRequests: {} }),
+    upsertTrackedPullRequest: vi.fn().mockResolvedValue(undefined),
+  };
+  const githubReviewStore = {
+    upsertTrackedPullRequest: vi.fn().mockResolvedValue(undefined),
+  };
   const azure = {
     sync: vi.fn().mockResolvedValue(undefined),
     getSnapshot: vi.fn().mockReturnValue({ pullRequests: {} }),
@@ -30,6 +37,9 @@ function makeCtx(state: ReturnType<typeof makeState>) {
     configurePolling: vi.fn(),
     buildManagedReviewPaths: vi.fn().mockReturnValue(null),
     buildReviewMetadata: vi.fn(),
+    // Both managers expose their tracked-PR store as `.reviewStore` (see
+    // BaseProviderManager); the detach pass clears reviewWorkspaceId there.
+    reviewStore: azureReviewStore,
   };
   const github = {
     sync: vi.fn().mockResolvedValue(undefined),
@@ -37,12 +47,9 @@ function makeCtx(state: ReturnType<typeof makeState>) {
     ensurePullRequestDetail: vi.fn().mockResolvedValue(undefined),
     stopPolling: vi.fn(),
     configurePolling: vi.fn(),
+    reviewStore: githubReviewStore,
   };
   const git = { getProjectMap: vi.fn().mockReturnValue({}) };
-  const azureReviewStore = {
-    getState: vi.fn().mockReturnValue({ trackedPullRequests: {} }),
-    upsertTrackedPullRequest: vi.fn().mockResolvedValue(undefined),
-  };
   const store = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mutate: vi.fn(async (fn: (draft: any) => void) => {
@@ -65,17 +72,36 @@ function makeCtx(state: ReturnType<typeof makeState>) {
     getGitHubSettings: (s: any = state) => s.settings.integrations.github,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     getGitHubConnections: (s: any = state) => s.settings.integrations.github.connections,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     parseAzureReviewWorkspaceHint: (_workspace: WorkspaceState) => ({ prId: 0, connectionPathKey: "" }),
     normalizeFsPath: (p: string) => p,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     createAzureWorkspaceReviewPanels: (_templates: any[]) => [{ id: "panel1" }],
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     findWorkspace: (s: AppState, workspaceId: string) =>
       (s as unknown as { workspaces: WorkspaceState[] }).workspaces.find((w) => w.id === workspaceId) || null,
   };
 
-  return { ctx, azure, github, git, azureReviewStore, store };
+  return { ctx, azure, github, git, azureReviewStore, githubReviewStore, store };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function attachedReviewWorkspace(overrides: Record<string, any> = {}): any {
+  return {
+    id: "ws-attached",
+    name: "mhub",
+    kind: "terminal",
+    cwd: "C:/work/mhub",
+    profileId: "default",
+    panels: [],
+    review: {
+      provider: "azure-devops",
+      prKey: "ado-main:repo-1:29456",
+      role: "author",
+      checkout: { mode: "linked-existing-workspace", rootPath: "C:/work/mhub", cacheRepoPath: "" },
+    },
+    ...overrides,
+  };
 }
 
 describe("createProviderLifecycle — ensureAzureWorkspace / ensureGitHubWorkspace", () => {
@@ -266,5 +292,143 @@ describe("createProviderLifecycle — scheduleAzurePolling / scheduleGitHubPolli
     await azureCallback();
     expect(azure.sync).toHaveBeenCalledTimes(1);
     expect(github.sync).not.toHaveBeenCalled();
+  });
+});
+
+describe("createProviderLifecycle — detaching attached reviews from terminal PRs", () => {
+  let state: ReturnType<typeof makeState>;
+  beforeEach(() => {
+    state = makeState();
+  });
+
+  test("clears the review marker and the tracked pointer once the PR is completed", async () => {
+    state.workspaces = [attachedReviewWorkspace()];
+    const { ctx, azure, azureReviewStore } = makeCtx(state);
+    azure.getSnapshot.mockReturnValue({
+      pullRequests: { "ado-main:repo-1:29456": { pullRequest: { id: 29456, status: "completed" } } },
+    });
+    const lifecycle = createProviderLifecycle(ctx);
+
+    await lifecycle.refreshAzure();
+
+    expect(state.workspaces[0].review).toBeNull();
+    expect(azureReviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith("ado-main:repo-1:29456", {
+      reviewWorkspaceId: "",
+    });
+  });
+
+  test("abandoned PRs detach too, active ones stay linked", async () => {
+    state.workspaces = [
+      attachedReviewWorkspace({ id: "ws-abandoned", review: attachedReviewWorkspace().review }),
+      attachedReviewWorkspace({
+        id: "ws-active",
+        review: { ...attachedReviewWorkspace().review, prKey: "ado-main:repo-1:31500" },
+      }),
+    ];
+    const { ctx, azure } = makeCtx(state);
+    azure.getSnapshot.mockReturnValue({
+      pullRequests: {
+        "ado-main:repo-1:29456": { pullRequest: { status: "abandoned" } },
+        "ado-main:repo-1:31500": { pullRequest: { status: "active" } },
+      },
+    });
+    const lifecycle = createProviderLifecycle(ctx);
+
+    await lifecycle.refreshAzure();
+
+    expect(state.workspaces[0].review).toBeNull();
+    expect(state.workspaces[1].review).not.toBeNull();
+  });
+
+  test("leaves managed review worktrees linked — they exist only for the review", async () => {
+    state.workspaces = [
+      attachedReviewWorkspace({
+        id: "ws-managed",
+        review: {
+          ...attachedReviewWorkspace().review,
+          checkout: { mode: "managed-worktree", rootPath: "C:/reviews/pr-29456", cacheRepoPath: "" },
+        },
+      }),
+    ];
+    const { ctx, azure } = makeCtx(state);
+    azure.getSnapshot.mockReturnValue({
+      pullRequests: { "ado-main:repo-1:29456": { pullRequest: { status: "completed" } } },
+    });
+    const lifecycle = createProviderLifecycle(ctx);
+
+    await lifecycle.refreshAzure();
+
+    expect(state.workspaces[0].review).not.toBeNull();
+  });
+
+  test("an absent or stateless summary is never treated as terminal", async () => {
+    state.workspaces = [
+      attachedReviewWorkspace({ id: "ws-missing" }),
+      attachedReviewWorkspace({
+        id: "ws-blank",
+        review: { ...attachedReviewWorkspace().review, prKey: "ado-main:repo-1:31500" },
+      }),
+    ];
+    const { ctx, azure } = makeCtx(state);
+    // A poll that returned nothing useful must not unlink everything at once.
+    azure.getSnapshot.mockReturnValue({
+      pullRequests: { "ado-main:repo-1:31500": { pullRequest: { status: "" } } },
+    });
+    const lifecycle = createProviderLifecycle(ctx);
+
+    await lifecycle.refreshAzure();
+
+    expect(state.workspaces[0].review).not.toBeNull();
+    expect(state.workspaces[1].review).not.toBeNull();
+  });
+
+  test("GitHub uses pullRequest.state: closed detaches, open stays", async () => {
+    state.workspaces = [
+      attachedReviewWorkspace({
+        id: "ws-gh-closed",
+        review: {
+          ...attachedReviewWorkspace().review,
+          provider: "github",
+          prKey: "gh-main:acme/web:7",
+        },
+      }),
+      attachedReviewWorkspace({
+        id: "ws-gh-open",
+        review: {
+          ...attachedReviewWorkspace().review,
+          provider: "github",
+          prKey: "gh-main:acme/web:8",
+        },
+      }),
+    ];
+    const { ctx, github, githubReviewStore } = makeCtx(state);
+    github.getSnapshot.mockReturnValue({
+      pullRequests: {
+        "gh-main:acme/web:7": { pullRequest: { state: "closed" } },
+        "gh-main:acme/web:8": { pullRequest: { state: "open" } },
+      },
+    });
+    const lifecycle = createProviderLifecycle(ctx);
+
+    await lifecycle.refreshGitHub();
+
+    expect(state.workspaces[0].review).toBeNull();
+    expect(state.workspaces[1].review).not.toBeNull();
+    expect(githubReviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith("gh-main:acme/web:7", {
+      reviewWorkspaceId: "",
+    });
+  });
+
+  test("an Azure workspace is untouched by the GitHub pass and vice versa", async () => {
+    state.workspaces = [attachedReviewWorkspace()];
+    const { ctx, github } = makeCtx(state);
+    github.getSnapshot.mockReturnValue({
+      pullRequests: { "ado-main:repo-1:29456": { pullRequest: { state: "closed" } } },
+    });
+    const lifecycle = createProviderLifecycle(ctx);
+
+    await lifecycle.refreshGitHub();
+
+    expect(state.workspaces[0].review).not.toBeNull();
   });
 });

@@ -174,6 +174,13 @@ function pushWorkspaceScope(args: string[], workspaceCwd: unknown): void {
   args.push("--add-dir", cwd);
 }
 
+// Review context is only ever handed to an agent as *passive* context, never as
+// a turn the agent is expected to act on. Claude takes it via
+// --append-system-prompt, which does not start a run. Codex ([PROMPT]
+// positional), Copilot (-i) and OpenCode (--prompt) have no equivalent: their
+// only prompt inputs submit immediately, so opening one of those tabs in a
+// review workspace would kick off an unrequested review run. Those three get
+// the MCP wiring and nothing else — the user drives the first turn.
 function buildReviewPrompt(context: ReviewContext | undefined): string {
   const repository = String(context?.repository?.name || context?.repository?.id || "the repository").trim();
   const pullRequestId = Number.isInteger(context?.pullRequest?.id) ? `PR #${context!.pullRequest!.id}` : null;
@@ -422,7 +429,6 @@ function buildCodexLaunch({ workspace, panel, context, processInfo }: BuildLaunc
     `mcp_servers.review.command=${JSON.stringify(mcp.command)}`,
     "-c",
     `mcp_servers.review.args=${JSON.stringify(mcp.args)}`,
-    buildReviewPrompt(context),
   );
 
   return finishLaunch({
@@ -472,8 +478,6 @@ function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLau
     }),
     "--add-dir",
     String(workspace?.cwd || ""),
-    "-i",
-    buildReviewPrompt(context),
   );
 
   return finishLaunch({
@@ -491,10 +495,15 @@ function buildOpencodeLaunch({ workspace, panel, context, processInfo }: BuildLa
   const mcp = buildMcpServerSpec({ context, processInfo });
   const platform = processInfo?.platform || process.platform;
   const args = [...inheritedPanelArgs(panel)];
+  // --yolo is a real flag but `hidden: true`, so it does NOT show up in
+  // `opencode --help` — don't "fix" it away after reading that output. OpenCode
+  // resolves auto-approval as `auto || yolo || dangerously-skip-permissions`,
+  // so this is exactly the documented --auto. Verified on opencode 1.18.14:
+  // its yargs parser is strict (an unknown flag exits 1 with the help screen),
+  // and --yolo starts the TUI normally.
   if (!args.includes("--yolo")) {
     args.unshift("--yolo");
   }
-  args.push("--prompt", buildReviewPrompt(context));
 
   // Unlike Claude/Codex/Copilot, OpenCode's CLI has no flag for inline
   // per-session MCP config. Its config loader does support OPENCODE_CONFIG_CONTENT

@@ -122,7 +122,7 @@ After publishing, draft comments are removed from the local database and re-impo
 Same workflow as Azure DevOps:
 
 1. Open a Claude Code, Codex, or GitHub Copilot tab in the review workspace
-2. The agent automatically gets MCP tools for the review bridge (Copilot uses `--additional-mcp-config` with inline JSON; Claude uses `--mcp-config`; Codex uses `-c mcp_servers.review.*`)
+2. The agent automatically gets MCP tools for the review bridge (Copilot uses `--additional-mcp-config` with inline JSON; Claude uses `--mcp-config`; Codex uses `-c mcp_servers.review.*`) — no prompt is submitted for you, so the agent waits for your first turn
 3. The agent reads comments, analyzes code, writes draft replies
 4. Drafts appear in the Comments tab
 5. Click **Push & publish** to send to GitHub

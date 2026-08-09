@@ -136,6 +136,15 @@
       >
         &#x22F6; Open in grid
       </button>
+      <button
+        v-if="wsMenuIsPrLinked"
+        type="button"
+        class="context-menu__item"
+        title="Unlink this workspace from its pull request. The Review tab disappears, agent tabs stop getting the review MCP bridge, and git operations behave like a normal workspace again. The PR on the server is not touched."
+        @click="onMenuAction('detach-review')"
+      >
+        &#x1F517; Detach from PR review
+      </button>
       <div class="context-menu__divider"></div>
       <button
         type="button"
@@ -579,6 +588,19 @@ const wsMenuHasChildren = computed<boolean>(() => {
   });
 });
 
+// Any workspace carrying a PR review marker — managed review checkouts as well
+// as normal workspaces that were attached to a PR via the inbox's "Attach"
+// action. The Git tab only surfaces its detach button for review-locked
+// (non-author) checkouts, so without this entry an author-attached workspace
+// has no obvious way back out.
+const wsMenuIsPrLinked = computed<boolean>(() => {
+  const id = wsMenu.value?.ws?.id;
+  if (!id) return false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ws = store.filteredWorkspaces.find((w) => w.id === id) as any;
+  return !!ws?.review?.prKey;
+});
+
 function onOpenMenu(event: MouseEvent, ws: Record<string, unknown>): void {
   const btn = (event.target as Element).closest("button");
   if (btn) {
@@ -612,6 +634,28 @@ function onMenuAction(action: string): void {
     emit("force-remove-workspace", ws.id as string);
   } else if (action === "open-in-grid") {
     openInGrid(ws.id as string);
+  } else if (action === "detach-review") {
+    void detachReview(ws.id as string);
+  }
+}
+
+async function detachReview(workspaceId: string): Promise<void> {
+  const confirmed = await store.confirmInApp({
+    title: "Detach from PR review?",
+    message:
+      "Unlink this workspace from its pull request. The Review tab disappears and agent tabs stop being launched with the review MCP bridge; git operations behave like a normal workspace again. The pull request on the server is not touched.",
+    confirmLabel: "Detach",
+  });
+  if (!confirmed) return;
+  try {
+    await store.detachWorkspaceReview(workspaceId);
+  } catch (err) {
+    notifications.pushEphemeralToast({
+      title: "Detach failed",
+      body: (err as Error)?.message || "Could not detach the workspace from its PR review.",
+      kind: "error",
+      durationMs: 6000,
+    });
   }
 }
 
