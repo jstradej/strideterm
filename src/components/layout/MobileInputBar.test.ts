@@ -471,6 +471,85 @@ describe("MobileInputBar", () => {
     });
   });
 
+  describe("password-manager autofill", () => {
+    // Mobile password managers classify the single-field composer form as a
+    // login, offer to save what gets sent, and autofill the remembered value
+    // back on the next page load — text the user never typed, one ⏎ from the
+    // PTY. The field opts out declaratively and drops foreign values as a
+    // backstop for managers that ignore the attributes.
+    it("opts out of autofill on both the form and the field", () => {
+      const { wrapper } = mountBar();
+      const input = wrapper.find("[data-role='mobile-input-bar-input']");
+
+      expect(wrapper.find("form").attributes("autocomplete")).toBe("off");
+      expect(input.attributes("autocomplete")).toBe("off");
+      // Vendor opt-outs: 1Password, LastPass, Bitwarden, Dashlane.
+      expect(input.attributes()).toHaveProperty("data-1p-ignore");
+      expect(input.attributes("data-lpignore")).toBe("true");
+      expect(input.attributes("data-bwignore")).toBe("true");
+      expect(input.attributes("data-form-type")).toBe("other");
+    });
+
+    describe("with fake timers", () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("drops a value autofilled into a field the user never touched", async () => {
+        const { wrapper, writeTerminal } = mountBar();
+        const input = wrapper.find("[data-role='mobile-input-bar-input']");
+        // Autofill sets the value and dispatches input, exactly like setValue.
+        await input.setValue("Ahoj");
+
+        vi.advanceTimersByTime(600);
+        await nextTick();
+
+        expect((input.element as HTMLInputElement).value).toBe("");
+        // The foreign value is gone from the draft too — ⏎ sends a bare Enter.
+        await wrapper.find("form").trigger("submit");
+        expect(writeTerminal).toHaveBeenCalledTimes(1);
+        expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r");
+      });
+
+      it.each([
+        [".mobile-input-bar__key--slash", "/"],
+        [".mobile-input-bar__key--paste", "pasted"],
+      ])("keeps a draft the bar itself wrote via %s", async (button, expected) => {
+        Object.defineProperty(window.navigator, "clipboard", {
+          value: { readText: () => Promise.resolve("pasted") },
+          configurable: true,
+        });
+        const { wrapper } = mountBar();
+        // The accessory buttons never focus the field on tap (mousedown.prevent),
+        // so the drop guard must not mistake their insert for an autofill.
+        await wrapper.find(button).trigger("click");
+        await flushPromises();
+
+        vi.advanceTimersByTime(600);
+        await nextTick();
+
+        expect((wrapper.find("[data-role='mobile-input-bar-input']").element as HTMLInputElement).value).toBe(expected);
+      });
+
+      it("keeps text typed into the field after the user focused it", async () => {
+        const { wrapper, writeTerminal } = mountBar();
+        const input = wrapper.find("[data-role='mobile-input-bar-input']");
+        await input.trigger("focus");
+        await input.setValue("echo typed");
+
+        vi.advanceTimersByTime(600);
+        await nextTick();
+
+        expect((input.element as HTMLInputElement).value).toBe("echo typed");
+        await wrapper.find("form").trigger("submit");
+        expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo typed");
+      });
+    });
+  });
+
   describe("collapse / expand", () => {
     it("collapses to the slim handle and persists the preference", async () => {
       const { wrapper } = mountBar();

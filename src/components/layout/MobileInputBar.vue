@@ -124,18 +124,34 @@
           ▾
         </button>
       </div>
-      <form class="mobile-input-bar__row" @submit.prevent="sendComposed">
+      <!-- This is not a credential form, but a single text field plus a submit
+           button is exactly what mobile password managers (Google Password
+           Manager, iCloud Keychain, Samsung Pass, 1Password, Bitwarden…)
+           heuristically classify as a login: they offer to "save the password"
+           on ⏎ and then autofill the remembered value back into the field on
+           the next page load — the bar would open pre-filled with a word the
+           user never typed, one ⏎ away from the shell. The autocomplete and
+           vendor opt-out attributes below tell every manager we know of to stay
+           out; dropAutofilledValue() is the backstop for the ones that ignore
+           them (Chrome's autofill routinely ignores autocomplete="off"). -->
+      <form class="mobile-input-bar__row" autocomplete="off" @submit.prevent="sendComposed">
         <input
           ref="inputRef"
           v-model="draft"
           type="text"
           class="mobile-input-bar__input"
           placeholder="Type a command — ⏎ sends it"
+          name="strideterm-terminal-line"
           autocomplete="off"
+          data-1p-ignore
+          data-lpignore="true"
+          data-bwignore="true"
+          data-form-type="other"
           autocapitalize="none"
           enterkeyhint="send"
           title="Compose a line for the active terminal. Mobile predictive text and autocorrect work normally here — what you see is exactly what gets sent when you press ⏎."
           data-role="mobile-input-bar-input"
+          @focus="touched = true"
           @compositionstart="handleCompositionStart"
           @compositionend="handleCompositionEnd"
         />
@@ -153,7 +169,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, nextTick, ref, watch } from "vue";
+import { computed, inject, nextTick, onMounted, ref, watch } from "vue";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import { useAppStore } from "../../stores/app.js";
@@ -195,6 +211,37 @@ const ignoreCompositionEnd = ref(false);
 // listener order we don't control), so the ignore branch can't trust `draft` —
 // it restores from this instead.
 let valueAfterIgnoredComposition = "";
+
+// Whether the field's content is explained: the user focused it (typing needs
+// focus on both touch and desktop) or the bar itself wrote the draft. A
+// password manager autofills without either, so this separates "we know where
+// this text came from" from "something else put it here". The write paths set
+// it directly rather than relying on their inputRef.focus() to emit a focus
+// event — focus() is a no-op on an already-focused element, and iOS Safari can
+// refuse programmatic focus outright.
+const touched = ref(false);
+
+// How long after mount an unexplained value still counts as autofill. Managers
+// fill during or right after page load; 600ms covers the slow ones without
+// leaving a window where a real draft could be dropped.
+const AUTOFILL_SETTLE_MS = 600;
+
+// The composer always starts empty, so any content in an untouched field came
+// from a password manager that ignored the opt-out attributes on the input.
+// Drop it: an autofilled value sitting in the bar is one ⏎ away from being
+// written to the PTY.
+function dropAutofilledValue(): void {
+  if (touched.value) return;
+  if (!draft.value && !inputRef.value?.value) return;
+  draft.value = "";
+  if (inputRef.value) inputRef.value.value = "";
+}
+
+// The input is created by Vue, so a manager can only reach it after mount —
+// one check once the fill window has passed is enough.
+onMounted(() => {
+  setTimeout(dropAutofilledValue, AUTOFILL_SETTLE_MS);
+});
 
 watch(targetSessionId, (sessionId, previousSessionId) => {
   if (sessionId !== previousSessionId) {
@@ -369,6 +416,7 @@ function insertSlash(): void {
   valueAfterIgnoredComposition = draft.value;
   if (inputRef.value) inputRef.value.value = draft.value;
   menuOpen.value = false;
+  touched.value = true;
   inputRef.value?.focus();
 }
 
@@ -385,6 +433,7 @@ function setSlashCommand(cmd: string): void {
   valueAfterIgnoredComposition = draft.value;
   if (inputRef.value) inputRef.value.value = draft.value;
   menuOpen.value = false;
+  touched.value = true;
   inputRef.value?.focus();
 }
 
@@ -466,6 +515,7 @@ async function pasteFromClipboard(): Promise<void> {
   // Set the element directly: Vue's v-model skips view updates while the
   // browser still considers the composition active.
   if (inputRef.value) inputRef.value.value = draft.value;
+  touched.value = true;
   inputRef.value?.focus();
 }
 
