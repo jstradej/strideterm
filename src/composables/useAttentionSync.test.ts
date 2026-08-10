@@ -297,3 +297,88 @@ describe("useAttentionSync — terminal:removed resyncs deterministically (findi
     expect(api.subscribeTerminals).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("Companion Primary relocation — streams follow the source session", () => {
+  const RELOCATION_PAYLOAD = {
+    appState: {
+      workspaces: [
+        {
+          id: "ws-source",
+          kind: "terminal",
+          profileId: "default",
+          panels: [{ id: "panel-primary", title: "Claude" }],
+        },
+        {
+          id: "ws-task",
+          kind: "task",
+          profileId: "default",
+          panels: [{ id: "panel-judge", title: "Reviewer" }],
+          task: {
+            mode: "attached",
+            state: "running",
+            workerWorkspaceId: "ws-source",
+            workerPanelId: "panel-primary",
+          },
+        },
+      ],
+    },
+    taskRunner: {},
+  };
+
+  test("a borrowed Primary subscribes as its source session, not its view id", () => {
+    const { visibleSessionIds, subscriptionIds } = deriveAttentionSync(
+      {
+        isGridVisible: false,
+        gridCellWorkspaces: [],
+        activeViewId: "attached-primary:ws-task",
+        activeWorkspace: { id: "ws-task" },
+        attentionSummary: { count: 0, waitingCount: 0 },
+        activeProfile: { id: "default" },
+        visibleTabs: [
+          { id: "task-dashboard:panel-dashboard", type: "task-dashboard" },
+          {
+            id: "attached-primary:ws-task",
+            type: "terminal",
+            sessionId: "ws-source:panel-primary",
+            ownerWorkspaceId: "ws-source",
+            borrowed: true,
+          },
+          { id: "ws-task:panel-judge", type: "terminal" },
+        ],
+        payload: RELOCATION_PAYLOAD,
+      } as never,
+      true,
+    );
+    // The virtual view id is not a session the server knows — sending it would
+    // freeze the Primary on the remote client.
+    expect(visibleSessionIds).toEqual(["ws-source:panel-primary", "ws-task:panel-judge"]);
+    expect(subscriptionIds).toEqual(["ws-source:panel-primary", "ws-task:panel-judge"]);
+  });
+
+  test("a grid cell rendering the alias resolves it to the source session", () => {
+    const ids = deriveGridSessionIds({
+      isGridVisible: true,
+      activeWorkspace: { id: "ws-task" },
+      activeViewId: "attached-primary:ws-task",
+      gridCellWorkspaces: [
+        { id: "ws-task", activeViewId: "ignored" },
+        { id: "ws-other", activeViewId: "ws-other:sh" },
+      ],
+      payload: RELOCATION_PAYLOAD,
+    } as never);
+    expect(ids).toEqual(["ws-source:panel-primary", "ws-other:sh"]);
+  });
+
+  test("a cell whose alias no longer resolves streams nothing for that cell", () => {
+    const finished = JSON.parse(JSON.stringify(RELOCATION_PAYLOAD));
+    finished.appState.workspaces[1].task.state = "completed";
+    const ids = deriveGridSessionIds({
+      isGridVisible: true,
+      activeWorkspace: { id: "ws-task" },
+      activeViewId: "attached-primary:ws-task",
+      gridCellWorkspaces: [{ id: "ws-task", activeViewId: "attached-primary:ws-task" }],
+      payload: finished,
+    } as never);
+    expect(ids).toEqual([]);
+  });
+});

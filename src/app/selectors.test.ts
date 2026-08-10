@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { getVisibleTabs, getWorkspacePanelByViewId, getWorkspaceTabs, summarizeAttention } from "./selectors.js";
+import {
+  getVisibleTabs,
+  getWorkspacePanelByViewId,
+  getWorkspaceTabs,
+  summarizeAttention,
+  tabSessionId,
+} from "./selectors.js";
 import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
 
 describe("workspace selectors", () => {
@@ -292,5 +298,134 @@ describe("summarizeAttention", () => {
     const result = summarizeAttention(makePayload(), "profile-c");
     expect(result.count).toBe(0);
     expect(result.waitingCount).toBe(0);
+  });
+});
+
+describe("Companion Primary relocation projection", () => {
+  const SOURCE = {
+    id: "ws-source",
+    name: "Live conversation",
+    kind: "terminal",
+    profileId: "default",
+    panels: [
+      { id: "panel-primary", title: "Claude", command: "claude" },
+      { id: "panel-other", title: "Shell", command: "bash" },
+    ],
+  };
+
+  function taskWorkspace(state: string) {
+    return {
+      id: "ws-task",
+      name: "Reviewer: Live conversation",
+      kind: "task",
+      profileId: "default",
+      panels: [
+        { id: "panel-dashboard", title: "Dashboard", command: "__task-dashboard__" },
+        { id: "panel-judge", title: "Reviewer", command: "codex" },
+      ],
+      task: {
+        mode: "attached",
+        state,
+        workerWorkspaceId: "ws-source",
+        workerPanelId: "panel-primary",
+        companionRole: "reviewer",
+      },
+    };
+  }
+
+  function payloadFor(state: string, extra: Record<string, unknown> = {}): StatePayload {
+    return {
+      appState: { workspaces: [SOURCE, taskWorkspace(state)] },
+      ...extra,
+    } as unknown as StatePayload;
+  }
+
+  function sourceTabs(state: string, extra: Record<string, unknown> = {}) {
+    return getWorkspaceTabs({
+      workspace: {
+        workspace: SOURCE as unknown as WorkspaceState,
+        sessions: [
+          { sessionId: "ws-source:panel-primary", panelId: "panel-primary", title: "Claude", status: "running" },
+          { sessionId: "ws-source:panel-other", panelId: "panel-other", title: "Shell", status: "running" },
+        ],
+      },
+      payload: payloadFor(state, extra),
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+  }
+
+  function taskTabs(state: string, extra: Record<string, unknown> = {}) {
+    return getWorkspaceTabs({
+      workspace: {
+        workspace: taskWorkspace(state) as unknown as WorkspaceState,
+        sessions: [{ sessionId: "ws-task:panel-judge", panelId: "panel-judge", title: "Reviewer", status: "running" }],
+      },
+      payload: payloadFor(state, extra),
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+  }
+
+  test("hides the source tab and shows Dashboard / Primary / Companion in the task workspace", () => {
+    expect(sourceTabs("running").map((t) => t.id)).toEqual(["ws-source:panel-other"]);
+    expect(taskTabs("running").map((t) => t.title)).toEqual(["Dashboard", "Primary", "Reviewer"]);
+  });
+
+  test("the alias carries a different view id and the real session id", () => {
+    const alias = taskTabs("running").find((t) => t.title === "Primary")!;
+    expect(alias.id).toBe("attached-primary:ws-task");
+    expect(alias.sessionId).toBe("ws-source:panel-primary");
+    expect(alias.ownerWorkspaceId).toBe("ws-source");
+    expect(alias.borrowed).toBe(true);
+    expect(alias.type).toBe("terminal");
+    // Hosted only — never closable, never draggable, never editable here.
+    expect(alias.closable).toBe(false);
+    expect(alias.persistent).toBe(false);
+  });
+
+  test("the alias status chip follows the source session's live activity", () => {
+    const attention = { attention: { sessions: { "ws-source:panel-primary": { activity: "running" } } } };
+    expect(taskTabs("running", attention).find((t) => t.title === "Primary")!.status).toBe("running");
+    const done = { attention: { sessions: { "ws-source:panel-primary": { activity: "done", lastExitCode: 1 } } } };
+    expect(taskTabs("running", done).find((t) => t.title === "Primary")!.status).toBe("✗ exit 1");
+  });
+
+  test("terminal states return the tab: no alias, source tab back in place", () => {
+    for (const state of ["completed", "failed"]) {
+      expect(sourceTabs(state).map((t) => t.id)).toEqual(["ws-source:panel-primary", "ws-source:panel-other"]);
+      expect(taskTabs(state).map((t) => t.title)).toEqual(["Dashboard", "Reviewer"]);
+    }
+  });
+
+  test("every non-terminal state keeps the tab hosted", () => {
+    for (const state of ["idle", "capturing-context", "brief-ready", "awaiting-user", "paused", "judge-evaluating"]) {
+      expect(sourceTabs(state).map((t) => t.id)).toEqual(["ws-source:panel-other"]);
+      expect(taskTabs(state).map((t) => t.title)).toEqual(["Dashboard", "Primary", "Reviewer"]);
+    }
+  });
+
+  test("primaryMissing never creates an alias", () => {
+    const workspaces = [
+      SOURCE,
+      { ...taskWorkspace("running"), task: { ...taskWorkspace("running").task, primaryMissing: true } },
+    ];
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace: taskWorkspace("running") as unknown as WorkspaceState,
+        sessions: [{ sessionId: "ws-task:panel-judge", panelId: "panel-judge", title: "Reviewer", status: "running" }],
+      },
+      payload: { appState: { workspaces } } as unknown as StatePayload,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+    expect(tabs.map((t) => t.title)).toEqual(["Dashboard", "Reviewer"]);
+  });
+
+  test("ordinary terminal tabs keep sessionId === id", () => {
+    for (const tab of sourceTabs("completed")) {
+      expect(tabSessionId(tab)).toBe(tab.id);
+      expect(tab.borrowed).toBeUndefined();
+    }
   });
 });

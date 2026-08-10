@@ -738,6 +738,13 @@
   text-align: center;
 }
 
+/* Call-to-action inside an empty state (e.g. "Open companion task" when this
+   workspace's Primary is currently shown inside a Companion loop) — the 4px
+   grid gap alone reads as cramped against a button. */
+.terminal-empty__action {
+  margin-top: 8px;
+}
+
 .welcome-screen {
   width: 100%;
   height: 100%;

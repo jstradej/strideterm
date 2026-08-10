@@ -124,6 +124,7 @@ import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
+import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
 import type { NotifyServerHandle } from "./notify-server.js";
 
 const log = getLogger("runtime");
@@ -3271,19 +3272,27 @@ export async function createRuntime({
   // An attached companion task never owns its Primary — it only references
   // it via workerWorkspaceId/workerPanelId (plan section 3, 8.6). Deleting that
   // source workspace, or removing the panel that hosts it, would silently
-  // orphan an active loop with no way back short of recreating the companion
-  // task. Callers that mutate/delete a workspace or panel must check this
-  // first and refuse rather than leave a dangling binding.
+  // orphan the loop with no way back short of recreating the companion task —
+  // and while the loop is live the Primary tab is PRESENTED inside the task
+  // workspace, so the deletion would also make a tab the user is looking at
+  // vanish from under them.
+  //
+  // The predicate is the shared hosting one (shared/companion-primary.ts), the
+  // very same function the renderer uses to decide where to draw the tab: what
+  // is on screen and what may be deleted can therefore never disagree. It is
+  // wider than the old "actively executing" set — idle / brief-ready /
+  // awaiting-user / paused all host the Primary and all refuse the delete.
+  // After completed/failed the tab has returned home and the existing inactive
+  // semantics apply again (delete allowed, task flagged primaryMissing).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function findActiveCompanionSource(state: any, sourceWorkspaceId: string, sourcePanelId?: string): any {
     return (state.workspaces || []).find(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (ws: any) =>
         ws.kind === "task" &&
-        ws.task?.mode === "attached" &&
-        ws.task.workerWorkspaceId === sourceWorkspaceId &&
+        ws.task?.workerWorkspaceId === sourceWorkspaceId &&
         (!sourcePanelId || ws.task.workerPanelId === sourcePanelId) &&
-        ACTIVE_TASK_STATES.has(ws.task.state),
+        isCompanionPrimaryHosted(ws.task),
     );
   }
   // Every attached companion task bound to this source workspace/panel,
@@ -5319,7 +5328,7 @@ export async function createRuntime({
                 activeCompanionSource.task.companionRole as keyof typeof COMPANION_ROLE_DISPLAY_NAMES
               ] || "Companion";
             throw new Error(
-              `Cannot close this tab: an active ${roleLabel} loop is attached to this session. Pause it from its Dashboard first, then close.`,
+              `Cannot close this tab: its Primary conversation is currently shown in the ${roleLabel} loop "${formatWorkspaceDisplayName(activeCompanionSource)}". Finish or delete that companion task first.`,
             );
           }
           // Inactive companion loops don't block the close, but they do lose
@@ -5389,7 +5398,7 @@ export async function createRuntime({
             activeCompanionSource.task.companionRole as keyof typeof COMPANION_ROLE_DISPLAY_NAMES
           ] || "Companion";
         throw new Error(
-          `Cannot delete: an active ${roleLabel} loop is attached to this session. Pause it from its Dashboard first, then delete.`,
+          `Cannot delete: the Primary conversation is currently shown in the ${roleLabel} loop "${formatWorkspaceDisplayName(activeCompanionSource)}". Finish or delete that companion task first.`,
         );
       }
       // Inactive companion loops attached to this workspace are allowed to

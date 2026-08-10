@@ -55,8 +55,8 @@
          sessions get a keyed component so Vue runs a normal unmount/mount when
          the cell switches tabs instead of rebinding xterm mid-update. -->
     <div class="workspace-cell__pane">
-      <template v-if="activeViewType === 'terminal' && activeViewId">
-        <TerminalPane :key="activeViewId" :session-id="activeViewId" />
+      <template v-if="activeViewType === 'terminal' && activeSessionId">
+        <TerminalPane :key="activeSessionId" :session-id="activeSessionId" />
       </template>
       <template v-else-if="paneComponent">
         <!-- :compact tells panes (TaskDashboardPane today, others later) to
@@ -139,6 +139,14 @@ const activeViewId = computed<string | null>(() => {
 
 const activeViewType = computed<string>(() =>
   classifyViewType(activeViewId.value, props.workspaceId, store.payload as AnyApi),
+);
+
+// A cell showing a companion task workspace may be rendering the borrowed
+// Primary: the view id is virtual, the PTY it drives belongs to the source
+// workspace. Everything terminal-shaped in this cell keys off this, never off
+// the view id.
+const activeSessionId = computed<string | null>(() =>
+  props.workspaceId ? store.resolveSessionIdForView(activeViewId.value, props.workspaceId) : null,
 );
 
 const paneComponent = computed(() => resolvePaneComponent(activeViewType.value));

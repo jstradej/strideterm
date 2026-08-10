@@ -15,6 +15,7 @@ import {
 import type { Ref, ShallowRef, ComputedRef } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-display.js";
+import { isCompanionPrimaryViewId } from "../../electron/shared/companion-primary.js";
 import type { Transport } from "../transport.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
@@ -350,6 +351,12 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   function closeTab(viewId: string): void {
     if (!viewId) return;
     if (isAzureViewId(viewId) || isGitHubViewId(viewId) || isReviewViewId(viewId)) return;
+    // A borrowed Companion Primary is only HOSTED here — closing it is the
+    // owning workspace's call. Falling through would hide the alias locally
+    // (it matches no panel of this workspace) and the live conversation would
+    // silently disappear from the loop it is driving. Ctrl+W reaches this
+    // directly, so the guard cannot live in the tab strip alone.
+    if (isCompanionPrimaryViewId(viewId)) return;
 
     if (ctx.splitGroup.value) {
       const next = ctx.splitGroup.value.viewIds.filter((id) => id !== viewId);

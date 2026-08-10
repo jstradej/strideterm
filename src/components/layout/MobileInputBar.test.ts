@@ -583,3 +583,93 @@ describe("MobileInputBar", () => {
     });
   });
 });
+
+describe("MobileInputBar — relocated Companion Primary", () => {
+  function relocationPayload(state: string): AnyApi {
+    const source = {
+      id: "ws-source",
+      name: "Live conversation",
+      kind: "terminal",
+      profileId: "default",
+      panels: [{ id: "panel-primary", title: "Claude", command: "claude" }],
+    };
+    const task = {
+      id: "ws-task",
+      name: "Reviewer",
+      kind: "task",
+      profileId: "default",
+      panels: [
+        { id: "panel-dashboard", title: "Dashboard", command: "__task-dashboard__" },
+        { id: "panel-judge", title: "Reviewer", command: "codex" },
+      ],
+      task: {
+        mode: "attached",
+        state,
+        workerWorkspaceId: "ws-source",
+        workerPanelId: "panel-primary",
+        judgePanelId: "panel-judge",
+        companionRole: "reviewer",
+      },
+    };
+    return {
+      appState: {
+        activeWorkspaceId: "ws-task",
+        workspaces: [source, task],
+        profiles: [],
+        windowSlots: [],
+        settings: {},
+      },
+      workspace: {
+        workspace: task,
+        // The task workspace's OWN sessions — the source Primary is not here.
+        sessions: [{ sessionId: "ws-task:panel-judge", panelId: "panel-judge", title: "Reviewer" }],
+      },
+      attention: { sessions: {}, byWorkspace: {} },
+      taskRunner: {},
+    };
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem(COLLAPSED_KEY);
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "" } };
+  });
+
+  it("writes to the source PTY while the Primary is hosted in the task workspace", async () => {
+    const store = useAppStore();
+    store.payload = relocationPayload("running") as AnyApi;
+    store.activeViewId = "attached-primary:ws-task";
+    store.activeSessionId = "ws-source:panel-primary";
+
+    const writeTerminal = vi.fn();
+    const wrapper = mount(MobileInputBar, {
+      global: { provide: { [apiKey]: { isRemote: true, writeTerminal } as AnyApi } },
+    });
+    await flushPromises();
+
+    const input = wrapper.find("input");
+    expect(input.exists()).toBe(true);
+    await input.setValue("hello");
+    await wrapper.find("form").trigger("submit");
+    await nextTick();
+
+    // The virtual view id must never reach the PTY layer.
+    expect(writeTerminal).toHaveBeenCalledWith("ws-source:panel-primary", "hello");
+  });
+
+  it("has no write target once the loop finishes and the alias is gone", async () => {
+    const store = useAppStore();
+    store.payload = relocationPayload("completed") as AnyApi;
+    store.activeViewId = "attached-primary:ws-task";
+    store.activeSessionId = "ws-source:panel-primary";
+
+    const writeTerminal = vi.fn();
+    const wrapper = mount(MobileInputBar, {
+      global: { provide: { [apiKey]: { isRemote: true, writeTerminal } as AnyApi } },
+    });
+    await flushPromises();
+
+    expect(wrapper.find("input").exists()).toBe(false);
+    expect(writeTerminal).not.toHaveBeenCalled();
+  });
+});

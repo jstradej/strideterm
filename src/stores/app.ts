@@ -7,7 +7,17 @@ import {
   getWorkspacePanelByViewId,
   getWorkspaceAttention,
   getTabAttention,
+  tabSessionId,
 } from "../app/selectors.js";
+import {
+  companionPrimaryHostedPanelIds,
+  companionPrimaryViewId,
+  findCompanionPrimaryHost,
+  isCompanionPrimaryViewId,
+  parseCompanionPrimaryViewId,
+  resolveCompanionPrimaryBinding,
+  type CompanionPrimaryBinding,
+} from "../../electron/shared/companion-primary.js";
 import { LAYOUTS } from "../app/layout-geometry.js";
 import {
   readSidebarCollapsed,
@@ -467,19 +477,43 @@ export const useAppStore = defineStore("app", () => {
       // transport-aware accessors. On desktop these read the full payload.
       accessors: { gitSummary: getGitSummary, dockerCounts, providerInbox },
     });
-    // Fingerprint includes all visible fields: id, title, status, tone
-    const key = (result as AnyApi[]).map((t: AnyApi) => `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}`).join("|");
+    // Fingerprint includes all visible fields: id, title, status, tone — plus
+    // the borrowed-Primary metadata, which changes what the tab drives without
+    // changing anything it displays.
+    const key = (result as AnyApi[])
+      .map(
+        (t: AnyApi) => `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}:${t.sessionId || ""}:${t.borrowed ? 1 : 0}`,
+      )
+      .join("|");
     if (key === _prevTabsKey) return _prevTabs;
     _prevTabsKey = key;
     _prevTabs = result as AnyApi[];
     return result;
   });
 
+  /**
+   * The split as it can actually be DRAWN right now: the authoritative
+   * `splitGroup` minus any dormant (presentation-hidden) member, with the
+   * layout stepped down to match the surviving pane count so a three-slot
+   * layout doesn't render with an empty quadrant. `splitGroup` itself stays
+   * untouched — it is the user's layout and what gets persisted.
+   */
+  const renderedSplitGroup = computed<SplitGroup | null>(() => {
+    const group = splitGroup.value;
+    if (!group) return null;
+    const validIds = new Set((workspaceTabs.value as AnyApi[]).map((t: AnyApi) => t.id));
+    const viewIds = group.viewIds.filter((id) => validIds.has(id));
+    if (viewIds.length === group.viewIds.length) return group;
+    if (viewIds.length < 2) return null;
+    if ((LAYOUTS[group.layout]?.slots ?? viewIds.length) === viewIds.length) return { ...group, viewIds };
+    return { layout: viewIds.length >= 4 ? "grid" : viewIds.length === 3 ? "top-split" : "cols", viewIds };
+  });
+
   const visibleTabs = computed<AnyApi[]>(() => {
     const result = getVisibleTabs({
       tabs: workspaceTabs.value,
       activeViewId: activeViewId.value,
-      splitGroup: splitGroup.value,
+      splitGroup: renderedSplitGroup.value as AnyApi,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       isInSplitGroup: (viewId: string | null, sg: any) => (viewId ? sg?.viewIds?.includes(viewId) : false) || false,
       // On phone-width / short viewports we collapse splits to just the active
@@ -530,14 +564,31 @@ export const useAppStore = defineStore("app", () => {
     }
   });
 
-  // Normalize activeViewId and splitGroup when tabs change
+  // Normalize activeViewId, activeSessionId and splitGroup when tabs change
   watch(workspaceTabs, (tabs: AnyApi[]) => {
+    const workspaceId = myActiveWorkspaceId.value;
     const validIds = new Set((tabs as AnyApi[]).map((t: AnyApi) => t.id));
-    if (!activeViewId.value || !validIds.has(activeViewId.value)) {
-      activeViewId.value = (tabs as AnyApi[])[0]?.id || null;
-    }
+    // View and session identity must move together. When a hosted Primary
+    // stops being available (loop completed, task deleted), fixing only
+    // activeViewId would leave activeSessionId pointing at a session that is
+    // no longer on screen — and the next keystroke from the mobile composer
+    // would land in it.
+    const activeTab = validIds.has(activeViewId.value || "")
+      ? (tabs as AnyApi[]).find((t: AnyApi) => t.id === activeViewId.value)
+      : (tabs as AnyApi[])[0] || null;
+    const nextViewId = activeTab?.id || null;
+    const nextSessionId = activeTab?.type === "terminal" ? tabSessionId(activeTab) : null;
+    if (activeViewId.value !== nextViewId) activeViewId.value = nextViewId;
+    if (activeSessionId.value !== nextSessionId) activeSessionId.value = nextSessionId;
+
+    reconcileCompanionPrimaryLayout(workspaceId, tabs);
+
     if (splitGroup.value) {
-      const validSplitIds = splitGroup.value.viewIds.filter((id) => validIds.has(id));
+      // Dormant views (a presentation-hidden Primary on either side) are valid
+      // — filtering them out here would persist a truncated layout and the tab
+      // would not come back to its old slot.
+      const dormant = dormantViewIdsFor(workspaceId);
+      const validSplitIds = splitGroup.value.viewIds.filter((id) => validIds.has(id) || dormant.has(id));
       if (validSplitIds.length < 2) {
         splitGroup.value = null;
       } else if (validSplitIds.length !== splitGroup.value.viewIds.length) {
@@ -647,7 +698,132 @@ export const useAppStore = defineStore("app", () => {
     return viewId.startsWith(`${workspaceId}:`);
   }
 
+  // --- Companion Primary relocation (see electron/shared/companion-primary.ts) ---
+  // The Primary tab of a live companion loop is PRESENTED inside the task
+  // workspace while its panel, session id and owner stay put. `viewId` says
+  // where a tab is drawn, `sessionId` says which PTY it drives — the two are
+  // only equal for ordinary terminals.
+
+  /** Binding for a task workspace that currently hosts its Primary, else null. */
+  function getCompanionPrimaryBinding(
+    workspaceId: string,
+    sourcePayload: StatePayload | null = payload.value,
+  ): CompanionPrimaryBinding | null {
+    return resolveCompanionPrimaryBinding(
+      (sourcePayload as AnyApi)?.appState?.workspaces || [],
+      (sourcePayload as AnyApi)?.taskRunner || null,
+      workspaceId,
+    );
+  }
+
+  /** Binding for a SOURCE workspace whose Primary is currently shown elsewhere. */
+  function getCompanionPrimaryHost(
+    sourceWorkspaceId: string,
+    sourcePanelId?: string,
+    sourcePayload: StatePayload | null = payload.value,
+  ): CompanionPrimaryBinding | null {
+    return findCompanionPrimaryHost(
+      (sourcePayload as AnyApi)?.appState?.workspaces || [],
+      (sourcePayload as AnyApi)?.taskRunner || null,
+      sourceWorkspaceId,
+      sourcePanelId,
+    );
+  }
+
+  /**
+   * The one view→PTY resolver. Returns the real session id a view renders, or
+   * null when the view isn't a terminal. A virtual Primary id is only accepted
+   * by the workspace it names — no workspace may adopt a foreign
+   * `attached-primary:<id>` as its active or split view.
+   */
+  function resolveSessionIdForView(viewId: string | null | undefined, workspaceId: string): string | null {
+    if (!viewId || !workspaceId) return null;
+    if (isCompanionPrimaryViewId(viewId)) {
+      if (parseCompanionPrimaryViewId(viewId) !== workspaceId) return null;
+      return getCompanionPrimaryBinding(workspaceId)?.sourceSessionId || null;
+    }
+    return isSessionViewIdFor(viewId, workspaceId) ? viewId : null;
+  }
+
+  /** The two system-generated split shapes of an attached task workspace. */
+  function companionPrimarySystemShapes(
+    workspaceEntry: AnyApi,
+    workspaceId: string,
+  ): { aliasViewId: string; active: SplitGroup; terminal: SplitGroup } | null {
+    if (workspaceEntry?.kind !== "task" || workspaceEntry.task?.mode !== "attached") return null;
+    const dashboardPanel = (workspaceEntry.panels || []).find((p: AnyApi) => p?.command === "__task-dashboard__");
+    const judgePanelId = workspaceEntry.task?.judgePanelId;
+    if (!dashboardPanel?.id || !judgePanelId) return null;
+    const dashboardViewId = `task-dashboard:${dashboardPanel.id}`;
+    const companionViewId = `${workspaceId}:${judgePanelId}`;
+    const aliasViewId = companionPrimaryViewId(workspaceId);
+    return {
+      aliasViewId,
+      active: { layout: "top-split", viewIds: [dashboardViewId, aliasViewId, companionViewId] },
+      terminal: { layout: "cols", viewIds: [dashboardViewId, companionViewId] },
+    };
+  }
+
+  function isSameSplitShape(a: SplitGroup | null, b: SplitGroup | null): boolean {
+    if (!a || !b) return false;
+    return (
+      a.layout === b.layout && a.viewIds.length === b.viewIds.length && a.viewIds.every((id, i) => id === b.viewIds[i])
+    );
+  }
+
+  /**
+   * Views that are valid but temporarily presentation-hidden: the source's own
+   * Primary tab while it is hosted elsewhere, and an attached task's alias
+   * while the loop sits in a terminal state. Dormant is NOT deleted — their
+   * persisted layout must survive so the tab returns to where it was.
+   */
+  function dormantViewIdsFor(workspaceId: string): Set<string> {
+    const dormant = new Set<string>();
+    if (!workspaceId) return dormant;
+    const workspaces = (payload.value as AnyApi)?.appState?.workspaces || [];
+    const taskRunner = (payload.value as AnyApi)?.taskRunner || null;
+    for (const panelId of companionPrimaryHostedPanelIds(workspaces, taskRunner, workspaceId)) {
+      dormant.add(`${workspaceId}:${panelId}`);
+    }
+    const entry = workspaces.find((ws: AnyApi) => ws.id === workspaceId);
+    if (entry?.kind === "task" && entry.task?.mode === "attached") {
+      dormant.add(companionPrimaryViewId(workspaceId));
+    }
+    return dormant;
+  }
+
+  /**
+   * Swap the attached task workspace between its two system layouts as the
+   * Primary arrives and leaves. Only ever fires when the current layout is
+   * exactly the other system shape (or absent) — a layout the user arranged
+   * themselves is never rewritten by a lifecycle transition.
+   */
+  function reconcileCompanionPrimaryLayout(workspaceId: string, tabs: AnyApi[]): void {
+    if (!workspaceId) return;
+    const entry = ((payload.value as AnyApi)?.appState?.workspaces || []).find((ws: AnyApi) => ws.id === workspaceId);
+    const shapes = companionPrimarySystemShapes(entry, workspaceId);
+    if (!shapes) return;
+    const hosting = (tabs as AnyApi[]).some((tab: AnyApi) => tab.id === shapes.aliasViewId);
+    const current = splitGroup.value;
+    if (hosting) {
+      if (!current || isSameSplitShape(current, shapes.terminal)) splitGroup.value = { ...shapes.active };
+      return;
+    }
+    if (current && isSameSplitShape(current, shapes.active)) splitGroup.value = { ...shapes.terminal };
+  }
+
   function resolveSplitForWorkspace(workspaceEntry: AnyApi, workspaceId: string): SplitGroup | null {
+    const base = resolveBaseSplitForWorkspace(workspaceEntry, workspaceId);
+    const shapes = companionPrimarySystemShapes(workspaceEntry, workspaceId);
+    if (shapes) {
+      const hosting = Boolean(getCompanionPrimaryBinding(workspaceId));
+      if (hosting && (!base || isSameSplitShape(base, shapes.terminal))) return { ...shapes.active };
+      if (!hosting && isSameSplitShape(base, shapes.active)) return { ...shapes.terminal };
+    }
+    return base;
+  }
+
+  function resolveBaseSplitForWorkspace(workspaceEntry: AnyApi, workspaceId: string): SplitGroup | null {
     if (
       workspaceEntry?.splitLayout &&
       Array.isArray(workspaceEntry.splitViewIds) &&
@@ -710,6 +886,20 @@ export const useAppStore = defineStore("app", () => {
       if (dashPanel?.id) {
         nextViewId = `task-dashboard:${dashPanel.id}`;
       }
+    }
+
+    // A persisted virtual Primary view is honoured only by the task workspace
+    // it names, and only while that task still hosts the Primary. Otherwise it
+    // is dormant/invalid and we fall back to the workspace's own panel.
+    if (isCompanionPrimaryViewId(nextViewId)) {
+      const binding =
+        parseCompanionPrimaryViewId(nextViewId) === workspaceId ? getCompanionPrimaryBinding(workspaceId) : null;
+      if (binding) {
+        activeViewId.value = binding.viewId;
+        activeSessionId.value = binding.sourceSessionId;
+        return;
+      }
+      nextViewId = fallbackViewId || null;
     }
 
     if (!nextViewId) return;
@@ -1009,6 +1199,24 @@ export const useAppStore = defineStore("app", () => {
 
   async function activateView(viewId: string, { focus: _focus = true } = {}): Promise<void> {
     if (!viewId || viewId === activeViewId.value) return;
+
+    // Borrowed Primary: activate the VIEW here, point the session at the
+    // source PTY, and stop. Routing this through activateSession would send
+    // the source session id to the backend, which derives the workspace from
+    // its prefix and would yank the viewer over to the source workspace —
+    // exactly the split-brain this relocation exists to remove.
+    if (isCompanionPrimaryViewId(viewId)) {
+      const workspaceId = myActiveWorkspaceId.value;
+      const binding = getCompanionPrimaryBinding(workspaceId);
+      if (!binding || binding.viewId !== viewId) return;
+      pendingViewActivationId.value = "";
+      activeViewId.value = viewId;
+      activeSessionId.value = binding.sourceSessionId;
+      if (workspaceId && (_api as AnyApi)?.setWorkspaceUIState) {
+        (_api as AnyApi).setWorkspaceUIState(workspaceId, { activeViewId: viewId }).catch(() => {});
+      }
+      return;
+    }
 
     activeViewId.value = viewId;
     const selectedTab = (workspaceTabs.value as AnyApi[]).find((tab: AnyApi) => tab.id === viewId) || null;
@@ -1465,6 +1673,7 @@ export const useAppStore = defineStore("app", () => {
     otherProfileAttentionCount,
     workspaceTabs,
     visibleTabs,
+    renderedSplitGroup,
     workspaceGrid,
     isGridVisible,
     gridCellWorkspaces,
@@ -1510,5 +1719,9 @@ export const useAppStore = defineStore("app", () => {
     getWorkspaceAttentionForId,
     getTabAttentionForView,
     getPanelByViewId,
+    // Companion Primary relocation
+    getCompanionPrimaryBinding,
+    getCompanionPrimaryHost,
+    resolveSessionIdForView,
   };
 });

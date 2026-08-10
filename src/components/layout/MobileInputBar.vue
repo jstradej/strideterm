@@ -190,12 +190,20 @@ function toast(title: string, body: string, kind: "info" | "error" = "info"): vo
 // formats, while every writable terminal has a matching runtime session.
 const targetSessionId = computed<string | null>(() => {
   if (store.isGridVisible) return null;
+  const candidate = store.activeViewId || store.activeSessionId;
+  if (!candidate) return null;
+  // A borrowed Companion Primary writes to the SOURCE session, which is not in
+  // this workspace's session list. The projected tab is the validation: it
+  // only exists while the relocation is live, and it disappears atomically
+  // with it — so a completed loop can never leave a stale write target here.
+  const projected = (
+    store.workspaceTabs as Array<{ id: string; type: string; sessionId?: string; borrowed?: boolean }>
+  ).find((tab) => tab.id === candidate);
+  if (projected?.borrowed) return projected.type === "terminal" ? projected.sessionId || null : null;
   const workspacePayload = store.payload?.workspace as unknown as {
     sessions?: Array<{ sessionId: string }>;
   } | null;
   const sessions = workspacePayload?.sessions || [];
-  const candidate = store.activeViewId || store.activeSessionId;
-  if (!candidate) return null;
   return sessions.some((session) => session.sessionId === candidate) ? candidate : null;
 });
 

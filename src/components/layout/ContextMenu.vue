@@ -337,7 +337,10 @@ function arrowFor(srcBox: SlotBox, tgtBox: SlotBox): string {
 // has the target viewId, the arrow glyph showing which direction the pane
 // will move into, and the target pane's title for context.
 const moveTargets = computed(() => {
-  const sg = store.splitGroup;
+  // Rendered, not authoritative: slot indexes must line up with the panes that
+  // are actually on screen (a dormant Companion Primary is in the persisted
+  // group but occupies no slot).
+  const sg = store.renderedSplitGroup;
   if (!sg || !inGroup.value) return [];
   const boxes = (
     SLOT_BOXES as Record<string, { rMin: number; rMax: number; cMin: number; cMax: number }[] | undefined>

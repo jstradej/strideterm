@@ -1,6 +1,8 @@
 import { watch, onScopeDispose } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { classifyViewType } from "../app/helpers.js";
+import { tabSessionId } from "../app/selectors.js";
+import { isCompanionPrimaryViewId, resolveCompanionPrimaryBinding } from "../../electron/shared/companion-primary.js";
 import { isMobileViewport } from "./useIsNarrow.js";
 import type { Transport } from "../transport.js";
 
@@ -42,13 +44,17 @@ export function deriveGridSessionIds(
     // must not stream.
     if (narrow && ws.id !== focusedWorkspaceId) continue;
     const viewId = ws.id === focusedWorkspaceId ? appStore.activeViewId : ws.activeViewId;
-    if (
-      typeof viewId === "string" &&
-      classifyViewType(viewId, ws.id, appStore.payload) === "terminal" &&
-      !ids.includes(viewId)
-    ) {
-      ids.push(viewId);
-    }
+    if (typeof viewId !== "string" || classifyViewType(viewId, ws.id, appStore.payload) !== "terminal") continue;
+    // A cell rendering a borrowed Companion Primary must subscribe to the
+    // SOURCE session — the virtual view id is not a session the server knows.
+    const sessionId = isCompanionPrimaryViewId(viewId)
+      ? resolveCompanionPrimaryBinding(
+          appStore.payload?.appState?.workspaces || [],
+          appStore.payload?.taskRunner || null,
+          ws.id,
+        )?.sourceSessionId || ""
+      : viewId;
+    if (sessionId && !ids.includes(sessionId)) ids.push(sessionId);
   }
   return ids;
 }
@@ -91,9 +97,12 @@ export function deriveAttentionSync(
 ): { visibleSessionIds: string[]; subscriptionIds: string[]; syncKey: string } {
   const { count, waitingCount } = appStore.attentionSummary;
 
+  // Real session ids, never view ids: a borrowed Companion Primary is drawn
+  // under a virtual id but streams and reports attention as its source session.
   const visibleSessionIds = (appStore.visibleTabs as any[]) // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: visibleTabs is open-ended server JSON
     .filter((tab) => tab.type === "terminal")
-    .map((tab: any) => tab.id as string); // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: tab item is open-ended server JSON
+    .map((tab: any) => tabSessionId(tab)) // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: tab item is open-ended server JSON
+    .filter((sessionId: string) => Boolean(sessionId));
 
   const subscriptionIds = appStore.isGridVisible ? deriveGridSessionIds(appStore, narrow) : visibleSessionIds;
 
@@ -212,7 +221,10 @@ export function useAttentionSync(api: Transport) {
     clearTimeout(resyncTimer);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const hasVisibleAlert = (appStore.visibleTabs as any[]).some((tab: any) =>
-      appStore.getTabAttentionForView(appStore.activeWorkspace?.id || "", tab.id as string),
+      appStore.getTabAttentionForView(
+        (tab.ownerWorkspaceId as string) || appStore.activeWorkspace?.id || "",
+        tabSessionId(tab),
+      ),
     );
     if (hasVisibleAlert) {
       resyncTimer = setTimeout(() => {

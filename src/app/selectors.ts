@@ -1,4 +1,11 @@
 import type { StatePayload, WorkspaceState, PanelState } from "../../electron/shared/types/state.js";
+import {
+  companionPrimaryHostedPanelIds,
+  isCompanionPrimaryViewId,
+  resolveCompanionPrimaryBinding,
+  type CompanionPrimaryTaskRunner,
+  type CompanionPrimaryWorkspaceLike,
+} from "../../electron/shared/companion-primary.js";
 
 // ---------------------------------------------------------------------------
 // Local structural types used by selectors
@@ -36,7 +43,8 @@ interface SplitGroup {
   [key: string]: unknown;
 }
 
-interface WorkspaceTab {
+export interface WorkspaceTab {
+  /** Presentation view id — where the tab lives in the UI. */
   id: string;
   type: string;
   title: string;
@@ -45,6 +53,27 @@ interface WorkspaceTab {
   persistent?: boolean;
   closable?: boolean;
   url?: string;
+  /**
+   * Real PTY target. Equal to `id` for every ordinary terminal tab; only the
+   * relocated Companion Primary sets it to something else. ALWAYS resolve
+   * terminal operations through tabSessionId(), never through `id`.
+   */
+  sessionId?: string;
+  /** Workspace that owns the session (attention bucket, panel, layout). */
+  ownerWorkspaceId?: string;
+  /** True when this workspace only HOSTS the tab — no close/edit/drag/attach. */
+  borrowed?: boolean;
+  /** Overrides the tab-strip hover text when set. */
+  tooltip?: string;
+}
+
+/**
+ * The one place that turns a tab into a PTY target. Terminal rendering, input,
+ * resize, find, export, clear, attention and remote subscriptions all go
+ * through this — `tab.id` is a location, not a session.
+ */
+export function tabSessionId(tab: { id: string; sessionId?: string } | null | undefined): string {
+  return tab ? tab.sessionId || tab.id : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +183,12 @@ export function getTabAttention(
   if (!workspaceId || !viewId || helpers.isGitViewId(viewId) || helpers.isDockerViewId(viewId)) {
     return null;
   }
+  // Attention is owned by the SOURCE session, never by the borrowing task
+  // workspace. Callers must resolve tabSessionId()/ownerWorkspaceId first; a
+  // raw alias id here would silently look in the wrong bucket.
+  if (isCompanionPrimaryViewId(viewId)) {
+    return null;
+  }
 
   const workspaceAttention = getWorkspaceAttention(payload, workspaceId);
   if (!workspaceAttention?.alerts?.length) {
@@ -221,6 +256,70 @@ function buildProviderInboxTab(
   return hiddenViewIds.has(tab.id) ? [] : [tab];
 }
 
+/**
+ * Presentation-only relocation of an attached loop's Primary tab (see
+ * electron/shared/companion-primary.ts):
+ *
+ *  - inside the companion TASK workspace, insert a synthetic `Primary` tab
+ *    between the Dashboard and the Companion terminal. Its `sessionId` is the
+ *    untouched source session, so every terminal operation still targets the
+ *    original PTY;
+ *  - inside the SOURCE workspace the real tab is dropped from the strip —
+ *    hidden, not removed: `workspace.panels`, its order and the persisted
+ *    layout are all left alone so the tab reappears in place on return.
+ *
+ * Attached task workspaces always list the Dashboard first so the tab does not
+ * hop around as the alias appears and disappears across the loop's lifecycle.
+ * Standard task workspaces and ordinary terminals are untouched.
+ */
+function applyCompanionPrimaryProjection(
+  tabs: WorkspaceTab[],
+  activeWorkspace: WorkspaceState,
+  payload: StatePayload | null | undefined,
+): WorkspaceTab[] {
+  const workspaces = (payload?.appState?.workspaces || []) as unknown as CompanionPrimaryWorkspaceLike[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const taskRunner = ((payload as any)?.taskRunner || null) as CompanionPrimaryTaskRunner;
+  if (activeWorkspace.kind !== "task" || activeWorkspace.task?.mode !== "attached") return tabs;
+
+  const dashboardIndex = tabs.findIndex((tab) => tab.type === "task-dashboard");
+  const ordered =
+    dashboardIndex > 0 ? [tabs[dashboardIndex], ...tabs.filter((_, i) => i !== dashboardIndex)] : [...tabs];
+
+  const binding = resolveCompanionPrimaryBinding(workspaces, taskRunner, activeWorkspace.id);
+  if (!binding) return ordered;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const signal = ((payload?.attention as any)?.sessions || {})[binding.sourceSessionId] as
+    { activity?: string; lastExitCode?: number | null } | undefined;
+  const display = terminalStatusDisplay({
+    sessionId: binding.sourceSessionId,
+    panelId: binding.sourcePanelId,
+    title: binding.sourcePanelTitle,
+    status: "running",
+    activity: signal?.activity,
+    lastExitCode: signal?.lastExitCode,
+  });
+
+  const alias: WorkspaceTab = {
+    id: binding.viewId,
+    type: "terminal",
+    title: "Primary",
+    status: display.status,
+    tone: display.tone,
+    // Not a panel of THIS workspace: no drag-reorder, no double-click edit.
+    persistent: false,
+    closable: false,
+    sessionId: binding.sourceSessionId,
+    ownerWorkspaceId: binding.sourceWorkspaceId,
+    borrowed: true,
+    tooltip: `Primary conversation — ${binding.sourcePanelTitle} in ${binding.sourceWorkspaceName}. Shown here while the companion loop runs.`,
+  };
+
+  const insertAt = ordered[0]?.type === "task-dashboard" ? 1 : 0;
+  return [...ordered.slice(0, insertAt), alias, ...ordered.slice(insertAt)];
+}
+
 export function getWorkspaceTabs({
   workspace,
   payload,
@@ -265,6 +364,15 @@ export function getWorkspaceTabs({
   const taskDashboardPanelIds = new Set(panels.filter((p) => p.command === "__task-dashboard__").map((p) => p.id));
   const nonTerminalPanelIds = new Set([...browserPanelIds, ...filesPanelIds, ...taskDashboardPanelIds]);
 
+  // Panels of THIS workspace whose tab is currently presented inside a
+  // companion task workspace — hidden here, still fully owned here.
+  const hostedElsewherePanelIds = companionPrimaryHostedPanelIds(
+    (payload?.appState?.workspaces || []) as unknown as CompanionPrimaryWorkspaceLike[],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ((payload as any)?.taskRunner || null) as CompanionPrimaryTaskRunner,
+    activeWorkspace.id,
+  );
+
   // Terminal tabs from real sessions (exclude sessions for non-terminal panels)
   const tabs: WorkspaceTab[] = [
     ...(["azure-devops", "github"].includes(activeWorkspace.review?.provider ?? "")
@@ -285,7 +393,7 @@ export function getWorkspaceTabs({
         ]
       : []),
     ...workspace.sessions
-      .filter((session) => !nonTerminalPanelIds.has(session.panelId))
+      .filter((session) => !nonTerminalPanelIds.has(session.panelId) && !hostedElsewherePanelIds.has(session.panelId))
       .map((session) => {
         const headlessJudge = getHeadlessJudgeTabMeta(activeWorkspace, payload, session.panelId);
         const disp = terminalStatusDisplay(session);
@@ -395,7 +503,7 @@ export function getWorkspaceTabs({
     });
   }
 
-  return tabs.filter((tab) => !hiddenViewIds.has(tab.id));
+  return applyCompanionPrimaryProjection(tabs, activeWorkspace, payload).filter((tab) => !hiddenViewIds.has(tab.id));
 }
 
 export function getVisibleTabs({

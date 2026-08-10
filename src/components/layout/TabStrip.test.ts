@@ -236,3 +236,108 @@ describe("TabStrip", () => {
     expect(notifications.sessions[0].events[0].body).toBe("session gone");
   });
 });
+
+describe("TabStrip — relocated Companion Primary", () => {
+  const SOURCE = {
+    id: "ws-source",
+    name: "Live conversation",
+    kind: "terminal",
+    profileId: "default",
+    panels: [
+      { id: "panel-primary", title: "Claude", command: "claude" },
+      { id: "panel-other", title: "Shell", command: "bash" },
+    ],
+    activeViewId: "ws-source:panel-primary",
+  };
+
+  function task(state: string) {
+    return {
+      id: "ws-task",
+      name: "Reviewer: Live conversation",
+      kind: "task",
+      profileId: "default",
+      activeViewId: "attached-primary:ws-task",
+      panels: [
+        { id: "panel-dashboard", title: "Dashboard", command: "__task-dashboard__" },
+        { id: "panel-judge", title: "Reviewer", command: "codex" },
+      ],
+      task: {
+        mode: "attached",
+        state,
+        workerWorkspaceId: "ws-source",
+        workerPanelId: "panel-primary",
+        judgePanelId: "panel-judge",
+        companionRole: "reviewer",
+      },
+    };
+  }
+
+  function relocationPayload(state: string, activeWorkspaceId: string): StatePayload {
+    const workspaces = [SOURCE, task(state)];
+    const active = workspaces.find((w) => w.id === activeWorkspaceId)!;
+    return {
+      workspace: {
+        workspace: active,
+        sessions: (active.panels || [])
+          .filter((p) => p.command !== "__task-dashboard__")
+          .map((p) => ({
+            sessionId: `${active.id}:${p.id}`,
+            panelId: p.id,
+            title: p.title,
+            status: "idle",
+            activity: "idle",
+            lastExitCode: null,
+          })),
+      },
+      appState: { workspaces, activeWorkspaceId, activeProfileId: "default", windowSlots: [] },
+      attention: { sessions: {}, byWorkspace: {} },
+      taskRunner: {},
+    } as unknown as StatePayload;
+  }
+
+  test("the active task workspace strip shows Dashboard, Primary and the Companion", () => {
+    const store = useAppStore();
+    store.payload = relocationPayload("running", "ws-task");
+    const wrapper = mount(TabStrip);
+    expect(wrapper.findAll(".tab").map((t) => t.find("span").text())).toEqual(["Dashboard", "Primary", "Reviewer"]);
+  });
+
+  test("the borrowed Primary is neither draggable nor marked persistent", () => {
+    const store = useAppStore();
+    store.payload = relocationPayload("running", "ws-task");
+    const wrapper = mount(TabStrip);
+    const primary = wrapper.findAll(".tab")[1];
+    expect(primary.attributes("data-view-id")).toBe("attached-primary:ws-task");
+    expect(primary.attributes("data-persistent")).toBe("false");
+    expect(primary.attributes("draggable")).toBe("false");
+  });
+
+  test("a compact grid cell uses the same projection as the main strip", async () => {
+    const store = useAppStore();
+    // Active workspace is the SOURCE, so the task cell takes the compact path
+    // that used to rebuild tabs straight from wsEntry.panels.
+    store.payload = relocationPayload("running", "ws-source");
+    const wrapper = mount(TabStrip, { props: { compact: true, workspaceId: "ws-task" } });
+    await flushPromises();
+    expect(wrapper.findAll(".tab").map((t) => t.find("span").text())).toEqual(["Dashboard", "Primary", "Reviewer"]);
+  });
+
+  test("the source workspace's compact cell drops the relocated tab", async () => {
+    const store = useAppStore();
+    store.payload = relocationPayload("running", "ws-task");
+    const wrapper = mount(TabStrip, { props: { compact: true, workspaceId: "ws-source" } });
+    await flushPromises();
+    expect(wrapper.findAll(".tab").map((t) => t.find("span").text())).toEqual(["Shell"]);
+  });
+
+  test("a finished loop restores the source tab and drops the alias everywhere", async () => {
+    const store = useAppStore();
+    store.payload = relocationPayload("completed", "ws-task");
+    const wrapper = mount(TabStrip);
+    expect(wrapper.findAll(".tab").map((t) => t.find("span").text())).toEqual(["Dashboard", "Reviewer"]);
+
+    const compact = mount(TabStrip, { props: { compact: true, workspaceId: "ws-source" } });
+    await flushPromises();
+    expect(compact.findAll(".tab").map((t) => t.find("span").text())).toEqual(["Claude", "Shell"]);
+  });
+});

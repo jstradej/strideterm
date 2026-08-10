@@ -3723,7 +3723,7 @@ describe("runtime integration", () => {
     };
   }
 
-  test("deleting an inactive companion task's Primary workspace flags it as primaryMissing", async () => {
+  test("deleting a finished companion task's Primary workspace flags it as primaryMissing", async () => {
     const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-del-"));
     tempPaths.push(sharedCwd);
 
@@ -3731,7 +3731,9 @@ describe("runtime integration", () => {
       initialState: {
         workspaces: [
           makeSourceWorkspace("ws-source", sharedCwd),
-          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "paused"),
+          // "completed" is a RETURN state: the Primary tab has gone back to
+          // its own workspace, so the source is deletable again.
+          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "completed"),
         ],
       },
     });
@@ -3746,7 +3748,7 @@ describe("runtime integration", () => {
     expect(companion.task.primaryMissing).toBe(true);
   });
 
-  test("an ACTIVE companion loop still refuses the delete instead of being flagged", async () => {
+  test("a companion loop that still hosts the Primary refuses the delete instead of being flagged", async () => {
     const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-active-"));
     tempPaths.push(sharedCwd);
 
@@ -3761,7 +3763,9 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
     await setTaskStateAfterInit(fixture, "task-companion", "running");
 
-    await expect(fixture.runtime.deleteWorkspace("ws-source")).rejects.toThrow(/Reviewer loop is attached/);
+    await expect(fixture.runtime.deleteWorkspace("ws-source")).rejects.toThrow(
+      /Primary conversation is currently shown in the Reviewer loop/,
+    );
 
     const after = fixture.runtime.getPayload().appState.workspaces!;
     expect(after.find((w) => w.id === "ws-source")).toBeDefined();
@@ -3770,7 +3774,7 @@ describe("runtime integration", () => {
     expect(companion.task.primaryMissing).toBeFalsy();
   });
 
-  test("closing just the Primary TAB flags an inactive companion task too", async () => {
+  test("closing just the Primary TAB flags a finished companion task too", async () => {
     const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab-"));
     tempPaths.push(sharedCwd);
 
@@ -3778,7 +3782,7 @@ describe("runtime integration", () => {
       initialState: {
         workspaces: [
           makeSourceWorkspace("ws-source", sharedCwd),
-          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "awaiting-user"),
+          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "failed"),
         ],
       },
     });
@@ -3796,6 +3800,33 @@ describe("runtime integration", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const companion = after.find((w) => w.id === "task-companion") as any;
     expect(companion.task.primaryMissing).toBe(true);
+  });
+
+  test("an awaiting-user companion loop still hosts the Primary, so the source tab cannot be closed", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab-await-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          makeSourceWorkspace("ws-source", sharedCwd),
+          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "awaiting-user"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const source = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "ws-source")!;
+    await expect(
+      fixture.runtime.saveWorkspace({
+        ...source,
+        panels: source.panels.filter((p: { id: string }) => p.id !== "panel-primary"),
+        activePanelId: "panel-other",
+      }),
+    ).rejects.toThrow(/Primary conversation is currently shown in the Reviewer loop/);
+
+    const after = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "ws-source")!;
+    expect(after.panels.some((p: { id: string }) => p.id === "panel-primary")).toBe(true);
   });
 
   test("removing an unrelated tab leaves the companion task alone", async () => {
@@ -6732,26 +6763,56 @@ describe("Companion loop — close/delete dependency guards", () => {
     fixtures.push(fixture);
     await setCompanionStateAfterInit(fixture, "running");
 
-    await expect(fixture.runtime.deleteWorkspace("workspace-source")).rejects.toThrow(/Reviewer loop is attached/i);
+    await expect(fixture.runtime.deleteWorkspace("workspace-source")).rejects.toThrow(
+      /Primary conversation is currently shown in the Reviewer loop/i,
+    );
 
     const after = fixture.runtime.getPayload().appState.workspaces!;
     expect(after.find((w) => w.id === "workspace-source")).toBeDefined();
   });
 
-  test("deleteWorkspace allows deleting the source workspace once the companion task is paused", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-src-paused-"));
-    tempPaths.push(cwd);
+  // The guard is the shared hosting predicate, not an "is the runner busy"
+  // check: every state that keeps the Primary tab inside the task workspace
+  // refuses the delete, including the ones where nothing is executing.
+  for (const hostedState of ["idle", "brief-ready", "awaiting-user", "paused"]) {
+    test(`deleteWorkspace refuses to delete the source workspace while the companion is ${hostedState}`, async () => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), `strideterm-companion-hosted-${hostedState}-`));
+      tempPaths.push(cwd);
 
-    const fixture = await createFixture({
-      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "paused")] },
+      const fixture = await createFixture({
+        initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, hostedState)] },
+      });
+      fixtures.push(fixture);
+      await setCompanionStateAfterInit(fixture, hostedState);
+
+      await expect(fixture.runtime.deleteWorkspace("workspace-source")).rejects.toThrow(
+        /Primary conversation is currently shown in the Reviewer loop/i,
+      );
+
+      const after = fixture.runtime.getPayload().appState.workspaces!;
+      expect(after.find((w) => w.id === "workspace-source")).toBeDefined();
     });
-    fixtures.push(fixture);
+  }
 
-    await fixture.runtime.deleteWorkspace("workspace-source");
+  for (const terminalState of ["completed", "failed"]) {
+    test(`deleteWorkspace allows deleting the source workspace once the companion task is ${terminalState}`, async () => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), `strideterm-companion-src-${terminalState}-`));
+      tempPaths.push(cwd);
 
-    const after = fixture.runtime.getPayload().appState.workspaces!;
-    expect(after.find((w) => w.id === "workspace-source")).toBeUndefined();
-  });
+      const fixture = await createFixture({
+        initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, terminalState)] },
+      });
+      fixtures.push(fixture);
+      await setCompanionStateAfterInit(fixture, terminalState);
+
+      await fixture.runtime.deleteWorkspace("workspace-source");
+
+      const after = fixture.runtime.getPayload().appState.workspaces!;
+      expect(after.find((w) => w.id === "workspace-source")).toBeUndefined();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((after.find((w) => w.id === "workspace-companion") as any).task.primaryMissing).toBe(true);
+    });
+  }
 
   test("deleteWorkspace of the companion task workspace itself never touches the Primary source workspace", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-del-"));
@@ -6768,6 +6829,12 @@ describe("Companion loop — close/delete dependency guards", () => {
     const after = fixture.runtime.getPayload().appState.workspaces!;
     expect(after.find((w) => w.id === "workspace-companion")).toBeUndefined();
     expect(after.find((w) => w.id === "workspace-source")).toBeDefined();
+    // The Primary session lives under the SOURCE workspace's id prefix, so the
+    // task workspace's prefix-scoped cleanup must not reach it: the live
+    // conversation (and its replay/hook bindings) outlives the loop, it only
+    // stops being presented inside the task workspace.
+    expect(fixture.sessionManager.removedProjects).not.toContain("workspace-source");
+    expect(fixture.sessionManager.closedSessions).not.toContain("workspace-source:panel-source");
   });
 
   test("saveWorkspace refuses removing the panel bound as an active companion's Primary", async () => {
@@ -6783,7 +6850,9 @@ describe("Companion loop — close/delete dependency guards", () => {
     const source = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
     const nextWorkspace = { ...source, panels: source.panels!.filter((p) => p.id !== "panel-source") };
 
-    await expect(fixture.runtime.saveWorkspace(nextWorkspace)).rejects.toThrow(/Reviewer loop is attached/i);
+    await expect(fixture.runtime.saveWorkspace(nextWorkspace)).rejects.toThrow(
+      /Primary conversation is currently shown in the Reviewer loop/i,
+    );
 
     const after = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
     expect(after.panels!.some((p) => p.id === "panel-source")).toBe(true);
@@ -6809,14 +6878,15 @@ describe("Companion loop — close/delete dependency guards", () => {
     expect(after.panels!.some((p) => p.id === "panel-source")).toBe(true);
   });
 
-  test("saveWorkspace allows removing the Primary panel once the companion task is paused", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab-paused-"));
+  test("saveWorkspace allows removing the Primary panel once the companion task has completed", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab-completed-"));
     tempPaths.push(cwd);
 
     const fixture = await createFixture({
-      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "paused")] },
+      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "completed")] },
     });
     fixtures.push(fixture);
+    await setCompanionStateAfterInit(fixture, "completed");
 
     const source = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
     const nextWorkspace = { ...source, panels: source.panels!.filter((p) => p.id !== "panel-source") };

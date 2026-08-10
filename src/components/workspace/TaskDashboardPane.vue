@@ -416,9 +416,23 @@ const sourceWorkspaceAvailable = computed(() => {
   return panels.some((p) => p.id === panelId);
 });
 
-function onOpenPrimary() {
+// Presentation-aware navigation: while the loop is live the Primary is a tab
+// of THIS workspace, so "Open Primary" must not jump anywhere — it just
+// activates the local alias. Once the loop reaches a terminal state the tab
+// has gone home, and the same button becomes a real jump to the source
+// workspace and its exact session.
+async function onOpenPrimary() {
+  const taskWorkspaceId = workspace.value?.id || "";
+  const binding = taskWorkspaceId ? store.getCompanionPrimaryBinding(taskWorkspaceId) : null;
+  if (binding) {
+    await store.activateView(binding.viewId);
+    return;
+  }
   const sourceWorkspaceId = taskState.value?.workerWorkspaceId;
-  if (sourceWorkspaceId) store.activateWorkspace(sourceWorkspaceId);
+  if (!sourceWorkspaceId) return;
+  await store.activateWorkspaceInGrid(sourceWorkspaceId);
+  const sourcePanelId = taskState.value?.workerPanelId;
+  if (sourcePanelId) await store.activateView(`${sourceWorkspaceId}:${sourcePanelId}`);
 }
 
 const stateLabel = computed(() => {

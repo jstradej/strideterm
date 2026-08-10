@@ -1,7 +1,19 @@
 <template>
   <div class="terminal-stage" :class="stageClasses" data-role="terminal-stage" @mousedown="onStageMousedown">
-    <!-- Empty state: no tabs visible -->
-    <div v-if="!visibleTabs.length" class="terminal-empty">
+    <!-- Empty state: no tabs visible. When this workspace's only tab is the
+         Primary currently shown inside a companion task workspace, say so and
+         offer the way there instead of a bare "no terminal" — a placeholder
+         tab would look like a second copy of the conversation. -->
+    <div v-if="!visibleTabs.length && hostedPrimary" class="terminal-empty">
+      <p>Primary is currently shown in {{ hostedPrimary.taskWorkspaceName }}</p>
+      <small
+        >{{ hostedPrimary.sourcePanelTitle }} stays owned by this workspace and comes back when the loop ends.</small
+      >
+      <button type="button" class="button button--sm terminal-empty__action" @click="openCompanionTask">
+        Open companion task
+      </button>
+    </div>
+    <div v-else-if="!visibleTabs.length" class="terminal-empty">
       <p>No active terminal</p>
       <small>Select a tab or open a Docker shell/log stream.</small>
     </div>
@@ -24,7 +36,7 @@
           :actions="terminalPaneActions(tab)"
           @action="(a, meta) => onPaneAction(a, tab, meta)"
         />
-        <TerminalPane :session-id="tab.id" />
+        <TerminalPane :session-id="sessionIdOf(tab)" />
       </template>
 
       <!-- Non-terminal pane (dynamic component) -->
@@ -64,6 +76,7 @@ import {
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
 import { resolvePaneComponent, resolvePaneProps } from "../../app/pane-resolver.js";
+import { tabSessionId } from "../../app/selectors.js";
 import { SLOT_BOXES, gridAreaStyle as _gridAreaStyle, swapDirection, swapArrow } from "../../app/layout-geometry.js";
 interface Tab {
   id: string;
@@ -72,12 +85,29 @@ interface Tab {
   status?: string;
   persistent?: boolean;
   url?: string;
+  /** Real PTY target — differs from `id` only for a borrowed Primary. */
+  sessionId?: string;
+  borrowed?: boolean;
 }
 
 const store = useAppStore();
 const termStore = useTerminalStore();
 
 const visibleTabs = computed(() => store.visibleTabs);
+
+/** Never drive a terminal operation off `tab.id` — see selectors.tabSessionId. */
+function sessionIdOf(tab: Tab): string {
+  return tabSessionId(tab);
+}
+
+// This workspace's Primary is presented inside a companion task workspace
+// right now (null otherwise) — drives the dedicated empty state above.
+const hostedPrimary = computed(() => store.getCompanionPrimaryHost(store.myActiveWorkspaceId));
+
+function openCompanionTask(): void {
+  const taskWorkspaceId = hostedPrimary.value?.taskWorkspaceId;
+  if (taskWorkspaceId) void store.activateWorkspaceInGrid(taskWorkspaceId);
+}
 
 const currentLayout = computed(() => {
   // When only one pane is visible (e.g. mobile forceSoloLayout collapses a
@@ -86,7 +116,9 @@ const currentLayout = computed(() => {
   // single article ends up parked in slot "a" of "top-split" / "left-split"
   // and the rest of the viewport stays blank.
   if (visibleTabs.value.length <= 1) return "solo";
-  const sg = store.splitGroup;
+  // renderedSplitGroup, not splitGroup: a dormant member (a Primary hidden on
+  // either side of the relocation) must not leave an empty slot behind.
+  const sg = store.renderedSplitGroup;
   if (!sg) return "solo";
   return sg.viewIds.includes(store.activeViewId || "") ? sg.layout : "solo";
 });
@@ -115,7 +147,7 @@ function gridAreaStyle(index: number) {
 // sibling then gives access to the same swap targets through the context
 // menu's "Move to" section.
 function paneSwapActions(tab: Tab) {
-  const sg = store.splitGroup;
+  const sg = store.renderedSplitGroup;
   if (!sg || !sg.viewIds.includes(tab.id)) return [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const boxes = (SLOT_BOXES as Record<string, any>)[sg.layout];
@@ -167,6 +199,7 @@ function withSwapAndMenu(tab: Tab, baseActions: any[]) {
 }
 
 function terminalPaneActions(tab: Tab) {
+  const sessionId = sessionIdOf(tab);
   return withSwapAndMenu(tab, [
     {
       className: "workspace-pane__icon-btn",
@@ -178,12 +211,14 @@ function terminalPaneActions(tab: Tab) {
     {
       className: "workspace-pane__icon-btn",
       action: "find-in-terminal",
-      sessionId: tab.id,
+      sessionId,
       title:
         "Find text in this terminal's scrollback (Ctrl/Cmd+F). Searches the buffer xterm.js keeps in memory — older output that's scrolled past the limit isn't searchable.",
       label: "🔍",
     },
-    ...(tab.persistent
+    // A borrowed Primary is only hosted here — editing the tab would edit a
+    // panel this workspace doesn't own.
+    ...(tab.persistent && !tab.borrowed
       ? [
           {
             className: "workspace-pane__icon-btn",
@@ -197,33 +232,38 @@ function terminalPaneActions(tab: Tab) {
     {
       className: "workspace-pane__icon-btn",
       action: "export-terminal-transcript",
-      sessionId: tab.id,
+      sessionId,
       title: "Export the last 500 lines of this terminal's scrollback to a text file via the system save dialog.",
       label: "⇩",
     },
     {
       className: "workspace-pane__icon-btn",
       action: "clear-terminal",
-      sessionId: tab.id,
+      sessionId,
       title: "Clear the terminal viewport (Ctrl+L equivalent). Scrollback is also wiped.",
       label: "⌫",
     },
     {
       className: "workspace-pane__icon-btn",
       action: "restart-session",
-      sessionId: tab.id,
+      sessionId,
       title:
         "Kill the current process in this tab and re-run the tab's startup command. Useful when an agent gets stuck or you want a fresh session.",
       label: "↻",
     },
-    {
-      className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
-      action: "close-tab",
-      viewId: tab.id,
-      title:
-        "Close this tab. Default panels (Git / Docker / Files / Browser) reopen on next workspace activation; closed PTY tabs do not.",
-      label: "×",
-    },
+    // Closing is the owner's call: a borrowed Primary has no close button.
+    ...(tab.borrowed
+      ? []
+      : [
+          {
+            className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
+            action: "close-tab",
+            viewId: tab.id,
+            title:
+              "Close this tab. Default panels (Git / Docker / Files / Browser) reopen on next workspace activation; closed PTY tabs do not.",
+            label: "×",
+          },
+        ]),
   ]);
 }
 
@@ -373,7 +413,7 @@ function onStageMousedown(event: MouseEvent) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tab = visibleTabs.value.find((entry: any) => entry.id === viewId) || null;
   store.activeViewId = viewId;
-  store.activeSessionId = tab?.type === "terminal" ? viewId : null;
+  store.activeSessionId = tab?.type === "terminal" ? sessionIdOf(tab) : null;
   termStore.focusActiveTerminal();
 }
 

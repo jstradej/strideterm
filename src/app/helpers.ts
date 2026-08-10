@@ -1,4 +1,5 @@
 import { APP_CONFIG } from "../../config/app-config.js";
+import { isCompanionPrimaryViewId } from "../../electron/shared/companion-primary.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 
 interface AttentionAlert {
@@ -212,6 +213,10 @@ export function classifyViewType(
   if (isFilesViewId(viewId)) return "files";
   if (isTaskDashboardViewId(viewId)) return "task-dashboard";
   if (isBrowserViewId(viewId)) return "browser";
+  // The relocated Companion Primary is a real terminal rendered under a
+  // virtual view id. Classified before the headless-judge probe below, whose
+  // panel-id extraction would read the task workspace id out of the alias.
+  if (isCompanionPrimaryViewId(viewId)) return "terminal";
   if (workspaceId) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const taskState = (payload as any)?.taskRunner?.[workspaceId];

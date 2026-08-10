@@ -822,7 +822,16 @@ function backendSessionId(s: NotificationSession): string {
 
 function resolveJumpTarget(s: NotificationSession): { workspaceId: string; viewId: string } {
   if (s.category !== "review") {
-    return { workspaceId: s.workspaceId || "", viewId: s.viewId || "" };
+    // Follow the tab to wherever it is currently PRESENTED: a Primary alerting
+    // mid-companion-loop lives in the task workspace, and jumping to its owner
+    // would land on a workspace that no longer shows it. Ownership is
+    // unchanged — only the destination of this click is.
+    const workspaceId = s.workspaceId || "";
+    const viewId = s.viewId || "";
+    const panelId = viewId.startsWith(`${workspaceId}:`) ? viewId.slice(workspaceId.length + 1) : "";
+    const host = panelId ? appStore.getCompanionPrimaryHost(workspaceId, panelId) : null;
+    if (host) return { workspaceId: host.taskWorkspaceId, viewId: host.viewId };
+    return { workspaceId, viewId };
   }
   const workspaces = appStore.payload?.appState?.workspaces || [];
   const preferredId = s.meta?.reviewWorkspaceId || s.meta?.existingWorkspaceId || s.workspaceId || "";

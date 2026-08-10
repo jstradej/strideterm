@@ -110,6 +110,11 @@ import { useTerminalStore } from "../../stores/terminal.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useTabDragDrop } from "../../composables/useDragDrop.js";
 import { isFreshAlert, tabAttentionTitle } from "../../app/helpers.js";
+import { tabSessionId } from "../../app/selectors.js";
+import {
+  companionPrimaryHostedPanelIds,
+  resolveCompanionPrimaryBinding,
+} from "../../../electron/shared/companion-primary.js";
 
 interface TaskRunnerState {
   workerPanelId?: string;
@@ -181,21 +186,56 @@ const compactTabModels = computed(() => {
   const activeWsId = store.myActiveWorkspaceId;
   // If this cell is the active workspace, the normal tabModels computation handles it.
   if (wsId === activeWsId) return null;
-  const wsEntry = ((store.payload as AnyApi)?.appState?.workspaces || []).find((w: AnyApi) => w.id === wsId);
+  const workspaces = (store.payload as AnyApi)?.appState?.workspaces || [];
+  const taskRunner = (store.payload as AnyApi)?.taskRunner || null;
+  const wsEntry = workspaces.find((w: AnyApi) => w.id === wsId);
   if (!wsEntry) return [];
   const activeViewId = wsEntry.activeViewId || null;
   const panels: AnyApi[] = wsEntry.panels || [];
-  return panels.map((p: AnyApi) => {
-    const viewId = `${wsId}:${p.id}`;
-    return {
-      id: viewId,
-      title: p.title || p.id,
+  // Same Companion Primary projection as the main strip — without it a grid
+  // cell would keep showing the source tab that has moved, and would omit the
+  // borrowed Primary from the cell it moved into.
+  const hostedElsewhere = companionPrimaryHostedPanelIds(workspaces, taskRunner, wsId);
+  const models = panels
+    .filter((p: AnyApi) => !hostedElsewhere.has(p.id))
+    .map((p: AnyApi) => {
+      const viewId = `${wsId}:${p.id}`;
+      return {
+        id: viewId,
+        sessionId: viewId,
+        title: p.title || p.id,
+        status: "",
+        tone: "idle",
+        active: viewId === activeViewId,
+        grouped: false,
+        persistent: true,
+        closable: true,
+        borrowed: false,
+        attention: false,
+        attentionFresh: false,
+        attentionTooltip: "",
+        taskBadge: "",
+        taskTooltip: "",
+        companionWorkspaceId: "",
+        companionRoleLabel: "",
+        notes: (p.notes as string) || "",
+        titleTooltip: p.title || p.id,
+      };
+    });
+
+  const binding = resolveCompanionPrimaryBinding(workspaces, taskRunner, wsId);
+  if (binding) {
+    models.splice(panels[0]?.command === "__task-dashboard__" ? 1 : 0, 0, {
+      id: binding.viewId,
+      sessionId: binding.sourceSessionId,
+      title: "Primary",
       status: "",
       tone: "idle",
-      active: viewId === activeViewId,
+      active: binding.viewId === activeViewId,
       grouped: false,
-      persistent: true,
-      closable: true,
+      persistent: false,
+      closable: false,
+      borrowed: true,
       attention: false,
       attentionFresh: false,
       attentionTooltip: "",
@@ -203,10 +243,11 @@ const compactTabModels = computed(() => {
       taskTooltip: "",
       companionWorkspaceId: "",
       companionRoleLabel: "",
-      notes: (p.notes as string) || "",
-      titleTooltip: p.title || p.id,
-    };
-  });
+      notes: "",
+      titleTooltip: `Primary conversation — ${binding.sourcePanelTitle} in ${binding.sourceWorkspaceName}.`,
+    });
+  }
+  return models;
 });
 
 const tabModels = computed(() => {
@@ -221,12 +262,16 @@ const tabModels = computed(() => {
   const taskState = store.payload?.taskRunner?.[workspace?.id] as TaskRunnerState | undefined;
 
   return tabs.map((tab) => {
-    const tabAttention = store.getTabAttentionForView(workspace?.id || "", tab.id) as AttentionAlert | null | undefined;
+    // Attention stays owned by the SOURCE session even when the tab is drawn
+    // in another workspace — look it up by owner workspace + real session id.
+    const sessionId = tabSessionId(tab);
+    const tabAttention = store.getTabAttentionForView(tab.ownerWorkspaceId || workspace?.id || "", sessionId) as
+      AttentionAlert | null | undefined;
 
     // Task runner badge for worker/judge panels
     let taskBadge = "";
     let taskTooltip = "";
-    if (taskState && workspace?.task) {
+    if (taskState && workspace?.task && !tab.borrowed) {
       const panelId = tab.id.includes(":") ? tab.id.split(":").pop() : tab.id;
       if (panelId === taskState.workerPanelId || panelId === taskState.judgePanelId) {
         const role = panelId === taskState.workerPanelId ? "Worker" : "Judge";
@@ -249,7 +294,9 @@ const tabModels = computed(() => {
     // loop elsewhere (plan section 3.5/9.1).
     let companionWorkspaceId = "";
     let companionRoleLabel = "";
-    if (!taskBadge && workspace) {
+    // A borrowed Primary is ALREADY inside its companion task workspace — the
+    // "back to the loop" badge would point at the workspace it is drawn in.
+    if (!taskBadge && workspace && !tab.borrowed) {
       const panelId = tab.id.includes(":") ? tab.id.split(":").pop() : tab.id;
       const allWorkspaces = store.payload?.appState?.workspaces || [];
       const companionWs = allWorkspaces.find(
@@ -285,6 +332,7 @@ const tabModels = computed(() => {
     const suppressStatus = !!tabAttention;
     return {
       id: tab.id,
+      sessionId,
       title: tab.title,
       status: suppressStatus ? "" : tab.status,
       tone: suppressStatus ? "idle" : tab.tone,
@@ -292,6 +340,7 @@ const tabModels = computed(() => {
       grouped: splitVisible && tab.id !== activeViewId && (splitGroup?.viewIds.includes(tab.id) || false),
       persistent: !!tab.persistent,
       closable: tab.closable !== false,
+      borrowed: !!tab.borrowed,
       attention: !!tabAttention,
       attentionFresh: isFreshAlert(tabAttention),
       attentionTooltip: tabAttentionTitle(tabAttention),
@@ -307,6 +356,7 @@ const tabModels = computed(() => {
       titleTooltip:
         taskTooltip ||
         tabAttentionTitle(tabAttention) ||
+        tab.tooltip ||
         (tab.persistent
           ? "Double click to edit. Drag to reorder."
           : `${tab.title}${tab.status ? `\n${tab.status}` : ""}`),
