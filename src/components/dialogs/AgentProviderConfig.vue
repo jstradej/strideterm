@@ -2,7 +2,12 @@
   <div class="agent-config-section">
     <div class="agent-config-section__header">
       <span class="agent-config-section__label">{{ sectionLabel }}</span>
-      <button type="button" class="button button--ghost agent-config-section__advanced-btn" @click="toggleOverride">
+      <button
+        v-if="allowCustomCommand"
+        type="button"
+        class="button button--ghost agent-config-section__advanced-btn"
+        @click="toggleOverride"
+      >
         {{ commandOverride ? "Use provider picker" : "Advanced: custom command" }}
       </button>
     </div>
@@ -27,10 +32,13 @@
           </datalist>
         </label>
       </div>
-      <label class="checkbox-inline">
+      <label v-if="allowSkipPermissions" class="checkbox-inline">
         <input v-model="skipPermissions" type="checkbox" />
         <span>Skip permission prompts (dangerous)</span>
       </label>
+      <p v-else class="agent-config-section__isolation-note" :title="isolationTitle">
+        Inspect-only — permission bypass is never enabled here. Isolation: <strong>{{ isolationLabel }}</strong>
+      </p>
     </template>
     <label v-else title="Full CLI command including flags">
       <span>{{ commandLabel }}</span>
@@ -50,14 +58,45 @@ interface Props {
   panelCommand: string;
   commandOverride: boolean;
   providerOptions: Array<{ value: string; label: string; disabled?: boolean }>;
+  /** false for the attached-mode Companion picker (plan §9) — hides the raw
+   * custom-command escape hatch so the backend's inspect-only contract can't
+   * be bypassed from the UI. */
+  allowCustomCommand?: boolean;
+  /** false for the attached-mode Companion picker — hides the skip-
+   * permissions checkbox entirely; the attached Judge is always inspect-only. */
+  allowSkipPermissions?: boolean;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  allowCustomCommand: true,
+  allowSkipPermissions: true,
+});
 const emit = defineEmits<{
   "update:provider": [provider: ProviderConfig];
   "update:panelCommand": [command: string];
   "update:commandOverride": [value: boolean];
 }>();
+
+// Plan §3.2 "Capability význam" — never claim a hard sandbox the provider
+// can't demonstrably enforce. "prompt-only" is shown as "Prompt-enforced" to
+// make clear it's a contract, not a technical guarantee.
+const ISOLATION_LABELS: Record<string, string> = {
+  enforced: "Enforced",
+  "permission-gated": "Permission-gated",
+  "prompt-only": "Prompt-enforced",
+};
+const ISOLATION_TITLES: Record<string, string> = {
+  enforced: "This provider has a verified read-only/execution-disabled mode for project files.",
+  "permission-gated":
+    "No permission bypass flag is used — the provider's own per-tool approval prompt gates any write or execution attempt, and the app pauses the task instead of auto-approving it.",
+  "prompt-only":
+    "This provider cannot demonstrably gate tool use on its own. Only the runner's prompt contract restrains it — not an enforced technical boundary.",
+};
+const isolationLevel = computed(
+  () => PROVIDER_CHOICES.find((c) => c.id === props.provider.providerId)?.inspectionIsolation || "permission-gated",
+);
+const isolationLabel = computed(() => ISOLATION_LABELS[isolationLevel.value] || isolationLevel.value);
+const isolationTitle = computed(() => ISOLATION_TITLES[isolationLevel.value] || "");
 
 const sectionLabel = computed(() => (props.role === "worker" ? "Worker agent" : "Judge agent"));
 const commandLabel = computed(() => (props.role === "worker" ? "Worker command" : "Judge command"));
@@ -175,5 +214,10 @@ function toggleOverride() {
 .checkbox-inline input {
   width: auto;
   margin: 0;
+}
+.agent-config-section__isolation-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  opacity: 0.75;
 }
 </style>

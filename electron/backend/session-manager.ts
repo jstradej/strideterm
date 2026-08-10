@@ -491,6 +491,13 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  /** Whether a live PTY session currently exists for this id — used by the
+   * Companion-loop create flow to require a live Primary conversation rather
+   * than silently attaching to a dead/never-started panel. */
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
   suppressNextExit(sessionId: string): void {
     this.suppressedExits.set(sessionId, (this.suppressedExits.get(sessionId) || 0) + 1);
   }

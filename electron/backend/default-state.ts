@@ -409,6 +409,14 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
           pausedAt: workspace.task.pausedAt || null,
           finishedAt: workspace.task.finishedAt || null,
           rateLimitedUntil: workspace.task.rateLimitedUntil || null,
+          // Attached mode (Companion loop) — absent means "standard", never
+          // heuristically migrated from old tasks (plan §6.1).
+          mode: workspace.task.mode === "attached" ? "attached" : "standard",
+          workerWorkspaceId: workspace.task.workerWorkspaceId || "",
+          companionRole: workspace.task.companionRole || undefined,
+          companionFocus: workspace.task.companionFocus || "",
+          contextApprovedAt: workspace.task.contextApprovedAt || undefined,
+          judgeExecutionPolicy: workspace.task.mode === "attached" ? "inspect-only" : undefined,
         }
       : null,
   };

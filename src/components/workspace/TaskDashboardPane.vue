@@ -7,11 +7,11 @@
       <!-- Header with controls -->
       <div class="td__header">
         <div class="td__title">
-          <h2>{{ taskState?.description || "Task workspace" }}</h2>
+          <h2>{{ headerTitle }}</h2>
           <span class="td__badge" :class="`td__badge--${taskState?.state || 'idle'}`">
             {{ stateLabel }}
           </span>
-          <span v-if="['running', 'evaluating', 'refreshing'].includes(taskState?.state)" class="td__round">
+          <span v-if="showRoundChip" class="td__round">
             Round {{ taskState?.currentRound || 0 }}/{{ taskState?.maxRounds || 10 }}
           </span>
           <span v-if="taskState?.startedAt && taskState.state !== 'idle'" class="td__elapsed" :title="elapsedTitle">
@@ -19,16 +19,42 @@
           </span>
         </div>
         <div class="td__controls">
+          <!-- Always visible for attached tasks — the sticky Dashboard/Primary
+               switcher mobile needs (plan §9.1), since there's no split view
+               to fall back on. -->
           <button
-            v-if="taskState?.state === 'idle'"
-            class="button button--sm"
-            title="Begin the task — sends prompt to Worker and starts the automation loop"
-            @click="onStartWithBrief(statusTabRef?.briefDraft)"
+            v-if="isAttached && taskState?.state !== 'idle' && sourceWorkspaceAvailable"
+            class="button button--ghost button--sm"
+            title="Open the Primary conversation this companion loop is attached to"
+            @click="onOpenPrimary"
           >
-            Start
+            Open Primary
           </button>
           <button
-            v-if="taskState?.state === 'paused' || taskState?.state === 'completed' || taskState?.state === 'failed'"
+            v-if="taskState?.state === 'idle' && !primaryMissing"
+            class="button button--sm"
+            :title="
+              isAttached
+                ? 'Send the context-capture prompt into the existing Primary conversation'
+                : 'Begin the task — sends prompt to Worker and starts the automation loop'
+            "
+            @click="isAttached ? onStart() : onStartWithBrief(statusTabRef?.briefDraft)"
+          >
+            {{ isAttached ? "Start capture" : "Start" }}
+          </button>
+          <button
+            v-if="isAttached && taskState?.state === 'brief-ready' && !primaryMissing"
+            class="button button--sm"
+            :title="`Start the baseline ${companionRoleLabel} evaluation of the work already discussed in the Primary conversation`"
+            @click="onStart"
+          >
+            Start {{ companionRoleLabel }} loop
+          </button>
+          <button
+            v-if="
+              !primaryMissing &&
+              (taskState?.state === 'paused' || taskState?.state === 'completed' || taskState?.state === 'failed')
+            "
             class="button button--sm"
             title="Resume the task from where it left off — keeps round history and progress"
             @click="onStart"
@@ -40,7 +66,8 @@
               taskState?.state === 'running' ||
               taskState?.state === 'evaluating' ||
               taskState?.state === 'judge-evaluating' ||
-              taskState?.state === 'refreshing'
+              taskState?.state === 'refreshing' ||
+              (isAttached && taskState?.state === 'capturing-context')
             "
             class="button button--ghost button--sm"
             title="Pause the task — you can Continue or Reset afterwards"
@@ -49,33 +76,43 @@
             Pause
           </button>
           <button
-            v-if="['running', 'evaluating', 'judge-evaluating', 'refreshing', 'paused'].includes(taskState?.state)"
+            v-if="resendVisible && !primaryMissing"
             class="button button--ghost button--sm"
-            title="Re-send the last instruction to the Worker — use if the CLI dropped out of agent mode"
+            :title="`Re-send the last instruction to the ${isAttached ? 'Primary' : 'Worker'} — use if the CLI dropped out of agent mode`"
             @click="onResend('worker')"
           >
-            ↻ Worker
+            ↻ {{ isAttached ? "Primary" : "Worker" }}
           </button>
           <button
-            v-if="['running', 'evaluating', 'judge-evaluating', 'refreshing', 'paused'].includes(taskState?.state)"
+            v-if="resendVisible && !primaryMissing"
             class="button button--ghost button--sm"
-            title="Re-send the last instruction to the Judge — use if the CLI dropped out of agent mode"
+            :title="`Re-send the last instruction to the ${isAttached ? companionRoleLabel : 'Judge'} — use if the CLI dropped out of agent mode`"
             @click="onResend('judge')"
           >
-            ↻ Judge
+            ↻ {{ isAttached ? companionRoleLabel : "Judge" }}
           </button>
           <button
-            v-if="taskState?.state === 'completed' || taskState?.state === 'failed'"
+            v-if="!primaryMissing && (taskState?.state === 'completed' || taskState?.state === 'failed')"
             class="button button--ghost button--sm"
-            title="Override the verdict and send the Worker back with your own feedback"
+            :title="`Override the verdict and send the ${isAttached ? 'Primary' : 'Worker'} back with your own feedback`"
             @click="onRejectVerdict"
           >
             Send back
           </button>
           <button
-            v-if="taskState?.state === 'paused' || taskState?.state === 'completed' || taskState?.state === 'failed'"
+            v-if="
+              !primaryMissing &&
+              (taskState?.state === 'paused' ||
+                taskState?.state === 'completed' ||
+                taskState?.state === 'failed' ||
+                (isAttached && taskState?.state === 'brief-ready'))
+            "
             class="button button--ghost button--sm"
-            title="Clear all rounds and return to idle — edit the brief in the Task tab, then press Start"
+            :title="
+              isAttached
+                ? 'Clear all rounds and return to idle — the next Start re-captures context from the Primary conversation'
+                : 'Clear all rounds and return to idle — edit the brief in the Task tab, then press Start'
+            "
             @click="onReset"
           >
             Reset
@@ -101,7 +138,7 @@
         <TaskDashboardHelpTab v-if="activeTab === 'help'" :task-id="taskState?.taskId" />
 
         <TaskDashboardStatusTab
-          v-if="activeTab === 'status'"
+          v-if="activeTab === 'status' && !isAttached"
           ref="statusTabRef"
           :task-state="taskState"
           :workspace-cwd="workspace?.cwd || ''"
@@ -113,6 +150,21 @@
           @reject-verdict="onRejectVerdict"
           @open-assignment="openAssignment"
           @open-config="activeTab = 'config'"
+        />
+
+        <TaskDashboardCompanionStatusTab
+          v-if="activeTab === 'status' && isAttached"
+          :task-state="taskState"
+          :workspace-cwd="workspace?.cwd || ''"
+          :task-id="taskState?.taskId || ''"
+          :source-workspace-available="sourceWorkspaceAvailable"
+          @open-primary="onOpenPrimary"
+          @open-assignment="openAssignment"
+          @start="onStart"
+          @reject-verdict="onRejectVerdict"
+          @reset="onReset"
+          @delete-task="onDeleteTask"
+          @answer="onAnswerCompanion"
         />
 
         <TaskDashboardFilesTab
@@ -140,7 +192,7 @@
         />
 
         <!-- CONFIG tab (small — stays inline) -->
-        <div v-if="activeTab === 'config'" class="td__section">
+        <div v-if="activeTab === 'config' && !isAttached" class="td__section">
           <label class="td__field">
             <span>Task description</span>
             <div class="td__value">{{ taskState?.description || "(none — instruct the Worker directly)" }}</div>
@@ -181,6 +233,52 @@
             </div>
           </label>
         </div>
+
+        <!-- CONFIG tab — attached mode (plan §3.5) -->
+        <div v-if="activeTab === 'config' && isAttached" class="td__section">
+          <label class="td__field">
+            <span>Primary</span>
+            <div class="td__value">
+              {{ workerProviderLabel }} (existing conversation)
+              <template v-if="sourceWorkspaceAvailable">
+                &mdash;
+                <button class="td__link-btn" @click="onOpenPrimary">Open conversation</button>
+              </template>
+              <span v-else class="tdp__source-missing"> — no longer available in this profile</span>
+            </div>
+          </label>
+          <label class="td__field">
+            <span>Judge role</span>
+            <div class="td__value">{{ companionRoleLabel }}</div>
+          </label>
+          <label class="td__field">
+            <span>Evaluator</span>
+            <div class="td__value">{{ judgeProviderLabel }}</div>
+          </label>
+          <label class="td__field">
+            <span>Working directory</span>
+            <div class="td__value">
+              <code>{{ workspace?.cwd || "" }}</code>
+            </div>
+          </label>
+          <label class="td__field">
+            <span>Max rounds</span>
+            <div class="td__value">{{ taskState?.maxRounds || 10 }}</div>
+          </label>
+          <label class="td__field">
+            <span>Judge execution</span>
+            <div class="td__value">
+              Inspect only — never runs project code, builds, tests, or writes source. Isolation:
+              <strong>{{ judgeIsolationLabel }}</strong>
+            </div>
+          </label>
+          <label class="td__field">
+            <span>Primary permissions</span>
+            <div class="td__value">
+              Unchanged — this loop never modifies the Primary panel's command or permissions.
+            </div>
+          </label>
+        </div>
       </div>
     </div>
   </div>
@@ -191,8 +289,10 @@ import { ref, computed, inject, watch, onUnmounted } from "vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useTaskFiles } from "../../composables/useTaskFiles.js";
+import { PROVIDER_CHOICES } from "../../lib/agent-providers.js";
 import TaskDashboardHelpTab from "./TaskDashboardHelpTab.vue";
 import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
+import TaskDashboardCompanionStatusTab from "./TaskDashboardCompanionStatusTab.vue";
 import TaskDashboardFilesTab from "./TaskDashboardFilesTab.vue";
 import TaskDashboardLogTab from "./TaskDashboardLogTab.vue";
 
@@ -239,11 +339,96 @@ function providerLabel(config: Record<string, any> | null | undefined) {
 const workerProviderLabel = computed(() => providerLabel(taskState.value?.workerProviderConfig));
 const judgeProviderLabel = computed(() => providerLabel(taskState.value?.judgeProviderConfig));
 
+// Same vocabulary as AgentProviderConfig.vue's creation-time picker (plan
+// §10) — the Dashboard must keep telling the truth about how much the
+// inspect-only contract is actually enforced while the loop is running, not
+// just at creation time.
+const ISOLATION_LABELS: Record<string, string> = {
+  enforced: "Enforced",
+  "permission-gated": "Permission-gated",
+  "prompt-only": "Prompt-enforced",
+};
+const judgeIsolationLabel = computed(() => {
+  const providerId = taskState.value?.judgeProviderConfig?.providerId;
+  const level = PROVIDER_CHOICES.find((c) => c.id === providerId)?.inspectionIsolation || "permission-gated";
+  return ISOLATION_LABELS[level] || level;
+});
+
+// Attached mode (Companion loop) — plan §3.5/§9: Dashboard uses Primary/role
+// labels, never Worker/Judge, and adds three states standard tasks never see.
+const isAttached = computed(() => taskState.value?.mode === "attached");
+const COMPANION_ROLE_LABELS: Record<string, string> = {
+  reviewer: "Reviewer",
+  planner: "Planner",
+  consultant: "Consultant",
+  critic: "Critic",
+};
+const companionRoleLabel = computed(() => COMPANION_ROLE_LABELS[taskState.value?.companionRole || "reviewer"]);
+
+const headerTitle = computed(() => {
+  if (isAttached.value) {
+    return workspace.value?.name || `${companionRoleLabel.value} loop`;
+  }
+  return taskState.value?.description || "Task workspace";
+});
+
+// Judge-evaluating shows a round chip for attached tasks too (Primary <->
+// Companion rounds matter equally there) — added as a separate OR so the
+// standard task's existing list/behavior above is untouched.
+const showRoundChip = computed(() => {
+  const s = taskState.value?.state;
+  if (["running", "evaluating", "refreshing"].includes(s || "")) return true;
+  return isAttached.value && s === "judge-evaluating";
+});
+
+const resendVisible = computed(() => {
+  const s = taskState.value?.state || "";
+  if (["running", "evaluating", "judge-evaluating", "refreshing", "paused"].includes(s)) return true;
+  return isAttached.value && (s === "capturing-context" || s === "awaiting-user");
+});
+
+// Set by the backend once the Primary's workspace or panel is known to be gone
+// (deleted, or missing at app-restart recovery). Every action that drives an
+// attached loop forward is refused from then on, and Reset doesn't lift it, so
+// the controls that would only fail silently are hidden rather than offered.
+const primaryMissing = computed(() => isAttached.value && Boolean(taskState.value?.primaryMissing));
+
+// The remote payload is already filtered per viewer profile — if the source
+// workspace isn't in it (wrong profile, or it was deleted), Open Primary must
+// not be offered at all rather than failing silently when clicked. The PANEL
+// counts too: deleting just the tab that hosts the conversation leaves the
+// workspace in place, and jumping to it would only show a workspace whose
+// Primary conversation no longer exists.
+const sourceWorkspaceAvailable = computed(() => {
+  const sourceWorkspaceId = taskState.value?.workerWorkspaceId;
+  if (!sourceWorkspaceId) return false;
+  if (primaryMissing.value) return false;
+  const sourceWorkspace = (store.payload?.appState?.workspaces || []).find((w) => w.id === sourceWorkspaceId);
+  if (!sourceWorkspace) return false;
+  const panelId = taskState.value?.workerPanelId;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const panels = (sourceWorkspace as any).panels as Array<{ id: string }> | undefined;
+  // Only a payload that carries no panel list AT ALL falls back to the
+  // workspace-level answer (older remote payloads), rather than hiding a
+  // working button. A list that is present but empty is authoritative: every
+  // panel is gone, so the Primary's certainly is.
+  if (!panelId || !Array.isArray(panels)) return true;
+  return panels.some((p) => p.id === panelId);
+});
+
+function onOpenPrimary() {
+  const sourceWorkspaceId = taskState.value?.workerWorkspaceId;
+  if (sourceWorkspaceId) store.activateWorkspace(sourceWorkspaceId);
+}
+
 const stateLabel = computed(() => {
   const s = taskState.value?.state;
+  if (s === "capturing-context") return "Capturing context…";
+  if (s === "brief-ready") return "Brief ready";
+  if (s === "awaiting-user") return `Awaiting your input`;
   if (s === "running") return "Running";
   if (s === "evaluating") return "Evaluating";
-  if (s === "judge-evaluating") return "Judge evaluating";
+  if (s === "judge-evaluating") return isAttached.value ? `${companionRoleLabel.value} evaluating` : "Judge evaluating";
   if (s === "refreshing") return "Refreshing context";
   if (s === "completed") return "Completed";
   if (s === "failed") return "Failed";
@@ -252,7 +437,7 @@ const stateLabel = computed(() => {
 });
 
 // ── Elapsed timer ───────────────────────────────────────────────
-const ACTIVE_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+const ACTIVE_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing", "capturing-context"]);
 const elapsedMs = ref(0);
 let elapsedTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -473,14 +658,53 @@ async function onReset() {
   }
 }
 
+// Only offered once the Primary is known to be gone: recovery from that is
+// delete-and-recreate, so the hero's action deletes this task workspace. Goes
+// through the store's normal delete path, which owns the confirm dialog and the
+// optimistic sidebar removal — the Primary's own workspace is never touched.
+async function onDeleteTask() {
+  const id = wsId();
+  if (!id) return;
+  try {
+    await store.deleteWorkspace(id);
+  } catch (err) {
+    console.error("[task-dashboard] delete task failed:", err);
+    await taskToast("Delete failed", (err as Error)?.message || "Unknown error");
+  }
+}
+
+// Explicit answer action for a `needs-input` companion verdict — the only
+// way out of awaiting-user besides Pause/Reset (plan §8.5). Never a plain
+// Continue, which would bypass the question.
+async function onAnswerCompanion({ questionIds, answer }: { questionIds: string[]; answer: string }) {
+  const id = wsId();
+  if (!api || !id) return;
+  try {
+    const r = await api.answerCompanionTask({ workspaceId: id, questionIds, answer });
+    if (r?.payload) store.handleBroadcastPayload(r.payload);
+    if (r && (r as { ok?: boolean }).ok === false) {
+      await taskToast("Could not send decision", "The task may no longer be awaiting your input.");
+    }
+  } catch (err) {
+    console.error("[task-dashboard] answer companion failed:", err);
+    await taskToast("Send decision failed", (err as Error)?.message || "Unknown error");
+  }
+}
+
 function onRejectVerdict() {
   const id = wsId();
   if (!api || !id) return;
-  const verdictLabel = taskState.value?.state === "failed" ? "Max rounds reached" : "Judge said complete";
+  const targetLabel = isAttached.value ? "Primary" : "Worker";
+  const verdictLabel =
+    taskState.value?.state === "failed"
+      ? "Max rounds reached"
+      : isAttached.value
+        ? `${companionRoleLabel.value} said complete`
+        : "Judge said complete";
   store.openDialog("TextAreaDialog", {
     eyebrow: "Task runner",
-    title: "Send Worker back with feedback",
-    label: `${verdictLabel} — describe what's still missing so the Worker runs one more round:`,
+    title: `Send ${targetLabel} back with feedback`,
+    label: `${verdictLabel} — describe what's still missing so the ${targetLabel} runs one more round:`,
     placeholder:
       "e.g. The CLAUDE.md section on git polling was not updated; UC-12 auto-dismiss is still not wired to the snapshot watcher.",
     submitLabel: "Send back",
@@ -681,6 +905,10 @@ function onRejectVerdict() {
 }
 .td__link-btn:hover {
   opacity: 0.8;
+}
+.tdp__source-missing {
+  opacity: 0.6;
+  font-style: italic;
 }
 
 /* ── Compact mode (workspace-grid cells) ─────────────────────────────

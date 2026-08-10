@@ -778,6 +778,34 @@ export const taskRecoveryResolveSchema = z.object({
 });
 export type TaskRecoveryResolve = z.infer<typeof taskRecoveryResolveSchema>;
 
+// ---------------------------------------------------------------------------
+// Attached mode (Companion loop) — plan §7. Separate create channel: the
+// authoritative source workspace/panel/cwd/parent/profile are ALWAYS derived
+// server-side from `sourceSessionId`, never accepted from the client.
+// ---------------------------------------------------------------------------
+
+export const taskCompanionCreateSchema = z.object({
+  sourceSessionId: nonEmptyString,
+  // Informational only — timeout/prompt-injection-style hint for the
+  // existing Primary session. Never used to change its command/model/env.
+  primaryProvider: providerConfigSchema.optional(),
+  companionRole: z.enum(["reviewer", "planner", "consultant", "critic"]),
+  companionProvider: providerConfigSchema,
+  focus: z.string().max(5000).optional().default(""),
+  maxRounds: z.number().int().min(1).max(100).optional(),
+});
+export type TaskCompanionCreate = z.infer<typeof taskCompanionCreateSchema>;
+
+export const taskCompanionAnswerSchema = z.object({
+  workspaceId: nonEmptyString,
+  questionIds: z
+    .array(z.string().regex(/^Q-[0-9]+$/))
+    .min(1)
+    .max(5),
+  answer: z.string().min(1).max(5000),
+});
+export type TaskCompanionAnswer = z.infer<typeof taskCompanionAnswerSchema>;
+
 export const workspaceReorderSchema = z.array(nonEmptyString);
 export type WorkspaceReorder = z.infer<typeof workspaceReorderSchema>;
 

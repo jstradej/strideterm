@@ -12,10 +12,23 @@ import type { TaskState } from "../../electron/shared/types/task.js";
 //
 // WORKER.md is only present in the new split format — older tasks have rules
 // embedded in TASK.md and don't ship a Worker tab. The composable probes its
-// existence at mount and updates the tab list reactively.
+// existence at mount and updates the tab list reactively. Attached (Companion
+// loop) tasks reuse the same file/probe for their own "Worker rules" tab —
+// durable rules for the Primary, not the standard Worker's rules.
 const TASK_FILE_NAME = "TASK.md";
 const WORKER_FILE_NAME = "WORKER.md";
 const JUDGE_FILE_NAME = "JUDGE_PROMPT.md";
+// Attached mode (Companion loop) only — see docs/agent-task-runner.md.
+const CONTEXT_FILE_NAME = "CONTEXT.md";
+const HANDOFF_FILE_NAME = "HANDOFF.md";
+const VERIFICATION_FILE_NAME = "VERIFICATION.md";
+
+const COMPANION_ROLE_LABELS: Record<string, string> = {
+  reviewer: "Reviewer",
+  planner: "Planner",
+  consultant: "Consultant",
+  critic: "Critic",
+};
 
 /**
  * Composable for task dashboard file editing.
@@ -37,6 +50,8 @@ export function useTaskFiles(
   const saving = ref(false);
   // null = haven't probed yet; true/false = result of disk probe.
   const workerFileExists = ref<boolean | null>(null);
+  const contextFileExists = ref<boolean | null>(null);
+  const verificationFileExists = ref<boolean | null>(null);
   let suppressDirty = false;
 
   const taskDir = computed(() => {
@@ -46,7 +61,59 @@ export function useTaskFiles(
     return `.strideterm/tasks/${taskId}`;
   });
 
+  const isAttached = computed(() => taskState.value?.mode === "attached");
+  const companionRoleLabel = computed(
+    () => COMPANION_ROLE_LABELS[taskState.value?.companionRole || "reviewer"] || "Judge",
+  );
+
   const taskFiles = computed(() => {
+    if (isAttached.value) {
+      const list = [
+        {
+          name: TASK_FILE_NAME,
+          label: "Your focus",
+          description: "Explicit user focus and later clarifications — the highest-authority task scope.",
+        },
+      ];
+      if (contextFileExists.value) {
+        list.push({
+          name: CONTEXT_FILE_NAME,
+          label: "Context",
+          description: "Captured scope from the Primary conversation. Editable before you approve the brief.",
+        });
+      }
+      if (workerFileExists.value) {
+        list.push({
+          name: WORKER_FILE_NAME,
+          label: "Worker rules",
+          description: "Durable operating rules for the Primary across this companion loop.",
+        });
+      }
+      list.push({
+        name: HANDOFF_FILE_NAME,
+        label: "Handoff",
+        description: "Current progress snapshot written by the Primary — evidence, never scope authority.",
+      });
+      if (verificationFileExists.value) {
+        list.push({
+          name: VERIFICATION_FILE_NAME,
+          label: "Verification",
+          description: "Primary-recorded command results for the next companion review.",
+        });
+      }
+      list.push({
+        name: JUDGE_FILE_NAME,
+        label: `${companionRoleLabel.value} customization`,
+        description: `Additional ${companionRoleLabel.value} instructions only — can add focus, never replace the runner contract or role policy.`,
+      });
+      return list.map((file) => ({
+        name: file.name,
+        label: file.label,
+        description: file.description,
+        dirty: !!fileDirtyFlags.value[file.name],
+      }));
+    }
+
     const list = [
       {
         name: TASK_FILE_NAME,
@@ -84,30 +151,40 @@ export function useTaskFiles(
     return "plaintext";
   });
 
-  // Probe WORKER.md presence on mount and whenever the task changes.
-  // Backend's fileRead returns content or throws — we treat any failure as
-  // "doesn't exist" so old single-file tasks gracefully hide the Worker tab.
-  async function probeWorkerFile() {
-    if (!api?.fileRead || !taskDir.value || !workspace.value?.cwd) {
-      workerFileExists.value = null;
-      return;
-    }
+  // Existence probes — fileRead returns content or throws, so any failure is
+  // treated as "doesn't exist yet" (old single-file tasks hide the Worker
+  // tab; a not-yet-captured attached task hides Context/Verification).
+  async function probeFileExists(name: string): Promise<boolean> {
+    if (!api?.fileRead || !taskDir.value || !workspace.value?.cwd) return false;
     try {
-      await api.fileRead({
-        rootPath: workspace.value.cwd,
-        relativePath: `${taskDir.value}/${WORKER_FILE_NAME}`,
-      });
-      workerFileExists.value = true;
+      await api.fileRead({ rootPath: workspace.value.cwd, relativePath: `${taskDir.value}/${name}` });
+      return true;
     } catch {
-      workerFileExists.value = false;
+      return false;
     }
+  }
+
+  async function probeWorkerFile() {
+    workerFileExists.value = await probeFileExists(WORKER_FILE_NAME);
+  }
+
+  async function probeAttachedFiles() {
+    contextFileExists.value = await probeFileExists(CONTEXT_FILE_NAME);
+    verificationFileExists.value = await probeFileExists(VERIFICATION_FILE_NAME);
+    workerFileExists.value = await probeFileExists(WORKER_FILE_NAME);
   }
 
   watch(
     () => taskState.value?.taskId,
     (taskId) => {
-      if (taskId) probeWorkerFile();
-      else workerFileExists.value = null;
+      if (taskId) {
+        if (isAttached.value) probeAttachedFiles();
+        else probeWorkerFile();
+      } else {
+        workerFileExists.value = null;
+        contextFileExists.value = null;
+        verificationFileExists.value = null;
+      }
     },
     { immediate: true },
   );

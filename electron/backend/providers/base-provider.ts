@@ -120,6 +120,30 @@ export class BaseProvider {
   }
 
   /**
+   * How strongly this provider can enforce the attached-mode Judge's
+   * read-only/no-execution contract (plan §3.2 "Capability význam") when
+   * launched with `skipPermissions: false` (the attached-mode invariant —
+   * never a bypass flag):
+   *   "enforced"         — the provider has a documented hard project-tree
+   *                         read-only / execution-disabled mode. None of the
+   *                         current providers claim this — it would require
+   *                         verified CLI support, not an assumption.
+   *   "permission-gated" — no bypass flag means the CLI's own per-tool
+   *                         approval prompt gates any write/execute; the
+   *                         runner turns that prompt into a policy pause
+   *                         (never auto-approved). This is the default for
+   *                         every provider below, since it reflects their
+   *                         actual out-of-the-box behavior without
+   *                         `skipPermissions`.
+   *   "prompt-only"       — the provider cannot demonstrably gate tool use
+   *                         at all; only the prompt contract restrains it.
+   * UI must show this truthfully rather than implying a hard OS sandbox.
+   */
+  get inspectionIsolation(): "enforced" | "permission-gated" | "prompt-only" {
+    return "permission-gated";
+  }
+
+  /**
    * Hook called before the first prompt is injected.
    * Providers can write config files here (e.g. Gemini yolo policy).
    */

@@ -44,6 +44,8 @@ import {
   gitStashListSchema,
   gitSquashSchema,
   taskUpdateDescriptionSchema,
+  taskCompanionCreateSchema,
+  taskCompanionAnswerSchema,
   terminalSessionSchema,
   validateIpc,
   workspaceDeleteOptionsSchema,
@@ -1755,6 +1757,17 @@ export async function startRemoteServer({
     "/api/task/update-description": (body, windowId) => {
       const parsed = validateIpc(taskUpdateDescriptionSchema, body, "POST /api/task/update-description");
       return runtime.updateTaskDescription(parsed.workspaceId, parsed.description, windowId);
+    },
+    // Companion loop (attached mode) — validated explicitly here (unlike the
+    // legacy /api/task/create gap noted above) since remote/mobile clients
+    // are the least-trusted caller for a new create channel.
+    "/api/task/create-companion": (body, windowId) => {
+      const parsed = validateIpc(taskCompanionCreateSchema, body, "POST /api/task/create-companion");
+      return runtime.createCompanionTask(parsed, windowId);
+    },
+    "/api/task/answer-companion": (body, windowId) => {
+      const parsed = validateIpc(taskCompanionAnswerSchema, body, "POST /api/task/answer-companion");
+      return runtime.answerCompanionTask(parsed.workspaceId, parsed.questionIds, parsed.answer, windowId);
     },
     // Activation also moves slot.activeWorkspaceId for the bound slot
     // (legacy activateWorkspace mirrors to windowSlots[0]) — must be

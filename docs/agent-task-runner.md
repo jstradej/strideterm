@@ -348,6 +348,70 @@ This makes the task workspace reusable: create it once, then reset and re-run as
 - **Use the terminal**: You can always type directly into the Worker or Judge terminal for course correction
 - **Put verification commands in your brief**: the Task Runner does not auto-detect them. If you want `npm test` / `cargo test` / `pytest -x` to run before completion, write them into TASK.md.
 
+## Companion Loop (Attach to an Existing Conversation)
+
+The Companion loop attaches an independent AI evaluator to a **live, already-in-progress** agent conversation — Claude Code, Codex, Gemini, Copilot, or OpenCode — without restarting it, cloning it, or scraping its terminal scrollback. It reuses the same Worker+Judge task-runner infrastructure described above, in an "attached" mode.
+
+The conversation you attach to is called the **Primary**. It stays exactly as it was: same session, same command, same permissions. The Companion never sends it `/clear`, never restarts it, and is never itself allowed to run with permission-bypass/yolo flags — it only reads.
+
+### Starting a Companion loop
+
+1. Right-click the tab of a running agent panel and choose **Add companion agent…**
+2. Pick a role (see below), a provider/model for the Companion, and optionally a focus note
+3. The Primary is asked to write `CONTEXT.md` and `HANDOFF.md` from its own context — nothing in your project is touched during this step
+4. Once those are ready, review them in the **Brief ready** screen and press **Start `<Role>` loop**
+
+The attached task workspace contains only a **Dashboard** and one **Companion** panel — there is never a second, fake "Worker" panel. The Primary keeps living in its own original workspace/tab; the Dashboard's **Open Primary** button jumps you there.
+
+Alongside `CONTEXT.md`/`HANDOFF.md`, the task also gets a `WORKER.md` — durable ground rules for the Primary for the whole loop (never restart/`/clear` itself, record verification evidence before removing WORK_LOCK, keep TODO.md/HANDOFF.md current). It's shown as the **Worker rules** tab in the Dashboard's Assignment view, next to **Your focus** (TASK.md) and the role customization file.
+
+### Roles
+
+Each role has a materially different blocking policy, not just a different persona:
+
+| Role           | What it checks                                                                   | What can block completion                                                                                                    |
+| -------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Reviewer**   | Requirements vs. git diff, code quality, scope creep                             | Missing/incorrect requirements                                                                                               |
+| **Critic**     | Steelmans the approach first, then tries to disprove it                          | Confirmed flaws only — speculative concerns are advisory                                                                     |
+| **Consultant** | Whether the chosen direction is the best safe next step for the goal/constraints | The approach can't meet the goal, an unresolved decision blocks progress, or a major ignored trade-off contradicts the brief |
+| **Planner**    | Coverage/completeness of a plan document, assumptions, open questions            | Never asks you a question — resolves ambiguity with a documented working default                                             |
+
+Reviewer, Critic, and Consultant can all leave the loop in a **blocking** or `needs-input` state; Planner alone always reaches `complete` (optionally with advisories/documentation), resolving ambiguity with a documented working default instead of asking.
+
+### Dashboard states unique to attached mode
+
+| State                        | Meaning                                                                                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Capturing context**        | Waiting for the Primary to write CONTEXT.md/HANDOFF.md                                                                                                                               |
+| **Brief ready**              | Captured brief is ready for your review before the loop starts                                                                                                                       |
+| **Awaiting user**            | The Companion asked a genuine question it couldn't resolve on its own — Reviewer, Critic, or Consultant can reach this; Planner never does. Your decision must cover every question of that round — the round resumes as soon as it's sent, so a partial answer is refused rather than left half-open |
+| **Paused: policy violation** | The Companion hit a permission prompt during evaluation — it tried something outside its inspect-only scope, so the runner paused it rather than nudging it to retry                 |
+| **Primary no longer exists** | The Primary's workspace or tab is gone (deleted, or missing at app-restart recovery). Terminal in every state, not just while paused: the Dashboard replaces the state hero with a "Primary no longer exists" hero whose only action is **Delete task**, and hides Start, Continue, Send back, Send decision, Reset, and the Primary resend — the runner refuses all of them and Reset does not lift the flag, because nothing in this app re-attaches a conversation that no longer exists. The last verdict stays readable |
+
+Verification is a hard gate: only the Worker-owned `VERIFICATION.md` counts as evidence — the Companion never runs your project's build/test/lint commands itself.
+
+**Send back.** Overriding a `complete`/max-rounds verdict re-opens a round exactly like a Companion `continue` does: the Primary gets your feedback, a `VERIFICATION.md` template tagged for the new round, and a fresh freshness baseline the next record has to beat. If the feedback can't be delivered (the Primary's CLI is gone), nothing is consumed — the verdict stands, the round bookkeeping and the previous round's evidence are left untouched, and you can retry.
+
+**Evaluation identity.** A verdict only counts as the answer to the evaluation the runner asked for. `role`, `phase` and `round` are not enough for that on their own — a `needs-input` answer and a withheld completion both re-evaluate the *same* phase and round — so every request also carries a monotonic `evaluationAttempt` that the Companion must echo in `verdict.json`. A verdict carrying an older attempt (the previous turn writing late, or a file left over from a previous run) is treated as stale and rewritten, never processed. The counter deliberately survives Reset.
+
+**Completion floor.** Every role except Planner can only reach `complete` against a `VERIFICATION.md` for the current round that the runner itself read as fresh. This is checked twice: the verdict schema rejects a `complete` whose `recordStatus` isn't `fresh`, and the runner then compares that claim against the record it actually handed to that evaluation — so a baseline review (which is given no record at all) can't sign off by simply claiming one exists. When the claim doesn't hold, the review is kept but the sign-off is withheld: the Primary is asked to record the evidence for the same round, no round is consumed, and the next round-review can complete. A round that genuinely needs no command still satisfies the floor — a fresh record whose "Checks not run" section says why.
+
+### Isolation level
+
+The Companion always starts without any permission-bypass/yolo flag, and the create dialog refuses a custom command override for it — those are the only two guarantees this feature makes universally. Beyond that, how much is actually _enforced_ depends on the provider, shown as one of:
+
+- **Enforced** — the provider has a verified read-only/execution-disabled mode
+- **Permission-gated** — no bypass flag is used; the provider's own per-tool approval prompt gates any write/execution attempt, and the app pauses the task instead of auto-approving it (this is what triggers the "Paused: policy violation" state above)
+- **Prompt-enforced** — the provider can't demonstrably gate tool use on its own; only the prompt contract restrains it, not a technical boundary
+
+This label is shown both in the creation dialog and, live, in the running task's Config tab — it's never claimed as a hard sandbox it can't back up.
+
+### Guards
+
+- Deleting the Primary's workspace, or closing/removing the tab that hosts it, is refused while a Companion loop is actively attached to it — pause the loop first
+- Deleting the Companion task workspace never touches the Primary session
+- A source session can have at most one active Companion attached at a time
+
 ---
 
 ## Technical Details

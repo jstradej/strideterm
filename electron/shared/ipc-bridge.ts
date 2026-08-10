@@ -51,6 +51,8 @@ import type {
   TaskResendInstruction,
   TaskUpdateDescription,
   TaskRecoveryResolve,
+  TaskCompanionCreate,
+  TaskCompanionAnswer,
   ProfilePayload,
   NotificationShow,
   TelegramConnectionPayload,
@@ -351,6 +353,8 @@ export interface StridetermAPI {
   updateTaskDescription: (payload: TaskUpdateDescription) => Promise<unknown>;
   resolveTaskRecovery: (decisions: TaskRecoveryResolve) => Promise<unknown>;
   getTaskStatus: (workspaceId: string) => Promise<unknown>;
+  createCompanionTask: (payload: TaskCompanionCreate) => Promise<unknown>;
+  answerCompanionTask: (payload: TaskCompanionAnswer) => Promise<unknown>;
 
   // Tunnel
   refreshTunnel: () => Promise<unknown>;

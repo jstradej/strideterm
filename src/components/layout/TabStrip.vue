@@ -33,7 +33,14 @@
       "
     >
       <span>{{ tab.title }}</span>
-      <small v-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
+      <small
+        v-if="tab.taskBadge && tab.companionWorkspaceId"
+        class="tab__task-badge tab__task-badge--linked"
+        :title="tab.taskTooltip"
+        @click.stop="goToCompanionLoop(tab.companionWorkspaceId)"
+        >{{ tab.taskBadge }}</small
+      >
+      <small v-else-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
       <small v-else>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
       <span v-if="tab.notes" class="tab__notes" :title="tab.notes">📝</span>
@@ -74,7 +81,14 @@
           @click="activateTabFromCompactPicker(tab.id)"
         >
           <span class="tab-strip-compact-picker__item-title">{{ tab.title }}</span>
-          <small v-if="tab.taskBadge" class="tab-strip-compact-picker__item-status">{{ tab.taskBadge }}</small>
+          <small
+            v-if="tab.taskBadge && tab.companionWorkspaceId"
+            class="tab-strip-compact-picker__item-status tab__task-badge--linked"
+            :title="tab.taskTooltip"
+            @click.stop="goToCompanionLoop(tab.companionWorkspaceId)"
+            >{{ tab.taskBadge }}</small
+          >
+          <small v-else-if="tab.taskBadge" class="tab-strip-compact-picker__item-status">{{ tab.taskBadge }}</small>
           <small v-else class="tab-strip-compact-picker__item-status">{{ tab.status }}</small>
           <span v-if="tab.notes" :title="tab.notes">📝</span>
           <span
@@ -103,7 +117,20 @@ interface TaskRunnerState {
   state?: string;
   currentRound?: number;
   maxRounds?: number;
+  mode?: string;
+  workerWorkspaceId?: string;
+  companionRole?: string;
 }
+
+// Short badge labels for a companion loop attached to a tab in a DIFFERENT
+// (source) workspace — plan §3.5/§9.1 "role-aware badge (Review R2, Plan R2,
+// Consult R2, Critique R2)".
+const COMPANION_BADGE_LABELS: Record<string, string> = {
+  reviewer: "Review",
+  planner: "Plan",
+  consultant: "Consult",
+  critic: "Critique",
+};
 
 interface AttentionAlert {
   title?: string;
@@ -174,6 +201,8 @@ const compactTabModels = computed(() => {
       attentionTooltip: "",
       taskBadge: "",
       taskTooltip: "",
+      companionWorkspaceId: "",
+      companionRoleLabel: "",
       notes: (p.notes as string) || "",
       titleTooltip: p.title || p.id,
     };
@@ -214,6 +243,42 @@ const tabModels = computed(() => {
       }
     }
 
+    // Companion loop attached to THIS tab from a different (task) workspace:
+    // the source Primary tab gets a small linked badge so it's obvious the
+    // tab is being driven by an attached Reviewer/Planner/Consultant/Critic
+    // loop elsewhere (plan section 3.5/9.1).
+    let companionWorkspaceId = "";
+    let companionRoleLabel = "";
+    if (!taskBadge && workspace) {
+      const panelId = tab.id.includes(":") ? tab.id.split(":").pop() : tab.id;
+      const allWorkspaces = store.payload?.appState?.workspaces || [];
+      const companionWs = allWorkspaces.find(
+        (w) =>
+          w.kind === "task" &&
+          w.task?.mode === "attached" &&
+          w.task.workerWorkspaceId === workspace.id &&
+          w.task.workerPanelId === panelId,
+      );
+      if (companionWs) {
+        const companionState = store.payload?.taskRunner?.[companionWs.id] as TaskRunnerState | undefined;
+        const s = companionState?.state || companionWs.task?.state || "idle";
+        const round = companionState?.currentRound ?? companionWs.task?.currentRound ?? 0;
+        const roleLabel = COMPANION_BADGE_LABELS[companionWs.task?.companionRole || "reviewer"];
+        if (s === "awaiting-user") taskBadge = "Waiting for you";
+        else if (s === "capturing-context") taskBadge = "Capturing\u2026";
+        else if (s === "brief-ready") taskBadge = "Brief ready";
+        else if (s === "completed") taskBadge = `${roleLabel} \u2713`;
+        else if (s === "failed") taskBadge = `${roleLabel} \u2717`;
+        else if (s === "paused") taskBadge = `${roleLabel} ||`;
+        else taskBadge = `${roleLabel} R${round}`;
+        taskTooltip = `Back to ${roleLabel} loop \u2014 ${s}`;
+        // Mobile has no automatic split, so this badge doubles as the only
+        // return path back to the loop besides browser Back (plan \u00a79.1).
+        companionWorkspaceId = companionWs.id;
+        companionRoleLabel = roleLabel;
+      }
+    }
+
     // When the tab has an attention alert, the bell already conveys
     // "agent needs input". Keeping the activity chip visible ("running")
     // contradicts that — suppress the chip so the bell speaks alone.
@@ -232,6 +297,8 @@ const tabModels = computed(() => {
       attentionTooltip: tabAttentionTitle(tabAttention),
       taskBadge,
       taskTooltip,
+      companionWorkspaceId,
+      companionRoleLabel,
       // Free-text scratchpad from the tab's context menu. Surfaced as a 📝
       // marker so a workspace full of tabs shows which ones carry a note
       // without opening each one.
@@ -301,6 +368,16 @@ function activateTab(viewId: string): void {
     await store.activateView(viewId);
     await nextTick();
     termStore.focusActiveTerminal();
+  });
+}
+
+// The linked companion badge doubles as the "Back to <Role> loop" action
+// (plan §9.1) — mobile has no automatic split, so this is the return path
+// besides browser Back. Jumps straight to the companion task workspace
+// instead of just activating this tab.
+function goToCompanionLoop(workspaceId: string): void {
+  void notifications.runWithToast("Couldn't open the companion loop", async () => {
+    await store.activateWorkspace(workspaceId);
   });
 }
 

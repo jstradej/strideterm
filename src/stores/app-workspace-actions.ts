@@ -408,8 +408,20 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       .then((p: StatePayload) => {
         ctx.payload.value = p;
       })
-      .catch((err: Error) => {
+      .catch(async (err: Error) => {
         console.warn("[closeTab] failed to save workspace after panel removal:", err?.message || err);
+        // The backend refused (e.g. an active companion loop is attached to
+        // this panel). ctx.payload.value was never updated, so the tab is
+        // still there — restore the active view so the user lands back on
+        // it instead of the next tab over, and say why.
+        ctx.activeViewId.value = viewId;
+        const { useNotificationStore } = await import("./notifications.js");
+        useNotificationStore().pushPersistentToast({
+          title: "Couldn't close tab",
+          body: err?.message || String(err),
+          kind: "error",
+          profileId: (activeWs as AnyApi)?.profileId || "default",
+        });
       });
   }
 

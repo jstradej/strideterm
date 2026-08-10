@@ -116,6 +116,8 @@ import {
   taskResendInstructionSchema,
   taskUpdateDescriptionSchema,
   taskRecoveryResolveSchema,
+  taskCompanionCreateSchema,
+  taskCompanionAnswerSchema,
   telegramConnectionSchema,
   workspaceIdSchema,
   workspaceDeleteOptionsSchema,
@@ -1123,6 +1125,19 @@ export function registerIpc(
       return runtime.resolveTaskRecovery(parsed.decisions);
     }),
   );
+  handle("task:create-companion", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "task:create-companion" }, () =>
+      runtime.createCompanionTask(validateIpc(taskCompanionCreateSchema, payload, "task:create-companion"), windowId),
+    );
+  });
+  handle("task:answer-companion", async (event, payload) => {
+    const p = validateIpc(taskCompanionAnswerSchema, payload, "task:answer-companion");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:answer-companion" }, () =>
+      runtime.answerCompanionTask(p.workspaceId, p.questionIds, p.answer, windowId),
+    );
+  });
   handle("docker:refresh", async () =>
     withOperationPromise({ opId: "docker:refresh" }, () => runtime.refreshDockerState()),
   );

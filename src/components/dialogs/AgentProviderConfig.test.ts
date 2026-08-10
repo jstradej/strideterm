@@ -87,6 +87,18 @@ describe("AgentProviderConfig", () => {
     expect(updated.skipPermissions).toBe(true);
   });
 
+  test("allowCustomCommand=false hides the advanced custom-command escape hatch", () => {
+    const wrapper = mountConfig("judge", { allowCustomCommand: false });
+    expect(wrapper.find(".agent-config-section__advanced-btn").exists()).toBe(false);
+  });
+
+  test("allowSkipPermissions=false hides the checkbox and shows the real isolation capability instead", () => {
+    const wrapper = mountConfig("judge", { allowSkipPermissions: false });
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("Inspect-only");
+    expect(wrapper.text()).toContain("Permission-gated");
+  });
+
   test("judge role auto-selects the judge-suggested model on provider change", async () => {
     const wrapper = mount(AgentProviderConfig, {
       props: {

@@ -921,6 +921,39 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     });
   }
 
+  /**
+   * "Add companion agent…" — attaches a Reviewer/Planner/Consultant/Critic
+   * companion to an existing live conversation (plan §3/§7). Unlike
+   * openTaskWorkspaceDialog, the source workspace/panel/cwd/profile are all
+   * derived server-side from `sourceSessionId`; this action never sends its
+   * own cwd/profile guess. After a successful create, immediately calls the
+   * existing task:start path so the dialog doesn't need a second "confirm"
+   * IPC round-trip — startTask's attached branch injects the capture prompt.
+   */
+  function openCompanionAgentDialog(sourceSessionId: string): void {
+    openDialog("CompanionAgentDialog", {
+      sourceSessionId,
+      onCancel: closeDialog,
+      onSubmit: async (payload: AnyApi) => {
+        try {
+          const result = (await (ctx.getApi() as AnyApi).createCompanionTask(payload)) as AnyApi;
+          if (result?.payload) {
+            ctx.payload.value = result.payload as StatePayload;
+          }
+          closeDialog();
+          if (result?.workspaceId) {
+            await doStartTask(result.workspaceId as string);
+          }
+        } catch (err) {
+          console.error("[companion-agent] create failed:", err);
+          // Re-throw so the dialog's inline error banner renders it and the
+          // dialog stays open with the user's role/provider/focus intact.
+          throw err;
+        }
+      },
+    });
+  }
+
   async function doStartTask(workspaceId: string): Promise<void> {
     const api = ctx.getApi() as AnyApi;
     try {
@@ -1092,6 +1125,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openQuickFixWizard,
     createWorktreeWithDialog,
     openTaskWorkspaceDialog,
+    openCompanionAgentDialog,
     startTaskWithHookCheck,
     openSshHostsDialog,
     openSshHostEditor,

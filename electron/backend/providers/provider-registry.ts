@@ -17,6 +17,9 @@ export interface ProviderChoice {
   id: string;
   name: string;
   models: ModelDescriptor[];
+  /** Attached-mode Judge capability level (plan §3.2/§7) — see
+   * BaseProvider.inspectionIsolation for what each level means. */
+  inspectionIsolation: "enforced" | "permission-gated" | "prompt-only";
 }
 
 export interface ParsedProviderConfig {
@@ -52,6 +55,7 @@ export function getProviderChoices(): ProviderChoice[] {
     id: P.id,
     name: P.displayName,
     models: P.models,
+    inspectionIsolation: new P().inspectionIsolation,
   }));
 }
 

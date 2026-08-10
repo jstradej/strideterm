@@ -3674,6 +3674,156 @@ describe("runtime integration", () => {
     ).rejects.toThrow(/Refactor login flow/);
   });
 
+  // ── Attached companion loop: deleting/closing its Primary ──────────────
+  // An active loop refuses the delete outright. An INACTIVE one is legitimately
+  // deletable, but used to be left with a dangling binding and no marker: the
+  // Dashboard still offered Continue, which flipped the badge to running and
+  // then injected into a session that no longer existed (fire-and-forget, so the
+  // only trace was a log line).
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeSourceWorkspace(id: string, cwd: string): any {
+    return {
+      id,
+      name: "Live conversation",
+      kind: "manual",
+      cwd,
+      activePanelId: "panel-primary",
+      panels: [
+        { id: "panel-primary", title: "Claude", command: "claude", shell: true, startup: "default" },
+        { id: "panel-other", title: "Shell", command: "bash", shell: true, startup: "none" },
+      ],
+      task: null,
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeAttachedTaskWorkspace(id: string, cwd: string, sourceId: string, state: string): any {
+    return {
+      id,
+      name: "Reviewer companion",
+      kind: "task",
+      cwd,
+      activePanelId: "panel-dashboard",
+      panels: [
+        { id: "panel-dashboard", title: "Dashboard", command: "__task-dashboard__", startup: "none" },
+        { id: "panel-companion", title: "Reviewer", command: "codex", shell: true, startup: "default" },
+      ],
+      task: {
+        taskId: `${id}-tid`,
+        state,
+        mode: "attached",
+        workerWorkspaceId: sourceId,
+        workerPanelId: "panel-primary",
+        judgePanelId: "panel-companion",
+        companionRole: "reviewer",
+        currentRound: 1,
+        description: "",
+      },
+    };
+  }
+
+  test("deleting an inactive companion task's Primary workspace flags it as primaryMissing", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-del-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          makeSourceWorkspace("ws-source", sharedCwd),
+          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "paused"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.deleteWorkspace("ws-source");
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    expect(after.find((w) => w.id === "ws-source")).toBeUndefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const companion = after.find((w) => w.id === "task-companion") as any;
+    expect(companion.task.primaryMissing).toBe(true);
+  });
+
+  test("an ACTIVE companion loop still refuses the delete instead of being flagged", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-active-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          makeSourceWorkspace("ws-source", sharedCwd),
+          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "running"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await setTaskStateAfterInit(fixture, "task-companion", "running");
+
+    await expect(fixture.runtime.deleteWorkspace("ws-source")).rejects.toThrow(/Reviewer loop is attached/);
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    expect(after.find((w) => w.id === "ws-source")).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const companion = after.find((w) => w.id === "task-companion") as any;
+    expect(companion.task.primaryMissing).toBeFalsy();
+  });
+
+  test("closing just the Primary TAB flags an inactive companion task too", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          makeSourceWorkspace("ws-source", sharedCwd),
+          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "awaiting-user"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Save the source workspace back with the Primary panel removed.
+    const source = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "ws-source")!;
+    await fixture.runtime.saveWorkspace({
+      ...source,
+      panels: source.panels.filter((p: { id: string }) => p.id !== "panel-primary"),
+      activePanelId: "panel-other",
+    });
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const companion = after.find((w) => w.id === "task-companion") as any;
+    expect(companion.task.primaryMissing).toBe(true);
+  });
+
+  test("removing an unrelated tab leaves the companion task alone", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab2-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          makeSourceWorkspace("ws-source", sharedCwd),
+          makeAttachedTaskWorkspace("task-companion", sharedCwd, "ws-source", "paused"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const source = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "ws-source")!;
+    await fixture.runtime.saveWorkspace({
+      ...source,
+      panels: source.panels.filter((p: { id: string }) => p.id !== "panel-other"),
+    });
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const companion = after.find((w) => w.id === "task-companion") as any;
+    expect(companion.task.primaryMissing).toBeFalsy();
+  });
+
   test("deleteWorkspace clears state even when the task workspace is missing taskId", async () => {
     // Resilience: a task workspace persisted without task.taskId (corrupt state,
     // backward-compat record, or partial migration) used to be reachable by the
@@ -6503,6 +6653,178 @@ describe("runtime integration", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Companion loop — close/delete dependency guards", () => {
+  // An attached companion task never owns its Primary — it only references
+  // it via workerWorkspaceId/workerPanelId. Deleting that source workspace,
+  // or removing the panel that hosts it, must never silently orphan an
+  // active loop (plan §8.6).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeSourceWorkspace(cwd: string, overrides: Record<string, unknown> = {}): any {
+    return {
+      id: "workspace-source",
+      name: "Source workspace",
+      kind: "terminal",
+      cwd,
+      profileId: "default",
+      activePanelId: "panel-source",
+      panels: [
+        { id: "panel-source", title: "Claude", command: "claude", shell: true, startup: "default" },
+        { id: "panel-other", title: "Shell", command: "", shell: true, startup: "default" },
+      ],
+      ...overrides,
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeCompanionWorkspace(cwd: string, taskState: string, overrides: Record<string, unknown> = {}): any {
+    return {
+      id: "workspace-companion",
+      name: "Reviewer: Source workspace",
+      kind: "task",
+      cwd,
+      profileId: "default",
+      activePanelId: "panel-dashboard",
+      panels: [
+        { id: "panel-dashboard", title: "Dashboard", command: "__task-dashboard__" },
+        { id: "panel-judge", title: "Reviewer", command: "codex", shell: true, startup: "default" },
+      ],
+      task: {
+        taskId: "companion-task-1",
+        mode: "attached",
+        workerWorkspaceId: "workspace-source",
+        workerPanelId: "panel-source",
+        judgePanelId: "panel-judge",
+        companionRole: "reviewer",
+        state: taskState,
+        currentRound: taskState === "running" ? 1 : 0,
+      },
+      ...overrides,
+    };
+  }
+
+  // AgentTaskRunner#reconcileOnStartup flips active task states to "paused"
+  // on runtime init (see makeTaskWorkspace's comment above) — flip the
+  // companion task back through the store after fixture setup to exercise
+  // the "active" guard branch.
+  async function setCompanionStateAfterInit(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fixture: any,
+    state: string,
+  ): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.store.mutate((draft: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ws = draft.workspaces.find((w: any) => w.id === "workspace-companion");
+      if (ws?.task) ws.task.state = state;
+    });
+  }
+
+  test("deleteWorkspace refuses to delete the source workspace of an active attached companion task", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-src-"));
+    tempPaths.push(cwd);
+
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "running")] },
+    });
+    fixtures.push(fixture);
+    await setCompanionStateAfterInit(fixture, "running");
+
+    await expect(fixture.runtime.deleteWorkspace("workspace-source")).rejects.toThrow(/Reviewer loop is attached/i);
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    expect(after.find((w) => w.id === "workspace-source")).toBeDefined();
+  });
+
+  test("deleteWorkspace allows deleting the source workspace once the companion task is paused", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-src-paused-"));
+    tempPaths.push(cwd);
+
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "paused")] },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.deleteWorkspace("workspace-source");
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    expect(after.find((w) => w.id === "workspace-source")).toBeUndefined();
+  });
+
+  test("deleteWorkspace of the companion task workspace itself never touches the Primary source workspace", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-del-"));
+    tempPaths.push(cwd);
+
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "running")] },
+    });
+    fixtures.push(fixture);
+    await setCompanionStateAfterInit(fixture, "running");
+
+    await fixture.runtime.deleteWorkspace("workspace-companion");
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    expect(after.find((w) => w.id === "workspace-companion")).toBeUndefined();
+    expect(after.find((w) => w.id === "workspace-source")).toBeDefined();
+  });
+
+  test("saveWorkspace refuses removing the panel bound as an active companion's Primary", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab-"));
+    tempPaths.push(cwd);
+
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "running")] },
+    });
+    fixtures.push(fixture);
+    await setCompanionStateAfterInit(fixture, "running");
+
+    const source = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
+    const nextWorkspace = { ...source, panels: source.panels!.filter((p) => p.id !== "panel-source") };
+
+    await expect(fixture.runtime.saveWorkspace(nextWorkspace)).rejects.toThrow(/Reviewer loop is attached/i);
+
+    const after = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
+    expect(after.panels!.some((p) => p.id === "panel-source")).toBe(true);
+  });
+
+  test("saveWorkspace allows removing an unrelated panel from the source workspace while the companion is active", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab-other-"));
+    tempPaths.push(cwd);
+
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "running")] },
+    });
+    fixtures.push(fixture);
+    await setCompanionStateAfterInit(fixture, "running");
+
+    const source = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
+    const nextWorkspace = { ...source, panels: source.panels!.filter((p) => p.id !== "panel-other") };
+
+    await fixture.runtime.saveWorkspace(nextWorkspace);
+
+    const after = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
+    expect(after.panels!.some((p) => p.id === "panel-other")).toBe(false);
+    expect(after.panels!.some((p) => p.id === "panel-source")).toBe(true);
+  });
+
+  test("saveWorkspace allows removing the Primary panel once the companion task is paused", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-companion-tab-paused-"));
+    tempPaths.push(cwd);
+
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeSourceWorkspace(cwd), makeCompanionWorkspace(cwd, "paused")] },
+    });
+    fixtures.push(fixture);
+
+    const source = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
+    const nextWorkspace = { ...source, panels: source.panels!.filter((p) => p.id !== "panel-source") };
+
+    await fixture.runtime.saveWorkspace(nextWorkspace);
+
+    const after = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "workspace-source")!;
+    expect(after.panels!.some((p) => p.id === "panel-source")).toBe(false);
   });
 });
 

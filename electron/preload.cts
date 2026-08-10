@@ -149,6 +149,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   updateTaskDescription: (payload) => ipcRenderer.invoke("task:update-description", payload),
   resolveTaskRecovery: (decisions) => ipcRenderer.invoke("task-recovery:resolve", decisions),
   getTaskStatus: (workspaceId) => ipcRenderer.invoke("task:status", workspaceId),
+  createCompanionTask: (payload) => ipcRenderer.invoke("task:create-companion", payload),
+  answerCompanionTask: (payload) => ipcRenderer.invoke("task:answer-companion", payload),
   refreshTunnel: () => ipcRenderer.invoke("tunnel:refresh"),
   createCloudflareTunnel: () => ipcRenderer.invoke("tunnel:create"),
   stopCloudflareTunnel: () => ipcRenderer.invoke("tunnel:stop"),

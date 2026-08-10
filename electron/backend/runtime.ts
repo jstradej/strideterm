@@ -56,7 +56,7 @@ import {
   detectOpencodeHookStatus,
   migrateLegacyOpencodeHooks,
 } from "./opencode-hook-config.js";
-import { AgentTaskRunner } from "./agent-task-runner.js";
+import { AgentTaskRunner, COMPANION_ROLE_DISPLAY_NAMES } from "./agent-task-runner.js";
 import type { RecoveryCandidate } from "../shared/types/state.js";
 import { getProvider } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
@@ -3258,7 +3258,53 @@ export async function createRuntime({
   // the worktree. Other states (idle/paused/completed/failed) leave the
   // filesystem inert, so multiple inert tasks at the same cwd are allowed to
   // coexist — the guard only fires when one of them is doing real work.
-  const ACTIVE_TASK_STATES: ReadonlySet<string> = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+  // "capturing-context" is attached-mode-only (Companion loop) — included so
+  // the same-cwd guard treats a mid-capture attached task as active, exactly
+  // like the runner's own #setTaskState ACTIVE set.
+  const ACTIVE_TASK_STATES: ReadonlySet<string> = new Set([
+    "running",
+    "evaluating",
+    "judge-evaluating",
+    "refreshing",
+    "capturing-context",
+  ]);
+  // An attached companion task never owns its Primary — it only references
+  // it via workerWorkspaceId/workerPanelId (plan section 3, 8.6). Deleting that
+  // source workspace, or removing the panel that hosts it, would silently
+  // orphan an active loop with no way back short of recreating the companion
+  // task. Callers that mutate/delete a workspace or panel must check this
+  // first and refuse rather than leave a dangling binding.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function findActiveCompanionSource(state: any, sourceWorkspaceId: string, sourcePanelId?: string): any {
+    return (state.workspaces || []).find(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (ws: any) =>
+        ws.kind === "task" &&
+        ws.task?.mode === "attached" &&
+        ws.task.workerWorkspaceId === sourceWorkspaceId &&
+        (!sourcePanelId || ws.task.workerPanelId === sourcePanelId) &&
+        ACTIVE_TASK_STATES.has(ws.task.state),
+    );
+  }
+  // Every attached companion task bound to this source workspace/panel,
+  // regardless of task state. findActiveCompanionSource above only *refuses*
+  // deletion while the loop is actively working; an idle/paused/awaiting-user
+  // one is legitimately deletable, but it still loses its Primary — and a
+  // companion task whose Primary silently vanished would flip to "running" on
+  // Continue and inject into a dead session. Callers that go through with the
+  // deletion use this to mark those tasks instead.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function findAttachedCompanionsFor(state: any, sourceWorkspaceId: string, sourcePanelId?: string): any[] {
+    return (state.workspaces || []).filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (ws: any) =>
+        ws.kind === "task" &&
+        ws.task?.mode === "attached" &&
+        ws.task.workerWorkspaceId === sourceWorkspaceId &&
+        (!sourcePanelId || ws.task.workerPanelId === sourcePanelId) &&
+        !ws.task.primaryMissing,
+    );
+  }
   function normalizeTaskCwd(cwd: string | undefined | null): string {
     return String(cwd || "")
       .replace(/[\\/]+$/, "")
@@ -5253,6 +5299,37 @@ export async function createRuntime({
         }
       }
 
+      // A panel that disappears from workspace.panels gets its live session
+      // torn down by sessions.syncWithState below. If that panel is the
+      // Primary of an active attached companion task, closing/removing it
+      // would silently orphan the loop — refuse the same way deleteWorkspace
+      // does for the whole workspace.
+      const priorWorkspace = workspace?.id ? findWorkspace(getState(), workspace.id) : null;
+      const orphanedCompanionIds: string[] = [];
+      if (Array.isArray(priorWorkspace?.panels) && Array.isArray(workspace?.panels)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const nextPanelIds = new Set(workspace.panels.map((p: any) => p.id));
+        const priorPanels = priorWorkspace!.panels as Array<{ id: string }>;
+        const removedPanelIds = priorPanels.map((p) => p.id).filter((id: string) => !nextPanelIds.has(id));
+        for (const removedPanelId of removedPanelIds) {
+          const activeCompanionSource = findActiveCompanionSource(getState(), workspace.id, removedPanelId);
+          if (activeCompanionSource) {
+            const roleLabel =
+              COMPANION_ROLE_DISPLAY_NAMES[
+                activeCompanionSource.task.companionRole as keyof typeof COMPANION_ROLE_DISPLAY_NAMES
+              ] || "Companion";
+            throw new Error(
+              `Cannot close this tab: an active ${roleLabel} loop is attached to this session. Pause it from its Dashboard first, then close.`,
+            );
+          }
+          // Inactive companion loops don't block the close, but they do lose
+          // their Primary — collected now, flagged after the save lands.
+          for (const ws of findAttachedCompanionsFor(getState(), workspace.id, removedPanelId)) {
+            orphanedCompanionIds.push(ws.id);
+          }
+        }
+      }
+
       // Ensure the working directory exists (create if needed)
       if (workspace.cwd && workspace.kind !== "docker") {
         await mkdir(workspace.cwd, { recursive: true }).catch(() => {});
@@ -5278,6 +5355,10 @@ export async function createRuntime({
         }
       });
 
+      for (const companionId of orphanedCompanionIds) {
+        taskRunner.markAttachedSourceMissing(companionId);
+      }
+
       sessions.syncWithState(getState());
       syncSessionSignalsWithState();
       await refreshGit(workspace.id || null);
@@ -5300,6 +5381,21 @@ export async function createRuntime({
       const workspace = findWorkspace(state, workspaceId);
       // Cross-profile delete is data loss in another profile. Refuse it.
       assertWorkspaceInViewerProfile(String(workspaceId), windowId);
+
+      const activeCompanionSource = findActiveCompanionSource(state, String(workspaceId));
+      if (activeCompanionSource) {
+        const roleLabel =
+          COMPANION_ROLE_DISPLAY_NAMES[
+            activeCompanionSource.task.companionRole as keyof typeof COMPANION_ROLE_DISPLAY_NAMES
+          ] || "Companion";
+        throw new Error(
+          `Cannot delete: an active ${roleLabel} loop is attached to this session. Pause it from its Dashboard first, then delete.`,
+        );
+      }
+      // Inactive companion loops attached to this workspace are allowed to
+      // outlive it, but must be told their Primary is gone — captured before
+      // the deletion mutate, flagged after it.
+      const orphanedCompanionIds = findAttachedCompanionsFor(state, String(workspaceId)).map((ws) => ws.id as string);
 
       // For task workspaces, mark (profile, cwd) as "being deleted" so a
       // parallel createTaskWorkspace in the SAME profile over the same
@@ -5388,6 +5484,10 @@ export async function createRuntime({
             if (ids.every((id) => id === null)) draft.workspaceGrid = null;
           }
         });
+
+        for (const companionId of orphanedCompanionIds) {
+          taskRunner.markAttachedSourceMissing(companionId);
+        }
 
         sessionsExited = cleanupWorkspaceRuntimeState(workspaceId);
         for (const sessionId of [...sessionSignals.keys()]) {

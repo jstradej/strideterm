@@ -5,6 +5,7 @@ import {
   buildRePrompt,
   buildRecoveryPrompt,
   buildUserFeedbackPrompt,
+  buildCompanionUserFeedbackPrompt,
 } from "./agent-task-prompts.js";
 
 describe("buildRecoveryPrompt", () => {
@@ -111,5 +112,49 @@ describe("prompt builders — format-aware references", () => {
 
     const userSplit = buildUserFeedbackPrompt({ ...baseTask, useWorkerFile: true }, "still incomplete");
     expect(userSplit).toContain(".strideterm/tasks/task-fmt-001/WORKER.md");
+  });
+});
+
+// Judge round-4 finding (item 69): the Dashboard's "Send back" control on an
+// attached task injected the standard buildUserFeedbackPrompt, which never
+// mentions VERIFICATION.md/CONTEXT.md and talks in Worker/judge terms that
+// don't apply to a companion loop's externally-owned Primary.
+describe("buildCompanionUserFeedbackPrompt", () => {
+  const companionTask = {
+    taskId: "task-companion-001",
+    mode: "attached",
+    companionRole: "critic" as const,
+    currentRound: 3,
+    maxRounds: 5,
+  };
+
+  test("speaks in Primary/companion terms and points at CONTEXT.md + VERIFICATION.md", () => {
+    const prompt = buildCompanionUserFeedbackPrompt(companionTask, "The retry logic still isn't idempotent.");
+
+    expect(prompt).toContain("The retry logic still isn't idempotent.");
+    expect(prompt).toContain("Critic companion");
+    expect(prompt).toContain(".strideterm/tasks/task-companion-001/CONTEXT.md");
+    expect(prompt).toContain(".strideterm/tasks/task-companion-001/VERIFICATION.md");
+    expect(prompt).toContain(".strideterm/tasks/task-companion-001/WORK_LOCK");
+    expect(prompt).toContain("Round 3/5");
+
+    // Never the standard-mode vocabulary — this is the externally-owned
+    // Primary, not a disposable Worker, and there is no "judge" role here.
+    expect(prompt).not.toContain("Worker");
+    expect(prompt).not.toContain("the judge");
+
+    // Must never instruct the Primary to reset its own session (plan §8.6).
+    expect(prompt).not.toContain("resend");
+    expect(prompt.toLowerCase()).toMatch(/do not restart yourself|never restart yourself/);
+  });
+
+  test("falls back to a generic placeholder when no feedback text is given", () => {
+    const prompt = buildCompanionUserFeedbackPrompt(companionTask, "");
+    expect(prompt).toContain("(no specific feedback provided)");
+  });
+
+  test("defaults to Reviewer when companionRole is missing", () => {
+    const prompt = buildCompanionUserFeedbackPrompt({ ...companionTask, companionRole: undefined }, "feedback");
+    expect(prompt).toContain("Reviewer companion");
   });
 });

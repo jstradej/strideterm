@@ -21,6 +21,8 @@ import {
   TASK_LOG_FILE,
   PROMPT_FILE,
   HANDOFF_FILE,
+  CONTEXT_FILE,
+  VERIFICATION_FILE,
   MAX_OUTPUT_TAIL,
   FILE_PROMPT_THRESHOLD,
   DEFAULT_SHOWER_INTERVAL,
@@ -28,7 +30,9 @@ import {
   taskDirRel,
   fenceUserInput,
   tailLines,
+  COMPLETION_REQUIRES_FRESH_VERIFICATION,
 } from "./agent-task-utils.js";
+import type { CompanionVerdict } from "./agent-task-utils.js";
 import {
   buildInitialWorkerPrompt,
   buildRePrompt,
@@ -36,23 +40,41 @@ import {
   buildJudgeFeedbackPrompt,
   buildUserFeedbackPrompt,
   buildRecoveryPrompt,
+  buildContextCapturePrompt,
+  buildCompanionPrompt,
+  buildCompanionFeedbackPrompt,
+  buildCompanionUserFeedbackPrompt,
+  buildVerificationNudgePrompt,
+  buildCompletionEvidencePrompt,
+  buildCompanionAnswerPrompt,
+  buildAttachedCompanionRecoveryPrompt,
 } from "./agent-task-prompts.js";
 import { execCommand } from "./agent-task-exec.js";
 import type { ExecResult } from "./agent-task-exec.js";
 import {
+  appendUserClarification,
   cleanupTaskFiles as cleanupTaskFilesImpl,
   clearVerdict,
   ensureGitIgnore,
+  readCaptureFiles,
+  readCompanionVerdict,
   readTaskDescription,
+  readTaskMd,
   readVerdict,
+  readVerificationRecord,
   runBuiltInChecks,
   taskHasWorkerFile,
+  validateCaptureFiles,
   waitForFile,
+  writeCompanionInitialFiles,
   writeTaskFiles,
+  writeVerificationTemplate,
+  writeVerificationTemplateReversibly,
 } from "./agent-task-files.js";
+import type { VerificationRecord } from "./agent-task-files.js";
 import { ensureGitRepo, getGitContext } from "./agent-task-git.js";
 import type { AppState, WorkspaceState, RecoveryCandidate } from "../shared/types/state.js";
-import type { TaskState } from "../shared/types/task.js";
+import type { CompanionRole, TaskState } from "../shared/types/task.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 
 const log: Logger = getLogger("task-runner");
@@ -64,9 +86,26 @@ const COPILOT_PROGRAMMATIC_JUDGE_TIMEOUT_MS = 180_000;
 /** Full task state as used internally (extends persisted TaskState with runtime fields) */
 interface RuntimeTaskState extends TaskState {
   judgeNudged?: boolean;
+  // Attached mode only — see docs/agent-task-runner.md.
+  /** True once a capture-incomplete nudge has been sent to Primary; a second
+   * incomplete idle pauses instead of nudging forever. */
+  captureNudged?: boolean;
+  /** Which evaluation phase the last companion request was for — read back
+   * by #handleCompanionVerdict / recovery to validate the verdict on disk. */
+  companionPhase?: "baseline" | "round-review" | "recovery";
+  /** Questions from the last "needs-input" companion verdict, surfaced by
+   * the Dashboard and consumed by answerCompanionTask. */
+  pendingQuestions?: Array<{ id: string; question: string; whyNeeded: string; options?: string[] }>;
   // showerResumePrompt, pausedFromState, promptSent are already in TaskState
   [key: string]: unknown; // index signature for TaskData compatibility in prompts
 }
+
+export const COMPANION_ROLE_DISPLAY_NAMES: Record<CompanionRole, string> = {
+  reviewer: "Reviewer",
+  planner: "Planner",
+  consultant: "Consultant",
+  critic: "Critic",
+};
 
 /** A workspace that has a task attached (narrowed from WorkspaceState) */
 interface TaskWorkspaceState extends WorkspaceState {
@@ -74,7 +113,18 @@ interface TaskWorkspaceState extends WorkspaceState {
 }
 
 type TaskStateKind =
-  "idle" | "running" | "paused" | "evaluating" | "judge-evaluating" | "refreshing" | "completed" | "failed";
+  | "idle"
+  | "running"
+  | "paused"
+  | "evaluating"
+  | "judge-evaluating"
+  | "refreshing"
+  | "completed"
+  | "failed"
+  // Attached mode (Companion loop) only.
+  | "capturing-context"
+  | "brief-ready"
+  | "awaiting-user";
 
 interface TaskRound {
   round: number;
@@ -179,6 +229,33 @@ function isTaskWorkspace(workspace: WorkspaceState): workspace is TaskWorkspaceS
   return workspace.kind === "task" && workspace.task != null;
 }
 
+type TaskBindingRole = "worker" | "judge";
+
+interface TaskBinding {
+  workspace: TaskWorkspaceState;
+  task: RuntimeTaskState;
+  role: TaskBindingRole;
+}
+
+/**
+ * Canonical session id for a task workspace's worker/"Primary" or
+ * judge/"Companion" role. Standard tasks: both roles live in the task
+ * workspace itself, so this returns exactly what every call site used to
+ * hardcode inline. Attached (Companion loop) tasks: the worker/"Primary"
+ * role is an EXTERNALLY OWNED session living in a different workspace
+ * (`task.workerWorkspaceId`) — every write path (inject/clear/restart/alert)
+ * must go through this helper instead of hardcoding
+ * `${workspace.id}:${task.workerPanelId}`.
+ */
+export function sessionIdFor(workspace: TaskWorkspaceState, role: TaskBindingRole): string {
+  const task = workspace.task;
+  if (role === "judge") return `${workspace.id}:${task.judgePanelId}`;
+  if (task.mode === "attached" && task.workerWorkspaceId) {
+    return `${task.workerWorkspaceId}:${task.workerPanelId}`;
+  }
+  return `${workspace.id}:${task.workerPanelId}`;
+}
+
 /**
  * Agent Task Runner — orchestrates a worker + judge evaluation loop.
  *
@@ -190,6 +267,24 @@ function isTaskWorkspace(workspace: WorkspaceState): workspace is TaskWorkspaceS
 export class AgentTaskRunner {
   /** workspaceIds currently being evaluated (re-entrance guard) */
   #evaluating = new Set<string>();
+  /** workspaceIds whose companion verdict is being handled right now — the
+   *  attached-mode counterpart of #evaluating. #handleCompanionVerdict awaits
+   *  a disk read and (on "continue") a work-lock recreate and a template write
+   *  before it moves the task out of judge-evaluating, so two idle signals
+   *  arriving back to back would otherwise both pass the state check and each
+   *  inject a round into the Primary. */
+  #handlingCompanionVerdict = new Map<string, boolean>();
+  /** Turn-boundary idle signals (hook:stop and friends) that arrived while a
+   *  NON-boundary pass — idle_prompt / notification, which return without
+   *  nudging — held the guard above. Keyed by workspaceId, replayed once that
+   *  pass finishes: dropping them leaves the task in judge-evaluating with no
+   *  event left to come. Only such upgrades are queued; see the guard. */
+  #pendingCompanionVerdict = new Map<string, string>();
+  /** workspaceIds with a Send back in flight. rejectTaskVerdict's own state
+   *  check can't serialize it: `state` only flips to "running" after the
+   *  work-lock recreate awaits, so two fast clicks both pass it, both start a
+   *  round, and one's rollback can undo the other's completed send. */
+  #rejectingVerdict = new Set<string>();
   /** per-cwd git init locks to prevent concurrent init */
   #gitInitLocks = new Map<string, Promise<boolean>>();
   /** workspaceIds with a headless programmatic judge in flight */
@@ -329,7 +424,9 @@ export class AgentTaskRunner {
     //                       go through "Send Back" with explicit feedback,
     //                       not a silent restart that may overwrite verdict.json
     //   idle              — task never started; nothing to recover
-    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+    //   brief-ready/awaiting-user — attached-only, user-facing wait states;
+    //                       not mid-flight work, so not swept into recovery.
+    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing", "capturing-context"]);
 
     for (const workspace of state.workspaces) {
       if (!isTaskWorkspace(workspace)) continue;
@@ -623,6 +720,10 @@ export class AgentTaskRunner {
       return false;
     }
 
+    if (workspace.task.mode === "attached") {
+      return this.#startAttachedTask(workspace);
+    }
+
     const task = workspace.task;
     if (task.state === "running" || task.state === "evaluating" || task.state === "judge-evaluating") {
       log.debug("startTask: already running", { workspaceId, state: task.state });
@@ -746,11 +847,14 @@ export class AgentTaskRunner {
   pauseTask(workspaceId: string): boolean {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
+    // "capturing-context" is attached-only (never produced for standard
+    // tasks) — pausing mid-capture is a valid user action (plan §6.1).
     if (
       workspace.task.state !== "running" &&
       workspace.task.state !== "evaluating" &&
       workspace.task.state !== "judge-evaluating" &&
-      workspace.task.state !== "refreshing"
+      workspace.task.state !== "refreshing" &&
+      workspace.task.state !== "capturing-context"
     )
       return false;
 
@@ -764,22 +868,75 @@ export class AgentTaskRunner {
     return true;
   }
 
+  /**
+   * Called by app-restart recovery (resolveTaskRecovery) when an attached
+   * task's source workspace/panel no longer exists. The task is already
+   * left paused with pausedFromState set — this just adds the truthful,
+   * visible "Primary conversation no longer exists" signal instead of the
+   * silent pause that used to be the only trace (plan §8.7 step 5).
+   */
+  markAttachedSourceMissing(workspaceId: string): void {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace || workspace.task.mode !== "attached") return;
+    workspace.task.primaryMissing = true;
+    void this.#logTaskEvent(
+      workspace,
+      "primary-missing",
+      "The Primary conversation's workspace or tab no longer exists — recovery could not re-attach it.",
+    );
+    this.#raiseTaskAlert(
+      workspace,
+      "failed",
+      "Primary conversation no longer exists. Its workspace or tab was closed — this companion task can't continue.",
+    );
+    this.#broadcastState!();
+  }
+
+  /**
+   * Single gate in front of every action that drives an attached task forward
+   * by injecting into the Primary (Start/Continue/answer). Each of those would
+   * otherwise flip the badge to a working state and then write into a session
+   * that no longer exists — the injections are fire-and-forget, so the failure
+   * would only ever surface in the log.
+   *
+   * Returns true when the action may proceed. Recovery from a missing Primary
+   * is delete-and-recreate (plan §8.7 step 5), so nothing here clears the flag;
+   * only a task workspace bound to a live conversation ever gets past it.
+   */
+  #assertAttachedPrimaryAvailable(workspace: TaskWorkspaceState, action: string): boolean {
+    const task = workspace.task;
+    if (task.mode !== "attached" || !task.primaryMissing) return true;
+    log.warn("attached action refused: Primary is gone", { workspaceId: workspace.id, action });
+    void this.#logTaskEvent(
+      workspace,
+      "attached-action-refused",
+      `${action} refused — the Primary conversation no longer exists. Delete this companion task and create a new one against a live conversation.`,
+    );
+    return false;
+  }
+
   resumeTask(workspaceId: string): boolean {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
     const resumable = new Set(["paused", "completed", "failed"]);
     if (!resumable.has(workspace.task.state)) return false;
+    if (!this.#assertAttachedPrimaryAvailable(workspace, "Continue")) return false;
 
     const task = workspace.task;
     const previousState = task.state;
     // Restore to the state we were in before pausing, not always "running".
     // If paused during judge-evaluating, resume to judge-evaluating so the
-    // verdict can be read.  If paused from evaluating/refreshing, fall back
-    // to running (the evaluation was interrupted and needs to restart from
-    // the next worker idle).
+    // verdict can be read. If paused from capturing-context (attached only),
+    // resume there so capture readiness gets re-checked. If paused from
+    // evaluating/refreshing, fall back to running (the evaluation was
+    // interrupted and needs to restart from the next worker idle).
     const pausedFromState = task.pausedFromState;
-    const resumeTo: TaskStateKind = task.pausedFromState === "judge-evaluating" ? "judge-evaluating" : "running";
+    const attachedPauseOrigins = new Set(["judge-evaluating", "capturing-context", "awaiting-user", "brief-ready"]);
+    const resumeTo: TaskStateKind = attachedPauseOrigins.has(task.pausedFromState)
+      ? (task.pausedFromState as TaskStateKind)
+      : "running";
     task.pausedFromState = "";
+    task.judgePolicyViolation = false;
 
     this.#setTaskState(task, resumeTo);
     log.info("task resumed", { workspaceId, previousState, resumeTo });
@@ -824,6 +981,11 @@ export class AgentTaskRunner {
   ): Promise<void> {
     const task = workspace.task;
     const workspaceId = workspace.id;
+
+    if (task.mode === "attached") {
+      return this.#reconcileAttachedAfterResume(workspace, { previousState, pausedFromState, resumeTo });
+    }
+
     const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
 
     // 0. Recovery (resolveTaskRecovery) injects via the deferred-idle path — do
@@ -937,11 +1099,14 @@ export class AgentTaskRunner {
   async resetTask(workspaceId: string): Promise<boolean> {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
-    const resettable = new Set(["paused", "completed", "failed"]);
+    // "brief-ready" is attached-only (never produced for standard tasks) —
+    // plan §4.13 allows resetting+recreating from that paused-equivalent state.
+    const resettable = new Set(["paused", "completed", "failed", "brief-ready"]);
     if (!resettable.has(workspace.task.state)) return false;
 
     const task = workspace.task;
     const previousState = task.state;
+    const isAttached = task.mode === "attached";
 
     this.#setTaskState(task, "idle");
     task.currentRound = 0;
@@ -951,10 +1116,35 @@ export class AgentTaskRunner {
     task.showerResumePrompt = "";
     task.lastShowerRound = 0;
     task.rateLimitedUntil = null;
-    // Tell the next Start to wipe Worker + Judge conversational context so
-    // they don't run on stale memory of the previous attempt — particularly
-    // important if the user edits the brief between Reset and Start.
-    task.needsContextClear = true;
+    if (isAttached) {
+      // Attached Primary is externally owned — Reset must NEVER send /clear
+      // to it (plan §8.6). Also clear attached-only round bookkeeping so a
+      // fresh capture starts from a clean slate.
+      task.captureStartedAt = undefined;
+      task.contextApprovedAt = undefined;
+      task.companionPhase = undefined;
+      task.pendingQuestions = [];
+      task.verificationNotRequired = false;
+      task.companionEvidence = undefined;
+      task.companionLastFeedbackAt = undefined;
+      // companionEvaluationAttempt is deliberately NOT reset — it is what makes
+      // the previous run's verdict.json (same role, same baseline phase, same
+      // round 1) detectable as stale instead of being read as the answer to the
+      // first evaluation of the new run. Only the handled marker is dropped.
+      task.companionVerdictHandledAttempt = undefined;
+      task.captureNudged = false;
+      task.judgePolicyViolation = false;
+      // primaryMissing is deliberately NOT cleared: Reset re-runs the capture
+      // against the same binding, and nothing here re-attaches a Primary that
+      // no longer exists. Clearing it only made the task look continuable
+      // again — the next Start would inject into a dead session.
+      task.repeatedBlockingFindingIds = [];
+    } else {
+      // Tell the next Start to wipe Worker + Judge conversational context so
+      // they don't run on stale memory of the previous attempt — particularly
+      // important if the user edits the brief between Reset and Start.
+      task.needsContextClear = true;
+    }
     // Preserve lastJudgeInstructions — might be useful for next run
     this.#evaluating.delete(workspaceId);
     this.#clearWorkLockOverrideTimer(workspaceId);
@@ -970,12 +1160,14 @@ export class AgentTaskRunner {
     this.#shortWorkerTurns.delete(workspaceId);
     // Drop the per-session last-instruction cache and dropout counters so a
     // fresh run never resends a stale prompt or carries an old restart tally.
-    for (const sid of [`${workspaceId}:${task.workerPanelId}`, `${workspaceId}:${task.judgePanelId}`]) {
+    for (const sid of [sessionIdFor(workspace, "worker"), sessionIdFor(workspace, "judge")]) {
       this.#lastInjected.delete(sid);
       this.#dropoutCtx.delete(sid);
     }
 
-    await this.#recreateWorkLock(workspace, "reset");
+    if (!isAttached) {
+      await this.#recreateWorkLock(workspace, "reset");
+    }
 
     log.info("task reset", { workspaceId, previousState });
     void this.#logTaskEvent(workspace, "task-reset", `Previous state: ${previousState}`);
@@ -993,9 +1185,7 @@ export class AgentTaskRunner {
   async resendLastInstruction(workspaceId: string, role: "worker" | "judge"): Promise<boolean> {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
-    const task = workspace.task;
-    const panelId = role === "judge" ? task.judgePanelId : task.workerPanelId;
-    const sessionId = `${workspaceId}:${panelId}`;
+    const sessionId = sessionIdFor(workspace, role);
     const text = this.#lastInjected.get(sessionId);
     if (!text) {
       log.warn("resendLastInstruction: nothing to resend", { workspaceId, role });
@@ -1021,23 +1211,102 @@ export class AgentTaskRunner {
   async rejectTaskVerdict(workspaceId: string, feedback: string): Promise<boolean> {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
+    // Taken synchronously, before the first await below — the dialog leaves its
+    // "Send back" button live for the whole request, so a double click delivers
+    // two calls in the same tick and the reopenable-state check alone lets both
+    // through (see #rejectingVerdict).
+    if (this.#rejectingVerdict.has(workspaceId)) {
+      log.warn("rejectTaskVerdict: already in flight for this workspace", { workspaceId });
+      return false;
+    }
+    this.#rejectingVerdict.add(workspaceId);
+    try {
+      return await this.#rejectTaskVerdict(workspace, feedback);
+    } finally {
+      this.#rejectingVerdict.delete(workspaceId);
+    }
+  }
 
+  async #rejectTaskVerdict(workspace: TaskWorkspaceState, feedback: string): Promise<boolean> {
+    const workspaceId = workspace.id;
     const task = workspace.task;
     const reopenable = new Set(["completed", "failed"]);
     if (!reopenable.has(task.state)) {
       log.warn("rejectTaskVerdict: task not in reopenable state", { workspaceId, state: task.state });
       return false;
     }
+    // Send back re-opens a round and injects into the Primary before it can
+    // discover the session is gone — same gate as Start/Continue/answer.
+    if (!this.#assertAttachedPrimaryAvailable(workspace, "Send back")) return false;
     const trimmed = String(feedback || "").trim();
     if (!trimmed) {
       log.warn("rejectTaskVerdict: empty feedback", { workspaceId });
       return false;
     }
 
+    // Everything below the prompt build mutates the round bookkeeping the
+    // prompt itself quotes ("Round N/M"), so the mutation has to come first —
+    // and be fully undoable. Restoring only `state` (all this used to do) left
+    // the round consumed and the chip pushed, so a retry after a failed
+    // injection silently skipped a round and stacked up phantom chips.
     const previousState = task.state;
-    const lastRound = (task.rounds as unknown as TaskRound[])?.[task.rounds.length - 1];
+    const rounds = task.rounds as unknown as TaskRound[];
+    const lastRound = rounds?.[rounds.length - 1];
+    const snapshot = {
+      currentRound: task.currentRound,
+      maxRounds: task.maxRounds,
+      lastJudgeInstructions: task.lastJudgeInstructions,
+      lastRoundAction: lastRound?.action ?? "",
+      roundCount: rounds?.length || 0,
+      totalPausedMs: task.totalPausedMs,
+      pausedAt: task.pausedAt,
+      finishedAt: task.finishedAt,
+      companionLastFeedbackAt: task.companionLastFeedbackAt,
+    };
     if (lastRound) lastRound.action = "re-prompted";
 
+    // Single undo path for everything this method touches, disk included —
+    // both failure points below (staging the verification artifacts and
+    // injecting the prompt) leave the task exactly as they found it.
+    let restoreVerification: (() => Promise<void>) | null = null;
+    // Returns whether the on-disk evidence made it back. A disk failure there
+    // must not cost the in-memory undo as well, so the bookkeeping restore runs
+    // in `finally` — the task returns to its verdict either way, and the caller
+    // tells the user which of the two happened.
+    const rollback = async (): Promise<{ verificationRestored: boolean }> => {
+      let verificationRestored = true;
+      try {
+        if (restoreVerification) {
+          await restoreVerification();
+          restoreVerification = null;
+        }
+      } catch (err: unknown) {
+        verificationRestored = false;
+        restoreVerification = null;
+        log.error("rejectTaskVerdict: verification rollback failed", {
+          workspaceId,
+          err: (err as Error)?.message,
+        });
+      } finally {
+        task.currentRound = snapshot.currentRound;
+        task.maxRounds = snapshot.maxRounds;
+        task.lastJudgeInstructions = snapshot.lastJudgeInstructions;
+        task.companionLastFeedbackAt = snapshot.companionLastFeedbackAt;
+        if (rounds && rounds.length > snapshot.roundCount) rounds.length = snapshot.roundCount;
+        if (lastRound) lastRound.action = snapshot.lastRoundAction;
+        this.#setTaskState(task, previousState as TaskStateKind);
+        // #setTaskState re-stamps the terminal timing on the way back — restore
+        // the original values so the Dashboard's "ended HH:MM" doesn't jump.
+        task.totalPausedMs = snapshot.totalPausedMs;
+        task.pausedAt = snapshot.pausedAt;
+        task.finishedAt = snapshot.finishedAt;
+      }
+      return { verificationRestored };
+    };
+
+    // Idempotent, and the lock is what tells the runner this round is still in
+    // progress — a rollback deliberately leaves it in place rather than
+    // re-signalling "done" for work the Primary was never asked to redo.
     await this.#recreateWorkLock(workspace, "rejectVerdict");
 
     // User override starts a fresh round. Increment currentRound so the new
@@ -1055,13 +1324,63 @@ export class AgentTaskRunner {
     this.#ensureRunningRound(task);
 
     await this.#ensureFormatFlag(task, workspace);
-    const prompt = buildUserFeedbackPrompt(task, trimmed);
-    const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+    const prompt =
+      task.mode === "attached"
+        ? buildCompanionUserFeedbackPrompt(task, trimmed)
+        : buildUserFeedbackPrompt(task, trimmed);
+    const workerSessionId = sessionIdFor(workspace, "worker");
+
+    if (task.mode === "attached") {
+      // Same two artifacts the Companion's own "continue" path hands the
+      // Primary: a VERIFICATION.md template tagged for the round it is now
+      // working on, and a freshness baseline the next record has to beat.
+      // Without them the next round-review would gate on a record still tagged
+      // for the round the user just re-opened and burn a nudge cycle.
+      //
+      // Staged BEFORE the injection, because the Primary may start recording
+      // the moment the prompt lands and a template arriving behind it would
+      // wipe that record. The template also overwrites the record this round
+      // was signed off against, so it is staged reversibly and rolled back
+      // together with the round bookkeeping if the send back never lands.
+      try {
+        restoreVerification = await writeVerificationTemplateReversibly(
+          workspace.cwd,
+          task.taskId,
+          task.currentRound,
+          log,
+        );
+      } catch (err: unknown) {
+        log.error("rejectTaskVerdict: verification template write failed", {
+          workspaceId,
+          err: (err as Error)?.message,
+        });
+        await rollback();
+        void this.#logTaskEvent(
+          workspace,
+          "verdict-reject-failed",
+          "Could not prepare the verification record for the re-opened round — the verdict stands, try again.",
+        );
+        this.#broadcastState!();
+        return false;
+      }
+      // Template first, baseline second: a baseline older than the template it
+      // guards would let the empty template pass as this round's evidence.
+      task.companionLastFeedbackAt = new Date().toISOString();
+    }
+
     try {
       await this.#injectPrompt(workerSessionId, prompt, workspace);
     } catch (err: unknown) {
       log.error("rejectTaskVerdict: failed to inject prompt", { workspaceId, err: (err as Error)?.message });
-      this.#setTaskState(task, previousState as TaskStateKind);
+      const { verificationRestored } = await rollback();
+      const target = task.mode === "attached" ? "Primary conversation" : "Worker";
+      void this.#logTaskEvent(
+        workspace,
+        "verdict-reject-failed",
+        verificationRestored
+          ? `Could not deliver your feedback to the ${target} — the verdict stands, try again.`
+          : `Could not deliver your feedback to the ${target} — the verdict stands, but ${VERIFICATION_FILE} could NOT be put back and now holds an empty template. Check it before sending back again.`,
+      );
       this.#broadcastState!();
       return false;
     }
@@ -1081,22 +1400,19 @@ export class AgentTaskRunner {
    * Returns true if this session belongs to a task workspace and was handled.
    */
   onAgentIdle(sessionId: string, source = "unknown"): boolean {
-    const parts = sessionId.split(":");
-    if (parts.length < 2) return false;
-
-    const workspaceId = parts.slice(0, -1).join(":");
-    const panelId = parts[parts.length - 1];
-    const workspace = this.#findTaskWorkspace(workspaceId);
-    if (!workspace) {
-      log.trace("onAgentIdle: not a task workspace", { sessionId, workspaceId });
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding) {
+      log.trace("onAgentIdle: not a task workspace", { sessionId });
       return false;
     }
-
-    const task = workspace.task;
+    const { workspace, task, role } = binding;
+    const workspaceId = workspace.id;
+    const isWorker = role === "worker";
+    const isJudge = role === "judge";
     log.debug("onAgentIdle: task workspace found", {
       sessionId,
       workspaceId,
-      panelId,
+      role,
       taskState: task.state,
       workerPanelId: task.workerPanelId,
       judgePanelId: task.judgePanelId,
@@ -1104,14 +1420,13 @@ export class AgentTaskRunner {
       currentRound: task.currentRound,
     });
 
-    const isWorker = panelId === task.workerPanelId;
-    const isJudge = panelId === task.judgePanelId;
-
-    if (!isWorker && !isJudge) {
-      // Arbitrary panel inside a task workspace (e.g. a docs/readme tab the
-      // user added manually). Fall through so the user pipeline decides.
-      log.debug("onAgentIdle: panel is neither worker nor judge", { sessionId, panelId });
-      return false;
+    // Attached (Companion loop) tasks have a materially different lifecycle
+    // (no built-in project checks, a Companion-specific verdict schema,
+    // externally-owned Primary session) — dispatch entirely to the
+    // attached-mode handler so every branch below stays byte-for-byte
+    // unchanged for standard tasks.
+    if (task.mode === "attached") {
+      return this.#onAttachedAgentIdle(workspace, role, sessionId, source);
     }
 
     // Paused: user might be hands-on (reviewing, resuming, asking questions
@@ -1247,7 +1562,6 @@ export class AgentTaskRunner {
     log.debug("onAgentIdle: worker/judge panel in non-actionable state, consuming", {
       sessionId,
       taskState: task.state,
-      panelId,
       isWorker,
       isJudge,
     });
@@ -1282,29 +1596,18 @@ export class AgentTaskRunner {
    * (incident C: judge stuck at the dialog, verdict never read for 2h+).
    */
   onAgentRateLimited(sessionId: string, match: RateLimitMatch, source = "unknown"): boolean {
-    const parts = sessionId.split(":");
-    if (parts.length < 2) return false;
-    const workspaceId = parts.slice(0, -1).join(":");
-    const panelId = parts[parts.length - 1];
-    const workspace = this.#findTaskWorkspace(workspaceId);
-    if (!workspace) return false;
-    if (panelId === workspace.task.judgePanelId) {
-      return this.#handleJudgeRateLimited(workspace, sessionId, match, source);
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding) return false;
+    if (binding.role === "judge") {
+      return this.#handleJudgeRateLimited(binding.workspace, sessionId, match, source);
     }
     return this.onWorkerRateLimited(sessionId, match, source);
   }
 
   onWorkerRateLimited(sessionId: string, match: RateLimitMatch, source = "unknown"): boolean {
-    const parts = sessionId.split(":");
-    if (parts.length < 2) return false;
-    const workspaceId = parts.slice(0, -1).join(":");
-    const panelId = parts[parts.length - 1];
-    const workspace = this.#findTaskWorkspace(workspaceId);
-    if (!workspace) return false;
-    const task = workspace.task;
-    if (panelId !== task.workerPanelId) return false;
-
-    return this.#handleRateLimited(workspace, sessionId, match, source, "worker");
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding || binding.role !== "worker") return false;
+    return this.#handleRateLimited(binding.workspace, sessionId, match, source, "worker");
   }
 
   /** Static-ish constants attached to the class for easy override in tests. */
@@ -1549,9 +1852,34 @@ export class AgentTaskRunner {
     this.#broadcastState!();
 
     if (task.state !== "running") return;
-    const sessionId = `${workspaceId}:${task.workerPanelId}`;
+    const sessionId = sessionIdFor(workspace, "worker");
 
     if (ctx?.needsRestart) {
+      if (task.mode === "attached") {
+        // Primary is an EXTERNALLY OWNED session (plan §8.6): a CLI-exit
+        // rate-limit means the provider process likely already exited, but
+        // the runner must never restart it just to move the task state
+        // machine forward — that would destroy the user's live conversation.
+        // Treat this exactly like a Primary dropout: pause with an
+        // actionable "Open Primary" alert (mirrors #onAttachedAgentIdle's
+        // dropout guard) and let the user restart the session themselves if
+        // needed; Continue will reorient it from the task files.
+        task.pausedFromState = "running";
+        this.#setTaskState(task, "paused");
+        this.#evaluating.delete(workspaceId);
+        void this.#logTaskEvent(
+          workspace,
+          "primary-dropout",
+          "Primary conversation appears to have exited (rate limit) — task paused.",
+        );
+        this.#raiseTaskAlert(
+          workspace,
+          "failed",
+          "Primary conversation appears to have exited. Open Primary to check, then Continue.",
+        );
+        this.#broadcastState!();
+        return;
+      }
       // CLI-exit providers (Codex / Gemini / Copilot): respawn the worker
       // and let onAgentIdle re-inject the initial task prompt when the new
       // session settles.
@@ -1665,17 +1993,39 @@ export class AgentTaskRunner {
     this.#broadcastState!();
     if (task.state !== "judge-evaluating") return;
 
+    const judgeSessionId = sessionIdFor(workspace, "judge");
+    const resumePrompt = `Continue your evaluation — the previous attempt was rate-limited. When you reach a decision, write your verdict JSON to ${taskDirRel(
+      task.taskId,
+    )}/${VERDICT_FILE}.`;
+
+    // Attached (Companion loop) tasks must never fall through to the legacy
+    // verdict parser/#handleJudgeVerdict (plan §6/§8.4) — the legacy parser
+    // accepts a companion "continue" verdict and rejects "needs-input" as
+    // invalid, which would drive standard-path re-prompting into a session
+    // that doesn't exist for attached tasks.
+    if (task.mode === "attached") {
+      const result = await readCompanionVerdict(
+        workspace.cwd,
+        task.taskId,
+        this.#companionVerdictExpectation(task),
+        log,
+      );
+      if (result.status === "valid") {
+        // Verdict already on disk — process it regardless of the (now-expired) hold.
+        await this.#handleCompanionVerdict(workspace, "judge-rate-limit-resume");
+        return;
+      }
+      await this.#injectPrompt(judgeSessionId, resumePrompt, workspace);
+      return;
+    }
+
     const verdict = await readVerdict(workspace.cwd, task.taskId, log);
     if (verdict.reason !== "Judge did not produce a verdict file.") {
       // Verdict already on disk — process it regardless of the (now-expired) hold.
       await this.#handleJudgeVerdict(workspace, "judge-rate-limit-resume");
       return;
     }
-    const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
-    const prompt = `Continue your evaluation — the previous attempt was rate-limited. When you reach a decision, write your verdict JSON to ${taskDirRel(
-      task.taskId,
-    )}/${VERDICT_FILE}.`;
-    await this.#injectPrompt(judgeSessionId, prompt, workspace);
+    await this.#injectPrompt(judgeSessionId, resumePrompt, workspace);
   }
 
   // ---------------------------------------------------------------------------
@@ -1793,6 +2143,39 @@ export class AgentTaskRunner {
     if (!workspace) return;
     const task = workspace.task;
 
+    if (task.state === "judge-evaluating" && task.mode === "attached") {
+      // Attached tasks use a completely different verdict schema/handler —
+      // never let the standard verdictSchema/handleJudgeVerdict path near
+      // them (it would misparse the companion verdict and, worse, could
+      // send a "task ended" stop signal into the externally-owned Primary).
+      const result = await readCompanionVerdict(
+        workspace.cwd,
+        task.taskId,
+        this.#companionVerdictExpectation(task),
+        log,
+      );
+      if (result.status !== "valid") return;
+      // Per-evaluation marker, not lastRound.judgeVerdict: the same round is
+      // evaluated again after a needs-input answer or a withheld completion,
+      // and the chip still carries the previous evaluation's verdict — reading
+      // that as "already processed" stranded the task in judge-evaluating
+      // forever whenever the idle hook was the one that went missing.
+      if (this.#companionVerdictAlreadyHandled(task)) return;
+      armGrace(AgentTaskRunner.WATCH_VERDICT_GRACE_MS, async () => {
+        const ws = this.#findTaskWorkspace(workspaceId);
+        if (!ws || ws.task.state !== "judge-evaluating") return;
+        if (this.#companionVerdictAlreadyHandled(ws.task)) return; // a hook handled it during the grace
+        log.warn("watcher backstop: companion verdict on disk but no idle hook — handling", { workspaceId });
+        void this.#logTaskEvent(
+          ws,
+          "watcher-verdict",
+          "Companion verdict detected by watcher (no idle hook) — handling it.",
+        );
+        await this.#handleCompanionVerdict(ws, "watcher");
+      });
+      return;
+    }
+
     if (task.state === "judge-evaluating") {
       const verdict = await readVerdict(workspace.cwd, task.taskId, log);
       if (verdict.reason === "Judge did not produce a verdict file.") return;
@@ -1810,6 +2193,51 @@ export class AgentTaskRunner {
         log.warn("watcher backstop: verdict on disk but no judge hook — handling", { workspaceId });
         void this.#logTaskEvent(ws, "watcher-verdict", "Verdict detected by watcher (no idle hook) — handling it.");
         await this.#handleJudgeVerdict(ws, "watcher");
+      });
+      return;
+    }
+
+    if (task.state === "capturing-context") {
+      // Same backstop idea as the verdict branch above: a lost/missed idle
+      // hook during capture must not permanently strand the task (plan
+      // §8.3). Only arm the grace once the files are ACTUALLY complete —
+      // never let the watcher fire a premature nudge for a still-in-progress
+      // capture.
+      const validation = await validateCaptureFiles(workspace.cwd, task.taskId, {
+        sinceIso: task.captureStartedAt || null,
+      });
+      if (!validation.ok) return;
+      armGrace(AgentTaskRunner.WATCH_VERDICT_GRACE_MS, async () => {
+        const ws = this.#findTaskWorkspace(workspaceId);
+        if (!ws || ws.task.state !== "capturing-context") return;
+        const revalidation = await validateCaptureFiles(ws.cwd, ws.task.taskId, {
+          sinceIso: ws.task.captureStartedAt || null,
+        });
+        if (!revalidation.ok) return; // a hook already handled it during the grace
+        log.warn("watcher backstop: capture files complete but no idle hook — handling", { workspaceId });
+        void this.#logTaskEvent(
+          ws,
+          "watcher-capture",
+          "CONTEXT.md/HANDOFF.md complete detected by watcher (no idle hook) — handling it.",
+        );
+        await this.#checkCaptureReadiness(ws, sessionIdFor(ws, "worker"));
+      });
+      return;
+    }
+
+    if (task.state === "running" && task.mode === "attached") {
+      // Attached Primary hooks are the app's normal terminal hooks — this is
+      // just a backstop for a missed one, same idea as the standard branch
+      // below but routed to the companion round gate, never built-in checks.
+      if (!(await this.isWorkerCompleted(workspaceId))) return;
+      armGrace(AgentTaskRunner.WATCH_WORKLOCK_GRACE_MS, async () => {
+        const ws = this.#findTaskWorkspace(workspaceId);
+        if (!ws || ws.task.state !== "running") return;
+        if (this.#evaluating.has(workspaceId)) return;
+        if (!(await this.isWorkerCompleted(workspaceId))) return;
+        log.warn("watcher backstop: WORK_LOCK absent but no primary hook — evaluating", { workspaceId });
+        void this.#logTaskEvent(ws, "watcher-worklock", "WORK_LOCK absent (watcher, no idle hook) — evaluating.");
+        await this.#evaluateCompanionRound(ws);
       });
       return;
     }
@@ -2004,30 +2432,40 @@ export class AgentTaskRunner {
    * Called when a session exits — if it's a worker session, pause the task.
    */
   onSessionExit(sessionId: string): void {
-    const parts = sessionId.split(":");
-    if (parts.length < 2) return;
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding) return;
+    const { workspace, task, role } = binding;
+    const workspaceId = workspace.id;
 
-    const workspaceId = parts.slice(0, -1).join(":");
-    const panelId = parts[parts.length - 1];
-    const workspace = this.#findTaskWorkspace(workspaceId);
-    if (!workspace) return;
-
-    log.trace("onSessionExit: task session exited", { sessionId, panelId, taskState: workspace.task.state });
+    log.trace("onSessionExit: task session exited", { sessionId, role, taskState: task.state });
 
     // Note: this fires only when the whole PTY (the shell hosting the agent)
     // dies. The common dropout — the agent CLI exits back to a still-alive
     // shell after a forced update — produces NO process exit and is handled by
     // the shell-prompt guard in onAgentIdle (#handleAgentDropout) instead.
-    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
-    if (panelId === workspace.task.workerPanelId && ACTIVE.has(workspace.task.state)) {
+    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing", "capturing-context"]);
+    if (role === "worker" && ACTIVE.has(task.state)) {
       // Worker crash → resume to running (re-inject). Krok 3's resume reconcile
       // still processes any verdict left on disk regardless of this value.
-      workspace.task.pausedFromState = "";
-      this.#setTaskState(workspace.task, "paused");
+      const isAttached = task.mode === "attached";
+      task.pausedFromState = "";
+      this.#setTaskState(task, "paused");
       this.#evaluating.delete(workspaceId);
-      log.warn("worker session exited, task paused", { workspaceId, sessionId });
-      void this.#logTaskEvent(workspace, "worker-crashed", "Worker session exited unexpectedly, task paused");
-      this.#raiseTaskAlert(workspace, "failed", "Worker session exited — task paused");
+      log.warn("worker session exited, task paused", { workspaceId, sessionId, isAttached });
+      void this.#logTaskEvent(
+        workspace,
+        "worker-crashed",
+        isAttached
+          ? "Primary session exited unexpectedly, task paused"
+          : "Worker session exited unexpectedly, task paused",
+      );
+      this.#raiseTaskAlert(
+        workspace,
+        "failed",
+        isAttached
+          ? "Primary conversation exited — task paused. Open Primary to check."
+          : "Worker session exited — task paused",
+      );
       this.#broadcastState!();
     }
   }
@@ -2110,6 +2548,7 @@ export class AgentTaskRunner {
 
     switch (hook) {
       case "Notification":
+        if (subtype === "permission_prompt" && this.#handleJudgePermissionPrompt(sessionId)) return true;
         return this.onAgentIdle(sessionId, subtype ? `hook:${subtype}` : "hook:notification");
       case "Stop":
         // Treat assistant-turn end as an idle signal. Task runner checks
@@ -2122,6 +2561,47 @@ export class AgentTaskRunner {
       default:
         return false;
     }
+  }
+
+  /**
+   * Attached Judge (Companion) always starts without permission-bypass/yolo
+   * flags — it is contractually inspect-only (plan section 10). A permission
+   * prompt firing while it's evaluating means the provider tried to execute
+   * project code, write outside the allowlisted task-artifact path, or use
+   * some other un-allowlisted tool — a violation of that contract, not a
+   * routine wait. Pause immediately rather than nudging/retrying so the loop
+   * never silently continues past it; the allowlisted verdict.json/JUDGE_TODO.md
+   * write itself never triggers a permission prompt, so this can't misfire on
+   * normal Companion output.
+   */
+  #handleJudgePermissionPrompt(sessionId: string): boolean {
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding || binding.role !== "judge") return false;
+    const { workspace, task } = binding;
+    if (task.mode !== "attached" || task.state !== "judge-evaluating") return false;
+
+    task.pausedFromState = task.state;
+    task.judgePolicyViolation = true;
+    this.#setTaskState(task, "paused");
+    this.#evaluating.delete(workspace.id);
+    const roleLabel = COMPANION_ROLE_DISPLAY_NAMES[task.companionRole as CompanionRole];
+    log.warn("attached judge hit a permission prompt during evaluation — paused as a policy violation", {
+      workspaceId: workspace.id,
+      sessionId,
+      companionRole: task.companionRole,
+    });
+    void this.#logTaskEvent(
+      workspace,
+      "judge-policy-violation",
+      `${roleLabel} tried an action outside its inspect-only scope during evaluation — paused.`,
+    );
+    this.#raiseTaskAlert(
+      workspace,
+      "failed",
+      `${roleLabel} paused: it hit a permission prompt during inspect-only evaluation.`,
+    );
+    this.#broadcastState!();
+    return true;
   }
 
   /**
@@ -2150,11 +2630,9 @@ export class AgentTaskRunner {
    * classified system-only; this is belt-and-braces).
    */
   onUserPromptSubmit(sessionId: string): boolean {
-    const parts = sessionId.split(":");
-    if (parts.length < 2) return false;
-    const workspaceId = parts.slice(0, -1).join(":");
-    const workspace = this.#findTaskWorkspace(workspaceId);
-    if (!workspace) return false;
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding) return false;
+    const { workspace } = binding;
 
     log.trace("onUserPromptSubmit: user sent prompt in task workspace", { sessionId });
     // Krok 1 — this hook also fires for prompts WE inject, so it doubles as the
@@ -2177,20 +2655,21 @@ export class AgentTaskRunner {
    * (e.g. focus events from xterm.js when switching between panels).
    */
   onUserInput(sessionId: string): void {
-    const parts = sessionId.split(":");
-    if (parts.length < 2) return;
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding) return;
+    const { workspace, task, role } = binding;
+    const workspaceId = workspace.id;
 
-    const workspaceId = parts.slice(0, -1).join(":");
-    const panelId = parts[parts.length - 1];
-    const workspace = this.#findTaskWorkspace(workspaceId);
-    if (!workspace) return;
-
-    const task = workspace.task;
-    // Only pause if input targets the panel that the task runner is actively driving
-    const isWorkerInput = panelId === task.workerPanelId;
-    const isJudgeInput = panelId === task.judgePanelId;
+    // Only pause if input targets the panel that the task runner is actively
+    // driving. Attached-only: input into the Primary during capturing-context
+    // also pauses the capture (plan §6.2 manual-input rules) — that state
+    // never occurs for standard tasks, so this is additive, not a behavior
+    // change for them.
+    const isWorkerInput = role === "worker";
+    const isJudgeInput = role === "judge";
     const shouldPause =
-      ((task.state === "evaluating" || task.state === "refreshing") && isWorkerInput) ||
+      ((task.state === "evaluating" || task.state === "refreshing" || task.state === "capturing-context") &&
+        isWorkerInput) ||
       (task.state === "judge-evaluating" && isJudgeInput);
 
     if (shouldPause) {
@@ -2200,7 +2679,7 @@ export class AgentTaskRunner {
       log.info("user input detected during evaluation, task paused", {
         workspaceId,
         sessionId,
-        panelId,
+        role,
         pausedFromState: task.pausedFromState,
       });
       this.#broadcastState!();
@@ -2216,7 +2695,9 @@ export class AgentTaskRunner {
    * Tracks startedAt, pausedAt, totalPausedMs, finishedAt across all transitions.
    */
   #setTaskState(task: RuntimeTaskState, newState: TaskStateKind): void {
-    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+    // "capturing-context" is attached-only and counts as active for elapsed
+    // timing (plan §6.1); "brief-ready"/"awaiting-user" deliberately do not.
+    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing", "capturing-context"]);
     const prev = task.state;
     const now = Date.now();
 
@@ -2327,15 +2808,13 @@ export class AgentTaskRunner {
    * provider configured for that panel (worker or judge).
    */
   getIdleTimeout(sessionId: string): number | null {
-    const parts = sessionId.split(":");
-    if (parts.length < 2) return null;
-    const workspaceId = parts.slice(0, -1).join(":");
-    const panelId = parts[parts.length - 1];
-    const workspace = this.#findTaskWorkspace(workspaceId);
-    if (!workspace) return null;
-    const task = workspace.task;
-    const isWorker = panelId === task.workerPanelId;
-    const config = isWorker ? task.workerProviderConfig : task.judgeProviderConfig;
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding) return null;
+    const { task, role } = binding;
+    // Attached tasks never set workerProviderConfig (the Primary's provider
+    // is not ours to manage) — this correctly falls back to null, letting
+    // the caller use its generic default idle detection for that session.
+    const config = role === "worker" ? task.workerProviderConfig : task.judgeProviderConfig;
     if (!config?.providerId) return null;
     try {
       return getProvider(config.providerId).idleTimeoutMs;
@@ -2375,6 +2854,17 @@ export class AgentTaskRunner {
         totalPausedMs: task.totalPausedMs || 0,
         pausedAt: task.pausedAt || null,
         finishedAt: task.finishedAt || null,
+        // Attached mode (Companion loop) — undefined/"standard" for every
+        // pre-existing task, so this is purely additive for the renderer.
+        mode: task.mode || "standard",
+        workerWorkspaceId: task.workerWorkspaceId || "",
+        companionRole: task.companionRole || null,
+        companionFocus: task.companionFocus || "",
+        contextApprovedAt: task.contextApprovedAt || null,
+        judgeExecutionPolicy: task.judgeExecutionPolicy || null,
+        companionPhase: task.companionPhase || null,
+        pendingQuestions: task.pendingQuestions || [],
+        lastCompanionVerdict: task.lastCompanionVerdict || null,
       };
     }
     return result;
@@ -2399,6 +2889,16 @@ export class AgentTaskRunner {
   async #evaluateWorker(workspace: TaskWorkspaceState): Promise<void> {
     const task = workspace.task;
     const workspaceId = workspace.id;
+
+    // Attached (Companion loop) tasks never run project checks or the legacy
+    // judge — route to the attached round gate instead (plan §6.2/§8.4). This
+    // guard is the single dispatch point for every call site, including the
+    // periodic WORK_LOCK probe (#performWorkLockOverrideCheck), which fires on
+    // its own timer and isn't gated by onAgentIdle's earlier attached dispatch.
+    if (task.mode === "attached") {
+      await this.#evaluateCompanionRound(workspace);
+      return;
+    }
 
     // Re-entrance guard
     if (this.#evaluating.has(workspaceId)) {
@@ -2822,6 +3322,1075 @@ export class AgentTaskRunner {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Attached mode (Companion loop) — see docs/agent-task-runner.md. These
+  // methods are deliberately PARALLEL to the Worker/Judge methods above
+  // rather than branching inside them: every entry point that can receive an
+  // attached task dispatches here as its very first action, so standard
+  // tasks execute the exact same code they always did (plan §14 "Běžné task
+  // workspaces se chovají beze změny").
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Build an attached task workspace object (not yet persisted — caller
+   * saves via runtime.saveWorkspace, mirroring createTaskWorkspace). Only
+   * Dashboard + Companion panels: there is no Worker panel because the
+   * Worker/"Primary" role is an existing, externally-owned session that
+   * keeps living in its own workspace (plan §6).
+   */
+  createCompanionTaskWorkspace({
+    state,
+    workerWorkspaceId,
+    workerPanelId,
+    primaryProvider,
+    companionRole,
+    companionProvider,
+    focus,
+    maxRounds,
+    callerProfileId = "",
+  }: {
+    state: Partial<Pick<AppState, "workspaces" | "windowSlots">>;
+    workerWorkspaceId: string;
+    workerPanelId: string;
+    /** Informational only (plan §7) — used for injection-strategy/idle-timeout
+     * lookups on the existing Primary session. Never used to build a command. */
+    primaryProvider?: ParsedProviderConfig | null;
+    companionRole: CompanionRole;
+    companionProvider: ParsedProviderConfig;
+    focus?: string;
+    maxRounds?: number;
+    callerProfileId?: string;
+  }): TaskWorkspaceState {
+    const sourceWorkspace = state.workspaces?.find((w) => w.id === workerWorkspaceId);
+    if (!sourceWorkspace) {
+      throw new Error(`createCompanionTaskWorkspace: source workspace not found: ${workerWorkspaceId}`);
+    }
+    const sourcePanel = sourceWorkspace.panels?.find((p) => p.id === workerPanelId);
+    if (!sourcePanel) {
+      throw new Error(`createCompanionTaskWorkspace: source panel not found: ${workerPanelId}`);
+    }
+
+    const workspaceId = `workspace-${randomUUID()}`;
+    const dashboardPanelId = `panel-${randomUUID()}`;
+    const judgePanelId = `panel-${randomUUID()}`;
+
+    const roleLabel = COMPANION_ROLE_DISPLAY_NAMES[companionRole];
+    const autoName = `${roleLabel}: ${formatWorkspaceDisplayName(sourceWorkspace)}`;
+
+    // Same stable per-parent ordinal scheme as createTaskWorkspace, scoped by
+    // the SOURCE workspace id (companion loops are children of the source,
+    // not of each other).
+    const siblings = (state.workspaces || []).filter(
+      (w) => w.kind === "task" && (w.task?.parentWorkspaceId || "") === workerWorkspaceId,
+    );
+    const maxSeq = siblings.reduce((max, w) => Math.max(max, w.task?.sequenceNumber || 0), 0);
+    const sequenceNumber = Math.max(maxSeq, siblings.length) + 1;
+
+    const jp = getProvider(companionProvider.providerId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const jpCtor = jp.constructor as any;
+    const resolvedJudgeCmd = jp.buildCommand({
+      model: companionProvider.model,
+      role: "judge",
+      // Attached Judge is always inspect-only (plan §3.2/§10) — never a
+      // permission bypass, and no custom-command override exists for it.
+      skipPermissions: false,
+    });
+    const judgeTitle = `${roleLabel} (${jpCtor.displayName} ${companionProvider.model})`;
+
+    return {
+      id: workspaceId,
+      name: autoName,
+      icon: "\u{1F916}", // 🤖
+      color: sourceWorkspace.color || "#7C4DFF",
+      kind: "task",
+      source: "manual",
+      pluginId: "",
+      // Effective cwd = the source PANEL's cwd if set, else the source
+      // workspace's cwd (plan §7) — a live conversation's cwd may differ
+      // from its workspace's nominal cwd (e.g. a manually-cd'd shell tab).
+      cwd: sourcePanel.cwd || sourceWorkspace.cwd,
+      gitRoots: [],
+      activeRootPath: "",
+      notes: "",
+      profileId: sourceWorkspace.profileId || callerProfileId || "default",
+      connectionId: "",
+      activePanelId: dashboardPanelId,
+      activeViewId: null,
+      splitLayout: null,
+      splitViewIds: [],
+      starred: false,
+      review: null,
+      quickfix: null,
+
+      panels: [
+        {
+          id: dashboardPanelId,
+          title: "Dashboard",
+          command: "__task-dashboard__",
+          shell: false as unknown as string,
+          startup: "none",
+        },
+        {
+          id: judgePanelId,
+          title: judgeTitle,
+          command: resolvedJudgeCmd,
+          shell: true as unknown as string,
+          startup: "default",
+        },
+      ],
+      task: {
+        taskId: randomUUID(),
+        description: "",
+        parentWorkspaceId: workerWorkspaceId,
+        worktreeBase: "",
+        worktreeBranch: "",
+        workerPanelId,
+        judgePanelId,
+        maxRounds: maxRounds || 10,
+        showerInterval: 0, // Shower is disabled for attached tasks (plan §8.6).
+        state: "idle",
+        currentRound: 0,
+        rounds: [],
+        lastShowerRound: 0,
+        lastJudgeInstructions: "",
+        workerProviderConfig: primaryProvider || null,
+        // Stored config must agree with the command actually built above —
+        // never persist skipPermissions:true for an attached Judge even if
+        // the caller passed it (defense in depth; the create handler already
+        // rejects it, but this method must never be the one that drifts).
+        judgeProviderConfig: { ...companionProvider, skipPermissions: false },
+        startedAt: null,
+        totalPausedMs: 0,
+        pausedAt: null,
+        finishedAt: null,
+        rateLimitedUntil: null,
+        promptSent: false,
+        pausedFromState: "",
+        showerResumePrompt: "",
+        createdAt: new Date().toISOString(),
+        sequenceNumber,
+        mode: "attached",
+        workerWorkspaceId,
+        companionRole,
+        companionFocus: focus?.trim() || "",
+        judgeExecutionPolicy: "inspect-only",
+      } as RuntimeTaskState,
+    };
+  }
+
+  /** Attached counterpart to writeInitialFiles — TASK.md + WORKER.md +
+   * JUDGE_PROMPT.md only (no TODO.md/WORK_LOCK; see writeCompanionInitialFiles). */
+  async writeCompanionFiles(cwd: string, task: RuntimeTaskState): Promise<void> {
+    log.info("writing companion initial files", { cwd, taskId: task.taskId, role: task.companionRole });
+    await runEffect(
+      Effect.all(
+        [
+          Effect.tryPromise({
+            try: () => writeCompanionInitialFiles(cwd, task, log),
+            catch: (e) => new TaskFileError({ workspaceId: task.taskId, path: cwd, cause: e }),
+          }),
+          Effect.tryPromise({
+            try: () => ensureGitIgnore(cwd, log),
+            catch: (e) => new TaskFileError({ workspaceId: task.taskId, path: cwd, cause: e }),
+          }),
+        ],
+        { concurrency: "unbounded" },
+      ),
+    );
+  }
+
+  /** Attached counterpart to startTask's body — dispatches by current state
+   * instead of always injecting the initial worker prompt. */
+  async #startAttachedTask(workspace: TaskWorkspaceState): Promise<boolean> {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+
+    // Both branches below inject into the Primary — neither may run once the
+    // conversation this task is bound to is known to be gone.
+    if (!this.#assertAttachedPrimaryAvailable(workspace, "Start")) return false;
+
+    if (task.state === "idle") {
+      const sessionId = sessionIdFor(workspace, "worker");
+      this.#setTaskState(task, "capturing-context");
+      // Stamped BEFORE the prompt goes out: nothing ever deletes CONTEXT.md /
+      // HANDOFF.md, so this is the only thing separating "the Primary just
+      // wrote a capture" from "a capture from before the last Reset is still
+      // lying on disk".
+      task.captureStartedAt = new Date().toISOString();
+      const prompt = buildContextCapturePrompt(task);
+      try {
+        await this.#injectPrompt(sessionId, prompt, workspace);
+      } catch (err: unknown) {
+        log.error("startAttachedTask: failed to inject capture prompt", {
+          workspaceId,
+          err: (err as Error)?.message,
+        });
+        this.#setTaskState(task, "idle");
+        task.captureStartedAt = undefined;
+        this.#broadcastState!();
+        return false;
+      }
+      log.info("attached task: capture prompt sent to Primary", { workspaceId });
+      void this.#logTaskEvent(workspace, "capture-started", "Capture prompt sent to the Primary conversation.");
+      this.#broadcastState!();
+      return true;
+    }
+
+    if (task.state === "brief-ready") {
+      task.contextApprovedAt = new Date().toISOString();
+      task.currentRound = 1;
+      task.rounds = [];
+      this.#ensureRunningRound(task);
+      void this.#logTaskEvent(workspace, "baseline-started", "Baseline companion evaluation requested.");
+      this.#broadcastState!();
+      await this.#requestCompanionEvaluation(workspace, "baseline", null);
+      return true;
+    }
+
+    log.debug("startAttachedTask: no-op for current state", { workspaceId, state: task.state });
+    return false;
+  }
+
+  /** Attached counterpart to onAgentIdle's dispatch body. */
+  #onAttachedAgentIdle(
+    workspace: TaskWorkspaceState,
+    role: TaskBindingRole,
+    sessionId: string,
+    source: string,
+  ): boolean {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+
+    if (task.state === "paused") {
+      log.debug("onAttachedAgentIdle: paused task, falling through to user pipeline", {
+        sessionId,
+        taskState: task.state,
+      });
+      return false;
+    }
+
+    if (role === "worker") {
+      if (task.state === "capturing-context") {
+        this.#checkCaptureReadiness(workspace, sessionId).catch((err: unknown) => {
+          log.error("checkCaptureReadiness error", { workspaceId, err: (err as Error)?.message });
+        });
+        return true;
+      }
+      if (task.state === "running") {
+        // App-restart recovery (resolveTaskRecovery) stashes a re-orientation
+        // prompt here for the freshly re-spawned Primary panel, the same
+        // "inject on first idle" pattern the judge branch below uses.
+        if (task.showerResumePrompt) {
+          const prompt = task.showerResumePrompt;
+          task.showerResumePrompt = "";
+          this.#injectPrompt(sessionId, prompt, workspace).catch((err: unknown) => {
+            log.error("primary recovery prompt injection failed", { workspaceId, err: (err as Error)?.message });
+          });
+          this.#broadcastState!();
+          return true;
+        }
+        // Dropout guard: the Primary is an EXTERNALLY OWNED session. Unlike
+        // the standard worker, the runner never restarts it — that would be
+        // touching a conversation the user owns. Pause with an actionable
+        // alert instead (plan §8.6).
+        if (this.#isAgentDroppedToShell?.(sessionId)) {
+          task.pausedFromState = "running";
+          this.#setTaskState(task, "paused");
+          this.#evaluating.delete(workspaceId);
+          void this.#logTaskEvent(
+            workspace,
+            "primary-dropout",
+            "Primary conversation appears to have exited — task paused.",
+          );
+          this.#raiseTaskAlert(
+            workspace,
+            "failed",
+            "Primary conversation appears to have exited. Open Primary to check, then Continue.",
+          );
+          this.#broadcastState!();
+          return true;
+        }
+        this.#dropoutCtx.delete(sessionId);
+        void this.#logTaskEvent(
+          workspace,
+          "primary-idle-detected",
+          `Primary went idle via ${source}. Checking verification…`,
+        );
+        this.#evaluateCompanionRound(workspace).catch((err: unknown) => {
+          log.error("evaluateCompanionRound error", { workspaceId, err: (err as Error)?.message });
+        });
+        return true;
+      }
+      log.debug("onAttachedAgentIdle: primary idle in non-actionable state, consuming", {
+        sessionId,
+        taskState: task.state,
+      });
+      return true;
+    }
+
+    // role === "judge" (Companion)
+    if (task.state === "judge-evaluating") {
+      if (this.#programmaticJudges.has(workspaceId)) return true;
+      if (task.showerResumePrompt) {
+        const prompt = task.showerResumePrompt;
+        task.showerResumePrompt = "";
+        this.#injectPrompt(sessionId, prompt, workspace).catch((err: unknown) => {
+          log.error("companion recovery prompt injection failed", { workspaceId, err: (err as Error)?.message });
+        });
+        this.#broadcastState!();
+        return true;
+      }
+      if (this.#isAgentDroppedToShell?.(sessionId)) {
+        this.#handleAgentDropout(workspace, sessionId, "judge").catch((err: unknown) => {
+          log.error("handleAgentDropout (companion) error", { workspaceId, err: (err as Error)?.message });
+        });
+        return true;
+      }
+      this.#dropoutCtx.delete(sessionId);
+      void this.#logTaskEvent(
+        workspace,
+        "companion-idle-detected",
+        `Companion went idle via ${source}. Reading verdict…`,
+      );
+      this.#handleCompanionVerdict(workspace, source).catch((err: unknown) => {
+        log.error("handleCompanionVerdict error", { workspaceId, err: (err as Error)?.message });
+      });
+      return true;
+    }
+    log.debug("onAttachedAgentIdle: companion idle in non-actionable state, consuming", {
+      sessionId,
+      taskState: task.state,
+    });
+    return true;
+  }
+
+  /**
+   * Check whether CONTEXT.md/HANDOFF.md are structurally ready. Nudges once
+   * if incomplete; a second incomplete idle pauses with an actionable alert
+   * rather than nudging forever (plan §8.3).
+   */
+  async #checkCaptureReadiness(workspace: TaskWorkspaceState, sessionId: string): Promise<void> {
+    const task = workspace.task;
+    if (task.state !== "capturing-context") return;
+    const validation = await validateCaptureFiles(workspace.cwd, task.taskId, {
+      sinceIso: task.captureStartedAt || null,
+    });
+    // Re-check after the async read: a pause/reset may have landed while we
+    // were reading the capture files from disk.
+    if (task.state !== "capturing-context") return;
+
+    if (validation.ok) {
+      this.#setTaskState(task, "brief-ready");
+      log.info("attached task: capture complete", { workspaceId: workspace.id });
+      void this.#logTaskEvent(
+        workspace,
+        "context-captured",
+        "CONTEXT.md and HANDOFF.md captured — brief ready for review.",
+      );
+      this.#broadcastState!();
+      return;
+    }
+
+    if (!task.captureNudged) {
+      task.captureNudged = true;
+      const staleFiles = [
+        validation.contextStale ? CONTEXT_FILE : "",
+        validation.handoffStale ? HANDOFF_FILE : "",
+      ].filter(Boolean);
+      const nudge = `${CONTEXT_FILE}/${HANDOFF_FILE} capture is not complete yet. ${
+        validation.contextExists ? "" : `${CONTEXT_FILE} is missing. `
+      }${validation.handoffExists ? "" : `${HANDOFF_FILE} is missing. `}${
+        staleFiles.length
+          ? `${staleFiles.join(" and ")} ${staleFiles.length > 1 ? "are" : "is"} left over from an earlier capture — rewrite ${staleFiles.length > 1 ? "them" : "it"} from your current context. `
+          : ""
+      }Finish writing both files with every required section (see your capture instructions), then stop.`;
+      try {
+        await this.#injectPrompt(sessionId, nudge, workspace);
+      } catch (err: unknown) {
+        log.warn("checkCaptureReadiness: nudge injection failed", {
+          workspaceId: workspace.id,
+          err: (err as Error)?.message,
+        });
+      }
+      void this.#logTaskEvent(workspace, "capture-nudged", "Reminded Primary to finish CONTEXT.md/HANDOFF.md.");
+      this.#broadcastState!();
+      return;
+    }
+
+    task.pausedFromState = "capturing-context";
+    this.#setTaskState(task, "paused");
+    void this.#logTaskEvent(
+      workspace,
+      "capture-incomplete",
+      "Capture did not complete after a reminder — task paused.",
+    );
+    this.#raiseTaskAlert(
+      workspace,
+      "failed",
+      "Context capture did not complete. Open Primary, finish CONTEXT.md/HANDOFF.md, then Continue.",
+    );
+    this.#broadcastState!();
+  }
+
+  /**
+   * Round-review gate for attached tasks: waits for WORK_LOCK absence (same
+   * completion signal as the standard flow), then checks VERIFICATION.md
+   * structurally/freshness — NEVER runs a project command (plan §8.4). A
+   * missing/invalid/stale record is a Primary-side protocol issue and is
+   * nudged directly; the Companion is never spawned for it.
+   */
+  async #evaluateCompanionRound(workspace: TaskWorkspaceState): Promise<void> {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+    if (this.#evaluating.has(workspaceId)) return;
+    this.#clearRateLimitCtx(workspaceId);
+    this.#evaluating.add(workspaceId);
+    try {
+      this.#setTaskState(task, "evaluating");
+      this.#broadcastState!();
+
+      const workLockGone = await this.isWorkerCompleted(workspaceId);
+      if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) return;
+      if (!workLockGone) {
+        // Primary hasn't signalled done yet — nothing to evaluate.
+        this.#setTaskState(task, "running");
+        this.#broadcastState!();
+        return;
+      }
+
+      const verification = await readVerificationRecord(workspace.cwd, task.taskId, {
+        expectedRound: task.currentRound,
+        sinceIso: task.companionLastFeedbackAt || null,
+      });
+      if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) return;
+
+      const structurallyBad =
+        verification.status === "missing" || verification.status === "invalid" || verification.status === "stale";
+      if (structurallyBad && !task.verificationNotRequired) {
+        await this.#recreateWorkLock(workspace, "verification-gate");
+        const nudge = buildVerificationNudgePrompt(task, verification);
+        await this.#injectPrompt(sessionIdFor(workspace, "worker"), nudge, workspace);
+        this.#setTaskState(task, "running");
+        log.info("attached task: verification record not ready, nudged Primary", {
+          workspaceId,
+          status: verification.status,
+        });
+        void this.#logTaskEvent(
+          workspace,
+          "verification-missing",
+          `VERIFICATION.md is ${verification.status} — asked Primary to record it before the next companion review.`,
+        );
+        this.#broadcastState!();
+        return;
+      }
+
+      await this.#requestCompanionEvaluation(workspace, "round-review", structurallyBad ? null : verification);
+    } finally {
+      this.#evaluating.delete(workspaceId);
+    }
+  }
+
+  /** IDs of every blocking finding ever raised for this task, across rounds —
+   * used so the Companion prompt can require RESOLVED/STILL OPEN/REOPENED
+   * tracking rather than losing history each round (plan §4.15). */
+  #collectPreviousCompanionFindingIds(task: RuntimeTaskState): string[] {
+    const rounds = (task.rounds as unknown as TaskRound[]) || [];
+    const ids = new Set<string>();
+    for (const r of rounds) {
+      const list = r.companionFindingIds as string[] | undefined;
+      if (Array.isArray(list)) for (const id of list) ids.add(id);
+    }
+    return [...ids];
+  }
+
+  /**
+   * The identity a verdict on disk must carry to count as the answer to the
+   * evaluation currently in flight. role/phase/round are not enough on their
+   * own — a `needs-input` answer and a withheld completion both re-evaluate the
+   * same phase and round — so the attempt counter is part of it. Every
+   * readCompanionVerdict call site goes through here so they can never disagree.
+   */
+  #companionVerdictExpectation(task: RuntimeTaskState): {
+    role: string;
+    phase: string;
+    round: number;
+    evaluationAttempt?: number;
+  } {
+    return {
+      role: task.companionRole || "reviewer",
+      phase: task.companionPhase || "baseline",
+      round: task.currentRound || 1,
+      evaluationAttempt: task.companionEvaluationAttempt,
+    };
+  }
+
+  /**
+   * Has the verdict for the evaluation currently in flight already been
+   * processed? Used by the watcher backstop to decide whether a verdict file it
+   * found still needs handling.
+   */
+  #companionVerdictAlreadyHandled(task: RuntimeTaskState): boolean {
+    const attempt = task.companionEvaluationAttempt;
+    if (attempt === undefined) {
+      // Mid-evaluation when the task was upgraded: no attempt was ever handed
+      // out, so the round chip's verdict is the only marker that exists.
+      const rounds = task.rounds as unknown as TaskRound[];
+      return Boolean(rounds?.[rounds.length - 1]?.judgeVerdict);
+    }
+    return task.companionVerdictHandledAttempt === attempt;
+  }
+
+  /** Build + inject the Companion evaluation prompt and move to judge-evaluating. */
+  async #requestCompanionEvaluation(
+    workspace: TaskWorkspaceState,
+    phase: "baseline" | "round-review" | "recovery",
+    verification: VerificationRecord | null,
+  ): Promise<void> {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+    const round = task.currentRound || 1;
+    // New evaluation identity. Bumped before the prompt is built so the number
+    // the Companion is told to echo is the one every later read expects, and
+    // the previous attempt's handled marker no longer matches.
+    const evaluationAttempt = (task.companionEvaluationAttempt || 0) + 1;
+
+    // TASK.md is re-read on EVERY evaluation: an attached task's in-memory
+    // description is always empty, and manual brief edits / appended user
+    // clarifications only ever land on disk. A cached copy would quote an
+    // empty brief to the evaluator.
+    const [gitContext, captured, taskMd] = await Promise.all([
+      getGitContext(workspace.cwd, { execCommand, log }),
+      readCaptureFiles(workspace.cwd, task.taskId),
+      readTaskMd(workspace.cwd, task.taskId),
+    ]);
+    const previousFindingIds = this.#collectPreviousCompanionFindingIds(task);
+
+    const prompt = await buildCompanionPrompt({
+      task,
+      phase,
+      round,
+      evaluationAttempt,
+      taskMd,
+      contextMd: captured.contextMd,
+      handoffMd: captured.handoffMd,
+      gitContext,
+      cwd: workspace.cwd,
+      verification,
+      previousFindingIds,
+    });
+
+    // Evidence ledger for the completion floor: record what this evaluation was
+    // actually given, so the verdict's verificationReview can be checked against
+    // reality instead of taken at its word (see #handleCompanionVerdict).
+    task.companionEvidence = verification
+      ? { status: verification.status, mtimeIso: verification.mtimeIso, round: verification.round }
+      : { status: "not-provided", mtimeIso: null, round: null };
+
+    const judgeSessionId = sessionIdFor(workspace, "judge");
+    task.judgeNudged = false;
+    task.companionPhase = phase;
+    task.companionEvaluationAttempt = evaluationAttempt;
+    task.companionVerdictHandledAttempt = undefined;
+    await clearVerdict(workspace.cwd, task.taskId);
+    await this.#clearSessionContext(judgeSessionId, workspace);
+    await this.#injectPrompt(judgeSessionId, prompt, workspace);
+    this.#setTaskState(task, "judge-evaluating");
+    log.info("companion evaluation requested", { workspaceId, phase, round, evaluationAttempt });
+    void this.#logTaskEvent(
+      workspace,
+      "companion-requested",
+      `${phase} evaluation requested (round ${round}, attempt ${evaluationAttempt}).`,
+    );
+    this.#broadcastState!();
+  }
+
+  /** Attached counterpart to #handleJudgeVerdict — mode-aware parser, third
+   * "needs-input" outcome, and Companion-specific feedback prompt. */
+  async #handleCompanionVerdict(workspace: TaskWorkspaceState, source = "manual"): Promise<void> {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+    const judgeSessionId = sessionIdFor(workspace, "judge");
+    const isIdlePromptOnly = source.includes("idle_prompt") || source.includes("notification");
+    const round = task.currentRound || 1;
+    const phase = task.companionPhase || "baseline";
+    const role = task.companionRole || "reviewer";
+    const expected = this.#companionVerdictExpectation(task);
+    // Only mentioned to the Companion when the runner actually tracks one, so a
+    // task upgraded mid-evaluation never asks for a number it never handed out.
+    const identity =
+      expected.evaluationAttempt === undefined
+        ? `role "${role}", phase "${phase}", round ${round}`
+        : `role "${role}", phase "${phase}", round ${round}, evaluationAttempt ${expected.evaluationAttempt}`;
+
+    // Concurrency guard. The `task.state !== "judge-evaluating"` check below
+    // only rejects a SECOND handler that starts after the first one finished —
+    // one that starts while the first is still awaiting disk sees the state
+    // unchanged, and both go on to inject feedback and bump currentRound.
+    //
+    // Re-entry that UPGRADES the signal is coalesced rather than dropped: a
+    // pass started by idle_prompt/notification is not a turn boundary and
+    // returns without nudging, so discarding the hook:stop behind it leaves
+    // the task in judge-evaluating with no event left to come. A re-entry of
+    // equal authority is still dropped — replaying a second hook:stop behind
+    // the nudge the first one just sent reads as "still nothing after the
+    // nudge" and would pause the task on its own duplicate.
+    const inFlightIdleOnly = this.#handlingCompanionVerdict.get(workspaceId);
+    if (inFlightIdleOnly !== undefined) {
+      const upgrade = inFlightIdleOnly && !isIdlePromptOnly;
+      if (upgrade) this.#pendingCompanionVerdict.set(workspaceId, source);
+      log.debug("handleCompanionVerdict already in flight — coalescing re-entry", {
+        workspaceId,
+        source,
+        queued: upgrade,
+      });
+      return;
+    }
+    this.#handlingCompanionVerdict.set(workspaceId, isIdlePromptOnly);
+
+    try {
+      const result = await readCompanionVerdict(workspace.cwd, task.taskId, expected, log);
+
+      if (result.status === "missing") {
+        if (isIdlePromptOnly) return;
+        if (!task.judgeNudged) {
+          task.judgeNudged = true;
+          const dir = taskDirRel(task.taskId);
+          const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} now — a schemaVersion 1 JSON object with ${identity}. Write the file now.`;
+          await this.#injectPrompt(judgeSessionId, nudge, workspace);
+          void this.#logTaskEvent(
+            workspace,
+            "companion-nudged",
+            "Verdict file missing — reminded Companion to write it.",
+          );
+          this.#broadcastState!();
+          return;
+        }
+        if (this.#isSessionBusy?.(judgeSessionId)) return;
+        log.warn("companion verdict file missing after nudge", { workspaceId, round });
+        task.pausedFromState = "judge-evaluating";
+        this.#setTaskState(task, "paused");
+        void this.#logTaskEvent(
+          workspace,
+          "companion-give-up",
+          "Companion produced no verdict after nudge + Stop — pausing.",
+        );
+        this.#raiseTaskAlert(workspace, "failed", "Companion did not produce a verdict file");
+        this.#broadcastState!();
+        return;
+      }
+
+      if (result.status === "invalid" || result.status === "stale") {
+        if (isIdlePromptOnly) return;
+        if (!task.judgeNudged) {
+          task.judgeNudged = true;
+          const dir = taskDirRel(task.taskId);
+          const detail =
+            result.status === "invalid"
+              ? `Your verdict file is malformed: ${result.errors.join("; ") || "schema validation failed"}.`
+              : `Your verdict file is for a different evaluation than the one requested (expected ${identity}).`;
+          const nudge = `${detail} Rewrite ${dir}/${VERDICT_FILE} as a single valid schemaVersion 1 JSON object matching exactly ${identity}, then stop.`;
+          await this.#injectPrompt(judgeSessionId, nudge, workspace);
+          void this.#logTaskEvent(
+            workspace,
+            "companion-verdict-repair",
+            `Verdict ${result.status} — asked Companion to rewrite it.`,
+          );
+          this.#broadcastState!();
+          return;
+        }
+        if (this.#isSessionBusy?.(judgeSessionId)) return;
+        log.warn("companion verdict remained invalid/stale after repair request", {
+          workspaceId,
+          status: result.status,
+        });
+        task.pausedFromState = "judge-evaluating";
+        this.#setTaskState(task, "paused");
+        void this.#logTaskEvent(
+          workspace,
+          "companion-give-up",
+          `Companion verdict remained ${result.status} after a repair request — pausing.`,
+        );
+        this.#raiseTaskAlert(workspace, "failed", `Companion verdict file is ${result.status}`);
+        this.#broadcastState!();
+        return;
+      }
+
+      // result.status === "valid"
+      const verdict = result.data as CompanionVerdict;
+      task.judgeNudged = false;
+      if (task.state !== "judge-evaluating") {
+        log.info("handleCompanionVerdict interrupted (state changed)", { workspaceId, taskState: task.state });
+        return;
+      }
+
+      // Handled marker for the watcher backstop. Set here, where the verdict is
+      // committed to, and NOT derived from lastRound.judgeVerdict below: that
+      // field survives from the previous evaluation of the same round, so it
+      // cannot distinguish "already processed" from "second evaluation of this
+      // round, verdict still unread".
+      task.companionVerdictHandledAttempt = task.companionEvaluationAttempt;
+
+      const rounds = task.rounds as unknown as TaskRound[];
+      const lastRound = rounds[rounds.length - 1];
+      if (lastRound) {
+        lastRound.judgeVerdict = verdict.verdict;
+        lastRound.judgeReason = verdict.reason;
+        lastRound.companionFindingIds = verdict.blockingFindings.map((f) => f.id);
+      }
+      // Anti-loop UX signal (plan §4.15): a blocker ID showing up in 3+ rounds
+      // without being fixed gets a "Pause and review" hint on the Dashboard.
+      // Purely advisory — the runner itself never auto-pauses or changes the
+      // verdict because of this.
+      const repeatCounts = new Map<string, number>();
+      for (const r of rounds) {
+        for (const id of new Set((r.companionFindingIds as string[] | undefined) || [])) {
+          repeatCounts.set(id, (repeatCounts.get(id) || 0) + 1);
+        }
+      }
+      task.repeatedBlockingFindingIds = [...repeatCounts.entries()].filter(([, count]) => count >= 3).map(([id]) => id);
+      // Kept purely for Dashboard rendering (structured report, verification
+      // card, role-specific summary) — never consulted by control flow, which
+      // always re-reads verdict.json from disk.
+      task.lastCompanionVerdict = verdict;
+      log.info("companion verdict", { workspaceId, verdict: verdict.verdict, role, round });
+      void this.#logTaskEvent(workspace, "companion-verdict", `Verdict: ${verdict.verdict}. ${verdict.reason}`);
+
+      // Scoped to the NEXT round only (see the field's doc comment): re-derived
+      // from every verdict rather than latched. Latching it on "not-required"
+      // and clearing it only on "fresh" meant one such verdict disabled the
+      // verification gate for the rest of the task — and because the gate is
+      // what nudges Primary to produce a record, nothing could ever flip it
+      // back to "fresh" on its own.
+      task.verificationNotRequired = verdict.verificationReview.recordStatus === "not-required";
+
+      const roleLabel = COMPANION_ROLE_DISPLAY_NAMES[role];
+
+      // Completion floor, runtime half. The schema half only constrains what
+      // the Companion *claims* in verificationReview.recordStatus — a baseline
+      // is handed no record at all, so "fresh" there could be pure assertion.
+      // Sign-off has to match the record the runner actually read from disk.
+      const observedEvidence = task.companionEvidence?.status || "not-provided";
+      if (
+        verdict.verdict === "complete" &&
+        COMPLETION_REQUIRES_FRESH_VERIFICATION.has(role) &&
+        observedEvidence !== "fresh"
+      ) {
+        await this.#demandCompletionEvidence(workspace, verdict, observedEvidence);
+        return;
+      }
+
+      if (verdict.verdict === "complete") {
+        this.#setTaskState(task, "completed");
+        if (lastRound) lastRound.action = "completed";
+        log.info("attached task completed by companion verdict", { workspaceId, rounds: task.currentRound });
+        void this.#logTaskEvent(workspace, "task-completed", verdict.reason);
+        this.#raiseTaskAlert(workspace, "completed", `${roleLabel}: ${verdict.reason}`);
+        this.#broadcastState!();
+        return;
+      }
+
+      if (verdict.verdict === "needs-input") {
+        task.pendingQuestions = verdict.questions.map((q) => ({
+          id: q.id,
+          question: q.question,
+          whyNeeded: q.whyNeeded,
+          options: q.options,
+        }));
+        this.#setTaskState(task, "awaiting-user");
+        if (lastRound) lastRound.action = "needs-input";
+        void this.#logTaskEvent(workspace, "companion-needs-input", verdict.reason);
+        this.#raiseTaskAlert(workspace, "failed", `${roleLabel} needs your input: ${verdict.reason}`);
+        this.#broadcastState!();
+        return;
+      }
+
+      // "continue"
+      if (verdict.reason) task.lastJudgeInstructions = verdict.reason;
+      if (task.currentRound >= task.maxRounds) {
+        this.#setTaskState(task, "failed");
+        if (lastRound) lastRound.action = "failed";
+        log.info("attached task failed: max rounds after companion review", { workspaceId, rounds: task.currentRound });
+        void this.#logTaskEvent(workspace, "task-failed", `Max rounds after companion review. ${verdict.reason}`);
+        this.#raiseTaskAlert(
+          workspace,
+          "failed",
+          `Max rounds reached. ${roleLabel}: ${verdict.reason || "incomplete"}`,
+        );
+        this.#broadcastState!();
+        return;
+      }
+
+      await this.#recreateWorkLock(workspace, "companionVerdict-continue");
+      // Template first, baseline second: the baseline is what the next
+      // round-review compares the record's mtime against, and a template
+      // written after it would beat it and pass as this round's evidence.
+      await writeVerificationTemplate(workspace.cwd, task.taskId, task.currentRound + 1, log);
+      task.companionLastFeedbackAt = new Date().toISOString();
+      const feedbackPrompt = buildCompanionFeedbackPrompt(task, verdict);
+      const workerSessionId = sessionIdFor(workspace, "worker");
+      // The Primary session is externally owned (plan §8.6) — unlike the
+      // standard worker path, it is NEVER cleared between rounds. Clearing it
+      // would wipe the user's live conversation, which the whole feature
+      // exists to preserve.
+      await this.#injectPrompt(workerSessionId, feedbackPrompt, workspace);
+      this.#setTaskState(task, "running");
+      if (lastRound) lastRound.action = "re-prompted";
+      task.currentRound += 1;
+      this.#ensureRunningRound(task);
+      log.info("primary re-prompted with companion feedback", { workspaceId, round: task.currentRound });
+      void this.#logTaskEvent(workspace, "primary-reprompted", `Companion feedback: ${verdict.reason}`);
+      this.#broadcastState!();
+    } catch (err: unknown) {
+      log.error("handleCompanionVerdict failed", { workspaceId, err: (err as Error)?.message });
+      task.pausedFromState = "judge-evaluating";
+      this.#setTaskState(task, "paused");
+      // The handled marker may already be set for this attempt (it is stamped
+      // before the mutations that can throw). Clear it so resuming re-runs the
+      // verdict instead of the watcher backstop reading it as done.
+      task.companionVerdictHandledAttempt = undefined;
+      void this.#logTaskEvent(
+        workspace,
+        "companion-error",
+        `Verdict handling failed: ${(err as Error)?.message || "unknown"}`,
+      );
+      this.#broadcastState!();
+    } finally {
+      this.#handlingCompanionVerdict.delete(workspaceId);
+      const pending = this.#pendingCompanionVerdict.get(workspaceId);
+      // Consumed unconditionally — a signal that is no longer relevant (the
+      // pass that just finished moved the task on) must not be replayed later.
+      if (pending) this.#pendingCompanionVerdict.delete(workspaceId);
+      if (pending && task.state === "judge-evaluating") {
+        log.debug("replaying coalesced companion idle signal", { workspaceId, source: pending });
+        // Caught here rather than left to the caller: this runs inside the
+        // finally of a pass that already reported its own outcome.
+        await this.#handleCompanionVerdict(workspace, pending).catch((err: unknown) => {
+          log.error("coalesced handleCompanionVerdict replay failed", {
+            workspaceId,
+            err: (err as Error)?.message,
+          });
+        });
+      }
+    }
+  }
+
+  /**
+   * A code-accepting role returned "complete", but the runner never handed
+   * that evaluation a fresh VERIFICATION.md — typically a baseline (no record
+   * exists yet) or a round the previous verdict declared "not-required".
+   *
+   * The review itself is kept: no blocking findings are invented and the round
+   * is NOT consumed, because this is a missing-evidence gap, not a defect. The
+   * Primary is asked to record the evidence for the CURRENT round; the next
+   * round-review then evaluates it and can legitimately complete.
+   */
+  async #demandCompletionEvidence(
+    workspace: TaskWorkspaceState,
+    verdict: CompanionVerdict,
+    observedEvidence: string,
+  ): Promise<void> {
+    const task = workspace.task;
+    const round = task.currentRound || 1;
+    const rounds = task.rounds as unknown as TaskRound[];
+    const lastRound = rounds?.[rounds.length - 1];
+    if (lastRound) lastRound.action = "verification-required";
+
+    await this.#recreateWorkLock(workspace, "completion-floor");
+    // Same round resumes, so the template must be tagged for the round we are
+    // staying in — same reasoning as the answerCompanionTask path. Written
+    // before the baseline is stamped so the template can never clear the very
+    // freshness gate this method exists to enforce.
+    await writeVerificationTemplate(workspace.cwd, task.taskId, round, log);
+    task.companionLastFeedbackAt = new Date().toISOString();
+    await this.#injectPrompt(
+      sessionIdFor(workspace, "worker"),
+      buildCompletionEvidencePrompt(task, verdict),
+      workspace,
+    );
+    this.#setTaskState(task, "running");
+
+    log.info("companion completion withheld: no fresh verification evidence", {
+      workspaceId: workspace.id,
+      role: verdict.role,
+      round,
+      observedEvidence,
+      claimedRecordStatus: verdict.verificationReview.recordStatus,
+    });
+    void this.#logTaskEvent(
+      workspace,
+      "completion-evidence-required",
+      `${COMPANION_ROLE_DISPLAY_NAMES[verdict.role]} returned "complete" claiming recordStatus "${verdict.verificationReview.recordStatus}", but the evaluation was given ${observedEvidence === "not-provided" ? "no verification record" : `a ${observedEvidence} verification record`}. Asked Primary to record evidence for round ${round}; the round was not consumed.`,
+    );
+    this.#broadcastState!();
+  }
+
+  /**
+   * Attached counterpart to #reconcileAfterResume — same priority ladder,
+   * adapted for the Companion verdict schema and the externally-owned
+   * Primary (no late-initial-prompt branch: the "initial prompt" for an
+   * attached task is the one-time capture prompt, handled by
+   * #startAttachedTask, not a resumable per-round send).
+   */
+  async #reconcileAttachedAfterResume(
+    workspace: TaskWorkspaceState,
+    { previousState, pausedFromState, resumeTo }: { previousState: string; pausedFromState: string; resumeTo: string },
+  ): Promise<void> {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+
+    if (task.showerResumePrompt) {
+      void this.#logTaskEvent(
+        workspace,
+        "task-resumed-reconcile",
+        "Recovery prompt pending — deferring to recovery idle path.",
+      );
+      return;
+    }
+
+    const round = task.currentRound || 1;
+    if (
+      task.state === "judge-evaluating" ||
+      resumeTo === "judge-evaluating" ||
+      pausedFromState === "judge-evaluating"
+    ) {
+      const result = await readCompanionVerdict(
+        workspace.cwd,
+        task.taskId,
+        this.#companionVerdictExpectation(task),
+        log,
+      );
+      if (result.status === "valid") {
+        if (task.state !== "judge-evaluating") this.#setTaskState(task, "judge-evaluating");
+        this.#broadcastState!();
+        await this.#handleCompanionVerdict(workspace, "resume-reconcile");
+        return;
+      }
+      task.judgeNudged = false;
+      if (task.state !== "judge-evaluating") this.#setTaskState(task, "judge-evaluating");
+      this.#broadcastState!();
+      const prompt = buildAttachedCompanionRecoveryPrompt(task, round);
+      await this.#injectPrompt(sessionIdFor(workspace, "judge"), prompt, workspace);
+      return;
+    }
+
+    if (previousState === "completed" || previousState === "failed" || previousState === "awaiting-user") {
+      void this.#logTaskEvent(workspace, "task-resumed-reconcile", `Resumed ${previousState}; awaiting user.`);
+      return;
+    }
+
+    if (task.state === "capturing-context") {
+      await this.#checkCaptureReadiness(workspace, sessionIdFor(workspace, "worker"));
+      return;
+    }
+
+    if (task.state === "running") {
+      await this.#evaluateCompanionRound(workspace);
+      return;
+    }
+    void this.#logTaskEvent(workspace, "task-resumed-reconcile", `Resumed to ${resumeTo}; nothing to reconcile.`);
+  }
+
+  /**
+   * Explicit answer action for an attached task in `awaiting-user`
+   * (plan §8.5). Appends the clarification to TASK.md as authoritative
+   * scope BEFORE injecting anything into Primary, then resumes the SAME
+   * round — a needs-input pause never consumes a round.
+   */
+  async answerCompanionTask(workspaceId: string, questionIds: string[], answer: string): Promise<boolean> {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+    const task = workspace.task;
+    if (task.mode !== "attached" || task.state !== "awaiting-user") {
+      log.warn("answerCompanionTask: task not awaiting-user", { workspaceId, state: task.state, mode: task.mode });
+      return false;
+    }
+    if (!this.#assertAttachedPrimaryAvailable(workspace, "Send decision")) return false;
+    const pending = task.pendingQuestions || [];
+    // All-or-nothing: answering resumes the round, and the Dashboard only ever
+    // renders questions in "awaiting-user", so a partially answered round would
+    // leave the rest pending with no surface left to answer them on. One answer
+    // covers the whole round's questions (which is also all the UI can send).
+    const answeredIds = new Set(questionIds);
+    const coversAll = pending.length > 0 && pending.every((q) => answeredIds.has(q.id));
+    if (!coversAll) {
+      log.warn("answerCompanionTask: answer does not cover every pending question", {
+        workspaceId,
+        questionIds,
+        pendingIds: pending.map((q) => q.id),
+      });
+      void this.#logTaskEvent(
+        workspace,
+        "companion-answer-rejected",
+        `An answer must address every open question of this round (${pending.map((q) => q.id).join(", ") || "none pending"}).`,
+      );
+      return false;
+    }
+    const trimmed = String(answer || "").trim();
+    if (!trimmed) return false;
+
+    const now = new Date().toISOString();
+    try {
+      await appendUserClarification(
+        workspace.cwd,
+        task.taskId,
+        { timestamp: now, questionIds: pending.map((q) => q.id), answer: trimmed },
+        log,
+      );
+    } catch (err: unknown) {
+      log.error("answerCompanionTask: failed to append clarification to TASK.md", {
+        workspaceId,
+        err: (err as Error)?.message,
+      });
+      return false;
+    }
+
+    // Same round resumes, so the Primary owes a verification record tagged for
+    // the CURRENT round — the "continue" path hands it a template for round+1,
+    // this one has to hand it a template for the round we're staying in, or the
+    // freshness gate would reject whatever is on disk and burn a nudge cycle.
+    // Template before baseline, so the template itself stays older than the
+    // baseline and can't pass as the record. Re-stamped here rather than reusing
+    // `now` (taken before the clarification was appended) for the same reason —
+    // a baseline older than the template it guards gates nothing.
+    await writeVerificationTemplate(workspace.cwd, task.taskId, task.currentRound || 1, log);
+    task.companionLastFeedbackAt = new Date().toISOString();
+    await this.#recreateWorkLock(workspace, "companion-answer");
+    const prompt = buildCompanionAnswerPrompt(task, pending, trimmed);
+    const workerSessionId = sessionIdFor(workspace, "worker");
+    try {
+      await this.#injectPrompt(workerSessionId, prompt, workspace);
+    } catch (err: unknown) {
+      // Everything that would strand the user is deferred until the Primary has
+      // actually received the answer: the questions stay pending and the task
+      // stays awaiting-user, so the Dashboard can retry. Re-answering is safe —
+      // appendUserClarification and #recreateWorkLock are both idempotent.
+      log.error("answerCompanionTask: failed to inject answer prompt", { workspaceId, err: (err as Error)?.message });
+      void this.#logTaskEvent(
+        workspace,
+        "companion-answer-failed",
+        "Could not deliver the answer to the Primary conversation — the question is still open, try again.",
+      );
+      this.#broadcastState!();
+      return false;
+    }
+    // Every question of this round was covered (checked above), so the queue is
+    // empty — cleared only after the Primary actually received the answer.
+    task.pendingQuestions = [];
+    const rounds = task.rounds as unknown as TaskRound[];
+    const lastRound = rounds?.[rounds.length - 1];
+    if (lastRound) lastRound.action = "user-answered";
+    this.#setTaskState(task, "running");
+    log.info("answerCompanionTask: answer injected, resuming same round", {
+      workspaceId,
+      round: task.currentRound,
+      answered: questionIds.length,
+    });
+    void this.#logTaskEvent(workspace, "user-clarification", `Answered: ${trimmed}`);
+    this.#broadcastState!();
+    return true;
+  }
+
   async #runProgrammaticCopilotJudge(workspace: TaskWorkspaceState, prompt: string): Promise<ExecResult> {
     const task = workspace.task;
     const promptPath = path.join(taskDir(workspace.cwd, task.taskId), COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE);
@@ -2856,7 +4425,7 @@ export class AgentTaskRunner {
    * Returns true when enough rounds have elapsed since last shower.
    */
   #shouldShower(task: RuntimeTaskState): boolean {
-    const interval = task.showerInterval || DEFAULT_SHOWER_INTERVAL;
+    const interval = task.showerInterval ?? DEFAULT_SHOWER_INTERVAL;
     if (interval <= 0) return false; // Disabled
     const roundsSinceShower = task.currentRound - (task.lastShowerRound || 0);
     return roundsSinceShower >= interval;
@@ -2879,7 +4448,7 @@ export class AgentTaskRunner {
   async #performShower(workspace: TaskWorkspaceState): Promise<boolean> {
     const task = workspace.task;
     const workspaceId = workspace.id;
-    const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+    const workerSessionId = sessionIdFor(workspace, "worker");
     const dir = taskDir(workspace.cwd, task.taskId);
     const relDir = taskDirRel(task.taskId);
 
@@ -3039,6 +4608,58 @@ Do NOT continue working on the task — only write the handoff summary.`;
   }
 
   /**
+   * Resolve a raw `${workspaceId}:${panelId}` session id to the task
+   * workspace/role that owns it. Every hook/lifecycle entry point that only
+   * receives a bare sessionId (onAgentIdle, onUserInput, onSessionExit,
+   * getIdleTimeout, rate-limit handlers) must go through this instead of
+   * re-deriving `#findTaskWorkspace(workspaceId)` + inline panelId
+   * comparisons — see plan §8.2 "Binding resolver".
+   *
+   * Standard tasks: identical fast path to the old inline logic (the session
+   * lives IN the task workspace it names). Attached tasks: the worker/
+   * "Primary" role lives in a DIFFERENT workspace than the one that owns the
+   * Companion loop, so a miss on the fast path falls back to scanning active
+   * attached task workspaces bound to this exact external session.
+   */
+  #resolveTaskBinding(sessionId: string): TaskBinding | null {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return null;
+    const workspaceId = parts.slice(0, -1).join(":");
+    const panelId = parts[parts.length - 1];
+
+    const direct = this.#findTaskWorkspace(workspaceId);
+    if (direct) {
+      const task = direct.task;
+      if (panelId === task.judgePanelId) return { workspace: direct, task, role: "judge" };
+      if (task.mode !== "attached" && panelId === task.workerPanelId) {
+        return { workspace: direct, task, role: "worker" };
+      }
+      return null;
+    }
+
+    const state = this.#getState?.();
+    if (!state) return null;
+    const candidates: TaskWorkspaceState[] = [];
+    for (const w of state.workspaces) {
+      if (!isTaskWorkspace(w)) continue;
+      if (w.task.mode !== "attached") continue;
+      if (w.task.workerWorkspaceId !== workspaceId) continue;
+      if (w.task.workerPanelId !== panelId) continue;
+      candidates.push(w);
+    }
+    if (candidates.length === 0) return null;
+    // Creation-time guard (createCompanionTask) prevents more than one active
+    // binding per source session; if a stale/terminal duplicate still exists
+    // on disk, prefer the most recently created active one so a lookup never
+    // silently picks an already-finished companion loop.
+    const active = candidates.filter((w) => w.task.state !== "completed" && w.task.state !== "failed");
+    const pool = active.length > 0 ? active : candidates;
+    pool.sort((a, b) => (b.task.createdAt || "").localeCompare(a.task.createdAt || ""));
+    const chosen = pool[0]!;
+    return { workspace: chosen, task: chosen.task, role: "worker" };
+  }
+
+  /**
    * Send /clear to an agent session to reset its conversation context.
    * Returns a promise that resolves after a short delay to allow the
    * command to be processed before injecting the next prompt.
@@ -3077,7 +4698,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
 
     // Krok 9c — stamp the worker inject time so onAgentIdle can measure how long
     // the next worker turn lasts (the short-turn rate-limit heuristic).
-    if (workspace?.task && sessionId === `${workspace.id}:${workspace.task.workerPanelId}`) {
+    if (workspace?.task && sessionId === sessionIdFor(workspace, "worker")) {
       this.#workerInjectAt.set(workspace.id, Date.now());
     }
 
@@ -3340,8 +4961,10 @@ Do NOT continue working on the task — only write the handoff summary.`;
     log.info("raising task alert", { workspaceId: workspace.id, kind, detail, urgency });
     this.#raiseAlert({
       projectId: workspace.id,
-      panelId: workspace.task.workerPanelId,
-      sessionId: `${workspace.id}:${workspace.task.workerPanelId}`,
+      panelId: task.workerPanelId,
+      // Attached-aware: the alert must point at wherever the Primary
+      // session actually lives, not always this task workspace's own id.
+      sessionId: sessionIdFor(workspace, "worker"),
       title: formatWorkspaceDisplayName(workspace),
       kind: kind === "completed" ? "completed" : "waiting",
       tier: 1,

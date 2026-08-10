@@ -2005,6 +2005,57 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
     }
   }, 25000);
 
+  // showerInterval: 0 must truly disable shower mode. `0 || DEFAULT_SHOWER_INTERVAL`
+  // silently falls back to the default (0 is falsy), so a round count that clears
+  // the default threshold would wrongly trigger a shower even though the task
+  // explicitly disabled it (this is what attached/Companion tasks rely on).
+  test("showerInterval: 0 disables shower mode even past the default threshold", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-shower-disabled-"));
+    const runner = new AgentTaskRunner();
+    try {
+      const ws = runner.createTaskWorkspace({
+        state: {},
+        description: "Real task",
+        cwd: tmp,
+        parentWorkspaceId: "",
+        maxRounds: 99,
+      });
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      // WORK_LOCK present → checks fail → re-prompt branch, which is where
+      // #shouldShower is consulted.
+      await fs.writeFile(path.join(dir, WORK_LOCK_FILE), "work remains", "utf8");
+
+      const deps = createMockDeps([ws]);
+      runner.init(deps);
+      ws.task.state = "running";
+      ws.task.promptSent = true;
+      // Default shower interval is 5; round 5 with lastShowerRound 0 would
+      // trigger a shower under the falsy-0 bug even though it's disabled here.
+      ws.task.currentRound = 5;
+      ws.task.showerInterval = 0;
+      ws.task.lastShowerRound = 0;
+
+      const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+      runner.onAgentIdle(workerSessionId, "hook:stop");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await waitFor(() => ws.task.state === "running" && (ws.task.rounds[0] as any)?.action === "running");
+
+      expect(ws.task.lastShowerRound || 0).toBe(0);
+      const events = await readTaskLogEvents(tmp, ws.task.taskId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(events.some((e: any) => e.event === "shower-started")).toBe(false);
+      const reprompt = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .filter((w: any) => w.sessionId === workerSessionId)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((w: any) => w.data)
+        .join("");
+      expect(reprompt).not.toContain("SHOWER_REQUEST");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   // Krok 12 — judge-requested → pause → resume must reactivate the same-round chip,
   // not push a duplicate (the "ROUNDS 1 1" bug).
   test("ensureRunningRound reactivates the same-round chip after pause/resume (no duplicate)", async () => {

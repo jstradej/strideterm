@@ -413,6 +413,18 @@
   white-space: nowrap;
 }
 
+/* Companion loop badge on the source Primary's tab doubles as "Back to
+   <Role> loop" (plan §9.1) — underline on hover signals it's clickable,
+   distinct from the plain informational badge above. */
+.tab__task-badge--linked {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+.tab__task-badge--linked:hover {
+  background: rgba(var(--tint), 0.22);
+}
+
 .tab--dragging {
   opacity: 0.4;
 }

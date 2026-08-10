@@ -133,6 +133,94 @@ describe("TabStrip", () => {
     expect(wrapper.find(".tab__attention").exists()).toBe(true);
   });
 
+  test("shows a role-aware linked badge on the Primary tab when a companion loop is attached to it", () => {
+    const store = useAppStore();
+    const payload = makePayload([{ id: "ws1:shell", title: "Claude Code" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload.appState as any).workspaces.push({
+      id: "ws-companion",
+      kind: "task",
+      parentWorkspaceId: "ws1",
+      profileId: "default",
+      panels: [],
+      task: {
+        mode: "attached",
+        workerWorkspaceId: "ws1",
+        workerPanelId: "shell",
+        companionRole: "planner",
+        state: "running",
+        currentRound: 2,
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload as any).taskRunner = { "ws-companion": { state: "running", currentRound: 2 } };
+    store.payload = payload;
+    const wrapper = mount(TabStrip);
+    expect(wrapper.find(".tab__task-badge").text()).toBe("Plan R2");
+  });
+
+  test("clicking the linked companion badge jumps to the companion loop instead of just activating the tab", async () => {
+    const store = useAppStore();
+    const payload = makePayload([{ id: "ws1:shell", title: "Claude Code" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload.appState as any).workspaces.push({
+      id: "ws-companion",
+      kind: "task",
+      parentWorkspaceId: "ws1",
+      profileId: "default",
+      panels: [],
+      task: {
+        mode: "attached",
+        workerWorkspaceId: "ws1",
+        workerPanelId: "shell",
+        companionRole: "planner",
+        state: "running",
+        currentRound: 2,
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload as any).taskRunner = { "ws-companion": { state: "running", currentRound: 2 } };
+    store.payload = payload;
+    store.activateWorkspace = vi.fn(async () => {});
+    store.activateView = vi.fn(async () => {});
+    const wrapper = mount(TabStrip);
+
+    const badge = wrapper.find(".tab__task-badge--linked");
+    expect(badge.exists()).toBe(true);
+    expect(badge.attributes("title")).toContain("Back to Plan loop");
+    await badge.trigger("click");
+    await flushPromises();
+
+    expect(store.activateWorkspace).toHaveBeenCalledWith("ws-companion");
+    // Clicking the badge must not also activate the underlying tab (the
+    // click is stopped before it bubbles to the tab's own handler).
+    expect(store.activateView).not.toHaveBeenCalled();
+  });
+
+  test("shows 'Waiting for you' on the Primary tab while its companion loop is awaiting-user", () => {
+    const store = useAppStore();
+    const payload = makePayload([{ id: "ws1:shell", title: "Claude Code" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload.appState as any).workspaces.push({
+      id: "ws-companion",
+      kind: "task",
+      parentWorkspaceId: "ws1",
+      profileId: "default",
+      panels: [],
+      task: {
+        mode: "attached",
+        workerWorkspaceId: "ws1",
+        workerPanelId: "shell",
+        companionRole: "reviewer",
+        state: "awaiting-user",
+        currentRound: 1,
+      },
+    });
+    store.payload = payload;
+    const wrapper = mount(TabStrip);
+    expect(wrapper.find(".tab__task-badge").text()).toBe("Waiting for you");
+  });
+
   test("clicking a tab that fails to activate surfaces an error toast instead of an unhandled rejection", async () => {
     const store = useAppStore();
     store.payload = makePayload([{ id: "ws1:shell", title: "Shell" }]);

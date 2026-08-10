@@ -27,6 +27,60 @@ describe("ContextMenu", () => {
     wrapper.unmount();
   });
 
+  test("offers 'Add companion agent…' for a real terminal panel and passes the exact sourceSessionId", async () => {
+    const store = useAppStore();
+    store.getPanelByViewId = ((viewId: string) => {
+      if (viewId !== "ws1:shell") return null;
+      return { workspace: { id: "ws1", kind: "manual" }, panel: { id: "shell", command: "claude" } };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    const spy = { called: false, arg: "" };
+    store.openCompanionAgentDialog = (id: string) => {
+      spy.called = true;
+      spy.arg = id;
+    };
+    store.contextMenu = { viewId: "ws1:shell", x: 0, y: 0 };
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const menu = document.querySelector(".context-menu") as Element;
+    const btn = Array.from(menu.querySelectorAll("button")).find((b) => b.textContent?.includes("Add companion agent"));
+    expect(btn).toBeDefined();
+    (btn as HTMLElement).click();
+    await wrapper.vm.$nextTick();
+    expect(spy.called).toBe(true);
+    expect(spy.arg).toBe("ws1:shell");
+    wrapper.unmount();
+  });
+
+  test("does not offer 'Add companion agent…' for an SSH panel", () => {
+    const store = useAppStore();
+    store.getPanelByViewId = ((viewId: string) => {
+      if (viewId !== "ws1:ssh") return null;
+      return { workspace: { id: "ws1", kind: "manual" }, panel: { id: "ssh", launch: { kind: "ssh" } } };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    store.contextMenu = { viewId: "ws1:ssh", x: 0, y: 0 };
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const menu = document.querySelector(".context-menu") as Element;
+    const text = menu.textContent || "";
+    expect(text).not.toContain("Add companion agent");
+    wrapper.unmount();
+  });
+
+  test("does not offer 'Add companion agent…' inside a task workspace's own panels", () => {
+    const store = useAppStore();
+    store.getPanelByViewId = ((viewId: string) => {
+      if (viewId !== "ws-task:judge") return null;
+      return { workspace: { id: "ws-task", kind: "task" }, panel: { id: "judge", command: "claude" } };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    store.contextMenu = { viewId: "ws-task:judge", x: 0, y: 0 };
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const menu = document.querySelector(".context-menu") as Element;
+    const text = menu.textContent || "";
+    expect(text).not.toContain("Add companion agent");
+    wrapper.unmount();
+  });
+
   test("renders group actions when tab is in split group", () => {
     const store = useAppStore();
     store.contextMenu = { viewId: "term:1", x: 50, y: 50 };

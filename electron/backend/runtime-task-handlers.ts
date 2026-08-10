@@ -1,7 +1,12 @@
 import { getAllProviders } from "./providers/provider-registry.js";
 import { findWorkspace } from "./runtime-utils.js";
-import { buildRecoveryPrompt } from "./agent-task-prompts.js";
+import {
+  buildRecoveryPrompt,
+  buildAttachedPrimaryRecoveryPrompt,
+  buildAttachedCompanionRecoveryPrompt,
+} from "./agent-task-prompts.js";
 import { updateTaskDescriptionFile } from "./agent-task-files.js";
+import { sessionIdFor } from "./agent-task-runner.js";
 import type { Logger } from "./logger.js";
 import type { AppState, RecoveryCandidate } from "../shared/types/state.js";
 
@@ -389,6 +394,132 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
     },
 
     /**
+     * Attach a Companion (Reviewer/Planner/Consultant/Critic) to an existing
+     * live conversation — plan §8.1. Every authoritative input (source
+     * workspace/panel, effective cwd, parent, profile) is derived from
+     * `sourceSessionId` server-side; the client cannot supply its own cwd or
+     * profile. Creates a new "attached" task workspace with only a Dashboard
+     * + Companion panel — the Primary keeps living in its own workspace.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async createCompanionTask(config: any, windowId?: string) {
+      const state = getState();
+      const sourceSessionId = String(config.sourceSessionId || "");
+      const parts = sourceSessionId.split(":");
+      if (parts.length < 2) {
+        throw new Error('createCompanionTask: sourceSessionId must be "<workspaceId>:<panelId>"');
+      }
+      const sourceWorkspaceId = parts.slice(0, -1).join(":");
+      const sourcePanelId = parts[parts.length - 1];
+
+      // Cross-profile refusal before anything else touches disk/state.
+      assertWorkspaceInViewerProfile(sourceWorkspaceId, windowId);
+
+      const sourceWorkspace = findWorkspace(state, sourceWorkspaceId);
+      if (!sourceWorkspace) {
+        throw new Error("The source conversation's workspace no longer exists.");
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sourcePanel = (sourceWorkspace.panels || []).find((p: any) => p.id === sourcePanelId);
+      if (!sourcePanel) {
+        throw new Error("The source conversation's panel no longer exists.");
+      }
+      // Prefer a genuinely live session over a merely persistent panel — an
+      // "existing conversation" that isn't currently running can't receive
+      // the capture prompt at all.
+      if (!sessions.hasSession(sourceSessionId)) {
+        throw new Error("The Primary conversation isn't currently running. Open it and try again.");
+      }
+
+      // Never silently accept a permission-bypass Judge — the attached Judge
+      // is always inspect-only (plan §3.2/§10). Reject with a clear error
+      // rather than quietly stripping the flag, so a client bug surfaces.
+      if (config.companionProvider?.skipPermissions === true) {
+        throw new Error("The attached Judge can never run with skipPermissions — it is always inspect-only.");
+      }
+
+      const effectiveCwd = sourcePanel.cwd || sourceWorkspace.cwd;
+      const callerProfileId = resolveCallerProfileId(state, windowId, sourceWorkspaceId);
+      // Same profile-aware same-cwd guard the standard create path uses.
+      assertNoConflictingActiveTask(state, effectiveCwd, callerProfileId);
+
+      // Refuse a second active companion loop over the same source session.
+      const duplicate = state.workspaces.find(
+        (w) =>
+          w.kind === "task" &&
+          w.task?.mode === "attached" &&
+          w.task.workerWorkspaceId === sourceWorkspaceId &&
+          w.task.workerPanelId === sourcePanelId &&
+          w.task.state !== "completed" &&
+          w.task.state !== "failed",
+      );
+      if (duplicate) {
+        throw new Error(`A companion loop ("${duplicate.name}") is already attached to this conversation.`);
+      }
+
+      const workspace = taskRunner.createCompanionTaskWorkspace({
+        state,
+        workerWorkspaceId: sourceWorkspaceId,
+        workerPanelId: sourcePanelId,
+        primaryProvider: config.primaryProvider || null,
+        companionRole: config.companionRole,
+        companionProvider: { ...config.companionProvider, skipPermissions: false },
+        focus: config.focus,
+        maxRounds: config.maxRounds,
+        callerProfileId,
+      });
+
+      try {
+        await taskRunner.writeCompanionFiles(workspace.cwd, workspace.task);
+      } catch (err) {
+        log.error("createCompanionTask: failed to write initial companion files", {
+          workspaceId: workspace.id,
+          cwd: workspace.cwd,
+          err: (err as Error).message,
+        });
+        throw new Error(`Failed to create companion task files: ${(err as Error).message}`, { cause: err });
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (this as any).saveWorkspace(workspace);
+
+      if (config.activate !== false) {
+        if (windowId) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await (this as any).activateWorkspaceInWindow(workspace.id, windowId);
+          } catch (err) {
+            log.info("createCompanionTask: skipping slot activation (cross-profile)", {
+              workspaceId: workspace.id,
+              windowId,
+              err: (err as Error).message,
+            });
+            broadcastState();
+          }
+        } else {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (this as any).activateWorkspace(workspace.id);
+        }
+      } else {
+        broadcastState();
+      }
+
+      return { workspaceId: workspace.id, payload: getPayload() };
+    },
+
+    /**
+     * Explicit answer action for a `needs-input` companion verdict — the
+     * only legitimate way out of `awaiting-user` besides Pause/Reset (plan
+     * §8.5). Never a plain Continue, which would bypass the question.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async answerCompanionTask(workspaceId: any, questionIds: any, answer: any, windowId?: string) {
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
+      const ids = Array.isArray(questionIds) ? questionIds.map(String) : [];
+      const result = await taskRunner.answerCompanionTask(String(workspaceId), ids, String(answer || ""));
+      return { ok: result, payload: getPayload() };
+    },
+
+    /**
      * Apply the user's per-task recovery decisions, collected by the dialog
      * (or auto-generated when the dialog is suppressed; see setImmediate at
      * the end of createRuntime).
@@ -430,15 +561,78 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
           // pausedFromState was set by #reconcileOnStartup, so resumeTask
           // resumes to the correct role (worker or judge-evaluating).
           const role = candidate.previousState === "judge-evaluating" ? "judge" : "worker";
+
+          const state = getState();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ws = state.workspaces.find((w: any) => w.id === workspaceId) as any;
+
+          if (ws?.task?.mode === "attached") {
+            const attachedTask = ws.task;
+            // Attached tasks never blindly respawn the externally-owned
+            // Primary as if it were a fresh/unrelated panel (plan §8.7 step
+            // 5) — they re-spawn the SAME existing source panel only after
+            // confirming it (and its workspace) still exist.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sourceWs = state.workspaces.find((w: any) => w.id === attachedTask.workerWorkspaceId);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sourcePanelExists = (sourceWs?.panels || []).some((p: any) => p.id === attachedTask.workerPanelId);
+            if (!sourceWs || !sourcePanelExists) {
+              log.warn("resolveTaskRecovery: attached task's source panel no longer exists", { workspaceId });
+              await store.mutate((draft: AppState) => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const dws = draft.workspaces.find((w: any) => w.id === workspaceId);
+                if (dws?.task) dws.task.pausedFromState = candidate.previousState;
+              });
+              // Leave it paused with an actionable, truthful error instead of
+              // guessing — "Primary conversation no longer exists".
+              taskRunner.markAttachedSourceMissing(workspaceId);
+              continue;
+            }
+
+            const attachedPrompt =
+              role === "worker"
+                ? buildAttachedPrimaryRecoveryPrompt(attachedTask, candidate.currentRound)
+                : buildAttachedCompanionRecoveryPrompt(attachedTask, candidate.currentRound);
+
+            await store.mutate((draft: AppState) => {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const dws = draft.workspaces.find((w: any) => w.id === workspaceId);
+              if (dws?.task) dws.task.showerResumePrompt = attachedPrompt;
+            });
+
+            const ok = taskRunner.resumeTask(workspaceId);
+            if (!ok) log.warn("resolveTaskRecovery: resumeTask returned false (attached)", { workspaceId });
+
+            // Only the role that was actually mid-flight needs a fresh PTY:
+            // the Companion panel belongs to this task workspace and is
+            // always safe to re-spawn; the Primary panel is re-spawned only
+            // because it's the SAME pre-existing source panel, not a new one.
+            const idleSessionId = sessionIdFor(ws, role);
+            await sessions.ensureSession(state, idleSessionId).catch((err: unknown) => {
+              log.warn("resolveTaskRecovery: ensureSession (attached) failed", {
+                workspaceId,
+                role,
+                err: (err as Error).message,
+              });
+            });
+            setTimeout(() => {
+              try {
+                taskRunner.onAgentIdle(idleSessionId, "recovery-deferred");
+              } catch (err) {
+                log.warn("resolveTaskRecovery: deferred onAgentIdle (attached) threw", {
+                  workspaceId,
+                  err: (err as Error).message,
+                });
+              }
+            }, 5000);
+            continue;
+          }
+
           const recoveryPrompt = buildRecoveryPrompt({
             role,
             round: candidate.currentRound,
             taskId: candidate.taskId,
           });
-
-          const state = getState();
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const ws = state.workspaces.find((w: any) => w.id === workspaceId);
 
           // Stash the recovery prompt on the task. We reuse `showerResumePrompt`
           // (originally added for the periodic "fresh-context shower" feature)

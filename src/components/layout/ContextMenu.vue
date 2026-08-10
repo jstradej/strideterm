@@ -102,6 +102,16 @@
         <span class="context-menu__icon">&#x21BB;</span><span>Refresh {{ refreshLabel }}</span>
       </button>
 
+      <button
+        v-if="canAttachCompanion"
+        type="button"
+        class="context-menu__item"
+        title="Attach a Reviewer/Planner/Consultant/Critic companion to this live conversation without restarting it — the companion evaluates the work already discussed here."
+        @click="onAddCompanionAgent"
+      >
+        <span class="context-menu__icon">&#x1F916;</span><span>Add companion agent…</span>
+      </button>
+
       <template v-if="canClose">
         <div class="context-menu__divider"></div>
         <button
@@ -244,6 +254,19 @@ const refreshLabel = computed(() => {
     github: "GitHub",
   };
   return labels[refreshKind.value] || "";
+});
+
+// "Add companion agent…" — only for a real, addressable terminal panel that
+// isn't SSH and doesn't already belong to a task workspace (plan §3.1: "Akce
+// se nezobrazuje u SSH, systémových panelů a uvnitř běžícího task workspace").
+const currentWorkspaceKind = computed(() => {
+  const target = store.getPanelByViewId(viewId.value) as { workspace?: { kind?: string } } | undefined;
+  return target?.workspace?.kind || "";
+});
+const canAttachCompanion = computed(() => {
+  if (!isTerminal.value || isSshPanel.value) return false;
+  if (currentWorkspaceKind.value === "task") return false;
+  return hasPersistentPanel.value;
 });
 
 const inGroup = computed(() => Boolean(store.splitGroup?.viewIds.includes(viewId.value)));
@@ -473,6 +496,12 @@ function onDisbandGroup() {
 function onAddToGroup() {
   store.ctxAddToGroup(viewId.value);
   store.hideContextMenu();
+}
+
+function onAddCompanionAgent() {
+  const id = viewId.value;
+  store.hideContextMenu();
+  store.openCompanionAgentDialog(id);
 }
 
 useContextMenu({

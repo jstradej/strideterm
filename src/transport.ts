@@ -883,6 +883,8 @@ export function createRemoteTransport(): Transport {
     updateTaskDescription: (payload) => fetchJson("/api/task/update-description", payload),
     resolveTaskRecovery: (decisions) => fetchJson("/api/task-recovery/resolve", decisions),
     getTaskStatus: (workspaceId) => fetchJson("/api/task/status", { workspaceId }),
+    createCompanionTask: (payload) => fetchJson("/api/task/create-companion", payload),
+    answerCompanionTask: (payload) => fetchJson("/api/task/answer-companion", payload),
     getTerminalReplay: (sessionId) =>
       fetchJson("/api/terminal/replay", { sessionId }) as Promise<TerminalReplayPayload>,
     verifyAzureConnection: (connection) => fetchJson("/api/azure/verify-connection", { connection }),

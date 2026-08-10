@@ -433,6 +433,62 @@ describe("createDialogActions profile-aware saves", () => {
   });
 });
 
+describe("createDialogActions.openCompanionAgentDialog", () => {
+  it("opens CompanionAgentDialog with the exact sourceSessionId", () => {
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    const actions = createDialogActions(ctx);
+
+    actions.openCompanionAgentDialog("ws-source:panel-source");
+
+    expect(ctx.overlay.value).toBe("CompanionAgentDialog");
+    expect(ctx.overlayProps.value.sourceSessionId).toBe("ws-source:panel-source");
+  });
+
+  it("on submit: creates the companion task, then starts it, merging both payloads and closing the dialog", async () => {
+    const createCompanionTask = vi.fn(() =>
+      Promise.resolve({ workspaceId: "ws-companion", payload: { appState: { workspaces: [{ id: "ws-companion" }] } } }),
+    );
+    const startTask = vi.fn(() =>
+      Promise.resolve({ payload: { appState: { workspaces: [{ id: "ws-companion-started" }] } } }),
+    );
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    ctx.getApi = () => ({ createCompanionTask, startTask });
+    const actions = createDialogActions(ctx);
+
+    actions.openCompanionAgentDialog("ws-source:panel-source");
+    const submitPayload = {
+      sourceSessionId: "ws-source:panel-source",
+      companionRole: "reviewer",
+      companionProvider: { providerId: "codex", model: "gpt-5.6-sol", skipPermissions: false },
+      focus: "",
+      maxRounds: 10,
+    };
+    await (ctx.overlayProps.value.onSubmit as (p: AnyApi) => Promise<void>)(submitPayload);
+
+    expect(createCompanionTask).toHaveBeenCalledWith(submitPayload);
+    expect(startTask).toHaveBeenCalledWith({ workspaceId: "ws-companion" });
+    expect(ctx.overlay.value).toBeNull(); // dialog closed
+    expect((ctx.payload.value as AnyApi).appState.workspaces[0].id).toBe("ws-companion-started");
+  });
+
+  it("on a backend rejection, re-throws so the dialog's inline error banner renders it and never calls startTask", async () => {
+    const createCompanionTask = vi.fn(() => Promise.reject(new Error("Another companion loop is already attached")));
+    const startTask = vi.fn();
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    ctx.getApi = () => ({ createCompanionTask, startTask });
+    const actions = createDialogActions(ctx);
+
+    actions.openCompanionAgentDialog("ws-source:panel-source");
+    await expect(
+      (ctx.overlayProps.value.onSubmit as (p: AnyApi) => Promise<void>)({ sourceSessionId: "ws-source:panel-source" }),
+    ).rejects.toThrow("Another companion loop is already attached");
+
+    expect(startTask).not.toHaveBeenCalled();
+    // Dialog stays open — openCompanionAgentDialog never calls closeDialog on failure.
+    expect(ctx.overlay.value).toBe("CompanionAgentDialog");
+  });
+});
+
 // makeOpenConnectionDialog is the factory behind openAzureConnectionDialog /
 // openGitHubConnectionDialog. These tests exercise it directly (not through
 // createDialogActions) to prove "azure" vs "github" config wires the right

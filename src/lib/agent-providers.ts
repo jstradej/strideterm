@@ -25,6 +25,15 @@ export interface ProviderChoice {
   name: string;
   defaultSkipPermissions: boolean;
   models: ProviderModelChoice[];
+  /** Attached-mode Companion capability level (plan §3.2) — how strongly this
+   * provider gates project execution/writes when launched without a
+   * permission-bypass flag. Mirrors electron/backend/providers/base-provider.ts.
+   * Every provider defaults to "permission-gated": no bypass flag means the
+   * CLI's own per-tool approval prompt gates writes/execution, and the
+   * runner turns that prompt into a policy pause rather than auto-approving
+   * it. None claims "enforced" (a verified hard sandbox) or degrades to
+   * "prompt-only" without a concrete reason. */
+  inspectionIsolation: "enforced" | "permission-gated" | "prompt-only";
 }
 
 export const PROVIDER_CHOICES: ProviderChoice[] = [
@@ -32,6 +41,7 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     id: "claude",
     name: "Claude Code",
     defaultSkipPermissions: true,
+    inspectionIsolation: "permission-gated",
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "claude-fable-5", name: "Fable 5", suggestedRole: null },
@@ -44,6 +54,7 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     id: "codex",
     name: "Codex CLI",
     defaultSkipPermissions: true,
+    inspectionIsolation: "permission-gated",
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: "judge" },
@@ -57,6 +68,7 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     id: "gemini",
     name: "Gemini CLI",
     defaultSkipPermissions: false,
+    inspectionIsolation: "permission-gated",
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "gemini-3.1-pro-preview", name: "3.1 Pro (preview)", suggestedRole: "judge" },
@@ -69,6 +81,7 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     id: "copilot",
     name: "GitHub Copilot",
     defaultSkipPermissions: true,
+    inspectionIsolation: "permission-gated",
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "claude-opus-4.8", name: "Claude Opus 4.8", suggestedRole: "judge" },
@@ -82,6 +95,7 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     id: "opencode",
     name: "OpenCode",
     defaultSkipPermissions: true,
+    inspectionIsolation: "permission-gated",
     models: [
       { id: "default", name: "Default", suggestedRole: null },
       { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7", suggestedRole: "judge" },
