@@ -12,6 +12,7 @@ import type {
   WorkspaceGridLayout,
   WindowSlot,
 } from "../shared/types/state.js";
+import { isCompanionPrimaryViewId, parseCompanionPrimaryViewId } from "../shared/companion-primary.js";
 
 const UTF8_DECODER = (() => {
   try {
@@ -182,6 +183,13 @@ function isKnownPrefixViewId(viewId: unknown): boolean {
 
 function isValidWorkspaceViewId(viewId: unknown, workspaceId: string, panels: Array<{ id: string }>): boolean {
   if (typeof viewId !== "string" || !viewId) return false;
+  // A companion loop's borrowed Primary is drawn under a virtual view id that
+  // names the task workspace hosting it (electron/shared/companion-primary.ts).
+  // It deliberately matches no panel of this workspace, so it has to be
+  // recognised here: normalizeState runs on EVERY store.mutate, and dropping
+  // the alias left the task workspace persisting a three-slot layout holding
+  // two panes — the split fell apart on the next activation.
+  if (isCompanionPrimaryViewId(viewId)) return parseCompanionPrimaryViewId(viewId) === workspaceId;
   if (isKnownPrefixViewId(viewId)) return true;
   const sessionPrefix = `${workspaceId}:`;
   if (!viewId.startsWith(sessionPrefix)) return false;

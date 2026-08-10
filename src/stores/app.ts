@@ -772,6 +772,31 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /**
+   * Which system shape a split is, or null when the user arranged it themselves
+   * (only a system shape may be rewritten by a lifecycle transition).
+   *
+   * The hosting shape is also recognised with its alias MISSING: state written
+   * before the virtual view id was persistable had it stripped by
+   * normalizeState, leaving `top-split` with two panes — a shape the layout
+   * picker can produce but this workspace never chose, and one that renders as
+   * a split with an empty quadrant. Treating it as the hosting shape lets the
+   * next activation repair it instead of preserving the damage.
+   */
+  function companionSplitShapeKind(
+    split: SplitGroup | null,
+    shapes: { aliasViewId: string; active: SplitGroup; terminal: SplitGroup },
+  ): "active" | "terminal" | null {
+    if (!split) return null;
+    if (isSameSplitShape(split, shapes.active)) return "active";
+    if (isSameSplitShape(split, shapes.terminal)) return "terminal";
+    const activeWithoutAlias: SplitGroup = {
+      layout: shapes.active.layout,
+      viewIds: shapes.active.viewIds.filter((id) => id !== shapes.aliasViewId),
+    };
+    return isSameSplitShape(split, activeWithoutAlias) ? "active" : null;
+  }
+
+  /**
    * Views that are valid but temporarily presentation-hidden: the source's own
    * Primary tab while it is hosted elsewhere, and an attached task's alias
    * while the loop sits in a terminal state. Dormant is NOT deleted — their
@@ -805,11 +830,12 @@ export const useAppStore = defineStore("app", () => {
     if (!shapes) return;
     const hosting = (tabs as AnyApi[]).some((tab: AnyApi) => tab.id === shapes.aliasViewId);
     const current = splitGroup.value;
+    const kind = companionSplitShapeKind(current, shapes);
     if (hosting) {
-      if (!current || isSameSplitShape(current, shapes.terminal)) splitGroup.value = { ...shapes.active };
+      if (!current || (kind && !isSameSplitShape(current, shapes.active))) splitGroup.value = { ...shapes.active };
       return;
     }
-    if (current && isSameSplitShape(current, shapes.active)) splitGroup.value = { ...shapes.terminal };
+    if (kind === "active") splitGroup.value = { ...shapes.terminal };
   }
 
   function resolveSplitForWorkspace(workspaceEntry: AnyApi, workspaceId: string): SplitGroup | null {
@@ -817,8 +843,9 @@ export const useAppStore = defineStore("app", () => {
     const shapes = companionPrimarySystemShapes(workspaceEntry, workspaceId);
     if (shapes) {
       const hosting = Boolean(getCompanionPrimaryBinding(workspaceId));
-      if (hosting && (!base || isSameSplitShape(base, shapes.terminal))) return { ...shapes.active };
-      if (!hosting && isSameSplitShape(base, shapes.active)) return { ...shapes.terminal };
+      const kind = companionSplitShapeKind(base, shapes);
+      if (hosting && (!base || (kind && !isSameSplitShape(base, shapes.active)))) return { ...shapes.active };
+      if (!hosting && kind === "active") return { ...shapes.terminal };
     }
     return base;
   }

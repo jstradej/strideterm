@@ -248,6 +248,50 @@ describe("default state", () => {
     expect(workspace.panels.find((panel) => panel.id === "p2")!.notes).toBe("");
   });
 
+  // normalizeState runs on every store.mutate, so anything it doesn't recognise
+  // is stripped within milliseconds of being written. The companion loop's
+  // borrowed Primary is drawn under a virtual view id that matches no panel of
+  // the task workspace; dropping it left the workspace persisting a three-slot
+  // layout with two panes, and the split fell apart on the next activation.
+  test("normalizeWorkspace keeps a companion Primary alias that names this workspace", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-task",
+      kind: "task",
+      panels: [
+        { id: "dash", title: "Dashboard", command: "__task-dashboard__" },
+        { id: "companion", title: "Reviewer", command: "codex" },
+      ],
+      activePanelId: "companion",
+      activeViewId: "attached-primary:ws-task",
+      splitLayout: "top-split",
+      splitViewIds: ["task-dashboard:dash", "attached-primary:ws-task", "ws-task:companion"],
+    });
+
+    expect(workspace.activeViewId).toBe("attached-primary:ws-task");
+    expect(workspace.splitLayout).toBe("top-split");
+    expect(workspace.splitViewIds).toEqual(["task-dashboard:dash", "attached-primary:ws-task", "ws-task:companion"]);
+  });
+
+  // A workspace only ever hosts the alias that names it — anything else would
+  // draw another workspace's conversation, so it stays invalid.
+  test("normalizeWorkspace drops a companion Primary alias naming another workspace", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-task",
+      kind: "task",
+      panels: [
+        { id: "dash", title: "Dashboard", command: "__task-dashboard__" },
+        { id: "companion", title: "Reviewer", command: "codex" },
+      ],
+      activePanelId: "companion",
+      activeViewId: "attached-primary:ws-other",
+      splitLayout: "top-split",
+      splitViewIds: ["task-dashboard:dash", "attached-primary:ws-other", "ws-task:companion"],
+    });
+
+    expect(workspace.activeViewId).toBe("ws-task:companion");
+    expect(workspace.splitViewIds).toEqual(["task-dashboard:dash", "ws-task:companion"]);
+  });
+
   test("normalizeWorkspace preserves plugin workspace metadata", () => {
     const workspace = normalizeWorkspace({
       id: "system-monitor",

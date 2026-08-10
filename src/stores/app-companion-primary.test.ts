@@ -183,6 +183,30 @@ describe("Companion Primary relocation — store", () => {
     expect(store.splitGroup).toEqual({ layout: "top-split", viewIds: [DASHBOARD_VIEW, ALIAS, COMPANION_SESSION] });
   });
 
+  // State written before the alias was persistable had it stripped by
+  // normalizeState, leaving `top-split` holding two panes: the split rendered
+  // with an empty quadrant and the Primary was missing from it entirely. It is
+  // the hosting shape minus its alias, so activation repairs it.
+  it("repairs a hosting layout whose alias was stripped by an older state file", async () => {
+    const damaged = { splitLayout: "top-split", splitViewIds: [DASHBOARD_VIEW, COMPANION_SESSION] };
+    const { store } = await makeStore(taskPayload("capturing-context", damaged));
+    await nextTick();
+
+    expect(store.splitGroup).toEqual({ layout: "top-split", viewIds: [DASHBOARD_VIEW, ALIAS, COMPANION_SESSION] });
+    expect(store.renderedSplitGroup).toEqual({
+      layout: "top-split",
+      viewIds: [DASHBOARD_VIEW, ALIAS, COMPANION_SESSION],
+    });
+  });
+
+  it("normalises the stripped shape down to two panes when the loop is not hosting", async () => {
+    const damaged = { splitLayout: "top-split", splitViewIds: [DASHBOARD_VIEW, COMPANION_SESSION] };
+    const { store } = await makeStore(taskPayload("completed", damaged));
+    await nextTick();
+
+    expect(store.splitGroup).toEqual({ layout: "cols", viewIds: [DASHBOARD_VIEW, COMPANION_SESSION] });
+  });
+
   it("never rewrites a task layout the user arranged themselves", async () => {
     const { store } = await makeStore(taskPayload("running"));
     const custom = { layout: "rows", viewIds: [COMPANION_SESSION, DASHBOARD_VIEW] };

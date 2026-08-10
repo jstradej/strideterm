@@ -26,163 +26,139 @@
       </div>
     </div>
 
-    <!-- capturing-context -->
-    <div v-else-if="taskState?.state === 'capturing-context'" class="td__hero">
-      <div class="td__hero-eyebrow">Capturing context…</div>
-      <p class="tdc__lead">
-        Waiting for the Primary conversation to write <code>CONTEXT.md</code> and <code>HANDOFF.md</code> from its own
-        context. Nothing in the source code or project is touched during this step.
-      </p>
-      <button
-        v-if="sourceWorkspaceAvailable"
-        type="button"
-        class="button td__hero-start"
-        @click="$emit('open-primary')"
-      >
-        Open Primary
-      </button>
-      <p v-else class="tdc__warning">The Primary conversation's workspace is no longer available in this profile.</p>
-    </div>
+    <!-- Everything below shares one always-present explanation of the loop's
+         position: which step it is on, who it is waiting for, why it is waiting
+         and what happens next. The per-state blocks that follow carry only the
+         actions and the data, so nothing has to be inferred from a state badge.
+         primaryMissing is exempt: its terminal hero above already IS that
+         explanation, and there is no loop left to place on the pipeline. -->
+    <template v-else>
+      <div class="tdc__now">
+        <div class="tdc__now-head">
+          <span class="td__hero-eyebrow" :class="now.toneClass">{{ now.headline }}</span>
+          <span class="tdc__now-actor" :class="`tdc__now-actor--${now.actorKind}`">
+            {{ now.actorKind === "none" ? now.actorLabel : `Waiting on ${now.actorLabel}` }}
+          </span>
+        </div>
+        <p class="tdc__now-what">{{ now.what }}</p>
+        <p class="tdc__now-line"><span class="tdc__now-key">Why</span>{{ now.why }}</p>
+        <p v-if="now.next" class="tdc__now-line"><span class="tdc__now-key">Next</span>{{ now.next }}</p>
 
-    <!-- brief-ready -->
-    <div v-else-if="taskState?.state === 'brief-ready'" class="td__hero">
-      <div class="td__hero-eyebrow">Brief ready</div>
-      <p class="tdc__lead">
-        Review what was captured, then start the baseline {{ companionRoleLabel }} review of the work already discussed
-        in the Primary conversation.
-      </p>
-
-      <p v-if="contextHasOpenQuestions" class="tdc__warning">
-        CONTEXT.md still lists open questions or ambiguities. The {{ companionRoleLabel }} will try to resolve them from
-        evidence first — this does not block starting the loop.
-      </p>
-
-      <details class="tdc__accordion" open>
-        <summary>Your focus <span class="tdc__accordion-file">TASK.md</span></summary>
-        <pre class="tdc__preview">{{ taskFocusPreview || "No additional focus specified." }}</pre>
-      </details>
-      <details class="tdc__accordion" open>
-        <summary>Captured context <span class="tdc__accordion-file">CONTEXT.md</span></summary>
-        <pre class="tdc__preview">{{ contextPreview || "(not available)" }}</pre>
-      </details>
-      <details class="tdc__accordion">
-        <summary>Current progress <span class="tdc__accordion-file">HANDOFF.md</span></summary>
-        <pre class="tdc__preview">{{ handoffPreview || "(not available)" }}</pre>
-      </details>
-
-      <div class="tdc__hero-actions">
-        <button type="button" class="button td__hero-start" @click="$emit('start')">
-          Start {{ companionRoleLabel }} loop
-        </button>
-        <button type="button" class="td__link-btn" @click="$emit('open-assignment')">Edit before starting</button>
-      </div>
-    </div>
-
-    <!-- awaiting-user -->
-    <div v-else-if="taskState?.state === 'awaiting-user'" class="td__hero tdc__awaiting">
-      <div class="td__hero-eyebrow">{{ companionRoleLabel }} needs your input</div>
-      <div v-for="q in pendingQuestions" :key="q.id" class="tdc__question-card">
-        <p class="tdc__question-id">{{ q.id }}</p>
-        <p class="tdc__question-text">{{ q.question }}</p>
-        <p class="tdc__question-why">{{ q.whyNeeded }}</p>
-        <ul v-if="q.options?.length" class="tdc__question-options">
-          <li v-for="(opt, i) in q.options" :key="i">{{ opt }}</li>
-        </ul>
-      </div>
-      <label class="tdc__answer-label">
-        <span>Your decision</span>
-        <textarea v-model="answerDraft" rows="4" placeholder="Explain the decision the companion should apply…" />
-      </label>
-      <button type="button" class="button tdc__send-decision" :disabled="!answerDraft.trim()" @click="submitAnswer">
-        Send decision
-      </button>
-    </div>
-
-    <!-- completed / failed — structured report -->
-    <div v-else-if="taskState?.state === 'completed' || taskState?.state === 'failed'" class="td__hero tdc__report">
-      <div
-        class="td__hero-eyebrow"
-        :class="taskState?.state === 'completed' ? 'tdc__eyebrow--ok' : 'tdc__eyebrow--fail'"
-      >
-        {{
-          taskState?.state === "completed"
-            ? verdict?.advisories?.length
-              ? "Completed with advice"
-              : "Completed"
-            : "Failed — max rounds reached"
-        }}
-      </div>
-      <p class="tdc__lead">{{ verdict?.reason || lastReason || "" }}</p>
-
-      <CompanionReportSections :verdict="verdict" :role="companionRole" :repeated-finding-ids="repeatedFindingIds" />
-
-      <div class="tdc__hero-actions">
-        <button type="button" class="td__link-btn" @click="$emit('reject-verdict')">Send back with feedback</button>
-        <button type="button" class="td__link-btn" @click="$emit('reset')">Reset &amp; re-capture</button>
-      </div>
-    </div>
-
-    <!-- paused -->
-    <div v-else-if="taskState?.state === 'paused'" class="td__hero">
-      <div class="td__hero-eyebrow">{{ pausedEyebrow }}</div>
-      <p class="tdc__lead">{{ pausedHint }}</p>
-    </div>
-
-    <!-- idle -->
-    <div v-else-if="taskState?.state === 'idle'" class="td__hero">
-      <div class="td__hero-eyebrow">Not started</div>
-      <p class="tdc__lead">
-        Press <strong>Start capture</strong> to send a context-capture prompt into the existing Primary conversation.
-        Nothing in the project is touched — the Primary only writes CONTEXT.md and HANDOFF.md.
-      </p>
-    </div>
-
-    <!-- running / evaluating / judge-evaluating — active loop pipeline -->
-    <div v-else class="tdc__pipeline-wrap">
-      <div class="tdc__pipeline">
-        <div
-          v-for="step in pipelineSteps"
-          :key="step.id"
-          class="tdc__pipeline-step"
-          :class="`tdc__pipeline-step--${step.status}`"
-        >
-          <span class="tdc__pipeline-dot" />
-          <span class="tdc__pipeline-label">{{ step.label }}</span>
+        <div class="tdc__pipeline">
+          <div
+            v-for="step in pipelineSteps"
+            :key="step.id"
+            class="tdc__pipeline-step"
+            :class="`tdc__pipeline-step--${step.status}`"
+            :title="step.hint"
+          >
+            <span class="tdc__pipeline-dot" />
+            <span class="tdc__pipeline-label">{{ step.label }}</span>
+          </div>
         </div>
       </div>
 
-      <p v-if="completionEvidenceWithheld" class="tdc__warning">
-        {{ companionRoleLabel }} found no blockers, but completion has to be signed off against a
-        <code>VERIFICATION.md</code> for this round and there was none. Primary was asked to record it — this round was
-        not consumed.
-      </p>
+      <!-- capturing-context -->
+      <div v-if="taskState?.state === 'capturing-context'" class="td__hero">
+        <button
+          v-if="sourceWorkspaceAvailable"
+          type="button"
+          class="button td__hero-start"
+          @click="$emit('open-primary')"
+        >
+          Open Primary
+        </button>
+        <p v-else class="tdc__warning">The Primary conversation's workspace is no longer available in this profile.</p>
+      </div>
 
-      <div v-if="verificationCardVisible" class="tdc__verification-card">
-        <p class="tdc__verification-status">
-          Verification: <strong>{{ verificationStatusLabel }}</strong>
+      <!-- brief-ready -->
+      <div v-else-if="taskState?.state === 'brief-ready'" class="td__hero">
+        <p v-if="contextHasOpenQuestions" class="tdc__warning">
+          CONTEXT.md still lists open questions or ambiguities. The {{ companionRoleLabel }} will try to resolve them
+          from evidence first — this does not block starting the loop.
         </p>
-        <ul v-if="verdict?.verificationReview?.evidenceReviewed?.length" class="tdc__verification-evidence">
-          <li v-for="(line, i) in verdict.verificationReview.evidenceReviewed" :key="i">{{ line }}</li>
-        </ul>
-        <ul v-if="verdict?.verificationReview?.workerActionsRequired?.length" class="tdc__verification-actions">
-          <li v-for="(action, i) in verdict.verificationReview.workerActionsRequired" :key="i">
-            <code>{{ action.commandOrCheck }}</code> — {{ action.reason }}
-          </li>
-        </ul>
+
+        <details class="tdc__accordion" open>
+          <summary>Your focus <span class="tdc__accordion-file">TASK.md</span></summary>
+          <pre class="tdc__preview">{{ taskFocusPreview || "No additional focus specified." }}</pre>
+        </details>
+        <details class="tdc__accordion" open>
+          <summary>Captured context <span class="tdc__accordion-file">CONTEXT.md</span></summary>
+          <pre class="tdc__preview">{{ contextPreview || "(not available)" }}</pre>
+        </details>
+        <details class="tdc__accordion">
+          <summary>Current progress <span class="tdc__accordion-file">HANDOFF.md</span></summary>
+          <pre class="tdc__preview">{{ handoffPreview || "(not available)" }}</pre>
+        </details>
+
+        <div class="tdc__hero-actions">
+          <button type="button" class="button td__hero-start" @click="$emit('start')">
+            Start {{ companionRoleLabel }} loop
+          </button>
+          <button type="button" class="td__link-btn" @click="$emit('open-assignment')">Edit before starting</button>
+        </div>
       </div>
 
-      <div v-if="verdict && (verdict.blockingFindings?.length || verdict.advisories?.length)" class="tdc__report">
+      <!-- awaiting-user -->
+      <div v-else-if="taskState?.state === 'awaiting-user'" class="td__hero tdc__awaiting">
+        <div v-for="q in pendingQuestions" :key="q.id" class="tdc__question-card">
+          <p class="tdc__question-id">{{ q.id }}</p>
+          <p class="tdc__question-text">{{ q.question }}</p>
+          <p class="tdc__question-why">{{ q.whyNeeded }}</p>
+          <ul v-if="q.options?.length" class="tdc__question-options">
+            <li v-for="(opt, i) in q.options" :key="i">{{ opt }}</li>
+          </ul>
+        </div>
+        <label class="tdc__answer-label">
+          <span>Your decision</span>
+          <textarea v-model="answerDraft" rows="4" placeholder="Explain the decision the companion should apply…" />
+        </label>
+        <button type="button" class="button tdc__send-decision" :disabled="!answerDraft.trim()" @click="submitAnswer">
+          Send decision
+        </button>
+      </div>
+
+      <!-- completed / failed — structured report -->
+      <div v-else-if="taskState?.state === 'completed' || taskState?.state === 'failed'" class="td__hero tdc__report">
         <CompanionReportSections :verdict="verdict" :role="companionRole" :repeated-finding-ids="repeatedFindingIds" />
+
+        <div class="tdc__hero-actions">
+          <button type="button" class="td__link-btn" @click="$emit('reject-verdict')">Send back with feedback</button>
+          <button type="button" class="td__link-btn" @click="$emit('reset')">Reset &amp; re-capture</button>
+        </div>
       </div>
 
-      <p v-else class="td__empty">
-        {{
-          taskState?.state === "judge-evaluating"
-            ? `${companionRoleLabel} is reviewing the current state…`
-            : "Waiting for Primary to signal this round is done…"
-        }}
-      </p>
-    </div>
+      <!-- running / evaluating / judge-evaluating / refreshing — round detail -->
+      <div v-else-if="isLoopState" class="tdc__pipeline-wrap">
+        <p v-if="completionEvidenceWithheld" class="tdc__warning">
+          {{ companionRoleLabel }} found no blockers, but completion has to be signed off against a
+          <code>VERIFICATION.md</code> for this round and there was none. Primary was asked to record it — this round
+          was not consumed.
+        </p>
+
+        <div v-if="verificationCardVisible" class="tdc__verification-card">
+          <p class="tdc__verification-status">
+            Verification: <strong>{{ verificationStatusLabel }}</strong>
+          </p>
+          <ul v-if="verdict?.verificationReview?.evidenceReviewed?.length" class="tdc__verification-evidence">
+            <li v-for="(line, i) in verdict.verificationReview.evidenceReviewed" :key="i">{{ line }}</li>
+          </ul>
+          <ul v-if="verdict?.verificationReview?.workerActionsRequired?.length" class="tdc__verification-actions">
+            <li v-for="(action, i) in verdict.verificationReview.workerActionsRequired" :key="i">
+              <code>{{ action.commandOrCheck }}</code> — {{ action.reason }}
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="verdict && (verdict.blockingFindings?.length || verdict.advisories?.length)" class="tdc__report">
+          <CompanionReportSections
+            :verdict="verdict"
+            :role="companionRole"
+            :repeated-finding-ids="repeatedFindingIds"
+          />
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -241,15 +217,24 @@ const pausedEyebrow = computed(() => {
   return "Paused";
 });
 
-const pausedHint = computed(() => {
+// Paused splits into the two halves the panel keeps apart: why the loop is
+// sitting still, and what Continue will actually resume into. Which phase it
+// stopped in is carried by the pipeline, so neither line repeats it.
+const pausedWhy = computed(() => {
   if (props.taskState?.judgePolicyViolation) {
-    return `${companionRoleLabel.value} hit a permission prompt during evaluation — it tried something outside its inspect-only scope, so the loop was paused instead of continuing. Check its panel, then Continue to re-run the evaluation.`;
+    return `${companionRoleLabel.value} hit a permission prompt during evaluation — it tried something outside its inspect-only scope, so the loop was paused instead of continuing.`;
+  }
+  return "A paused loop sends nothing to either side — it keeps its rounds and resumes from where it stopped.";
+});
+
+const pausedNext = computed(() => {
+  if (props.taskState?.judgePolicyViolation) {
+    return `Check the ${companionRoleLabel.value}'s panel, then Continue to re-run the evaluation.`;
   }
   const from = props.taskState?.pausedFromState || "";
-  if (from === "capturing-context") return "Paused while capturing context. Open Primary to check, then Continue.";
-  if (from === "judge-evaluating")
-    return `Paused while ${companionRoleLabel.value} was evaluating. Continue to resume reading the verdict.`;
-  if (from === "awaiting-user") return "Paused while awaiting your input. Continue to answer the open question.";
+  if (from === "capturing-context") return "Open Primary to check what it wrote, then Continue.";
+  if (from === "judge-evaluating") return "Continue resumes reading the verdict.";
+  if (from === "awaiting-user") return "Continue brings the open question back for your answer.";
   return "Continue when ready, or Reset to start over.";
 });
 
@@ -347,24 +332,217 @@ function submitAnswer() {
   answerDraft.value = "";
 }
 
-// --- Active-loop pipeline ----------------------------------------------------
+// --- Pipeline ----------------------------------------------------------------
+// Four phases of one round, shown in every state so the loop's position is
+// always visible — including before it starts (all waiting) and after it ends
+// (all done). Rounds 2..n repeat phases 1-3; the Round chip in the Dashboard
+// header carries the count.
 
-const PIPELINE_ORDER = ["running", "evaluating", "judge-evaluating"];
-function pipelineStatus(stepState: string): string {
-  const current = props.taskState?.state === "capturing-context" ? "running" : props.taskState?.state;
-  const curIdx = PIPELINE_ORDER.indexOf(current);
-  const stepIdx = PIPELINE_ORDER.indexOf(stepState);
-  if (curIdx < 0 || stepIdx < 0) return "waiting";
-  if (stepIdx < curIdx) return "done";
-  if (stepIdx === curIdx) return "active";
-  return "waiting";
+const PHASE_CAPTURE = 0;
+const PHASE_PRIMARY = 1;
+const PHASE_VERIFICATION = 2;
+const PHASE_COMPANION = 3;
+
+/** Phase a state sits in, and how many phases are already behind it. */
+const PHASE_BY_STATE = new Map<string, { active: number; done: number }>([
+  ["idle", { active: -1, done: 0 }],
+  ["capturing-context", { active: PHASE_CAPTURE, done: 0 }],
+  ["brief-ready", { active: -1, done: 1 }],
+  ["running", { active: PHASE_PRIMARY, done: 1 }],
+  ["refreshing", { active: PHASE_PRIMARY, done: 1 }],
+  ["evaluating", { active: PHASE_VERIFICATION, done: 2 }],
+  ["judge-evaluating", { active: PHASE_COMPANION, done: 3 }],
+  ["awaiting-user", { active: PHASE_COMPANION, done: 3 }],
+  ["completed", { active: -1, done: 4 }],
+  ["failed", { active: -1, done: 4 }],
+]);
+
+// A paused loop keeps the position it was paused in — "paused" itself says
+// nothing about which phase the user will come back to.
+const currentPhase = computed(() => {
+  const state = props.taskState?.state || "idle";
+  const key = state === "paused" ? props.taskState?.pausedFromState || "" : state;
+  return PHASE_BY_STATE.get(key) || { active: -1, done: 0 };
+});
+
+const pipelineSteps = computed(() => {
+  const { active, done } = currentPhase.value;
+  const role = companionRoleLabel.value;
+  return [
+    { id: "capture", label: "Capture", index: PHASE_CAPTURE, hint: "Primary writes CONTEXT.md and HANDOFF.md" },
+    { id: "primary", label: "Primary", index: PHASE_PRIMARY, hint: "Primary works, then signals the round is done" },
+    {
+      id: "verification",
+      label: "Verification",
+      index: PHASE_VERIFICATION,
+      hint: "This round's VERIFICATION.md record is checked",
+    },
+    { id: "companion", label: role, index: PHASE_COMPANION, hint: `${role} evaluates and returns a verdict` },
+  ].map((step) => ({
+    ...step,
+    status: step.index === active ? "active" : step.index < done ? "done" : "waiting",
+  }));
+});
+
+const isLoopState = computed(() =>
+  ["running", "evaluating", "judge-evaluating", "refreshing"].includes(props.taskState?.state || ""),
+);
+
+// --- What is happening, and why ---------------------------------------------
+// One explanation per state, in the same four slots every time: the state's
+// own name, who the loop is waiting for, why it is waiting there (the condition
+// that has to be met), and what happens once it is. Written so the user never
+// has to know the runner's vocabulary to follow along.
+
+const PAUSED_PHASE_LABELS: Record<string, string> = {
+  "capturing-context": "context capture",
+  running: "the Primary's round",
+  evaluating: "the verification check",
+  "judge-evaluating": "the evaluation",
+  "awaiting-user": "your decision",
+};
+
+interface NowPanel {
+  headline: string;
+  /** primary | companion | you | none — drives the actor chip's colour. */
+  actorKind: string;
+  actorLabel: string;
+  what: string;
+  why: string;
+  next: string;
+  toneClass: string;
 }
 
-const pipelineSteps = computed(() => [
-  { id: "primary", label: "Primary", status: pipelineStatus("running") },
-  { id: "verification", label: "Verification", status: pipelineStatus("evaluating") },
-  { id: "companion", label: companionRoleLabel.value, status: pipelineStatus("judge-evaluating") },
-]);
+const now = computed<NowPanel>(() => {
+  const role = companionRoleLabel.value;
+  const state = props.taskState?.state || "idle";
+  const round = props.taskState?.currentRound || 0;
+  const maxRounds = props.taskState?.maxRounds || 10;
+  const reason = verdict.value?.reason || lastReason.value || "";
+
+  switch (state) {
+    case "capturing-context":
+      return {
+        headline: "Capturing context…",
+        actorKind: "primary",
+        actorLabel: "Primary",
+        what: "The Primary conversation is writing CONTEXT.md and HANDOFF.md from its own context.",
+        why: `${role} never reads the conversation itself — it works from those two files, so they have to exist before any review can start. Nothing in the project is touched during this step.`,
+        next: "Once both files land you can check the brief and start the loop.",
+        toneClass: "",
+      };
+    case "brief-ready":
+      return {
+        headline: "Brief ready",
+        actorKind: "you",
+        actorLabel: "you",
+        what: "Context is captured and nothing is running.",
+        why: "You get the last word on scope before any rounds are spent — what CONTEXT.md says is what the loop will hold the work to.",
+        next: `Start ${role} loop runs a baseline review of the work already discussed in the Primary conversation.`,
+        toneClass: "",
+      };
+    case "running":
+      return {
+        headline: "Primary is working",
+        actorKind: "primary",
+        actorLabel: "Primary",
+        what: reason
+          ? `Round ${round}/${maxRounds}: the Primary is addressing the ${role}'s findings.`
+          : `Round ${round}/${maxRounds}: the Primary is working on the captured scope.`,
+        why: reason
+          ? `${role} sent it back: ${reason}`
+          : "The loop only advances when the Primary signals its round is done — until then nothing is evaluated.",
+        next: `On that signal this round's VERIFICATION.md record is checked, then ${role} evaluates the result.`,
+        toneClass: "",
+      };
+    case "refreshing":
+      return {
+        headline: "Refreshing context",
+        actorKind: "primary",
+        actorLabel: "Primary",
+        what: "The Primary is re-stating the current context.",
+        why: "The captured record drifted from where the work actually is, so it is being brought back up to date before the next review.",
+        next: `Back to the ${role} evaluation once the refresh lands.`,
+        toneClass: "",
+      };
+    case "evaluating":
+      return {
+        headline: "Checking the record",
+        actorKind: "companion",
+        actorLabel: role,
+        what: `Round ${round}/${maxRounds} finished — its VERIFICATION.md record is being checked.`,
+        why: "A sign-off only counts against a record written in THIS round; a stale or missing one can't support one.",
+        next: `${role} evaluates next and returns continue, complete, or a question for you.`,
+        toneClass: "",
+      };
+    case "judge-evaluating":
+      return {
+        headline: `${role} is evaluating`,
+        actorKind: "companion",
+        actorLabel: role,
+        what: `${role} is reading the current state of the work and writing a verdict. It inspects only — it never runs project code.`,
+        why: `Every round ends with a ${role} verdict; that verdict is what decides whether the Primary gets another round.`,
+        next: "Findings go back to the Primary, or the loop signs off, or it stops to ask you something.",
+        toneClass: "",
+      };
+    case "awaiting-user":
+      return {
+        headline: `${role} needs your input`,
+        actorKind: "you",
+        actorLabel: "you",
+        what: pendingQuestions.value.length
+          ? `The loop stopped on ${pendingQuestions.value.length} open question${pendingQuestions.value.length > 1 ? "s" : ""} it will not answer for you.`
+          : "The loop stopped for a decision only you can make.",
+        why:
+          pendingQuestions.value[0]?.whyNeeded ||
+          `${role} found more than one defensible answer and won't guess which one you want.`,
+        next: "Your decision is passed to the Primary and the loop picks up from there.",
+        toneClass: "",
+      };
+    case "paused": {
+      const from = PAUSED_PHASE_LABELS[props.taskState?.pausedFromState || ""] || "";
+      return {
+        headline: pausedEyebrow.value,
+        actorKind: "none",
+        actorLabel: "Nothing running",
+        what: from ? `Stopped during ${from} — no prompt is in flight.` : "Stopped — no prompt is in flight.",
+        why: pausedWhy.value,
+        next: pausedNext.value,
+        toneClass: props.taskState?.judgePolicyViolation ? "tdc__eyebrow--fail" : "",
+      };
+    }
+    case "completed":
+      return {
+        headline: verdict.value?.advisories?.length ? "Completed with advice" : "Completed",
+        actorKind: "none",
+        actorLabel: "Finished",
+        what: `${role} signed off after ${round} round${round === 1 ? "" : "s"}. The Primary tab has gone back to its own workspace.`,
+        why: reason || `${role} was left with no blocking findings and a verification record to sign off against.`,
+        next: "Send back with feedback for one more round, or Reset & re-capture to start from a fresh context.",
+        toneClass: "tdc__eyebrow--ok",
+      };
+    case "failed":
+      return {
+        headline: "Failed — max rounds reached",
+        actorKind: "none",
+        actorLabel: "Finished",
+        what: `The loop used all ${maxRounds} rounds without ${role} signing off.`,
+        why: reason || `${role} still had blocking findings when the last round ran out.`,
+        next: "Send back with feedback to give it another round, or Reset & re-capture.",
+        toneClass: "tdc__eyebrow--fail",
+      };
+    default:
+      return {
+        headline: "Not started",
+        actorKind: "you",
+        actorLabel: "you",
+        what: "Nothing has been sent to the Primary conversation yet.",
+        why: `${role} reviews written records rather than the chat log, so the loop opens by asking the Primary to write its own context down.`,
+        next: "Start capture sends that one prompt — the Primary only writes CONTEXT.md and HANDOFF.md, nothing in the project is touched.",
+        toneClass: "",
+      };
+  }
+});
 
 const verificationCardVisible = computed(() => Boolean(verdict.value?.verificationReview));
 const verificationStatusLabel = computed(() => {
@@ -506,6 +684,70 @@ const completionEvidenceWithheld = computed(() => {
 .tdc__eyebrow--fail {
   color: #ef9a9a;
 }
+/* Always-present "what is happening, and why" panel. Deliberately the loudest
+   thing in the tab: on a three-pane task layout the Dashboard is often the only
+   pane the user reads before deciding whether to intervene. */
+.tdc__now {
+  border: 1px solid var(--border, #333);
+  border-left: 3px solid var(--accent, #7c4dff);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.tdc__now-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.tdc__now-actor {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted, #888);
+}
+.tdc__now-actor--primary {
+  background: rgba(27, 94, 32, 0.35);
+  color: #a5d6a7;
+}
+.tdc__now-actor--companion {
+  background: rgba(230, 81, 0, 0.3);
+  color: #ffcc80;
+}
+.tdc__now-actor--you {
+  background: rgba(255, 193, 7, 0.2);
+  color: #ffe082;
+}
+.tdc__now-what {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+.tdc__now-line {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+/* Fixed-width key column so Why/Next line up as a pair the eye can skim. */
+.tdc__now-key {
+  display: inline-block;
+  min-width: 42px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.55;
+  margin-right: 4px;
+}
 .tdc__pipeline-wrap {
   padding: 4px 0;
 }
@@ -513,7 +755,8 @@ const completionEvidenceWithheld = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }
 .tdc__pipeline-step {
   display: flex;
@@ -521,6 +764,14 @@ const completionEvidenceWithheld = computed(() => {
   gap: 6px;
   font-size: 12px;
   opacity: 0.55;
+}
+/* Connector — reads the row as a sequence rather than four separate chips. */
+.tdc__pipeline-step:not(:last-child)::after {
+  content: "";
+  width: 12px;
+  height: 1px;
+  background: var(--border, #333);
+  margin-left: 2px;
 }
 .tdc__pipeline-step--active,
 .tdc__pipeline-step--done {

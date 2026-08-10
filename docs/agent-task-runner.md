@@ -390,6 +390,16 @@ Each role has a materially different blocking policy, not just a different perso
 
 Reviewer, Critic, and Consultant can all leave the loop in a **blocking** or `needs-input` state; Planner alone always reaches `complete` (optionally with advisories/documentation), resolving ambiguity with a documented working default instead of asking.
 
+### Reading the Status tab
+
+The attached Status tab opens with the same block in every state, so the loop's position never has to be inferred from the state badge:
+
+- **Who it is waiting on** — Primary, the Companion role, you, or nobody (paused/finished)
+- **What** is happening right now, **Why** it is sitting there (the condition that has to be met), and what happens **Next** once it is. In `running` the "Why" is the verdict that sent the round back, quoted verbatim
+- **A four-phase pipeline** — Capture → Primary → Verification → _role_ — shown in every state, including before the loop starts (all pending) and after it finishes (all done). A paused loop keeps the phase it was paused in, which is the one thing "Paused" itself doesn't tell you
+
+Only **Primary no longer exists** replaces this block instead of sitting under it: there is no loop left to place on the pipeline.
+
 ### Dashboard states unique to attached mode
 
 | State                        | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

@@ -211,9 +211,87 @@ describe("TaskDashboardCompanionStatusTab", () => {
     expect(wrapper.text()).not.toContain("Continue to resume reading the verdict");
   });
 
-  test("running shows the Primary -> Verification -> Role pipeline", () => {
+  test("running shows the Capture -> Primary -> Verification -> Role pipeline", () => {
     const wrapper = mountTab({ state: "running", companionRole: "critic" });
     const labels = wrapper.findAll(".tdc__pipeline-label").map((l) => l.text());
-    expect(labels).toEqual(["Primary", "Verification", "Critic"]);
+    expect(labels).toEqual(["Capture", "Primary", "Verification", "Critic"]);
+  });
+
+  // The pipeline is the loop's position at a glance, so it has to be there in
+  // states that aren't mid-round too — the position is exactly what a user
+  // coming back to a paused or not-yet-started loop is missing.
+  test.each([
+    ["idle", ["waiting", "waiting", "waiting", "waiting"]],
+    ["capturing-context", ["active", "waiting", "waiting", "waiting"]],
+    ["brief-ready", ["done", "waiting", "waiting", "waiting"]],
+    ["running", ["done", "active", "waiting", "waiting"]],
+    ["evaluating", ["done", "done", "active", "waiting"]],
+    ["judge-evaluating", ["done", "done", "done", "active"]],
+    ["awaiting-user", ["done", "done", "done", "active"]],
+    ["completed", ["done", "done", "done", "done"]],
+    ["failed", ["done", "done", "done", "done"]],
+  ])("%s places the pipeline correctly", (state, expected) => {
+    const wrapper = mountTab({ state, companionRole: "reviewer", pendingQuestions: [] });
+    const statuses = wrapper.findAll(".tdc__pipeline-step").map((step) => {
+      const cls = step.classes().find((c) => c.startsWith("tdc__pipeline-step--")) || "";
+      return cls.replace("tdc__pipeline-step--", "");
+    });
+    expect(statuses).toEqual(expected);
+  });
+
+  // "Paused" says nothing about where the loop will resume — the phase it was
+  // paused in does, and that's what the user needs before pressing Continue.
+  test("a paused loop keeps the pipeline position it was paused in", () => {
+    const wrapper = mountTab({ state: "paused", pausedFromState: "judge-evaluating", companionRole: "reviewer" });
+    const active = wrapper.find(".tdc__pipeline-step--active .tdc__pipeline-label");
+    expect(active.text()).toBe("Reviewer");
+  });
+
+  test.each([
+    ["capturing-context", "Waiting on Primary"],
+    ["running", "Waiting on Primary"],
+    ["judge-evaluating", "Waiting on Reviewer"],
+    ["awaiting-user", "Waiting on you"],
+    ["brief-ready", "Waiting on you"],
+    ["idle", "Waiting on you"],
+    ["paused", "Nothing running"],
+    ["completed", "Finished"],
+  ])("%s names who the loop is waiting on", (state, expected) => {
+    const wrapper = mountTab({ state, companionRole: "reviewer" });
+    expect(wrapper.find(".tdc__now-actor").text()).toBe(expected);
+  });
+
+  // Every state has to answer "why is it sitting here" — that's the half a
+  // state badge can never carry.
+  test.each(["idle", "capturing-context", "brief-ready", "running", "judge-evaluating", "paused", "completed"])(
+    "%s explains why the loop is where it is and what comes next",
+    (state) => {
+      const wrapper = mountTab({ state, companionRole: "reviewer" });
+      const keys = wrapper.findAll(".tdc__now-key").map((k) => k.text());
+      expect(keys).toEqual(["Why", "Next"]);
+      expect(wrapper.find(".tdc__now-what").text().length).toBeGreaterThan(10);
+    },
+  );
+
+  // A round sent back is the one case where "why" is not generic: the reason it
+  // came back is the single most useful line on the screen.
+  test("running quotes the verdict that sent the round back", () => {
+    const wrapper = mountTab({
+      state: "running",
+      companionRole: "reviewer",
+      currentRound: 2,
+      maxRounds: 10,
+      rounds: [{ round: 1, judgeReason: "Tests do not cover the retry path." }],
+    });
+    expect(wrapper.find(".tdc__now-what").text()).toContain("Round 2/10");
+    expect(wrapper.text()).toContain("Reviewer sent it back: Tests do not cover the retry path.");
+  });
+
+  // primaryMissing is the one state with no loop left to explain — its terminal
+  // hero replaces the panel rather than sitting above it.
+  test("primaryMissing shows no now-panel", () => {
+    const wrapper = mountTab({ state: "paused", primaryMissing: true, companionRole: "reviewer" });
+    expect(wrapper.find(".tdc__now").exists()).toBe(false);
+    expect(wrapper.find(".tdc__pipeline").exists()).toBe(false);
   });
 });
