@@ -24,6 +24,20 @@ describe("TaskDashboardCompanionStatusTab", () => {
     expect(wrapper.text()).toContain("Open Primary");
   });
 
+  test("capturing-context drops the Open Primary CTA once the Primary is a pane on screen", () => {
+    const wrapper = mount(TaskDashboardCompanionStatusTab, {
+      props: {
+        taskState: { state: "capturing-context", companionRole: "reviewer" },
+        primaryVisible: true,
+      },
+      global: { provide: { [apiKey as unknown as string]: { fileRead: vi.fn() } } },
+    });
+    // Still explains what's happening — only the redundant call to action goes.
+    expect(wrapper.text()).toContain("Capturing context");
+    expect(wrapper.text()).not.toContain("Open Primary");
+    expect(wrapper.text()).not.toContain("no longer available in this profile");
+  });
+
   test("capturing-context hides Open Primary when the source workspace isn't in the payload", () => {
     const wrapper = mount(TaskDashboardCompanionStatusTab, {
       props: {
@@ -144,6 +158,18 @@ describe("TaskDashboardCompanionStatusTab", () => {
     expect(wrapper.text()).toContain("Open Primary to check");
   });
 
+  test("the paused hint stops saying 'open' when the Primary is already on screen", () => {
+    const wrapper = mount(TaskDashboardCompanionStatusTab, {
+      props: {
+        taskState: { state: "paused", pausedFromState: "capturing-context", companionRole: "reviewer" },
+        primaryVisible: true,
+      },
+      global: { provide: { [apiKey as unknown as string]: { fileRead: vi.fn() } } },
+    });
+    expect(wrapper.text()).toContain("Check what the Primary wrote");
+    expect(wrapper.text()).not.toContain("Open Primary to check");
+  });
+
   test("primaryMissing replaces the paused hero with a terminal 'Primary no longer exists' hero", () => {
     const wrapper = mountTab({
       state: "paused",
@@ -199,15 +225,16 @@ describe("TaskDashboardCompanionStatusTab", () => {
     expect(wrapper.emitted("delete-task")).toHaveLength(1);
   });
 
-  test("paused with judgePolicyViolation shows a distinct policy-violation banner, not the generic pause hint", () => {
+  test("paused on a permission prompt names that as the reason, not the generic pause hint", () => {
     const wrapper = mountTab({
       state: "paused",
       pausedFromState: "judge-evaluating",
       judgePolicyViolation: true,
       companionRole: "critic",
     });
-    expect(wrapper.text()).toContain("Paused: policy violation");
-    expect(wrapper.text()).toContain("Critic hit a permission prompt");
+    expect(wrapper.text()).toContain("Paused: permission prompt");
+    expect(wrapper.text()).toContain("Critic is waiting on a permission prompt");
+    expect(wrapper.text()).toContain("Answer the prompt in the Critic's panel");
     expect(wrapper.text()).not.toContain("Continue to resume reading the verdict");
   });
 

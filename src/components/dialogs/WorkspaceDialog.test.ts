@@ -440,7 +440,7 @@ describe("WorkspaceDialog", () => {
       await nextTick();
 
       // codex's worker-suggested model, per PROVIDER_CHOICES in agent-providers.ts.
-      expect(workerModelInput().value).toBe("gpt-5.5");
+      expect(workerModelInput().value).toBe("gpt-5.6-terra");
       // Judge section is untouched by the worker's provider switch.
       expect(judgeModelInput().value).toBe("opus");
     });

@@ -77,26 +77,23 @@ describe("AgentProviderConfig", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (wrapper as any).setProps({ provider: { providerId: "codex", model: "opus", skipPermissions: false } });
     await wrapper.findComponent(CustomSelect).vm.$emit("change");
-    // codex's worker-suggested model is gpt-5.5 (see PROVIDER_CHOICES), and
-    // codex defaults to skipPermissions: true.
+    // codex's worker-suggested model is gpt-5.6-terra (see PROVIDER_CHOICES),
+    // and codex defaults to skipPermissions: true.
     const updated = lastEmitted<{ providerId: string; model: string; skipPermissions: boolean }>(
       wrapper,
       "update:provider",
     );
-    expect(updated.model).toBe("gpt-5.5");
+    expect(updated.model).toBe("gpt-5.6-terra");
     expect(updated.skipPermissions).toBe(true);
   });
 
-  test("allowCustomCommand=false hides the advanced custom-command escape hatch", () => {
-    const wrapper = mountConfig("judge", { allowCustomCommand: false });
-    expect(wrapper.find(".agent-config-section__advanced-btn").exists()).toBe(false);
-  });
-
-  test("allowSkipPermissions=false hides the checkbox and shows the real isolation capability instead", () => {
-    const wrapper = mountConfig("judge", { allowSkipPermissions: false });
-    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false);
-    expect(wrapper.text()).toContain("Inspect-only");
-    expect(wrapper.text()).toContain("Permission-gated");
+  // Both escape hatches are offered for every role, the attached Companion
+  // included — how much rope to take is the user's decision.
+  test("offers the skip-permissions checkbox and the custom-command hatch for the judge role", () => {
+    const wrapper = mountConfig("judge");
+    expect(wrapper.find(".agent-config-section__advanced-btn").exists()).toBe(true);
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("Skip permission prompts");
   });
 
   test("judge role auto-selects the judge-suggested model on provider change", async () => {

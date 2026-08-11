@@ -25,6 +25,10 @@ export interface ProviderChoice {
 export interface ParsedProviderConfig {
   providerId: string;
   model: string;
+  /** Whether this agent launches with its provider's permission-bypass flag.
+   * Absent on configs recovered by parsing a command line, where the flag isn't
+   * recoverable — callers fall back to the provider default. */
+  skipPermissions?: boolean;
 }
 
 const providers = new Map<string, ProviderClass>();

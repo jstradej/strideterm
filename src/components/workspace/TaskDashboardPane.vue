@@ -158,6 +158,7 @@
           :workspace-cwd="workspace?.cwd || ''"
           :task-id="taskState?.taskId || ''"
           :source-workspace-available="sourceWorkspaceAvailable"
+          :primary-visible="primaryVisible"
           @open-primary="onOpenPrimary"
           @open-assignment="openAssignment"
           @start="onStart"
@@ -265,12 +266,12 @@
             <span>Max rounds</span>
             <div class="td__value">{{ taskState?.maxRounds || 10 }}</div>
           </label>
-          <label class="td__field">
-            <span>Judge execution</span>
-            <div class="td__value">
-              Inspect only — never runs project code, builds, tests, or writes source. Isolation:
-              <strong>{{ judgeIsolationLabel }}</strong>
-            </div>
+          <label
+            class="td__field"
+            title="Chosen when the loop was created. Independent of the evaluator's prompt, which restricts it to read-only inspection plus its own verdict files."
+          >
+            <span>Judge permissions</span>
+            <div class="td__value">{{ judgePermissionsLabel }}</div>
           </label>
           <label class="td__field">
             <span>Primary permissions</span>
@@ -293,6 +294,7 @@ import { PROVIDER_CHOICES } from "../../lib/agent-providers.js";
 import TaskDashboardHelpTab from "./TaskDashboardHelpTab.vue";
 import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
 import TaskDashboardCompanionStatusTab from "./TaskDashboardCompanionStatusTab.vue";
+import { companionPrimaryViewId } from "../../../electron/shared/companion-primary.js";
 import TaskDashboardFilesTab from "./TaskDashboardFilesTab.vue";
 import TaskDashboardLogTab from "./TaskDashboardLogTab.vue";
 
@@ -339,20 +341,14 @@ function providerLabel(config: Record<string, any> | null | undefined) {
 const workerProviderLabel = computed(() => providerLabel(taskState.value?.workerProviderConfig));
 const judgeProviderLabel = computed(() => providerLabel(taskState.value?.judgeProviderConfig));
 
-// Same vocabulary as AgentProviderConfig.vue's creation-time picker (plan
-// §10) — the Dashboard must keep telling the truth about how much the
-// inspect-only contract is actually enforced while the loop is running, not
-// just at creation time.
-const ISOLATION_LABELS: Record<string, string> = {
-  enforced: "Enforced",
-  "permission-gated": "Permission-gated",
-  "prompt-only": "Prompt-enforced",
-};
-const judgeIsolationLabel = computed(() => {
-  const providerId = taskState.value?.judgeProviderConfig?.providerId;
-  const level = PROVIDER_CHOICES.find((c) => c.id === providerId)?.inspectionIsolation || "permission-gated";
-  return ISOLATION_LABELS[level] || level;
-});
+// Report the permission mode the loop is actually running under, chosen in the
+// companion dialog. Reading it off the persisted config rather than restating a
+// contract keeps the Dashboard honest when the user opted into the bypass.
+const judgePermissionsLabel = computed(() =>
+  taskState.value?.judgeProviderConfig?.skipPermissions
+    ? "Permission prompts bypassed — runs unattended without asking."
+    : "Permission prompts on — the loop pauses if the agent hits one.",
+);
 
 // Attached mode (Companion loop) — plan §3.5/§9: Dashboard uses Primary/role
 // labels, never Worker/Judge, and adds three states standard tasks never see.
@@ -414,6 +410,20 @@ const sourceWorkspaceAvailable = computed(() => {
   // panel is gone, so the Primary's certainly is.
   if (!panelId || !Array.isArray(panels)) return true;
   return panels.some((p) => p.id === panelId);
+});
+
+// True when the Primary is one of the panes already drawn on screen — the
+// normal desktop shape of a live attached loop puts it right below this
+// dashboard. Offering "Open Primary" then reads as "something still needs
+// opening" next to a pane that is visibly working. Keyed off visibleTabs
+// (not the split group) because that is what PaneStage actually renders: on
+// phone widths it collapses to the active tab alone, and there the button is
+// the only way to reach the Primary, so it must stay.
+const primaryVisible = computed(() => {
+  const taskWorkspaceId = workspace.value?.id;
+  if (!taskWorkspaceId) return false;
+  const aliasViewId = companionPrimaryViewId(taskWorkspaceId);
+  return (store.visibleTabs || []).some((t: { id: string }) => t.id === aliasViewId);
 });
 
 // Presentation-aware navigation: while the loop is live the Primary is a tab

@@ -77,7 +77,7 @@ describe("CompanionAgentDialog", () => {
     expect(plannerCard.classes()).not.toContain("companion-dialog__role-card--selected");
   });
 
-  test("submits the expected payload shape, always forcing skipPermissions:false on the companion provider", async () => {
+  test("submits the expected payload shape", async () => {
     setSourcePayload("claude");
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const wrapper = mountDialog("ws-source:panel-source", { onSubmit });
@@ -88,7 +88,9 @@ describe("CompanionAgentDialog", () => {
     expect(payload.sourceSessionId).toBe("ws-source:panel-source");
     expect(payload.companionRole).toBe("reviewer");
     expect(payload.focus).toBe("Pay attention to X.");
-    expect(payload.companionProvider.skipPermissions).toBe(false);
+    // Defaults to the provider's own setting (codex bypasses) so the loop runs
+    // unattended out of the box — the checkbox is there to turn it off.
+    expect(payload.companionProvider.skipPermissions).toBe(true);
     expect(payload.primaryProvider).toEqual({ providerId: "claude", model: "sonnet" });
   });
 
@@ -105,11 +107,47 @@ describe("CompanionAgentDialog", () => {
     expect(wrapper.emitted("cancel")).toBeUndefined();
   });
 
-  test("the companion provider picker never exposes skip-permissions or a custom-command escape hatch", () => {
+  // Both escape hatches are the user's to use: whether the companion bypasses
+  // permission prompts, and whether to launch a hand-written command instead of
+  // the one built from the picker.
+  test("the companion provider picker offers both skip-permissions and a custom command", () => {
     setSourcePayload("claude");
     const wrapper = mountDialog();
-    expect(wrapper.text()).not.toContain("Skip permission prompts");
-    expect(wrapper.text()).not.toContain("Advanced: custom command");
-    expect(wrapper.text()).toContain("Inspect only");
+    expect(wrapper.text()).toContain("Skip permission prompts");
+    expect(wrapper.text()).toContain("Advanced: custom command");
+    expect(wrapper.text()).not.toContain("Inspect only");
+  });
+
+  // Regression: submit used to overwrite skipPermissions with false, so the
+  // checkbox rendered but its value never reached the backend. Assert on the
+  // submitted payload, not just on what the picker draws.
+  test("submits the companion's permission choice instead of overwriting it", async () => {
+    setSourcePayload("claude");
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const wrapper = mountDialog("ws-source:panel-source", { onSubmit });
+
+    await wrapper.find('input[type="checkbox"]').setValue(true);
+    await wrapper.find("form").trigger("submit");
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companionProvider: expect.objectContaining({ skipPermissions: true }),
+      }),
+    );
+  });
+
+  test("sends a custom command only while the override is on", async () => {
+    setSourcePayload("claude");
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const wrapper = mountDialog("ws-source:panel-source", { onSubmit });
+
+    await wrapper.find("form").trigger("submit");
+    expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ companionCommand: undefined }));
+
+    await wrapper.find(".agent-config-section__advanced-btn").trigger("click");
+    await wrapper.find(".agent-config-section input[maxlength='500']").setValue("codex --my-flag");
+    await wrapper.find("form").trigger("submit");
+
+    expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ companionCommand: "codex --my-flag" }));
   });
 });

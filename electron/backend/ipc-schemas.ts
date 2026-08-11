@@ -791,6 +791,9 @@ export const taskCompanionCreateSchema = z.object({
   primaryProvider: providerConfigSchema.optional(),
   companionRole: z.enum(["reviewer", "planner", "consultant", "critic"]),
   companionProvider: providerConfigSchema,
+  // Full CLI command, replacing the one built from companionProvider — the
+  // same escape hatch a standard task's worker/judge already has.
+  companionCommand: z.string().max(500).optional(),
   focus: z.string().max(5000).optional().default(""),
   maxRounds: z.number().int().min(1).max(100).optional(),
 });

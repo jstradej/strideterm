@@ -197,19 +197,25 @@ describe("createCompanionTask", () => {
     ).rejects.toThrow(/panel no longer exists/i);
   });
 
-  test("rejects companionProvider.skipPermissions:true rather than silently stripping it", async () => {
+  // The bypass is the user's decision, made in the companion dialog — the
+  // handler carries it through rather than rejecting or stripping it.
+  test("passes companionProvider.skipPermissions:true through instead of rejecting or stripping it", async () => {
     const source = createSourceWorkspace();
-    const { runtime } = createTestRuntime({ workspaces: [source] });
-    await expect(
-      runtime.createCompanionTask(
-        {
-          sourceSessionId: "workspace-source:panel-source",
-          companionRole: "reviewer",
-          companionProvider: { providerId: "codex", model: "gpt-5.5", skipPermissions: true },
-        },
-        "window-1",
-      ),
-    ).rejects.toThrow(/inspect-only/i);
+    const { runtime, taskRunner } = createTestRuntime({ workspaces: [source] });
+    await runtime.createCompanionTask(
+      {
+        sourceSessionId: "workspace-source:panel-source",
+        companionRole: "reviewer",
+        companionProvider: { providerId: "codex", model: "gpt-5.6-terra", skipPermissions: true },
+      },
+      "window-1",
+    );
+
+    expect(taskRunner.createCompanionTaskWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companionProvider: expect.objectContaining({ skipPermissions: true }),
+      }),
+    );
   });
 
   test("refuses a second active companion loop over the same source session", async () => {

@@ -55,13 +55,16 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     name: "Codex CLI",
     defaultSkipPermissions: true,
     inspectionIsolation: "permission-gated",
+    // Catalog per developers.openai.com/codex/models (checked 2026-08-11).
+    // Dropped: gpt-5.3-codex (already deprecated), gpt-5.4 and gpt-5.4-mini
+    // (retire from Codex 2026-08-31).
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: "judge" },
-      { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: "worker" },
-      { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: null },
-      { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
-      { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
+      { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", suggestedRole: "worker" },
+      { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", suggestedRole: null },
+      { id: "gpt-5.3-codex-spark", name: "GPT-5.3 Codex Spark", suggestedRole: null },
+      { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: null },
     ],
   },
   {

@@ -60,15 +60,17 @@
 
       <!-- capturing-context -->
       <div v-if="taskState?.state === 'capturing-context'" class="td__hero">
-        <button
-          v-if="sourceWorkspaceAvailable"
-          type="button"
-          class="button td__hero-start"
-          @click="$emit('open-primary')"
-        >
+        <p v-if="!sourceWorkspaceAvailable" class="tdc__warning">
+          The Primary conversation's workspace is no longer available in this profile.
+        </p>
+        <!-- Nothing to offer when the Primary is already one of the panes on
+             screen: the capture is visibly running in it, and a call-to-action
+             button next to it only suggests the user still has a step to take.
+             Still shown on phone widths, where the split collapses and this is
+             the only route to the Primary. -->
+        <button v-else-if="!primaryVisible" type="button" class="button td__hero-start" @click="$emit('open-primary')">
           Open Primary
         </button>
-        <p v-else class="tdc__warning">The Primary conversation's workspace is no longer available in this profile.</p>
       </div>
 
       <!-- brief-ready -->
@@ -174,8 +176,10 @@ const props = withDefaults(
     workspaceCwd?: string;
     taskId?: string;
     sourceWorkspaceAvailable?: boolean;
+    /** The Primary is already a pane on screen, so prompts to go open it are noise. */
+    primaryVisible?: boolean;
   }>(),
-  { taskState: null, workspaceCwd: "", taskId: "", sourceWorkspaceAvailable: true },
+  { taskState: null, workspaceCwd: "", taskId: "", sourceWorkspaceAvailable: true, primaryVisible: false },
 );
 
 const emit = defineEmits<{
@@ -213,7 +217,7 @@ const pendingQuestions = computed(() => props.taskState?.pendingQuestions || [])
 const primaryMissing = computed(() => Boolean(props.taskState?.primaryMissing));
 
 const pausedEyebrow = computed(() => {
-  if (props.taskState?.judgePolicyViolation) return "Paused: policy violation";
+  if (props.taskState?.judgePolicyViolation) return "Paused: permission prompt";
   return "Paused";
 });
 
@@ -222,17 +226,21 @@ const pausedEyebrow = computed(() => {
 // stopped in is carried by the pipeline, so neither line repeats it.
 const pausedWhy = computed(() => {
   if (props.taskState?.judgePolicyViolation) {
-    return `${companionRoleLabel.value} hit a permission prompt during evaluation — it tried something outside its inspect-only scope, so the loop was paused instead of continuing.`;
+    return `${companionRoleLabel.value} is waiting on a permission prompt, which nothing can answer on the loop's behalf — so the loop paused instead of sitting there. This only happens when the ${companionRoleLabel.value} was created without permission prompts bypassed.`;
   }
   return "A paused loop sends nothing to either side — it keeps its rounds and resumes from where it stopped.";
 });
 
 const pausedNext = computed(() => {
   if (props.taskState?.judgePolicyViolation) {
-    return `Check the ${companionRoleLabel.value}'s panel, then Continue to re-run the evaluation.`;
+    return `Answer the prompt in the ${companionRoleLabel.value}'s panel, then Continue to re-run the evaluation.`;
   }
   const from = props.taskState?.pausedFromState || "";
-  if (from === "capturing-context") return "Open Primary to check what it wrote, then Continue.";
+  if (from === "capturing-context") {
+    return props.primaryVisible
+      ? "Check what the Primary wrote, then Continue."
+      : "Open Primary to check what it wrote, then Continue.";
+  }
   if (from === "judge-evaluating") return "Continue resumes reading the verdict.";
   if (from === "awaiting-user") return "Continue brings the open question back for your answer.";
   return "Continue when ready, or Reset to start over.";

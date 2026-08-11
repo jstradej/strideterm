@@ -431,13 +431,6 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         throw new Error("The Primary conversation isn't currently running. Open it and try again.");
       }
 
-      // Never silently accept a permission-bypass Judge — the attached Judge
-      // is always inspect-only (plan §3.2/§10). Reject with a clear error
-      // rather than quietly stripping the flag, so a client bug surfaces.
-      if (config.companionProvider?.skipPermissions === true) {
-        throw new Error("The attached Judge can never run with skipPermissions — it is always inspect-only.");
-      }
-
       const effectiveCwd = sourcePanel.cwd || sourceWorkspace.cwd;
       const callerProfileId = resolveCallerProfileId(state, windowId, sourceWorkspaceId);
       // Same profile-aware same-cwd guard the standard create path uses.
@@ -463,7 +456,8 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         workerPanelId: sourcePanelId,
         primaryProvider: config.primaryProvider || null,
         companionRole: config.companionRole,
-        companionProvider: { ...config.companionProvider, skipPermissions: false },
+        companionProvider: config.companionProvider,
+        companionCommand: config.companionCommand,
         focus: config.focus,
         maxRounds: config.maxRounds,
         callerProfileId,

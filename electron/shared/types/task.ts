@@ -191,9 +191,6 @@ export interface TaskState {
   /** Attached only: ISO timestamp set when the user confirms the captured
    * brief and starts the baseline Companion evaluation (Brief ready -> Start). */
   contextApprovedAt?: string;
-  /** Attached only: always "inspect-only" once set. Invariant, never toggled
-   * by user input — recorded so the value survives reload/snapshot. */
-  judgeExecutionPolicy?: "inspect-only";
   /** Attached only: ISO timestamp of the last time companion feedback (or the
    * baseline "continue") was injected into the Primary session. Used to
    * decide whether a VERIFICATION.md on disk is fresh (written after this
@@ -220,7 +217,7 @@ export interface TaskState {
     round: number | null;
   };
   /** Attached only: set when the runner paused the task because the
-   * inspect-only Judge/Companion hit a permission prompt during evaluation —
+   * Judge/Companion hit a permission prompt during evaluation —
    * a signal it tried something outside its allowlisted task-artifact write
    * (plan section 10). Distinguishes this from an ordinary pause/dropout so
    * the Dashboard can say why. Cleared on resume/reset. */

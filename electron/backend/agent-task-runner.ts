@@ -2564,15 +2564,11 @@ export class AgentTaskRunner {
   }
 
   /**
-   * Attached Judge (Companion) always starts without permission-bypass/yolo
-   * flags — it is contractually inspect-only (plan section 10). A permission
-   * prompt firing while it's evaluating means the provider tried to execute
-   * project code, write outside the allowlisted task-artifact path, or use
-   * some other un-allowlisted tool — a violation of that contract, not a
-   * routine wait. Pause immediately rather than nudging/retrying so the loop
-   * never silently continues past it; the allowlisted verdict.json/JUDGE_TODO.md
-   * write itself never triggers a permission prompt, so this can't misfire on
-   * normal Companion output.
+   * A permission prompt can only reach the Companion when the user chose NOT to
+   * bypass prompts for it in the companion dialog. Nothing can answer that
+   * prompt on the loop's behalf, so the evaluation would sit there forever —
+   * pause and say so instead of nudging, retrying, or waiting silently. With
+   * the bypass enabled (the default for most providers) this never fires.
    */
   #handleJudgePermissionPrompt(sessionId: string): boolean {
     const binding = this.#resolveTaskBinding(sessionId);
@@ -2585,20 +2581,20 @@ export class AgentTaskRunner {
     this.#setTaskState(task, "paused");
     this.#evaluating.delete(workspace.id);
     const roleLabel = COMPANION_ROLE_DISPLAY_NAMES[task.companionRole as CompanionRole];
-    log.warn("attached judge hit a permission prompt during evaluation — paused as a policy violation", {
+    log.warn("attached judge hit a permission prompt during evaluation — paused, nothing can answer it", {
       workspaceId: workspace.id,
       sessionId,
       companionRole: task.companionRole,
     });
     void this.#logTaskEvent(
       workspace,
-      "judge-policy-violation",
-      `${roleLabel} tried an action outside its inspect-only scope during evaluation — paused.`,
+      "judge-permission-prompt",
+      `${roleLabel} is waiting on a permission prompt during evaluation — paused.`,
     );
     this.#raiseTaskAlert(
       workspace,
       "failed",
-      `${roleLabel} paused: it hit a permission prompt during inspect-only evaluation.`,
+      `${roleLabel} paused on a permission prompt. Answer it in its panel, then Continue — or recreate the loop with permission prompts bypassed.`,
     );
     this.#broadcastState!();
     return true;
@@ -2861,7 +2857,6 @@ export class AgentTaskRunner {
         companionRole: task.companionRole || null,
         companionFocus: task.companionFocus || "",
         contextApprovedAt: task.contextApprovedAt || null,
-        judgeExecutionPolicy: task.judgeExecutionPolicy || null,
         companionPhase: task.companionPhase || null,
         pendingQuestions: task.pendingQuestions || [],
         lastCompanionVerdict: task.lastCompanionVerdict || null,
@@ -3345,6 +3340,7 @@ export class AgentTaskRunner {
     primaryProvider,
     companionRole,
     companionProvider,
+    companionCommand,
     focus,
     maxRounds,
     callerProfileId = "",
@@ -3357,6 +3353,8 @@ export class AgentTaskRunner {
     primaryProvider?: ParsedProviderConfig | null;
     companionRole: CompanionRole;
     companionProvider: ParsedProviderConfig;
+    /** Full CLI command that replaces the one built from companionProvider. */
+    companionCommand?: string;
     focus?: string;
     maxRounds?: number;
     callerProfileId?: string;
@@ -3389,13 +3387,17 @@ export class AgentTaskRunner {
     const jp = getProvider(companionProvider.providerId);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const jpCtor = jp.constructor as any;
-    const resolvedJudgeCmd = jp.buildCommand({
-      model: companionProvider.model,
-      role: "judge",
-      // Attached Judge is always inspect-only (plan §3.2/§10) — never a
-      // permission bypass, and no custom-command override exists for it.
-      skipPermissions: false,
-    });
+    // Same precedence as a standard task's worker/judge: an explicit command
+    // wins, otherwise build one from the picked provider. Whether to bypass
+    // permission prompts is the user's choice — a companion that has to ask
+    // before reading a file cannot run its loop unattended.
+    const resolvedJudgeCmd =
+      companionCommand?.trim() ||
+      jp.buildCommand({
+        model: companionProvider.model,
+        role: "judge",
+        skipPermissions: companionProvider.skipPermissions === true,
+      });
     const judgeTitle = `${roleLabel} (${jpCtor.displayName} ${companionProvider.model})`;
 
     return {
@@ -3455,11 +3457,9 @@ export class AgentTaskRunner {
         lastShowerRound: 0,
         lastJudgeInstructions: "",
         workerProviderConfig: primaryProvider || null,
-        // Stored config must agree with the command actually built above —
-        // never persist skipPermissions:true for an attached Judge even if
-        // the caller passed it (defense in depth; the create handler already
-        // rejects it, but this method must never be the one that drifts).
-        judgeProviderConfig: { ...companionProvider, skipPermissions: false },
+        // Stored config must agree with the command actually built above, so
+        // that a reload or a Continue rebuilds the same agent.
+        judgeProviderConfig: { ...companionProvider, skipPermissions: companionProvider.skipPermissions === true },
         startedAt: null,
         totalPausedMs: 0,
         pausedAt: null,
@@ -3474,7 +3474,6 @@ export class AgentTaskRunner {
         workerWorkspaceId,
         companionRole,
         companionFocus: focus?.trim() || "",
-        judgeExecutionPolicy: "inspect-only",
       } as RuntimeTaskState,
     };
   }

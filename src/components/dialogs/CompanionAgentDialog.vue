@@ -54,13 +54,11 @@
       <section class="companion-dialog__section">
         <span class="companion-dialog__section-label">Judge / evaluator agent</span>
         <AgentProviderConfig
+          v-model:panel-command="companionCommand"
+          v-model:command-override="companionCommandOverride"
           role="judge"
           :provider="companionProvider"
-          :panel-command="''"
-          :command-override="false"
           :provider-options="companionProviderOptions"
-          :allow-custom-command="false"
-          :allow-skip-permissions="false"
           @update:provider="onUpdateCompanionProvider"
         />
       </section>
@@ -83,9 +81,6 @@
           <span>Max rounds</span>
           <input v-model.number="maxRounds" type="number" min="1" max="100" />
         </label>
-        <p class="companion-dialog__hint companion-dialog__locked">
-          Judge execution: <strong>Inspect only</strong> — always read-only, never runs project code (locked).
-        </p>
       </details>
 
       <div v-if="errorMessage" class="dialog__error" role="alert">
@@ -195,7 +190,8 @@ function detectProviderFromCommand(command: string): ProviderConfig | null {
   if (/^claude(\s|$)/.test(trimmed))
     return { providerId: "claude", model: extractModelFromCommand(trimmed) || "sonnet" };
   if (/^codex(\s|$)/.test(trimmed))
-    return { providerId: "codex", model: extractModelFromCommand(trimmed) || "gpt-5.4-mini" };
+    // gpt-5.4-mini until 2026-08-11 — it retires from Codex on 2026-08-31.
+    return { providerId: "codex", model: extractModelFromCommand(trimmed) || "gpt-5.6-luna" };
   if (/^gemini(\s|$)/.test(trimmed))
     return { providerId: "gemini", model: extractModelFromCommand(trimmed) || "gemini-2.5-flash" };
   if (/^copilot(\s|$)/.test(trimmed))
@@ -230,19 +226,33 @@ const sourceProviderLabel = computed(() => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const taskDefaults = computed<any>(() => store.payload?.appState?.settings?.taskDefaults || {});
+// Whether the companion bypasses permission prompts is the user's call, like
+// it is for a standard task's worker and judge. An evaluator that stops to ask
+// whether it may read a file can't run a loop unattended, so the provider's own
+// default (or the stored task default) applies here rather than a forced false.
+function defaultSkipPermissionsFor(providerId: string): boolean {
+  return PROVIDER_CHOICES.find((c) => c.id === providerId)?.defaultSkipPermissions ?? false;
+}
+
 const companionProvider = reactive<ProviderConfig>({
   providerId: taskDefaults.value.judgeProvider?.providerId || "codex",
   model: taskDefaults.value.judgeProvider?.model || "gpt-5.6-sol",
-  // Attached Judge is always inspect-only — never a permission bypass,
-  // regardless of what the reused default judge provider carries.
-  skipPermissions: false,
+  skipPermissions:
+    taskDefaults.value.judgeProvider?.skipPermissions ??
+    defaultSkipPermissionsFor(taskDefaults.value.judgeProvider?.providerId || "codex"),
 });
 const companionProviderOptions = PROVIDER_CHOICES.map((c) => ({ value: c.id, label: c.name }));
+
+// Custom-command escape hatch, same as a standard task's worker/judge: while
+// the override is on, this raw string is launched verbatim and the provider
+// picker above only labels the panel.
+const companionCommand = ref("");
+const companionCommandOverride = ref(false);
 
 function onUpdateCompanionProvider(next: ProviderConfig) {
   companionProvider.providerId = next.providerId;
   companionProvider.model = next.model;
-  companionProvider.skipPermissions = false;
+  companionProvider.skipPermissions = next.skipPermissions ?? false;
 }
 
 // --- Submit ---------------------------------------------------------------
@@ -267,6 +277,7 @@ async function handleSubmit() {
             primaryProvider: ProviderConfig | null;
             companionRole: CompanionRole;
             companionProvider: ProviderConfig;
+            companionCommand: string | undefined;
             focus: string;
             maxRounds: number;
           }) => Promise<void>)
@@ -275,7 +286,8 @@ async function handleSubmit() {
       sourceSessionId: props.sourceSessionId,
       primaryProvider: effectivePrimaryProvider.value,
       companionRole: selectedRole.value,
-      companionProvider: { ...companionProvider, skipPermissions: false },
+      companionProvider: { ...companionProvider },
+      companionCommand: companionCommandOverride.value ? companionCommand.value.trim() : undefined,
       focus: focus.value.trim(),
       maxRounds: maxRounds.value,
     });
@@ -390,8 +402,5 @@ function extractErrorMessage(err: unknown): string {
   align-items: center;
   gap: 8px;
   max-width: 160px;
-}
-.companion-dialog__locked {
-  margin-top: 8px;
 }
 </style>

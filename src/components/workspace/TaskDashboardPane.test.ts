@@ -454,13 +454,22 @@ describe("TaskDashboardPane — attached mode (Companion loop) labels", () => {
     expect(text).toContain("Primary");
     expect(text).toContain("Judge role");
     expect(text).toContain("Evaluator");
-    expect(text).toContain("Inspect only");
     expect(text).toContain("Primary permissions");
     expect(text).not.toContain("Worker agent");
-    // Truthful ongoing isolation label (plan §10) — not just shown once in
-    // the creation dialog. Codex's inspectionIsolation is "permission-gated".
-    expect(text).toContain("Isolation:");
-    expect(text).toContain("Permission-gated");
+    // Reports the permission mode the loop actually runs under, read off the
+    // persisted judge config rather than restating a fixed contract.
+    expect(text).toContain("Judge permissions");
+    expect(text).toContain("Permission prompts on");
+  });
+
+  test("Config tab reports a bypassed judge as running unattended", async () => {
+    const wrapper = mountAttached({
+      state: "running",
+      judgeProviderConfig: { providerId: "codex", model: "gpt-5.6-terra", skipPermissions: true },
+    });
+    const config = wrapper.findAll(".td__tab").find((t) => t.text() === "Config")!;
+    await config.trigger("click");
+    expect(wrapper.find(".td__section").text()).toContain("Permission prompts bypassed");
   });
 
   // Judge round-4 finding (item 68): the attached Assignment tab never showed

@@ -129,6 +129,7 @@ async function setupAttached(overrides: any = {}) {
     workerPanelId: source.panels[0].id,
     companionRole: overrides.role || "reviewer",
     companionProvider: overrides.companionProvider || { providerId: "codex", model: "gpt-5.5" },
+    companionCommand: overrides.companionCommand,
     focus: overrides.focus,
     maxRounds: overrides.maxRounds || 5,
   });
@@ -261,7 +262,6 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
         expect(companionWorkspace.panels[0].command).toBe("__task-dashboard__");
         expect(companionWorkspace.panels[1].id).toBe(companionWorkspace.task.judgePanelId);
         expect(companionWorkspace.task.mode).toBe("attached");
-        expect(companionWorkspace.task.judgeExecutionPolicy).toBe("inspect-only");
         expect(companionWorkspace.task.state).toBe("idle");
         expect(companionWorkspace.task.showerInterval).toBe(0);
       } finally {
@@ -282,9 +282,38 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
       expect(companionWorkspace.cwd).toBe("/tmp/panel-cwd");
     });
 
-    test("never persists skipPermissions:true for the companion provider, even if the caller passed it", async () => {
+    // Whether the companion bypasses permission prompts is the user's choice —
+    // an evaluator that stops to ask before reading a file can't run its loop
+    // unattended. The built command and the persisted config must agree, so a
+    // reload or a Continue rebuilds the same agent.
+    test("launches the companion with the permission bypass the caller asked for, and persists it", async () => {
       const { tmp, companionWorkspace } = await setupAttached({
-        companionProvider: { providerId: "codex", model: "gpt-5.5", skipPermissions: true },
+        companionProvider: { providerId: "codex", model: "gpt-5.6-terra", skipPermissions: true },
+      });
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        expect((companionWorkspace.task.judgeProviderConfig as any).skipPermissions).toBe(true);
+        expect(companionWorkspace.panels[1].command).toContain("dangerously-bypass-approvals-and-sandbox");
+      } finally {
+        await cleanup(tmp);
+      }
+    });
+
+    test("launches a custom command verbatim instead of building one from the provider", async () => {
+      const { tmp, companionWorkspace } = await setupAttached({
+        companionProvider: { providerId: "codex", model: "gpt-5.6-terra" },
+        companionCommand: "codex --my-own-flag --model gpt-5.6-luna",
+      });
+      try {
+        expect(companionWorkspace.panels[1].command).toBe("codex --my-own-flag --model gpt-5.6-luna");
+      } finally {
+        await cleanup(tmp);
+      }
+    });
+
+    test("keeps prompts on when the caller declines the bypass", async () => {
+      const { tmp, companionWorkspace } = await setupAttached({
+        companionProvider: { providerId: "codex", model: "gpt-5.6-terra", skipPermissions: false },
       });
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

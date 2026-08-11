@@ -2,12 +2,7 @@
   <div class="agent-config-section">
     <div class="agent-config-section__header">
       <span class="agent-config-section__label">{{ sectionLabel }}</span>
-      <button
-        v-if="allowCustomCommand"
-        type="button"
-        class="button button--ghost agent-config-section__advanced-btn"
-        @click="toggleOverride"
-      >
+      <button type="button" class="button button--ghost agent-config-section__advanced-btn" @click="toggleOverride">
         {{ commandOverride ? "Use provider picker" : "Advanced: custom command" }}
       </button>
     </div>
@@ -32,13 +27,10 @@
           </datalist>
         </label>
       </div>
-      <label v-if="allowSkipPermissions" class="checkbox-inline">
+      <label class="checkbox-inline" :title="skipPermissionsTitle">
         <input v-model="skipPermissions" type="checkbox" />
         <span>Skip permission prompts (dangerous)</span>
       </label>
-      <p v-else class="agent-config-section__isolation-note" :title="isolationTitle">
-        Inspect-only — permission bypass is never enabled here. Isolation: <strong>{{ isolationLabel }}</strong>
-      </p>
     </template>
     <label v-else title="Full CLI command including flags">
       <span>{{ commandLabel }}</span>
@@ -58,47 +50,24 @@ interface Props {
   panelCommand: string;
   commandOverride: boolean;
   providerOptions: Array<{ value: string; label: string; disabled?: boolean }>;
-  /** false for the attached-mode Companion picker (plan §9) — hides the raw
-   * custom-command escape hatch so the backend's inspect-only contract can't
-   * be bypassed from the UI. */
-  allowCustomCommand?: boolean;
-  /** false for the attached-mode Companion picker — hides the skip-
-   * permissions checkbox entirely; the attached Judge is always inspect-only. */
-  allowSkipPermissions?: boolean;
 }
 
-const props = withDefaults(defineProps<Props>(), {
-  allowCustomCommand: true,
-  allowSkipPermissions: true,
-});
+const props = defineProps<Props>();
 const emit = defineEmits<{
   "update:provider": [provider: ProviderConfig];
   "update:panelCommand": [command: string];
   "update:commandOverride": [value: boolean];
 }>();
 
-// Plan §3.2 "Capability význam" — never claim a hard sandbox the provider
-// can't demonstrably enforce. "prompt-only" is shown as "Prompt-enforced" to
-// make clear it's a contract, not a technical guarantee.
-const ISOLATION_LABELS: Record<string, string> = {
-  enforced: "Enforced",
-  "permission-gated": "Permission-gated",
-  "prompt-only": "Prompt-enforced",
-};
-const ISOLATION_TITLES: Record<string, string> = {
-  enforced: "This provider has a verified read-only/execution-disabled mode for project files.",
-  "permission-gated":
-    "No permission bypass flag is used — the provider's own per-tool approval prompt gates any write or execution attempt, and the app pauses the task instead of auto-approving it.",
-  "prompt-only":
-    "This provider cannot demonstrably gate tool use on its own. Only the runner's prompt contract restrains it — not an enforced technical boundary.",
-};
-const isolationLevel = computed(
-  () => PROVIDER_CHOICES.find((c) => c.id === props.provider.providerId)?.inspectionIsolation || "permission-gated",
-);
-const isolationLabel = computed(() => ISOLATION_LABELS[isolationLevel.value] || isolationLevel.value);
-const isolationTitle = computed(() => ISOLATION_TITLES[isolationLevel.value] || "");
-
 const sectionLabel = computed(() => (props.role === "worker" ? "Worker agent" : "Judge agent"));
+// Says what the flag actually changes. For the judge it also names what still
+// holds it back, so unchecked isn't mistaken for the only thing keeping the
+// evaluator out of your source tree.
+const skipPermissionsTitle = computed(() =>
+  props.role === "worker"
+    ? "Launch with the provider's permission-bypass flag: the agent edits files and runs commands without stopping to ask. Required for an unattended loop."
+    : "Launch with the provider's permission-bypass flag so the evaluation runs unattended — nothing can answer a prompt on the loop's behalf, and hitting one pauses the task. Its prompt still restricts it to read-only inspection plus its own verdict files.",
+);
 const commandLabel = computed(() => (props.role === "worker" ? "Worker command" : "Judge command"));
 const commandPlaceholder = computed(() =>
   props.role === "worker"
