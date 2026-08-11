@@ -824,6 +824,25 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     win.flashFrame(false);
   });
 
+  // The renderer can't work out on its own that nobody is watching it: with
+  // backgroundThrottling disabled (above, for the xterm WebGL renderer)
+  // Electron pins document.visibilityState to "visible" forever and never
+  // fires visibilitychange. So push the transitions from here instead — this
+  // drives the `html.app-hidden` animation freeze in base.css.
+  //
+  // Covers minimize and win.hide() only. A window merely *covered* by other
+  // windows can't be detected: Chromium tracks native occlusion internally but
+  // exposes no API for it — BrowserWindow.isOccluded() was reverted five days
+  // after landing (electron/electron#41311) and is absent from Electron 43.
+  const sendVisibility = (hidden: boolean) => {
+    if (win.isDestroyed()) return;
+    win.webContents.send("window:visibility", { hidden });
+  };
+  win.on("minimize", () => sendVisibility(true));
+  win.on("hide", () => sendVisibility(true));
+  win.on("restore", () => sendVisibility(false));
+  win.on("show", () => sendVisibility(false));
+
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
     if (!isMainFrame) return;
     log.error("createWindow: did-fail-load", {

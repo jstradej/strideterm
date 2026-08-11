@@ -201,3 +201,18 @@ textarea {
 .frame--notif-pinned.frame--sidebar-collapsed {
   grid-template-columns: var(--sidebar-collapsed-width) 1fr var(--notif-dock-width);
 }
+
+/* Freeze every CSS animation while the window is hidden or minimized.
+   Electron runs our windows with `backgroundThrottling: false` (main.ts), so
+   Chromium keeps servicing a backgrounded renderer at the full frame rate
+   instead of dropping to ~1 fps — a single infinite animation then burns CPU
+   all night with nobody looking. Set by useGlobalEvents() on visibilitychange.
+
+   `!important` is load-bearing: the `animation` shorthand every animated rule
+   uses resets animation-play-state to `running`, and those rules are more
+   specific than this one. */
+html.app-hidden *,
+html.app-hidden *::before,
+html.app-hidden *::after {
+  animation-play-state: paused !important;
+}

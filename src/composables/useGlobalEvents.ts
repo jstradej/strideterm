@@ -35,8 +35,36 @@ export function useGlobalEvents() {
     }
   }
 
+  // Drives the `html.app-hidden` animation freeze in base.css. Desktop windows
+  // run with backgroundThrottling disabled, so Chromium keeps a minimized
+  // renderer painting at 60 fps — infinite CSS animations (spinners, status
+  // pulses) otherwise cost real CPU for hours with nothing on screen.
+  //
+  // Two independent inputs because neither covers both clients: Electron pins
+  // document.visibilityState to "visible" when backgroundThrottling is off, so
+  // desktop windows only learn about it from main's window:visibility push;
+  // remote/mobile browsers have no such push and rely on visibilitychange.
+  // Whichever says "hidden" wins.
+  let windowHidden = false;
+
+  function syncHiddenClass() {
+    const hidden = windowHidden || document.visibilityState === "hidden";
+    document.documentElement.classList.toggle("app-hidden", hidden);
+  }
+
   function handleVisibility() {
+    syncHiddenClass();
     if (document.visibilityState === "visible") {
+      reclaimTerminalSize();
+    }
+  }
+
+  function handleWindowVisibility(payload: { hidden: boolean }) {
+    windowHidden = payload.hidden;
+    syncHiddenClass();
+    if (!payload.hidden) {
+      // Restoring from minimized is a resize as far as the panes are concerned —
+      // the same reclaim visibilitychange does for the remote client.
       reclaimTerminalSize();
     }
   }
@@ -80,6 +108,14 @@ export function useGlobalEvents() {
     window.addEventListener("focus", reclaimTerminalSize);
     window.addEventListener("orientationchange", handleOrientationChange);
     document.addEventListener("visibilitychange", handleVisibility);
+    // Desktop only — absent on the remote/mobile client, which uses
+    // visibilitychange above. Fire-and-forget: main owns the window's lifetime,
+    // so there is nothing to unsubscribe on unmount.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).strideterm?.onWindowVisibility?.(handleWindowVisibility);
+    // Mount can happen while already hidden (remote client opened in a
+    // background tab).
+    syncHiddenClass();
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", handleVisualViewportResize);
     }
@@ -91,6 +127,7 @@ export function useGlobalEvents() {
     window.removeEventListener("focus", reclaimTerminalSize);
     window.removeEventListener("orientationchange", handleOrientationChange);
     document.removeEventListener("visibilitychange", handleVisibility);
+    document.documentElement.classList.remove("app-hidden");
     if (window.visualViewport) {
       window.visualViewport.removeEventListener("resize", handleVisualViewportResize);
     }

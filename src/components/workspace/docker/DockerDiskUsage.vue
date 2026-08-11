@@ -222,13 +222,24 @@ watch(
   font-style: italic;
 }
 
+/* The shimmer is a band sliding across on `transform` rather than a gradient
+   scrolled with `background-position`. background-position can't be
+   composited, so the old version repainted all four skeleton rows on the
+   renderer's main thread every frame for as long as the fetch was in flight. */
 .disk-usage__skel {
+  position: relative;
   display: inline-block;
   height: 9px;
   border-radius: 3px;
   vertical-align: middle;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.05));
-  background-size: 200% 100%;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+}
+.disk-usage__skel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0));
   animation: disk-usage-skeleton 1.4s ease-in-out infinite;
 }
 .disk-usage__skel--sm {
@@ -242,12 +253,13 @@ watch(
   max-width: 100%;
 }
 
+/* Right-to-left, matching the direction the old background-position sweep ran. */
 @keyframes disk-usage-skeleton {
   0% {
-    background-position: 200% 0;
+    transform: translateX(100%);
   }
   100% {
-    background-position: -200% 0;
+    transform: translateX(-100%);
   }
 }
 

@@ -253,6 +253,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   openDiffPopout: (payload) => ipcRenderer.invoke("diff:popout:open", payload),
   getDiffPopoutInit: () => ipcRenderer.invoke("diff:popout:get-init"),
   onNewWindowShortcut: (handler) => ipcRenderer.on("shortcut:new-window", () => handler()),
+  onWindowVisibility: (handler) => ipcRenderer.on("window:visibility", (_event, payload) => handler(payload)),
   onConfirmCloseRequest: (handler) =>
     ipcRenderer.on("window:confirm-close-request", (_event, payload) => handler(payload)),
   fileList: (p) => ipcRenderer.invoke("file:list", p),

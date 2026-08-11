@@ -549,6 +549,13 @@ export interface StridetermAPI {
   respondConfirmClose: (confirmed: boolean) => Promise<void>;
   onNewWindowShortcut: (handler: () => void) => void;
   /**
+   * Main reports that the window was minimized/hidden or came back. Stands in
+   * for the Page Visibility API, which Electron pins to "visible" while
+   * `backgroundThrottling` is disabled. Occlusion is not reported — Electron
+   * exposes no API for it.
+   */
+  onWindowVisibility: (handler: (payload: { hidden: boolean }) => void) => void;
+  /**
    * Main asks the renderer to confirm closing the last main window because
    * workspaces / running task agents would be lost. The renderer must reply
    * via {@link respondConfirmClose}; until it does, the window stays open.

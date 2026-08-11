@@ -805,10 +805,22 @@ const selectedRoundEntries = computed(() => {
   background: #333;
   color: #666;
 }
+/* The glow lives on a pseudo-element so the pulse can animate `opacity`, which
+   the compositor handles on its own thread. Animating `box-shadow` directly
+   repaints the circle on the renderer's main thread every single frame — an
+   idle window left overnight sat at a steady 60 fps because of it. */
 .td__pipe-step--active .td__pipe-circle {
   background: #4caf50;
   color: #fff;
+  position: relative;
+}
+.td__pipe-step--active .td__pipe-circle::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
   box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
+  pointer-events: none;
   animation: pipe-pulse 1.5s ease-in-out infinite;
 }
 .td__pipe-step--active .td__pipe-name {
@@ -838,10 +850,10 @@ const selectedRoundEntries = computed(() => {
 @keyframes pipe-pulse {
   0%,
   100% {
-    box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
+    opacity: 1;
   }
   50% {
-    box-shadow: 0 0 2px rgba(76, 175, 80, 0.2);
+    opacity: 0.4;
   }
 }
 
@@ -910,19 +922,30 @@ const selectedRoundEntries = computed(() => {
   background: #283593;
   color: #9fa8da;
 }
+/* Glow on a pseudo-element for the same reason as .td__pipe-circle above —
+   keeps the pulse on the compositor instead of repainting every frame.
+   `pointer-events: none` so the chip stays clickable through it. */
 .td__rchip--active {
   background: #4caf50;
   color: #fff;
+  position: relative;
+}
+.td__rchip--active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
   box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+  pointer-events: none;
   animation: rchip-pulse 1.5s ease-in-out infinite;
 }
 @keyframes rchip-pulse {
   0%,
   100% {
-    box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+    opacity: 1;
   }
   50% {
-    box-shadow: 0 0 2px rgba(76, 175, 80, 0.2);
+    opacity: 0.4;
   }
 }
 .td__rchip--neutral {

@@ -514,6 +514,10 @@ describe("remote transport API parity — no method silently missing its remote 
     "getDiffPopoutInit",
     "onNewWindowShortcut",
     "onConfirmCloseRequest",
+    // Stands in for the Page Visibility API, which Electron pins to "visible"
+    // while backgroundThrottling is disabled. A remote browser client has a
+    // working visibilitychange and doesn't need the push.
+    "onWindowVisibility",
     // Renderer-side logging writes into the Electron main-process log file,
     // which doesn't exist for a remote browser client. Always called via
     // optional chaining (api.logRenderer?.(...)) at every call site.

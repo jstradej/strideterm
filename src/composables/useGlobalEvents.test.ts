@@ -162,3 +162,112 @@ describe("useGlobalEvents — empty-store guard", () => {
     wrapper.unmount();
   });
 });
+
+describe("useGlobalEvents — hidden-window animation freeze", () => {
+  function setVisibility(state: "visible" | "hidden") {
+    Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    isMobileViewport.value = false;
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.documentElement.classList.remove("app-hidden");
+  });
+
+  test("hiding the window adds app-hidden, showing it again removes it", () => {
+    const wrapper = mount(Host);
+
+    setVisibility("hidden");
+    expect(document.documentElement.classList.contains("app-hidden")).toBe(true);
+
+    setVisibility("visible");
+    expect(document.documentElement.classList.contains("app-hidden")).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  test("mounting while already hidden marks the document immediately", () => {
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+
+    const wrapper = mount(Host);
+
+    expect(document.documentElement.classList.contains("app-hidden")).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  test("unmount clears the class so a torn-down app never leaves animations frozen", () => {
+    const wrapper = mount(Host);
+    setVisibility("hidden");
+
+    wrapper.unmount();
+
+    expect(document.documentElement.classList.contains("app-hidden")).toBe(false);
+  });
+});
+
+describe("useGlobalEvents — desktop window:visibility bridge", () => {
+  // Electron pins document.visibilityState to "visible" while
+  // backgroundThrottling is disabled, so the desktop path must work with the
+  // document reporting "visible" the entire time.
+  let emit: (payload: { hidden: boolean }) => void;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    isMobileViewport.value = false;
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.documentElement.classList.remove("app-hidden");
+    (window as unknown as { strideterm?: unknown }).strideterm = {
+      onWindowVisibility: (handler: (payload: { hidden: boolean }) => void) => {
+        emit = handler;
+      },
+    };
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { strideterm?: unknown }).strideterm;
+  });
+
+  test("minimize freezes animations even though the document still reports visible", () => {
+    const wrapper = mount(Host);
+
+    emit({ hidden: true });
+    expect(document.visibilityState).toBe("visible");
+    expect(document.documentElement.classList.contains("app-hidden")).toBe(true);
+
+    emit({ hidden: false });
+    expect(document.documentElement.classList.contains("app-hidden")).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  test("a visible document does not un-freeze a minimized window", () => {
+    const wrapper = mount(Host);
+
+    emit({ hidden: true });
+    // Any unrelated visibilitychange must not clear the window's own state.
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(document.documentElement.classList.contains("app-hidden")).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  test("restoring re-fits visible panes", () => {
+    const store = useTerminalStore();
+    const spy = vi.fn();
+    (store.views as unknown as Map<string, unknown>).set("sid", {});
+    store.scheduleAllVisibleResize = spy as unknown as typeof store.scheduleAllVisibleResize;
+
+    const wrapper = mount(Host);
+    emit({ hidden: true });
+    expect(spy).not.toHaveBeenCalled();
+
+    emit({ hidden: false });
+    expect(spy).toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
+});
