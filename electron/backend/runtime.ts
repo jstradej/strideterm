@@ -748,7 +748,6 @@ export async function createRuntime({
   // behavior of runInitialRefresh.
   let autoTunnelBootstrapped = false;
   let dockerPoll: ReturnType<typeof setInterval> | null = null;
-  let dockerPollMode: "fast" | "slow" | null = null;
   let gitPoll: ReturnType<typeof setInterval> | null = null;
   const attentionContext = createAttentionContext();
   const terminalReplay = new TerminalReplayStore(APP_CONFIG.session.replayMaxChars || 0);
@@ -3629,10 +3628,6 @@ export async function createRuntime({
     return true;
   }
 
-  // Slow interval when no docker workspaces exist; the normal fast interval
-  // resumes as soon as a docker workspace is active.
-  const DOCKER_POLL_SLOW_MS = 5 * 60 * 1000;
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function hasActiveDockerConsumer(state: any): boolean {
     // Predicate 1: a docker workspace is the active workspace (globally or in any window slot).
@@ -3649,21 +3644,30 @@ export async function createRuntime({
     return dockerLogManager.hasAnySessions() || dockerShellManager.hasAnySessions();
   }
 
+  // Docker data has exactly one consumer — the "Docker" tab chip built in
+  // selectors.ts for an active docker workspace (plus open logs/shell streams,
+  // which pin the same predicate). With nobody looking there is nothing to
+  // keep fresh, so we stop polling outright rather than falling back to a
+  // slower interval: every probe pays a `wsl.exe`/`docker version` spawn that
+  // blocks the main thread for seconds when the backend is cold.
+  // Restart is covered by the call sites — startup, both directions of
+  // activateWorkspace, window-slot removal, and log/shell open+close — and
+  // activateWorkspace additionally fires an immediate refresh, so opening the
+  // tab never shows stale data while waiting for the first tick.
   function ensureDockerPolling() {
-    const targetMode = hasActiveDockerConsumer(getState()) ? "fast" : "slow";
-    if (dockerPollMode === targetMode && dockerPoll) return;
+    const wanted = hasActiveDockerConsumer(getState());
+    if (wanted === (dockerPoll !== null)) return;
 
-    if (dockerPoll) {
-      clearInterval(dockerPoll);
+    if (!wanted) {
+      clearInterval(dockerPoll!);
       dockerPoll = null;
+      return;
     }
-    dockerPollMode = targetMode;
-    const intervalMs = targetMode === "fast" ? APP_CONFIG.runtime.dockerPollMs : DOCKER_POLL_SLOW_MS;
     dockerPoll = setInterval(() => {
       refreshDocker().catch((error: Error) => {
         log.warn("docker poll error", { err: error.message });
       });
-    }, intervalMs);
+    }, APP_CONFIG.runtime.dockerPollMs);
   }
 
   function ensureGitPolling() {
@@ -3766,7 +3770,13 @@ export async function createRuntime({
   });
 
   async function runInitialRefresh() {
-    await refreshDocker();
+    // Same demand predicate as the poll: probing docker on a launch that never
+    // opens a docker workspace costs a cold `wsl.exe` spawn (seconds of blocked
+    // main thread) for a snapshot nothing reads. activateWorkspace refreshes on
+    // its own when the user does open one.
+    if (hasActiveDockerConsumer(getState())) {
+      await refreshDocker();
+    }
     // perf-1: eager refresh only the active workspace; background-refresh the rest
     const activeId = getState().activeWorkspaceId;
     if (activeId) {
@@ -5260,6 +5270,10 @@ export async function createRuntime({
       // The window is gone — drop its visible-session contribution so its
       // panels stop counting as visible (otherwise their alerts stay suppressed).
       dropViewerVisibility(windowId);
+      // The closing window may have been the only one showing a docker
+      // workspace; without this the poll would keep spawning probes for a view
+      // that no longer exists.
+      ensureDockerPolling();
       broadcastState();
     },
 
@@ -6551,7 +6565,6 @@ export async function createRuntime({
       if (dockerPoll) {
         clearInterval(dockerPoll);
         dockerPoll = null;
-        dockerPollMode = null;
       }
       if (gitPoll) {
         clearInterval(gitPoll);

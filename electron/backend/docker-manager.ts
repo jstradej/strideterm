@@ -220,9 +220,44 @@ export class DockerManager extends EventEmitter {
     this.lazydockerBackends = new Map();
   }
 
+  // CLIs that answered ENOENT — the binary isn't installed, or isn't on PATH.
+  // Trustworthy on every platform because fix-path.ts merges the login shell's
+  // PATH into the process before the runtime is created, so a Finder/Dock
+  // launch on macOS sees the same binaries as the user's Terminal.
+  //
+  // Held for the life of the manager: a missing binary cannot start existing
+  // without a user action, and re-probing it costs a spawn on every refresh.
+  // Cleared by invalidateBackendDetectionCache(), which the Refresh button and
+  // any settings change trigger — that covers installing docker mid-session.
+  //
+  // ENOENT only. A non-zero exit means the CLI is present and something else
+  // is wrong (daemon stopped, WSL distro down); those must stay probed so the
+  // backend reappears on its own once the daemon is back.
+  #missingCli = new Set<string>();
+
   /** Discard the backend/lazydocker detection cache. Next refresh() re-probes. */
   invalidateBackendDetectionCache(): void {
     this.backendDetectionCache = null;
+    this.#missingCli.clear();
+  }
+
+  /**
+   * Run a detection probe, remembering binaries that don't exist so later
+   * refreshes skip the spawn entirely. Rejects like execFileText otherwise.
+   */
+  async #probeCli(file: string, args: string[]): Promise<void> {
+    if (this.#missingCli.has(file)) {
+      throw new Error(`${file} is not installed`);
+    }
+    try {
+      await execFileText(file, args);
+    } catch (err) {
+      if ((err as { error?: { code?: string } })?.error?.code === "ENOENT") {
+        this.#missingCli.add(file);
+        log.debug("docker CLI not found — skipping it until the next explicit refresh", { file });
+      }
+      throw err;
+    }
   }
 
   getSnapshot(): DockerState {
@@ -234,8 +269,8 @@ export class DockerManager extends EventEmitter {
   // -----------------------------------------------------------------------
 
   async detectAllBackends(): Promise<DockerBackend[]> {
-    const results = await Promise.allSettled([
-      execFileText("docker", ["version", "--format", "{{json .}}"]).then((): DockerBackend => ({
+    const probes: Promise<DockerBackend>[] = [
+      this.#probeCli("docker", ["version", "--format", "{{json .}}"]).then((): DockerBackend => ({
         id: "host",
         type: "host",
         label: "Host",
@@ -243,15 +278,26 @@ export class DockerManager extends EventEmitter {
         file: "docker",
         argsPrefix: [],
       })),
-      execFileText("wsl.exe", ["-e", "sh", "-lc", "docker version --format '{{json .}}'"]).then((): DockerBackend => ({
-        id: "wsl",
-        type: "wsl",
-        label: "WSL",
-        available: "ok",
-        file: "wsl.exe",
-        argsPrefix: ["-e", "sh", "-lc"],
-      })),
-    ]);
+    ];
+
+    // WSL is a Windows-only concept — elsewhere `wsl.exe` is a guaranteed
+    // ENOENT, so don't spend a spawn discovering that on every detection.
+    if (process.platform === "win32") {
+      probes.push(
+        this.#probeCli("wsl.exe", ["-e", "sh", "-lc", "docker version --format '{{json .}}'"]).then(
+          (): DockerBackend => ({
+            id: "wsl",
+            type: "wsl",
+            label: "WSL",
+            available: "ok",
+            file: "wsl.exe",
+            argsPrefix: ["-e", "sh", "-lc"],
+          }),
+        ),
+      );
+    }
+
+    const results = await Promise.allSettled(probes);
 
     return results
       .filter((r): r is PromiseFulfilledResult<DockerBackend> => r.status === "fulfilled")

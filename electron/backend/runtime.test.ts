@@ -4810,7 +4810,7 @@ describe("runtime integration", () => {
 
   // --- Step 5c: demand-aware docker polling ---
 
-  test("activating a docker workspace triggers immediate docker refresh and switches poll to fast mode", async () => {
+  test("activating a docker workspace triggers an immediate docker refresh", async () => {
     const dockerWs = {
       id: "docker-ws",
       name: "Docker WS",
@@ -4830,6 +4830,35 @@ describe("runtime integration", () => {
     await fixture.runtime.activateWorkspace("docker-ws");
 
     expect(refreshSpy).toHaveBeenCalled();
+  });
+
+  // Counterpart to the "polling is stopped outright" tests below: those would
+  // also pass if polling were broken for everyone, so pin the live case too.
+  test("with a docker workspace active, the poll keeps ticking", async () => {
+    vi.useFakeTimers();
+    try {
+      const dockerWs = {
+        id: "docker-ws-ticking",
+        name: "Docker WS",
+        kind: "docker",
+        cwd: "",
+        activePanelId: "shell",
+        panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+      };
+      const fixture = await createFixture({
+        initialState: { workspaces: [dockerWs], activeWorkspaceId: "docker-ws-ticking" },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.activateWorkspace("docker-ws-ticking");
+      const baseline = fixture.docker.refreshCount;
+
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(fixture.docker.refreshCount).toBeGreaterThan(baseline);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("no docker workspaces: docker refresh is NOT called during activateWorkspace for non-docker workspace", async () => {
@@ -4853,9 +4882,11 @@ describe("runtime integration", () => {
     expect(refreshSpy).not.toHaveBeenCalled();
   });
 
-  test("without active docker consumer, docker poll stays on slow interval — no extra refresh in 31s (#33)", async () => {
-    // With no active docker consumer, ensureDockerPolling() sets the SLOW interval (5 min).
-    // Advancing 31s should NOT trigger any additional poll (would fire if fast 30s interval was active).
+  test("without active docker consumer, docker polling is stopped outright — no refresh in 10 min (#33)", async () => {
+    // Nothing reads the docker snapshot unless a docker workspace is on screen
+    // (or a logs/shell stream is open), so ensureDockerPolling() clears the
+    // interval instead of slowing it down. 10 min covers the old 5-min "slow"
+    // fallback — a single tick in that window means polling never stopped.
     vi.useFakeTimers();
     try {
       const fixture = await createFixture({
@@ -4865,8 +4896,7 @@ describe("runtime integration", () => {
 
       const baseline = fixture.docker.refreshCount;
 
-      // Advance just past the fast interval (30s) but well before the slow interval (5min = 300s)
-      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
 
       expect(fixture.docker.refreshCount).toBe(baseline);
     } finally {
@@ -4874,7 +4904,7 @@ describe("runtime integration", () => {
     }
   });
 
-  test("switching away from docker workspace moves docker poll back to slow interval", async () => {
+  test("switching away from a docker workspace stops docker polling entirely", async () => {
     vi.useFakeTimers();
     try {
       const dockerWs = {
@@ -4901,7 +4931,7 @@ describe("runtime integration", () => {
       await fixture.runtime.activateWorkspace("term-ws-after-docker");
       const baseline = fixture.docker.refreshCount;
 
-      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
 
       expect(fixture.docker.refreshCount).toBe(baseline);
     } finally {

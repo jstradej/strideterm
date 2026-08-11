@@ -25,6 +25,12 @@ export function createDockerHandlers(ctx: DockerHandlerCtx) {
 
   return {
     async refreshDockerState() {
+      // This is the user hitting Refresh, so re-probe from scratch instead of
+      // reusing the detection cache. It's the escape hatch for a backend that
+      // appeared after we last looked — notably a docker CLI installed mid-
+      // session, which the "not installed" memo would otherwise hide until a
+      // restart.
+      docker.invalidateBackendDetectionCache();
       await refreshDocker();
       return getPayload();
     },
