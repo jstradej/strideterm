@@ -1482,6 +1482,94 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
       });
     });
 
+    // A clean baseline used to be unreachable for the code-accepting roles:
+    // the schema rejected `complete` without a fresh VERIFICATION.md, and
+    // baseline is handed none by design, so the only schema-valid honest
+    // answer was a `continue` carrying an invented "record the evidence"
+    // blocker — a consumed round and an adversarial message to Primary for
+    // something that is not a defect.
+    describe("clean baseline", () => {
+      test("asks Primary for the evidence without consuming a round or inventing a finding", async () => {
+        const { tmp, runner, deps, companionWorkspace } = await startBaseline();
+        const task = companionWorkspace.task;
+        try {
+          const dir = taskDir(tmp, task.taskId);
+          expect(task.currentRound).toBe(1);
+
+          await writeVerdict(dir, task, {
+            ...baseReviewerVerdict,
+            verdict: "complete",
+            reason: "All 3 requirements verified implemented: ...",
+            verificationReview: { recordStatus: "missing", evidenceReviewed: [], workerActionsRequired: [] },
+            blockingFindings: [],
+            questions: [],
+          });
+          runner.onAgentIdle(sessionIdFor(companionWorkspace, "judge"), "test");
+
+          // The sign-off is withheld, not the review: Primary is sent back to
+          // record evidence for the SAME round.
+          await waitFor(() => task.state === "running");
+          expect(task.currentRound).toBe(1);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const rounds = task.rounds as any[];
+          expect(rounds[rounds.length - 1].action).toBe("verification-required");
+
+          const sent = await readInjectedText(deps, sessionIdFor(companionWorkspace, "worker"), tmp, task.taskId);
+          expect(sent).toContain("found no blocking");
+          expect(sent).toContain(VERIFICATION_FILE);
+          expect(sent).toContain("does not consume an evaluation round");
+
+          // Primary records it and the same round can then genuinely complete.
+          await writePrimaryRecord(
+            dir,
+            "# Verification\n\nEvaluation target: 1\nRecorded at: now\n\n## Commands\n\n### V-1\nCommand: `npm test`\nResult: PASS\nExit code: 0\n",
+          );
+          await fs.rm(path.join(dir, WORK_LOCK_FILE), { force: true });
+          runner.onAgentIdle(sessionIdFor(companionWorkspace, "worker"), "test");
+          await waitFor(() => task.state === "judge-evaluating" && task.companionPhase === "round-review");
+          expect(task.currentRound).toBe(1);
+
+          await writeVerdict(dir, task, {
+            ...baseReviewerVerdict,
+            phase: "round-review",
+            verdict: "complete",
+            reason: "All 3 requirements verified implemented: ...",
+            verificationReview: { recordStatus: "fresh", evidenceReviewed: ["npm test"], workerActionsRequired: [] },
+            blockingFindings: [],
+            questions: [],
+          });
+          runner.onAgentIdle(sessionIdFor(companionWorkspace, "judge"), "test");
+          await waitFor(() => task.state === "completed");
+          expect(task.currentRound).toBe(1);
+        } finally {
+          await cleanup(tmp);
+        }
+      });
+
+      // The floor is unchanged where it bites: the runtime half never trusted
+      // the Companion's claim, so a baseline that asserts "fresh" over a record
+      // the runner never handed it is still withheld.
+      test("a baseline claiming fresh evidence is still withheld", async () => {
+        const { tmp, runner, companionWorkspace } = await startBaseline();
+        const task = companionWorkspace.task;
+        try {
+          await writeVerdict(taskDir(tmp, task.taskId), task, {
+            ...baseReviewerVerdict,
+            verdict: "complete",
+            reason: "All good.",
+            verificationReview: { recordStatus: "fresh", evidenceReviewed: ["npm test"], workerActionsRequired: [] },
+            blockingFindings: [],
+            questions: [],
+          });
+          runner.onAgentIdle(sessionIdFor(companionWorkspace, "judge"), "test");
+          await waitFor(() => task.state === "running");
+          expect(task.currentRound).toBe(1);
+        } finally {
+          await cleanup(tmp);
+        }
+      });
+    });
+
     // role+phase+round do NOT identify an evaluation: a needs-input answer and
     // a withheld completion both re-evaluate the same phase and round. The
     // runner therefore hands out a monotonic evaluationAttempt and requires it

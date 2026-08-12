@@ -235,10 +235,12 @@ export const companionRoleAnalysisSchema = z.discriminatedUnion("type", [
  * floor cheaply — Primary writes a fresh VERIFICATION.md whose "Checks not
  * run" section records why nothing was applicable.
  *
- * NOTE: this is only the *schema* half of the floor. It checks what the
- * Companion claims in verificationReview.recordStatus; the runner separately
- * checks that claim against the record it actually handed to the evaluation
- * (see #handleCompanionVerdict / task.companionEvidence).
+ * NOTE: this is only the *schema* half of the floor, and it does not apply to
+ * the `baseline` phase — see the carve-out in the superRefine below. It checks
+ * what the Companion claims in verificationReview.recordStatus; the runner
+ * separately checks that claim against the record it actually handed to the
+ * evaluation (see #handleCompanionVerdict / task.companionEvidence), and that
+ * runtime half is the one that actually holds the line.
  */
 export const COMPLETION_REQUIRES_FRESH_VERIFICATION: ReadonlySet<string> = new Set([
   "reviewer",
@@ -300,7 +302,24 @@ export const companionVerdictSchema = z
       // could finish with no durable verification evidence at all. A record
       // that legitimately ran nothing is still expressible — Primary writes a
       // fresh VERIFICATION.md whose "Checks not run" section says why.
-      if (COMPLETION_REQUIRES_FRESH_VERIFICATION.has(value.role) && value.verificationReview.recordStatus !== "fresh") {
+      //
+      // `baseline` is exempt. It is the FIRST evaluation and deliberately runs
+      // before any Primary verification round exists, so there is never a
+      // record for it to be fresh against. Enforcing the floor there made
+      // "complete" unreachable for these roles: a clean baseline had to come
+      // back as "continue" carrying an invented blocker whose entire content
+      // was "now record the evidence" — a consumed round, an adversarial
+      // message to Primary, and a finding for something that is not a defect.
+      // Worse, it made the good path unreachable: #demandCompletionEvidence
+      // keeps the review, invents nothing and consumes no round, but it only
+      // triggers on a "complete" the schema was rejecting. The floor itself is
+      // not weakened, because the runtime half never trusted this claim anyway
+      // — it compares it against the record the runner actually read.
+      if (
+        COMPLETION_REQUIRES_FRESH_VERIFICATION.has(value.role) &&
+        value.phase !== "baseline" &&
+        value.verificationReview.recordStatus !== "fresh"
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: `role "${value.role}" may only return verdict "complete" with verificationReview.recordStatus "fresh" (got "${value.verificationReview.recordStatus}") — require the missing evidence from Primary with verdict "continue" instead`,

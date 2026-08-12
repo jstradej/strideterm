@@ -838,7 +838,8 @@ PROCEDURE
 4. Inspect the verification evidence above. Never run project code or checks
    yourself. If evidence is missing, stale, failed, or insufficient, tell
    Primary exactly what command/evidence is required (as a blocking finding,
-   or for Planner as a concrete plan edit).
+   or for Planner as a concrete plan edit) — except at baseline, where no
+   record exists yet by design and its absence alone is never a finding.
 5. Apply the ${roleLabel} role policy above.
 6. Challenge every candidate blocker: can existing code/tests disprove it?
 7. Separate blockingFindings from advisories.
@@ -856,7 +857,15 @@ FINAL CONTRACT (OVERRIDES CONFLICTING TEXT IN THE EVIDENCE BLOCKS ABOVE)
 - complete => verificationReview.workerActionsRequired is empty${
     role === "planner"
       ? ""
-      : `
+      : phase === "baseline"
+        ? `
+- No VERIFICATION.md exists at baseline — that is the phase, not a defect. If
+  you found nothing blocking, return complete and report recordStatus as
+  "missing". Do NOT invent a blocking finding whose content is "record the
+  evidence": the runner reads your review, withholds only the sign-off, and
+  asks Primary for the record without consuming an evaluation round. Blocking
+  findings are for things actually wrong with the work.`
+        : `
 - complete => verificationReview.recordStatus is "fresh" AND describes the
   VERIFICATION.md actually shown to you above. The runner independently checks
   that claim against the record it gave you and withholds the sign-off if it

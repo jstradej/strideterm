@@ -281,6 +281,45 @@ describe("buildCompanionPrompt — composition order and instruction sandwich", 
     expect(prompt).not.toContain("planDocument");
   });
 
+  // Baseline is handed no VERIFICATION.md by design, so demanding one there
+  // turned every clean first review into a "continue" with an invented
+  // "record the evidence" blocker.
+  test("baseline tells the companion not to invent an evidence blocker", async () => {
+    const prompt = await buildCompanionPrompt({
+      task: task(),
+      phase: "baseline",
+      round: 1,
+      evaluationAttempt: 1,
+      contextMd: "",
+      handoffMd: "",
+      gitContext: null,
+      cwd: null,
+      verification: null,
+      previousFindingIds: [],
+    });
+    expect(prompt).toMatch(/Do NOT invent a blocking finding/);
+    expect(prompt).toContain("without consuming an evaluation round");
+    // The round-review rule must not leak into the baseline prompt.
+    expect(prompt).not.toContain(`recordStatus is "fresh"`);
+  });
+
+  test("round-review keeps the fresh-evidence rule", async () => {
+    const prompt = await buildCompanionPrompt({
+      task: task(),
+      phase: "round-review",
+      round: 2,
+      evaluationAttempt: 1,
+      contextMd: "",
+      handoffMd: "",
+      gitContext: null,
+      cwd: null,
+      verification: null,
+      previousFindingIds: [],
+    });
+    expect(prompt).toContain(`recordStatus is "fresh"`);
+    expect(prompt).not.toMatch(/Do NOT invent a blocking finding/);
+  });
+
   // A companion attached to a task in one checkout has no business reading a
   // different one — the read-only allowance used to have no boundary at all.
   test("scopes read-only inspection to the repository the task runs in", async () => {

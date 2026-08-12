@@ -156,10 +156,14 @@ describe("companionVerdictSchema", () => {
       openQuestions: [],
     };
 
+    // The floor applies from the first round-review on. Baseline has its own
+    // carve-out below — it runs before any verification round exists, so
+    // there is nothing there for a record to be fresh against.
     for (const recordStatus of ["missing", "stale", "not-required"] as const) {
       test(`rejects consultant complete on recordStatus "${recordStatus}"`, () => {
         const result = companionVerdictSchema.safeParse(
           baseVerdict({
+            phase: "round-review",
             role: "consultant",
             roleAnalysis: consultantAnalysis,
             verificationReview: { recordStatus, evidenceReviewed: [], workerActionsRequired: [] },
@@ -171,6 +175,7 @@ describe("companionVerdictSchema", () => {
       test(`rejects reviewer complete on recordStatus "${recordStatus}"`, () => {
         const result = companionVerdictSchema.safeParse(
           baseVerdict({
+            phase: "round-review",
             verificationReview: { recordStatus, evidenceReviewed: [], workerActionsRequired: [] },
           }),
         );
@@ -181,6 +186,7 @@ describe("companionVerdictSchema", () => {
       test(`rejects critic complete on recordStatus "${recordStatus}"`, () => {
         const result = companionVerdictSchema.safeParse(
           baseVerdict({
+            phase: "round-review",
             role: "critic",
             roleAnalysis: criticAnalysis,
             verificationReview: { recordStatus, evidenceReviewed: [], workerActionsRequired: [] },
@@ -188,7 +194,31 @@ describe("companionVerdictSchema", () => {
         );
         expect(result.success).toBe(false);
       });
+
+      // Enforcing the floor at baseline made "complete" unreachable for these
+      // roles: a clean first review had to come back as "continue" with an
+      // invented blocker saying "now record the evidence", consuming a round
+      // for something that is not a defect. The runtime half still withholds
+      // the sign-off — it just does so without the round or the finding.
+      test(`accepts reviewer complete at baseline on recordStatus "${recordStatus}"`, () => {
+        const result = companionVerdictSchema.safeParse(
+          baseVerdict({
+            verificationReview: { recordStatus, evidenceReviewed: [], workerActionsRequired: [] },
+          }),
+        );
+        expect(result.success).toBe(true);
+      });
     }
+
+    test("recovery is not exempt — it re-runs an evaluation that had a record", () => {
+      const result = companionVerdictSchema.safeParse(
+        baseVerdict({
+          phase: "recovery",
+          verificationReview: { recordStatus: "missing", evidenceReviewed: [], workerActionsRequired: [] },
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
 
     test("accepts reviewer complete on fresh evidence", () => {
       const result = companionVerdictSchema.safeParse(baseVerdict());
@@ -215,6 +245,7 @@ describe("companionVerdictSchema", () => {
     test("consultant may NOT complete without a verification record", () => {
       const result = companionVerdictSchema.safeParse(
         baseVerdict({
+          phase: "round-review",
           role: "consultant",
           roleAnalysis: consultantAnalysis,
           verificationReview: { recordStatus: "not-required", evidenceReviewed: [], workerActionsRequired: [] },
