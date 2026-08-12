@@ -19,7 +19,7 @@ import {
   JUDGE_TODO_FILE,
   WORK_LOCK_FILE,
   TASK_LOG_FILE,
-  PROMPT_FILE,
+  promptFileFor,
   HANDOFF_FILE,
   CONTEXT_FILE,
   VERIFICATION_FILE,
@@ -4585,9 +4585,10 @@ Do NOT continue working on the task — only write the handoff summary.`;
 
     const resumePrompt = this.#buildShowerResumePrompt(task, handoffContent);
 
-    // Write the resume prompt to PROMPT.md — it will be injected via file-based
-    // prompt when the new session goes idle (promptSent is reset below).
-    const promptFilePath = path.join(dir, PROMPT_FILE);
+    // Write the resume prompt to the worker's prompt file — it will be
+    // injected via file-based prompt when the new session goes idle
+    // (promptSent is reset below). Shower only ever refreshes the worker.
+    const promptFilePath = path.join(dir, promptFileFor("worker"));
     try {
       await writeFile(promptFilePath, resumePrompt, "utf8");
       log.debug("shower mode: resume prompt written to file", { workspaceId, promptLength: resumePrompt.length });
@@ -4761,10 +4762,13 @@ Do NOT continue working on the task — only write the handoff summary.`;
 
     let injection = text;
 
-    // File-based injection for long prompts
+    // File-based injection for long prompts. The file is per role — see
+    // promptFileFor: the agent reads it on its own schedule, so a shared one
+    // could be replaced by the other role's prompt before the read landed.
     if (text.length > FILE_PROMPT_THRESHOLD && workspace?.cwd && workspace?.task?.taskId) {
-      const promptPath = path.join(taskDir(workspace.cwd, workspace.task.taskId), PROMPT_FILE);
-      const relPromptPath = `${taskDirRel(workspace.task.taskId)}/${PROMPT_FILE}`;
+      const promptFile = promptFileFor(sessionId === sessionIdFor(workspace, "judge") ? "judge" : "worker");
+      const promptPath = path.join(taskDir(workspace.cwd, workspace.task.taskId), promptFile);
+      const relPromptPath = `${taskDirRel(workspace.task.taskId)}/${promptFile}`;
       try {
         await writeFile(promptPath, text, "utf8");
         injection = `Read ${relPromptPath} and follow the instructions in it now.`;

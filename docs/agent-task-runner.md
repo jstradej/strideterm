@@ -492,13 +492,15 @@ idle --> running --> evaluating --> judge-evaluating --> completed
 
 ### Prompt Injection
 
-Short prompts (< 400 chars) are pasted directly into the PTY. Longer prompts are written to `.strideterm/tasks/<taskId>/PROMPT.md` and a short directive is sent instead:
+Short prompts (< 400 chars) are pasted directly into the PTY. Longer prompts are written to `.strideterm/tasks/<taskId>/PROMPT.<role>.md` and a short directive is sent instead:
 
 ```
-Read .strideterm/tasks/<taskId>/PROMPT.md and follow the instructions in it now.
+Read .strideterm/tasks/<taskId>/PROMPT.worker.md and follow the instructions in it now.
 ```
 
 This avoids reliability issues with pasting large text blocks into terminal sessions.
+
+The file is per role (`PROMPT.worker.md` / `PROMPT.judge.md`) rather than one shared `PROMPT.md`. The agent reads it on its own schedule, so with a single file a prompt written for the other role in that window replaced the one an agent had been sent to read — and it would then follow the wrong role's instructions, silently and with nothing in the logs to say so. The runner's own flow keeps the two roles a turn apart; a manual Resend or a dropout re-inject does not.
 
 ### Completion Claim Heuristic
 

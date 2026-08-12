@@ -14,7 +14,18 @@ export const JUDGE_TODO_FILE = "JUDGE_TODO.md";
 export const JUDGE_PROMPT_FILE = "JUDGE_PROMPT.md";
 export const WORK_LOCK_FILE = "WORK_LOCK";
 export const TASK_LOG_FILE = "TASK_LOG.jsonl";
-export const PROMPT_FILE = "PROMPT.md";
+/**
+ * Prompt hand-off file, per role. A prompt over FILE_PROMPT_THRESHOLD is not
+ * pasted into the PTY — the agent is told to go read this file, and the read
+ * happens whenever it gets around to it. With one shared PROMPT.md, a prompt
+ * written for the other role in that window replaced the one an agent had
+ * been sent to read, and it would then follow the wrong role's instructions
+ * with no error anywhere. The runner's own flow keeps the two roles a turn
+ * apart, but a manual Resend or a dropout re-inject does not.
+ */
+export function promptFileFor(role: "worker" | "judge"): string {
+  return role === "judge" ? "PROMPT.judge.md" : "PROMPT.worker.md";
+}
 export const HANDOFF_FILE = "HANDOFF.md";
 // Attached mode (Companion loop) — see docs/agent-task-runner.md.
 export const CONTEXT_FILE = "CONTEXT.md";

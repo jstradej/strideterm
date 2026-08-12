@@ -8,7 +8,7 @@ import { readVerificationRecord } from "./agent-task-files.js";
 import {
   CONTEXT_FILE,
   HANDOFF_FILE,
-  PROMPT_FILE,
+  promptFileFor,
   TASK_FILE,
   VERDICT_FILE,
   VERIFICATION_FILE,
@@ -17,23 +17,26 @@ import {
 } from "./agent-task-utils.js";
 
 // The companion/capture prompts are always > FILE_PROMPT_THRESHOLD chars, so
-// #injectPrompt always writes them to PROMPT.md and injects a short pointer
-// instead of the raw text — read the file to see what was actually sent.
-async function readLastPrompt(cwd: string, taskId: string): Promise<string> {
-  return fs.readFile(path.join(taskDir(cwd, taskId), PROMPT_FILE), "utf8");
+// #injectPrompt always writes them to the role's prompt file and injects a
+// short pointer instead of the raw text — read the file to see what was
+// actually sent. The role is explicit: the two files exist precisely so one
+// role's prompt can never land in the other's hands.
+async function readLastPrompt(cwd: string, taskId: string, role: "worker" | "judge"): Promise<string> {
+  return fs.readFile(path.join(taskDir(cwd, taskId), promptFileFor(role)), "utf8");
 }
 
 // Resolves whichever the injection actually did: a short direct paste, or a
-// "Read PROMPT.md and follow it" pointer for text over FILE_PROMPT_THRESHOLD.
+// "Read <file> and follow it" pointer for text over FILE_PROMPT_THRESHOLD.
+// The path comes from the pointer itself, so this stays honest about which
+// file the agent was actually sent to.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function readInjectedText(deps: any, sessionId: string, cwd: string, taskId: string): Promise<string> {
+async function readInjectedText(deps: any, sessionId: string, cwd: string, _taskId: string): Promise<string> {
   const texts = deps.written
     .filter((w: { sessionId: string; data: string }) => w.sessionId === sessionId && w.data !== "\r")
     .map((w: { data: string }) => w.data);
   const last = texts[texts.length - 1] || "";
-  if (last.includes(PROMPT_FILE)) {
-    return fs.readFile(path.join(taskDir(cwd, taskId), PROMPT_FILE), "utf8");
-  }
+  const pointer = last.match(/^Read (\S+) and follow the instructions in it now\.$/);
+  if (pointer) return fs.readFile(path.join(cwd, pointer[1]), "utf8");
   return last;
 }
 
@@ -401,7 +404,7 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
         expect(companionWorkspace.task.state).toBe("capturing-context");
         const sourceSessionId = `${source.id}:${source.panels[0].id}`;
         expect(deps.written.some((w: { sessionId: string }) => w.sessionId === sourceSessionId)).toBe(true);
-        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId);
+        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId, "worker");
         expect(promptContent).toContain("CONTEXT CAPTURE ONLY");
         expect(promptContent).not.toContain("/clear");
       } finally {
@@ -547,7 +550,7 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
 
         const judgeSessionId = `${companionWorkspace.id}:${companionWorkspace.task.judgePanelId}`;
         expect(deps.written.some((w: { sessionId: string }) => w.sessionId === judgeSessionId)).toBe(true);
-        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId);
+        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId, "judge");
         expect(promptContent).toContain("PHASE: baseline");
         expect(promptContent).toContain("ROLE POLICY — REVIEWER");
       } finally {
@@ -575,7 +578,7 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
         expect(companionWorkspace.task.description).toBe("");
 
         await runner.startTask(companionWorkspace.id);
-        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId);
+        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId, "judge");
         expect(promptContent).toContain("Ship the smaller variant.");
         expect(promptContent).toContain("Original focus.");
         expect(promptContent).not.toContain("(empty)");
@@ -981,7 +984,7 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
 
         const sourceSessionId = `${source.id}:${source.panels[0].id}`;
         expect(deps.written.some((w: { sessionId: string }) => w.sessionId === sourceSessionId)).toBe(true);
-        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId);
+        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId, "worker");
         expect(promptContent).toContain("REQUIRED BLOCKING FINDINGS");
         expect(promptContent).toContain("REQ-1");
       } finally {
@@ -1167,7 +1170,7 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
 
         const sourceSessionId = `${source.id}:${source.panels[0].id}`;
         expect(deps.written.some((w: { sessionId: string }) => w.sessionId === sourceSessionId)).toBe(true);
-        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId);
+        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId, "worker");
         expect(promptContent).toContain("Go with option B.");
       } finally {
         await cleanup(tmp);
@@ -1196,7 +1199,7 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
         // the freshness gate rejects whatever Primary writes.
         const verification = await fs.readFile(path.join(dir, VERIFICATION_FILE), "utf8");
         expect(verification).toContain("Evaluation target: 1");
-        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId);
+        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId, "worker");
         expect(promptContent).toContain("Evaluation target: 1");
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1480,6 +1483,43 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
           await cleanup(tmp);
         }
       });
+    });
+
+    // A long prompt is not pasted — the agent is told to go read a file, and
+    // it reads whenever it gets there. With one shared PROMPT.md, a prompt
+    // written for the other role in that window silently replaced it, and the
+    // agent followed the wrong role's instructions with no error anywhere.
+    test("each role's prompt lands in its own file", async () => {
+      const { tmp, runner, deps, companionWorkspace } = await startBaseline();
+      const task = companionWorkspace.task;
+      try {
+        const dir = taskDir(tmp, task.taskId);
+
+        // The baseline evaluation prompt went to the Companion.
+        const judgePrompt = await fs.readFile(path.join(dir, promptFileFor("judge")), "utf8");
+        expect(judgePrompt).toContain("PHASE: baseline");
+
+        // Send the Primary something, then re-read the Companion's file: it
+        // must still hold the evaluation prompt, not the Primary's.
+        await writeVerdict(dir, task, {
+          ...baseReviewerVerdict,
+          verdict: "continue",
+          reason: "Missing the rollback test.",
+          blockingFindings: [
+            { id: "REQ-1", title: "x", category: "tests", evidence: ["x"], impact: "x", requiredAction: "x" },
+          ],
+          questions: [],
+        });
+        runner.onAgentIdle(sessionIdFor(companionWorkspace, "judge"), "test");
+        await waitFor(() => task.state === "running");
+        await waitForDelivery(deps, sessionIdFor(companionWorkspace, "worker"));
+
+        const workerPrompt = await fs.readFile(path.join(dir, promptFileFor("worker")), "utf8");
+        expect(workerPrompt).toContain("REQUIRED BLOCKING FINDINGS");
+        expect(await fs.readFile(path.join(dir, promptFileFor("judge")), "utf8")).toBe(judgePrompt);
+      } finally {
+        await cleanup(tmp);
+      }
     });
 
     // A clean baseline used to be unreachable for the code-accepting roles:
@@ -1948,7 +1988,7 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
 
         const judgeSessionId = sessionIdFor(companionWorkspace, "judge");
         expect(deps.written.some((w: { sessionId: string }) => w.sessionId === judgeSessionId)).toBe(true);
-        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId);
+        const promptContent = await readLastPrompt(tmp, companionWorkspace.task.taskId, "judge");
         expect(promptContent).toContain("PHASE: round-review");
       } finally {
         await cleanup(tmp);
