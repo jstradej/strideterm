@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { companionVerdictSchema } from "./agent-task-utils.js";
+import { companionVerdictContract, companionVerdictSchema } from "./agent-task-utils.js";
 
 // Companion verdict v1 cross-field invariants (plan §4.4). Pure schema tests
 // — no disk I/O, no runner — so the contract can be pinned down fast and
@@ -400,5 +400,78 @@ describe("companionVerdictSchema", () => {
   test("rejects an unknown top-level verdict value", () => {
     const result = companionVerdictSchema.safeParse(baseVerdict({ verdict: "maybe" }));
     expect(result.success).toBe(false);
+  });
+});
+
+// The prompt contract. Every field asserted here is one a Companion previously
+// had to invent: the prompt described the verdict as `{"verificationReview":
+// {...}, "roleAnalysis": {...}, ...}` and nothing more, so verdicts came back
+// with `workerActionsRequired` as bare strings, no `requirementAudit` at all,
+// and ids like "A1"/"Q1". The runner rejected them with zod messages that name
+// the type but not the shape, and a Companion went reading strideterm's own
+// sources to find this schema. Generating the contract from the schema is what
+// keeps the two from drifting again — these tests keep it wired up.
+describe("companionVerdictContract", () => {
+  test("names every nested field the schema requires but the old prompt left to guesswork", () => {
+    const contract = companionVerdictContract("reviewer");
+    for (const field of [
+      "verificationReview",
+      "recordStatus",
+      "evidenceReviewed",
+      "workerActionsRequired",
+      "commandOrCheck",
+      "expectedEvidence",
+      "roleAnalysis",
+      "requirementAudit",
+      "blockingFindings",
+      "requiredAction",
+      "advisories",
+      "recommendation",
+      "questions",
+      "whyNeeded",
+    ]) {
+      expect(contract).toContain(`"${field}"`);
+    }
+    // The id patterns are the other half of what was guessed.
+    expect(contract).toContain("^[A-Z]+-[0-9]+$");
+    expect(contract).toContain("^Q-[0-9]+$");
+  });
+
+  test("is scoped to the asked role so three quarters of the union stay out of the prompt", () => {
+    const reviewer = companionVerdictContract("reviewer");
+    expect(reviewer).toContain("requirementAudit");
+    // Planner/critic/consultant-only fields must not ride along.
+    for (const foreign of ["planDocument", "coverageAudit", "steelman", "recommendedNextStep"]) {
+      expect(reviewer).not.toContain(foreign);
+    }
+    expect(companionVerdictContract("planner")).toContain("planDocument");
+    expect(companionVerdictContract("critic")).toContain("steelman");
+    expect(companionVerdictContract("consultant")).toContain("recommendedNextStep");
+  });
+
+  test("requires the identity fields, including the attempt the schema keeps optional", () => {
+    const contract = JSON.parse(companionVerdictContract("reviewer"));
+    for (const field of ["schemaVersion", "role", "phase", "round", "evaluationAttempt", "verdict", "reason"]) {
+      expect(contract.required).toContain(field);
+    }
+    expect(contract.properties.role.const).toBe("reviewer");
+    expect(contract.properties.roleAnalysis.properties.type.const).toBe("reviewer");
+  });
+
+  test("carries the planner coverage areas verbatim, so the role policy cannot promise one the enum lacks", () => {
+    const contract = JSON.parse(companionVerdictContract("planner"));
+    const areas: string[] = contract.properties.roleAnalysis.properties.coverageAudit.items.properties.area.enum;
+    expect(areas).toContain("testing");
+    expect(areas).toContain("mobile-remote");
+    // The policy used to list "acceptance criteria" as its own dimension; there
+    // has never been a slot for it, so a planner obeying the prose failed the
+    // enum. It is folded into `testing` in the policy text instead.
+    expect(areas).not.toContain("acceptance-criteria");
+  });
+
+  test("drops the noise that carries no instruction (int upper bound, $schema banner)", () => {
+    const contract = companionVerdictContract("reviewer");
+    expect(contract).not.toContain(String(Number.MAX_SAFE_INTEGER));
+    expect(contract).not.toContain("$schema");
   });
 });

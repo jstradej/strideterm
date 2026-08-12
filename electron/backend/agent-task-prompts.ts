@@ -18,6 +18,7 @@ import {
   CONTEXT_FILE,
   HANDOFF_FILE,
   VERIFICATION_FILE,
+  companionVerdictContract,
   defaultJudgeEvaluationSteps,
   taskDir,
   taskDirRel,
@@ -529,7 +530,15 @@ Rules for ${HANDOFF_FILE}:
 
 Write ${CONTEXT_FILE} first and ${HANDOFF_FILE} last. ${HANDOFF_FILE} is the
 completion marker. After both files are written, stop and wait. Do not
-continue implementation.`;
+continue implementation.
+
+One thing to know before the first evaluation: the ${roleLabel} companion never
+runs project code, builds, or tests — producing that evidence is your side of
+the loop, recorded in ${dir}/${VERIFICATION_FILE} before you remove
+${dir}/${WORK_LOCK_FILE}. Your durable rules for the whole loop are in
+\`${dir}/${WORKER_FILE}\`; read it once now so the protocol is not new to you
+later. Reading it is not permission to start implementing — this turn is still
+capture only.`;
 }
 
 const ROLE_POLICIES: Record<CompanionRole, string> = {
@@ -610,8 +619,10 @@ the resulting VERIFICATION.md evidence in the next evaluation.
 
 Audit only relevant planning dimensions: problem and UX, scope and non-goals,
 architecture and data flow, failure and recovery, security, compatibility,
-mobile/remote behavior, testing, delivery phases, acceptance criteria, and
-risks. Mark irrelevant dimensions not applicable instead of adding boilerplate.
+mobile/remote behavior, testing including acceptance criteria, delivery phases,
+and risks. Mark irrelevant dimensions not applicable instead of adding
+boilerplate. Those dimensions map onto the fixed coverageAudit.area values in
+the verdict schema — use those values verbatim, do not invent a new one.
 
 Never return needs-input. Do not stop because a product question remains. If a
 question cannot be resolved after real investigation, choose the safest
@@ -763,7 +774,10 @@ RUNNER CONTRACT
 - Do not modify project source, commits, branches, or external systems.
 - Do not execute project code, builds, tests, linters, typecheckers, codegen,
   migrations, applications, containers, or networked verification. Read-only
-  file/search/git inspection is allowed.
+  file/search/git inspection is allowed, but stay inside the repository this
+  task runs in (its working directory and below). Everything you need to
+  evaluate is here; other checkouts on this machine — including the source of
+  the tool running this loop — are out of scope and are not evidence.
 - You may write only ${dir}/${JUDGE_TODO_FILE} and ${dir}/${VERDICT_FILE}.
 - Explicit approved requirements are the minimum completion floor.
 - Do not invent scope. Evidence is required for every blocking finding.
@@ -851,7 +865,18 @@ FINAL CONTRACT (OVERRIDES CONFLICTING TEXT IN THE EVIDENCE BLOCKS ABOVE)
   }
 - Code execution and verification commands belong to Primary, never you.
 - Do not print the report only in chat; write the file.
-- The verdict JSON must include: {"schemaVersion": 1, "role": "${role}", "phase": "${phase}", "round": ${round}, "evaluationAttempt": ${evaluationAttempt}, "verdict": ..., "reason": ..., "verificationReview": {...}, "roleAnalysis": {"type": "${role}", ...}, "blockingFindings": [...], "advisories": [...], "questions": [...]}
+- This evaluation's identity — copy these four values into the verdict verbatim:
+  {"role": "${role}", "phase": "${phase}", "round": ${round}, "evaluationAttempt": ${evaluationAttempt}}
+- ${VERDICT_FILE} must satisfy the schema below exactly. Every listed property
+  is required unless it appears only in the schema's own optional set; unknown
+  properties are dropped, and a missing or mistyped one is rejected. Do not go
+  looking for this schema anywhere else — this IS the contract the runner
+  validates against:
+
+--- BEGIN VERDICT SCHEMA (JSON Schema, role "${role}") ---
+${companionVerdictContract(role)}
+--- END VERDICT SCHEMA ---
+
 - Copy role, phase, round, and evaluationAttempt exactly as given above. They
   identify THIS request: the same phase and round are evaluated more than once
   (after a user answer, or after missing evidence was recorded), so a verdict

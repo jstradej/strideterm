@@ -30,6 +30,7 @@ import {
   taskDirRel,
   fenceUserInput,
   tailLines,
+  companionVerdictContract,
   COMPLETION_REQUIRES_FRESH_VERIFICATION,
 } from "./agent-task-utils.js";
 import type { CompanionVerdict } from "./agent-task-utils.js";
@@ -93,6 +94,17 @@ interface RuntimeTaskState extends TaskState {
   /** Which evaluation phase the last companion request was for — read back
    * by #handleCompanionVerdict / recovery to validate the verdict on disk. */
   companionPhase?: "baseline" | "round-review" | "recovery";
+  /** How many times the runner has asked the Companion to rewrite a malformed
+   * or stale verdict for the CURRENT evaluation. Deliberately not `judgeNudged`:
+   * that one boolean is shared with the "no file at all" branch, so a
+   * missing-then-malformed sequence used to get zero repair attempts, and one
+   * rejection was enough to pause a task the Companion could still have fixed. */
+  companionRepairAttempts?: number;
+  /** The rejected verdict bytes the last repair request was about. Several idle
+   * signals arrive per Companion turn (hook:stop, notification, the watcher
+   * backstop) and each re-reads the same unchanged file — without this they
+   * would burn the whole repair budget on one rejection. */
+  companionRepairFingerprint?: string;
   /** Questions from the last "needs-input" companion verdict, surfaced by
    * the Dashboard and consumed by answerCompanionTask. */
   pendingQuestions?: Array<{ id: string; question: string; whyNeeded: string; options?: string[] }>;
@@ -1609,6 +1621,12 @@ export class AgentTaskRunner {
     if (!binding || binding.role !== "worker") return false;
     return this.#handleRateLimited(binding.workspace, sessionId, match, source, "worker");
   }
+
+  /** Attached mode — how many rewrites of a malformed/stale companion verdict
+   * the runner asks for before pausing. Only a verdict the Companion actually
+   * changed costs an attempt (see companionRepairFingerprint), so this is a
+   * budget of genuine tries, not of idle signals. */
+  static MAX_COMPANION_VERDICT_REPAIRS = 3;
 
   /** Static-ish constants attached to the class for easy override in tests. */
   static MAX_RATE_LIMIT_RETRIES = 5;
@@ -3888,6 +3906,10 @@ export class AgentTaskRunner {
 
     const judgeSessionId = sessionIdFor(workspace, "judge");
     task.judgeNudged = false;
+    // A fresh evaluation gets a fresh repair budget — a rejection carried over
+    // from the previous one must not pause this evaluation on its first slip.
+    task.companionRepairAttempts = 0;
+    task.companionRepairFingerprint = undefined;
     task.companionPhase = phase;
     task.companionEvaluationAttempt = evaluationAttempt;
     task.companionVerdictHandledAttempt = undefined;
@@ -3981,34 +4003,68 @@ export class AgentTaskRunner {
 
       if (result.status === "invalid" || result.status === "stale") {
         if (isIdlePromptOnly) return;
-        if (!task.judgeNudged) {
+        // Only a verdict the Companion actually rewrote costs an attempt. The
+        // same rejected bytes coming back means this is another idle signal for
+        // the turn we already answered, not a second failed try.
+        const fingerprint = result.raw ?? "";
+        const attempts = task.companionRepairAttempts ?? 0;
+        const alreadyAsked = task.companionRepairFingerprint === fingerprint;
+        if (!alreadyAsked && attempts < AgentTaskRunner.MAX_COMPANION_VERDICT_REPAIRS) {
           task.judgeNudged = true;
+          task.companionRepairAttempts = attempts + 1;
+          task.companionRepairFingerprint = fingerprint;
           const dir = taskDirRel(task.taskId);
+          // A malformed verdict gets the field-level contract back. Bare zod
+          // messages name the type but not the shape ("expected array, received
+          // undefined"), which leaves rewriting it a second guess — the failure
+          // that sent one Companion reading strideterm's own sources for the
+          // schema. Staleness is a different problem: the shape was fine and
+          // only the identity was wrong, so repeating the schema there is noise.
           const detail =
             result.status === "invalid"
-              ? `Your verdict file is malformed: ${result.errors.join("; ") || "schema validation failed"}.`
-              : `Your verdict file is for a different evaluation than the one requested (expected ${identity}).`;
-          const nudge = `${detail} Rewrite ${dir}/${VERDICT_FILE} as a single valid schemaVersion 1 JSON object matching exactly ${identity}, then stop.`;
+              ? `Your verdict file is malformed: ${result.errors.join("; ") || "schema validation failed"}.
+
+Rewrite ${dir}/${VERDICT_FILE} as a single JSON object matching this schema exactly — it is the contract the runner validates against, so do not go looking for it elsewhere:
+
+--- BEGIN VERDICT SCHEMA (JSON Schema, role "${role}") ---
+${companionVerdictContract(role)}
+--- END VERDICT SCHEMA ---
+
+Cross-field rules the schema above cannot express: "complete" needs empty blockingFindings, empty questions and empty verificationReview.workerActionsRequired; "continue" needs at least one blockingFinding and no questions; "needs-input" needs at least one question; role "planner" must never use "needs-input" and keeps "questions" empty (unresolved items go in roleAnalysis.openQuestions).`
+              : `Your verdict file is for a different evaluation than the one requested. Its shape was fine — only the identity is wrong. Rewrite ${dir}/${VERDICT_FILE} with the same content and exactly ${identity}.`;
+          // The stale variant is deliberately kept short. Anything over
+          // FILE_PROMPT_THRESHOLD is injected as a "read PROMPT.md" pointer,
+          // which writes into the watched task dir — needless churn for a nudge
+          // whose whole content is four identity fields. The invalid variant
+          // carries the schema and is worth that cost.
+          const nudge = `${detail}
+
+Write the corrected file, then stop.`;
           await this.#injectPrompt(judgeSessionId, nudge, workspace);
           void this.#logTaskEvent(
             workspace,
             "companion-verdict-repair",
-            `Verdict ${result.status} — asked Companion to rewrite it.`,
+            `Verdict ${result.status} — asked Companion to rewrite it (attempt ${attempts + 1}/${AgentTaskRunner.MAX_COMPANION_VERDICT_REPAIRS}).`,
           );
           this.#broadcastState!();
           return;
         }
         if (this.#isSessionBusy?.(judgeSessionId)) return;
+        // Unchanged file + an idle Companion means it stopped without fixing
+        // anything; an exhausted budget means it kept trying and kept failing.
+        // Both are the end of the road for this evaluation.
         log.warn("companion verdict remained invalid/stale after repair request", {
           workspaceId,
           status: result.status,
+          attempts,
+          errors: result.errors.slice(0, 10),
         });
         task.pausedFromState = "judge-evaluating";
         this.#setTaskState(task, "paused");
         void this.#logTaskEvent(
           workspace,
           "companion-give-up",
-          `Companion verdict remained ${result.status} after a repair request — pausing.`,
+          `Companion verdict remained ${result.status} after ${attempts} repair request(s) — pausing.`,
         );
         this.#raiseTaskAlert(workspace, "failed", `Companion verdict file is ${result.status}`);
         this.#broadcastState!();
@@ -4018,6 +4074,8 @@ export class AgentTaskRunner {
       // result.status === "valid"
       const verdict = result.data as CompanionVerdict;
       task.judgeNudged = false;
+      task.companionRepairAttempts = 0;
+      task.companionRepairFingerprint = undefined;
       if (task.state !== "judge-evaluating") {
         log.info("handleCompanionVerdict interrupted (state changed)", { workspaceId, taskState: task.state });
         return;

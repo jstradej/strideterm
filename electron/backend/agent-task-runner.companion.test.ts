@@ -1326,6 +1326,162 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
       }
     });
 
+    // One rejection used to be the whole budget: `judgeNudged` is a single
+    // boolean shared with the "no verdict file at all" branch, so a Companion
+    // that rewrote a malformed verdict and got one nested field wrong again was
+    // paused instead of corrected. With the schema now in the repair nudge, a
+    // second try is usually the one that lands.
+    describe("malformed verdict repair budget", () => {
+      const malformed = (reason: string) => ({
+        schemaVersion: 1,
+        role: "reviewer",
+        phase: "baseline",
+        round: 1,
+        verdict: "continue",
+        reason,
+        // workerActionsRequired as bare strings and no requirementAudit — the
+        // exact shape a Companion produced when the prompt named neither.
+        verificationReview: { recordStatus: "missing", evidenceReviewed: [], workerActionsRequired: ["npm test"] },
+        roleAnalysis: { type: "reviewer" },
+        blockingFindings: [
+          { id: "REQ-1", title: "x", category: "tests", evidence: ["x"], impact: "x", requiredAction: "x" },
+        ],
+        advisories: [],
+        questions: [],
+      });
+
+      // A synthetic idle fired while the previous pass still holds its
+      // re-entrancy guard is coalesced away (#injectPrompt resolves only after
+      // the trailing Enter), and under load that window is wider than any fixed
+      // sleep. A real Companion's next Stop is its next turn, so re-firing until
+      // the runner acts is the faithful equivalent. Safe to repeat because these
+      // tests keep the session "busy": a re-fire that lands on the unchanged
+      // file waits instead of giving up.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async function idleUntilAttempt(runner: any, sessionId: string, task: any, attempt: number): Promise<void> {
+        await waitFor(
+          async () => {
+            if (task.companionRepairAttempts === attempt) return true;
+            runner.onAgentIdle(sessionId, "test");
+            await new Promise((r) => setTimeout(r, 25));
+            return task.companionRepairAttempts === attempt;
+          },
+          { timeoutMs: 15000 },
+        );
+      }
+
+      test("a rewritten-but-still-malformed verdict gets another try instead of pausing", async () => {
+        const { tmp, runner, deps, companionWorkspace } = await startBaseline();
+        const task = companionWorkspace.task;
+        try {
+          const dir = taskDir(tmp, task.taskId);
+          const judgeSessionId = sessionIdFor(companionWorkspace, "judge");
+          deps.isSessionBusy.mockReturnValue(true);
+
+          await writeVerdict(dir, task, malformed("first try"));
+          await idleUntilAttempt(runner, judgeSessionId, task, 1);
+          await waitForDelivery(deps, judgeSessionId);
+
+          // The repair request must carry the shape, not just the zod errors —
+          // "expected array, received undefined" names the type, not the field.
+          const nudge = await readInjectedText(deps, judgeSessionId, tmp, task.taskId);
+          expect(nudge).toContain("requirementAudit");
+          expect(nudge).toContain("commandOrCheck");
+
+          // The Companion tries again and still gets it wrong.
+          await writeVerdict(dir, task, malformed("second try"));
+          await idleUntilAttempt(runner, judgeSessionId, task, 2);
+          expect(task.state).toBe("judge-evaluating");
+          await waitForDelivery(deps, judgeSessionId);
+
+          // And the third one is correct.
+          await writeVerdict(dir, task, {
+            ...baseReviewerVerdict,
+            verdict: "continue",
+            reason: "Missing the rollback test.",
+            blockingFindings: [
+              { id: "REQ-1", title: "x", category: "tests", evidence: ["x"], impact: "x", requiredAction: "x" },
+            ],
+            questions: [],
+          });
+          await waitFor(
+            async () => {
+              if (task.state === "running") return true;
+              runner.onAgentIdle(judgeSessionId, "test");
+              await new Promise((r) => setTimeout(r, 25));
+              return task.state === "running";
+            },
+            { timeoutMs: 15000 },
+          );
+          expect(task.companionRepairAttempts).toBe(0);
+        } finally {
+          await cleanup(tmp);
+        }
+      });
+
+      // Several idle signals arrive per Companion turn. Each re-reads the same
+      // rejected file, and counting those as failed tries would spend the whole
+      // budget on a single rejection.
+      test("re-reading the same rejected verdict does not spend the budget", async () => {
+        const { tmp, runner, deps, companionWorkspace } = await startBaseline();
+        const task = companionWorkspace.task;
+        try {
+          const dir = taskDir(tmp, task.taskId);
+          const judgeSessionId = sessionIdFor(companionWorkspace, "judge");
+          // Mutate the mock the runner already captured at init — reassigning
+          // deps.isSessionBusy here would leave the runner on the old fn.
+          deps.isSessionBusy.mockReturnValue(true); // still working on the rewrite
+
+          await writeVerdict(dir, task, malformed("only try"));
+          await idleUntilAttempt(runner, judgeSessionId, task, 1);
+          await waitForDelivery(deps, judgeSessionId);
+
+          // Ten more reads of the same rejected bytes must all be free.
+          for (let i = 0; i < 10; i++) {
+            runner.onAgentIdle(judgeSessionId, "test");
+            await new Promise((r) => setTimeout(r, 15));
+          }
+          expect(task.companionRepairAttempts).toBe(1);
+          expect(task.state).toBe("judge-evaluating");
+        } finally {
+          await cleanup(tmp);
+        }
+      });
+
+      test("an exhausted budget still pauses rather than nudging forever", async () => {
+        const { tmp, runner, deps, companionWorkspace } = await startBaseline();
+        const task = companionWorkspace.task;
+        try {
+          const dir = taskDir(tmp, task.taskId);
+          const judgeSessionId = sessionIdFor(companionWorkspace, "judge");
+          deps.isSessionBusy.mockReturnValue(true);
+
+          for (let i = 1; i <= AgentTaskRunner.MAX_COMPANION_VERDICT_REPAIRS; i++) {
+            await writeVerdict(dir, task, malformed(`try ${i}`));
+            await idleUntilAttempt(runner, judgeSessionId, task, i);
+            await waitForDelivery(deps, judgeSessionId);
+          }
+
+          // Budget gone. The Companion stops without fixing it, so it is no
+          // longer busy — that is the give-up signal.
+          await writeVerdict(dir, task, malformed("one too many"));
+          deps.isSessionBusy.mockReturnValue(false);
+          await waitFor(
+            async () => {
+              if (task.state === "paused") return true;
+              runner.onAgentIdle(judgeSessionId, "test");
+              await new Promise((r) => setTimeout(r, 25));
+              return task.state === "paused";
+            },
+            { timeoutMs: 15000 },
+          );
+          expect(task.pausedFromState).toBe("judge-evaluating");
+        } finally {
+          await cleanup(tmp);
+        }
+      });
+    });
+
     // role+phase+round do NOT identify an evaluation: a needs-input answer and
     // a withheld completion both re-evaluate the same phase and round. The
     // runner therefore hands out a monotonic evaluationAttempt and requires it

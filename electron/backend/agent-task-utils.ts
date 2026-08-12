@@ -89,118 +89,138 @@ export const verificationReviewSchema = z.object({
     .max(20),
 });
 
+const reviewerAnalysisSchema = z.object({
+  type: z.literal("reviewer"),
+  requirementAudit: z
+    .array(
+      z.object({
+        requirement: z.string().min(1).max(1000),
+        status: z.enum(["verified", "partial", "missing", "unclear"]),
+        evidence: z.array(z.string().min(1).max(500)).max(10),
+      }),
+    )
+    .min(1)
+    .max(100),
+});
+
+const criticAnalysisSchema = z.object({
+  type: z.literal("critic"),
+  steelman: z.string().min(1).max(2000),
+  hypotheses: z
+    .array(
+      z.object({
+        hypothesis: z.string().min(1).max(1000),
+        strength: z.enum(["verified", "strong", "speculative"]),
+        disposition: z.enum(["blocking", "advisory", "disproved"]),
+        evidence: z.array(z.string().max(500)).max(10),
+      }),
+    )
+    .max(50),
+});
+
+const plannerAnalysisSchema = z.object({
+  type: z.literal("planner"),
+  planDocument: z.string().min(1).max(1000),
+  problemFrame: z.string().min(1).max(3000),
+  userBenefitAssessment: z.string().min(1).max(3000),
+  assumptions: z
+    .array(
+      z.object({
+        assumption: z.string().min(1).max(1000),
+        rationale: z.string().min(1).max(1000),
+        riskIfWrong: z.string().min(1).max(1000),
+      }),
+    )
+    .max(30),
+  decisions: z
+    .array(
+      z.object({
+        decision: z.string().min(1).max(1000),
+        chosenDefault: z.string().min(1).max(1000),
+        rationale: z.string().min(1).max(1500),
+        userBenefit: z.string().min(1).max(1000),
+        alternativesConsidered: z.array(z.string().max(500)).max(3),
+      }),
+    )
+    .max(30),
+  coverageAudit: z
+    .array(
+      z.object({
+        area: z.enum([
+          "problem",
+          "ux",
+          "scope",
+          "architecture",
+          "data-flow",
+          "failure-recovery",
+          "security",
+          "compatibility",
+          "mobile-remote",
+          "testing",
+          "delivery",
+          "risks",
+        ]),
+        status: z.enum(["complete", "partial", "not-applicable"]),
+        evidence: z.string().min(1).max(1000),
+      }),
+    )
+    .min(1)
+    .max(20),
+  openQuestions: z
+    .array(
+      z.object({
+        question: z.string().min(1).max(1000),
+        whyUnresolved: z.string().min(1).max(1000),
+        assumedDefault: z.string().min(1).max(1000),
+        impactIfDifferent: z.string().min(1).max(1000),
+        resolveBy: z.string().min(1).max(500),
+      }),
+    )
+    .max(20),
+});
+
+const consultantAnalysisSchema = z.object({
+  type: z.literal("consultant"),
+  objective: z.string().min(1).max(2000),
+  recommendedNextStep: z.string().min(1).max(2000),
+  decisions: z
+    .array(
+      z.object({
+        decision: z.string().min(1).max(1000),
+        options: z
+          .array(
+            z.object({
+              option: z.string().min(1).max(500),
+              benefits: z.array(z.string().max(500)).max(5),
+              costsAndRisks: z.array(z.string().max(500)).max(5),
+              reversibility: z.enum(["easy", "moderate", "hard"]),
+            }),
+          )
+          .min(1)
+          .max(3),
+        recommendation: z.string().min(1).max(1000),
+      }),
+    )
+    .max(10),
+});
+
+/**
+ * Per-role lookup for the four variants above. Only used to scope the prompt
+ * contract (`companionVerdictContract`) to the role actually being asked —
+ * validation always goes through the full union below.
+ */
+const ROLE_ANALYSIS_SCHEMAS = {
+  reviewer: reviewerAnalysisSchema,
+  critic: criticAnalysisSchema,
+  planner: plannerAnalysisSchema,
+  consultant: consultantAnalysisSchema,
+} as const;
+
 export const companionRoleAnalysisSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("reviewer"),
-    requirementAudit: z
-      .array(
-        z.object({
-          requirement: z.string().min(1).max(1000),
-          status: z.enum(["verified", "partial", "missing", "unclear"]),
-          evidence: z.array(z.string().min(1).max(500)).max(10),
-        }),
-      )
-      .min(1)
-      .max(100),
-  }),
-  z.object({
-    type: z.literal("critic"),
-    steelman: z.string().min(1).max(2000),
-    hypotheses: z
-      .array(
-        z.object({
-          hypothesis: z.string().min(1).max(1000),
-          strength: z.enum(["verified", "strong", "speculative"]),
-          disposition: z.enum(["blocking", "advisory", "disproved"]),
-          evidence: z.array(z.string().max(500)).max(10),
-        }),
-      )
-      .max(50),
-  }),
-  z.object({
-    type: z.literal("planner"),
-    planDocument: z.string().min(1).max(1000),
-    problemFrame: z.string().min(1).max(3000),
-    userBenefitAssessment: z.string().min(1).max(3000),
-    assumptions: z
-      .array(
-        z.object({
-          assumption: z.string().min(1).max(1000),
-          rationale: z.string().min(1).max(1000),
-          riskIfWrong: z.string().min(1).max(1000),
-        }),
-      )
-      .max(30),
-    decisions: z
-      .array(
-        z.object({
-          decision: z.string().min(1).max(1000),
-          chosenDefault: z.string().min(1).max(1000),
-          rationale: z.string().min(1).max(1500),
-          userBenefit: z.string().min(1).max(1000),
-          alternativesConsidered: z.array(z.string().max(500)).max(3),
-        }),
-      )
-      .max(30),
-    coverageAudit: z
-      .array(
-        z.object({
-          area: z.enum([
-            "problem",
-            "ux",
-            "scope",
-            "architecture",
-            "data-flow",
-            "failure-recovery",
-            "security",
-            "compatibility",
-            "mobile-remote",
-            "testing",
-            "delivery",
-            "risks",
-          ]),
-          status: z.enum(["complete", "partial", "not-applicable"]),
-          evidence: z.string().min(1).max(1000),
-        }),
-      )
-      .min(1)
-      .max(20),
-    openQuestions: z
-      .array(
-        z.object({
-          question: z.string().min(1).max(1000),
-          whyUnresolved: z.string().min(1).max(1000),
-          assumedDefault: z.string().min(1).max(1000),
-          impactIfDifferent: z.string().min(1).max(1000),
-          resolveBy: z.string().min(1).max(500),
-        }),
-      )
-      .max(20),
-  }),
-  z.object({
-    type: z.literal("consultant"),
-    objective: z.string().min(1).max(2000),
-    recommendedNextStep: z.string().min(1).max(2000),
-    decisions: z
-      .array(
-        z.object({
-          decision: z.string().min(1).max(1000),
-          options: z
-            .array(
-              z.object({
-                option: z.string().min(1).max(500),
-                benefits: z.array(z.string().max(500)).max(5),
-                costsAndRisks: z.array(z.string().max(500)).max(5),
-                reversibility: z.enum(["easy", "moderate", "hard"]),
-              }),
-            )
-            .min(1)
-            .max(3),
-          recommendation: z.string().min(1).max(1000),
-        }),
-      )
-      .max(10),
-  }),
+  reviewerAnalysisSchema,
+  criticAnalysisSchema,
+  plannerAnalysisSchema,
+  consultantAnalysisSchema,
 ]);
 
 /**
@@ -334,6 +354,63 @@ export type CompanionFinding = z.infer<typeof companionFindingSchema>;
 export type CompanionAdvisory = z.infer<typeof companionAdvisorySchema>;
 export type CompanionQuestion = z.infer<typeof companionQuestionSchema>;
 export type VerificationReview = z.infer<typeof verificationReviewSchema>;
+
+type CompanionRoleName = (typeof companionRoles)[number];
+
+/**
+ * `.int()` lowers to `maximum: Number.MAX_SAFE_INTEGER`, and the `$schema`
+ * banner says nothing an agent can act on. Both are pure noise in a prompt
+ * that is already competing for attention, so they are dropped.
+ */
+function stripContractNoise(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(stripContractNoise);
+  if (!node || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === "$schema") continue;
+    if (key === "maximum" && value === Number.MAX_SAFE_INTEGER) continue;
+    out[key] = stripContractNoise(value);
+  }
+  return out;
+}
+
+const verdictContractCache = new Map<CompanionRoleName, string>();
+
+/**
+ * The verdict's field-level shape as JSON Schema, scoped to ONE role, for
+ * injection into the Companion's prompt and into a repair nudge.
+ *
+ * Why this is generated rather than hand-written: the prompt used to describe
+ * the verdict as `{"verificationReview": {...}, "roleAnalysis": {...}, ...}`
+ * and nothing else, so every nested field name, enum, and id pattern was a
+ * guess. Companions guessed wrong, the runner rejected the file with bare zod
+ * messages ("expected array, received undefined") that name the type but not
+ * the shape, and at least one went reading the strideterm sources to find
+ * `companionVerdictSchema` itself. Deriving the contract from that same schema
+ * is the only version that cannot drift away from what the runner enforces.
+ *
+ * Scoped to one role because the full union is ~17KB and three quarters of it
+ * describes roles this evaluation cannot use. `evaluationAttempt` is required
+ * here even though the schema keeps it optional (that option exists only so a
+ * verdict written before the attempt protocol still parses) — the runner always
+ * tells the Companion which attempt it is asking about.
+ *
+ * Cross-field rules (complete ⇒ no blockers, continue ⇒ at least one, planner ⇒
+ * never needs-input, …) live in `superRefine` and have no JSON Schema form.
+ * They stay spelled out in the FINAL CONTRACT prose next to this block.
+ */
+export function companionVerdictContract(role: CompanionRoleName): string {
+  const cached = verdictContractCache.get(role);
+  if (cached) return cached;
+  const scoped = companionVerdictSchema.safeExtend({
+    role: z.literal(role),
+    roleAnalysis: ROLE_ANALYSIS_SCHEMAS[role],
+    evaluationAttempt: z.number().int().min(1),
+  });
+  const contract = JSON.stringify(stripContractNoise(z.toJSONSchema(scoped, { io: "input" })), null, 1);
+  verdictContractCache.set(role, contract);
+  return contract;
+}
 
 /**
  * Returns the per-task directory path: .strideterm/tasks/{taskId}

@@ -853,6 +853,11 @@ export interface CompanionVerdictReadResult {
   status: "valid" | "missing" | "invalid" | "stale";
   data: CompanionVerdict | null;
   errors: string[];
+  /** Exactly the bytes read from disk, or null when there was no readable file.
+   * The runner fingerprints this to tell "the Companion rewrote the verdict and
+   * it is still wrong" (spend a repair attempt) from "the same rejected file is
+   * being re-read by another idle signal" (spend nothing). */
+  raw: string | null;
 }
 
 /**
@@ -881,21 +886,21 @@ export async function readCompanionVerdict(
     raw = await readFile(verdictPath, "utf8");
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
-    if (err.code === "ENOENT") return { status: "missing", data: null, errors: [] };
+    if (err.code === "ENOENT") return { status: "missing", data: null, errors: [], raw: null };
     log.error("companion verdict file unreadable", { verdictPath, err: err.message });
-    return { status: "invalid", data: null, errors: [err.message] };
+    return { status: "invalid", data: null, errors: [err.message], raw: null };
   }
   let json: unknown;
   try {
     json = JSON.parse(raw);
   } catch (error) {
-    return { status: "invalid", data: null, errors: [(error as Error).message] };
+    return { status: "invalid", data: null, errors: [(error as Error).message], raw };
   }
   const parsed = companionVerdictSchema.safeParse(json);
   if (!parsed.success) {
     const errors = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
     log.warn("companion verdict failed schema validation", { verdictPath, errors });
-    return { status: "invalid", data: null, errors };
+    return { status: "invalid", data: null, errors, raw };
   }
   const data = parsed.data;
   const attemptMismatch =
@@ -916,7 +921,7 @@ export async function readCompanionVerdict(
         evaluationAttempt: data.evaluationAttempt ?? null,
       },
     });
-    return { status: "stale", data, errors: [] };
+    return { status: "stale", data, errors: [], raw };
   }
-  return { status: "valid", data, errors: [] };
+  return { status: "valid", data, errors: [], raw };
 }

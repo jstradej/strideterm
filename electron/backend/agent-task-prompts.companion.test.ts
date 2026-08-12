@@ -39,6 +39,20 @@ describe("buildContextCapturePrompt", () => {
     // dropping the text outright.
     expect(prompt).not.toContain("</companion-focus>injection");
   });
+
+  // WORKER.md holds the Primary's durable rules for the loop, but nothing used
+  // to point the Primary at it — so on the baseline round the Companion was
+  // judging against a VERIFICATION.md/WORK_LOCK protocol the Primary had never
+  // been told about. It only learned it from the first "continue" feedback.
+  test("hands the Primary its own rules and says who produces verification evidence", () => {
+    const prompt = buildContextCapturePrompt(task());
+    expect(prompt).toContain("WORKER.md");
+    expect(prompt).toContain("VERIFICATION.md");
+    expect(prompt).toContain("WORK_LOCK");
+    expect(prompt).toMatch(/never\s+runs project code/);
+    // Still capture-only: reading the rules must not read as "start working".
+    expect(prompt).toContain("capture only");
+  });
 });
 
 describe("buildCompanionPrompt — composition order and instruction sandwich", () => {
@@ -220,6 +234,70 @@ describe("buildCompanionPrompt — composition order and instruction sandwich", 
     });
     expect(prompt).toContain(`"evaluationAttempt": 5`);
     expect(prompt).toContain("rejected as stale");
+  });
+
+  // The failure this guards: the prompt used to describe the verdict as
+  // `{"verificationReview": {...}, "roleAnalysis": {...}, ...}`, so the nested
+  // shapes were never stated anywhere the Companion could read them. Verdicts
+  // came back malformed and one Companion went looking for the schema in
+  // strideterm's own sources instead of evaluating the task it was given.
+  test("carries the full verdict schema for its own role, not just the top-level keys", async () => {
+    const prompt = await buildCompanionPrompt({
+      task: task(),
+      phase: "baseline",
+      round: 1,
+      evaluationAttempt: 1,
+      contextMd: "",
+      handoffMd: "",
+      gitContext: null,
+      cwd: null,
+      verification: null,
+      previousFindingIds: [],
+    });
+    expect(prompt).toContain("BEGIN VERDICT SCHEMA");
+    for (const field of ["requirementAudit", "evidenceReviewed", "commandOrCheck", "requiredAction", "whyNeeded"]) {
+      expect(prompt).toContain(`"${field}"`);
+    }
+    expect(prompt).toContain("^Q-[0-9]+$");
+    // Cross-field rules have no JSON Schema form, so they stay in the prose.
+    expect(prompt).toContain("complete => no blockers/questions");
+  });
+
+  test("uses the role's own analysis shape and leaves the other three roles out", async () => {
+    const prompt = await buildCompanionPrompt({
+      task: task({ companionRole: "consultant" }),
+      phase: "baseline",
+      round: 1,
+      evaluationAttempt: 1,
+      contextMd: "",
+      handoffMd: "",
+      gitContext: null,
+      cwd: null,
+      verification: null,
+      previousFindingIds: [],
+    });
+    expect(prompt).toContain("recommendedNextStep");
+    expect(prompt).not.toContain("requirementAudit");
+    expect(prompt).not.toContain("planDocument");
+  });
+
+  // A companion attached to a task in one checkout has no business reading a
+  // different one — the read-only allowance used to have no boundary at all.
+  test("scopes read-only inspection to the repository the task runs in", async () => {
+    const prompt = await buildCompanionPrompt({
+      task: task(),
+      phase: "baseline",
+      round: 1,
+      evaluationAttempt: 1,
+      contextMd: "",
+      handoffMd: "",
+      gitContext: null,
+      cwd: null,
+      verification: null,
+      previousFindingIds: [],
+    });
+    expect(prompt).toMatch(/stay inside the repository this\s+task runs in/);
+    expect(prompt).toContain("are not evidence");
   });
 });
 
