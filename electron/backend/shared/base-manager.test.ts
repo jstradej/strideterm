@@ -705,7 +705,9 @@ describe("BaseProviderManager.syncReviewWorkspace — real git fixture round-tri
       credentialStore: createCredentialStore({ "tok-ref-1": "tok-123" }) as unknown as ConstructorParameters<
         typeof BaseProviderManager
       >[0]["credentialStore"],
-      reviewStore: createReviewStore() as unknown as ConstructorParameters<typeof BaseProviderManager>[0]["reviewStore"],
+      reviewStore: createReviewStore() as unknown as ConstructorParameters<
+        typeof BaseProviderManager
+      >[0]["reviewStore"],
       createApi: () => ({}),
     });
     manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com" }];

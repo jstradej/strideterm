@@ -826,10 +826,7 @@ export function registerIpc(
   handle("github:workspace:sync", async (event, workspaceId) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "github:workspace:sync" }, () =>
-      runtime.syncGitHubReviewWorkspace(
-        validateIpc(workspaceIdSchema, workspaceId, "github:workspace:sync"),
-        windowId,
-      ),
+      runtime.syncGitHubReviewWorkspace(validateIpc(workspaceIdSchema, workspaceId, "github:workspace:sync"), windowId),
     );
   });
   handle("github:list-remote-branches", async (_event, payload) =>

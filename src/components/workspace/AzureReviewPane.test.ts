@@ -454,9 +454,7 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (payload.appState!.workspaces[0] as any).cwd = "/repo";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (payload as any).azureDevops.pullRequests["ado:1"].changedFiles = [
-      { path: "src/foo.ts", changeType: "modified" },
-    ];
+    (payload as any).azureDevops.pullRequests["ado:1"].changedFiles = [{ path: "src/foo.ts", changeType: "modified" }];
     appStore.payload = payload;
     for (const fn of ["refreshAzure", "markAzurePrSeen"]) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -519,9 +517,7 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (payload.appState!.workspaces[0] as any).cwd = "/repo";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (payload as any).azureDevops.pullRequests["ado:1"].changedFiles = [
-      { path: "src/foo.ts", changeType: "modified" },
-    ];
+    (payload as any).azureDevops.pullRequests["ado:1"].changedFiles = [{ path: "src/foo.ts", changeType: "modified" }];
     appStore.payload = payload;
     for (const fn of ["refreshAzure", "markAzurePrSeen"]) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

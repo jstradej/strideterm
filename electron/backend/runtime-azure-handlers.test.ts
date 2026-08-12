@@ -242,8 +242,17 @@ describe("syncAzureReviewWorkspace — profile guard + in-flight coalescing", ()
   });
 
   test("on success: refreshes git + azure, broadcasts, and returns {payload, result}", async () => {
-    const { handlers, workspace, syncReviewWorkspace, refreshGit, refreshAzure, broadcastState, getPayload, payload, syncResult } =
-      makeHandlers();
+    const {
+      handlers,
+      workspace,
+      syncReviewWorkspace,
+      refreshGit,
+      refreshAzure,
+      broadcastState,
+      getPayload,
+      payload,
+      syncResult,
+    } = makeHandlers();
 
     const response = await handlers.syncAzureReviewWorkspace("ws-1");
 
@@ -270,7 +279,13 @@ describe("syncAzureReviewWorkspace — profile guard + in-flight coalescing", ()
 
     const p1 = handlers.syncAzureReviewWorkspace("ws-1");
     const p2 = handlers.syncAzureReviewWorkspace("ws-1");
-    resolveSync({ status: "already-current", message: "Already up to date.", commitCount: 0, headSha: "s", previousHeadSha: "s" });
+    resolveSync({
+      status: "already-current",
+      message: "Already up to date.",
+      commitCount: 0,
+      headSha: "s",
+      previousHeadSha: "s",
+    });
     const [r1, r2] = await Promise.all([p1, p2]);
 
     expect(syncReviewWorkspace).toHaveBeenCalledTimes(1);

@@ -126,7 +126,7 @@ Refresh works the same in a read-only reviewer checkout as in an author's — it
 
 **Background refresh** — triggered automatically when you switch into the review pane, or by polling — only updates PR metadata (title, checks, comments) and never touches the checkout. Only a manual click on **Refresh** can move `HEAD`.
 
-**Rebase on target** (Summary tab, **More git actions** menu) is a different, more advanced operation: it rewrites history by rebasing your branch onto the PR's *target* branch, and its availability is based on how far behind that target branch you are — not on whether the PR's source branch has moved, which is what Refresh handles. Force push and Lazygit live in the same menu since they're needed far less often than Push or Refresh.
+**Rebase on target** (Summary tab, **More git actions** menu) is a different, more advanced operation: it rewrites history by rebasing your branch onto the PR's _target_ branch, and its availability is based on how far behind that target branch you are — not on whether the PR's source branch has moved, which is what Refresh handles. Force push and Lazygit live in the same menu since they're needed far less often than Push or Refresh.
 
 ---
 
