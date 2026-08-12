@@ -642,6 +642,12 @@ export function registerIpc(
       ),
     ),
   );
+  handle("azure:workspace:sync", async (event, workspaceId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "azure:workspace:sync" }, () =>
+      runtime.syncAzureReviewWorkspace(validateIpc(workspaceIdSchema, workspaceId, "azure:workspace:sync"), windowId),
+    );
+  });
   handle("azure:create-pull-request", async (_event, payload) =>
     withOperationPromise({ opId: "azure:create-pull-request" }, () =>
       runtime.azureCreatePullRequest(validateIpc(gitPayloadSchema, payload, "azure:create-pull-request")),
@@ -817,6 +823,15 @@ export function registerIpc(
       ),
     ),
   );
+  handle("github:workspace:sync", async (event, workspaceId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "github:workspace:sync" }, () =>
+      runtime.syncGitHubReviewWorkspace(
+        validateIpc(workspaceIdSchema, workspaceId, "github:workspace:sync"),
+        windowId,
+      ),
+    );
+  });
   handle("github:list-remote-branches", async (_event, payload) =>
     withOperationPromise({ opId: "github:list-remote-branches" }, () =>
       runtime.githubListRemoteBranches(validateIpc(gitPayloadSchema, payload, "github:list-remote-branches")),

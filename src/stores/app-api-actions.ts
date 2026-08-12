@@ -66,7 +66,10 @@ interface ProviderApiMethods {
   refresh: (api: AnyApi) => Promise<AnyApi>;
   markPrSeen: (api: AnyApi, prKey: string) => Promise<AnyApi>;
   openPullRequest: (api: AnyApi, args: { prKey: string; workspaceId: string }) => Promise<AnyApi>;
-  fetchReviewWorkspace: (api: AnyApi, workspaceId: string) => Promise<AnyApi>;
+  /** The Refresh button's git-mutating half: fast-forward the review checkout
+   *  onto the PR's latest source commit. Returns {payload, result} — result is
+   *  the structured sync outcome (status/message/commitCount/headSha). */
+  syncReviewWorkspace: (api: AnyApi, workspaceId: string) => Promise<AnyApi>;
   rebaseReviewWorkspace: (api: AnyApi, workspaceId: string) => Promise<AnyApi>;
   pushReviewWorkspace: (api: AnyApi, workspaceId: string, opts: { force: boolean }) => Promise<AnyApi>;
   deleteConnection: (api: AnyApi, connectionId: string) => Promise<AnyApi>;
@@ -79,7 +82,7 @@ const PROVIDER_API_METHODS: Record<ProviderKind, ProviderApiMethods> = {
     refresh: (api) => api.refreshAzure(),
     markPrSeen: (api, prKey) => api.markAzurePullRequestSeen(prKey),
     openPullRequest: (api, args) => api.openAzurePullRequest(args),
-    fetchReviewWorkspace: (api, workspaceId) => api.fetchAzureReviewWorkspace(workspaceId),
+    syncReviewWorkspace: (api, workspaceId) => api.syncAzureReviewWorkspace(workspaceId),
     rebaseReviewWorkspace: (api, workspaceId) => api.rebaseAzureReviewWorkspace(workspaceId),
     pushReviewWorkspace: (api, workspaceId, opts) => api.pushAzureReviewWorkspace(workspaceId, opts),
     deleteConnection: (api, connectionId) => api.deleteAzureConnection(connectionId),
@@ -90,7 +93,7 @@ const PROVIDER_API_METHODS: Record<ProviderKind, ProviderApiMethods> = {
     refresh: (api) => api.refreshGitHub(),
     markPrSeen: (api, prKey) => api.markGitHubPullRequestSeen(prKey),
     openPullRequest: (api, args) => api.openGitHubPullRequest(args),
-    fetchReviewWorkspace: (api, workspaceId) => api.fetchGitHubReviewWorkspace(workspaceId),
+    syncReviewWorkspace: (api, workspaceId) => api.syncGitHubReviewWorkspace(workspaceId),
     rebaseReviewWorkspace: (api, workspaceId) => api.rebaseGitHubReviewWorkspace(workspaceId),
     pushReviewWorkspace: (api, workspaceId, opts) => api.pushGitHubReviewWorkspace(workspaceId, opts),
     deleteConnection: (api, connectionId) => api.deleteGitHubConnection(connectionId),
@@ -122,9 +125,11 @@ export function makeProviderApiActions(
     );
   }
 
-  async function fetchReviewWorkspace(workspaceId: string): Promise<void> {
-    if (!workspaceId) return;
-    setPayload((await m.fetchReviewWorkspace(ctx.getApi() as AnyApi, workspaceId)) as StatePayload);
+  async function syncReviewWorkspace(workspaceId: string): Promise<unknown> {
+    if (!workspaceId) return null;
+    const response = (await m.syncReviewWorkspace(ctx.getApi() as AnyApi, workspaceId)) as AnyApi;
+    setPayload((response?.payload || response) as StatePayload);
+    return response?.result ?? null;
   }
 
   async function rebaseReviewWorkspace(workspaceId: string): Promise<void> {
@@ -158,7 +163,7 @@ export function makeProviderApiActions(
     refresh,
     markPrSeen,
     openPullRequest,
-    fetchReviewWorkspace,
+    syncReviewWorkspace,
     rebaseReviewWorkspace,
     pushReviewWorkspace,
     deleteConnection,
@@ -826,7 +831,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     azureReactivateThread,
     azureComment,
     openAzurePullRequest: azureApi.openPullRequest,
-    azureFetchReviewWorkspace: azureApi.fetchReviewWorkspace,
+    azureSyncReviewWorkspace: azureApi.syncReviewWorkspace,
     azureRebaseReviewWorkspace: azureApi.rebaseReviewWorkspace,
     azurePushReviewWorkspace: azureApi.pushReviewWorkspace,
     deleteAzureConnection: azureApi.deleteConnection,
@@ -837,7 +842,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     openGitHubPullRequest: githubApi.openPullRequest,
     githubComment,
     githubSubmitReview,
-    githubFetchReviewWorkspace: githubApi.fetchReviewWorkspace,
+    githubSyncReviewWorkspace: githubApi.syncReviewWorkspace,
     githubRebaseReviewWorkspace: githubApi.rebaseReviewWorkspace,
     githubPushReviewWorkspace: githubApi.pushReviewWorkspace,
     deleteGitHubConnection: githubApi.deleteConnection,

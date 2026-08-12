@@ -208,6 +208,7 @@ export interface StridetermAPI {
   fetchAzureReviewWorkspace: (workspaceId: string) => Promise<unknown>;
   rebaseAzureReviewWorkspace: (workspaceId: string) => Promise<unknown>;
   pushAzureReviewWorkspace: (workspaceId: string, options?: WorkspacePushOptions) => Promise<unknown>;
+  syncAzureReviewWorkspace: (workspaceId: string) => Promise<unknown>;
   azureCreatePullRequest: (payload: Record<string, unknown>) => Promise<unknown>;
   azureListRemoteBranches: (payload: Record<string, unknown>) => Promise<unknown>;
   azureQuickFixListProjects: (payload: QuickFixListProjects) => Promise<unknown>;
@@ -288,6 +289,7 @@ export interface StridetermAPI {
   fetchGitHubReviewWorkspace: (workspaceId: string) => Promise<unknown>;
   rebaseGitHubReviewWorkspace: (workspaceId: string) => Promise<unknown>;
   pushGitHubReviewWorkspace: (workspaceId: string, options?: WorkspacePushOptions) => Promise<unknown>;
+  syncGitHubReviewWorkspace: (workspaceId: string) => Promise<unknown>;
   githubListRemoteBranches: (payload: Record<string, unknown>) => Promise<unknown>;
   githubCreatePullRequest: (payload: Record<string, unknown>) => Promise<unknown>;
   githubQuickFixListRepos: (payload: GithubQuickFixListRepos) => Promise<unknown>;

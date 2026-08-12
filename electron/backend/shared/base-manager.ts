@@ -38,7 +38,7 @@ interface SnapshotConnection {
   [key: string]: unknown;
 }
 
-/** Minimal shape `fetch/rebase/pushReviewWorkspace` need — both AzureDevOpsManager's
+/** Minimal shape `fetch/rebase/push/syncReviewWorkspace` need — both AzureDevOpsManager's
  * `ReviewWorkspace` and GitHubManager's `SyncWorkspace` satisfy this structurally. */
 interface ReviewWorkspaceRef {
   id: string;
@@ -50,6 +50,19 @@ interface ReviewWorkspaceRef {
       targetRefName?: string;
     };
   };
+}
+
+/** Outcome of `syncReviewWorkspace` — see its docstring for the semantics of each. */
+export type ReviewWorkspaceSyncStatus = "updated" | "already-current" | "dirty" | "ahead" | "diverged";
+
+export interface ReviewWorkspaceSyncResult {
+  status: ReviewWorkspaceSyncStatus;
+  /** Human-readable outcome/reason, safe to show directly in the UI. */
+  message: string;
+  /** Number of commits fast-forwarded; 0 unless status is "updated". */
+  commitCount: number;
+  headSha: string;
+  previousHeadSha: string;
 }
 
 interface ProviderSnapshot {
@@ -956,6 +969,135 @@ export class BaseProviderManager extends EventEmitter {
       { type: force ? "force-push" : "push", connection, workspaceId: workspace.id },
       () => this.runGit(workspace.cwd || "", pushArgs, { login: connection.login, token }),
     );
+  }
+
+  /**
+   * Returns a non-empty reason string when `cwd` cannot be safely
+   * fast-forwarded right now (uncommitted changes, or a rebase/merge/
+   * cherry-pick/revert already in progress), otherwise "".
+   */
+  async describeWorkingTreeBlock(cwd: string): Promise<string> {
+    const status = (await this.runGit(cwd, ["status", "--porcelain"])).stdout.trim();
+    if (status) {
+      const count = status.split(/\r?\n/).filter(Boolean).length;
+      return `${count} uncommitted change${count !== 1 ? "s" : ""} in the worktree.`;
+    }
+    const gitDir = (await this.runGit(cwd, ["rev-parse", "--git-dir"])).stdout.trim();
+    if (gitDir) {
+      const base = path.isAbsolute(gitDir) ? gitDir : path.join(cwd, gitDir);
+      const markers: Array<[string, string]> = [
+        ["rebase-merge", "a rebase"],
+        ["rebase-apply", "a rebase"],
+        ["MERGE_HEAD", "a merge"],
+        ["CHERRY_PICK_HEAD", "a cherry-pick"],
+        ["REVERT_HEAD", "a revert"],
+      ];
+      for (const [marker, label] of markers) {
+        if (await exists(path.join(base, marker))) {
+          return `${label} is already in progress.`;
+        }
+      }
+    }
+    return "";
+  }
+
+  /**
+   * Bring a review checkout's working tree up to the PR's latest source
+   * commit — the "Refresh" button's git-mutating half. Unlike
+   * `fetchReviewWorkspace` (remote-tracking refs only) this may move `HEAD`,
+   * but only via a fast-forward: it never resets, rebases, or merges. The
+   * target is always `workspace.review.pullRequest.sourceRefName` — never the
+   * local branch's own name/upstream, since a managed checkout is named
+   * `pr-<id>-...` and reusing a stale/reused worktree may carry a wrong or
+   * missing upstream.
+   *
+   * Shared body of AzureDevOpsManager.syncReviewWorkspace / GitHubManager.syncReviewWorkspace.
+   */
+  async syncReviewWorkspace({ workspace }: { workspace: ReviewWorkspaceRef }): Promise<ReviewWorkspaceSyncResult> {
+    const connection = this.findConnection(workspace.review?.connectionId || "");
+    if (!connection) throw new Error(this.connectionNotFoundMessage);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
+    if (!token) throw new Error("PAT is missing.");
+    const cwd = workspace.cwd || "";
+    if (!cwd) throw new Error("Review workspace has no working directory.");
+    const sourceBranch = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName || "");
+    if (!sourceBranch) throw new Error("Pull request source branch is unknown.");
+
+    this.log.info("sync review workspace", { workspaceId: workspace.id, sourceBranch });
+    const previousHeadSha = (await this.runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim();
+
+    // Fetch exactly the PR's source ref into its tracking ref — not a plain
+    // `fetch origin`, which relies on the remote's configured fetch refspecs
+    // and can miss the branch on an older/reused checkout. The leading `+`
+    // only force-updates the local `refs/remotes/origin/<source>` pointer,
+    // never anything under `refs/heads/` in this worktree.
+    const remoteRef = `refs/remotes/origin/${sourceBranch}`;
+    await this.runAuditedGitOperation({ type: "sync-fetch", connection, workspaceId: workspace.id }, () =>
+      this.runGit(cwd, ["fetch", "origin", `+refs/heads/${sourceBranch}:${remoteRef}`], {
+        login: connection.login,
+        token,
+      }),
+    );
+
+    const remoteHeadSha = (await this.runGit(cwd, ["rev-parse", remoteRef])).stdout.trim();
+    if (remoteHeadSha === previousHeadSha) {
+      return {
+        status: "already-current",
+        message: "Already up to date.",
+        commitCount: 0,
+        headSha: previousHeadSha,
+        previousHeadSha,
+      };
+    }
+
+    const blockReason = await this.describeWorkingTreeBlock(cwd);
+    if (blockReason) {
+      return {
+        status: "dirty",
+        message: `Cannot update: ${blockReason} Commit, stash, or resolve it, then try again.`,
+        commitCount: 0,
+        headSha: previousHeadSha,
+        previousHeadSha,
+      };
+    }
+
+    const [aheadResult, behindResult] = await Promise.all([
+      this.runGit(cwd, ["rev-list", "--count", `${remoteRef}..HEAD`]),
+      this.runGit(cwd, ["rev-list", "--count", `HEAD..${remoteRef}`]),
+    ]);
+    const aheadCount = Number(aheadResult.stdout.trim() || "0");
+    const behindCount = Number(behindResult.stdout.trim() || "0");
+
+    if (aheadCount > 0 && behindCount > 0) {
+      return {
+        status: "diverged",
+        message: `Local branch has diverged from origin/${sourceBranch} (${aheadCount} local, ${behindCount} remote). Commit/stash and choose an integration strategy (e.g. Enable editing) to reconcile.`,
+        commitCount: 0,
+        headSha: previousHeadSha,
+        previousHeadSha,
+      };
+    }
+    if (aheadCount > 0) {
+      return {
+        status: "ahead",
+        message: `Local branch is ${aheadCount} commit${aheadCount !== 1 ? "s" : ""} ahead of origin/${sourceBranch}. Nothing to fast-forward.`,
+        commitCount: 0,
+        headSha: previousHeadSha,
+        previousHeadSha,
+      };
+    }
+
+    await this.runAuditedGitOperation({ type: "sync-merge", connection, workspaceId: workspace.id }, () =>
+      this.runGit(cwd, ["merge", "--ff-only", remoteRef]),
+    );
+    const headSha = (await this.runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim();
+    return {
+      status: "updated",
+      message: `Updated ${behindCount} commit${behindCount !== 1 ? "s" : ""} from origin/${sourceBranch}.`,
+      commitCount: behindCount,
+      headSha,
+      previousHeadSha,
+    };
   }
 
   /**

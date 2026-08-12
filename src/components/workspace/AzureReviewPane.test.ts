@@ -92,6 +92,8 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
     "markAzurePrSeen",
     "markGitHubPrSeen",
     "markAzurePullRequestSeen",
+    "azureSyncReviewWorkspace",
+    "githubSyncReviewWorkspace",
     "openExternal",
   ]) {
     if (typeof (appStore as unknown as Record<string, unknown>)[fn] === "function") {
@@ -252,12 +254,12 @@ describe("AzureReviewPane — toolbar and pipelines refresh surface failures ins
   test("toolbar Refresh: rejection is caught and surfaced as a toast, busy resets", async () => {
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
-    // mountPane() itself installs no-op spies for refreshAzure/markAzurePrSeen —
-    // override them AFTER mounting, otherwise mountPane's noop clobbers ours.
+    // mountPane() itself installs no-op spies for azureSyncReviewWorkspace —
+    // override it AFTER mounting, otherwise mountPane's noop clobbers ours.
     const wrapper = mountPane();
     await flushPromises();
     const appStore = useAppStore();
-    vi.spyOn(appStore, "refreshAzure").mockRejectedValue(new Error("network down"));
+    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockRejectedValue(new Error("network down"));
 
     const refreshBtn = wrapper
       .findAll("button")
@@ -296,6 +298,282 @@ describe("AzureReviewPane — toolbar and pipelines refresh surface failures ins
     expect(notifications.sessions[0].events[0].title).toBe("Refresh checks failed");
     // busy resets — refreshing prop passed to the child goes back to false
     expect((wrapper.findComponent(ReviewPipelinesTab).props() as Record<string, unknown>).refreshing).toBe(false);
+  });
+});
+
+/**
+ * The Refresh button's git-mutating half (fast-forward sync onto the PR's
+ * latest source commit) — see .private/plan-review-source-update.md. These
+ * tests pin: the outcome banner for updated/blocked results, that a blocked
+ * result never triggers a diff reload, that an "updated" result DOES reload
+ * the currently selected diff, and that the metadata-only auto-refresh watch
+ * never calls the checkout-mutating sync action.
+ */
+describe("AzureReviewPane — manual Refresh drives the full sync, not just metadata", () => {
+  test("Refresh triggers the full sync even for a read-only reviewer workspace (no 'Enable editing' gate)", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const appStore = useAppStore();
+    const payload = buildPayload("azure-devops");
+    // review.role is already "reviewer" (see buildPayload's detail) and
+    // review.writable is intentionally omitted/false — the checkout-mutating
+    // sync must run regardless, unlike the Git pane's generic write actions.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload.appState!.workspaces[0].review as any).writable = false;
+    appStore.payload = payload;
+    const syncSpy = vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+      status: "already-current",
+      message: "Already up to date.",
+      commitCount: 0,
+      headSha: "s",
+      previousHeadSha: "s",
+    });
+    vi.spyOn(appStore, "markAzurePrSeen").mockResolvedValue(undefined);
+    const wrapper = mount(AzureReviewPane, {
+      props: { workspaceId: "ws-review" },
+      global: {
+        stubs: {
+          PaneShell: true,
+          DiffViewer: true,
+          GitCommitLog: true,
+          MonacoDiffPanel: true,
+          ReviewSummaryTab: true,
+          ReviewCommentsTab: true,
+          ReviewAgentTab: true,
+          ReviewPipelinesTab: true,
+          CustomSelect: true,
+        },
+        provide: {
+          [apiKey]: {
+            azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+          },
+        },
+      },
+    });
+    await flushPromises();
+
+    const refreshBtn = wrapper
+      .findAll("button")
+      .find((b) => b.attributes("title")?.includes("Fetch the latest PR data"))!;
+    expect(refreshBtn.attributes("disabled")).toBeUndefined();
+    await refreshBtn.trigger("click");
+    await flushPromises();
+
+    expect(syncSpy).toHaveBeenCalledWith("ws-review");
+  });
+
+  test("an 'updated' sync result renders a success outcome banner", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+      status: "updated",
+      message: "Updated 2 commits from origin/feature/x.",
+      commitCount: 2,
+      headSha: "new-sha",
+      previousHeadSha: "old-sha",
+    });
+
+    const refreshBtn = wrapper
+      .findAll("button")
+      .find((b) => b.attributes("title")?.includes("Fetch the latest PR data"))!;
+    await refreshBtn.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Updated 2 commits from origin/feature/x.");
+  });
+
+  test("a blocked ('dirty') sync result renders a distinct, non-success outcome banner", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+      status: "dirty",
+      message: "Cannot update: 2 uncommitted changes in the worktree. Commit, stash, or resolve it, then try again.",
+      commitCount: 0,
+      headSha: "old-sha",
+      previousHeadSha: "old-sha",
+    });
+
+    const refreshBtn = wrapper
+      .findAll("button")
+      .find((b) => b.attributes("title")?.includes("Fetch the latest PR data"))!;
+    await refreshBtn.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Cannot update: 2 uncommitted changes");
+  });
+
+  test("the metadata-only auto-refresh watch never calls the checkout-mutating sync action", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const appStore = useAppStore();
+    const syncSpy = vi.spyOn(appStore, "azureSyncReviewWorkspace");
+    appStore.payload = buildPayload("azure-devops");
+    (appStore as unknown as { activeViewId: string }).activeViewId = "review:ws-review";
+    vi.spyOn(appStore, "refreshAzure").mockResolvedValue(undefined);
+    vi.spyOn(appStore, "markAzurePrSeen").mockResolvedValue(undefined);
+
+    mount(AzureReviewPane, {
+      props: { workspaceId: "ws-review" },
+      global: {
+        stubs: {
+          PaneShell: true,
+          DiffViewer: true,
+          GitCommitLog: true,
+          MonacoDiffPanel: true,
+          ReviewSummaryTab: true,
+          ReviewCommentsTab: true,
+          ReviewAgentTab: true,
+          ReviewPipelinesTab: true,
+          CustomSelect: true,
+        },
+        provide: {
+          [apiKey]: {
+            azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+          },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(syncSpy).not.toHaveBeenCalled();
+  });
+
+  test("after an 'updated' result, the currently selected file's diff is reloaded", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const appStore = useAppStore();
+    const payload = buildPayload("azure-devops");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload.appState!.workspaces[0] as any).cwd = "/repo";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload as any).azureDevops.pullRequests["ado:1"].changedFiles = [
+      { path: "src/foo.ts", changeType: "modified" },
+    ];
+    appStore.payload = payload;
+    for (const fn of ["refreshAzure", "markAzurePrSeen"]) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (vi.spyOn(appStore as any, fn as any) as any).mockResolvedValue(undefined);
+    }
+    const fileGitDiff = vi.fn().mockResolvedValue({ ok: true, leftContent: "old", rightContent: "new" });
+    vi.spyOn(appStore, "getApi").mockReturnValue({ fileGitDiff } as unknown as ReturnType<typeof appStore.getApi>);
+
+    const wrapper = mount(AzureReviewPane, {
+      props: { workspaceId: "ws-review" },
+      global: {
+        stubs: {
+          PaneShell: true,
+          DiffViewer: true,
+          GitCommitLog: true,
+          ReviewSummaryTab: true,
+          ReviewCommentsTab: true,
+          ReviewAgentTab: true,
+          ReviewPipelinesTab: true,
+          CustomSelect: true,
+        },
+        provide: {
+          [apiKey]: {
+            azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+          },
+        },
+      },
+    });
+    await flushPromises();
+
+    const filesTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Files"))!;
+    await filesTabBtn.trigger("click");
+    await flushPromises();
+    await wrapper.find(".review-tree-file").trigger("click");
+    await flushPromises();
+    expect(fileGitDiff).toHaveBeenCalledTimes(1);
+
+    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+      status: "updated",
+      message: "Updated 1 commit from origin/feature/x.",
+      commitCount: 1,
+      headSha: "new-sha",
+      previousHeadSha: "old-sha",
+    });
+    const refreshBtn = wrapper
+      .findAll("button")
+      .find((b) => b.attributes("title")?.includes("Fetch the latest PR data"))!;
+    await refreshBtn.trigger("click");
+    await flushPromises();
+
+    expect(fileGitDiff).toHaveBeenCalledTimes(2);
+  });
+
+  test("a blocked sync result does NOT reload the currently selected diff", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const appStore = useAppStore();
+    const payload = buildPayload("azure-devops");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload.appState!.workspaces[0] as any).cwd = "/repo";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (payload as any).azureDevops.pullRequests["ado:1"].changedFiles = [
+      { path: "src/foo.ts", changeType: "modified" },
+    ];
+    appStore.payload = payload;
+    for (const fn of ["refreshAzure", "markAzurePrSeen"]) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (vi.spyOn(appStore as any, fn as any) as any).mockResolvedValue(undefined);
+    }
+    const fileGitDiff = vi.fn().mockResolvedValue({ ok: true, leftContent: "old", rightContent: "new" });
+    vi.spyOn(appStore, "getApi").mockReturnValue({ fileGitDiff } as unknown as ReturnType<typeof appStore.getApi>);
+
+    const wrapper = mount(AzureReviewPane, {
+      props: { workspaceId: "ws-review" },
+      global: {
+        stubs: {
+          PaneShell: true,
+          DiffViewer: true,
+          GitCommitLog: true,
+          ReviewSummaryTab: true,
+          ReviewCommentsTab: true,
+          ReviewAgentTab: true,
+          ReviewPipelinesTab: true,
+          CustomSelect: true,
+        },
+        provide: {
+          [apiKey]: {
+            azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+          },
+        },
+      },
+    });
+    await flushPromises();
+
+    const filesTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Files"))!;
+    await filesTabBtn.trigger("click");
+    await flushPromises();
+    await wrapper.find(".review-tree-file").trigger("click");
+    await flushPromises();
+    expect(fileGitDiff).toHaveBeenCalledTimes(1);
+
+    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+      status: "ahead",
+      message: "Local branch is 1 commit ahead of origin/feature/x. Nothing to fast-forward.",
+      commitCount: 0,
+      headSha: "old-sha",
+      previousHeadSha: "old-sha",
+    });
+    const refreshBtn = wrapper
+      .findAll("button")
+      .find((b) => b.attributes("title")?.includes("Fetch the latest PR data"))!;
+    await refreshBtn.trigger("click");
+    await flushPromises();
+
+    expect(fileGitDiff).toHaveBeenCalledTimes(1);
   });
 });
 

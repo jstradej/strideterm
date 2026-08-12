@@ -121,6 +121,31 @@
         </div>
       </div>
 
+      <!-- Refresh (fast-forward sync) outcome -->
+      <div
+        v-if="refreshSyncResult"
+        :style="{
+          padding: '6px 12px',
+          fontSize: '12px',
+          background: refreshSyncBlocked ? 'rgba(255, 80, 80, 0.08)' : 'rgba(76, 175, 80, 0.08)',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+        }"
+      >
+        <span :style="{ color: refreshSyncBlocked ? 'var(--danger, #e53935)' : 'var(--success, #4caf50)' }">{{
+          refreshSyncResult.message
+        }}</span>
+        <button
+          type="button"
+          class="button button--ghost"
+          style="font-size: 10px; padding: 1px 8px; margin-left: auto"
+          @click="refreshSyncResult = null"
+        >
+          Dismiss
+        </button>
+      </div>
       <!-- Toolbar success -->
       <div
         v-if="pushPublishSuccess"
@@ -652,8 +677,9 @@ const headerActions = computed(() => [
 ]);
 
 function onHeaderAction(action: { action: string }) {
-  if (action.action === "refresh-azure") appStore.refreshAzure();
-  if (action.action === "refresh-github") appStore.refreshGitHub();
+  // Same single Refresh action as the toolbar button (full sync, not just
+  // metadata) — the header's "↻" is just another entry point to it.
+  if (action.action === "refresh-azure" || action.action === "refresh-github") void handleRefresh();
 }
 
 // Auto-refresh when the Review pane becomes the active view.
@@ -695,16 +721,40 @@ watch(
 // Busy state for async toolbar actions
 const busyAction = ref<string>("");
 
+// Result of the last manual Refresh's git-mutating half (fast-forward sync
+// onto the PR's latest source commit). Distinct from the toolbar
+// success/error banners below, which report Push & publish outcomes.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const refreshSyncResult = ref<any>(null);
+const refreshSyncBlocked = computed(
+  () => !!refreshSyncResult.value && !["updated", "already-current"].includes(refreshSyncResult.value.status),
+);
+
 async function handleRefresh() {
   busyAction.value = "refresh";
+  refreshSyncResult.value = null;
   try {
     await notifications.runWithToast("Refresh failed", async () => {
-      if (isGitHub.value) {
-        await appStore.refreshGitHub();
-        if (prKey.value) await appStore.markGitHubPrSeen(prKey.value);
-      } else {
-        await appStore.refreshAzure();
-        if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
+      // The manual Refresh button — unlike the metadata-only auto-refresh
+      // watcher above — is the one place allowed to move the checkout's
+      // HEAD (a safe fast-forward onto the PR's source commit). It also
+      // refreshes the git snapshot and provider PR detail server-side, so
+      // no separate refreshAzure()/refreshGitHub() call is needed here.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const syncResult: any = isGitHub.value
+        ? await appStore.githubSyncReviewWorkspace(props.workspaceId)
+        : await appStore.azureSyncReviewWorkspace(props.workspaceId);
+      refreshSyncResult.value = syncResult || null;
+      if (prKey.value) {
+        if (isGitHub.value) await appStore.markGitHubPrSeen(prKey.value);
+        else await appStore.markAzurePrSeen(prKey.value);
+      }
+      // A blocked/no-op result (dirty, ahead, diverged, already-current)
+      // must leave any open diff exactly as it was — only "updated" moved
+      // HEAD, so only that case needs the Files tab to catch up.
+      if (syncResult?.status === "updated") {
+        const selected = reviewUi.value?.reviewSelectedFile;
+        if (selected) onSelectFile(String(selected));
       }
     });
   } finally {
@@ -829,6 +879,18 @@ const commitFilterOptions = computed(() => {
     label: `${String(c.shortHash || "").slice(0, 8)} — ${String(c.subject || "").slice(0, 60)}`,
   }));
   return [{ value: "", label: `Final — vs ${target}` }, ...commits];
+});
+
+// A HEAD-moving action (manual Refresh, rebase, push) rebuilds the git log,
+// which can drop the commit the per-commit filter was pointed at. Reset to
+// the roll-up "Final" view rather than silently diffing a commit outside
+// current history — the `watch(reviewCommitFilter, ...)` below then reloads
+// the still-selected file's diff against the new (branch) base.
+watch(commitFilterOptions, (options) => {
+  if (!reviewCommitFilter.value) return;
+  if (!options.some((option) => option.value === reviewCommitFilter.value)) {
+    reviewCommitFilter.value = "";
+  }
 });
 
 function loadMonacoReviewDiff(filePath: string) {

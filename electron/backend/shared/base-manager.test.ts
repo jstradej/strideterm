@@ -1,6 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { describe, expect, test, vi, afterEach } from "vitest";
 import { BaseProviderManager } from "./base-manager.js";
 
@@ -360,6 +361,418 @@ describe("BaseProviderManager.fetchReviewWorkspace / rebaseReviewWorkspace / pus
       manager.pushReviewWorkspace({ workspace: { id: "ws-1", cwd: "/repo", review: { connectionId: "conn-1" } } }),
     ).rejects.toThrow("Cannot determine branch name for push.");
   });
+});
+
+describe("BaseProviderManager.syncReviewWorkspace", () => {
+  function connectionSnapshot(overrides: Record<string, unknown> = {}) {
+    return { id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com", ...overrides };
+  }
+
+  function reviewWorkspace(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "ws-1",
+      cwd: "/repo",
+      review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" } },
+      ...overrides,
+    };
+  }
+
+  /** Fake `git` invocations for syncReviewWorkspace, keyed by subcommand rather
+   * than call order (extraArgs are prepended by runGit — see makeGitFake above). */
+  function makeSyncGitFake({
+    previousHead = "sha-old",
+    finalHead = "sha-new",
+    remoteHead = "sha-new",
+    statusOutput = "",
+    gitDirOutput = "",
+    aheadCount = 0,
+    behindCount = 1,
+    fetchError,
+  }: {
+    previousHead?: string;
+    finalHead?: string;
+    remoteHead?: string;
+    statusOutput?: string;
+    gitDirOutput?: string;
+    aheadCount?: number;
+    behindCount?: number;
+    fetchError?: Error;
+  } = {}) {
+    let revParseHeadCalls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test double for execFileText
+    return vi.fn(async (_bin: string, args: string[]): Promise<any> => {
+      if (args.includes("fetch")) {
+        if (fetchError) throw fetchError;
+        return { stdout: "", stderr: "" };
+      }
+      if (args.includes("rev-parse")) {
+        if (args.includes("--git-dir")) return { stdout: gitDirOutput, stderr: "" };
+        if (args.includes("HEAD")) {
+          revParseHeadCalls += 1;
+          return { stdout: revParseHeadCalls === 1 ? previousHead : finalHead, stderr: "" };
+        }
+        return { stdout: remoteHead, stderr: "" };
+      }
+      if (args.includes("status")) return { stdout: statusOutput, stderr: "" };
+      if (args.includes("rev-list")) {
+        const range = args[args.length - 1];
+        return { stdout: String(range.endsWith("..HEAD") ? aheadCount : behindCount), stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+  }
+
+  test("already up to date: no dirty/rev-list/merge calls, returns previousHead unchanged", async () => {
+    const execFileTextImpl = makeSyncGitFake({ previousHead: "sha-1", remoteHead: "sha-1" });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result).toEqual({
+      status: "already-current",
+      message: "Already up to date.",
+      commitCount: 0,
+      headSha: "sha-1",
+      previousHeadSha: "sha-1",
+    });
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("status"))).toBe(false);
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("merge"))).toBe(false);
+  });
+
+  test("fetches the PR's exact source ref into its tracking ref, not a plain `fetch origin`", async () => {
+    const execFileTextImpl = makeSyncGitFake({ previousHead: "sha-old", remoteHead: "sha-old" });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    const fetchCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("fetch"));
+    expect(fetchCall![1]).toEqual(
+      expect.arrayContaining(["fetch", "origin", "+refs/heads/feature:refs/remotes/origin/feature"]),
+    );
+  });
+
+  test("behind source: fast-forwards via `merge --ff-only` and reports the new HEAD + commit count", async () => {
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      finalHead: "sha-new",
+      remoteHead: "sha-new",
+      aheadCount: 0,
+      behindCount: 3,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result).toEqual({
+      status: "updated",
+      message: "Updated 3 commits from origin/feature.",
+      commitCount: 3,
+      headSha: "sha-new",
+      previousHeadSha: "sha-old",
+    });
+    const mergeCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("merge"));
+    expect(mergeCall![1]).toEqual(expect.arrayContaining(["merge", "--ff-only", "refs/remotes/origin/feature"]));
+    // Never reset --hard, never rebase, never force-push — only a fast-forward merge.
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("reset"))).toBe(false);
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("rebase"))).toBe(false);
+  });
+
+  test("dirty worktree: refuses to merge and leaves HEAD untouched", async () => {
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      remoteHead: "sha-new",
+      statusOutput: " M some-file.txt\n?? untracked.txt",
+      behindCount: 2,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result.status).toBe("dirty");
+    expect(result.message).toContain("2 uncommitted changes");
+    expect(result.headSha).toBe("sha-old");
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("merge"))).toBe(false);
+  });
+
+  test("local commits ahead of source: no-op, does not merge", async () => {
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      remoteHead: "sha-new",
+      aheadCount: 2,
+      behindCount: 0,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result.status).toBe("ahead");
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("merge"))).toBe(false);
+  });
+
+  test("diverged history: no-op, does not merge", async () => {
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      remoteHead: "sha-new",
+      aheadCount: 1,
+      behindCount: 4,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result.status).toBe("diverged");
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("merge"))).toBe(false);
+  });
+
+  test("throws the provider-specific connection-not-found message when the PR's connection is missing", async () => {
+    const manager = createManager({ execFileTextImpl: vi.fn() });
+    manager.connectionNotFoundMessage = "GitHub connection was not found.";
+
+    await expect(
+      manager.syncReviewWorkspace({ workspace: reviewWorkspace({ review: { connectionId: "missing" } }) }),
+    ).rejects.toThrow("GitHub connection was not found.");
+  });
+
+  test("throws a clear error when the PR's source ref is missing/deleted", async () => {
+    const manager = createManager({ execFileTextImpl: vi.fn(), secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    await expect(
+      manager.syncReviewWorkspace({
+        workspace: reviewWorkspace({ review: { connectionId: "conn-1", pullRequest: {} } }),
+      }),
+    ).rejects.toThrow("Pull request source branch is unknown.");
+  });
+
+  test("propagates a comprehensible error when fetching the source ref fails (e.g. branch deleted upstream)", async () => {
+    const execFileTextImpl = makeSyncGitFake({
+      fetchError: Object.assign(new Error("fetch failed"), {
+        stderr: "fatal: couldn't find remote ref refs/heads/feature",
+      }),
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    await expect(manager.syncReviewWorkspace({ workspace: reviewWorkspace() })).rejects.toThrow(
+      "couldn't find remote ref refs/heads/feature",
+    );
+  });
+
+  test("never logs the PAT or its Basic-auth header", async () => {
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      remoteHead: "sha-new",
+      behindCount: 1,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "super-secret-token" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+    const debugSpy = vi.spyOn(manager.log, "debug").mockImplementation(() => {});
+
+    await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    for (const call of debugSpy.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain("super-secret-token");
+      expect(JSON.stringify(call)).not.toContain("Basic ");
+    }
+  });
+});
+
+describe("BaseProviderManager.syncReviewWorkspace — real git fixture round-trip", () => {
+  const GIT_AVAILABLE = (() => {
+    try {
+      execFileSync("git", ["--version"], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  const tempPaths: string[] = [];
+  afterEach(async () => {
+    await Promise.all(tempPaths.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  function rg(cwd: string, args: string[]): string {
+    return execFileSync("git", args, { cwd, encoding: "utf8" });
+  }
+
+  async function initBareRemote(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sync-bare-"));
+    tempPaths.push(dir);
+    rg(dir, ["init", "--bare", "-q"]);
+    return dir;
+  }
+
+  async function cloneWorkingCopy(bareDir: string): Promise<string> {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sync-clone-"));
+    tempPaths.push(parent);
+    const dest = path.join(parent, "repo");
+    rg(parent, ["clone", "-q", bareDir, dest]);
+    rg(dest, ["config", "user.email", "t@example.com"]);
+    rg(dest, ["config", "user.name", "Test"]);
+    rg(dest, ["config", "commit.gpgsign", "false"]);
+    rg(dest, ["config", "core.autocrlf", "false"]);
+    return dest;
+  }
+
+  test.skipIf(!GIT_AVAILABLE)(
+    "fast-forwards a real worktree onto the PR source branch's new remote commit",
+    async () => {
+      const bareDir = await initBareRemote();
+      const authorDir = await cloneWorkingCopy(bareDir);
+
+      rg(authorDir, ["checkout", "-b", "feature"]);
+      await fs.writeFile(path.join(authorDir, "a.txt"), "one\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "feature commit 1"]);
+      rg(authorDir, ["push", "-q", "-u", "origin", "feature"]);
+
+      const reviewDir = await cloneWorkingCopy(bareDir);
+      rg(reviewDir, ["checkout", "feature"]);
+      const previousHead = rg(reviewDir, ["rev-parse", "HEAD"]).trim();
+
+      // Author pushes a new commit to the PR's source branch after the review checkout was created.
+      await fs.writeFile(path.join(authorDir, "a.txt"), "one\ntwo\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "feature commit 2"]);
+      rg(authorDir, ["push", "-q", "origin", "feature"]);
+      const authorHead = rg(authorDir, ["rev-parse", "HEAD"]).trim();
+      expect(authorHead).not.toBe(previousHead);
+
+      const manager = new BaseProviderManager({
+        credentialStore: createCredentialStore({ "tok-ref-1": "tok-123" }) as unknown as ConstructorParameters<
+          typeof BaseProviderManager
+        >[0]["credentialStore"],
+        reviewStore: createReviewStore() as unknown as ConstructorParameters<
+          typeof BaseProviderManager
+        >[0]["reviewStore"],
+        createApi: () => ({}),
+      });
+      manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com" }];
+
+      const result = await manager.syncReviewWorkspace({
+        workspace: {
+          id: "ws-1",
+          cwd: reviewDir,
+          review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" } },
+        },
+      });
+
+      expect(result.status).toBe("updated");
+      expect(result.commitCount).toBe(1);
+      expect(result.previousHeadSha).toBe(previousHead);
+      expect(result.headSha).toBe(authorHead);
+      expect(rg(reviewDir, ["rev-parse", "HEAD"]).trim()).toBe(authorHead);
+
+      // Calling it again with nothing new pushed is a no-op.
+      const again = await manager.syncReviewWorkspace({
+        workspace: {
+          id: "ws-1",
+          cwd: reviewDir,
+          review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" } },
+        },
+      });
+      expect(again.status).toBe("already-current");
+    },
+  );
+
+  test.skipIf(!GIT_AVAILABLE)("refuses to update a dirty review worktree, leaving HEAD untouched", async () => {
+    const bareDir = await initBareRemote();
+    const authorDir = await cloneWorkingCopy(bareDir);
+    rg(authorDir, ["checkout", "-b", "feature"]);
+    await fs.writeFile(path.join(authorDir, "a.txt"), "one\n");
+    rg(authorDir, ["add", "-A"]);
+    rg(authorDir, ["commit", "-q", "-m", "feature commit 1"]);
+    rg(authorDir, ["push", "-q", "-u", "origin", "feature"]);
+
+    const reviewDir = await cloneWorkingCopy(bareDir);
+    rg(reviewDir, ["checkout", "feature"]);
+    const previousHead = rg(reviewDir, ["rev-parse", "HEAD"]).trim();
+    await fs.writeFile(path.join(reviewDir, "a.txt"), "dirty local edit\n");
+
+    await fs.writeFile(path.join(authorDir, "a.txt"), "one\ntwo\n");
+    rg(authorDir, ["add", "-A"]);
+    rg(authorDir, ["commit", "-q", "-m", "feature commit 2"]);
+    rg(authorDir, ["push", "-q", "origin", "feature"]);
+
+    const manager = new BaseProviderManager({
+      credentialStore: createCredentialStore({ "tok-ref-1": "tok-123" }) as unknown as ConstructorParameters<
+        typeof BaseProviderManager
+      >[0]["credentialStore"],
+      reviewStore: createReviewStore() as unknown as ConstructorParameters<typeof BaseProviderManager>[0]["reviewStore"],
+      createApi: () => ({}),
+    });
+    manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com" }];
+
+    const result = await manager.syncReviewWorkspace({
+      workspace: {
+        id: "ws-1",
+        cwd: reviewDir,
+        review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" } },
+      },
+    });
+
+    expect(result.status).toBe("dirty");
+    expect(rg(reviewDir, ["rev-parse", "HEAD"]).trim()).toBe(previousHead);
+  });
+
+  test.skipIf(!GIT_AVAILABLE)(
+    "uses the PR's explicit source ref, not the local branch name or its (missing) upstream",
+    async () => {
+      const bareDir = await initBareRemote();
+      const authorDir = await cloneWorkingCopy(bareDir);
+      rg(authorDir, ["checkout", "-b", "feature"]);
+      await fs.writeFile(path.join(authorDir, "a.txt"), "one\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "feature commit 1"]);
+      rg(authorDir, ["push", "-q", "-u", "origin", "feature"]);
+
+      // The managed checkout's local branch is named differently from the PR's
+      // source branch (e.g. "pr-42-scratch" vs "feature") and deliberately has
+      // no upstream configured (--no-track) — a reused/older worktree may look
+      // exactly like this. `@{upstream}` must NOT be consulted anywhere.
+      const reviewDir = await cloneWorkingCopy(bareDir);
+      rg(reviewDir, ["checkout", "--no-track", "-b", "pr-42-scratch", "origin/feature"]);
+      expect(() => rg(reviewDir, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toThrow();
+      const previousHead = rg(reviewDir, ["rev-parse", "HEAD"]).trim();
+
+      await fs.writeFile(path.join(authorDir, "a.txt"), "one\ntwo\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "feature commit 2"]);
+      rg(authorDir, ["push", "-q", "origin", "feature"]);
+      const authorHead = rg(authorDir, ["rev-parse", "HEAD"]).trim();
+
+      const manager = new BaseProviderManager({
+        credentialStore: createCredentialStore({ "tok-ref-1": "tok-123" }) as unknown as ConstructorParameters<
+          typeof BaseProviderManager
+        >[0]["credentialStore"],
+        reviewStore: createReviewStore() as unknown as ConstructorParameters<
+          typeof BaseProviderManager
+        >[0]["reviewStore"],
+        createApi: () => ({}),
+      });
+      manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com" }];
+
+      const result = await manager.syncReviewWorkspace({
+        workspace: {
+          id: "ws-1",
+          cwd: reviewDir,
+          review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" } },
+        },
+      });
+
+      expect(result.status).toBe("updated");
+      expect(result.previousHeadSha).toBe(previousHead);
+      expect(result.headSha).toBe(authorHead);
+      expect(rg(reviewDir, ["rev-parse", "HEAD"]).trim()).toBe(authorHead);
+    },
+  );
 });
 
 // syncCore is the template-method skeleton AzureDevOpsManager.sync() and

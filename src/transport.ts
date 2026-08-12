@@ -911,6 +911,7 @@ export function createRemoteTransport(): Transport {
     rebaseAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/rebase", { workspaceId }),
     pushAzureReviewWorkspace: (workspaceId, options) =>
       fetchJson("/api/azure/workspace/push", { workspaceId, ...options }),
+    syncAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/sync", { workspaceId }),
     azureCreatePullRequest: (payload) => fetchJson("/api/azure/create-pull-request", payload),
     azureListRemoteBranches: (payload) => fetchJson("/api/azure/list-remote-branches", payload),
     azureQuickFixListProjects: (payload) => fetchJson("/api/azure/quickfix/list-projects", payload),
@@ -944,6 +945,7 @@ export function createRemoteTransport(): Transport {
     rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/rebase", { workspaceId }),
     pushGitHubReviewWorkspace: (workspaceId, options) =>
       fetchJson("/api/github/workspace/push", { workspaceId, ...options }),
+    syncGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/sync", { workspaceId }),
     githubListRemoteBranches: (payload) => fetchJson("/api/github/list-remote-branches", payload),
     githubCreatePullRequest: (payload) => fetchJson("/api/github/create-pull-request", payload),
     githubQuickFixListRepos: (payload) => fetchJson("/api/github/quickfix/list-repos", payload),

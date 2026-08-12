@@ -65,7 +65,7 @@ The review pane has five tabs:
 
 - PR metadata: title, author, branches, merge status, draft indicator
 - **Review actions**: Approve, Approve with suggestions, Wait, Reject, Clear vote
-- **Git operations**: Fetch, Rebase on target, Push branch, Force push, Open Lazygit
+- **Git operations**: Push branch directly; Rebase on target, Force push, and Open Lazygit live behind a **More git actions** menu (see [Refresh & Staying Up to Date](#refresh--staying-up-to-date) for how the toolbar's **Refresh** button keeps the checkout current — there is no separate "Fetch" button)
 - **Checks**: pipeline status with pass/fail/pending indicators
 - **Reviewers**: who reviewed and their vote
 
@@ -106,6 +106,27 @@ Merge conflict detection with file tree and diff preview. Shows merge status fro
 Ready-to-use prompt templates for AI agents. Copy a prompt and paste it into Claude Code, Codex, or GitHub Copilot. Templates are editable and stored locally.
 
 Also shows the MCP server command line for connecting custom agents.
+
+---
+
+## Refresh & Staying Up to Date
+
+The **Refresh** button in the review pane's toolbar is the only action that can move your review checkout's `HEAD`. On click it:
+
+1. Fetches the PR's exact source branch (`pullRequest.sourceRefName`), not whatever the local branch happens to be named or tracking — a managed checkout is named `pr-{id}-...` and may have no upstream configured at all.
+2. Fast-forwards onto the new commit **only** when that is safe — never a `reset --hard`, rebase, or merge.
+3. Refreshes the git snapshot and the PR's provider metadata (title, checks, comments) in the same click.
+4. Reloads the file diff you currently have open in the Files tab, and resets the per-commit filter if the commit it pointed at no longer exists in the refreshed history.
+5. Reports the exact outcome in a banner under the toolbar:
+   - **Updated N commits from origin/&lt;branch&gt;.** — the checkout moved forward.
+   - **Already up to date.** — nothing to do.
+   - A clear reason when it can't update safely — uncommitted changes or an in-progress rebase/merge ("dirty"), local commits ahead of the source branch ("ahead"), or a diverged history. Nothing is touched in any of these cases, and any diff you have open is left exactly as it was.
+
+Refresh works the same in a read-only reviewer checkout as in an author's — it never requires **Enable editing**, since a safe fast-forward onto the PR's own source branch isn't an edit.
+
+**Background refresh** — triggered automatically when you switch into the review pane, or by polling — only updates PR metadata (title, checks, comments) and never touches the checkout. Only a manual click on **Refresh** can move `HEAD`.
+
+**Rebase on target** (Summary tab, **More git actions** menu) is a different, more advanced operation: it rewrites history by rebasing your branch onto the PR's *target* branch, and its availability is based on how far behind that target branch you are — not on whether the PR's source branch has moved, which is what Refresh handles. Force push and Lazygit live in the same menu since they're needed far less often than Push or Refresh.
 
 ---
 
@@ -186,8 +207,8 @@ The Git tab adapts for review workspaces:
 - **Searchable branch picker** — every branch dropdown (checkout, compare, base) filters as you type, so repos with hundreds of branches stay navigable.
 - **Unpushed commits** are highlighted with an orange border and "unpushed" badge
 - **Merge buttons are hidden** — merging into the target branch is done through Azure DevOps, not locally
-- **Rebase on target** is available in the Summary tab (rebases onto the PR target branch)
-- **Force push** is available after rebase (uses `--force-with-lease` for safety)
+- **Rebase on target** is available in the Summary tab's **More git actions** menu (rebases onto the PR target branch)
+- **Force push** is available in the same menu after a rebase (uses `--force-with-lease` for safety)
 
 Both Push and Force push check for uncommitted changes before pushing.
 

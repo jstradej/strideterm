@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   fetchAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:fetch", workspaceId),
   rebaseAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:rebase", workspaceId),
   pushAzureReviewWorkspace: (workspaceId, options) => ipcRenderer.invoke("azure:workspace:push", workspaceId, options),
+  syncAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:sync", workspaceId),
   azureCreatePullRequest: (payload) => ipcRenderer.invoke("azure:create-pull-request", payload),
   azureListRemoteBranches: (payload) => ipcRenderer.invoke("azure:list-remote-branches", payload),
   azureQuickFixListProjects: (payload) => ipcRenderer.invoke("azure:quickfix:list-projects", payload),
@@ -101,6 +102,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   rebaseGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:rebase", workspaceId),
   pushGitHubReviewWorkspace: (workspaceId, options) =>
     ipcRenderer.invoke("github:workspace:push", workspaceId, options),
+  syncGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:sync", workspaceId),
   githubListRemoteBranches: (payload) => ipcRenderer.invoke("github:list-remote-branches", payload),
   githubCreatePullRequest: (payload) => ipcRenderer.invoke("github:create-pull-request", payload),
   githubQuickFixListRepos: (payload) => ipcRenderer.invoke("github:quickfix:list-repos", payload),

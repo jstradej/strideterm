@@ -1733,6 +1733,22 @@ export async function startRemoteServer({
     // another cross-profile-visible side effect, so refuse a foreign prKey.
     "/api/azure/rerun-check": (body, windowId) => runtime.rerunAzureCheck(body.prKey, body.checkItem, windowId),
     "/api/github/rerun-check": (body, windowId) => runtime.rerunGitHubCheck(body.prKey, body.checkItem, windowId),
+    // The Refresh button's git-mutating half (fast-forward the review
+    // checkout onto the PR's latest source commit). Unlike the plain
+    // fetch/rebase/push review-workspace routes above (flat API_ROUTES,
+    // unguarded — a pre-existing gap), this one is new and routed through
+    // slotAwareRoute so the runtime can refuse a workspace outside the
+    // caller's profile.
+    "/api/azure/workspace/sync": (body, windowId) =>
+      runtime.syncAzureReviewWorkspace(
+        validateIpc(workspaceIdSchema, body.workspaceId, "POST /api/azure/workspace/sync"),
+        windowId,
+      ),
+    "/api/github/workspace/sync": (body, windowId) =>
+      runtime.syncGitHubReviewWorkspace(
+        validateIpc(workspaceIdSchema, body.workspaceId, "POST /api/github/workspace/sync"),
+        windowId,
+      ),
     // Sync publishes queued draft comments to the PR provider — an
     // externally visible side effect that must refuse cross-profile prKeys.
     "/api/review-bridge/pull-request/sync": (body, windowId) => runtime.syncReviewBridgePullRequest(body, windowId),

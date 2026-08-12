@@ -53,7 +53,7 @@ describe("createApiActions.getRemoteShareUrl", () => {
 
 // makeProviderApiActions is the factory behind refreshAzure/refreshGitHub,
 // markAzurePrSeen/markGitHubPrSeen, openAzurePullRequest/openGitHubPullRequest,
-// azureFetchReviewWorkspace/githubFetchReviewWorkspace,
+// azureSyncReviewWorkspace/githubSyncReviewWorkspace,
 // azureRebaseReviewWorkspace/githubRebaseReviewWorkspace,
 // azurePushReviewWorkspace/githubPushReviewWorkspace,
 // deleteAzureConnection/deleteGitHubConnection, and
@@ -67,7 +67,10 @@ describe("makeProviderApiActions", () => {
       refreshAzure: vi.fn(async () => ({ azure: "refreshed" })),
       markAzurePullRequestSeen: vi.fn(async (prKey: string) => ({ azure: "seen", prKey })),
       openAzurePullRequest: vi.fn(async (args: unknown) => ({ azure: "opened", args })),
-      fetchAzureReviewWorkspace: vi.fn(async (id: string) => ({ azure: "fetched", id })),
+      syncAzureReviewWorkspace: vi.fn(async (id: string) => ({
+        payload: { azure: "synced" },
+        result: { azure: "sync-result", id },
+      })),
       rebaseAzureReviewWorkspace: vi.fn(async (id: string) => ({ azure: "rebased", id })),
       pushAzureReviewWorkspace: vi.fn(async (id: string, opts: unknown) => ({ azure: "pushed", id, opts })),
       deleteAzureConnection: vi.fn(async (id: string) => ({ azure: "deleted", id })),
@@ -76,7 +79,10 @@ describe("makeProviderApiActions", () => {
       refreshGitHub: vi.fn(async () => ({ github: "refreshed" })),
       markGitHubPullRequestSeen: vi.fn(async (prKey: string) => ({ github: "seen", prKey })),
       openGitHubPullRequest: vi.fn(async (args: unknown) => ({ github: "opened", args })),
-      fetchGitHubReviewWorkspace: vi.fn(async (id: string) => ({ github: "fetched", id })),
+      syncGitHubReviewWorkspace: vi.fn(async (id: string) => ({
+        payload: { github: "synced" },
+        result: { github: "sync-result", id },
+      })),
       rebaseGitHubReviewWorkspace: vi.fn(async (id: string) => ({ github: "rebased", id })),
       pushGitHubReviewWorkspace: vi.fn(async (id: string, opts: unknown) => ({ github: "pushed", id, opts })),
       deleteGitHubConnection: vi.fn(async (id: string) => ({ github: "deleted", id })),
@@ -104,7 +110,7 @@ describe("makeProviderApiActions", () => {
       await actions.refresh();
       await actions.markPrSeen("pr-1");
       await actions.openPullRequest("pr-1", "ws-1");
-      await actions.fetchReviewWorkspace("ws-1");
+      const syncResult = await actions.syncReviewWorkspace("ws-1");
       await actions.rebaseReviewWorkspace("ws-1");
       await actions.pushReviewWorkspace("ws-1", { force: true });
       await actions.saveConnection({ id: "conn-1" });
@@ -115,7 +121,7 @@ describe("makeProviderApiActions", () => {
 
       const markPrSeenMethod = provider === "azure" ? api.markAzurePullRequestSeen : api.markGitHubPullRequestSeen;
       const openPrMethod = provider === "azure" ? api.openAzurePullRequest : api.openGitHubPullRequest;
-      const fetchMethod = provider === "azure" ? api.fetchAzureReviewWorkspace : api.fetchGitHubReviewWorkspace;
+      const syncMethod = provider === "azure" ? api.syncAzureReviewWorkspace : api.syncGitHubReviewWorkspace;
       const rebaseMethod = provider === "azure" ? api.rebaseAzureReviewWorkspace : api.rebaseGitHubReviewWorkspace;
       const pushMethod = provider === "azure" ? api.pushAzureReviewWorkspace : api.pushGitHubReviewWorkspace;
       const saveMethod = provider === "azure" ? api.saveAzureConnection : api.saveGitHubConnection;
@@ -123,11 +129,15 @@ describe("makeProviderApiActions", () => {
 
       expect(markPrSeenMethod).toHaveBeenCalledWith("pr-1");
       expect(openPrMethod).toHaveBeenCalledWith({ prKey: "pr-1", workspaceId: "ws-1" });
-      expect(fetchMethod).toHaveBeenCalledWith("ws-1");
+      expect(syncMethod).toHaveBeenCalledWith("ws-1");
       expect(rebaseMethod).toHaveBeenCalledWith("ws-1");
       expect(pushMethod).toHaveBeenCalledWith("ws-1", { force: true });
       expect(saveMethod).toHaveBeenCalledWith({ id: "conn-1" });
       expect(otherMarkPrSeenMethod).not.toHaveBeenCalled();
+
+      // syncReviewWorkspace unwraps {payload, result}: setPayload gets the
+      // nested payload, and the structured sync result is returned to the caller.
+      expect(syncResult).toEqual({ [provider]: "sync-result", id: "ws-1" });
 
       // saveConnection unwraps { payload } exactly like the pre-refactor code did.
       expect(setPayloadCalls.at(-1)).toEqual({ [provider]: "saved", draft: { id: "conn-1" } });

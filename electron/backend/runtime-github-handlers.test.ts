@@ -118,3 +118,100 @@ describe("pushGitHubReviewWorkspace — worktree-clean guard wiring", () => {
     expect(getPayload).toHaveBeenCalled();
   });
 });
+
+// syncGitHubReviewWorkspace mirrors syncAzureReviewWorkspace (see
+// runtime-azure-handlers.test.ts for the full rationale).
+describe("syncGitHubReviewWorkspace — profile guard + in-flight coalescing", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeHandlers(overrides: any = {}) {
+    const workspace = overrides.workspace ?? {
+      id: "ws-1",
+      cwd: "/repo/ws-1",
+      review: { prKey: "gh:pr1", pullRequest: { sourceRefName: "refs/heads/feature" } },
+    };
+    const syncResult = overrides.syncResult ?? {
+      status: "updated",
+      message: "Updated 1 commit from origin/feature.",
+      commitCount: 1,
+      headSha: "sha-new",
+      previousHeadSha: "sha-old",
+    };
+    const syncReviewWorkspace = overrides.syncReviewWorkspace ?? vi.fn(async () => syncResult);
+    const refreshGit = overrides.refreshGit ?? vi.fn(async () => {});
+    const refreshGitHub = overrides.refreshGitHub ?? vi.fn(async () => {});
+    const broadcastState = overrides.broadcastState ?? vi.fn();
+    const payload = overrides.payload ?? { ok: true };
+    const getPayload = overrides.getPayload ?? vi.fn(() => payload);
+    const assertWorkspaceInViewerProfile = overrides.assertWorkspaceInViewerProfile ?? vi.fn();
+    const handlers = createGitHubHandlers({
+      getState: () => ({ workspaces: [workspace] }),
+      github: { syncReviewWorkspace },
+      refreshGit,
+      refreshGitHub,
+      broadcastState,
+      getPayload,
+      assertWorkspaceInViewerProfile,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    return {
+      handlers,
+      workspace,
+      syncResult,
+      syncReviewWorkspace,
+      refreshGit,
+      refreshGitHub,
+      broadcastState,
+      getPayload,
+      assertWorkspaceInViewerProfile,
+      payload,
+    };
+  }
+
+  test("runs the profile guard before touching git, and propagates its rejection", async () => {
+    const assertWorkspaceInViewerProfile = vi.fn(() => {
+      throw new Error("Cross-profile refused: workspace ws-1 is not in profile p2.");
+    });
+    const { handlers, syncReviewWorkspace } = makeHandlers({ assertWorkspaceInViewerProfile });
+
+    await expect(handlers.syncGitHubReviewWorkspace("ws-1", "remote:sess-b")).rejects.toThrow(/Cross-profile/);
+
+    expect(assertWorkspaceInViewerProfile).toHaveBeenCalledWith("ws-1", "remote:sess-b");
+    expect(syncReviewWorkspace).not.toHaveBeenCalled();
+  });
+
+  test("on success: refreshes git + github, broadcasts, and returns {payload, result}", async () => {
+    const { handlers, workspace, syncReviewWorkspace, refreshGit, refreshGitHub, broadcastState, getPayload, payload, syncResult } =
+      makeHandlers();
+
+    const response = await handlers.syncGitHubReviewWorkspace("ws-1");
+
+    expect(syncReviewWorkspace).toHaveBeenCalledWith({ workspace });
+    expect(refreshGit).toHaveBeenCalledWith("ws-1");
+    expect(refreshGitHub).toHaveBeenCalledTimes(1);
+    expect(broadcastState).toHaveBeenCalledTimes(1);
+    expect(getPayload).toHaveBeenCalled();
+    expect(response).toEqual({ payload, result: syncResult });
+  });
+
+  test("throws when the workspace has no review metadata", async () => {
+    const { handlers } = makeHandlers({ workspace: { id: "ws-1", cwd: "/repo" } });
+    await expect(handlers.syncGitHubReviewWorkspace("ws-1")).rejects.toThrow("GitHub review workspace not found.");
+  });
+
+  test("overlapping calls for the same workspace share one in-flight sync", async () => {
+    let resolveSync: (value: unknown) => void = () => {};
+    const gate = new Promise((resolve) => {
+      resolveSync = resolve;
+    });
+    const syncReviewWorkspace = vi.fn(() => gate);
+    const { handlers } = makeHandlers({ syncReviewWorkspace });
+
+    const p1 = handlers.syncGitHubReviewWorkspace("ws-1");
+    const p2 = handlers.syncGitHubReviewWorkspace("ws-1");
+    resolveSync({ status: "already-current", message: "Already up to date.", commitCount: 0, headSha: "s", previousHeadSha: "s" });
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(syncReviewWorkspace).toHaveBeenCalledTimes(1);
+    expect(r1).toBe(r2);
+  });
+});

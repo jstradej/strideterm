@@ -69,7 +69,7 @@ The review pane has five tabs (identical to Azure DevOps):
 
 - PR metadata: title, author, branches, merge status, draft indicator
 - **Review actions**: Approve, Request Changes, Comment
-- **Git operations**: Fetch, Rebase on target, Push branch
+- **Git operations**: Push branch directly; Rebase on target and Force push live behind a **More git actions** menu (see [Refresh & Staying Up to Date](#refresh--staying-up-to-date) — there is no separate "Fetch" button)
 - **Checks**: CI status with pass/fail/pending indicators
 - **Reviewers**: who reviewed and their state
 
@@ -96,6 +96,12 @@ Merge conflict detection with file tree and diff preview.
 Ready-to-use prompt templates for AI agents. Copy a prompt and paste it into Claude Code, Codex, or GitHub Copilot. Templates are editable and stored locally.
 
 Also shows the MCP server command line for connecting custom agents.
+
+---
+
+## Refresh & Staying Up to Date
+
+Works exactly like the [Azure DevOps integration](azure-devops-review.md#refresh--staying-up-to-date): the toolbar's **Refresh** button fetches the PR's exact source branch and fast-forwards your checkout onto it when that's safe (never `reset --hard`, rebase, or merge), refreshes the git snapshot and PR metadata, reloads any open diff, and reports the outcome — updated, already up to date, or a clear reason it couldn't (dirty worktree, local commits ahead, or a diverged history). It works the same in a read-only reviewer checkout — no "Enable editing" needed. Background refresh (activating the pane, polling) only ever touches PR metadata, never the checkout.
 
 ---
 

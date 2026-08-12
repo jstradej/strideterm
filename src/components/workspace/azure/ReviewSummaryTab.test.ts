@@ -1,29 +1,33 @@
 /**
  * Regression coverage for review-code-quality-2026-07.md finding 1.3: the
- * approve/vote, fetch, and rebase handlers were try/finally with no catch,
- * so a rejected call silently reset the busy flag with zero user-visible
- * feedback — the button just stopped spinning as if the click did nothing.
- * The neighboring handlePush/handleForcePush handlers already caught errors
- * (see pushError); handleVote/handleFetch/handleRebase now go through
- * notifications.runWithToast to match that robustness.
+ * approve/vote and rebase handlers were try/finally with no catch, so a
+ * rejected call silently reset the busy flag with zero user-visible feedback
+ * — the button just stopped spinning as if the click did nothing. The
+ * neighboring handlePush/handleForcePush handlers already caught errors (see
+ * pushError); handleVote/handleRebase now go through notifications.runWithToast
+ * to match that robustness.
  */
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
 const azureVote = vi.fn();
-const azureFetchReviewWorkspace = vi.fn();
 const azureRebaseReviewWorkspace = vi.fn();
 const azurePushReviewWorkspace = vi.fn();
 const getGitSnapshot = vi.fn(() => ({ aheadCount: 1, behindCount: 1 }));
+// Rebase-on-target is driven by an ad-hoc compare against the PR's target
+// branch (gitCompareBranch), not the top-level snapshot's behindCount — see
+// ReviewSummaryTab.vue's targetComparison. Default to "behind" so the Rebase
+// button is enabled unless a test overrides it.
+const gitCompareBranch = vi.fn(async () => ({ ok: true, aheadCount: 0, behindCount: 1 }));
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
     azureVote,
-    azureFetchReviewWorkspace,
     azureRebaseReviewWorkspace,
     azurePushReviewWorkspace,
     getGitSnapshot,
+    getApi: () => ({ gitCompareBranch }),
   }),
 }));
 vi.mock("../../../stores/git-ui.js", () => ({
@@ -58,10 +62,17 @@ function mountTab() {
 beforeEach(() => {
   setActivePinia(createPinia());
   azureVote.mockClear();
-  azureFetchReviewWorkspace.mockClear();
   azureRebaseReviewWorkspace.mockClear();
   azurePushReviewWorkspace.mockClear();
+  gitCompareBranch.mockClear();
+  gitCompareBranch.mockImplementation(async () => ({ ok: true, aheadCount: 0, behindCount: 1 }));
 });
+
+async function openAdvancedMenu(wrapper: ReturnType<typeof mountTab>) {
+  const trigger = wrapper.findAll("button").find((b) => b.text().includes("More git actions"))!;
+  await trigger.trigger("click");
+  await flushPromises();
+}
 
 describe("ReviewSummaryTab — vote/fetch/rebase surface failures instead of silently succeeding", () => {
   test("handleVote (Approve): rejection is caught and surfaced as a toast, not an unhandled rejection", async () => {
@@ -92,23 +103,11 @@ describe("ReviewSummaryTab — vote/fetch/rebase surface failures instead of sil
     expect(notifications.sessions[0].events[0].title).toBe("Reject failed");
   });
 
-  test("handleFetch: rejection is caught and surfaced as a toast, not an unhandled rejection", async () => {
-    azureFetchReviewWorkspace.mockRejectedValueOnce(new Error("git fetch failed"));
-    const wrapper = mountTab();
-    const fetchBtn = wrapper.findAll("button").find((b) => b.text().includes("Fetch"))!;
-    await fetchBtn.trigger("click");
-    await flushPromises();
-
-    expect(azureFetchReviewWorkspace).toHaveBeenCalledWith("ws-1");
-    const notifications = useNotificationStore();
-    expect(notifications.sessions).toHaveLength(1);
-    expect(notifications.sessions[0].events[0].title).toBe("Fetch failed");
-    expect(fetchBtn.text()).toBe("Fetch");
-  });
-
   test("handleRebase: rejection is caught and surfaced as a toast, not an unhandled rejection", async () => {
     azureRebaseReviewWorkspace.mockRejectedValueOnce(new Error("conflict"));
     const wrapper = mountTab();
+    await flushPromises(); // let the initial gitCompareBranch compare resolve
+    await openAdvancedMenu(wrapper);
     const rebaseBtn = wrapper.findAll("button").find((b) => b.text().includes("Rebase"))!;
     await rebaseBtn.trigger("click");
     await flushPromises();
@@ -118,5 +117,36 @@ describe("ReviewSummaryTab — vote/fetch/rebase surface failures instead of sil
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Rebase failed");
     expect(rebaseBtn.text()).toBe("Rebase on target");
+  });
+});
+
+describe("ReviewSummaryTab — Fetch button removed, standalone Refresh no longer split out", () => {
+  test("no standalone Fetch button renders in the Summary tab (Refresh now covers it)", () => {
+    const wrapper = mountTab();
+    expect(wrapper.findAll("button").some((b) => b.text() === "Fetch")).toBe(false);
+  });
+});
+
+describe("ReviewSummaryTab — rebase-on-target uses the PR target compare, not source behindCount", () => {
+  test("disables Rebase on target when HEAD is not behind the PR's target branch", async () => {
+    gitCompareBranch.mockImplementation(async () => ({ ok: true, aheadCount: 0, behindCount: 0 }));
+    const wrapper = mountTab();
+    await flushPromises();
+    await openAdvancedMenu(wrapper);
+
+    expect(gitCompareBranch).toHaveBeenCalledWith({ workspaceId: "ws-1", baseBranch: "origin/main" });
+    const rebaseBtn = wrapper.findAll("button").find((b) => b.text().includes("Rebase"))!;
+    expect(rebaseBtn.attributes("disabled")).toBeDefined();
+  });
+
+  test("enables Rebase on target when HEAD is behind the PR's target branch, even with source behindCount=0", async () => {
+    getGitSnapshot.mockReturnValueOnce({ aheadCount: 0, behindCount: 0 });
+    gitCompareBranch.mockImplementation(async () => ({ ok: true, aheadCount: 0, behindCount: 2 }));
+    const wrapper = mountTab();
+    await flushPromises();
+    await openAdvancedMenu(wrapper);
+
+    const rebaseBtn = wrapper.findAll("button").find((b) => b.text().includes("Rebase"))!;
+    expect(rebaseBtn.attributes("disabled")).toBeUndefined();
   });
 });

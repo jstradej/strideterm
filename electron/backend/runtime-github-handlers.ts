@@ -47,6 +47,8 @@ interface GitHubHandlerCtx {
   getViewerActiveWorkspaceId: (viewerId?: string) => string;
   /** Mirror an activation into a remote viewer's context (no-op for desktop ids). */
   mirrorRemoteViewerWorkspace: (viewerId: string | undefined, workspaceId: string) => void;
+  /** Refuse a workspace-id-addressed op when it does not belong to the caller's profile. */
+  assertWorkspaceInViewerProfile: (workspaceId: string, windowId?: string) => void;
 }
 
 /**
@@ -78,6 +80,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     getViewerProfileId,
     getViewerActiveWorkspaceId,
     mirrorRemoteViewerWorkspace,
+    assertWorkspaceInViewerProfile,
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
@@ -94,6 +97,10 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
   function assertPrInViewerProfile(prKey: string, windowId?: string): void {
     assertPrInViewerProfileShared({ getPayload, getViewerProfileId }, "github", prKey, windowId);
   }
+
+  // Coalesces concurrent "sync review source" calls per workspace — see
+  // runtime-azure-handlers.ts's azureSyncInFlight for the full rationale.
+  const githubSyncInFlight = new Map<string, Promise<unknown>>();
 
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -320,6 +327,31 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       await refreshGit(workspaceId);
       await refreshGitHub();
       return getPayload();
+    },
+    /**
+     * The Refresh button's git-mutating half — see syncAzureReviewWorkspace
+     * in runtime-azure-handlers.ts for the full rationale (shared design).
+     */
+    async syncGitHubReviewWorkspace(workspaceId: string, windowId?: string) {
+      assertWorkspaceInViewerProfile(workspaceId, windowId);
+      const inFlight = githubSyncInFlight.get(workspaceId);
+      if (inFlight) return inFlight;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
+      if (!workspace?.review) throw new Error("GitHub review workspace not found.");
+      const run = (async () => {
+        const result = await github.syncReviewWorkspace({ workspace });
+        await refreshGit(workspaceId);
+        await refreshGitHub();
+        broadcastState();
+        return { payload: getPayload(), result };
+      })();
+      githubSyncInFlight.set(workspaceId, run);
+      try {
+        return await run;
+      } finally {
+        githubSyncInFlight.delete(workspaceId);
+      }
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async githubListRemoteBranches(payload: any) {

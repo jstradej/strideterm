@@ -141,28 +141,6 @@
         <div class="docker-card__actions docker-card__actions--end">
           <button
             type="button"
-            :class="['button', 'button--ghost', busyAction === 'fetch' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Git fetch — refresh remote tracking refs for this review worktree without changing your working tree."
-            @click="handleFetch(workspaceId)"
-          >
-            {{ busyAction === "fetch" ? "Fetching…" : "Fetch" }}
-          </button>
-          <button
-            type="button"
-            :class="['button', 'button--ghost', busyAction === 'rebase' && 'button--busy']"
-            :disabled="!!busyAction || !canRebase"
-            :title="
-              !canRebase
-                ? 'Rebase is unnecessary — your branch is already up to date with the PR target.'
-                : 'Rebase the PR source branch onto the latest PR target branch. Conflicts will be reported in the Conflicts tab.'
-            "
-            @click="handleRebase(workspaceId)"
-          >
-            {{ busyAction === "rebase" ? "Rebasing…" : "Rebase on target" }}
-          </button>
-          <button
-            type="button"
             :class="['button', 'button--ghost', busyAction === 'push' && 'button--busy']"
             :disabled="!!busyAction || !canPush"
             :title="
@@ -174,28 +152,77 @@
           >
             {{ busyAction === "push" ? "Pushing…" : "Push branch" }}
           </button>
-          <button
-            type="button"
-            :class="['button', 'button--ghost', busyAction === 'force-push' && 'button--busy']"
-            :disabled="!!busyAction || !canForcePush"
-            :title="
-              !canForcePush
-                ? 'Force push is unnecessary — local and remote agree.'
-                : 'Force push with --force-with-lease. Use after rebase to update the PR branch; aborts if someone else pushed since your last fetch.'
-            "
-            @click="handleForcePush(workspaceId)"
-          >
-            {{ busyAction === "force-push" ? "Force pushing…" : "Force push" }}
-          </button>
-          <button
-            type="button"
-            class="button button--ghost"
-            :disabled="!!busyAction"
-            title="Open Lazygit in a terminal pointed at this review worktree for ad-hoc git operations."
-            @click="gitUiStore.openLazygit(workspaceId)"
-          >
-            Open Lazygit
-          </button>
+          <!-- Advanced git actions (history-rewriting or ad-hoc) live behind
+               this menu so the common flow — Refresh + Push — isn't
+               crowded by buttons most reviews never need. -->
+          <div ref="advancedMenuRef" style="position: relative">
+            <button
+              type="button"
+              class="button button--ghost"
+              :aria-expanded="advancedMenuOpen"
+              title="More git actions: rebase onto target, force push, open Lazygit"
+              @click="advancedMenuOpen = !advancedMenuOpen"
+            >
+              More git actions ⋯
+            </button>
+            <div
+              v-if="advancedMenuOpen"
+              style="
+                position: absolute;
+                right: 0;
+                top: 100%;
+                margin-top: 4px;
+                z-index: 20;
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                padding: 6px;
+                background: var(--bg-elevated, var(--panel, #1e1e1e));
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                min-width: 220px;
+              "
+            >
+              <button
+                type="button"
+                :class="['button', 'button--ghost', busyAction === 'rebase' && 'button--busy']"
+                :disabled="!!busyAction || !canRebase"
+                :title="
+                  !canRebase
+                    ? 'Rebase is unnecessary — your branch is already up to date with the PR target.'
+                    : 'Rebase the PR source branch onto the latest PR target branch. Conflicts will be reported in the Conflicts tab.'
+                "
+                @click="handleRebase(workspaceId)"
+              >
+                {{ busyAction === "rebase" ? "Rebasing…" : "Rebase on target" }}
+              </button>
+              <button
+                type="button"
+                :class="['button', 'button--ghost', busyAction === 'force-push' && 'button--busy']"
+                :disabled="!!busyAction || !canForcePush"
+                :title="
+                  !canForcePush
+                    ? 'Force push is unnecessary — local and remote agree.'
+                    : 'Force push with --force-with-lease. Use after rebase to update the PR branch; aborts if someone else pushed since your last fetch.'
+                "
+                @click="handleForcePush(workspaceId)"
+              >
+                {{ busyAction === "force-push" ? "Force pushing…" : "Force push" }}
+              </button>
+              <button
+                type="button"
+                class="button button--ghost"
+                :disabled="!!busyAction"
+                title="Open Lazygit in a terminal pointed at this review worktree for ad-hoc git operations."
+                @click="
+                  gitUiStore.openLazygit(workspaceId);
+                  advancedMenuOpen = false;
+                "
+              >
+                Open Lazygit
+              </button>
+            </div>
+          </div>
         </div>
         <p v-if="pushError" class="git-card__hint" style="color: var(--danger, #e53935); padding: 4px 0">
           {{ pushError }}
@@ -249,10 +276,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { useDismissable } from "../../../composables/useDismissable.js";
 
 const props = defineProps<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -299,6 +327,45 @@ const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId) as
 const aheadCount = computed(() => Number((gitSnapshot.value as { aheadCount?: number } | null)?.aheadCount || 0));
 const behindCount = computed(() => Number((gitSnapshot.value as { behindCount?: number } | null)?.behindCount || 0));
 
+// Rebase-on-target must be driven by HEAD vs the PR's TARGET branch, not the
+// top-level aheadCount/behindCount above (those are HEAD vs the source
+// branch's upstream — see git-manager.ts's readBaseComparison comment). A
+// dedicated, ad-hoc compare kept local to this component (not the shared
+// git-ui `baseComparison` slot, which the Git tab's "Compare with base"
+// picker also writes to for an unrelated branch).
+const targetComparison = ref<{ aheadCount: number; behindCount: number; ok: boolean } | null>(null);
+
+async function refreshTargetComparison(): Promise<void> {
+  const targetBranch = stripRef(props.pullRequest?.targetRefName || "");
+  if (!targetBranch || !props.workspaceId) {
+    targetComparison.value = null;
+    return;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = appStore.getApi() as any;
+    const result = await api.gitCompareBranch({ workspaceId: props.workspaceId, baseBranch: `origin/${targetBranch}` });
+    targetComparison.value = {
+      aheadCount: Number(result?.aheadCount || 0),
+      behindCount: Number(result?.behindCount || 0),
+      ok: !!result?.ok,
+    };
+  } catch {
+    targetComparison.value = { aheadCount: 0, behindCount: 0, ok: false };
+  }
+}
+
+// Re-check whenever the target ref changes, or whenever the git snapshot
+// moves (after Refresh/rebase/push) — the target comparison itself is not
+// part of the snapshot and would otherwise go stale.
+watch(
+  [() => props.workspaceId, () => props.pullRequest?.targetRefName, gitSnapshot],
+  () => {
+    void refreshTargetComparison();
+  },
+  { immediate: true },
+);
+
 const voteDisabledReason = computed(() => {
   if (busyAction.value) return "";
   if (isOwnPr.value) return "Azure DevOps does not allow voting on your own pull request.";
@@ -311,7 +378,13 @@ const voteDisabledTitle = (base: string) => (voteDisabledReason.value ? voteDisa
 
 const canPush = computed(() => aheadCount.value > 0);
 const canForcePush = computed(() => aheadCount.value > 0 || behindCount.value > 0);
-const canRebase = computed(() => behindCount.value > 0);
+const canRebase = computed(() => (targetComparison.value?.behindCount || 0) > 0);
+
+// Advanced git actions (rebase/force-push/Lazygit) live in this overflow
+// menu — see the "Git operations" section above.
+const advancedMenuOpen = ref(false);
+const advancedMenuRef = ref<HTMLElement | null>(null);
+useDismissable(advancedMenuOpen, advancedMenuRef, { onDismiss: () => (advancedMenuOpen.value = false) });
 
 const conflictInfo = computed(() => {
   const status = props.pullRequest.mergeStatus || "";
@@ -357,15 +430,6 @@ async function handleVote(prKey: string, vote: number, label: string) {
   busyAction.value = `vote-${vote}`;
   try {
     await notifications.runWithToast(`${label} failed`, () => appStore.azureVote(prKey, String(vote)));
-  } finally {
-    busyAction.value = "";
-  }
-}
-
-async function handleFetch(workspaceId: string) {
-  busyAction.value = "fetch";
-  try {
-    await notifications.runWithToast("Fetch failed", () => appStore.azureFetchReviewWorkspace(workspaceId));
   } finally {
     busyAction.value = "";
   }
