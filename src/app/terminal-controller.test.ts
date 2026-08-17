@@ -676,7 +676,7 @@ describe("desktop WebGL renderer selection", () => {
     expect(webglMockState.instances).toHaveLength(0);
   });
 
-  test("falls back on context loss, retries once, and does not enter a retry loop", async () => {
+  test("falls back on context loss, retries once fast, and does not enter a retry loop", async () => {
     vi.useFakeTimers();
     installFontLoader();
     const { controller, views } = buildAttachController({ isRemote: false });
@@ -707,6 +707,82 @@ describe("desktop WebGL renderer selection", () => {
     expect(view.webglAttached).toBe(false);
   });
 
+  test("re-arms a visible pane on a slow cooldown instead of degrading to DOM for the session", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+
+    // Loss 1 → fast retry, loss 2 → the fast budget is spent.
+    webglMockState.instances[0].triggerContextLoss();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    webglMockState.instances[1].triggerContextLoss();
+    expect(view.webglAttached).toBe(false);
+
+    // Previously this was terminal ("until the pane is reattached"). Now the
+    // still-visible pane heals itself on the slow cooldown.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(3);
+    expect(view.webglAttached).toBe(true);
+  });
+
+  test("stops re-arming after the loss budget is spent, and a healthy stretch replenishes it", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+
+    // Burn the whole budget: 1 fast retry + 4 slow re-arms = 5 attempts.
+    webglMockState.instances[0].triggerContextLoss();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    for (let attempt = 2; attempt <= 5; attempt += 1) {
+      webglMockState.instances[attempt - 1].triggerContextLoss();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushPromises();
+    }
+    expect(webglMockState.instances).toHaveLength(6);
+    expect(view.webglAttached).toBe(true);
+
+    // Sixth loss straight away → budget spent, no further re-arm.
+    webglMockState.instances[5].triggerContextLoss();
+    await vi.advanceTimersByTimeAsync(120_000);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(6);
+    expect(view.webglAttached).toBe(false);
+
+    // Recover by hand, run healthily for five minutes, then lose the context:
+    // the budget resets, so the pane retries instead of staying on DOM.
+    controller.detachTerminalPane(sessionId, paneBody);
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(7);
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    webglMockState.instances[6].triggerContextLoss();
+    expect(view.webglContextLosses).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(8);
+    expect(view.webglAttached).toBe(true);
+  });
+
   test("cancels a pending context-loss retry when the pane is detached", async () => {
     vi.useFakeTimers();
     installFontLoader();
@@ -723,6 +799,163 @@ describe("desktop WebGL renderer selection", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await flushPromises();
     expect(webglMockState.instances).toHaveLength(1);
+  });
+
+  test("releases the GL context of a detached pane and takes a fresh one on re-attach", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    expect(view.webglAttached).toBe(true);
+
+    controller.detachTerminalPane(sessionId, paneBody);
+    // Still held during the grace period.
+    expect(view.webglAttached).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(webglMockState.instances[0].dispose).toHaveBeenCalledTimes(1);
+    expect(view.webglAttached).toBe(false);
+    expect(view.webglAddon).toBeNull();
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(2);
+    expect(view.webglAttached).toBe(true);
+  });
+
+  test("a detach/attach round trip inside the grace period does not cycle the GL context", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const firstAddon = webglMockState.instances[0];
+
+    controller.detachTerminalPane(sessionId, paneBody);
+    await vi.advanceTimersByTimeAsync(500);
+    controller.attachTerminalPane(sessionId, paneBody);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flushPromises();
+
+    expect(firstAddon.dispose).not.toHaveBeenCalled();
+    expect(webglMockState.instances).toHaveLength(1);
+    expect(view.webglAttached).toBe(true);
+  });
+
+  // The invariant is "once the grace period has elapsed" — during fast
+  // switching the count is deliberately allowed to run higher, which is the
+  // whole point of the debounce.
+  test("after the grace period, live GL contexts settle at the number of attached panes", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+    const sessionIds = ["workspace-1:shell-1", "workspace-1:shell-2", "workspace-1:shell-3"];
+
+    // One pane, three sessions rotating through it — the classic workspace switch.
+    for (const sessionId of sessionIds) {
+      controller.attachTerminalPane(sessionId, paneBody);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    await flushPromises();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const live = [...(views.value as any).values()].filter((view: any) => view.webglAttached);
+    const attached = document.querySelectorAll(".terminal-host").length;
+    expect(attached).toBe(1);
+    expect(live).toHaveLength(1);
+  });
+
+  test("a recovery attempt that fails to activate still schedules the next re-arm", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+
+    // Context lost, and the GPU is still resetting when the fast retry runs.
+    webglMockState.instances[0].triggerContextLoss();
+    webglMockState.failLoad = true;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    expect(view.webglAttached).toBe(false);
+
+    // Without the re-arm on activation failure this pane would sit on the DOM
+    // renderer until someone switched away and back.
+    webglMockState.failLoad = false;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flushPromises();
+    expect(view.webglAttached).toBe(true);
+  });
+
+  test("a recovery attempt that hits a zero-sized pane still schedules the next re-arm", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+
+    // This exit path throws nothing, so it can't rely on the catch block.
+    webglMockState.instances[0].triggerContextLoss();
+    view.fitAddon.proposeDimensions.mockReturnValue(undefined);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(1);
+    expect(view.webglAttached).toBe(false);
+
+    view.fitAddon.proposeDimensions.mockReturnValue({ cols: 80, rows: 24 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flushPromises();
+    expect(view.webglAttached).toBe(true);
+  });
+
+  test("a first-ever activation failure does not start a retry loop", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    webglMockState.failLoad = true;
+    const { controller, views } = buildAttachController({ isRemote: false });
+    const sessionId = "workspace-1:shell-1";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    expect(webglMockState.instances).toHaveLength(1);
+
+    // A machine without WebGL2 must be told once, not polled forever.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await flushPromises();
+    expect(webglMockState.instances).toHaveLength(1);
+    expect(view.webglRetryTimer).toBeNull();
   });
 
   test("prunes the WebGL addon before disposing the terminal", async () => {
@@ -1365,6 +1598,47 @@ describe("terminal performance diagnostics", () => {
     const snap = controller.getDiagnosticsSnapshot();
     expect(snap.renderEvents).toBe(0);
     expect(snap.liveViews).toBe(0);
+  });
+
+  // Parking hidden panes (A1) means most live views legitimately have no
+  // renderer. Counting those as DOM fallbacks would report an epidemic that
+  // isn't happening — and would hide the one number the fix is judged on.
+  test("reports parked views separately instead of counting them as DOM fallbacks", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller } = buildAttachController({ isRemote: false });
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane("diag:visible", paneBody);
+    await flushPromises();
+    controller.ensureTerminal("diag:parked-1");
+    controller.ensureTerminal("diag:parked-2");
+
+    const snap = controller.getDiagnosticsSnapshot();
+    expect(snap.liveViews).toBe(3);
+    expect(snap.webglRenderers).toBe(1);
+    expect(snap.domRenderers).toBe(0);
+    expect(snap.parkedViews).toBe(2);
+  });
+
+  test("a pane whose context was released on detach counts as parked, not DOM", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const { controller } = buildAttachController({ isRemote: false });
+    const sessionId = "diag:detached";
+    const paneBody = document.createElement("div");
+    document.body.append(paneBody);
+
+    controller.attachTerminalPane(sessionId, paneBody);
+    await flushPromises();
+    controller.detachTerminalPane(sessionId, paneBody);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    const snap = controller.getDiagnosticsSnapshot();
+    expect(snap.webglRenderers).toBe(0);
+    expect(snap.domRenderers).toBe(0);
+    expect(snap.parkedViews).toBe(1);
   });
 
   test("distinguishes a resize callback without a size change from a real resize", async () => {

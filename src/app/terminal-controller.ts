@@ -34,8 +34,16 @@ export interface TerminalView {
   /** Live `WebglAddon` instance, or null on the DOM fallback. */
   webglAddon: WebglAddon | null;
   webglAttachPending: boolean;
+  /**
+   * Failure budget for this view's GL renderer: GPU context losses plus
+   * recovery attempts that failed to activate. Drives the bounded re-arm
+   * schedule and is reset by a long healthy stretch on WebGL.
+   */
   webglContextLosses: number;
   webglRetryTimer: number | null;
+  /** Pending grace-period timer that releases the GL context of a pane that
+   *  was detached from the DOM. Cleared when the pane comes back. */
+  webglIdleDisposeTimer: number | null;
   /** Disposer for the (always-registered, gated) diagnostics onRender hook. */
   diagRenderDisposer: { dispose(): void } | null;
 }
@@ -46,7 +54,7 @@ export interface TerminalView {
  * the history itself. Delta fields (`data*`, `render*`, `resize*`,
  * `fullRefreshes`, `webgl*Failures`/`Losses`/`Fallbacks`) accumulate since the
  * previous snapshot and reset on read; instantaneous fields (`liveViews`,
- * `webglRenderers`, `domRenderers`) reflect the current view set.
+ * `webglRenderers`, `domRenderers`, `parkedViews`) reflect the current view set.
  */
 export interface TerminalDiagnosticsSnapshot {
   enabled: boolean;
@@ -64,8 +72,16 @@ export interface TerminalDiagnosticsSnapshot {
   webglContextLosses: number;
   webglFallbacks: number;
   liveViews: number;
+  /**
+   * Renderer split across the *attached* views only. A parked (detached) view
+   * has no renderer worth reporting — it paints nothing and holds no GL
+   * context — so counting it as a DOM fallback would make the fallback look
+   * epidemic while the app is behaving exactly as intended.
+   */
   webglRenderers: number;
   domRenderers: number;
+  /** Live views not currently in the DOM: alive, not painting, no GL context. */
+  parkedViews: number;
   topSessions: Array<{ sessionId: string; dataChunks: number; dataBytes: number; renderEvents: number }>;
 }
 
@@ -75,6 +91,25 @@ const IS_MAC = typeof navigator !== "undefined" && navigator.userAgent.toLowerCa
 const OSC52_MAX_ENCODED_CHARS = 4 * 1024 * 1024;
 const WEBGL_CONTEXT_LOSS_RETRY_MS = 1_000;
 const WEBGL_CONTEXT_LOSS_RETRIES = 1;
+/**
+ * Cooldown between the slow re-arm attempts that follow the fast retries.
+ * Long enough that a systemic failure (GPU reset, driver crash) doesn't turn
+ * into a busy loop, short enough that a visible pane heals within a minute.
+ */
+const WEBGL_CONTEXT_LOSS_REARM_MS = 60_000;
+/** Losses after which a still-visible pane stops re-arming on its own. */
+const WEBGL_CONTEXT_LOSS_MAX_ATTEMPTS = 5;
+/**
+ * A context that ran this long before dying counts as healthy: the loss was
+ * an isolated incident, so the next one starts from a fresh retry budget
+ * instead of inheriting hours-old failures.
+ */
+const WEBGL_HEALTHY_UPTIME_MS = 5 * 60_000;
+/**
+ * Grace period before a detached pane's GL context is released, so rapid
+ * pane/workspace switching doesn't thrash dispose → attach.
+ */
+const WEBGL_IDLE_DISPOSE_MS = 2_000;
 
 function decodeOsc52Clipboard(data: string): string | null {
   const separator = data.indexOf(";");
@@ -424,9 +459,11 @@ export function createTerminalController({
     let liveViews = 0;
     let webglRenderers = 0;
     let domRenderers = 0;
+    let parkedViews = 0;
     for (const view of views.value.values()) {
       liveViews++;
-      if (view.webglAttached) webglRenderers++;
+      if (!view.mount.isConnected) parkedViews++;
+      else if (view.webglAttached) webglRenderers++;
       else domRenderers++;
     }
     const topSessions = [...diag.perSession.entries()]
@@ -455,6 +492,7 @@ export function createTerminalController({
       liveViews,
       webglRenderers,
       domRenderers,
+      parkedViews,
       topSessions,
     };
     // Atomically hand back the deltas and start the next interval.
@@ -481,6 +519,62 @@ export function createTerminalController({
     view.webglRetryTimer = null;
   }
 
+  /**
+   * Bounded self-healing schedule for a view that just dropped to the DOM
+   * renderer: one fast retry (transient hiccup), then slow re-arms, then stop
+   * until the pane is reattached. Returns the delay it scheduled, or null when
+   * the budget is spent or the view is gone/parked (a parked pane re-tries on
+   * reattach anyway, so there is nothing to schedule).
+   */
+  function scheduleWebglRearm(view: TerminalView, sessionId: string, attempt: number): number | null {
+    const retryDelayMs =
+      attempt <= WEBGL_CONTEXT_LOSS_RETRIES
+        ? WEBGL_CONTEXT_LOSS_RETRY_MS
+        : attempt <= WEBGL_CONTEXT_LOSS_MAX_ATTEMPTS
+          ? WEBGL_CONTEXT_LOSS_REARM_MS
+          : null;
+    if (retryDelayMs === null) return null;
+    if (views.value.get(sessionId) !== view || !view.mount.isConnected) return null;
+    cancelWebglRetry(view);
+    view.webglRetryTimer = window.setTimeout(() => {
+      view.webglRetryTimer = null;
+      tryAttachWebglAddon(view, "context-loss-retry");
+    }, retryDelayMs);
+    return retryDelayMs;
+  }
+
+  function cancelWebglIdleDispose(view: TerminalView): void {
+    if (view.webglIdleDisposeTimer === null) return;
+    window.clearTimeout(view.webglIdleDisposeTimer);
+    view.webglIdleDisposeTimer = null;
+  }
+
+  /**
+   * Release the GL context of a pane that is no longer in the DOM.
+   *
+   * Chromium caps a renderer process at 16 live WebGL contexts and forcibly
+   * loses the oldest one past that — and a forced loss drops that terminal
+   * onto the (much more expensive) DOM renderer. Keeping a context alive for
+   * every *live* terminal instead of every *visible* one kept the cap
+   * permanently saturated, so the degradation accumulated over a day of use.
+   *
+   * A detached terminal paints nothing (xterm's render service pauses itself
+   * via IntersectionObserver), so the context is pure waste while hidden.
+   */
+  function scheduleWebglIdleDispose(view: TerminalView): void {
+    if (!view.webglAddon) return;
+    cancelWebglIdleDispose(view);
+    view.webglIdleDisposeTimer = window.setTimeout(() => {
+      view.webglIdleDisposeTimer = null;
+      // Re-attached during the grace period, or already released — nothing to do.
+      if (view.mount.isConnected || !view.webglAddon) return;
+      // Deliberately silent: this fires on every pane switch, and the state it
+      // would report is already visible as `parkedViews` in the diagnostics
+      // snapshot (which costs nothing while the Performance panel is closed).
+      disposeWebglAddon(view, view.webglAddon);
+    }, WEBGL_IDLE_DISPOSE_MS);
+  }
+
   function disposeWebglAddon(view: TerminalView, addon: WebglAddon): void {
     if (view.webglAddon === addon) {
       view.webglAddon = null;
@@ -504,6 +598,7 @@ export function createTerminalController({
       window.cancelAnimationFrame(view.resizeFrame || 0);
       view.resizeObserver?.disconnect();
       cancelWebglRetry(view);
+      cancelWebglIdleDispose(view);
       view.diagRenderDisposer?.dispose();
       view.diagRenderDisposer = null;
       // Dispose the WebGL addon explicitly, before term.dispose(), so the GL
@@ -1254,6 +1349,7 @@ export function createTerminalController({
       webglAttachPending: false,
       webglContextLosses: 0,
       webglRetryTimer: null,
+      webglIdleDisposeTimer: null,
       diagRenderDisposer,
     });
 
@@ -1279,6 +1375,20 @@ export function createTerminalController({
       return;
     }
     const sessionId = view.mount.dataset.sessionId || "";
+    /**
+     * Keep the bounded re-arm schedule alive when a *recovery* attempt fails,
+     * whether it threw or bailed out quietly. Dropping it here is what makes a
+     * single lost context terminal after all — the exact degradation A2
+     * exists to prevent. The failure counts against the same budget, so this
+     * still converges. Returns null (and schedules nothing) for a view that
+     * never lost a context: a first-ever failure is a capability verdict, not
+     * a hiccup, and retrying it would poll forever on a machine without WebGL2.
+     */
+    const rearmAfterFailedRecovery = (): number | null => {
+      if (view.webglContextLosses === 0) return null;
+      view.webglContextLosses += 1;
+      return scheduleWebglRearm(view, sessionId, view.webglContextLosses);
+    };
     const loadWebgl = (): void => {
       view.webglAttachPending = false;
       if (views.value.get(sessionId) !== view) return;
@@ -1286,13 +1396,34 @@ export function createTerminalController({
       let webglAddon: WebglAddon | null = null;
       try {
         const proposed = view.fitAddon.proposeDimensions();
-        if (!proposed || proposed.cols <= 0 || proposed.rows <= 0) return;
+        if (!proposed || proposed.cols <= 0 || proposed.rows <= 0) {
+          // A pane that is momentarily 0×0 (mid-transition) must not silently
+          // end the recovery — this exit throws nothing, so the catch below
+          // would never see it.
+          const retryInMs = rearmAfterFailedRecovery();
+          if (retryInMs !== null) {
+            log("warn", "[webgl] retry hit a zero-sized pane; re-arming", {
+              sessionId,
+              attempt: view.webglContextLosses,
+              retryInMs,
+            });
+          }
+          return;
+        }
         view.fitAddon.fit();
         if (view.webglAttached) return;
         const addon = new WebglAddon();
         webglAddon = addon;
+        let attachedAt = 0;
         addon.onContextLoss(() => {
           if (view.webglAddon !== addon) return;
+          // A context that ran healthily for a long stretch means the earlier
+          // losses were isolated incidents, not a systemic failure. Without
+          // this reset a long-lived session accumulates its way past the
+          // budget and stays on the DOM renderer for the rest of the day.
+          if (attachedAt && Date.now() - attachedAt >= WEBGL_HEALTHY_UPTIME_MS) {
+            view.webglContextLosses = 0;
+          }
           view.webglContextLosses += 1;
           if (diagnosticsEnabled) {
             diag.webglContextLosses++;
@@ -1300,36 +1431,33 @@ export function createTerminalController({
             diag.webglFallbacks++;
           }
           disposeWebglAddon(view, addon);
-          if (
-            view.webglContextLosses <= WEBGL_CONTEXT_LOSS_RETRIES &&
-            views.value.get(sessionId) === view &&
-            view.mount.isConnected
-          ) {
-            log("warn", "[webgl] context lost; using DOM renderer and scheduling one retry", {
+          const attempt = view.webglContextLosses;
+          const retryInMs = scheduleWebglRearm(view, sessionId, attempt);
+          if (retryInMs !== null) {
+            log("warn", "[webgl] context lost; using DOM renderer and scheduling a retry", {
               sessionId,
-              attempt: view.webglContextLosses,
+              attempt,
+              retryInMs,
             });
-            cancelWebglRetry(view);
-            view.webglRetryTimer = window.setTimeout(() => {
-              view.webglRetryTimer = null;
-              tryAttachWebglAddon(view, "context-loss-retry");
-            }, WEBGL_CONTEXT_LOSS_RETRY_MS);
             return;
           }
           log("warn", "[webgl] context lost; using DOM renderer until the pane is reattached", {
             sessionId,
-            losses: view.webglContextLosses,
+            losses: attempt,
           });
         });
         view.term.loadAddon(addon);
+        attachedAt = Date.now();
         view.webglAttached = true;
         view.webglAddon = addon;
         log("info", `[webgl] renderer enabled (${reason})`);
       } catch (err) {
         if (webglAddon) disposeWebglAddon(view, webglAddon);
         if (diagnosticsEnabled) diag.webglAttachFailures++;
+        const retryInMs = rearmAfterFailedRecovery();
         log("warn", "[webgl] unavailable; using DOM renderer", {
           error: (err as Error)?.message || String(err),
+          ...(retryInMs !== null ? { attempt: view.webglContextLosses, retryInMs } : {}),
         });
       }
     };
@@ -1352,6 +1480,9 @@ export function createTerminalController({
       }
       detachTerminalPane(otherSessionId, paneBody);
     }
+    // The pane is coming back inside the grace period — keep the context we
+    // already have instead of letting the pending timer tear it down.
+    cancelWebglIdleDispose(view);
     paneBody.append(view.mount);
     if (!view.opened) {
       view.term.open(view.mount);
@@ -1435,6 +1566,7 @@ export function createTerminalController({
     view.resizeObserver?.disconnect();
     view.resizeObserver = null;
     view.mount.remove();
+    scheduleWebglIdleDispose(view);
   }
 
   function getTerminalTranscript(sessionId: string, { lineCount = 500 } = {}): string {

@@ -246,6 +246,17 @@
         Judge: <strong>{{ selectedRoundData.judgeVerdict }}</strong>
         <p v-if="selectedRoundData.judgeReason" class="td__verdict-reason">{{ selectedRoundData.judgeReason }}</p>
       </div>
+      <div v-if="hiddenActivityCount" class="td__activity-more">
+        Showing the last {{ selectedRoundEntries.length }} of {{ roundEntriesInWindow.length }} entries.
+        <button
+          type="button"
+          class="td__link-btn"
+          title="Reveal another page of older entries. Rendering a whole long round here makes the dashboard sluggish — read it in the Log tab instead."
+          @click="showOlderActivity"
+        >
+          Show {{ nextActivityPageSize }} older
+        </button>
+      </div>
       <table v-if="selectedRoundEntries.length" class="td__activity-table">
         <thead>
           <tr>
@@ -515,7 +526,7 @@ const { logEntries: allLogEntries } = useTaskLog(api, props);
 // different points in the eval pipeline and doesn't cleanly map to round
 // chips. A time window between `round.startedAt` and the next round's
 // `startedAt` is an accurate, backend-agnostic mapping.
-const selectedRoundEntries = computed(() => {
+const roundEntriesInWindow = computed(() => {
   const r = selectedRoundData.value;
   if (!r?.startedAt) return [];
   const rounds = roundsChronological.value;
@@ -530,6 +541,31 @@ const selectedRoundEntries = computed(() => {
     return !Number.isNaN(ts) && ts >= startMs && ts < endMs;
   });
 });
+
+// Render only a tail by default. A long round can hold thousands of entries,
+// and this dashboard re-renders on every log poll, so an uncapped v-for keeps
+// tens of thousands of elements in the document and pays style/layout for all
+// of them on every frame. Older entries are revealed a page at a time — never
+// all at once, which would just rebuild the table that caused the problem.
+// The Log tab is the place to read a whole round.
+const ACTIVITY_ROW_CAP = 200;
+const activityRowLimit = ref(ACTIVITY_ROW_CAP);
+watch(selectedRound, () => {
+  activityRowLimit.value = ACTIVITY_ROW_CAP;
+});
+
+const selectedRoundEntries = computed(() => {
+  const entries = roundEntriesInWindow.value;
+  if (entries.length <= activityRowLimit.value) return entries;
+  return entries.slice(-activityRowLimit.value);
+});
+
+const hiddenActivityCount = computed(() => roundEntriesInWindow.value.length - selectedRoundEntries.value.length);
+const nextActivityPageSize = computed(() => Math.min(hiddenActivityCount.value, ACTIVITY_ROW_CAP));
+
+function showOlderActivity(): void {
+  activityRowLimit.value += ACTIVITY_ROW_CAP;
+}
 </script>
 
 <style scoped>
@@ -1057,6 +1093,11 @@ const selectedRoundEntries = computed(() => {
 }
 
 /* ── Per-round activity table ─────────────────────────────────── */
+.td__activity-more {
+  margin-top: 8px;
+  font-size: 11px;
+  opacity: 0.7;
+}
 .td__activity-table {
   width: 100%;
   border-collapse: collapse;

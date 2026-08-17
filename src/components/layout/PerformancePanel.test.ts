@@ -72,6 +72,7 @@ function termDiag(overrides: Partial<TerminalDiagnosticsSnapshot> = {}): Termina
     liveViews: 2,
     webglRenderers: 2,
     domRenderers: 0,
+    parkedViews: 0,
     topSessions: [{ sessionId: "workspace-1:panel-1", dataChunks: 8, dataBytes: 2000, renderEvents: 6 }],
     ...overrides,
   };

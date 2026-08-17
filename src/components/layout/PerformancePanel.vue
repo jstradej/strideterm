@@ -255,10 +255,17 @@
           </div>
           <div
             class="perf__mini"
-            title="Terminals currently drawing with the GPU (WebGL) renderer vs the DOM fallback. Terminals stuck on DOM scroll less smoothly under heavy output."
+            title="Of the terminals actually on screen: how many draw with the GPU (WebGL) renderer vs the DOM fallback. Terminals stuck on DOM scroll less smoothly under heavy output. Parked (off-screen) terminals are excluded — they paint nothing."
           >
             <span class="perf__mini-value">{{ termDiag.webglRenderers }}/{{ termDiag.domRenderers }}</span
             ><span class="perf__mini-label">WebGL/DOM</span>
+          </div>
+          <div
+            class="perf__mini"
+            title="Live terminals not currently on screen. They keep their scrollback but paint nothing and hold no GPU context, so they cost nothing per frame."
+          >
+            <span class="perf__mini-value">{{ termDiag.parkedViews }}</span
+            ><span class="perf__mini-label">parked</span>
           </div>
           <div
             class="perf__mini"

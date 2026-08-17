@@ -60,3 +60,41 @@ describe("TaskDashboardStatusTab — log loading via useTaskLog", () => {
     expect(wrapper.findAll(".td__activity-tr")).toHaveLength(2);
   });
 });
+
+// An uncapped v-for over a long round put thousands of <tr> (≈14k elements in
+// the observed incident) permanently in the document, and this tab re-renders
+// on every log poll — so style/layout paid for all of them every frame.
+describe("TaskDashboardStatusTab — activity table row cap", () => {
+  const HUGE_LOG = Array.from(
+    { length: 5000 },
+    (_unused, i) => `{"ts":"2026-07-19T10:00:0${i % 10}.000Z","event":"worker-output","round":1,"detail":"line ${i}"}`,
+  ).join("\n");
+
+  it("renders at most the cap for a 5000-entry round and reveals older entries a page at a time", async () => {
+    const { wrapper } = mountTab({}, { fileRead: vi.fn().mockResolvedValue({ content: HUGE_LOG }) });
+    await flushPromises();
+
+    expect(wrapper.findAll(".td__activity-tr")).toHaveLength(200);
+    // The tail is what's kept: newest entry visible, the one just past the cap not.
+    expect(wrapper.text()).toContain("line 4999");
+    expect(wrapper.text()).toContain("line 4800");
+    expect(wrapper.text()).not.toContain("line 4799");
+
+    const more = wrapper.find(".td__activity-more");
+    expect(more.text()).toContain("Showing the last 200 of 5000");
+    // One page at a time — never "show all", which would rebuild exactly the
+    // multi-thousand-row table the cap exists to prevent.
+    await more.find("button").trigger("click");
+    expect(wrapper.findAll(".td__activity-tr")).toHaveLength(400);
+    expect(wrapper.text()).toContain("line 4600");
+    expect(wrapper.text()).not.toContain("line 4599");
+  });
+
+  it("leaves a round below the cap untouched and shows no expander", async () => {
+    const { wrapper } = mountTab();
+    await flushPromises();
+
+    expect(wrapper.findAll(".td__activity-tr")).toHaveLength(2);
+    expect(wrapper.find(".td__activity-more").exists()).toBe(false);
+  });
+});
