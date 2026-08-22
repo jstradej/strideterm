@@ -23,6 +23,7 @@
       >{{ workspace.icon }}
       <span
         v-if="statusDot"
+        v-heartbeat="statusDot.state === 'running' || statusDot.state === 'pr-active'"
         :class="['workspace-card__status-dot', `workspace-card__status-dot--${statusDot.state}`]"
         :title="statusDot.label"
       ></span>
@@ -53,6 +54,7 @@
         <strong>{{ workspace.name }}</strong>
         <span
           v-if="workspace.checksState"
+          v-heartbeat="workspace.checksState === 'pending'"
           :class="['workspace-card__checks-dot', `workspace-card__checks-dot--${workspace.checksState}`]"
           :title="
             workspace.checksState === 'failed'
@@ -126,6 +128,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import { vHeartbeat } from "../../app/heartbeat-directive.js";
 
 interface WorkspaceCardData {
   active: boolean;

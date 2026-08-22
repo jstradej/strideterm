@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted, watch } from "vue";
 import { useTerminalStore } from "../stores/terminal.js";
 import { isMobileViewport } from "./useIsNarrow.js";
+import { pauseHeartbeat, resumeHeartbeat } from "../app/status-heartbeat.js";
 
 export function useGlobalEvents() {
   const termStore = useTerminalStore();
@@ -35,21 +36,28 @@ export function useGlobalEvents() {
     }
   }
 
-  // Drives the `html.app-hidden` animation freeze in base.css. Desktop windows
-  // run with backgroundThrottling disabled, so Chromium keeps a minimized
-  // renderer painting at 60 fps — infinite CSS animations (spinners, status
-  // pulses) otherwise cost real CPU for hours with nothing on screen.
+  // Drives the `html.app-hidden` animation freeze in base.css and the shared
+  // status heartbeat's pause. Desktop windows run with backgroundThrottling
+  // disabled, so Chromium keeps a minimized renderer painting at 60 fps —
+  // animations and timers otherwise cost real CPU for hours with nothing on
+  // screen.
   //
   // Two independent inputs because neither covers both clients: Electron pins
   // document.visibilityState to "visible" when backgroundThrottling is off, so
   // desktop windows only learn about it from main's window:visibility push;
   // remote/mobile browsers have no such push and rely on visibilitychange.
   // Whichever says "hidden" wins.
+  //
+  // The heartbeat scheduler is told explicitly rather than left to sniff
+  // document.visibilityState for exactly that reason: on the desktop the
+  // document never reports hidden, so this push is the only signal it gets.
   let windowHidden = false;
 
   function syncHiddenClass() {
     const hidden = windowHidden || document.visibilityState === "hidden";
     document.documentElement.classList.toggle("app-hidden", hidden);
+    if (hidden) pauseHeartbeat();
+    else resumeHeartbeat();
   }
 
   function handleVisibility() {
@@ -128,6 +136,9 @@ export function useGlobalEvents() {
     window.removeEventListener("orientationchange", handleOrientationChange);
     document.removeEventListener("visibilitychange", handleVisibility);
     document.documentElement.classList.remove("app-hidden");
+    // A torn-down app must not leave the scheduler parked — a remount would
+    // register targets that never pulse.
+    resumeHeartbeat();
     if (window.visualViewport) {
       window.visualViewport.removeEventListener("resize", handleVisualViewportResize);
     }

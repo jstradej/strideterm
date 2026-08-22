@@ -1330,9 +1330,11 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   background: var(--status-failed);
 }
 
+/* Pending checks: the amber dot alone says "still running"; the shared
+   heartbeat (v-heartbeat in WorkspaceCard.vue) adds the liveness beat. */
 .workspace-card__checks-dot--pending {
   background: var(--status-running);
-  animation: pulse-check 1.8s ease-in-out infinite;
+  --heartbeat-on-opacity: 0.4;
 }
 
 .project__attention,
@@ -1458,7 +1460,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 }
 .workspace-card__status-dot--running {
   background: var(--status-running);
-  animation: status-dot-pulse 1.4s ease-in-out infinite;
+  --heartbeat-on-opacity: 0.55;
 }
 .workspace-card__status-dot--completed {
   background: var(--status-success);
@@ -1500,7 +1502,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 }
 .workspace-card__status-dot--pr-active {
   background: var(--status-review);
-  animation: status-dot-pulse 2s ease-in-out infinite;
+  --heartbeat-on-opacity: 0.55;
 }
 .workspace-card__status-dot--abandoned {
   background: var(--status-muted);
@@ -1585,18 +1587,6 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .workspace-card__star:hover {
   color: #f5c542;
   opacity: 1;
-}
-
-@keyframes status-dot-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.6;
-    transform: scale(0.85);
-  }
 }
 
 .frame--sidebar-collapsed .sidebar {

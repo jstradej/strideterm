@@ -208,6 +208,10 @@ textarea {
    instead of dropping to ~1 fps — a single infinite animation then burns CPU
    all night with nobody looking. Set by useGlobalEvents() on visibilitychange.
 
+   This now covers only transient animations (spinners, skeletons, one-shot
+   entry effects); the persistent status indicators moved to the shared
+   heartbeat below, which useGlobalEvents() pauses through the same signal.
+
    `!important` is load-bearing: the `animation` shorthand every animated rule
    uses resets animation-play-state to `running`, and those rules are more
    specific than this one. */
@@ -215,4 +219,26 @@ html.app-hidden *,
 html.app-hidden *::before,
 html.app-hidden *::after {
   animation-play-state: paused !important;
+}
+
+/* ── Shared status heartbeat ───────────────────────────────────────
+   One scheduler (src/app/status-heartbeat.ts) toggles this class on every
+   registered "still alive" indicator — running task dots, unread bell,
+   pending checks, active pipeline step, live panels — inside a single
+   requestAnimationFrame, holds it for ~200 ms, then clears it in another
+   single frame.
+
+   Deliberately no `transition` and no `animation`. Moving a persistent pulse
+   onto a compositor-friendly property removes the main-thread paint, but a
+   compositor-friendly animation is not a free animation: `infinite` still
+   asks for a frame every vsync for as long as the element is on screen, which
+   is exactly the idle CPU floor this replaces. Two discrete style changes per
+   1.5 s cost a fraction of that.
+
+   Every indicator stays unambiguous between beats — colour, badge, glyph and
+   title carry the state on their own, the heartbeat only says "still live".
+   Per-target strength is tuned with --heartbeat-on-opacity; nothing here may
+   affect layout. */
+.status-heartbeat--on {
+  opacity: var(--heartbeat-on-opacity, 0.5);
 }

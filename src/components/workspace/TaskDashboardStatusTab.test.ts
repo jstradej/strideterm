@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
 import { apiKey } from "../../types/keys.js";
+import { heartbeatTargetCount, resetHeartbeatForTests } from "../../app/status-heartbeat.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -96,5 +97,77 @@ describe("TaskDashboardStatusTab — activity table row cap", () => {
 
     expect(wrapper.findAll(".td__activity-tr")).toHaveLength(2);
     expect(wrapper.find(".td__activity-more").exists()).toBe(false);
+  });
+});
+
+// ── Shared status heartbeat ────────────────────────────────────────
+// The Status tab contributes two targets: the active pipeline circle and the
+// active round chip. They pulse in the same phase as every other indicator
+// because there is only ever one scheduler.
+describe("TaskDashboardStatusTab — shared heartbeat targets", () => {
+  beforeEach(() => {
+    resetHeartbeatForTests();
+  });
+
+  afterEach(() => {
+    resetHeartbeatForTests();
+  });
+
+  it("registers the active pipeline step and the active round chip, and nothing else", async () => {
+    const { wrapper } = mountTab();
+    await flushPromises();
+
+    // Four pipeline circles and one round chip are rendered; only the running
+    // step and the running round are live.
+    expect(wrapper.findAll(".td__pipe-circle")).toHaveLength(4);
+    expect(wrapper.findAll(".td__rchip")).toHaveLength(1);
+    expect(heartbeatTargetCount()).toBe(2);
+    expect(wrapper.findAll(".td__pipe-step--active")).toHaveLength(1);
+    expect(wrapper.find(".td__rchip--active").exists()).toBe(true);
+
+    wrapper.unmount();
+    expect(heartbeatTargetCount()).toBe(0);
+  });
+
+  it("a completed task drops the round chip and keeps only the final step", async () => {
+    const { wrapper } = mountTab({
+      state: "completed",
+      rounds: [{ round: 1, action: "completed", startedAt: "2026-07-19T10:00:00.000Z" }],
+    });
+    await flushPromises();
+
+    // "Done" is the pipeline's current stage once the task completes, so it
+    // stays the (single) live circle — same as before the heartbeat landed.
+    // The round chip is no longer active and deregisters.
+    expect(heartbeatTargetCount()).toBe(1);
+    expect(wrapper.findAll(".td__pipe-step--active")).toHaveLength(1);
+    expect(wrapper.find(".td__rchip--active").exists()).toBe(false);
+    expect(wrapper.find(".td__rchip--success").exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("a failed task registers nothing and keeps its failed styling", async () => {
+    const { wrapper } = mountTab({
+      state: "failed",
+      rounds: [{ round: 1, action: "failed", startedAt: "2026-07-19T10:00:00.000Z" }],
+    });
+    await flushPromises();
+
+    expect(heartbeatTargetCount()).toBe(0);
+    expect(wrapper.find(".td__pipe-step--active").exists()).toBe(false);
+    expect(wrapper.find(".td__pipe-step--failed").exists()).toBe(true);
+    expect(wrapper.find(".td__rchip--error").exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("an idle task registers nothing", async () => {
+    const { wrapper } = mountTab({ state: "idle", rounds: [] });
+    await flushPromises();
+
+    expect(heartbeatTargetCount()).toBe(0);
+
+    wrapper.unmount();
   });
 });

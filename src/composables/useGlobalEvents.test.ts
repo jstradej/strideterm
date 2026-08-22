@@ -5,6 +5,12 @@ import { defineComponent, h } from "vue";
 import { useGlobalEvents } from "./useGlobalEvents.js";
 import { useTerminalStore } from "../stores/terminal.js";
 import { isMobileViewport } from "./useIsNarrow.js";
+import {
+  HEARTBEAT_ON_CLASS,
+  HEARTBEAT_PERIOD_MS,
+  registerHeartbeatTarget,
+  resetHeartbeatForTests,
+} from "../app/status-heartbeat.js";
 
 /**
  * useGlobalEvents wires window/document listeners that force xterm panes
@@ -268,6 +274,80 @@ describe("useGlobalEvents — desktop window:visibility bridge", () => {
     emit({ hidden: false });
     expect(spy).toHaveBeenCalled();
 
+    wrapper.unmount();
+  });
+});
+
+describe("useGlobalEvents — shared heartbeat pause/resume", () => {
+  // The scheduler cannot rely on document.visibilityState alone: Electron pins
+  // it to "visible" while backgroundThrottling is off, so useGlobalEvents has
+  // to push the window's real state in.
+  let emit: (payload: { hidden: boolean }) => void;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    isMobileViewport.value = false;
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.documentElement.classList.remove("app-hidden");
+    resetHeartbeatForTests();
+    (window as unknown as { strideterm?: unknown }).strideterm = {
+      onWindowVisibility: (handler: (payload: { hidden: boolean }) => void) => {
+        emit = handler;
+      },
+    };
+  });
+
+  afterEach(() => {
+    resetHeartbeatForTests();
+    delete (window as unknown as { strideterm?: unknown }).strideterm;
+  });
+
+  test("minimizing stops the heartbeat and clears the pulse; restoring starts it again", () => {
+    vi.useFakeTimers();
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      cb(0);
+      return 0;
+    });
+    const wrapper = mount(Host);
+    const el = document.createElement("span");
+    document.body.appendChild(el);
+    registerHeartbeatTarget(el);
+
+    vi.advanceTimersByTime(HEARTBEAT_PERIOD_MS);
+    expect(el.classList.contains(HEARTBEAT_ON_CLASS)).toBe(true);
+
+    emit({ hidden: true });
+    // Electron still reports the document as visible — the push is the only signal.
+    expect(document.visibilityState).toBe("visible");
+    expect(el.classList.contains(HEARTBEAT_ON_CLASS)).toBe(false);
+
+    // While paused a tick does nothing at all.
+    vi.advanceTimersByTime(HEARTBEAT_PERIOD_MS * 3);
+    expect(el.classList.contains(HEARTBEAT_ON_CLASS)).toBe(false);
+
+    emit({ hidden: false });
+    vi.advanceTimersByTime(HEARTBEAT_PERIOD_MS);
+    expect(el.classList.contains(HEARTBEAT_ON_CLASS)).toBe(true);
+
+    rafSpy.mockRestore();
+    vi.useRealTimers();
+    el.remove();
+    wrapper.unmount();
+  });
+
+  test("a hidden document pauses the heartbeat on the remote client too", () => {
+    const wrapper = mount(Host);
+    const el = document.createElement("span");
+    document.body.appendChild(el);
+    registerHeartbeatTarget(el);
+    el.classList.add(HEARTBEAT_ON_CLASS);
+
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(el.classList.contains(HEARTBEAT_ON_CLASS)).toBe(false);
+
+    el.remove();
     wrapper.unmount();
   });
 });

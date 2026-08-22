@@ -225,7 +225,12 @@ watch(
 /* The shimmer is a band sliding across on `transform` rather than a gradient
    scrolled with `background-position`. background-position can't be
    composited, so the old version repainted all four skeleton rows on the
-   renderer's main thread every frame for as long as the fetch was in flight. */
+   renderer's main thread every frame for as long as the fetch was in flight.
+   Compositing it is cheaper per frame but still costs a frame per vsync — this
+   one stays `infinite` only because its owner guarantees an end: the skeleton
+   is rendered solely while `loading && rows.length === 0`, and the fetch
+   clears `loading` in a finally block. Persistent indicators use the shared
+   heartbeat instead (src/app/status-heartbeat.ts). */
 .disk-usage__skel {
   position: relative;
   display: inline-block;

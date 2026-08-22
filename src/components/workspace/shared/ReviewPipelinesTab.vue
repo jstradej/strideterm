@@ -20,7 +20,12 @@
       >
         {{ refreshing ? "Refreshing…" : "↻ Refresh" }}
       </button>
-      <span v-if="polling" class="pipelines-summary__polling" title="Auto-refreshing while checks are pending">
+      <span
+        v-if="polling"
+        v-heartbeat="polling"
+        class="pipelines-summary__polling"
+        title="Auto-refreshing while checks are pending"
+      >
         auto ●
       </span>
     </div>
@@ -121,6 +126,7 @@
 import { ref, inject, watch, computed, onUnmounted } from "vue";
 import { apiKey } from "../../../types/keys.js";
 import { formatRelative, formatFull, formatDuration } from "../azure/azurePipelineFormat.js";
+import { vHeartbeat } from "../../../app/heartbeat-directive.js";
 
 interface ChecksData {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

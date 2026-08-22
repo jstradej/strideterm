@@ -20,32 +20,19 @@
   color: var(--text);
 }
 
+/* Unread bell. The count badge carries the state statically; the shared
+   heartbeat (v-heartbeat in NotificationBell.vue) keeps it visually alive
+   while unread items remain. A discrete step to a slightly larger, brighter
+   bell for ~200 ms — no transition, so this is two style changes per beat
+   instead of a continuous shake. */
 .notification-bell--has-unread {
-  animation: notification-bell-periodic-ring 5s ease-in-out infinite;
-  transform-origin: 50% 10%;
+  color: var(--text);
+  /* The scale below carries the beat, so keep the glyph at full strength. */
+  --heartbeat-on-opacity: 1;
 }
 
-/* Shake briefly (~0.6s) every 5s so the bell stays visually alive while unread
-   items remain, without being obnoxious. Sitting still for most of the cycle
-   keeps peripheral vision calm. */
-@keyframes notification-bell-periodic-ring {
-  0%,
-  14%,
-  100% {
-    transform: rotate(0deg) scale(1);
-  }
-  2% {
-    transform: rotate(14deg) scale(1.05);
-  }
-  5% {
-    transform: rotate(-11deg) scale(1.08);
-  }
-  8% {
-    transform: rotate(8deg) scale(1.03);
-  }
-  11% {
-    transform: rotate(-5deg) scale(1);
-  }
+.notification-bell--has-unread.status-heartbeat--on {
+  transform: scale(1.16);
 }
 
 .notification-bell__badge {
@@ -453,12 +440,15 @@
   line-height: 1.4;
 }
 
-/* Icon shake while the item is flashing — periodic 0.5s shake every 2.5s
-   draws the eye intermittently without being a constant jitter. Same
-   rhythm as the toolbar bell's notification-bell-periodic-ring but faster
-   cadence because the dock is closer to the user's focal area. */
+/* Icon shake on arrival — a periodic 0.5s shake every 2.5s draws the eye
+   intermittently without being a constant jitter. Bounded to three cycles
+   (~7.5s) on purpose: the flash class itself persists until the user hovers
+   the item, so an `infinite` shake would keep the renderer producing frames
+   for an unread dock indefinitely. This is a one-shot entry effect, not part
+   of the shared heartbeat registry — the NEW pill and background wash carry
+   the "this is new" state after it finishes. */
 .notification-item--flash .notification-item__icon {
-  animation: notif-item-icon-shake 2.5s ease-in-out infinite;
+  animation: notif-item-icon-shake 2.5s ease-in-out 3;
   transform-origin: 50% 60%;
 }
 @keyframes notif-item-icon-shake {

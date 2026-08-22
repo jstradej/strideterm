@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import PerformancePanel from "./PerformancePanel.vue";
 import type { PerformanceSnapshot } from "../../../electron/shared/performance.js";
 import type { TerminalDiagnosticsSnapshot } from "../../app/terminal-controller.js";
+import { heartbeatTargetCount, resetHeartbeatForTests } from "../../app/status-heartbeat.js";
 
 const {
   getPerformanceSnapshot,
@@ -225,6 +226,45 @@ describe("PerformancePanel", () => {
     for (const s of parsed.terminal.topSessions) {
       expect(Object.keys(s).sort()).toEqual(["dataBytes", "dataChunks", "renderEvents", "sessionId"]);
     }
+    wrapper.unmount();
+  });
+});
+
+// ── Shared status heartbeat ────────────────────────────────────────
+// The diagnostics panel is deliberately excluded from the heartbeat registry:
+// anything it animates lands in the very renderer numbers the user opened it
+// to read. Colour alone distinguishes live / warming / paused.
+describe("PerformancePanel — the live dot is not a heartbeat target", () => {
+  beforeEach(() => {
+    resetHeartbeatForTests();
+  });
+
+  afterEach(() => {
+    resetHeartbeatForTests();
+  });
+
+  it("registers no heartbeat target while sampling is live", async () => {
+    const wrapper = mount(PerformancePanel);
+    await flushPromises();
+
+    expect(wrapper.get(".perf__dot").classes()).toContain("perf__dot--live");
+    expect(heartbeatTargetCount()).toBe(0);
+
+    wrapper.unmount();
+  });
+
+  it("registers nothing while warming up or paused either", async () => {
+    getPerformanceSnapshot.mockResolvedValue(snapshot({ warmingUp: true }));
+    const wrapper = mount(PerformancePanel);
+    await flushPromises();
+    expect(wrapper.get(".perf__dot").classes()).toContain("perf__dot--warming");
+    expect(heartbeatTargetCount()).toBe(0);
+
+    const pause = wrapper.findAll(".perf__btn").find((b) => b.text() === "Pause")!;
+    await pause.trigger("click");
+    expect(wrapper.get(".perf__dot").classes()).toContain("perf__dot--paused");
+    expect(heartbeatTargetCount()).toBe(0);
+
     wrapper.unmount();
   });
 });

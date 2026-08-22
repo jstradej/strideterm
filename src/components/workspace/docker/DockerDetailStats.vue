@@ -2,7 +2,7 @@
   <div class="stats">
     <div class="stats__toolbar">
       <span class="stats__status">
-        <span :class="['stats__dot', live ? 'stats__dot--live' : 'stats__dot--paused']" />
+        <span v-heartbeat="live" :class="['stats__dot', live ? 'stats__dot--live' : 'stats__dot--paused']" />
         {{ live ? "Live · refresh every 2s" : "Paused" }}
       </span>
       <button type="button" class="button button--ghost button--sm" @click="toggleLive">
@@ -94,6 +94,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
 import Sparkline from "./Sparkline.vue";
 import { useAppStore } from "../../../stores/app.js";
+import { vHeartbeat } from "../../../app/heartbeat-directive.js";
 
 /** Fixed-size ring of samples for the sparkline. ~2 min at 2 s polling. */
 const HISTORY_LEN = 60;
@@ -245,20 +246,12 @@ watch(
   border-radius: 50%;
 }
 
+/* Green + static glow says "live" on a still screenshot; the shared heartbeat
+   (v-heartbeat) supplies the beat only while this panel is mounted and live. */
 .stats__dot--live {
   background: var(--color-success, #48bb78);
   box-shadow: 0 0 6px rgba(72, 187, 120, 0.5);
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
+  --heartbeat-on-opacity: 0.4;
 }
 
 .stats__dot--paused {

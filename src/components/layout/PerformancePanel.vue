@@ -34,7 +34,7 @@
         type="button"
         class="perf__btn"
         :disabled="capturing"
-        title="Record a ~6s renderer CPU profile and write a .cpuprofile to the logs dir for offline analysis (same as Ctrl+Shift+F12)."
+        title="Record a ~6s renderer CPU profile and write a .cpuprofile to the logs dir for offline analysis (same as Ctrl+Shift+F12). It samples this renderer's V8 main thread only — compositor, raster and GPU threads do not appear in it, so a renderer that is busy compositing shows up as idle here."
         @click="captureProfile"
       >
         {{ capturing ? "Recording…" : "Capture CPU profile" }}
@@ -680,25 +680,20 @@ onBeforeUnmount(() => {
   height: 8px;
   border-radius: 50%;
 }
+/* Static on purpose — no animation and no shared-heartbeat binding. This is
+   the diagnostics panel: anything it animates lands in the very numbers the
+   user opened it to read, and the old infinite pulse contaminated every
+   renderer measurement taken while the panel was open. Colour alone
+   distinguishes live / warming / paused. */
 .perf__dot--live {
   background: var(--success, #4caf50);
   box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
-  animation: perf-pulse 2s ease-in-out infinite;
 }
 .perf__dot--warming {
   background: var(--accent, #ffa424);
 }
 .perf__dot--paused {
   background: var(--muted, #888);
-}
-@keyframes perf-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
 }
 
 .perf__interval {

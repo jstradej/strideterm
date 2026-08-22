@@ -758,23 +758,14 @@
   color: var(--danger);
 }
 
+/* Static on purpose: one list can hold dozens of pending checks, and the
+   `auto ●` summary above already shows that polling is running. */
 .pipeline-item__icon--pending {
   color: var(--accent);
-  animation: pulse-check 1.8s ease-in-out infinite;
 }
 
 .pipeline-item__icon--not-applicable {
   color: var(--muted);
-}
-
-@keyframes pulse-check {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
 }
 
 .pipeline-item__info {
@@ -862,10 +853,13 @@
   opacity: 1;
 }
 
+/* The single per-list liveness indicator — a shared-heartbeat target
+   (v-heartbeat in ReviewPipelinesTab.vue). The accent-coloured `auto ●` text
+   says polling is on even between beats. */
 .pipelines-summary__polling {
   font-size: 10px;
   color: var(--accent);
-  animation: pulse-check 1.8s ease-in-out infinite;
+  --heartbeat-on-opacity: 0.35;
 }
 
 .pipeline-item__detail {

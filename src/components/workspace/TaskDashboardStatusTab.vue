@@ -187,7 +187,7 @@
           :class="{ 'td__pipe-line--done': step.lineDone, 'td__pipe-line--active': step.lineActive }"
         ></div>
         <div class="td__pipe-step" :class="step.classes" :title="step.hint">
-          <span class="td__pipe-circle">{{ i + 1 }}</span>
+          <span v-heartbeat="step.active" class="td__pipe-circle">{{ i + 1 }}</span>
           <span class="td__pipe-name">{{ step.label }}</span>
         </div>
       </template>
@@ -206,6 +206,7 @@
       <div
         v-for="round in roundsChronological"
         :key="round.round"
+        v-heartbeat="roundStatus(round) === 'active'"
         class="td__rchip"
         :class="[`td__rchip--${roundStatus(round)}`, { 'td__rchip--selected': selectedRound === round.round }]"
         :title="roundTooltip(round)"
@@ -290,6 +291,7 @@
 import { computed, ref, inject, watch } from "vue";
 import { apiKey } from "../../types/keys.js";
 import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
+import { vHeartbeat } from "../../app/heartbeat-directive.js";
 import { useTaskLog, formatTime } from "../../composables/useTaskLog.js";
 import { eventLabel, eventCategory } from "../../lib/task-log-labels.js";
 
@@ -507,6 +509,7 @@ const pipelineSteps = computed(() => {
     return {
       ...step,
       hint,
+      active: status === "active",
       classes: { [`td__pipe-step--${status}`]: true },
       lineDone: prevStatus === "done" || prevStatus === "active",
       lineActive: prevStatus === "active",
@@ -841,14 +844,17 @@ function showOlderActivity(): void {
   background: #333;
   color: #666;
 }
-/* The glow lives on a pseudo-element so the pulse can animate `opacity`, which
-   the compositor handles on its own thread. Animating `box-shadow` directly
-   repaints the circle on the renderer's main thread every single frame — an
-   idle window left overnight sat at a steady 60 fps because of it. */
+/* The glow is a static pseudo-element. It used to animate `opacity` on the
+   compositor instead of repainting `box-shadow` on the main thread, which was
+   cheaper per frame but still asked for a frame every vsync for as long as a
+   task was running. The liveness now comes from the shared heartbeat
+   (v-heartbeat on the circle) — two discrete style changes every 1.5s.
+   `pointer-events: none` so the glow never eats clicks. */
 .td__pipe-step--active .td__pipe-circle {
   background: #4caf50;
   color: #fff;
   position: relative;
+  --heartbeat-on-opacity: 0.45;
 }
 .td__pipe-step--active .td__pipe-circle::after {
   content: "";
@@ -857,7 +863,6 @@ function showOlderActivity(): void {
   border-radius: 50%;
   box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
   pointer-events: none;
-  animation: pipe-pulse 1.5s ease-in-out infinite;
 }
 .td__pipe-step--active .td__pipe-name {
   color: #a5d6a7;
@@ -883,16 +888,6 @@ function showOlderActivity(): void {
 .td__pipe-step--failed .td__pipe-name {
   color: #e57373;
 }
-@keyframes pipe-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-
 /* Re-prompt loop indicator */
 .td__pipe-loop {
   margin: 6px 0 0 8px;
@@ -958,13 +953,14 @@ function showOlderActivity(): void {
   background: #283593;
   color: #9fa8da;
 }
-/* Glow on a pseudo-element for the same reason as .td__pipe-circle above —
-   keeps the pulse on the compositor instead of repainting every frame.
-   `pointer-events: none` so the chip stays clickable through it. */
+/* Static glow on a pseudo-element for the same reason as .td__pipe-circle
+   above; the active chip beats in phase with it via the shared heartbeat.
+   `pointer-events: none` so the chip stays clickable through the glow. */
 .td__rchip--active {
   background: #4caf50;
   color: #fff;
   position: relative;
+  --heartbeat-on-opacity: 0.45;
 }
 .td__rchip--active::after {
   content: "";
@@ -973,16 +969,6 @@ function showOlderActivity(): void {
   border-radius: 50%;
   box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
   pointer-events: none;
-  animation: rchip-pulse 1.5s ease-in-out infinite;
-}
-@keyframes rchip-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
 }
 .td__rchip--neutral {
   background: #444;
