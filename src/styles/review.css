@@ -859,7 +859,7 @@
 .pipelines-summary__polling {
   font-size: 10px;
   color: var(--accent);
-  --heartbeat-on-opacity: 0.35;
+  --heartbeat-on-opacity: 0.7;
 }
 
 .pipeline-item__detail {

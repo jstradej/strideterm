@@ -1334,7 +1334,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
    heartbeat (v-heartbeat in WorkspaceCard.vue) adds the liveness beat. */
 .workspace-card__checks-dot--pending {
   background: var(--status-running);
-  --heartbeat-on-opacity: 0.4;
+  --heartbeat-on-opacity: 0.68;
 }
 
 .project__attention,
@@ -1460,7 +1460,8 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 }
 .workspace-card__status-dot--running {
   background: var(--status-running);
-  --heartbeat-on-opacity: 0.55;
+  --heartbeat-on-opacity: 0.72;
+  --heartbeat-on-scale: 1.23;
 }
 .workspace-card__status-dot--completed {
   background: var(--status-success);
@@ -1502,7 +1503,8 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 }
 .workspace-card__status-dot--pr-active {
   background: var(--status-review);
-  --heartbeat-on-opacity: 0.55;
+  --heartbeat-on-opacity: 0.72;
+  --heartbeat-on-scale: 1.23;
 }
 .workspace-card__status-dot--abandoned {
   background: var(--status-muted);

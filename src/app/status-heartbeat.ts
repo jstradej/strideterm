@@ -10,9 +10,9 @@
  * make the animation free — the compositor still produces ~60 frames a second,
  * which is the steady-state CPU floor an idle window was paying for.
  *
- * This module replaces all of them with a single timer that flips one class on
- * every registered element for a short "on" window, then flips it back. Two
- * discrete style changes per 1.5 s instead of ~90 interpolated frames.
+ * This module replaces all of them with a single timer that starts one short,
+ * finite CSS pulse on every registered element, then removes its trigger class.
+ * The renderer sleeps for most of each cycle instead of interpolating forever.
  *
  * Rules the rest of the app relies on:
  *  - exactly one timer no matter how many targets are registered;
@@ -22,15 +22,15 @@
  *  - no Pinia mutation and no DOM querying on a tick — the registry holds the
  *    elements directly.
  *
- * The presentation lives in `src/styles/base.css` (`.status-heartbeat--on`),
- * deliberately with no `transition` and no `animation`.
+ * The presentation lives in `src/styles/base.css` (`.status-heartbeat--on`).
+ * Its animation is finite and uses only compositor-friendly properties.
  */
 
 /** Time between two heartbeats. */
-export const HEARTBEAT_PERIOD_MS = 1_500;
+export const HEARTBEAT_PERIOD_MS = 1_200;
 
 /** How long `.status-heartbeat--on` stays applied within one period. */
-export const HEARTBEAT_ON_MS = 200;
+export const HEARTBEAT_ON_MS = 1_050;
 
 /** Class the scheduler toggles on every registered target. */
 export const HEARTBEAT_ON_CLASS = "status-heartbeat--on";

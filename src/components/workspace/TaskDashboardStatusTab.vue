@@ -844,17 +844,13 @@ function showOlderActivity(): void {
   background: #333;
   color: #666;
 }
-/* The glow is a static pseudo-element. It used to animate `opacity` on the
-   compositor instead of repainting `box-shadow` on the main thread, which was
-   cheaper per frame but still asked for a frame every vsync for as long as a
-   task was running. The liveness now comes from the shared heartbeat
-   (v-heartbeat on the circle) — two discrete style changes every 1.5s.
-   `pointer-events: none` so the glow never eats clicks. */
+/* The glow stays static; v-heartbeat adds the short finite pulse to the circle.
+   `pointer-events: none` keeps the glow from eating clicks. */
 .td__pipe-step--active .td__pipe-circle {
   background: #4caf50;
   color: #fff;
   position: relative;
-  --heartbeat-on-opacity: 0.45;
+  --heartbeat-on-opacity: 0.68;
 }
 .td__pipe-step--active .td__pipe-circle::after {
   content: "";
@@ -960,7 +956,7 @@ function showOlderActivity(): void {
   background: #4caf50;
   color: #fff;
   position: relative;
-  --heartbeat-on-opacity: 0.45;
+  --heartbeat-on-opacity: 0.68;
 }
 .td__rchip--active::after {
   content: "";

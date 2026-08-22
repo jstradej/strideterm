@@ -251,7 +251,7 @@ watch(
 .stats__dot--live {
   background: var(--color-success, #48bb78);
   box-shadow: 0 0 6px rgba(72, 187, 120, 0.5);
-  --heartbeat-on-opacity: 0.4;
+  --heartbeat-on-opacity: 0.68;
 }
 
 .stats__dot--paused {

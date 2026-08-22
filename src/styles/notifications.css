@@ -20,19 +20,12 @@
   color: var(--text);
 }
 
-/* Unread bell. The count badge carries the state statically; the shared
-   heartbeat (v-heartbeat in NotificationBell.vue) keeps it visually alive
-   while unread items remain. A discrete step to a slightly larger, brighter
-   bell for ~200 ms — no transition, so this is two style changes per beat
-   instead of a continuous shake. */
+/* The count badge carries the unread state statically; the shared heartbeat
+   adds a short finite scale pulse while unread items remain. */
 .notification-bell--has-unread {
   color: var(--text);
-  /* The scale below carries the beat, so keep the glyph at full strength. */
   --heartbeat-on-opacity: 1;
-}
-
-.notification-bell--has-unread.status-heartbeat--on {
-  transform: scale(1.16);
+  --heartbeat-on-scale: 1.16;
 }
 
 .notification-bell__badge {

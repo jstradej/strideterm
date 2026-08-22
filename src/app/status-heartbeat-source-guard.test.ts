@@ -100,4 +100,24 @@ describe("persistent status selectors carry no infinite animation", () => {
       expect(sources, `${name} should have been removed`).not.toContain(name);
     }
   });
+
+  test("the shared pulse is finite and uses compositor-friendly properties", () => {
+    const source = read("styles/base.css");
+    const body = ruleBody(source, ".status-heartbeat--on");
+    expect(body).toMatch(/animation:\s*status-heartbeat-pulse\s+1s[^;]*\s1\s*;/);
+    expect(body).not.toMatch(/\binfinite\b/);
+
+    const keyframesStart = source.indexOf("@keyframes status-heartbeat-pulse");
+    expect(keyframesStart).toBeGreaterThanOrEqual(0);
+    const keyframes = source.slice(keyframesStart, source.indexOf("@media", keyframesStart));
+    expect(keyframes).toContain("opacity:");
+    expect(keyframes).toContain("transform:");
+    expect(keyframes).not.toMatch(/box-shadow|filter|width|height|margin/);
+  });
+
+  test("the workspace status dot keeps enough room for its glyph", () => {
+    const body = ruleBody(read("styles/sidebar.css"), ".workspace-card__status-dot");
+    expect(body).toContain("width: 16px;");
+    expect(body).toContain("height: 16px;");
+  });
 });

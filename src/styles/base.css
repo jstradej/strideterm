@@ -222,23 +222,33 @@ html.app-hidden *::after {
 }
 
 /* ── Shared status heartbeat ───────────────────────────────────────
-   One scheduler (src/app/status-heartbeat.ts) toggles this class on every
-   registered "still alive" indicator — running task dots, unread bell,
-   pending checks, active pipeline step, live panels — inside a single
-   requestAnimationFrame, holds it for ~200 ms, then clears it in another
-   single frame.
+   One scheduler (src/app/status-heartbeat.ts) starts this finite pulse on all
+   registered "still alive" indicators in the same frame. The 1 s animation
+   uses only opacity and transform, then the renderer sleeps for the remainder
+   of the 1.2 s period. It is intentionally finite: an `infinite` animation would
+   bring back the steady compositor CPU floor this scheduler removed.
 
-   Deliberately no `transition` and no `animation`. Moving a persistent pulse
-   onto a compositor-friendly property removes the main-thread paint, but a
-   compositor-friendly animation is not a free animation: `infinite` still
-   asks for a frame every vsync for as long as the element is on screen, which
-   is exactly the idle CPU floor this replaces. Two discrete style changes per
-   1.5 s cost a fraction of that.
-
-   Every indicator stays unambiguous between beats — colour, badge, glyph and
-   title carry the state on their own, the heartbeat only says "still live".
-   Per-target strength is tuned with --heartbeat-on-opacity; nothing here may
-   affect layout. */
+   Colour, badge, glyph and title keep every state readable between beats.
+   Per-target strength and scale can be tuned without affecting layout. */
 .status-heartbeat--on {
-  opacity: var(--heartbeat-on-opacity, 0.5);
+  transform-origin: center;
+  animation: status-heartbeat-pulse 1s cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+@keyframes status-heartbeat-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  42% {
+    opacity: var(--heartbeat-on-opacity, 0.72);
+    transform: scale(var(--heartbeat-on-scale, 1.14));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-heartbeat--on {
+    animation: none;
+  }
 }
