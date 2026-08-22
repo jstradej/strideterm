@@ -13,7 +13,7 @@ import { createDefaultState, normalizeState, MIGRATION_WINDOW_SLOT_ID } from "./
 import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
 import { inheritShellPath } from "./backend/fix-path.js";
 import { startFreezeWatchdog } from "./backend/freeze-watchdog.js";
-import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
+import { APP_CONFIG, getRendererDevUrl, resolveRemoteAccessPort } from "../config/app-config.js";
 import { getLogger, getLogDir, setLogDir, shutdownLogger } from "./backend/logger.js";
 import { SMOKE_READY_MARKER } from "./shared/smoke-protocol.js";
 import { createPerformanceSampler } from "./performance-metrics.js";
@@ -1451,7 +1451,9 @@ async function loadBootstrapPayload(): Promise<Record<string, unknown>> {
       remoteAccess: {
         enabled: Boolean(appState.settings?.remoteAccess?.enabled),
         host: (appState.settings?.remoteAccess?.host as string | undefined) || "0.0.0.0",
-        port: (appState.settings?.remoteAccess?.port as number | undefined) || 43123,
+        // The EFFECTIVE port, so Settings shows what is bound rather than what is stored: with
+        // STRIDETERM_REMOTE_PORT set they are different numbers, and the one the user needs is this.
+        port: resolveRemoteAccessPort(appState.settings?.remoteAccess?.port as number | undefined),
         urls: [],
         tunnel: {
           status: "idle",

@@ -116,7 +116,7 @@ import {
   shouldRefreshNow,
   createIntervalGate,
 } from "./runtime-utils.js";
-import { APP_CONFIG } from "../../config/app-config.js";
+import { APP_CONFIG, resolveRemoteAccessPort } from "../../config/app-config.js";
 // @ts-ignore — version-checker.js will be migrated in a later phase
 import { createVersionChecker } from "./version-checker.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.js";
@@ -1795,7 +1795,7 @@ export async function createRuntime({
         ...(remoteInfo || {
           enabled: false,
           host: state.settings.remoteAccess.host,
-          port: state.settings.remoteAccess.port,
+          port: resolveRemoteAccessPort(state.settings.remoteAccess.port),
           urls: [],
         }),
         tunnel: tunnel.getSnapshot(),

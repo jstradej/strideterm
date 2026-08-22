@@ -61,6 +61,7 @@ import {
   wsTerminalResizeSchema,
   wsTerminalSubscribeSchema,
 } from "./ipc-schemas.js";
+import { resolveRemoteAccessPort } from "../../config/app-config.js";
 import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { remoteViewerId } from "./viewer-id.js";
@@ -1615,7 +1616,11 @@ export async function startRemoteServer({
    *  can prove that by comparing references across two live requests. */
   _debugRouteMapsIdentity?: () => { detailRoutes: unknown; slotAwareRoute: unknown };
 }> {
-  const { enabled, host, port, token } = runtime.getPayload().appState.settings.remoteAccess;
+  const { enabled, host, token } = runtime.getPayload().appState.settings.remoteAccess;
+  // Through the resolver, not straight off the settings object: `STRIDETERM_REMOTE_PORT` has to be
+  // able to move a build that already has a settings file, which is the only situation anybody sets
+  // it in (a dev build beside a production install, both wanting 43123). See resolveRemoteAccessPort.
+  const port = resolveRemoteAccessPort(runtime.getPayload().appState.settings.remoteAccess.port);
   if (!enabled) {
     runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
     return { close: async () => {} };

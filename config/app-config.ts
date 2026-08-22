@@ -11,6 +11,17 @@ function envNumber(name: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+/** Like [envNumber], but says whether the variable was SET rather than substituting a default. */
+function envOptionalNumber(name: string): number | null {
+  const raw = envString(name, "");
+  if (!raw) {
+    return null;
+  }
+
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 && value < 65536 ? value : null;
+}
+
 function envBoolean(name: string, fallback: boolean): boolean {
   const value = envString(name, "");
   if (!value) {
@@ -77,6 +88,11 @@ export const APP_CONFIG = {
     enabled: envBoolean("STRIDETERM_REMOTE_ENABLED", false),
     host: envString("STRIDETERM_REMOTE_HOST", "0.0.0.0"),
     port: envNumber("STRIDETERM_REMOTE_PORT", 43123),
+    // The same variable again, kept separately because the two answer different questions: `port`
+    // above is the default a FRESH settings file is seeded with, while this says the variable was
+    // set explicitly and must win over whatever a settings file already holds. See
+    // `resolveRemoteAccessPort` for why that distinction turned out to matter.
+    portOverride: envOptionalNumber("STRIDETERM_REMOTE_PORT"),
   },
   session: {
     scrollback: envNumber("STRIDETERM_TERM_SCROLLBACK", 3000),
@@ -163,4 +179,29 @@ export const APP_CONFIG = {
 
 export function getRendererDevUrl(): string {
   return `http://${APP_CONFIG.renderer.devHost}:${APP_CONFIG.renderer.devPort}`;
+}
+
+/**
+ * The port the remote server should actually bind, given whatever the settings file holds.
+ *
+ * WHY THIS IS NOT JUST `settings.remoteAccess.port`. `STRIDETERM_REMOTE_PORT` was read in exactly
+ * one place: as the default for a settings file that does not exist yet. So it worked on a first
+ * run and silently did nothing ever after — while `dev.ps1` sets it to 43124 precisely so a dev
+ * build can run beside a production install, and the tunnel's own failure message tells the user to
+ * "change STRIDETERM_REMOTE_PORT, then restart". Both promised an override that was not there.
+ *
+ * Observed for real: a production install held 0.0.0.0:43123, the dev build's settings file (its own
+ * data dir, from an earlier run) also said 43123, and the dev build's remote server bound nothing at
+ * all — the paired phone got `desktopRefused` with `EADDRINUSE: address already in use
+ * 0.0.0.0:43123` and no way to act on it, because the documented lever was inert.
+ *
+ * The variable now wins. It is deliberately NOT written back into the settings file: an override
+ * that persists is one a user cannot undo by unsetting it, and this one exists to be temporary.
+ */
+export function resolveRemoteAccessPort(saved?: number | null): number {
+  if (APP_CONFIG.remoteAccess.portOverride !== null) {
+    return APP_CONFIG.remoteAccess.portOverride;
+  }
+
+  return typeof saved === "number" && Number.isFinite(saved) && saved > 0 ? saved : APP_CONFIG.remoteAccess.port;
 }

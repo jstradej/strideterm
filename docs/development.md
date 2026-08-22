@@ -47,7 +47,7 @@ What it does:
 - Starts four watchers in parallel — Vite dev server, backend `tsc --watch`, preload `tsc --watch`, and a `vite build --watch` for `dist/` so the bundle served to remote/mobile clients stays fresh — and launches Electron once `dist-electron/electron/main.js` is on disk.
 - **Auto-restarts Electron when the backend recompiles** (debounced) so new IPC handlers, runtime methods, and manager changes take effect without a manual restart. Disable with `-NoAutoRestart`.
 - Restarts Vite if it crashes, and cleans up everything on `Ctrl+C`.
-- Defaults the remote-access port to `43124` to avoid colliding with a running production instance on `43123`, and sets `STRIDETERM_LOG_LEVEL=trace` for verbose logs.
+- Sets the remote-access port to `43124` to avoid colliding with a running production instance on `43123`, and sets `STRIDETERM_LOG_LEVEL=trace` for verbose logs. `STRIDETERM_REMOTE_PORT` overrides whatever the settings file holds (it used to seed only a _new_ settings file, so on a dev build that had already run it silently did nothing and both instances fought over 43123).
 
 Requires an interactive PowerShell session.
 
