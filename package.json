@@ -182,7 +182,7 @@
     "@vue/eslint-config-typescript": "14.9.0",
     "@vue/test-utils": "^2.4",
     "concurrently": "^10.0.4",
-    "electron": "^43.4.0",
+    "electron": "^43.4.1",
     "electron-builder": "^26.15.3",
     "eslint": "^10.9.0",
     "eslint-config-prettier": "^10.1.8",
