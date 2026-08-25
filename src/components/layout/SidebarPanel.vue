@@ -50,6 +50,9 @@
       @task-toggle="handleTaskToggle(ws)"
       @task-stop="handleTaskStop(ws)"
     />
+    <p v-if="searchQuery && treeCards.length === 0" class="workspace-list__no-match">
+      No workspace matches “{{ store.workspaceSearchQuery.trim() }}”.
+    </p>
     <button
       type="button"
       class="workspace-new-tile"
@@ -59,7 +62,7 @@
       <span class="workspace-new-tile__plus" aria-hidden="true">+</span>
       <span class="workspace-new-tile__label">add new workspace</span>
     </button>
-    <div v-if="suggestions.length" class="workspace-suggestions">
+    <div v-if="suggestions.length && !searchQuery" class="workspace-suggestions">
       <p class="eyebrow workspace-suggestions__title">Available plugins</p>
       <button
         v-for="plugin in suggestions"
@@ -329,7 +332,7 @@ watch(
   { immediate: true },
 );
 
-const displayedCards = computed(() => {
+const starFilteredCards = computed(() => {
   if (!store.starFilterActive) return workspaceCards.value;
   const allWs = store.filteredWorkspaces;
   // Build parent→children and child→parent maps
@@ -369,6 +372,33 @@ const displayedCards = computed(() => {
     addDescendants(ws.id);
   }
   return workspaceCards.value.filter((card) => visible.has(card.id));
+});
+
+// Free-text name filter (sidebar profile row). Matches the query as a
+// case-insensitive substring of the workspace name — i.e. *text*. Ancestors of
+// a match are kept so an indented child never floats without its parent.
+const searchQuery = computed(() => store.workspaceSearchQuery.trim().toLowerCase());
+
+const displayedCards = computed(() => {
+  const query = searchQuery.value;
+  if (!query) return starFilteredCards.value;
+  const allWs = store.filteredWorkspaces;
+  const parentOf = new Map<string, string>();
+  for (const ws of allWs) {
+    const pid = resolveParentId(ws, allWs);
+    if (pid) parentOf.set(ws.id, pid);
+  }
+  const visible = new Set<string>();
+  for (const ws of allWs) {
+    if (!ws.name.toLowerCase().includes(query)) continue;
+    visible.add(ws.id);
+    let pid = parentOf.get(ws.id);
+    while (pid && !visible.has(pid)) {
+      visible.add(pid);
+      pid = parentOf.get(pid);
+    }
+  }
+  return starFilteredCards.value.filter((card) => visible.has(card.id));
 });
 
 const suggestions = computed(() => {

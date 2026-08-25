@@ -88,7 +88,7 @@ test.describe("Multi-workspace state", () => {
 
   test("sidebar shows active profile name", async ({ page }) => {
     await openApp(page, mock);
-    await expect(page.locator("button.profile-bar[title^='Open the Profiles dialog']")).toBeVisible();
+    await expect(page.locator("button.profile-bar")).toBeVisible();
     await expect(page.getByText("Default")).toBeVisible();
     assertNoErrors(page);
   });

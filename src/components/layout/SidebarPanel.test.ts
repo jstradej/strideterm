@@ -138,6 +138,71 @@ describe("SidebarPanel — ghost rendering for grid workspaces", () => {
   });
 });
 
+describe("SidebarPanel — workspace name filter", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+  });
+
+  it("keeps only workspaces whose name contains the query (case-insensitive substring)", () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    store.workspaceSearchQuery = "ET";
+
+    const wrapper = mount(SidebarPanel);
+    const cards = wrapper.findAll("[data-workspace-id]");
+    // "Beta" matches mid-name and case-insensitively; Alpha / Gamma / Delta do not.
+    expect(cards.map((card) => card.attributes("data-workspace-id"))).toEqual(["ws-B"]);
+  });
+
+  it("keeps the parent visible when only a child matches", () => {
+    const store = useAppStore();
+    store.payload = makePayload({
+      workspaces: [
+        ...BASE_WORKSPACES,
+        {
+          id: "ws-E",
+          name: "Mobile task",
+          cwd: "/e",
+          panels: [],
+          icon: "E",
+          color: "#fff",
+          profileId: "default",
+          task: { parentWorkspaceId: "ws-A" },
+        },
+      ],
+    });
+    store.workspaceSearchQuery = "mobile";
+
+    const wrapper = mount(SidebarPanel);
+    const cards = wrapper.findAll("[data-workspace-id]");
+    expect(cards.map((card) => card.attributes("data-workspace-id"))).toEqual(["ws-A", "ws-E"]);
+  });
+
+  it("shows a no-match hint when nothing matches", () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    store.workspaceSearchQuery = "zzz";
+
+    const wrapper = mount(SidebarPanel);
+    expect(wrapper.findAll("[data-workspace-id]").length).toBe(0);
+    expect(wrapper.find(".workspace-list__no-match").exists()).toBe(true);
+  });
+
+  it("renders every workspace again once the query is cleared", async () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    store.workspaceSearchQuery = "alpha";
+
+    const wrapper = mount(SidebarPanel);
+    expect(wrapper.findAll("[data-workspace-id]").length).toBe(1);
+
+    store.workspaceSearchQuery = "";
+    await nextTick();
+    expect(wrapper.findAll("[data-workspace-id]").length).toBe(4);
+  });
+});
+
 describe("SidebarPanel — multi-window active state", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

@@ -4,7 +4,7 @@
       type="button"
       class="profile-bar"
       :style="`--profile-color:${profile.color || '#ffa424'}`"
-      title="Open the Profiles dialog to switch the active profile, rename / colour profiles, or create a new one. The sidebar workspace list is filtered to the active profile."
+      :title="`${profile.name} — click to open the Profiles dialog: switch the active profile, rename / colour profiles, or create a new one. The sidebar workspace list is filtered to the active profile.`"
       @click="$emit('click')"
     >
       {{ profile.name }}
@@ -16,14 +16,34 @@
         >{{ otherProfileCount }}</span
       >
     </button>
-    <button
-      type="button"
-      class="profile-bar__menu"
-      title="Open the Profiles dialog (same as clicking the active profile name) — switch profiles, create new ones, edit colour or workspaces."
-      @click="$emit('click')"
-    >
-      ☰
-    </button>
+    <span class="profile-bar__sep" aria-hidden="true"></span>
+    <div class="profile-bar__search">
+      <svg class="profile-bar__search-icon" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <line x1="10.4" y1="10.4" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+      </svg>
+      <input
+        v-model="query"
+        type="text"
+        class="profile-bar__search-input"
+        placeholder="Filter…"
+        spellcheck="false"
+        aria-label="Filter workspaces by name"
+        title="Filter the workspace list by name — matches anywhere in the name (case-insensitive). Esc clears."
+        data-role="workspace-search"
+        @keydown.esc.prevent="query = ''"
+      />
+      <button
+        v-if="query"
+        type="button"
+        class="profile-bar__search-clear"
+        title="Clear the workspace filter"
+        aria-label="Clear workspace filter"
+        @click="query = ''"
+      >
+        ✕
+      </button>
+    </div>
   </div>
 </template>
 
@@ -35,6 +55,12 @@ const store = useAppStore();
 const profile = computed(() => store.activeProfile);
 const otherProfileCount = computed(() => store.otherProfileAttentionCount);
 const isRemote = computed(() => store.getApi()?.isRemote ?? false);
+const query = computed({
+  get: () => store.workspaceSearchQuery,
+  set: (value: string) => {
+    store.workspaceSearchQuery = value;
+  },
+});
 
 defineEmits<{
   (e: "click"): void;

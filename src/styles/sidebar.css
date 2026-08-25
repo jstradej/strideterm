@@ -26,8 +26,12 @@
 }
 
 .profile-bar {
-  flex: 1;
+  /* Half the row — the other half is the workspace name filter. */
+  flex: 1 1 50%;
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -43,28 +47,73 @@
   font-family: inherit;
 }
 
-.profile-bar__menu {
+/* Divider between the profile pill and the workspace filter. */
+.profile-bar__sep {
   flex-shrink: 0;
-  width: 24px;
-  height: 24px;
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+}
+
+.profile-bar__search {
+  position: relative;
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.profile-bar__search-icon {
+  position: absolute;
+  left: 5px;
+  width: 11px;
+  height: 11px;
+  color: var(--muted);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.profile-bar__search-input {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 20px 3px 20px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(var(--tint), 0.03);
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text);
+}
+
+.profile-bar__search-input::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.profile-bar__search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.profile-bar__search-clear {
+  position: absolute;
+  right: 2px;
+  width: 16px;
+  height: 16px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 3px;
   background: transparent;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 10px;
   line-height: 1;
-  cursor: pointer;
   padding: 0;
+  cursor: pointer;
   font-family: inherit;
-  transition:
-    background 0.12s,
-    color 0.12s;
 }
 
-.profile-bar__menu:hover {
-  background: rgba(var(--tint), 0.07);
+.profile-bar__search-clear:hover {
   color: var(--text);
 }
 
@@ -1591,6 +1640,13 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   opacity: 1;
 }
 
+.workspace-list__no-match {
+  margin: 8px 4px;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .frame--sidebar-collapsed .sidebar {
   padding: 10px 8px;
 }
@@ -1610,6 +1666,13 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   grid-template-columns: repeat(2, 28px);
   justify-content: center;
   gap: 4px;
+}
+
+/* No room for the filter box in the 84px icon strip — the profile pill and
+   the ☰ button already fill the row. */
+.frame--sidebar-collapsed .profile-bar__search,
+.frame--sidebar-collapsed .profile-bar__sep {
+  display: none;
 }
 
 .frame--sidebar-collapsed .workspace-list {

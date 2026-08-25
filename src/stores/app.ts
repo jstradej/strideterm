@@ -163,6 +163,9 @@ export const useAppStore = defineStore("app", () => {
   // Set when the picker is opened, read by pickLayout.
   const layoutPickerMode = ref<"grid" | "split" | "auto">("auto");
   const starFilterActive = ref(false);
+  // Free-text filter for the sidebar workspace list — matched as a
+  // case-insensitive substring against the workspace name.
+  const workspaceSearchQuery = ref("");
 
   // --- Task recovery ---
   const recoveryCandidates = ref<RecoveryCandidate[]>([]);
@@ -1679,6 +1682,7 @@ export const useAppStore = defineStore("app", () => {
     layoutPickerAnchor,
     layoutPickerMode,
     starFilterActive,
+    workspaceSearchQuery,
     pendingWorkspaceActivationId,
     pendingViewActivationId,
     suppressBroadcast,
