@@ -796,6 +796,9 @@ export const taskCompanionCreateSchema = z.object({
   companionCommand: z.string().max(500).optional(),
   focus: z.string().max(5000).optional().default(""),
   maxRounds: z.number().int().min(1).max(100).optional(),
+  // Skip the "Brief ready" confirmation and start the baseline evaluation as
+  // soon as the capture validates. Absent means the manual gate is kept.
+  autoStartAfterCapture: z.boolean().optional(),
 });
 export type TaskCompanionCreate = z.infer<typeof taskCompanionCreateSchema>;
 

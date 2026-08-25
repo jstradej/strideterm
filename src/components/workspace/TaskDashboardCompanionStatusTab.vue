@@ -436,7 +436,9 @@ const now = computed<NowPanel>(() => {
         actorLabel: "Primary",
         what: "The Primary conversation is writing CONTEXT.md and HANDOFF.md from its own context.",
         why: `${role} never reads the conversation itself — it works from those two files, so they have to exist before any review can start. Nothing in the project is touched during this step.`,
-        next: "Once both files land you can check the brief and start the loop.",
+        next: props.taskState?.autoStartAfterCapture
+          ? `Once both files land, ${role} starts its baseline review on its own — nothing left for you to confirm.`
+          : "Once both files land you can check the brief and start the loop.",
         toneClass: "",
       };
     case "brief-ready":

@@ -3361,6 +3361,7 @@ export class AgentTaskRunner {
     companionCommand,
     focus,
     maxRounds,
+    autoStartAfterCapture,
     callerProfileId = "",
   }: {
     state: Partial<Pick<AppState, "workspaces" | "windowSlots">>;
@@ -3375,6 +3376,8 @@ export class AgentTaskRunner {
     companionCommand?: string;
     focus?: string;
     maxRounds?: number;
+    /** Skip the "Brief ready" gate — see TaskState.autoStartAfterCapture. */
+    autoStartAfterCapture?: boolean;
     callerProfileId?: string;
   }): TaskWorkspaceState {
     const sourceWorkspace = state.workspaces?.find((w) => w.id === workerWorkspaceId);
@@ -3492,6 +3495,7 @@ export class AgentTaskRunner {
         workerWorkspaceId,
         companionRole,
         companionFocus: focus?.trim() || "",
+        autoStartAfterCapture: autoStartAfterCapture === true,
       } as RuntimeTaskState,
     };
   }
@@ -3699,13 +3703,34 @@ export class AgentTaskRunner {
 
     if (validation.ok) {
       this.#setTaskState(task, "brief-ready");
-      log.info("attached task: capture complete", { workspaceId: workspace.id });
+      log.info("attached task: capture complete", {
+        workspaceId: workspace.id,
+        autoStart: task.autoStartAfterCapture === true,
+      });
       void this.#logTaskEvent(
         workspace,
         "context-captured",
-        "CONTEXT.md and HANDOFF.md captured — brief ready for review.",
+        task.autoStartAfterCapture
+          ? "CONTEXT.md and HANDOFF.md captured — starting the loop without waiting for confirmation."
+          : "CONTEXT.md and HANDOFF.md captured — brief ready for review.",
       );
       this.#broadcastState!();
+      if (task.autoStartAfterCapture) {
+        // Deliberately the very same brief-ready branch the Start button
+        // drives: approval timestamp, round bookkeeping and the
+        // Primary-availability refusal all stay in one place. brief-ready is
+        // set BEFORE this await, so the several idle signals that arrive per
+        // Primary turn (hook, notification, watcher backstop) can't each
+        // launch a baseline — they all early-return on the state check above.
+        // A refusal here leaves the task sitting in brief-ready, which is
+        // exactly the manual gate, so nothing is ever stranded.
+        const started = await this.#startAttachedTask(workspace);
+        if (!started) {
+          log.warn("attached task: auto-start after capture did not run — brief-ready stands", {
+            workspaceId: workspace.id,
+          });
+        }
+      }
       return;
     }
 

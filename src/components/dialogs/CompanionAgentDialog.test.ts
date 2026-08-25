@@ -92,6 +92,22 @@ describe("CompanionAgentDialog", () => {
     // unattended out of the box — the checkbox is there to turn it off.
     expect(payload.companionProvider.skipPermissions).toBe(true);
     expect(payload.primaryProvider).toEqual({ providerId: "claude", model: "sonnet" });
+    // Default ON: the capture step is slow, so stopping for a second
+    // confirmation is what surprises people.
+    expect(payload.autoStartAfterCapture).toBe(true);
+  });
+
+  test("unticking auto-start asks for the Brief ready gate and relabels the submit button", async () => {
+    setSourcePayload("claude");
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const wrapper = mountDialog("ws-source:panel-source", { onSubmit });
+    expect(wrapper.find('button[type="submit"]').text()).toBe("Create & start loop");
+
+    await wrapper.find(".companion-dialog__autostart input").setValue(false);
+    expect(wrapper.find('button[type="submit"]').text()).toBe("Create & capture context");
+
+    await wrapper.find("form").trigger("submit");
+    expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ autoStartAfterCapture: false }));
   });
 
   test("a backend rejection keeps the dialog open and shows the inline error banner", async () => {

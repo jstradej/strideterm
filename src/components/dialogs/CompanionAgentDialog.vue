@@ -75,6 +75,17 @@
         </label>
       </section>
 
+      <label class="companion-dialog__autostart">
+        <input v-model="autoStartAfterCapture" type="checkbox" />
+        <span
+          >Start the loop as soon as the brief is ready
+          <small class="companion-dialog__hint"
+            >The capture takes a while — with this on, the {{ companionRoleLabel }} starts evaluating the moment
+            CONTEXT.md/HANDOFF.md are written. Uncheck it to review or edit the captured brief first.</small
+          ></span
+        >
+      </label>
+
       <details class="companion-dialog__advanced">
         <summary>Advanced</summary>
         <label class="companion-dialog__max-rounds">
@@ -93,7 +104,7 @@
           Cancel
         </button>
         <button type="submit" class="button" :disabled="!canSubmit || submitting">
-          {{ submitting ? "Creating…" : "Create & capture context" }}
+          {{ submitting ? "Creating…" : autoStartAfterCapture ? "Create & start loop" : "Create & capture context" }}
         </button>
       </footer>
     </form>
@@ -151,7 +162,11 @@ const focus = ref("");
 // Plan §3.2: Planner may only be *recommended* (a badge), never silently
 // pre-selected — the default stays Reviewer regardless of this signal.
 const plannerRecommended = computed(() => /\b(plan|design)\b/i.test(focus.value));
+const companionRoleLabel = computed(() => ROLES.find((r) => r.id === selectedRole.value)?.label || "companion");
 
+// Default ON: the capture step is slow, so stopping at "Brief ready" for a
+// confirmation is what surprises people. Off keeps the review/edit gate.
+const autoStartAfterCapture = ref(true);
 const maxRounds = ref(10);
 const submitting = ref(false);
 const errorMessage = ref("");
@@ -280,6 +295,7 @@ async function handleSubmit() {
             companionCommand: string | undefined;
             focus: string;
             maxRounds: number;
+            autoStartAfterCapture: boolean;
           }) => Promise<void>)
         | undefined
     )?.({
@@ -290,6 +306,7 @@ async function handleSubmit() {
       companionCommand: companionCommandOverride.value ? companionCommand.value.trim() : undefined,
       focus: focus.value.trim(),
       maxRounds: maxRounds.value,
+      autoStartAfterCapture: autoStartAfterCapture.value,
     });
   } catch (err) {
     errorMessage.value = extractErrorMessage(err);
@@ -396,6 +413,18 @@ function extractErrorMessage(err: unknown): string {
   font-weight: 600;
   opacity: 0.8;
   margin-bottom: 8px;
+}
+.companion-dialog__autostart {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.companion-dialog__autostart input {
+  margin-top: 2px;
+  flex: 0 0 auto;
 }
 .companion-dialog__max-rounds {
   display: flex;

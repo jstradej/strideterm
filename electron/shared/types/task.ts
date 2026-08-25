@@ -188,9 +188,15 @@ export interface TaskState {
    * re-accept the previous attempt's capture files (which nothing deletes) as
    * if the Primary had just written them. */
   captureStartedAt?: string;
-  /** Attached only: ISO timestamp set when the user confirms the captured
-   * brief and starts the baseline Companion evaluation (Brief ready -> Start). */
+  /** Attached only: ISO timestamp set when the captured brief is approved and
+   * the baseline Companion evaluation starts — by the user pressing Start in
+   * "Brief ready", or by the runner itself when autoStartAfterCapture is set. */
   contextApprovedAt?: string;
+  /** Attached only: skip the "Brief ready" confirmation and run the baseline
+   * evaluation as soon as CONTEXT.md/HANDOFF.md validate. Chosen in the create
+   * dialog and snapshotted onto the task, so changing the default later never
+   * changes how an already-running loop behaves. */
+  autoStartAfterCapture?: boolean;
   /** Attached only: ISO timestamp of the last time companion feedback (or the
    * baseline "continue") was injected into the Primary session. Used to
    * decide whether a VERIFICATION.md on disk is fresh (written after this

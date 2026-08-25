@@ -135,6 +135,7 @@ async function setupAttached(overrides: any = {}) {
     companionCommand: overrides.companionCommand,
     focus: overrides.focus,
     maxRounds: overrides.maxRounds || 5,
+    autoStartAfterCapture: overrides.autoStartAfterCapture,
   });
   const deps = createMockDeps([source, companionWorkspace]);
   runner.init(deps);
@@ -446,6 +447,66 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
         const sourceSessionId = `${source.id}:${source.panels[0].id}`;
         runner.onAgentIdle(sourceSessionId, "test");
         await waitFor(() => companionWorkspace.task.state === "brief-ready");
+      } finally {
+        await cleanup(tmp);
+      }
+    });
+
+    test("without autoStartAfterCapture the capture stops at brief-ready with nothing approved", async () => {
+      const { tmp, source, runner, companionWorkspace } = await setupAttached();
+      try {
+        await runner.startTask(companionWorkspace.id);
+        const dir = taskDir(tmp, companionWorkspace.task.taskId);
+        await fs.writeFile(path.join(dir, CONTEXT_FILE), validContext, "utf8");
+        await fs.writeFile(path.join(dir, HANDOFF_FILE), validHandoff, "utf8");
+
+        runner.onAgentIdle(`${source.id}:${source.panels[0].id}`, "test");
+        await waitFor(() => companionWorkspace.task.state === "brief-ready");
+        expect(companionWorkspace.task.contextApprovedAt).toBeUndefined();
+        expect(companionWorkspace.task.currentRound).toBe(0);
+      } finally {
+        await cleanup(tmp);
+      }
+    });
+
+    test("autoStartAfterCapture runs the round-1 baseline on the capture idle, with no Start press", async () => {
+      const { tmp, source, deps, runner, companionWorkspace } = await setupAttached({ autoStartAfterCapture: true });
+      try {
+        await runner.startTask(companionWorkspace.id);
+        const dir = taskDir(tmp, companionWorkspace.task.taskId);
+        await fs.writeFile(path.join(dir, CONTEXT_FILE), validContext, "utf8");
+        await fs.writeFile(path.join(dir, HANDOFF_FILE), validHandoff, "utf8");
+
+        runner.onAgentIdle(`${source.id}:${source.panels[0].id}`, "test");
+        await waitFor(() => companionWorkspace.task.state === "judge-evaluating");
+        expect(companionWorkspace.task.contextApprovedAt).toBeTruthy();
+        expect(companionWorkspace.task.currentRound).toBe(1);
+        expect(companionWorkspace.task.companionPhase).toBe("baseline");
+
+        const judgeSessionId = `${companionWorkspace.id}:${companionWorkspace.task.judgePanelId}`;
+        expect(deps.written.some((w: { sessionId: string }) => w.sessionId === judgeSessionId)).toBe(true);
+      } finally {
+        await cleanup(tmp);
+      }
+    });
+
+    // The auto-start goes through the same refusal gate the Start button does,
+    // so a Primary that disappeared mid-capture must leave the task in the
+    // ordinary manual gate rather than stranded in a working state.
+    test("autoStartAfterCapture falls back to brief-ready when the Primary is gone", async () => {
+      const { tmp, source, deps, runner, companionWorkspace } = await setupAttached({ autoStartAfterCapture: true });
+      try {
+        await runner.startTask(companionWorkspace.id);
+        const dir = taskDir(tmp, companionWorkspace.task.taskId);
+        await fs.writeFile(path.join(dir, CONTEXT_FILE), validContext, "utf8");
+        await fs.writeFile(path.join(dir, HANDOFF_FILE), validHandoff, "utf8");
+        runner.markAttachedSourceMissing(companionWorkspace.id);
+
+        const writesBefore = deps.written.length;
+        runner.onAgentIdle(`${source.id}:${source.panels[0].id}`, "test");
+        await waitFor(() => companionWorkspace.task.state === "brief-ready");
+        expect(companionWorkspace.task.contextApprovedAt).toBeUndefined();
+        expect(deps.written.length).toBe(writesBefore);
       } finally {
         await cleanup(tmp);
       }

@@ -460,6 +460,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         companionCommand: config.companionCommand,
         focus: config.focus,
         maxRounds: config.maxRounds,
+        autoStartAfterCapture: config.autoStartAfterCapture,
         callerProfileId,
       });
 

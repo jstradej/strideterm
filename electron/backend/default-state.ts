@@ -424,6 +424,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
           companionRole: workspace.task.companionRole || undefined,
           companionFocus: workspace.task.companionFocus || "",
           contextApprovedAt: workspace.task.contextApprovedAt || undefined,
+          autoStartAfterCapture: workspace.task.autoStartAfterCapture || undefined,
         }
       : null,
   };
