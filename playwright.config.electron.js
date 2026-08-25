@@ -15,8 +15,11 @@ import { defineConfig } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./test/electron-e2e",
-  // Electron startup + state hydrate is heavier than a browser context.
-  timeout: 60_000,
+  // Electron startup + state hydrate is heavier than a browser context, and a
+  // spec may launch the app twice (restart-restore). Must stay above the
+  // 60 s first-window wait in helpers.ts, otherwise a slow launch trips the
+  // test/hook timeout instead of the wait it was meant to cover.
+  timeout: 150_000,
   // Run files sequentially — each spec spawns its own Electron process and
   // we don't want N copies fighting over file handles or windows.
   fullyParallel: false,

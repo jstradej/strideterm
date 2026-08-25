@@ -108,7 +108,9 @@ export async function launchApp(fixture: FixtureName = "empty", options: LaunchO
     timeout: 60_000,
   });
 
-  const page = await app.firstWindow({ timeout: 30_000 });
+  // 30 s was not enough on a loaded windows-latest runner — the app spawned
+  // fine but the first window attached late, flaking the restart specs.
+  const page = await app.firstWindow({ timeout: 60_000 });
   const errors: string[] = [];
 
   page.on("console", (msg) => {
@@ -157,7 +159,7 @@ export async function relaunchApp(dataDir: string, options: LaunchOptions = {}):
     timeout: 60_000,
   });
 
-  const page = await app.firstWindow({ timeout: 30_000 });
+  const page = await app.firstWindow({ timeout: 60_000 });
   const errors: string[] = [];
 
   page.on("console", (msg) => {
