@@ -2571,6 +2571,100 @@ describe("runtime integration", () => {
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
   });
 
+  test("saveWorkspace spawns default-startup panels in the CALLER's workspace, not the global one", async () => {
+    // A remote/mobile viewer (or a second desktop window) sits on its own
+    // workspace while the global activeWorkspaceId points at whatever the
+    // primary window has open. Adding a tab there used to call
+    // ensureVisibleSession() with no argument, so the PTY was spawned in the
+    // OTHER workspace and the new pane stayed black until the user switched
+    // tabs (which routes through activateSession -> ensureSessionSafe).
+    const rootA = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-save-a-"));
+    const rootB = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-save-b-"));
+    tempPaths.push(rootA, rootB);
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-a",
+        projects: [
+          {
+            id: "ws-a",
+            name: "Desktop workspace",
+            kind: "terminal",
+            cwd: rootA,
+            profileId: "default",
+            activePanelId: "a1",
+            panels: [{ id: "a1", title: "A1", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b",
+            name: "Viewer workspace",
+            kind: "terminal",
+            cwd: rootB,
+            profileId: "default",
+            activePanelId: "b1",
+            panels: [{ id: "b1", title: "B1", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-b",
+            profileId: "default",
+            activeWorkspaceId: "ws-b",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const wsB = fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "ws-b")!;
+    await fixture.runtime.saveWorkspace(
+      {
+        ...wsB,
+        activePanelId: "b2",
+        panels: [...wsB.panels, { id: "b2", title: "B2", command: "", shell: true, startup: "default" }],
+      },
+      "win-b",
+    );
+
+    // The whole point: the newly added panel has a live session.
+    expect(fixture.sessionManager.sessions.has("ws-b:b2")).toBe(true);
+  });
+
+  test("saveWorkspace falls back to the global workspace when no viewer is given", async () => {
+    // Legacy / in-process callers pass no windowId; they must keep ensuring the
+    // globally-active workspace exactly as before.
+    const rootA = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-save-legacy-"));
+    tempPaths.push(rootA);
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-a",
+        projects: [
+          {
+            id: "ws-a",
+            name: "Only workspace",
+            kind: "terminal",
+            cwd: rootA,
+            profileId: "default",
+            activePanelId: "a1",
+            panels: [{ id: "a1", title: "A1", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const wsA = fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "ws-a")!;
+    await fixture.runtime.saveWorkspace({
+      ...wsA,
+      activePanelId: "a2",
+      panels: [...wsA.panels, { id: "a2", title: "A2", command: "", shell: true, startup: "default" }],
+    });
+
+    expect(fixture.sessionManager.sessions.has("ws-a:a2")).toBe(true);
+  });
+
   test("createWorktree mirrors active workspace into the caller's window slot", async () => {
     // Guards the slot-mirroring fix for the UI-flicker bug: without this,
     // creating a worktree only writes global activeWorkspaceId, the

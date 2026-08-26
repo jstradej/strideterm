@@ -5381,7 +5381,15 @@ export async function createRuntime({
       sessions.syncWithState(getState());
       syncSessionSignalsWithState();
       await refreshGit(workspace.id || null);
-      ensureVisibleSession();
+      // Spawn default-startup panels for the workspace the CALLER is looking at,
+      // not the global `activeWorkspaceId`. A remote/mobile viewer sits on its
+      // own workspace; adding a tab there used to ensure sessions in whatever
+      // the desktop had open, so the new panel never got a PTY and the pane
+      // stayed black until the user switched tabs (which routes through
+      // activateSession → ensureSessionSafe). Falls back to the global id when
+      // no viewer is supplied (in-process/legacy callers), so desktop behaviour
+      // is unchanged.
+      ensureVisibleSession(getViewerActiveWorkspaceId(windowId) || undefined);
       broadcastState();
       syncTreeDirWatchers(); // 6b: keep watcher set consistent after workspace add/edit
       refreshAzure().catch((err: unknown) => {
