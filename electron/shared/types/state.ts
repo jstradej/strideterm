@@ -194,6 +194,13 @@ export interface Profile {
   lastActiveWorkspaceId?: string;
   /** Last session the user was viewing in this profile — restored on profile switch. */
   lastActiveSessionId?: string;
+  /**
+   * Which sidebar workspace list layout this profile uses: the manually
+   * ordered/hierarchical `tree` (default), or `recent` — a time-grouped view
+   * of recently-opened workspaces. Purely a per-profile UI preference, not a
+   * security boundary; normalized to "tree" when missing/invalid.
+   */
+  sidebarWorkspaceViewMode?: "tree" | "recent";
 }
 
 // ------- Window slot (per BrowserWindow persistent state) -------
@@ -357,6 +364,15 @@ export interface WorkspaceState {
   quickfix: QuickfixInfo | null;
   starred: boolean;
   task: TaskState | null;
+  /**
+   * ISO timestamp of the last time the user actually navigated to this
+   * workspace (or a session inside it) — set only by activation handlers,
+   * never by background signals (PTY output, git/PR polling, attention
+   * events, task-runner progress). Drives the sidebar's "recent" view;
+   * absent for a workspace never explicitly activated since this field was
+   * introduced.
+   */
+  lastUsedAt?: string;
 }
 
 // ------- SSH app state -------

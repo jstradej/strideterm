@@ -572,6 +572,7 @@ export const profileSchema = z
   .object({
     id: z.string().optional(),
     name: z.string(),
+    sidebarWorkspaceViewMode: z.enum(["tree", "recent"]).optional(),
   })
   .passthrough();
 export type ProfilePayload = z.infer<typeof profileSchema>;

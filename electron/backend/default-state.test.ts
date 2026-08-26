@@ -911,6 +911,56 @@ describe("default state", () => {
       expect(state.settings.clipboardImagePasteEnabled).toBe(true);
     });
   });
+
+  describe("workspace lastUsedAt", () => {
+    test("normalizeWorkspace preserves a valid ISO timestamp", () => {
+      const workspace = normalizeWorkspace({ id: "w1", lastUsedAt: "2024-01-15T12:00:00.000Z" });
+      expect(workspace.lastUsedAt).toBe("2024-01-15T12:00:00.000Z");
+    });
+
+    test("normalizeWorkspace drops an invalid lastUsedAt instead of fabricating history", () => {
+      const workspace = normalizeWorkspace({ id: "w1", lastUsedAt: "not-a-date" });
+      expect(workspace.lastUsedAt).toBeUndefined();
+    });
+
+    test("normalizeWorkspace leaves lastUsedAt absent when never set (no backfill)", () => {
+      const workspace = normalizeWorkspace({ id: "w1" });
+      expect(workspace.lastUsedAt).toBeUndefined();
+    });
+
+    test("normalizeWorkspace drops a non-string lastUsedAt", () => {
+      const workspace = normalizeWorkspace({ id: "w1", lastUsedAt: 12345 });
+      expect(workspace.lastUsedAt).toBeUndefined();
+    });
+  });
+
+  describe("profile sidebarWorkspaceViewMode", () => {
+    test("createDefaultState's seed profile defaults to tree", () => {
+      const state = createDefaultState();
+      expect(state.profiles[0].sidebarWorkspaceViewMode).toBe("tree");
+    });
+
+    test("normalizeState backfills a missing mode to tree", () => {
+      const state = normalizeState({ profiles: [{ id: "p1", name: "P1" }] });
+      expect(state.profiles.find((p) => p.id === "p1")?.sidebarWorkspaceViewMode).toBe("tree");
+    });
+
+    test("normalizeState preserves an explicit recent", () => {
+      const state = normalizeState({ profiles: [{ id: "p1", name: "P1", sidebarWorkspaceViewMode: "recent" }] });
+      expect(state.profiles.find((p) => p.id === "p1")?.sidebarWorkspaceViewMode).toBe("recent");
+    });
+
+    test("normalizeState falls back to tree for an invalid value", () => {
+      const state = normalizeState({ profiles: [{ id: "p1", name: "P1", sidebarWorkspaceViewMode: "bogus" }] });
+      expect(state.profiles.find((p) => p.id === "p1")?.sidebarWorkspaceViewMode).toBe("tree");
+    });
+
+    test("the mode survives a second normalizeState pass unchanged", () => {
+      const first = normalizeState({ profiles: [{ id: "p1", name: "P1", sidebarWorkspaceViewMode: "recent" }] });
+      const second = normalizeState(first);
+      expect(second.profiles.find((p) => p.id === "p1")?.sidebarWorkspaceViewMode).toBe("recent");
+    });
+  });
 });
 
 describe("normalizeWorkspaceGrid", () => {

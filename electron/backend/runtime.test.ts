@@ -5645,7 +5645,15 @@ describe("runtime integration", () => {
 
     payload = await fixture.runtime.deleteProfile("focus");
     expect(payload.appState.profiles).toEqual([
-      { id: "default", name: "Default", color: "#ffa424", workspaceIds: [], projectIds: [], workspaceGrid: null },
+      {
+        id: "default",
+        name: "Default",
+        color: "#ffa424",
+        workspaceIds: [],
+        projectIds: [],
+        workspaceGrid: null,
+        sidebarWorkspaceViewMode: "tree",
+      },
     ]);
   });
 
@@ -9612,5 +9620,120 @@ describe("low-severity silent-catch batch — each now logs on failure", () => {
     } finally {
       logCallCapture.current = null;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// workspace.lastUsedAt — stamped only by genuine user activation
+// ---------------------------------------------------------------------------
+
+describe("workspace lastUsedAt — activation stamping", () => {
+  function recentIso(iso: string | undefined): boolean {
+    if (!iso) return false;
+    const age = Date.now() - Date.parse(iso);
+    return Number.isFinite(age) && age >= 0 && age < 10_000;
+  }
+
+  test("desktop activateWorkspaceInWindow stamps lastUsedAt on the activated workspace", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    await fixture.runtime.activateWorkspaceInWindow("ws-a1", "win-1");
+
+    const ws = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1");
+    expect(recentIso(ws?.lastUsedAt)).toBe(true);
+  });
+
+  test("desktop activateSessionInWindow stamps lastUsedAt on the session's workspace", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    await fixture.runtime.activateSessionInWindow("ws-a1:shell", "win-1");
+
+    const ws = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1");
+    expect(recentIso(ws?.lastUsedAt)).toBe(true);
+  });
+
+  test("legacy activateWorkspace (no windowId) stamps the target workspace only", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    await fixture.runtime.activateWorkspace("ws-a1");
+
+    const state = fixture.store.getState();
+    expect(recentIso(state.workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt)).toBe(true);
+    expect(state.workspaces.find((w) => w.id === "ws-b1")?.lastUsedAt).toBeUndefined();
+  });
+
+  test("remote activateWorkspaceForRemoteClient stamps the workspace and never touches the desktop slot", async () => {
+    const state = makeProfileSwitchState();
+    state.projects.push({
+      id: "ws-a2",
+      name: "A2",
+      kind: "terminal",
+      profileId: "profile-a",
+      cwd: "/tmp/a2",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    });
+    const fixture = await createFixture({ initialState: state });
+    fixtures.push(fixture);
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-a2");
+
+    const stored = fixture.store.getState();
+    expect(recentIso(stored.workspaces.find((w) => w.id === "ws-a2")?.lastUsedAt)).toBe(true);
+    // The desktop window's own slot never followed the remote activation.
+    expect(stored.windowSlots!.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
+  });
+
+  test("remote activateSessionForRemoteClient stamps the workspace", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.activateSessionForRemoteClient("mobile-1", "ws-a1", "ws-a1:shell");
+
+    const ws = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1");
+    expect(recentIso(ws?.lastUsedAt)).toBe(true);
+  });
+
+  test("a refused cross-profile activateWorkspaceInWindow stamps nothing", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    await expect(fixture.runtime.activateWorkspaceInWindow("ws-b1", "win-1")).rejects.toThrow();
+
+    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-b1")?.lastUsedAt).toBeUndefined();
+  });
+
+  test("a refused cross-profile activateWorkspaceForRemoteClient stamps nothing", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    await expect(fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-b1")).rejects.toThrow();
+
+    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-b1")?.lastUsedAt).toBeUndefined();
+  });
+
+  test("a background git refresh never touches lastUsedAt (same principle covers PR polling and attention)", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    await fixture.runtime.activateWorkspaceInWindow("ws-a1", "win-1");
+    const stampedAt = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt;
+    expect(stampedAt).toBeDefined();
+
+    await fixture.runtime.refreshGitState("ws-a1");
+
+    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBe(stampedAt);
   });
 });

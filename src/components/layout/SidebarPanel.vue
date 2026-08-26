@@ -3,11 +3,11 @@
     ref="listRef"
     class="workspace-list"
     data-role="workspace-list"
-    @dragstart="dragDrop.onDragstart"
-    @dragover.prevent="dragDrop.onDragover"
-    @dragleave="dragDrop.onDragleave"
-    @drop="dragDrop.onDrop"
-    @dragend="dragDrop.onDragend"
+    @dragstart="onListDragstart"
+    @dragover="onListDragover"
+    @dragleave="onListDragleave"
+    @drop="onListDrop"
+    @dragend="onListDragend"
   >
     <!-- "In split" group: workspaces currently displayed in the workspace grid -->
     <div
@@ -39,20 +39,56 @@
       />
       <hr class="workspace-list__divider" />
     </div>
-    <WorkspaceCard
-      v-for="ws in treeCards"
-      :key="ws.id"
-      :workspace="ws"
-      :data-workspace-id="ws.id"
-      @activate="onActivate(ws.id)"
-      @open-menu="onOpenMenu($event, ws)"
-      @toggle-star="handleToggleStar(ws)"
-      @task-toggle="handleTaskToggle(ws)"
-      @task-stop="handleTaskStop(ws)"
-    />
-    <p v-if="searchQuery && treeCards.length === 0" class="workspace-list__no-match">
-      No workspace matches “{{ store.workspaceSearchQuery.trim() }}”.
-    </p>
+    <template v-if="!isRecentActive">
+      <WorkspaceCard
+        v-for="ws in treeCards"
+        :key="ws.id"
+        :workspace="ws"
+        :data-workspace-id="ws.id"
+        @activate="onActivate(ws.id)"
+        @open-menu="onOpenMenu($event, ws)"
+        @toggle-star="handleToggleStar(ws)"
+        @task-toggle="handleTaskToggle(ws)"
+        @task-stop="handleTaskStop(ws)"
+      />
+      <p v-if="searchQuery && treeCards.length === 0" class="workspace-list__no-match">
+        No workspace matches “{{ store.workspaceSearchQuery.trim() }}”.
+      </p>
+    </template>
+    <template v-else>
+      <template v-for="item in visibleRecentItems" :key="item.key">
+        <p v-if="item.type === 'section'" class="workspace-list__section-header">
+          <button
+            v-if="item.sectionKey === 'older'"
+            type="button"
+            class="workspace-list__section-toggle"
+            :aria-expanded="!olderCollapsed"
+            :title="olderCollapsed ? 'Expand Older' : 'Collapse Older'"
+            @click="olderCollapsed = !olderCollapsed"
+          >
+            <span class="workspace-list__section-caret" aria-hidden="true">{{ olderCollapsed ? "▸" : "▾" }}</span>
+            <span>{{ item.label }} ({{ item.count }})</span>
+          </button>
+          <span v-else>{{ item.label }}</span>
+        </p>
+        <WorkspaceContextRow
+          v-else-if="item.type === 'context'"
+          :name="item.name"
+          :icon="item.icon"
+          :depth="item.depth"
+        />
+        <WorkspaceCard
+          v-else
+          :workspace="item.card"
+          :data-workspace-id="item.workspaceId"
+          @activate="onActivate(item.workspaceId)"
+          @open-menu="onOpenMenu($event, item.card)"
+          @toggle-star="handleToggleStar(item.card)"
+          @task-toggle="handleTaskToggle(item.card)"
+          @task-stop="handleTaskStop(item.card)"
+        />
+      </template>
+    </template>
     <button
       type="button"
       class="workspace-new-tile"
@@ -178,16 +214,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, inject, watch, nextTick } from "vue";
+import { computed, ref, inject, watch, nextTick, onMounted, onUnmounted } from "vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { useContextMenu } from "../../composables/useContextMenu.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
+import {
+  resolveParentId,
+  buildRecentProjection,
+  type RecentRenderItem,
+} from "../../app/workspace-sidebar-projection.js";
 import type { Transport } from "../../transport.js";
-import type { GitSnapshot, StatePayload } from "../../../electron/shared/types/state.js";
+import type { GitSnapshot, StatePayload, WorkspaceState } from "../../../electron/shared/types/state.js";
 import WorkspaceCard from "./WorkspaceCard.vue";
+import WorkspaceContextRow from "./WorkspaceContextRow.vue";
 
 interface LiveTask {
   state?: string;
@@ -250,24 +292,6 @@ const notifications = useNotificationStore();
 const listRef = ref<HTMLElement | null>(null);
 const dragDrop = useWorkspaceDragDrop(listRef);
 const activatingWorkspaceId = ref<string | null>(null);
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function resolveParentId(ws: any, allWs: any[]): string | null {
-  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
-    return ws.review.parentWorkspaceId;
-  if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
-  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;
-  // Legacy worktree: "Worktree of ParentName" — resolve parent by name (profile-aware)
-  if ((ws.notes || "").startsWith("Worktree of ")) {
-    const parentName = ws.name.split(" / ")[0];
-    const wsProfile = ws.profileId || "default";
-    const parent =
-      allWs.find((c) => c.name === parentName && c.id !== ws.id && (c.profileId || "default") === wsProfile) ||
-      allWs.find((c) => c.name === parentName && c.id !== ws.id);
-    return parent?.id || null;
-  }
-  return null;
-}
 
 const workspaceCards = computed((): WorkspaceCardData[] => {
   const payload = store.payload;
@@ -400,6 +424,135 @@ const displayedCards = computed(() => {
   }
   return starFilteredCards.value.filter((card) => visible.has(card.id));
 });
+
+// --- "recent" workspace view ---------------------------------------------
+
+const viewMode = computed<"tree" | "recent">(() =>
+  (store.activeProfile as { sidebarWorkspaceViewMode?: string } | null)?.sidebarWorkspaceViewMode === "recent"
+    ? "recent"
+    : "tree",
+);
+
+// Active search always wins — it flattens buckets away entirely so an old
+// (Older-bucket) workspace is never one profile-switch-away from findable.
+const isRecentActive = computed(() => viewMode.value === "recent" && !searchQuery.value);
+
+// One shared minute clock for the whole recent view (never per-card), so
+// items cross the 1h/24h/7d boundaries live. Only ticks while recent mode
+// is actually visible and the document isn't hidden.
+const recentNow = ref(Date.now());
+let recentClockTimer: ReturnType<typeof setInterval> | null = null;
+function startRecentClock(): void {
+  if (recentClockTimer) return;
+  recentNow.value = Date.now();
+  recentClockTimer = setInterval(() => {
+    recentNow.value = Date.now();
+  }, 60_000);
+}
+function stopRecentClock(): void {
+  if (recentClockTimer) {
+    clearInterval(recentClockTimer);
+    recentClockTimer = null;
+  }
+}
+function onRecentClockVisibilityChange(): void {
+  if (document.hidden) stopRecentClock();
+  else if (isRecentActive.value) startRecentClock();
+}
+watch(
+  isRecentActive,
+  (active) => {
+    if (active && !document.hidden) startRecentClock();
+    else stopRecentClock();
+  },
+  { immediate: true },
+);
+onMounted(() => {
+  document.addEventListener("visibilitychange", onRecentClockVisibilityChange);
+});
+onUnmounted(() => {
+  document.removeEventListener("visibilitychange", onRecentClockVisibilityChange);
+  stopRecentClock();
+});
+
+// "Older" starts collapsed and is purely local UI state — not persisted.
+const olderCollapsed = ref(true);
+
+// Real-workspace ids eligible to show, post profile-scope + star filter —
+// exactly the pipeline stage the recent projection is documented to run
+// after. Context-path resolution below still uses the full profile-scoped
+// list so a shared ancestor resolves even when the star filter hid it.
+const recentVisibleIds = computed(() => new Set(starFilteredCards.value.map((card) => card.id)));
+
+const rawRecentItems = computed((): RecentRenderItem[] => {
+  if (!isRecentActive.value) return [];
+  return buildRecentProjection({
+    workspaces: store.filteredWorkspaces as WorkspaceState[],
+    cards: workspaceCards.value,
+    activeWorkspaceId: store.myActiveWorkspaceId || "",
+    now: recentNow.value,
+    visibleIds: recentVisibleIds.value,
+  });
+});
+
+// Same in-grid ghost treatment as the tree view — a workspace pinned to a
+// grid slot still renders in its recent-time section, just dimmed.
+const recentItems = computed((): RecentRenderItem[] => {
+  const occ = gridCellIds.value;
+  const slotByWs = new Map<string, number>();
+  const grid = store.workspaceGrid;
+  if (grid) {
+    (grid.cellWorkspaceIds as (string | null)[]).forEach((id, idx) => {
+      if (id) slotByWs.set(id, idx + 1);
+    });
+  }
+  return rawRecentItems.value.map((item) => {
+    if (item.type !== "workspace") return item;
+    return {
+      ...item,
+      card: {
+        ...item.card,
+        inGrid: occ.has(item.workspaceId),
+        slotIndex: slotByWs.get(item.workspaceId),
+      },
+    };
+  });
+});
+
+// What actually renders: "Older" hides its non-header rows while collapsed;
+// the collapsed icon-strip sidebar drops section headers and context rows
+// entirely — only real workspace icons remain, in recent order.
+const visibleRecentItems = computed((): RecentRenderItem[] => {
+  if (store.sidebarCollapsed) return recentItems.value.filter((item) => item.type === "workspace");
+  return recentItems.value.filter(
+    (item) => !(item.type !== "section" && item.sectionKey === "older" && olderCollapsed.value),
+  );
+});
+
+// Drag-and-drop reordering only makes sense for the manually-ordered tree —
+// recent order is derived from lastUsedAt and cannot be dragged. Wrapping
+// (rather than conditionally binding the listeners) keeps tree-mode
+// behaviour byte-for-byte identical to before this view existed.
+function onListDragstart(event: DragEvent): void {
+  if (isRecentActive.value) return;
+  dragDrop.onDragstart(event);
+}
+function onListDragover(event: DragEvent): void {
+  if (isRecentActive.value) return;
+  dragDrop.onDragover(event);
+}
+function onListDragleave(event: DragEvent): void {
+  if (isRecentActive.value) return;
+  dragDrop.onDragleave(event);
+}
+function onListDrop(event: DragEvent): void {
+  if (isRecentActive.value) return;
+  dragDrop.onDrop(event);
+}
+function onListDragend(): void {
+  if (isRecentActive.value) return;
+  dragDrop.onDragend();
+}
 
 const suggestions = computed(() => {
   const payload = store.payload;

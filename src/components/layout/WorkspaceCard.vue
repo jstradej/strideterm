@@ -78,12 +78,9 @@
             >· {{ workspace.relativeAge }}</span
           ></span
         >
-        <span
-          v-if="workspace.lastActivity"
-          class="workspace-card__last-activity"
-          :title="workspace.lastActivityTitle"
-          >{{ workspace.lastActivity }}</span
-        >
+        <span v-if="rightTimestamp" class="workspace-card__last-activity" :title="rightTimestamp.title">{{
+          rightTimestamp.relative
+        }}</span>
       </small>
     </span>
     <span class="workspace-card__actions">
@@ -155,6 +152,9 @@ interface WorkspaceCardData {
   relativeAge?: string;
   lastActivity?: string;
   lastActivityTitle?: string;
+  /** Recent-view only: relative "last opened" time + tooltip, set by the sidebar projection. */
+  lastUsedRelative?: string;
+  lastUsedTitle?: string;
 }
 
 const props = defineProps<{
@@ -188,6 +188,19 @@ const statusDot = computed((): { state: string; label: string } | null => {
   if (prStatus === "completed") return { state: "merged", label: "PR merged" };
   if (prStatus === "abandoned") return { state: "abandoned", label: "PR abandoned" };
 
+  return null;
+});
+
+// Recent-view timestamp takes priority over the tree-view "last activity"
+// chip — they read as different things (user-opened vs. PR/git/attention
+// activity) and only one applies to any given render of a card.
+const rightTimestamp = computed((): { relative: string; title?: string } | null => {
+  if (props.workspace.lastUsedRelative) {
+    return { relative: props.workspace.lastUsedRelative, title: props.workspace.lastUsedTitle };
+  }
+  if (props.workspace.lastActivity) {
+    return { relative: props.workspace.lastActivity, title: props.workspace.lastActivityTitle };
+  }
   return null;
 });
 

@@ -93,6 +93,7 @@ import { SshManager } from "./ssh/ssh-manager.js";
 import {
   clone,
   findWorkspace,
+  markWorkspaceUsed,
   createAttentionContext,
   stripAnsi,
   lastNonEmptyLine,
@@ -4285,6 +4286,7 @@ export async function createRuntime({
       }
 
       draft.activeWorkspaceId = targetWorkspaceId;
+      markWorkspaceUsed(draft, targetWorkspaceId);
       workspace.activePanelId = panelId;
     });
 
@@ -4809,8 +4811,13 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateWorkspaceForRemoteClient(clientId: string, workspaceId: any): Promise<unknown> {
       if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
+      // Throws on an unknown/cross-profile workspace — markWorkspaceUsed below
+      // only runs once the registry has validated the target.
       _remoteClientRegistry.activateWorkspace(clientId, workspaceId, getState());
-      if (workspaceId) ensureVisibleSession(String(workspaceId));
+      if (workspaceId) {
+        await store.mutate((draft: AppState) => markWorkspaceUsed(draft, String(workspaceId)));
+        ensureVisibleSession(String(workspaceId));
+      }
       broadcastState();
       return _remoteClientRegistry.composePayload(clientId, getPayload());
     },
@@ -4819,7 +4826,10 @@ export async function createRuntime({
     async activateSessionForRemoteClient(clientId: string, workspaceId: any, sessionId: any): Promise<unknown> {
       if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
       _remoteClientRegistry.activateSession(clientId, workspaceId, sessionId, getState());
-      if (sessionId) ensureSessionSafe(String(sessionId));
+      if (sessionId) {
+        await store.mutate((draft: AppState) => markWorkspaceUsed(draft, String(workspaceId)));
+        ensureSessionSafe(String(sessionId));
+      }
       broadcastState();
       return _remoteClientRegistry.composePayload(clientId, getPayload());
     },
@@ -4892,6 +4902,7 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         if (draft.workspaces.some((workspace) => workspace.id === workspaceId)) {
           draft.activeWorkspaceId = workspaceId;
+          markWorkspaceUsed(draft, String(workspaceId));
           // Also update the first window slot (primary window compat) — but
           // never for remote viewers: a remote activation must not flip any
           // desktop window's view.
@@ -4948,6 +4959,7 @@ export async function createRuntime({
         }
 
         draft.activeWorkspaceId = descriptor.workspaceId;
+        markWorkspaceUsed(draft, descriptor.workspaceId);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if ((workspace as any).panels?.some((panel: any) => panel.id === descriptor.panelId)) {
           workspace.activePanelId = descriptor.panelId;
@@ -5031,6 +5043,7 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const targetWorkspace = draft.workspaces.find((ws) => ws.id === workspaceId);
         if (!targetWorkspace) return;
+        markWorkspaceUsed(draft, workspaceId);
         // Update per-window slot
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
         if (slot) {
@@ -5095,6 +5108,7 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, descriptor.workspaceId);
         if (!workspace) return;
+        markWorkspaceUsed(draft, descriptor.workspaceId);
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
         if (slot) {
           slot.activeWorkspaceId = descriptor.workspaceId;
@@ -6447,6 +6461,7 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = newProject.id;
+        markWorkspaceUsed(draft, newProject.id);
         // Entry check (assertWorkspaceInViewerProfile) already refused any
         // cross-profile request, so the mirror here is always in-profile.
         if (windowId) {
@@ -6479,6 +6494,9 @@ export async function createRuntime({
             : Array.isArray(profile.projectIds)
               ? profile.projectIds
               : [],
+          ...(profile.sidebarWorkspaceViewMode === "tree" || profile.sidebarWorkspaceViewMode === "recent"
+            ? { sidebarWorkspaceViewMode: profile.sidebarWorkspaceViewMode }
+            : {}),
         };
         if (index >= 0) {
           // Merge over the existing entry: rename/recolor must not wipe the

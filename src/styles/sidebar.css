@@ -117,6 +117,38 @@
   color: var(--text);
 }
 
+.profile-bar__view-toggle {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(var(--tint), 0.03);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+
+.profile-bar__view-toggle:hover {
+  color: var(--text);
+  background: rgba(var(--tint), 0.07);
+}
+
+.profile-bar__view-toggle--active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+}
+
 .profile-bar::before {
   content: "";
   width: 8px;
@@ -1647,6 +1679,82 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   text-align: center;
 }
 
+/* "Recent" workspace view — time sections, ancestor context rows ──────── */
+
+.workspace-list__section-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 8px 0 4px;
+  padding: 3px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+.workspace-list__section-header:first-child {
+  margin-top: 0;
+}
+
+.workspace-list__section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.workspace-list__section-toggle:hover {
+  color: var(--text);
+}
+
+.workspace-list__section-caret {
+  display: inline-block;
+  width: 8px;
+  flex-shrink: 0;
+}
+
+.workspace-context-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-context-row__icon {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.workspace-context-row__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Collapsed icon-strip: section headers and context rows carry no useful
+   information at icon width — only real workspace icons remain. */
+.frame--sidebar-collapsed .workspace-list__section-header,
+.frame--sidebar-collapsed .workspace-context-row {
+  display: none;
+}
+
 .frame--sidebar-collapsed .sidebar {
   padding: 10px 8px;
 }
@@ -1671,7 +1779,8 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 /* No room for the filter box in the 84px icon strip — the profile pill and
    the ☰ button already fill the row. */
 .frame--sidebar-collapsed .profile-bar__search,
-.frame--sidebar-collapsed .profile-bar__sep {
+.frame--sidebar-collapsed .profile-bar__sep,
+.frame--sidebar-collapsed .profile-bar__view-toggle {
   display: none;
 }
 

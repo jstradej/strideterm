@@ -267,6 +267,26 @@ export function findWorkspace(
   return state.workspaces.find((workspace) => workspace.id === workspaceId) || null;
 }
 
+/**
+ * Single choke point for "the user actually navigated to this workspace" —
+ * stamps `lastUsedAt` on the target workspace inside a store-mutation draft.
+ * Call this ONLY from activation handlers, after any profile-aware guard
+ * (assertWorkspaceInViewerProfile / RemoteClientRegistry validation) has
+ * already passed. Automatic signals — PTY output, git/PR polling, task
+ * runner progress, attention events — must never call this; they would
+ * otherwise make the sidebar's "recent" view track background activity
+ * instead of what the user actually opened.
+ */
+export function markWorkspaceUsed(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  state: { workspaces: Array<any> },
+  workspaceId: string,
+  atIso: string = new Date().toISOString(),
+): void {
+  const workspace = findWorkspace(state, workspaceId);
+  if (workspace) workspace.lastUsedAt = atIso;
+}
+
 export function createAttentionContext(): {
   visibleSessionIds: Set<string>;
   recentlyVisibleUntil: Map<string, number>;

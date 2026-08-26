@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { findWorkspace } from "./runtime-utils.js";
+import { findWorkspace, markWorkspaceUsed } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { insertWorkspace } from "./workspace-order.js";
 import {
@@ -255,6 +255,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         }
         draft.activeWorkspaceId = normalized.id;
+        markWorkspaceUsed(draft, normalized.id);
         // Mirror only when the review workspace's profile matches the slot's.
         // See shared/runtime-provider-guards.ts#mirrorActivationIntoSlot for
         // the full cross-profile bug story.
@@ -493,6 +494,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
         const normalized = normalizeWorkspace(result.workspace);
         insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = normalized.id;
+        markWorkspaceUsed(draft, normalized.id);
         // See openAzurePullRequest for the cross-profile guard rationale.
         const mirrorResult = mirrorActivationIntoSlot(draft, windowId, normalized);
         if (mirrorResult && !mirrorResult.mirrored) {

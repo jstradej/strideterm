@@ -45,6 +45,12 @@ function defaultCwd(): string {
   return os.homedir();
 }
 
+/** Valid ISO timestamp string, or undefined — used to normalize `lastUsedAt` without fabricating history. */
+function normalizeIsoTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  return Number.isNaN(Date.parse(value)) ? undefined : value;
+}
+
 /**
  * Returns the strIDEterm user-data directory, honoring the STRIDETERM_DATA_DIR
  * env var used by dev.ps1 and --data-dir. Centralized here so every module
@@ -427,6 +433,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
           autoStartAfterCapture: workspace.task.autoStartAfterCapture || undefined,
         }
       : null,
+    ...(normalizeIsoTimestamp(workspace.lastUsedAt) ? { lastUsedAt: normalizeIsoTimestamp(workspace.lastUsedAt) } : {}),
   };
 }
 
@@ -530,7 +537,15 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       { id: "browser", title: "Browser", command: "https://", icon: "\u{1F310}" },
       { id: "files", title: "Files", command: "__files__", icon: "\u{1F4C2}" },
     ],
-    profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [] as string[] }],
+    profiles: [
+      {
+        id: "default",
+        name: "Default",
+        color: "#ffa424",
+        workspaceIds: [] as string[],
+        sidebarWorkspaceViewMode: "tree" as const,
+      },
+    ],
     workspaces: [] as WorkspaceState[],
     windowSlots: [] as WindowSlot[],
     ssh: {
@@ -569,6 +584,10 @@ function normalizeProfiles(rawProfiles: any, defaults: { profiles: Profile[] }):
             : Array.isArray(profile.projectIds)
               ? (profile.projectIds as string[])
               : [],
+          // Sidebar workspace list layout — normalize to "tree" whenever
+          // missing or not one of the two known values. Never a security
+          // boundary, purely a per-profile UI preference (see Profile type).
+          sidebarWorkspaceViewMode: profile.sidebarWorkspaceViewMode === "recent" ? "recent" : "tree",
         };
         // Preserve the distinction between "had no grid in saved state" (undefined)
         // and "explicitly null" so the later migration step can tell whether the

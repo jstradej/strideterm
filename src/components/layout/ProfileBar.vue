@@ -44,14 +44,32 @@
         ✕
       </button>
     </div>
+    <button
+      type="button"
+      class="profile-bar__view-toggle"
+      :class="{ 'profile-bar__view-toggle--active': viewMode === 'recent' }"
+      :aria-label="
+        viewMode === 'recent' ? 'Switch to the manually ordered workspace tree' : 'Switch to the recently opened view'
+      "
+      :title="
+        viewMode === 'recent'
+          ? 'Showing recently opened workspaces, grouped by when you last opened them. Click to switch back to the manually ordered tree.'
+          : 'Showing the manually ordered workspace tree. Click to switch to a view grouped by when you last opened each workspace.'
+      "
+      @click="toggleViewMode"
+    >
+      🕐
+    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 
 const store = useAppStore();
+const notifications = useNotificationStore();
 const profile = computed(() => store.activeProfile);
 const otherProfileCount = computed(() => store.otherProfileAttentionCount);
 const isRemote = computed(() => store.getApi()?.isRemote ?? false);
@@ -61,6 +79,17 @@ const query = computed({
     store.workspaceSearchQuery = value;
   },
 });
+
+const viewMode = computed<"tree" | "recent">(() =>
+  (store.activeProfile as { sidebarWorkspaceViewMode?: string } | null)?.sidebarWorkspaceViewMode === "recent"
+    ? "recent"
+    : "tree",
+);
+
+async function toggleViewMode(): Promise<void> {
+  const next = viewMode.value === "recent" ? "tree" : "recent";
+  await notifications.runWithToast("Switch workspace view failed", () => store.saveSidebarWorkspaceViewMode(next));
+}
 
 defineEmits<{
   (e: "click"): void;

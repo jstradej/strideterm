@@ -533,3 +533,203 @@ describe("SidebarPanel — remote profile fallback", () => {
     ]);
   });
 });
+
+describe("SidebarPanel — recent workspace view", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+  });
+
+  function recentPayload(overrides: AnyApi = {}): StatePayload {
+    return makePayload({
+      profiles: [{ id: "default", name: "Default", sidebarWorkspaceViewMode: "recent" }],
+      ...overrides,
+    });
+  }
+
+  it("tree stays the default view (no explicit mode) and keeps the original order", () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    const wrapper = mount(SidebarPanel);
+
+    expect(wrapper.find(".workspace-list__section-header").exists()).toBe(false);
+    expect(wrapper.findAll("[data-workspace-id]").map((c) => c.attributes("data-workspace-id"))).toEqual([
+      "ws-A",
+      "ws-B",
+      "ws-C",
+      "ws-D",
+    ]);
+  });
+
+  it("renders time sections with parent context rows, and Older starts collapsed counting only real workspaces", () => {
+    const store = useAppStore();
+    const now = Date.now();
+    store.payload = recentPayload({
+      workspaces: [
+        {
+          id: "ws-root",
+          name: "Azure DevOps",
+          cwd: "/root",
+          panels: [],
+          icon: "AZ",
+          color: "#fff",
+          profileId: "default",
+          kind: "azure",
+          // No lastUsedAt of its own — bucket "Older".
+        },
+        {
+          id: "ws-task",
+          name: "task-1",
+          cwd: "/t",
+          panels: [],
+          icon: "T",
+          color: "#fff",
+          profileId: "default",
+          kind: "task",
+          task: { parentWorkspaceId: "ws-root" },
+          lastUsedAt: new Date(now - 5 * 60 * 1000).toISOString(),
+        },
+      ],
+      activeWorkspaceId: "ws-task",
+      windowSlots: [{ id: "win-test", profileId: "default", activeWorkspaceId: "ws-task" }],
+    });
+
+    const wrapper = mount(SidebarPanel);
+
+    const headers = wrapper.findAll(".workspace-list__section-header");
+    const headerTexts = headers.map((h) => h.text());
+    expect(headerTexts.some((t) => t.includes("Last hour"))).toBe(true);
+    // "ws-root" has no lastUsedAt of its own, so it is a real Older card — count 1.
+    expect(headerTexts.some((t) => t.includes("Older") && t.includes("1"))).toBe(true);
+
+    // Its own real card in Older is hidden while collapsed…
+    expect(wrapper.find('[data-workspace-id="ws-root"]').exists()).toBe(false);
+    // …but it still shows as a non-interactive context row under Last hour, for the task's parent chain.
+    const contextRow = wrapper.get(".workspace-context-row");
+    expect(contextRow.text()).toContain("Azure DevOps");
+    expect(contextRow.find("button").exists()).toBe(false);
+
+    // The real task card renders exactly once.
+    expect(wrapper.findAll('[data-workspace-id="ws-task"]').length).toBe(1);
+
+    // Expand Older — the root's real card now appears too.
+    wrapper.get(".workspace-list__section-toggle").trigger("click");
+    return nextTick().then(() => {
+      expect(wrapper.find('[data-workspace-id="ws-root"]').exists()).toBe(true);
+    });
+  });
+
+  it("search bypasses time buckets and finds an old workspace without switching off recent mode", () => {
+    const store = useAppStore();
+    const now = Date.now();
+    store.payload = recentPayload({
+      workspaces: [
+        {
+          id: "ws-ancient",
+          name: "Forgotten workspace",
+          cwd: "/old",
+          panels: [],
+          icon: "F",
+          color: "#fff",
+          profileId: "default",
+          lastUsedAt: new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      ],
+    });
+    store.workspaceSearchQuery = "forgotten";
+
+    const wrapper = mount(SidebarPanel);
+
+    // Search flattens away sections entirely.
+    expect(wrapper.find(".workspace-list__section-header").exists()).toBe(false);
+    expect(wrapper.find('[data-workspace-id="ws-ancient"]').exists()).toBe(true);
+    // The stored mode itself is untouched by searching.
+    expect(store.activeProfile.sidebarWorkspaceViewMode).toBe("recent");
+  });
+
+  it("composes star filter, In split, and recent mode; collapsing the sidebar leaves only real workspace icons", async () => {
+    const store = useAppStore();
+    const now = Date.now();
+    store.payload = recentPayload({
+      workspaces: [
+        {
+          id: "ws-star",
+          name: "Starred",
+          cwd: "/s",
+          panels: [],
+          icon: "S",
+          color: "#fff",
+          profileId: "default",
+          starred: true,
+          lastUsedAt: new Date(now - 5 * 60 * 1000).toISOString(),
+        },
+        {
+          id: "ws-plain",
+          name: "Plain",
+          cwd: "/p",
+          panels: [],
+          icon: "P",
+          color: "#fff",
+          profileId: "default",
+          lastUsedAt: new Date(now - 6 * 60 * 1000).toISOString(),
+        },
+        {
+          id: "ws-grid",
+          name: "Gridded",
+          cwd: "/g",
+          panels: [],
+          icon: "G",
+          color: "#fff",
+          profileId: "default",
+          starred: true,
+          lastUsedAt: new Date(now - 7 * 60 * 1000).toISOString(),
+        },
+      ],
+      activeWorkspaceId: "ws-star",
+      windowSlots: [
+        {
+          id: "win-test",
+          profileId: "default",
+          activeWorkspaceId: "ws-star",
+          workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-grid", null] },
+        },
+      ],
+    });
+    store.starFilterActive = true;
+
+    const wrapper = mount(SidebarPanel);
+
+    // "In split" always renders, regardless of star filter or view mode.
+    expect(wrapper.find(".workspace-list__split-group").exists()).toBe(true);
+    expect(wrapper.find('.workspace-list__split-group [data-workspace-id="ws-grid"]').exists()).toBe(true);
+    // Star filter hides the non-starred workspace from the recent section.
+    expect(wrapper.find('[data-role="workspace-list"] .workspace-card[data-workspace-id="ws-plain"]').exists()).toBe(
+      false,
+    );
+    // The starred grid workspace still renders in the tree/recent projection as a dimmed ghost.
+    const ghosts = wrapper.findAll(".workspace-card--in-grid");
+    expect(ghosts.length).toBeGreaterThan(0);
+
+    store.sidebarCollapsed = true;
+    await nextTick();
+
+    expect(wrapper.find(".workspace-list__section-header").exists()).toBe(false);
+    expect(wrapper.find(".workspace-context-row").exists()).toBe(false);
+    // Real workspace cards remain.
+    expect(wrapper.find('[data-workspace-id="ws-star"]').exists()).toBe(true);
+  });
+
+  it("drag-and-drop reordering is disabled in recent mode", async () => {
+    const store = useAppStore();
+    store.payload = recentPayload({
+      workspaces: [{ ...BASE_WORKSPACES[0], lastUsedAt: new Date().toISOString() }],
+    });
+    const reorder = vi.spyOn(store, "reorderWorkspaces").mockResolvedValue(undefined);
+
+    const wrapper = mount(SidebarPanel);
+    await wrapper.find('[data-role="workspace-list"]').trigger("drop");
+    await flushPromises();
+
+    expect(reorder).not.toHaveBeenCalled();
+  });
+});

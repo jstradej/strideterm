@@ -303,7 +303,7 @@ export const useAppStore = defineStore("app", () => {
         name: activeId || "Profile",
         color: "#ffa424",
       };
-    const key = `${(found as AnyApi).id}:${(found as AnyApi).name}:${(found as AnyApi).color}`;
+    const key = `${(found as AnyApi).id}:${(found as AnyApi).name}:${(found as AnyApi).color}:${(found as AnyApi).sidebarWorkspaceViewMode || ""}`;
     if (key === _prevProfileKey && _prevProfile) return _prevProfile;
     _prevProfileKey = key;
     _prevProfile = found;
@@ -1664,6 +1664,19 @@ export const useAppStore = defineStore("app", () => {
     recoveryCandidates.value = recoveryCandidates.value.filter((c) => !decided.has(c.workspaceId));
   }
 
+  /**
+   * Switch the active profile's sidebar workspace list between "tree" and
+   * "recent". Saves a copy of the CURRENT profile with the new mode and
+   * adopts the authoritative payload the runtime returns — on failure
+   * nothing is mutated locally, so the previous mode simply stays in place
+   * and the caller's error toast is the only visible effect.
+   */
+  async function saveSidebarWorkspaceViewMode(mode: "tree" | "recent"): Promise<void> {
+    const profile = activeProfile.value as AnyApi;
+    if (!profile?.id) return;
+    await apiActions.saveProfile({ ...profile, sidebarWorkspaceViewMode: mode });
+  }
+
   return {
     // State
     payload,
@@ -1722,6 +1735,7 @@ export const useAppStore = defineStore("app", () => {
     getPerformanceSnapshot,
     captureRendererCpuProfile,
     revealCpuProfile,
+    saveSidebarWorkspaceViewMode,
     // Grid actions
     enableWorkspaceGrid,
     disableWorkspaceGrid,

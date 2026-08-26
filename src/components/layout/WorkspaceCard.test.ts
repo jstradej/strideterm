@@ -23,6 +23,11 @@ interface CardWorkspace {
   taskState?: string;
   prStatus?: string;
   checksState?: string;
+  starred?: boolean;
+  lastActivity?: string;
+  lastActivityTitle?: string;
+  lastUsedRelative?: string;
+  lastUsedTitle?: string;
 }
 
 function props(overrides: Partial<CardWorkspace> = {}): { workspace: CardWorkspace } {
@@ -145,6 +150,63 @@ describe("WorkspaceCard — shared heartbeat targets", () => {
 
     expect(wrapper.find(".workspace-card__status-dot").exists()).toBe(false);
     expect(heartbeatTargetCount()).toBe(0);
+
+    wrapper.unmount();
+  });
+});
+
+describe("WorkspaceCard — recent-view timestamp", () => {
+  test("shows the recent-view 'last opened' timestamp with its own tooltip, not the tree-view last activity", () => {
+    const wrapper = mount(WorkspaceCard, {
+      props: props({
+        lastActivity: "2h",
+        lastActivityTitle: "Last activity: yesterday",
+        lastUsedRelative: "5m",
+        lastUsedTitle: "Last opened: just now",
+      }),
+    });
+
+    const chip = wrapper.get(".workspace-card__last-activity");
+    expect(chip.text()).toBe("5m");
+    expect(chip.attributes("title")).toBe("Last opened: just now");
+
+    wrapper.unmount();
+  });
+
+  test("falls back to the tree-view last activity when no recent-view timestamp is set", () => {
+    const wrapper = mount(WorkspaceCard, {
+      props: props({ lastActivity: "2h", lastActivityTitle: "Last activity: yesterday" }),
+    });
+
+    const chip = wrapper.get(".workspace-card__last-activity");
+    expect(chip.text()).toBe("2h");
+    expect(chip.attributes("title")).toBe("Last activity: yesterday");
+
+    wrapper.unmount();
+  });
+
+  test("shows no timestamp chip when neither field is set", () => {
+    const wrapper = mount(WorkspaceCard, { props: props() });
+    expect(wrapper.find(".workspace-card__last-activity").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  test("existing status indicators (task dot, star, attention) render unchanged alongside the recent timestamp", () => {
+    const wrapper = mount(WorkspaceCard, {
+      props: props({
+        kind: "task",
+        taskState: "running",
+        starred: true,
+        attentionCount: 2,
+        lastUsedRelative: "5m",
+        lastUsedTitle: "Last opened: just now",
+      }),
+    });
+
+    expect(wrapper.get(".workspace-card__status-dot").classes()).toContain("workspace-card__status-dot--running");
+    expect(wrapper.get(".workspace-card__star").classes()).toContain("workspace-card__star--active");
+    expect(wrapper.get(".workspace-card__attention-count").text()).toBe("2");
+    expect(wrapper.get(".workspace-card__last-activity").text()).toBe("5m");
 
     wrapper.unmount();
   });
