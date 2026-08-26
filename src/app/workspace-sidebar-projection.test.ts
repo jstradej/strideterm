@@ -114,6 +114,17 @@ describe("buildRecentProjection — ordering", () => {
     const ids = workspaceItems(project({ workspaces })).map((i) => i.workspaceId);
     expect(ids).toEqual(["first", "second"]);
   });
+
+  it("sorts a real parent's group by its newest real child, not its own timestamp", () => {
+    const workspaces = [
+      ws("R", { lastUsedAt: iso(4 * DAY) }),
+      ws("P", { lastUsedAt: iso(6 * DAY) }),
+      ws("C", { task: { parentWorkspaceId: "P" }, lastUsedAt: iso(2 * DAY) }),
+    ];
+    const items = project({ workspaces });
+    const ids = items.filter((i) => i.type !== "section").map((i) => (i as { workspaceId: string }).workspaceId);
+    expect(ids).toEqual(["P", "C", "R"]);
+  });
 });
 
 describe("buildRecentProjection — parent-path context", () => {
@@ -226,5 +237,16 @@ describe("buildRecentProjection — active-workspace override", () => {
     const items = workspaceItems(project({ workspaces, activeWorkspaceId: "active-migrated" }));
     expect(items[0]?.workspaceId).toBe("active-migrated");
     expect(items[0]?.sectionKey).toBe("last-hour");
+  });
+
+  it("promotes a real parent's group to the top of Last hour when the active workspace is nested under it", () => {
+    const workspaces = [
+      ws("X", { lastUsedAt: iso(10 * 60 * 1000) }),
+      ws("P", { lastUsedAt: iso(30 * 60 * 1000) }),
+      ws("ACT", { task: { parentWorkspaceId: "P" } }), // no lastUsedAt — active, migrated
+    ];
+    const items = workspaceItems(project({ workspaces, activeWorkspaceId: "ACT" }));
+    const ids = items.map((i) => i.workspaceId);
+    expect(ids).toEqual(["P", "ACT", "X"]);
   });
 });

@@ -219,28 +219,46 @@ export function buildRecentProjection({
       if (!reachable.has(id)) roots.push(id);
     }
 
-    // Representative (timestamp, tie-break index) per node: a real
-    // workspace uses its own lastUsedAt (Infinity for the renderer's active
-    // workspace, so its branch always sorts first); a context-only node
-    // uses the max over its children — "newest real workspace in its
-    // visible subtree" per the spec.
+    // Representative (timestamp, tie-break index) per node: the "newest real
+    // workspace in its visible subtree" per the spec. A real workspace's own
+    // timestamp (Infinity for the renderer's active workspace) always
+    // counts, but so does the max over its children — a real node with a
+    // newer real descendant represents its whole group by that descendant,
+    // keeping its OWN index as the tie-break so a real ancestor doesn't
+    // borrow a descendant's position. A context-only node has no timestamp
+    // of its own, so its representative — both ts and idx — is simply the
+    // max over its children.
     const repCache = new Map<string, { ts: number; idx: number }>();
+    const repComputing = new Set<string>();
     function repOf(id: string): { ts: number; idx: number } {
       const cached = repCache.get(id);
       if (cached) return cached;
+      const idx = indexOf.get(id) ?? 0;
+      // childrenOf can contain a cycle (the pathological parent-cycle
+      // fallback above turns every node on the loop into a root AND a
+      // child), and a real node now descends into its children too — without
+      // this guard that cycle recurses forever. A node still being computed
+      // contributes nothing further up its own cycle.
+      if (repComputing.has(id)) return { ts: -Infinity, idx };
+      repComputing.add(id);
       let rep: { ts: number; idx: number };
       if (realIds.has(id)) {
         const ws = byId.get(id);
-        const idx = indexOf.get(id) ?? 0;
+        let ts: number;
         if (id === activeWorkspaceId) {
-          rep = { ts: Infinity, idx };
+          ts = Infinity;
         } else {
           const parsed = ws?.lastUsedAt ? Date.parse(ws.lastUsedAt) : NaN;
-          rep = { ts: Number.isNaN(parsed) ? -Infinity : parsed, idx };
+          ts = Number.isNaN(parsed) ? -Infinity : parsed;
         }
+        for (const kid of childrenOf.get(id) || []) {
+          const kidTs = repOf(kid).ts;
+          if (kidTs > ts) ts = kidTs;
+        }
+        rep = { ts, idx };
       } else {
         let bestTs = -Infinity;
-        let bestIdx = indexOf.get(id) ?? 0;
+        let bestIdx = idx;
         for (const kid of childrenOf.get(id) || []) {
           const kidRep = repOf(kid);
           if (kidRep.ts > bestTs || (kidRep.ts === bestTs && kidRep.idx < bestIdx)) {
@@ -250,6 +268,7 @@ export function buildRecentProjection({
         }
         rep = { ts: bestTs, idx: bestIdx };
       }
+      repComputing.delete(id);
       repCache.set(id, rep);
       return rep;
     }
