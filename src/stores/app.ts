@@ -528,21 +528,10 @@ export const useAppStore = defineStore("app", () => {
     return (result as AnyApi).visibleTabs;
   });
 
-  // Auto-mark notifications as read when switching to the relevant tab
-  watch(activeViewId, async (viewId) => {
-    if (!viewId) return;
-    try {
-      const { useNotificationStore } = await import("./notifications.js");
-      const notifStore = useNotificationStore();
-      for (const item of notifStore.items) {
-        if (!item.read && item.viewId && item.viewId === viewId) {
-          notifStore.markRead(item.id);
-        }
-      }
-    } catch {
-      // Notification store may not be available during bootstrap
-    }
-  });
+  // Notifications are deliberately NOT acknowledged by activating a tab:
+  // clicking through tabs is browsing, not acting on a result. Acknowledgement
+  // happens on real typing into the session — notifications.resolveByEngagement,
+  // wired from the terminal store's onUserInput.
 
   // Keep per-workspace split cache in sync with current splitGroup
   watch(splitGroup, (next) => {

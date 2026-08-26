@@ -856,6 +856,30 @@ describe("hasMeaningfulUserInput", () => {
     expect(hasMeaningfulUserInput("\x1bOP")).toBe(true); // F1
   });
 
+  test("returns false for emulator replies to a program's query", () => {
+    // Agent TUIs issue these on startup and on every resize; none mean the
+    // user did anything.
+    expect(hasMeaningfulUserInput("\x1b[?1;2c")).toBe(false); // DA1
+    expect(hasMeaningfulUserInput("\x1b[>0;276;0c")).toBe(false); // DA2
+    expect(hasMeaningfulUserInput("\x1b[24;80R")).toBe(false); // cursor position report
+    expect(hasMeaningfulUserInput("\x1b[?24;80R")).toBe(false); // DECXCPR
+    expect(hasMeaningfulUserInput("\x1b[0n")).toBe(false); // device status "ready"
+    expect(hasMeaningfulUserInput("\x1b[?2026;2$y")).toBe(false); // mode report
+    expect(hasMeaningfulUserInput("\x1b[8;40;120t")).toBe(false); // window size report
+    expect(hasMeaningfulUserInput("\x1bP1$r0m\x1b\\")).toBe(false); // DECRQSS reply
+    expect(hasMeaningfulUserInput("\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\")).toBe(false); // bg colour reply
+    expect(hasMeaningfulUserInput("\x1b]11;rgb:1e1e/1e1e/1e1e\x07")).toBe(false); // BEL-terminated
+  });
+
+  test("emulator-reply filtering does not swallow real keys", () => {
+    expect(hasMeaningfulUserInput("\x1b[C")).toBe(true); // right arrow vs. DA final byte `c`
+    expect(hasMeaningfulUserInput("\x1b[D")).toBe(true); // left arrow
+    expect(hasMeaningfulUserInput("\x1b[3~")).toBe(true); // Delete
+    expect(hasMeaningfulUserInput("\x1b[200~ls -la\x1b[201~")).toBe(true); // bracketed paste
+    expect(hasMeaningfulUserInput("\x1b")).toBe(true); // bare Escape
+    expect(hasMeaningfulUserInput("cat")).toBe(true);
+  });
+
   test("returns true when mouse event is followed by typed text", () => {
     expect(hasMeaningfulUserInput("\x1b[<0;40;12Mabc")).toBe(true);
   });

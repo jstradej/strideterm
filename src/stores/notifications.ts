@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
+import { hasMeaningfulUserInput } from "../../electron/shared/terminal-input.js";
 
 /**
  * Notification center state — session-grouped (Plan § 3.3.1).
@@ -427,6 +428,34 @@ export const useNotificationStore = defineStore("notifications", () => {
     setState(sessionId, "resolved");
   }
 
+  /**
+   * Acknowledge a session's notification because the user actually typed into
+   * that terminal. Merely opening the tab is NOT enough — switching tabs is
+   * something the user does while browsing, and it must stay unambiguous that
+   * they did something with the result before the alert goes away.
+   *
+   * `data` is the raw PTY write; passive traffic (mouse tracking, focus
+   * in/out) is filtered out by the same predicate the backend uses to decide
+   * whether a write should pause a running task.
+   *
+   * Cheap by design: this runs on every keystroke, so the common case (no
+   * unacked thread for this session) exits after one scan and does no work.
+   */
+  function resolveByEngagement(sessionId: string, data: string): void {
+    if (!sessionId) return;
+    const targets = sessions.value.filter(
+      (s) => s.viewId === sessionId && (s.state === "waiting" || s.state === "finished"),
+    );
+    if (targets.length === 0) return;
+    if (!hasMeaningfulUserInput(data)) return;
+    for (const s of targets) setState(s.id, "resolved");
+    // Engagement, not a dismissal — same signal the notification center's
+    // "Jump" sends, so backend adaptive suppression learns the user acted on
+    // this alert. Fire-and-forget: the local state is already resolved and a
+    // failed RPC must not resurrect the badge.
+    clearOnBackend(sessionId, { dismissed: false }).catch(() => {});
+  }
+
   function removeInternal(sessionIdOrEventId: string): void {
     // Accept either a thread id or a legacy event id (back-compat with old UI).
     const before = sessions.value.length;
@@ -686,6 +715,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     markAllRead,
     unreadCountFor,
     markRead,
+    resolveByEngagement,
     remove,
     removeByViewId,
     clearAll,

@@ -126,6 +126,7 @@ import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
+import { hasMeaningfulUserInput } from "../shared/terminal-input.js";
 import type { NotifyServerHandle } from "./notify-server.js";
 
 const log = getLogger("runtime");
@@ -150,30 +151,11 @@ const reviewBridgeCliPath = fileURLToPath(new URL("./review-bridge-cli.js", impo
 
 // Utilities imported from runtime-utils.js
 
-/**
- * Returns true if the PTY write data represents a real keypress or pasted text
- * from the user. Returns false if the data is purely passive terminal bookkeeping
- * — mouse tracking, focus in/out, and bracketed-paste markers — which are emitted
- * by xterm.js on clicks and window focus changes without the user actually typing.
- *
- * Used to decide whether a terminal write should pause a running task workspace.
- * Without this filter, clicking into a task panel to watch it would pause the task.
- */
-export function hasMeaningfulUserInput(data: string | Buffer | null | undefined): boolean {
-  if (!data) return false;
-  const str = typeof data === "string" ? data : data.toString("binary");
-  // Strip all known passive escape sequences; if anything remains, it's real input.
-  const stripped = str
-    // SGR mouse: \x1b[<btn;x;yM or m
-    .replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, "")
-    // X10/normal mouse: \x1b[M followed by 3 bytes (btn, x, y) — any bytes incl newline
-    .replace(/\x1b\[M[\s\S]{3}/g, "")
-    // xterm highlight mouse: \x1b[T followed by 6 bytes
-    .replace(/\x1b\[T[\s\S]{6}/g, "")
-    // Focus in / focus out
-    .replace(/\x1b\[[IO]/g, "");
-  return stripped.length > 0;
-}
+// `hasMeaningfulUserInput` lives in electron/shared so the renderer can apply
+// the exact same "did the user actually type here?" rule when deciding whether
+// a write acknowledges a session's notification. Re-exported here because
+// existing importers (and runtime.test.ts) pull it from runtime.js.
+export { hasMeaningfulUserInput };
 
 function createTunnelOriginUrl(remoteConfig: { host?: string; port?: number } = {}): string {
   const rawHost = String(remoteConfig.host || "").trim();

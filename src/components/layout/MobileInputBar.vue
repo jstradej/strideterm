@@ -390,6 +390,9 @@ function toggleMenu(): void {
 
 function sendData(data: string): void {
   if (!targetSessionId.value) return;
+  // The composer writes straight to the transport (no xterm instance on
+  // mobile), so it has to report engagement itself.
+  notifications.resolveByEngagement(targetSessionId.value, data);
   api?.writeTerminal(targetSessionId.value, data);
 }
 
@@ -481,6 +484,7 @@ function sendComposed(): void {
   }
   const sessionId = targetSessionId.value;
   if (!sessionId) return;
+  notifications.resolveByEngagement(sessionId, draft.value || "\r");
   // Empty draft sends a bare Enter — confirming TUI prompts without typing.
   if (!draft.value) {
     api?.writeTerminal(sessionId, "\r");

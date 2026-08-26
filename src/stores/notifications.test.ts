@@ -521,3 +521,76 @@ describe("notification store — cross-window ack sync (BroadcastChannel)", () =
     }
   });
 });
+
+describe("resolveByEngagement — typing acknowledges a session", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+  });
+
+  function seed(kind: string) {
+    const store = useNotificationStore();
+    store.add({ title: "T", body: "B", kind, workspaceId: "ws1", viewId: "ws1:panel1" });
+    return store;
+  }
+
+  it("resolves a finished thread — the completed-agent case", () => {
+    const store = seed("completed");
+    expect(store.sessions[0].state).toBe("finished");
+    expect(store.unreadCount).toBe(1);
+
+    store.resolveByEngagement("ws1:panel1", "y");
+
+    expect(store.sessions[0].state).toBe("resolved");
+    expect(store.unreadCount).toBe(0);
+  });
+
+  it("resolves a waiting thread", () => {
+    const store = seed("waiting");
+    store.resolveByEngagement("ws1:panel1", "\r");
+    expect(store.sessions[0].state).toBe("resolved");
+  });
+
+  it("ignores passive traffic — clicks, wheel and focus do not acknowledge", () => {
+    const store = seed("completed");
+    store.resolveByEngagement("ws1:panel1", "\x1b[<0;40;12M");
+    store.resolveByEngagement("ws1:panel1", "\x1b[<64;10;5M");
+    store.resolveByEngagement("ws1:panel1", "\x1b[I");
+    store.resolveByEngagement("ws1:panel1", "");
+    expect(store.sessions[0].state).toBe("finished");
+    expect(store.unreadCount).toBe(1);
+  });
+
+  it("ignores emulator replies — resizing the window must not acknowledge", () => {
+    const store = seed("completed");
+    // What an agent TUI emits when it re-queries the terminal on SIGWINCH.
+    store.resolveByEngagement("ws1:panel1", "\x1b[8;40;120t");
+    store.resolveByEngagement("ws1:panel1", "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\");
+    store.resolveByEngagement("ws1:panel1", "\x1b[24;80R");
+    store.resolveByEngagement("ws1:panel1", "\x1b[?1;2c");
+    expect(store.sessions[0].state).toBe("finished");
+
+    // …but a keystroke in the same burst still counts.
+    store.resolveByEngagement("ws1:panel1", "\x1b[24;80Ry");
+    expect(store.sessions[0].state).toBe("resolved");
+  });
+
+  it("only touches the session that was typed into", () => {
+    const store = useNotificationStore();
+    store.add({ title: "A", kind: "completed", workspaceId: "ws1", viewId: "ws1:panel1" });
+    store.add({ title: "B", kind: "completed", workspaceId: "ws1", viewId: "ws1:panel2" });
+
+    store.resolveByEngagement("ws1:panel1", "x");
+
+    const byView = new Map(store.sessions.map((s) => [s.viewId, s.state]));
+    expect(byView.get("ws1:panel1")).toBe("resolved");
+    expect(byView.get("ws1:panel2")).toBe("finished");
+  });
+
+  it("is a no-op for an unknown or empty session id", () => {
+    const store = seed("completed");
+    store.resolveByEngagement("ws1:nope", "x");
+    store.resolveByEngagement("", "x");
+    expect(store.sessions[0].state).toBe("finished");
+  });
+});

@@ -13,6 +13,7 @@ import {
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { useAppStore } from "./app.js";
+import { useNotificationStore } from "./notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AppConfig = any;
@@ -64,6 +65,12 @@ export const useTerminalStore = defineStore("terminal", () => {
       shortcutTabDirection,
       downloadTextFile,
       safeFilenamePart,
+      // Typing into a terminal acknowledges that session's notification —
+      // the user demonstrably acted on the result, unlike merely clicking
+      // through to the tab.
+      onUserInput: (sessionId: string, data: string) => {
+        useNotificationStore().resolveByEngagement(sessionId, data);
+      },
       // Pull-up-to-refresh on remote/mobile: when the user keeps swiping
       // past the bottom of the terminal buffer (no more newer content),
       // fetch a fresh /api/state. Local Electron transport doesn't expose

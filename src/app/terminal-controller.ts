@@ -328,6 +328,7 @@ export function createTerminalController({
   downloadTextFile,
   safeFilenamePart,
   onOverscrollRefresh,
+  onUserInput,
 }: {
   views: Ref<Map<string, TerminalView>>;
   buffers: Ref<Map<string, string>>;
@@ -346,6 +347,12 @@ export function createTerminalController({
    * but there's nothing more. Acts as a manual pull-up-to-refresh gesture
    * on mobile remote clients. Optional — desktop and tests don't wire it. */
   onOverscrollRefresh?: () => void;
+  /** Called with every write that originates from the user typing into this
+   * terminal (xterm's onData). Deliberately NOT called for the synthetic
+   * writes this controller makes on the user's behalf (scroll-to-arrow-key
+   * translation, word-jump shortcuts), which are navigation rather than
+   * input. Optional — tests don't wire it. */
+  onUserInput?: (_sessionId: string, _data: string) => void;
 }) {
   // ---------------------------------------------------------------------------
   // Font size: per-transport zoom (Ctrl+wheel, Ctrl+0, pinch, Settings)
@@ -1325,7 +1332,10 @@ export function createTerminalController({
       { passive: true },
     );
 
-    term.onData((data) => api.writeTerminal(sessionId, data));
+    term.onData((data) => {
+      onUserInput?.(sessionId, data);
+      api.writeTerminal(sessionId, data);
+    });
     // Diagnostics render hook, registered exactly once with the view (not on
     // every panel open, which would leak duplicate listeners and double-count).
     // Gated: a no-op boolean check per render while the panel is closed.
