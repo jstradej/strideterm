@@ -72,6 +72,12 @@ interface WorkspaceActionsCtx {
    *   "auto"  — legacy: tab-split unless the grid is already visible. */
   layoutPickerMode: Ref<"grid" | "split" | "auto">;
   getApi: () => Transport;
+  /** Adopt a payload returned by an API call. Re-scopes `payload.workspace`
+   *  (always the DESKTOP's active workspace as the backend builds it) to this
+   *  viewer's own workspace — see store.adoptPayload. Never assign an API
+   *  response to `ctx.payload.value` directly: on a remote/mobile client that
+   *  jumps the tab strip and pane to whatever the desktop has open. */
+  adoptPayload: (payload: StatePayload) => void;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
 }
 
@@ -80,7 +86,7 @@ interface WorkspaceActionsCtx {
  *
  * @param ctx  Shared refs and helpers injected by the app store.
  *   payload, activeViewId, activeSessionId, splitGroup, hiddenViewIds,
- *   workspaceTabs, getApi, withSuppressedBroadcast
+ *   workspaceTabs, getApi, adoptPayload, withSuppressedBroadcast
  */
 export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   // --- Workspace CRUD ----------------------------------------------------
@@ -131,7 +137,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   async function saveWorkspace(draft: AnyApi): Promise<void> {
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(draft)) as StatePayload;
+    ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(draft)) as StatePayload);
   }
 
   /**
@@ -148,7 +154,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     if (/^(Azure DevOps|GitHub) review workspace for /.test(String((ws as AnyApi).notes || ""))) {
       next.notes = "";
     }
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(next)) as StatePayload;
+    ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(next)) as StatePayload);
   }
 
   /**
@@ -160,7 +166,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
     if (!ws || !(ws as AnyApi).review) return;
     const next: AnyApi = { ...(ws as AnyApi), review: { ...(ws as AnyApi).review, writable: true } };
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(next)) as StatePayload;
+    ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(next)) as StatePayload);
   }
 
   /**
@@ -384,7 +390,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       if (!isGitViewId(viewId) && !isDockerViewId(viewId) && _api.closeTerminal) {
         (_api.closeTerminal(viewId) as Promise<StatePayload>)
           .then((p) => {
-            ctx.payload.value = p;
+            ctx.adoptPayload(p);
           })
           .catch((err: Error) => {
             console.warn("[closeTab] failed to close terminal:", err?.message || err);
@@ -413,7 +419,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     (ctx.getApi() as AnyApi)
       .saveWorkspace(nextWorkspace)
       .then((p: StatePayload) => {
-        ctx.payload.value = p;
+        ctx.adoptPayload(p);
       })
       .catch(async (err: Error) => {
         console.warn("[closeTab] failed to save workspace after panel removal:", err?.message || err);
@@ -456,7 +462,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     nextWorkspace.panels.push(panel);
     nextWorkspace.activePanelId = panelId;
     await ctx.withSuppressedBroadcast(async () => {
-      ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
+      ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
     });
     ctx.activeViewId.value = `${nextWorkspace.id}:${panelId}`;
   }
@@ -508,7 +514,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
           ? `task-dashboard:${panelId}`
           : `${nextWorkspace.id}:${panelId}`;
     await ctx.withSuppressedBroadcast(async () => {
-      ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
+      ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
     });
     ctx.activeViewId.value = nextViewId;
   }
@@ -582,7 +588,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
   async function restartSession(sessionId: string): Promise<void> {
     if (!sessionId) return;
-    ctx.payload.value = (await ctx.getApi().restartTerminal(sessionId)) as StatePayload;
+    ctx.adoptPayload((await ctx.getApi().restartTerminal(sessionId)) as StatePayload);
     ctx.activeViewId.value = sessionId;
   }
 
@@ -629,7 +635,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     }
 
     try {
-      ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
+      ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
     } catch (err) {
       if (prevPayload) ctx.payload.value = prevPayload;
       throw err;
@@ -645,16 +651,18 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
       p.id === target.panel.id ? { ...p, title: title.trim() } : p,
     );
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
+    ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
   }
 
   async function createWorktree(workspaceId: string, name: string, rootPath = ""): Promise<void> {
     if (!workspaceId || !name) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).createWorktree({
-      workspaceId,
-      name,
-      rootPath,
-    })) as StatePayload;
+    ctx.adoptPayload(
+      (await (ctx.getApi() as AnyApi).createWorktree({
+        workspaceId,
+        name,
+        rootPath,
+      })) as StatePayload,
+    );
     ctx.splitGroup.value = null;
     ctx.hiddenViewIds.value = new Set();
   }
@@ -679,7 +687,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       } as StatePayload;
     }
     try {
-      ctx.payload.value = (await (ctx.getApi() as AnyApi).reorderWorkspaces(orderedIds)) as StatePayload;
+      ctx.adoptPayload((await (ctx.getApi() as AnyApi).reorderWorkspaces(orderedIds)) as StatePayload);
     } catch (err) {
       if (prevPayload) ctx.payload.value = prevPayload;
       throw err;

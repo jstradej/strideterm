@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { Transport } from "../transport.js";
+import type { StatePayload } from "../../electron/shared/types/state.js";
 import { rlog } from "../lib/renderer-log.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -402,8 +403,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const response = (await withGitTimeout(runner(), opts.timeoutMs ?? GIT_ACTION_TIMEOUT_MS, busyAction)) as any;
       if (response?.payload) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        appStore.payload = response.payload as any;
+        // adoptPayload, not `appStore.payload =`: the backend builds
+        // payload.workspace from the DESKTOP's active workspace, so a raw
+        // assignment jumps a remote/mobile viewer to whatever the desktop
+        // has open (see store.adoptPayload).
+        appStore.adoptPayload(response.payload as StatePayload);
       }
       const result = response?.result;
       // Success path: surface a transient toast and drop any prior banner.
@@ -1385,8 +1389,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const nextPayload = await (_api as any).openLazygitSession({ workspaceId, rootPath });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      appStore.payload = nextPayload as any;
+      appStore.adoptPayload(nextPayload as StatePayload);
       appStore.activeViewId = `${workspaceId}:lazygit`;
     } catch (error) {
       // openLazygitSession's return shape (a raw payload, not { payload, result })

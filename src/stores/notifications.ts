@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
+import type { StatePayload } from "../../electron/shared/types/state.js";
 
 /**
  * Notification center state — session-grouped (Plan § 3.3.1).
@@ -479,8 +480,7 @@ export const useNotificationStore = defineStore("notifications", () => {
         if (api?.clearAllAttention) {
           (api.clearAllAttention() as Promise<unknown>)
             .then((nextPayload) => {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              if (nextPayload) appStore.payload = nextPayload as any;
+              if (nextPayload) appStore.adoptPayload(nextPayload as StatePayload);
             })
             .catch(() => {});
         }
@@ -506,8 +506,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       sessionId,
       { dismissed },
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (next) appStore.payload = next as any;
+    if (next) appStore.adoptPayload(next as StatePayload);
   }
 
   function togglePanel(): void {

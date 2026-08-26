@@ -7,7 +7,7 @@ import { resolveViewerProfileId } from "./app.js";
 type AnyApi = any;
 
 function makeCtx(payloadValue: AnyApi) {
-  return {
+  const ctx = {
     overlay: ref<string | null>(null),
     overlayProps: ref<Record<string, unknown>>({}),
     contextMenu: ref(null),
@@ -20,12 +20,16 @@ function makeCtx(payloadValue: AnyApi) {
     suppressBroadcast: ref(false),
     hiddenViewIds: ref(new Set<string>()),
     getApi: () => ({}),
+    adoptPayload: (next: AnyApi) => {
+      ctx.payload.value = next;
+    },
     withSuppressedBroadcast: async (fn: () => Promise<void>) => fn(),
     getPanelByViewId: () => null,
     createWorktree: async () => undefined,
     quickAddTemplateTab: async () => undefined,
     resolveViewerProfileId,
   } as AnyApi;
+  return ctx;
 }
 
 describe("createDialogActions.openProfilesDialog", () => {
@@ -525,6 +529,9 @@ describe("makeOpenConnectionDialog", () => {
           },
         }),
         getApi: () => ({}),
+        adoptPayload: (next: AnyApi) => {
+          ctx.payload.value = next;
+        },
       } as AnyApi;
       const { dialogCalls, openDialog, closeDialog, currentProfileId } = makeDeps();
       const open = makeOpenConnectionDialog(ctx, openDialog, closeDialog, currentProfileId, {
@@ -572,13 +579,17 @@ describe("makeOpenQuickFixWizard", () => {
   }
 
   function makeQuickFixCtx(connections: AnyApi[]) {
-    return {
+    const ctx = {
       payload: shallowRef({
         appState: { settings: { integrations: { github: { connections }, azureDevops: { connections } } } },
       }),
       activeViewId: ref<string | null>("some-view"),
       splitGroup: ref<AnyApi>({ layout: "grid", viewIds: [] }),
+      adoptPayload: (next: AnyApi) => {
+        ctx.payload.value = next;
+      },
     } as AnyApi;
+    return ctx;
   }
 
   it('github: passes provider: "github" in QuickFixWizardDialog props', () => {

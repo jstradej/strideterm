@@ -10,14 +10,36 @@ import type { Transport } from "../transport.js";
 // when no payload has been loaded, which is what the other describe blocks
 // below implicitly relied on before this mock existed.
 const getGitSnapshot = vi.fn((_workspaceId: string, _rootPath?: string | null): unknown => null);
+// Git actions adopt the backend payload through the app store. It MUST be
+// adoptPayload (viewer-scoped) and never a raw `appStore.payload =` — the
+// backend's payload.workspace is always the DESKTOP's active workspace, so a
+// raw assignment jumps a remote/mobile viewer into another workspace.
+const adoptPayload = vi.fn();
 vi.mock("./app.js", () => ({
-  useAppStore: () => ({ getGitSnapshot }),
+  useAppStore: () => ({ getGitSnapshot, adoptPayload }),
 }));
 
 beforeEach(() => {
   setActivePinia(createPinia());
   getGitSnapshot.mockReset();
   getGitSnapshot.mockReturnValue(null);
+  adoptPayload.mockReset();
+});
+
+describe("git-ui store", () => {
+  describe("runGitAction payload adoption", () => {
+    test("adopts the action payload through adoptPayload, not a raw store write", async () => {
+      const store = useGitUiStore();
+      const responsePayload = { appState: { workspaces: [] } };
+      store.init({
+        gitFetch: async () => ({ payload: responsePayload, result: { ok: true } }),
+      } as unknown as Transport);
+
+      await store.gitFetch("ws1");
+
+      expect(adoptPayload).toHaveBeenCalledWith(responsePayload);
+    });
+  });
 });
 
 describe("git-ui store", () => {

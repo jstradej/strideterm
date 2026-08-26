@@ -77,6 +77,9 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
     optimisticallyDeletedIds,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     getApi: () => api as any,
+    adoptPayload: (next: AnyApi) => {
+      payload.value = next;
+    },
     withSuppressedBroadcast: async (fn: () => Promise<void>) => fn(),
   };
 

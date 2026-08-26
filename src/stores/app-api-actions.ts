@@ -24,7 +24,12 @@ interface ApiActionsCtx {
   remoteAccessMode: Ref<string>;
   selectedLanUrl: Ref<string>;
   getApi: () => Transport;
-  adoptPayload?: (payload: StatePayload) => void;
+  /** Adopt a payload returned by an API call. Re-scopes `payload.workspace`
+   *  (always the DESKTOP's active workspace as the backend builds it) to this
+   *  viewer's own workspace — see store.adoptPayload. Never assign an API
+   *  response to `ctx.payload.value` directly: on a remote/mobile client that
+   *  jumps the tab strip and pane to whatever the desktop has open. */
+  adoptPayload: (payload: StatePayload) => void;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
   /** In-app ConfirmDialog helper — replaces native window.confirm so the
    *  prompt is themed, non-blocking, and works in remote/mobile clients
@@ -206,11 +211,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
       }
       return;
     }
-    if (ctx.adoptPayload) {
-      ctx.adoptPayload(nextPayload);
-      return;
-    }
-    ctx.payload.value = nextPayload;
+    ctx.adoptPayload(nextPayload);
   }
 
   // --- Azure -----------------------------------------------------------
@@ -805,7 +806,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function activateProfile(profileId: string): Promise<void> {
     await ctx.withSuppressedBroadcast(async () => {
-      ctx.payload.value = (await ctx.getApi().activateProfile(profileId)) as StatePayload;
+      ctx.adoptPayload((await ctx.getApi().activateProfile(profileId)) as StatePayload);
     });
     // Use restored session/view from the backend payload rather than blindly
     // clearing. The backend now saves and restores lastActiveWorkspaceId/SessionId

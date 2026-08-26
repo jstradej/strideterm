@@ -626,6 +626,23 @@ export const useAppStore = defineStore("app", () => {
 
   // --- Helpers ---
 
+  /**
+   * Adopt a payload that came back from an API call.
+   *
+   * `payload.workspace` is always the DESKTOP's active workspace — the backend
+   * builds it from the global `appState.activeWorkspaceId` and the remote
+   * registry only injects `remoteClient` next to it. A viewer whose own active
+   * workspace differs (a remote/mobile client, or a second desktop window) must
+   * re-scope it to its OWN workspace before adopting, or its tab strip and pane
+   * silently jump to whatever the desktop has open. Every write that adopts an
+   * API response goes through here; locally-composed optimistic payloads keep
+   * the already-scoped `workspace` and can assign `payload.value` directly.
+   */
+  function adoptPayload(nextPayload: StatePayload): void {
+    payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
+    _cacheCurrentWorkspace();
+  }
+
   /** Save workspace-specific payload parts for the current workspace. */
   function _cacheCurrentWorkspace(): void {
     const p = payload.value as AnyApi;
@@ -648,25 +665,35 @@ export const useAppStore = defineStore("app", () => {
     const workspace = (appState.workspaces || []).find((ws: AnyApi) => ws.id === workspaceId);
     if (!workspace) return null;
 
-    // Strategy 2: return full cached workspace payload if available
-    const cached = _workspacePayloadCache.get(workspaceId);
-    if (cached?.workspace) return cached.workspace;
-
-    // Strategy 1 fallback: build snapshot, no cache → status stays "idle"
+    // The panel list is always rebuilt from `appState.workspaces`, never taken
+    // from the cache: the cached descriptor is a snapshot of the last broadcast,
+    // so a tab added / renamed / closed since then would be missing from it. The
+    // cache only contributes live per-session data (status, activity, exit code)
+    // that `appState` doesn't carry — a panel with no cache entry stays "idle".
+    const cachedSessions = new Map(
+      (((_workspacePayloadCache.get(workspaceId)?.workspace as AnyApi)?.sessions || []) as AnyApi[]).map(
+        (session: AnyApi) => [session.sessionId, session],
+      ),
+    );
     return {
       workspace,
       project: workspace,
       sessions: ((workspace as AnyApi).panels || [])
         .filter((panel: AnyApi) => !/^https?:\/\//i.test(panel.command || ""))
-        .map((panel: AnyApi) => ({
-          sessionId: `${(workspace as AnyApi).id}:${panel.id}`,
-          panelId: panel.id,
-          title: panel.title,
-          command: panel.command,
-          launch: panel.launch,
-          startup: panel.startup,
-          status: "idle",
-        })),
+        .map((panel: AnyApi) => {
+          const sessionId = `${(workspace as AnyApi).id}:${panel.id}`;
+          const cached = cachedSessions.get(sessionId) as AnyApi | undefined;
+          return {
+            ...(cached || {}),
+            sessionId,
+            panelId: panel.id,
+            title: panel.title,
+            command: panel.command,
+            launch: panel.launch,
+            startup: panel.startup,
+            status: cached?.status || "idle",
+          };
+        }),
     };
   }
 
@@ -686,10 +713,14 @@ export const useAppStore = defineStore("app", () => {
     const currentWorkspaceId =
       ((sourcePayload as AnyApi).workspace?.workspace || (sourcePayload as AnyApi).workspace?.project)?.id || "";
     if (currentWorkspaceId === workspaceId) return sourcePayload;
-    const cached = _workspacePayloadCache.get(workspaceId);
+    // Always rebuild rather than handing back the cached descriptor wholesale:
+    // the cache is as old as the last broadcast, so a tab this viewer just
+    // added/renamed/closed would be missing from it. The rebuild takes the
+    // panel list from `sourcePayload.appState` and borrows live session state
+    // from the cache — see buildWorkspacePayloadSnapshot.
     return {
       ...(sourcePayload as AnyApi),
-      workspace: cached?.workspace || buildWorkspacePayloadSnapshot(workspaceId, sourcePayload),
+      workspace: buildWorkspacePayloadSnapshot(workspaceId, sourcePayload),
     } as StatePayload;
   }
 
@@ -1276,8 +1307,7 @@ export const useAppStore = defineStore("app", () => {
             .refreshGit(wsId)
             .then((nextPayload: StatePayload) => {
               if (nextPayload && !pendingWorkspaceActivationId.value) {
-                payload.value = maybeApplyMockFromUrl(nextPayload as AnyApi) as StatePayload;
-                _cacheCurrentWorkspace();
+                adoptPayload(nextPayload);
               }
             })
             .catch((err: unknown) => {
@@ -1500,6 +1530,7 @@ export const useAppStore = defineStore("app", () => {
     enableWorkspaceGrid,
     layoutPickerMode,
     getApi,
+    adoptPayload,
     withSuppressedBroadcast,
   });
 
@@ -1516,6 +1547,7 @@ export const useAppStore = defineStore("app", () => {
     suppressBroadcast,
     hiddenViewIds,
     getApi,
+    adoptPayload,
     withSuppressedBroadcast,
     getPanelByViewId,
     createWorktree: workspaceActions.createWorktree,
@@ -1623,10 +1655,7 @@ export const useAppStore = defineStore("app", () => {
     remoteAccessMode,
     selectedLanUrl,
     getApi,
-    adoptPayload: (nextPayload: StatePayload) => {
-      payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
-      _cacheCurrentWorkspace();
-    },
+    adoptPayload,
     withSuppressedBroadcast,
     confirmInApp: workspaceActions.confirmInApp,
     resolveViewerProfileId,
@@ -1725,6 +1754,7 @@ export const useAppStore = defineStore("app", () => {
     // Core actions
     init,
     handleBroadcastPayload,
+    adoptPayload,
     withSuppressedBroadcast,
     activateWorkspace,
     activateView,

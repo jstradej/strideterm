@@ -7,7 +7,7 @@ import { resolveViewerProfileId } from "./app.js";
 type AnyApi = any;
 
 function makeCtx(payloadValue: AnyApi) {
-  return {
+  const ctx = {
     payload: shallowRef(payloadValue),
     activeViewId: ref<string | null>(null),
     activeSessionId: ref<string | null>(null),
@@ -15,10 +15,14 @@ function makeCtx(payloadValue: AnyApi) {
     remoteAccessMode: ref("lan"),
     selectedLanUrl: ref(""),
     getApi: () => ({ isRemote: false }),
+    adoptPayload: (next: AnyApi) => {
+      ctx.payload.value = next;
+    },
     withSuppressedBroadcast: async (fn: () => Promise<void>) => fn(),
     confirmInApp: async () => true,
     resolveViewerProfileId,
   } as AnyApi;
+  return ctx;
 }
 
 describe("createApiActions.getRemoteShareUrl", () => {

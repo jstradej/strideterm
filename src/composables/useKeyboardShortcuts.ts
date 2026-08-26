@@ -166,7 +166,7 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
     if (event.key.toLowerCase() === "r" && appStore.activeSessionId) {
       event.preventDefault();
       const nextPayload = await api.restartTerminal(appStore.activeSessionId);
-      appStore.payload = nextPayload as StatePayload;
+      appStore.adoptPayload(nextPayload as StatePayload);
       termStore.focusActiveTerminal();
       return;
     }

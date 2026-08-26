@@ -531,6 +531,87 @@ describe("useAppStore — remote mode identity", () => {
     expect((store as AnyApi).payload.appState.activeWorkspaceId).toBe("ws1");
   });
 
+  it("adds a tab on its OWN workspace when saveWorkspace returns a desktop-scoped payload", async () => {
+    // Repro of the mobile "+ Tab" bug: the phone is on ws-mine, the desktop is
+    // on ws-desktop. saveWorkspace answers with getPayload(), whose `workspace`
+    // is ALWAYS the desktop's active workspace — adopting it raw jumped the
+    // phone's tab strip to ws-desktop and left the new tab nowhere to be seen.
+    const wsMine = {
+      id: "ws-mine",
+      name: "Mine",
+      profileId: "p1",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      activePanelId: "shell",
+      kind: "terminal",
+      cwd: "/tmp",
+    };
+    const wsDesktop = {
+      id: "ws-desktop",
+      name: "Desktop",
+      profileId: "p1",
+      panels: [{ id: "other", title: "Other", command: "" }],
+      activePanelId: "other",
+      kind: "terminal",
+      cwd: "/tmp",
+    };
+    const desktopWorkspacePayload = {
+      workspace: wsDesktop,
+      project: wsDesktop,
+      sessions: [{ sessionId: "ws-desktop:other", panelId: "other", title: "Other", command: "", status: "running" }],
+    };
+    const initialPayload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws-mine", activeSessionId: "ws-mine:shell" },
+      appState: {
+        activeWorkspaceId: "ws-desktop",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [wsMine, wsDesktop],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-desktop", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+      workspace: desktopWorkspacePayload,
+    });
+    const transport = makeRemoteTransport(initialPayload);
+    // The backend persists the workspace it was handed and answers with a
+    // payload whose `workspace` is still the DESKTOP's.
+    (transport as AnyApi).saveWorkspace = vi.fn((saved: AnyApi) =>
+      Promise.resolve({
+        ...initialPayload,
+        appState: {
+          ...initialPayload.appState,
+          workspaces: (initialPayload.appState.workspaces as AnyApi[]).map((w: AnyApi) =>
+            w.id === saved.id ? saved : w,
+          ),
+        },
+        workspace: desktopWorkspacePayload,
+      }),
+    );
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await store.quickAddTemplateTab("claude", "Claude Code");
+
+    const saved = ((transport as AnyApi).saveWorkspace as AnyApi).mock.calls[0][0] as AnyApi;
+    const newPanel = saved.panels.at(-1);
+    // The tab was added to the phone's workspace, not the desktop's.
+    expect(saved.id).toBe("ws-mine");
+    expect(newPanel.command).toBe("claude");
+    // The view stays on the phone's workspace...
+    expect(store.activeWorkspace.id).toBe("ws-mine");
+    // ...and the new tab is both visible and active.
+    expect((store.workspaceTabs as AnyApi[]).map((t: AnyApi) => t.id)).toContain(`ws-mine:${newPanel.id}`);
+    expect(store.activeViewId).toBe(`ws-mine:${newPanel.id}`);
+  });
+
   it("keeps remote review tab active when Azure seen returns a desktop-scoped payload", async () => {
     const desktopWs = {
       id: "ws-desktop",

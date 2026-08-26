@@ -21,6 +21,12 @@ interface DialogActionsCtx {
   suppressBroadcast: Ref<boolean>;
   hiddenViewIds: Ref<Set<string>>;
   getApi: () => Transport;
+  /** Adopt a payload returned by an API call. Re-scopes `payload.workspace`
+   *  (always the DESKTOP's active workspace as the backend builds it) to this
+   *  viewer's own workspace — see store.adoptPayload. Never assign an API
+   *  response to `ctx.payload.value` directly: on a remote/mobile client that
+   *  jumps the tab strip and pane to whatever the desktop has open. */
+  adoptPayload: (payload: StatePayload) => void;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getPanelByViewId: (viewId: string, workspace?: any) => any;
@@ -123,7 +129,7 @@ interface ConnectionDialogConfig {
 }
 
 export function makeOpenConnectionDialog(
-  ctx: Pick<DialogActionsCtx, "payload" | "getApi">,
+  ctx: Pick<DialogActionsCtx, "payload" | "getApi" | "adoptPayload">,
   openDialog: (name: string, props?: Record<string, unknown>) => void,
   closeDialog: () => void,
   currentProfileId: () => string,
@@ -140,7 +146,7 @@ export function makeOpenConnectionDialog(
       onSave: async (draft: AnyApi) => {
         draft.profileId = currentProfileId();
         const result = (await config.saveConnection(ctx.getApi() as AnyApi, draft)) as AnyApi;
-        ctx.payload.value = (result.payload || result) as StatePayload;
+        ctx.adoptPayload((result.payload || result) as StatePayload);
         closeDialog();
       },
     });
@@ -161,7 +167,7 @@ interface QuickFixWizardConfig {
 }
 
 export function makeOpenQuickFixWizard(
-  ctx: Pick<DialogActionsCtx, "payload" | "activeViewId" | "splitGroup">,
+  ctx: Pick<DialogActionsCtx, "payload" | "activeViewId" | "splitGroup" | "adoptPayload">,
   openDialog: (name: string, props?: Record<string, unknown>) => void,
   closeDialog: () => void,
   currentProfileId: () => string,
@@ -190,7 +196,7 @@ export function makeOpenQuickFixWizard(
       onCreate: (result: AnyApi) => {
         closeDialog();
         if (result) {
-          ctx.payload.value = result as StatePayload;
+          ctx.adoptPayload(result as StatePayload);
           ctx.activeViewId.value = null;
           ctx.splitGroup.value = null;
         }
@@ -205,8 +211,8 @@ export function makeOpenQuickFixWizard(
  * @param ctx  Shared refs and helpers injected by the app store.
  *   overlay, overlayProps, contextMenu, layoutPickerAnchor,
  *   payload, activeViewId, activeSessionId, splitGroup, suppressBroadcast,
- *   hiddenViewIds, getApi, withSuppressedBroadcast, getPanelByViewId,
- *   createWorktree
+ *   hiddenViewIds, getApi, adoptPayload, withSuppressedBroadcast,
+ *   getPanelByViewId, createWorktree
  */
 export function createDialogActions(ctx: DialogActionsCtx) {
   // --- Dialog / overlay --------------------------------------------------
@@ -294,7 +300,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
           p.id === target.panel.id ? { ...p, title: nextTitle, command: nextCommand } : p,
         );
-        ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
+        ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
         // If the command changed and a live PTY is running, ask whether to
         // reload now. The saved command otherwise only takes effect the next
         // time the tab is launched, which is surprising when you just clicked
@@ -311,7 +317,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             onConfirm: async () => {
               closeDialog();
               try {
-                ctx.payload.value = (await (ctx.getApi() as AnyApi).restartTerminal(viewId)) as StatePayload;
+                ctx.adoptPayload((await (ctx.getApi() as AnyApi).restartTerminal(viewId)) as StatePayload);
                 ctx.activeViewId.value = viewId;
               } catch (err) {
                 console.error("[edit-tab] reload after save failed:", err);
@@ -356,7 +362,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
           p.id === target.panel.id ? { ...p, notes: next } : p,
         );
-        ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
+        ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
         closeDialog();
       },
     });
@@ -456,9 +462,9 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         // the dialog footer instead of swallowing them into devtools console
         // and silently closing the dialog.
         await ctx.withSuppressedBroadcast(async () => {
-          ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(plain)) as StatePayload;
+          ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(plain)) as StatePayload);
           if (isNew) {
-            ctx.payload.value = (await (ctx.getApi() as AnyApi).activateWorkspace(plain.id)) as StatePayload;
+            ctx.adoptPayload((await (ctx.getApi() as AnyApi).activateWorkspace(plain.id)) as StatePayload);
           }
         });
         closeDialog();
@@ -521,7 +527,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       onSave: async (patch: AnyApi) => {
         try {
           const plain = JSON.parse(JSON.stringify(patch)) as AnyApi;
-          ctx.payload.value = (await (ctx.getApi() as AnyApi).updateSettings(plain)) as StatePayload;
+          ctx.adoptPayload((await (ctx.getApi() as AnyApi).updateSettings(plain)) as StatePayload);
           closeDialog();
         } catch (err) {
           ctx.overlayProps.value = {
@@ -578,7 +584,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       desktopOccupancy,
       onCancel: closeDialog,
       onSave: async (profile: AnyApi) => {
-        ctx.payload.value = (await (api as AnyApi).saveProfile(profile)) as StatePayload;
+        ctx.adoptPayload((await (api as AnyApi).saveProfile(profile)) as StatePayload);
       },
       onActivate: async (profileId: string) => {
         ctx.suppressBroadcast.value = true;
@@ -598,7 +604,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           } as StatePayload;
         }
         try {
-          ctx.payload.value = (await (api as AnyApi).activateProfile(profileId)) as StatePayload;
+          ctx.adoptPayload((await (api as AnyApi).activateProfile(profileId)) as StatePayload);
         } catch (err) {
           if (previousPayload) ctx.payload.value = previousPayload;
           ctx.suppressBroadcast.value = false;
@@ -623,7 +629,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       },
       onDelete: async (profileId: string, options?: { taskAction?: "pause" | "stop" }) => {
         try {
-          ctx.payload.value = (await (api as AnyApi).deleteProfile(profileId, options)) as StatePayload;
+          ctx.adoptPayload((await (api as AnyApi).deleteProfile(profileId, options)) as StatePayload);
         } catch (err) {
           const msg = ((err as Error)?.message || String(err || ""))
             .replace(/^Error invoking remote method '[^']+':\s*/, "")
@@ -750,7 +756,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     (ctx.getApi() as AnyApi)
       .recheckClaude?.()
       .then((result: AnyApi) => {
-        if (result?.payload) ctx.payload.value = result.payload as StatePayload;
+        if (result?.payload) ctx.adoptPayload(result.payload as StatePayload);
       })
       .catch((err: unknown) => {
         rlog("warn", "task dialog: recheckClaude failed, provider availability may be stale", {
@@ -892,7 +898,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           const plainConfig = JSON.parse(JSON.stringify(config)) as AnyApi;
           const result = (await (ctx.getApi() as AnyApi).createTaskWorkspace(plainConfig)) as AnyApi;
           if (result?.payload) {
-            ctx.payload.value = result.payload as StatePayload;
+            ctx.adoptPayload(result.payload as StatePayload);
           }
           closeDialog();
           // Show warning if another task workspace uses the same directory
@@ -938,7 +944,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         try {
           const result = (await (ctx.getApi() as AnyApi).createCompanionTask(payload)) as AnyApi;
           if (result?.payload) {
-            ctx.payload.value = result.payload as StatePayload;
+            ctx.adoptPayload(result.payload as StatePayload);
           }
           closeDialog();
           if (result?.workspaceId) {
@@ -958,7 +964,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     const api = ctx.getApi() as AnyApi;
     try {
       const result = (await api.startTask({ workspaceId })) as AnyApi;
-      if (result?.payload) ctx.payload.value = result.payload as StatePayload;
+      if (result?.payload) ctx.adoptPayload(result.payload as StatePayload);
     } catch (err) {
       console.error("[task] start failed:", err);
     }
@@ -996,7 +1002,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             const settingsResult = (await api.updateSettings({
               notifications: { ...(settings as AnyApi), agentHook: true },
             })) as AnyApi;
-            if (settingsResult?.payload) ctx.payload.value = settingsResult.payload as StatePayload;
+            if (settingsResult?.payload) ctx.adoptPayload(settingsResult.payload as StatePayload);
             // Then configure the hook for the worker provider
             if (hookApi?.configure) await hookApi.configure();
           } catch (err) {
