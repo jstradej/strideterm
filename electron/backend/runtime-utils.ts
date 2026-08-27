@@ -268,14 +268,16 @@ export function findWorkspace(
 }
 
 /**
- * Single choke point for "the user actually navigated to this workspace" —
+ * Single choke point for "the user actually worked in this workspace" —
  * stamps `lastUsedAt` on the target workspace inside a store-mutation draft.
- * Call this ONLY from activation handlers, after any profile-aware guard
- * (assertWorkspaceInViewerProfile / RemoteClientRegistry validation) has
- * already passed. Automatic signals — PTY output, git/PR polling, task
- * runner progress, attention events — must never call this; they would
- * otherwise make the sidebar's "recent" view track background activity
- * instead of what the user actually opened.
+ * Two callers qualify: activation handlers (after any profile-aware guard —
+ * assertWorkspaceInViewerProfile / RemoteClientRegistry validation — has
+ * passed), and viewer-originated typing into one of its sessions
+ * (runtime's stampWorkspaceUsedByTyping, which throttles the persist).
+ * Automatic signals — PTY output, git/PR polling, task runner progress,
+ * attention events — must never call this; they would otherwise make the
+ * sidebar's "recent" view track background activity instead of what the
+ * user actually did.
  */
 export function markWorkspaceUsed(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

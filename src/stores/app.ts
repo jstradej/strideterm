@@ -280,10 +280,13 @@ export const useAppStore = defineStore("app", () => {
     const result = workspaces.filter((ws: AnyApi) => (ws.profileId || "default") === activeProfileId);
     // Include names, panel counts, and badge/accent — these change on
     // rename/add-tab/remove-tab and on editing the workspace icon/color.
+    // `lastUsedAt` belongs here too: the sidebar's recent view buckets by it,
+    // so leaving it out kept every activation stamp invisible and pinned a
+    // just-opened workspace in "Older" for the rest of the session.
     const key = result
       .map(
         (ws: AnyApi) =>
-          `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}:${ws.icon || ""}:${ws.color || ""}`,
+          `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}:${ws.icon || ""}:${ws.color || ""}:${ws.lastUsedAt || ""}`,
       )
       .join(",");
     if (key === _prevFilteredWsKey) return _prevFilteredWs;

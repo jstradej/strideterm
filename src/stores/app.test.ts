@@ -1302,3 +1302,38 @@ describe("resolveViewerProfileId — pinned fallback order", () => {
     });
   });
 });
+
+// The sidebar's "recent" view buckets workspaces by `lastUsedAt`, which the
+// backend stamps on every activation. `filteredWorkspaces` memoizes its result
+// behind a per-workspace fingerprint — if that fingerprint omits `lastUsedAt`,
+// a freshly activated workspace keeps the pre-activation object and stays
+// stuck in the "Older" section for the rest of the session.
+describe("useAppStore — filteredWorkspaces reflects a lastUsedAt stamp", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  it("a broadcast that only changes lastUsedAt invalidates the memo", async () => {
+    const initial = makeBasePayload();
+    const transport = makeElectronTransport(initial);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+
+    // Prime the memo.
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws1", "ws2"]);
+    expect(store.filteredWorkspaces[0].lastUsedAt).toBeUndefined();
+
+    const stampedAt = "2026-08-27T09:06:53.965Z";
+    const next = makeBasePayload();
+    next.appState.workspaces[0] = { ...next.appState.workspaces[0], lastUsedAt: stampedAt };
+    (transport as AnyApi)._push(next);
+    await nextTick();
+
+    expect(store.filteredWorkspaces[0].lastUsedAt).toBe(stampedAt);
+  });
+});

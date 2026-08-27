@@ -9842,6 +9842,68 @@ describe("workspace lastUsedAt — activation stamping", () => {
     expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-b1")?.lastUsedAt).toBeUndefined();
   });
 
+  test("a viewer typing into a session stamps its workspace", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
+    await fixture.store.flush();
+
+    expect(recentIso(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt)).toBe(true);
+  });
+
+  test("an internal writer (task runner injecting a prompt) stamps nothing", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "injected prompt\r");
+    await fixture.store.flush();
+
+    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBeUndefined();
+  });
+
+  test("clicking into a pane to watch it (mouse escapes only) stamps nothing", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "\x1b[<0;10;5M", "win-1");
+    await fixture.store.flush();
+
+    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBeUndefined();
+  });
+
+  test("keystrokes within the throttle window cost a single persist", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "l", "win-1");
+    await fixture.store.flush();
+    const firstStamp = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt;
+    expect(firstStamp).toBeDefined();
+
+    for (const char of "s -la\r") fixture.runtime.writeToSession("ws-a1:shell", char, "win-1");
+    await fixture.store.flush();
+
+    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBe(firstStamp);
+  });
+
+  test("input blocked by another viewer's lease stamps nothing", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    // win-1 owns the lease; its own typing stamps.
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
+    await fixture.store.flush();
+    const stampedAt = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt;
+
+    // A second viewer is blocked — those keystrokes never reached the PTY, so
+    // they are not "the user working here" either.
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "x", "win-2")).toMatchObject({ blocked: true });
+    await fixture.store.flush();
+
+    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBe(stampedAt);
+  });
+
   test("a background git refresh never touches lastUsedAt (same principle covers PR polling and attention)", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);

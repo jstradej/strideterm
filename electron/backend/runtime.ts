@@ -330,6 +330,17 @@ export async function createRuntime({
   const INPUT_LEASE_TTL_MS = 45_000;
   const sessionInputLeases = new Map<string, { viewerId: string; expiresAt: number }>();
 
+  // --- Recency stamping from real typing ---
+  // Activation alone is a weak "the user works here" signal: you can leave a
+  // workspace open for hours in another window while actually typing in this
+  // one. Typing into a session is the strongest signal there is, so it stamps
+  // `lastUsedAt` too — but every keystroke goes through writeToSession, and
+  // every store.mutate persists the state file, so the stamp is throttled per
+  // workspace. A minute of granularity is invisible in a sidebar that buckets
+  // by the hour and renders ages in whole minutes.
+  const TYPING_STAMP_INTERVAL_MS = 60_000;
+  const lastTypingStampAt = new Map<string, number>();
+
   const createStoreImpl = dependencies.createStore || createStore;
   const createCredentialStoreImpl = dependencies.createCredentialStore || createCredentialStore;
   const createAzureReviewStoreImpl = dependencies.createAzureReviewStore || createAzureReviewStore;
@@ -4115,6 +4126,24 @@ export async function createRuntime({
   }
 
   /**
+   * Stamp `lastUsedAt` because the user typed into this workspace. Throttled
+   * (see TYPING_STAMP_INTERVAL_MS) and fire-and-forget: writeToSession is
+   * synchronous and must never wait on a state persist. Only viewer-originated
+   * meaningful input reaches here — never task-runner writes or PTY output.
+   */
+  function stampWorkspaceUsedByTyping(workspaceId: string): void {
+    const now = Date.now();
+    if (now - (lastTypingStampAt.get(workspaceId) ?? 0) < TYPING_STAMP_INTERVAL_MS) return;
+    lastTypingStampAt.set(workspaceId, now);
+    store
+      .mutate((draft: AppState) => markWorkspaceUsed(draft, workspaceId))
+      .then(() => broadcastState())
+      .catch((error: unknown) => {
+        log.warn("lastUsedAt typing stamp failed", { workspaceId, err: (error as Error)?.message });
+      });
+  }
+
+  /**
    * Mirror an activation into a remote viewer's context: when a viewer-id
    * names a remote client and the workspace lives in its profile, the
    * client's own active workspace follows the operation (e.g. opening a PR
@@ -5903,11 +5932,12 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     writeToSession(sessionId: any, data: any, viewerId?: string) {
+      const isUserTyping = hasMeaningfulUserInput(data);
       // Input lease: only viewer-originated MEANINGFUL typing participates —
       // mouse-reporting escapes from a viewer that merely clicked to watch
       // neither grab nor get blocked by the lease, and internal writers
       // (no viewerId — task runner, tests) always pass through.
-      if (viewerId && hasMeaningfulUserInput(data)) {
+      if (viewerId && isUserTyping) {
         const verdict = acquireSessionInputLease(String(sessionId), viewerId);
         if (!verdict.ok) {
           log.info("terminal input blocked by input lease", {
@@ -5939,11 +5969,15 @@ export async function createRuntime({
       // Pause task runner only on real typing — mouse clicks and focus events
       // emit escape sequences too (e.g. \x1b[<0;x;yM) and would otherwise pause
       // the task just because the user clicked into the panel to watch.
-      if (hasMeaningfulUserInput(data)) {
+      if (isUserTyping) {
         taskRunner.onUserInput(sessionId);
       }
       const descriptor = parseSessionId(sessionId);
       if (descriptor) {
+        // Same rule as the lease: a viewer typing is the user working here.
+        // An internal writer (no viewerId) is the task runner driving an
+        // agent, which must never look like manual use.
+        if (viewerId && isUserTyping) stampWorkspaceUsedByTyping(descriptor.workspaceId);
         const current = projectAlerts.get(descriptor.workspaceId);
         const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
         if (alert && Date.now() - new Date(alert.at).getTime() >= ATTENTION_MIN_DISPLAY_MS) {

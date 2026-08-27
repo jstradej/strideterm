@@ -250,3 +250,39 @@ describe("buildRecentProjection — active-workspace override", () => {
     expect(ids).toEqual(["P", "ACT", "X"]);
   });
 });
+
+describe("buildRecentProjection — the chip never borrows background activity", () => {
+  it("drops the tree view's lastActivity so an Older card can't show a fresh age", () => {
+    const workspaces = [ws("never-opened")]; // no lastUsedAt
+    const items = workspaceItems(
+      buildRecentProjection({
+        workspaces,
+        // The tree view's chip: an agent notification arrived 4 minutes ago.
+        cards: [card("never-opened", { lastActivity: "4m", lastActivityTitle: "Last activity: …" })],
+        activeWorkspaceId: "",
+        now: NOW,
+        visibleIds: new Set(["never-opened"]),
+      }),
+    );
+    expect(items[0]?.sectionKey).toBe("older");
+    expect(items[0]?.card.lastUsedRelative).toBe("");
+    expect(items[0]?.card.lastActivity).toBe("");
+    expect(items[0]?.card.lastActivityTitle).toBe("");
+  });
+
+  it("keeps showing the last-used age when there is one", () => {
+    const workspaces = [ws("worked-in", { lastUsedAt: iso(4 * 60 * 1000) })];
+    const items = workspaceItems(
+      buildRecentProjection({
+        workspaces,
+        cards: [card("worked-in", { lastActivity: "2d" })],
+        activeWorkspaceId: "",
+        now: NOW,
+        visibleIds: new Set(["worked-in"]),
+      }),
+    );
+    expect(items[0]?.sectionKey).toBe("last-hour");
+    expect(items[0]?.card.lastUsedRelative).toBe("4m");
+    expect(items[0]?.card.lastActivity).toBe("");
+  });
+});

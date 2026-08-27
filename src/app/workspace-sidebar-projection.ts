@@ -319,7 +319,13 @@ export function buildRecentProjection({
           sectionKey,
           workspaceId: id,
           depth,
-          card: { ...baseCard, depth, lastUsedRelative, lastUsedTitle },
+          // `lastActivity` (PR/git/attention age) is the TREE view's chip and
+          // must not leak into this one: WorkspaceCard falls back to it when
+          // there is no `lastUsedRelative`, which put a fresh "4m" from a
+          // background agent notification on a card sitting in "Older". In
+          // the recent view the chip means "when YOU last worked here" — a
+          // workspace you never opened simply shows nothing.
+          card: { ...baseCard, depth, lastUsedRelative, lastUsedTitle, lastActivity: "", lastActivityTitle: "" },
         });
       } else {
         const ws = byId.get(id);
