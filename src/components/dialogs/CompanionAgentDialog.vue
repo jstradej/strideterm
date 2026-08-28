@@ -422,9 +422,15 @@ function extractErrorMessage(err: unknown): string {
   font-size: 12px;
   cursor: pointer;
 }
-.companion-dialog__autostart input {
-  margin-top: 2px;
+.companion-dialog__autostart input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  margin: 2px 0 0;
   flex: 0 0 auto;
+}
+.companion-dialog__autostart > span {
+  min-width: 0;
+  flex: 1;
 }
 .companion-dialog__max-rounds {
   display: flex;
