@@ -102,6 +102,20 @@ export function extractQuickTunnelUrl(rawText: unknown): string {
   return match?.[1] || "";
 }
 
+/**
+ * Safety gate shared by every "reconnect/re-establish an existing tunnel"
+ * caller (Telegram's `/tunnel reconnect` button, and MobileCommandDispatcher's
+ * `remote.endpoint.request` / `remote.tunnel.reconnect`, plan §9.1): a
+ * compromised remote caller may only RESUME a tunnel mechanism the user
+ * already enabled on the desktop — enabled LAN remote access AND a
+ * previously-started auto tunnel — never switch on brand-new public exposure
+ * the desktop never configured. Never bypass this by calling
+ * createCloudflareTunnel() directly from a remote-triggered path.
+ */
+export function canReconnectTunnel(remoteAccess: { enabled?: boolean; autoTunnel?: boolean }): boolean {
+  return !!remoteAccess.enabled && !!remoteAccess.autoTunnel;
+}
+
 export class CloudflareTunnelManager extends EventEmitter {
   private snapshot: TunnelSnapshot;
   private processHandle: ChildProcess | null;

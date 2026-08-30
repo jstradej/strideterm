@@ -140,7 +140,7 @@ vi.mock("@xterm/addon-search", () => ({
   },
 }));
 
-function buildController({ getOverlay }: { getOverlay: () => unknown }) {
+function buildController({ getOverlay, isRemote = false }: { getOverlay: () => unknown; isRemote?: boolean }) {
   const focus = vi.fn();
   const sessionId = "workspace-1:panel-1";
   const views = {
@@ -164,7 +164,7 @@ function buildController({ getOverlay }: { getOverlay: () => unknown }) {
     getOverlay,
     getPayload: () => null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    api: {} as any,
+    api: { isRemote } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     appConfig: {} as any,
     openTerminalLink: vi.fn(),
@@ -204,6 +204,20 @@ describe("createTerminalController", () => {
 
     expect(focus).not.toHaveBeenCalled();
   });
+
+  test("a remote workspace activation never focuses xterm's hidden textarea", () => {
+    const queuedFrames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback: FrameRequestCallback) => {
+      queuedFrames.push(callback);
+      return queuedFrames.length;
+    });
+    const { controller, focus } = buildController({ getOverlay: () => null, isRemote: true });
+
+    controller.focusActiveTerminal();
+    for (const frame of queuedFrames) frame(0);
+
+    expect(focus).not.toHaveBeenCalled();
+  });
 });
 
 function buildTouchController(
@@ -223,7 +237,7 @@ function buildTouchController(
     getActiveSessionId: () => null,
     getOverlay: () => null,
     getPayload: () => null,
-    // isRemote: true skips WebGL, link provider, and openTerminalPath registration.
+    // isRemote: true skips desktop-only link/open-path registration.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     api: { writeTerminal, isRemote: true } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -256,7 +270,7 @@ function touchPoint(target: EventTarget, clientX: number, clientY: number): Touc
 }
 
 describe("touch tap-to-focus", () => {
-  test("tap (movement < 10 px) calls term.focus() to restore mobile keyboard", () => {
+  test("a remote terminal tap does not focus xterm or raise the mobile keyboard", () => {
     const { controller, views } = buildTouchController();
     const sessionId = "touch-tap:panel-1";
     controller.ensureTerminal(sessionId);
@@ -280,7 +294,7 @@ describe("touch tap-to-focus", () => {
       }),
     );
 
-    expect(term.focus).toHaveBeenCalledTimes(1);
+    expect(term.focus).not.toHaveBeenCalled();
   });
 
   test("scroll (movement >= 10 px) does NOT call term.focus()", () => {
@@ -952,7 +966,7 @@ describe("terminal pane reattach", () => {
   });
 });
 
-describe("desktop WebGL renderer selection", () => {
+describe("WebGL renderer selection", () => {
   test("waits for the configured font and uses successful WebglAddon activation as the capability check", async () => {
     let resolveFont: (value: FontFace[]) => void = () => {};
     const fontPromise = new Promise<FontFace[]>((resolve) => {
@@ -979,18 +993,27 @@ describe("desktop WebGL renderer selection", () => {
     expect(view.webglAddon).toBe(webglMockState.instances[0]);
   });
 
-  test("does not attempt WebGL for remote clients or when explicitly disabled", async () => {
+  test("remote clients attempt WebGL and keep the same capability fallback", async () => {
     installFontLoader();
     const remote = buildAttachController({ isRemote: true });
+    const remotePane = document.createElement("div");
+    document.body.append(remotePane);
+
+    remote.controller.attachTerminalPane("remote:shell", remotePane);
+    await flushPromises();
+
+    expect(webglMockState.instances).toHaveLength(1);
+  });
+
+  test("does not attempt WebGL when explicitly disabled", async () => {
+    installFontLoader();
     const disabled = buildAttachController({
       isRemote: false,
       startupFlags: { disableWebgl: true },
     });
-    const remotePane = document.createElement("div");
     const disabledPane = document.createElement("div");
-    document.body.append(remotePane, disabledPane);
+    document.body.append(disabledPane);
 
-    remote.controller.attachTerminalPane("remote:shell", remotePane);
     disabled.controller.attachTerminalPane("disabled:shell", disabledPane);
     await flushPromises();
 

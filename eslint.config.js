@@ -208,4 +208,19 @@ export default [
     files: ["*.config.{js,ts}", "*.config.{mjs,mts}"],
     languageOptions: { globals: { ...globals.node } },
   },
+
+  // --- Mobile control plane: one logging door ---
+  //
+  // `no-console` is off everywhere else because the backend uses it deliberately. Here it is an
+  // error, because everything on this path is one hop from key material, a Firebase ID token (RTDB
+  // URLs carry it as `?auth=`) or decrypted notification content, and `getLogger()` is what applies
+  // the redaction in logger.ts on every emission — a `console.log` bypasses it entirely. Review 2
+  // §"Logy a diagnostika" asks for a CI scan for exactly this; the app half is
+  // strideterm-mobile/app/test/core/observability/no_unsafe_logging_test.dart, and the cloud half is
+  // strideterm-mobile/scripts/check-log-hygiene.mjs.
+  {
+    files: ["electron/backend/mobile/**/*.ts"],
+    ignores: ["electron/backend/mobile/**/*.test.ts"],
+    rules: { "no-console": "error" },
+  },
 ];

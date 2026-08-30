@@ -45,6 +45,8 @@ type Handler<T> = (payload: T) => void;
 interface ConnectionStatePayload {
   connected: boolean;
   message?: string;
+  /** What to do about it, when there is something to do. See `createRemoteIssue`. */
+  hint?: string;
   code?: number;
   reconnecting?: boolean;
   reconnected?: boolean;
@@ -327,26 +329,79 @@ export function createRemoteTransport(): Transport {
     kind: string;
     recoverable: boolean;
     rawMessage: string;
+    /** What to do about it, when there is something to do. Empty when there is not. */
+    hint: string;
   }
 
+  /**
+   * The server answers every failure as `{"error":"<sentence>"}` — see `json()` in
+   * `electron/backend/remote-server.ts`. This pulls the sentence out.
+   *
+   * WHY IT HAS TO. The HTTP path passes `await response.text()` as `rawMessage`, i.e. the whole
+   * response BODY, and any status without its own branch below fell straight through to
+   * `message = rawMessage`. So the banner rendered the raw envelope —
+   * `{"error":"Mobile sessions cannot switch profiles"}` — braces, quotes and all, as one unbroken
+   * token that a phone-width column cannot wrap. Three problems in one string: it looks like the app
+   * leaked its plumbing, it stretches the layout, and the one part a person can act on is buried in
+   * punctuation.
+   *
+   * Anything that is not that shape is returned unchanged, so a plain-text body, a proxy's HTML
+   * error page or an empty body all behave exactly as before.
+   */
+  function unwrapServerError(rawBody: string): string {
+    const trimmed = String(rawBody || "").trim();
+    if (!trimmed.startsWith("{")) return trimmed;
+    try {
+      const parsed = JSON.parse(trimmed) as { error?: unknown; message?: unknown };
+      const sentence = parsed?.error ?? parsed?.message;
+      return typeof sentence === "string" && sentence.trim() ? sentence.trim() : trimmed;
+    } catch {
+      // Body that starts like JSON and is not. Better the raw text than nothing.
+      return trimmed;
+    }
+  }
+
+  /**
+   * Turns a transport failure into something a person can read and act on.
+   *
+   * Two fields, deliberately. `message` says what happened; `hint` says what to do about it, and is
+   * empty when there is genuinely nothing — a banner that ends every failure with advice is a banner
+   * whose advice stops being read. The 403 below is the case that prompted all of this: it is the
+   * server refusing a profile switch inside a mobile session (by design — the ticket is minted for
+   * one profile), and the phone's own menu is where that switch actually lives.
+   */
   function createRemoteIssue({
     kind,
     statusCode = 0,
     rawMessage = "",
     recoverable = true,
   }: RemoteIssueOptions = {}): RemoteError {
-    const normalizedMessage = String(rawMessage || "").trim();
+    const normalizedMessage = unwrapServerError(rawMessage);
     let message = normalizedMessage;
+    let hint = "";
 
     if (statusCode === 401) {
       message = "Remote token is missing or invalid.";
+      hint = "Open this terminal again from the strIDEterm app to get a fresh one.";
+    } else if (statusCode === 403 && /cannot switch profiles/i.test(normalizedMessage)) {
+      // Not a fault, and the old banner made it look like one. Each mobile session is scoped to the
+      // profile its ticket was minted for, so the switch is a new session rather than a request.
+      message = "This session is tied to one profile.";
+      hint = "Pick the other profile in the strIDEterm app — pull down the handle at the top of the screen.";
+    } else if (statusCode === 403) {
+      message = normalizedMessage || "The desktop refused that.";
+      hint = "This phone may not be approved for it. Check the pairing on the desktop.";
     } else if (statusCode === 530 || /origin has been unregistered from argo tunnel/i.test(normalizedMessage)) {
-      message =
-        "Cloudflare tunnel is no longer connected to the desktop app. Recreate the tunnel from the desktop app.";
+      message = "Cloudflare tunnel is no longer connected to the desktop app.";
+      hint = "Recreate the tunnel from the desktop app.";
     } else if ([502, 503, 504].includes(statusCode)) {
       message = "Remote workspace is temporarily unavailable. The desktop app or its local server may be restarting.";
+      hint = "It should come back on its own. Reconnect if it does not.";
     } else if (kind === "ws-closed" || kind === "ws-error") {
       message = "Remote connection was lost. The desktop app or tunnel may have stopped.";
+    } else if (kind === "network") {
+      message = "Cannot reach the desktop right now.";
+      hint = "Check that strIDEterm is running there and that this device is online.";
     } else if (!message) {
       message = "Remote connection failed.";
     }
@@ -357,6 +412,7 @@ export function createRemoteTransport(): Transport {
     error.kind = kind || "request-failed";
     error.recoverable = recoverable;
     error.rawMessage = normalizedMessage;
+    error.hint = hint;
     return error;
   }
 
@@ -464,6 +520,14 @@ export function createRemoteTransport(): Transport {
 
   function scheduleReconnect(error: RemoteError, code = 0): void {
     if (reconnectTimer) {
+      return;
+    }
+    // A suspended client does not reconnect, and that is the whole point of suspending it: the mobile
+    // app puts this page to sleep when it has been in the background past its grace period, and a
+    // reconnect loop would keep the relay stream — and the mobile data — alive behind a screen nobody
+    // is looking at (production hardening §5 "Session" 6).
+    if (suspended) {
+      emitConnectionState({ connected: false, reconnecting: false, message: SUSPENDED_MESSAGE, code });
       return;
     }
     reconnectAttempt += 1;
@@ -680,6 +744,169 @@ export function createRemoteTransport(): Transport {
   connectWebSocket();
 
   // --------------------------------------------------------------------
+  // Host-driven suspend/resume (production hardening §5 "Session" 6).
+  //
+  // WHY THE HOST AND NOT `visibilitychange`. A WebView inside a backgrounded Android app is not a
+  // hidden tab: the app is still running, the page is still live, and Android does not reliably
+  // suspend a WebView's JavaScript or its sockets — so a terminal that is streaming output keeps
+  // streaming it, over the relay, on the user's mobile data, behind a screen that is off. Only the
+  // HOST knows the app went to the background and how long ago, and only the host knows its own grace
+  // period, so the host is what decides.
+  //
+  // WHAT SUSPEND IS AND IS NOT. It closes the socket and stops reconnecting; it does NOT reload,
+  // navigate, or clear anything. The page keeps its DOM and its stores, which is what lets a return
+  // after a two-minute background be a reconnect rather than a fresh session — and what keeps the
+  // half-typed command in the input bar. If the SESSION itself has expired in the meantime, `resume`
+  // fails the ordinary way and the host re-bootstraps.
+  //
+  // The bridge is a small object on `window` because that is the surface a WebView host can call
+  // (`runJavaScript`). It exposes exactly two verbs and one read; nothing here can send terminal
+  // input, request a credential, or reach anything the page could not already reach.
+  const SUSPENDED_MESSAGE = "Paused while the app is in the background.";
+  /**
+   * Two banners, because there are two readers and only one of them has a host behind them.
+   *
+   * On a phone the native app is watching (see `reportSessionLost`) and a new session is already on
+   * its way, so the only useful thing to say is "wait". In a plain browser tab nothing is coming: the
+   * person reading it IS the recovery mechanism, and telling them the app will handle it would be a
+   * promise nobody kept.
+   */
+  const SESSION_LOST_HOSTED_MESSAGE = "Session ended. Reopening from the app…";
+  const SESSION_LOST_MESSAGE = "Session ended. Reload this page to start a new one.";
+  let suspended = false;
+  /**
+   * Latched the first time the server answers 401, cleared by a resume.
+   *
+   * WHAT THIS STOPS. A page whose session cookie is gone keeps polling: `/api/state` on every resume
+   * probe, `/api/attention/sync` on every attention change, and a WebSocket that reconnects on a
+   * backoff. Every one of those is a 401, and on a phone every one of them also reaches the host as
+   * an HTTP error it has to decide about. That storm is what turned one lost cookie into a minute of
+   * a dead terminal: the host tore down the very re-bootstrap that was in flight, over and over,
+   * because the OLD page was still shouting at it. A session that is gone is gone until something
+   * mints a new one, so the correct amount of further traffic is none.
+   */
+  let sessionLost = false;
+
+  function suspendTransport(): void {
+    if (suspended) return;
+    suspended = true;
+    if (reconnectTimer) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = 0;
+    }
+    const current = ws;
+    ws = null;
+    if (current) {
+      try {
+        // 1000: this is a deliberate, clean close. The server treats it as a viewer going away, which
+        // is exactly what it is.
+        current.close(1000, "suspended");
+      } catch {
+        // Already closing.
+      }
+    }
+    emitConnectionState({ connected: false, reconnecting: false, message: SUSPENDED_MESSAGE });
+  }
+
+  function resumeTransport(): void {
+    if (!suspended) return;
+    suspended = false;
+    // A resume follows either a background teardown or a fresh bootstrap; both are a new verdict on
+    // whether this page has a session, so the latch must not survive one.
+    sessionLost = false;
+    reconnectAttempt = 0;
+    // The fresh socket's URL carries `?rev=` (see `buildWsUrl`), so the server sends ONE catch-up
+    // core if state moved while we were away, and the re-sent `terminal:subscribe` produces the
+    // desktop's own BOUNDED replay per session — not the whole history. That bound is what keeps a
+    // reconnect from undoing the data saving the suspend achieved.
+    connectWebSocket();
+    // AND ONE REQUEST, BECAUSE A SOCKET CANNOT REPORT ITS OWN REFUSAL. A resume happens after an
+    // arbitrary time away, so the session it is reattaching to may be gone — the desktop's idle
+    // deadline, the relay's viewer TTL, a desktop that restarted. A rejected WebSocket UPGRADE
+    // reaches the page as a close event and nothing else: no status, no body, indistinguishable from
+    // a flaky network, and therefore answered with a reconnect backoff that retries forever. The
+    // host, which is the only party that can mint a new session, is never told, and the user holds a
+    // phone that says "reconnecting" until they kill the screen.
+    //
+    // An HTTP request has a status. This one turns the same dead session into a 401, which
+    // `fetchJson` already routes to `reportSessionLost` — so the ambiguous case becomes the handled
+    // one. It re-syncs the state it fetches too, the way `probeAfterResume` does for a live socket,
+    // which is not a side benefit: a page returning from the background needs it either way.
+    //
+    // IT COUNTS AS THE PROBE. A foreground fires `visibilitychange`, `pageshow` and `focus` within
+    // milliseconds of the host's `resume()`, and `probeAfterResume` answers those with this same
+    // request — so without claiming the throttle window here, every single resume sent `/api/state`
+    // twice. That window is the one thing standing between a tab-switch and a small thundering herd
+    // on the notify server, and a resume is exactly when it must hold.
+    lastProbeAt = Date.now();
+    void fetchJson("/api/state")
+      .then((payload) => {
+        noteCoreRevision(payload);
+        emitConnectionState({ connected: true, message: "" });
+        listeners.stateUpdated.forEach((handler) => handler(payload as CoreState));
+      })
+      .catch(() => {
+        // `fetchJson` has already emitted the banner, and a 401 has already latched `sessionLost`
+        // and told the host. Anything else is a network the socket is entitled to keep retrying.
+      });
+  }
+
+  /**
+   * The session is over: stop talking, and tell the native host so it can mint a new one.
+   *
+   * The host is told through the `StridetermHost` JavaScript channel the WebView installs. It is
+   * absent in a plain browser, which is the whole reason this is a best-effort `postMessage` behind a
+   * type check rather than a required dependency: a browser tab has a person in front of it who can
+   * re-open the link, and the banner the suspend emits is that person's signal.
+   *
+   * Suspending rather than merely flagging is the point — see `sessionLost`. It also means the host's
+   * next `resume()` is what un-latches this, so a re-bootstrap that lands on the SAME document
+   * recovers without a reload.
+   */
+  function reportSessionLost(): void {
+    if (sessionLost) return;
+    sessionLost = true;
+    suspendTransport();
+    const host = (window as unknown as Record<string, unknown>).StridetermHost as
+      { postMessage?: (message: string) => void } | undefined;
+    let hosted = false;
+    try {
+      if (typeof host?.postMessage === "function") {
+        host.postMessage(JSON.stringify({ type: "session-lost" }));
+        hosted = true;
+      }
+    } catch {
+      // A host channel that refuses the message changes nothing about the transport, which is already
+      // quiet — but it does change the banner: nobody heard, so nobody is reopening anything.
+    }
+    emitConnectionState({
+      connected: false,
+      reconnecting: false,
+      message: hosted ? SESSION_LOST_HOSTED_MESSAGE : SESSION_LOST_MESSAGE,
+    });
+  }
+
+  if (typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__stridetermRemote = {
+      suspend: suspendTransport,
+      resume: resumeTransport,
+      /** Whether the transport is currently asleep. Read by the host to decide resume vs. re-bootstrap. */
+      isSuspended: () => suspended,
+      /**
+       * Whether this page has already been told its session is gone.
+       *
+       * READ IT BEFORE `resume()`, NOT AFTER. Together with `isSuspended()` this is how the host
+       * picks between the two ways of waking a backgrounded page: a page that is merely suspended
+       * takes a `resume()`, a page whose session is gone needs a fresh ticket and a re-bootstrap,
+       * because there is nothing on the server left for a resume to reattach to. `resume()` clears
+       * this flag by design (it is a new verdict on a new session), so asking afterwards always
+       * answers `false` and would send every lost session down the resume path.
+       */
+      isSessionLost: () => sessionLost,
+    };
+  }
+
+  // --------------------------------------------------------------------
   // Resume-from-background handling.
   //
   // Mobile Safari and Chrome aggressively suspend JS in backgrounded tabs.
@@ -712,6 +939,10 @@ export function createRemoteTransport(): Transport {
   function probeAfterResume(): void {
     if (typeof document === "undefined") return;
     if (document.visibilityState !== "visible") return;
+    // A suspended transport stays suspended until the HOST resumes it. A WebView can become
+    // "visible" for reasons that have nothing to do with the app being in the foreground, and a probe
+    // that reconnected on one of those would defeat the suspend.
+    if (suspended) return;
     const now = Date.now();
     if (now - lastProbeAt < PROBE_THROTTLE_MS) return;
     lastProbeAt = now;
@@ -808,7 +1039,7 @@ export function createRemoteTransport(): Transport {
         kind: "network",
         rawMessage: (cause as { message?: string })?.message || "",
       });
-      emitConnectionState({ connected: false, message: error.message, code: 0 });
+      emitConnectionState({ connected: false, message: error.message, hint: error.hint, code: 0 });
       throw error;
     }
 
@@ -824,7 +1055,18 @@ export function createRemoteTransport(): Transport {
         statusCode: response.status,
         rawMessage: await response.text(),
       });
-      emitConnectionState({ connected: false, message: error.message, code: response.status });
+      // 401 is the session ending, not a request failing. Everything else falls through to the
+      // ordinary banner-and-throw below.
+      if (response.status === 401) {
+        reportSessionLost();
+        throw error;
+      }
+      emitConnectionState({
+        connected: false,
+        message: error.message,
+        hint: error.hint,
+        code: response.status,
+      });
       throw error;
     }
 
@@ -864,6 +1106,13 @@ export function createRemoteTransport(): Transport {
      * more to do at this layer.
      */
     refresh: async (): Promise<void> => {
+      // A suspended transport does not reconnect, and a manual refresh is not an exception to that —
+      // `scheduleReconnect` and `probeAfterResume` already make the same check before they reach the
+      // socket. This is the third door. Pull-to-refresh is precisely the gesture a person makes at a
+      // screen that has gone quiet, which after a 401 is every screen, so without this each pull
+      // opened a socket the server was always going to reject: exactly the traffic `sessionLost`
+      // exists to stop, only hand-cranked.
+      if (suspended) return;
       const current = ws;
       if (!current) {
         connectWebSocket();

@@ -42,6 +42,10 @@
       <SettingsTelegramTab :telegram-settings="settings.integrations?.telegram" :profiles="profiles" />
     </div>
 
+    <div v-else-if="activeTab === 'mobile'" class="settings-tab-content">
+      <SettingsMobileTab :profiles="profiles" />
+    </div>
+
     <div v-else-if="activeTab === 'about'" class="settings-tab-content">
       <SettingsAboutTab
         :api="api"
@@ -86,10 +90,11 @@ import SettingsGeneralTab from "./settings/SettingsGeneralTab.vue";
 import SettingsGitTab from "./settings/SettingsGitTab.vue";
 import SettingsSshTab from "./settings/SettingsSshTab.vue";
 import SettingsTelegramTab from "./settings/SettingsTelegramTab.vue";
+import SettingsMobileTab from "./settings/SettingsMobileTab.vue";
 import SettingsTemplatesTab from "./settings/SettingsTemplatesTab.vue";
 import { useAgentHookSettings } from "./settings/useAgentHookSettings.js";
 
-const TABS = [
+const BASE_TABS = [
   { id: "general", label: "General", title: "Theme, logging, notification timing, agent hooks." },
   { id: "templates", label: "Tab Templates", title: "Reusable tab presets shown in the “New tab” menu." },
   { id: "git", label: "Git", title: "Git UI options (e.g. always show all actions in the Git pane)." },
@@ -100,8 +105,13 @@ const TABS = [
     title:
       "Forward strIDEterm alerts to a Telegram bot and act on them (start a task, open a PR review) by replying or pressing inline buttons. No public URL needed — long-polling.",
   },
-  { id: "about", label: "About", title: "Version, repository link, and update check." },
 ];
+const MOBILE_TAB = {
+  id: "mobile",
+  label: "Mobile",
+  title: "Pair strIDEterm Mobile for push notifications and typed remote actions — no Telegram required.",
+};
+const ABOUT_TAB = { id: "about", label: "About", title: "Version, repository link, and update check." };
 
 const THEMES = ["dark", "light", "system"];
 const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
@@ -199,6 +209,13 @@ const emit = defineEmits<{
 
 const api = inject<Transport>(apiKey);
 const hookSettings = reactive(useAgentHookSettings(api));
+
+// Mobile pairing/device management is Electron/desktop-only (plan §10.5) —
+// the remote-HTTP transport never implements createMobilePairingInvitation
+// (see transport.test.ts's KNOWN_DESKTOP_ONLY_METHODS), so the tab is simply
+// absent there rather than showing controls that would silently no-op —
+// same v-if-on-bridge-method precedent as WorkspaceDialog's browseDirectory.
+const TABS = computed(() => [...BASE_TABS, ...(api?.createMobilePairingInvitation ? [MOBILE_TAB] : []), ABOUT_TAB]);
 
 const activeTab = ref(props.initialTab || "general");
 const form = reactive({

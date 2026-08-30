@@ -1489,6 +1489,24 @@ async function startServices(): Promise<void> {
     deferInitialRefresh: true,
     dependencies: {
       safeStorage,
+      /**
+       * The managed relay's internal origin.
+       *
+       * Wired here rather than inside the runtime because this is the only place that knows where
+       * the built web client lives, and because `runtime.ts` importing `remote-server.ts` would be
+       * an import cycle. A build that does not wire this has no relay at all, whatever the setting
+       * says — which is what makes "no relay" the default rather than something to remember.
+       *
+       * This is a SECOND server instance, loopback-only, with no master token and no reported URL.
+       * It does not touch the user's LAN/tunnel listener, which `restartRemoteServer` above keeps
+       * owning on its own terms.
+       */
+      startRelayOrigin: async (loopbackOrigin) =>
+        startRemoteServer({
+          runtime: runtimeState.runtime,
+          staticRoot: path.join(app.getAppPath(), "dist"),
+          loopbackOrigin,
+        }),
       // Telegram `📸 Screenshot` uses this to grab a PNG of the live
       // BrowserWindow. Only the renderer view is captured (not surrounding
       // OS chrome / other windows) which is exactly what the user asked

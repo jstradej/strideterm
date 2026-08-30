@@ -185,7 +185,7 @@ strideterm --no-webgl
 STRIDETERM_DISABLE_WEBGL=1 strideterm
 ```
 
-`--no-webgl` is the recommended fix when only one machine is affected — add it to your shortcut, `.desktop` file, or launch command. The env var is convenient when you want the same behavior across every shell and shortcut on a host. Both are independent of remote-access clients (web/mobile), where WebGL is always disabled because mobile WebGL is too unreliable to validate.
+`--no-webgl` is the recommended fix when one desktop installation is affected — add it to your shortcut, `.desktop` file, or launch command. The env var is convenient when you want the same behavior across every shell and shortcut on a host. Remote web/mobile clients also try the WebGL renderer now; unsupported implementations stay on the DOM renderer, and a lost context is disposed and retried with a bounded fallback policy.
 
 ## Remote Access
 

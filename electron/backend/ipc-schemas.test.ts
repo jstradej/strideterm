@@ -22,6 +22,10 @@ import {
   removeWorktreeSchema,
   dockerSessionSchema,
   approvalAuditLogQuerySchema,
+  mobileCreatePairingInvitationSchema,
+  mobileRenameDeviceSchema,
+  mobileUpdateDeviceAllowlistSchema,
+  mobileAuditLogQuerySchema,
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
@@ -561,6 +565,142 @@ describe("ipc-schemas", () => {
       expect(() => validateIpc(approvalAuditLogQuerySchema, { beforeId: -1 }, "test")).toThrow();
       expect(() => validateIpc(approvalAuditLogQuerySchema, { afterId: 1.5 }, "test")).toThrow();
       expect(() => validateIpc(approvalAuditLogQuerySchema, { beforeId: "42" }, "test")).toThrow();
+    });
+  });
+
+  describe("mobileCreatePairingInvitationSchema", () => {
+    test("accepts a valid options payload", () => {
+      const result = validateIpc(
+        mobileCreatePairingInvitationSchema,
+        { profileAllowlist: ["default"], capabilities: ["task.control", "remote.request"] },
+        "mobile:pairing:create",
+      );
+      expect(result.profileAllowlist).toEqual(["default"]);
+      expect(result.capabilities).toEqual(["task.control", "remote.request"]);
+    });
+
+    test("rejects an empty profileAllowlist", () => {
+      expect(() =>
+        validateIpc(
+          mobileCreatePairingInvitationSchema,
+          { profileAllowlist: [], capabilities: ["task.control"] },
+          "test",
+        ),
+      ).toThrow();
+    });
+
+    test("rejects an empty capabilities list", () => {
+      expect(() =>
+        validateIpc(mobileCreatePairingInvitationSchema, { profileAllowlist: ["default"], capabilities: [] }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects a missing field", () => {
+      expect(() =>
+        validateIpc(mobileCreatePairingInvitationSchema, { profileAllowlist: ["default"] }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects an empty-string list entry", () => {
+      expect(() =>
+        validateIpc(
+          mobileCreatePairingInvitationSchema,
+          { profileAllowlist: [""], capabilities: ["task.control"] },
+          "test",
+        ),
+      ).toThrow();
+    });
+  });
+
+  describe("mobileRenameDeviceSchema", () => {
+    test("accepts a valid rename payload", () => {
+      const result = validateIpc(mobileRenameDeviceSchema, { deviceId: "mobile-1", label: "My Pixel" }, "test");
+      expect(result).toEqual({ deviceId: "mobile-1", label: "My Pixel" });
+    });
+
+    test("rejects an empty deviceId", () => {
+      expect(() => validateIpc(mobileRenameDeviceSchema, { deviceId: "", label: "x" }, "test")).toThrow();
+    });
+
+    test("rejects an empty label", () => {
+      expect(() => validateIpc(mobileRenameDeviceSchema, { deviceId: "mobile-1", label: "" }, "test")).toThrow();
+    });
+
+    test("rejects a label over 60 characters", () => {
+      expect(() =>
+        validateIpc(mobileRenameDeviceSchema, { deviceId: "mobile-1", label: "x".repeat(61) }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects a missing deviceId", () => {
+      expect(() => validateIpc(mobileRenameDeviceSchema, { label: "x" }, "test")).toThrow();
+    });
+  });
+
+  describe("mobileUpdateDeviceAllowlistSchema", () => {
+    test("accepts deviceId alone (both allowlist fields optional)", () => {
+      const result = validateIpc(mobileUpdateDeviceAllowlistSchema, { deviceId: "mobile-1" }, "test");
+      expect(result.deviceId).toBe("mobile-1");
+      expect(result.capabilities).toBeUndefined();
+      expect(result.profileAllowlist).toBeUndefined();
+    });
+
+    test("accepts a full payload", () => {
+      const result = validateIpc(
+        mobileUpdateDeviceAllowlistSchema,
+        { deviceId: "mobile-1", capabilities: ["remote.request"], profileAllowlist: ["default", "other"] },
+        "test",
+      );
+      expect(result.capabilities).toEqual(["remote.request"]);
+      expect(result.profileAllowlist).toEqual(["default", "other"]);
+    });
+
+    test("rejects a missing deviceId", () => {
+      expect(() =>
+        validateIpc(mobileUpdateDeviceAllowlistSchema, { capabilities: ["task.control"] }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects an empty-string capability entry", () => {
+      expect(() =>
+        validateIpc(mobileUpdateDeviceAllowlistSchema, { deviceId: "mobile-1", capabilities: [""] }, "test"),
+      ).toThrow();
+    });
+  });
+
+  describe("mobileAuditLogQuerySchema", () => {
+    test("accepts an empty filter object", () => {
+      expect(() => validateIpc(mobileAuditLogQuerySchema, {}, "test")).not.toThrow();
+    });
+
+    test("accepts a full filter payload", () => {
+      const result = validateIpc(
+        mobileAuditLogQuerySchema,
+        {
+          from: "2026-01-01",
+          to: "2026-01-02",
+          deviceId: "mobile-1",
+          action: "event.sent",
+          status: "success",
+          limit: 10,
+          offset: 0,
+        },
+        "test",
+      );
+      expect(result.status).toBe("success");
+      expect(result.limit).toBe(10);
+    });
+
+    test("rejects an invalid status value", () => {
+      expect(() => validateIpc(mobileAuditLogQuerySchema, { status: "maybe" }, "test")).toThrow();
+    });
+
+    test("rejects a negative offset", () => {
+      expect(() => validateIpc(mobileAuditLogQuerySchema, { offset: -1 }, "test")).toThrow();
+    });
+
+    test("rejects a non-positive limit", () => {
+      expect(() => validateIpc(mobileAuditLogQuerySchema, { limit: 0 }, "test")).toThrow();
     });
   });
 });

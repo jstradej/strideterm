@@ -525,6 +525,11 @@ export function createTerminalController({
   }
 
   function focusActiveTerminal(): void {
+    // The remote/mobile UI has a real composer input. Focusing xterm would
+    // focus its hidden textarea and make Android/iOS raise the keyboard while
+    // a workspace is merely opening or switching. On remote clients only a
+    // direct tap in MobileInputBar's editor is allowed to summon it.
+    if (api.isRemote) return;
     if (getOverlay()) return;
     const activeSessionId = getActiveSessionId();
     const activeView = activeSessionId ? views.value.get(activeSessionId) : null;
@@ -1218,9 +1223,9 @@ export function createTerminalController({
 
     // Touch scroll (1 finger) + pinch zoom (2 fingers).
     // touchstart calls preventDefault() to take ownership of all touch
-    // behaviour; that also suppresses the browser's tap-to-focus logic, so
-    // we detect "tap" ourselves (single touch that moved < 10 px) and call
-    // term.focus() manually to bring up the mobile keyboard.
+    // behaviour. Desktop touchscreens retain xterm's tap-to-focus behaviour;
+    // remote/mobile clients use MobileInputBar and must not focus xterm's
+    // hidden textarea (which would raise the software keyboard unexpectedly).
     const touch = {
       mode: "none" as "none" | "scroll" | "pinch",
       lastY: 0,
@@ -1482,8 +1487,8 @@ export function createTerminalController({
         if (touch.mode === "scroll" && e.changedTouches.length === 1) {
           const dx = Math.abs(e.changedTouches[0].clientX - touch.startX);
           const dy = Math.abs(e.changedTouches[0].clientY - touch.startY);
-          if (dx < 10 && dy < 10) {
-            // Tap: focus the terminal so the mobile keyboard reappears.
+          if (!api.isRemote && dx < 10 && dy < 10) {
+            // Desktop touchscreen tap: focus the terminal for direct typing.
             term.focus();
           }
         }
@@ -1547,7 +1552,6 @@ export function createTerminalController({
 
   function tryAttachWebglAddon(view: TerminalView, reason: "open" | "reattach" | "context-loss-retry"): void {
     if (view.webglAttached || view.webglAttachPending) return;
-    if (api.isRemote) return;
     const log = api.logRenderer ?? (() => {});
     if (api.startupFlags?.disableWebgl) {
       if (reason === "open") log("info", "[webgl] skipped: disabled by --no-webgl / STRIDETERM_DISABLE_WEBGL");
@@ -1695,9 +1699,10 @@ export function createTerminalController({
       }
       scheduleDeferredTerminalFits(sessionId);
       // Switch to the GPU renderer for smooth scrolling under heavy TUI traffic
-      // (e.g. Claude Code) on the desktop. We skip it on remote clients (web,
-      // mobile) because mobile WebGL is unreliable and we can't validate the
-      // result. On the desktop we explicitly load the configured font before
+      // (e.g. Claude Code), including the mobile WebView. Attachment is a
+      // capability probe in practice: an unavailable implementation throws and
+      // stays on DOM, while a lost context is disposed and retried under the
+      // bounded policy above. We explicitly load the configured font before
       // loading the addon — WebglAddon caches glyph dimensions at load time, so
       // attaching it before the font is ready or while the canvas is 0×0
       // produces a permanently broken renderer (giant glyphs, blank screen)

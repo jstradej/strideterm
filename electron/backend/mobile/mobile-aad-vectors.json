@@ -1,0 +1,105 @@
+{
+  "$comment": [
+    "SHARED, EXTERNALLY FIXED ROUTING-AAD TEST VECTORS (review 2 §P0.1).",
+    "",
+    "Read by all three implementations of the canonical routing AAD:",
+    "  - protocol/typescript/src/crypto/envelope-crypto.ts    (buildRoutingAad)",
+    "  - app/lib/core/protocol/protocol_adapter.dart          (EnvelopeCodec.buildAad)",
+    "  - strideterm: electron/backend/mobile/mobile-crypto.ts (hand mirror)",
+    "",
+    "The AAD is UTF-8 of a JSON object with exactly the keys protocolVersion, pairId,",
+    "sourceDeviceId, targetDeviceId, messageId, messageType, sessionKeyVersion, createdAt and expiresAt,",
+    "in that order, with no whitespace. These fixtures exist so the ordering and escaping are",
+    "pinned by data rather than by three independent readings of a prose rule: a serializer that",
+    "reordered keys or escaped non-ASCII differently would look perfectly correct in isolation and",
+    "would silently fail every cross-runtime decrypt.",
+    "",
+    "The fourth case is the recipient-isolation property in fixture form: two events identical in",
+    "every field except targetDeviceId must not share an AAD, so a record moved from one phone",
+    "mailbox to another's fails the AEAD instead of merely being in the wrong place.",
+    "",
+    "Regenerate with: node scripts/generate-aad-vectors.mjs"
+  ],
+  "cases": [
+    {
+      "name": "command envelope (mobile -> desktop)",
+      "fields": {
+        "protocolVersion": 2,
+        "pairId": "desktop-device-abc",
+        "sourceDeviceId": "mobile-device-xyz",
+        "targetDeviceId": "desktop-device-abc",
+        "messageId": "cmd-11111111-2222-3333-4444-555555555555",
+        "messageType": "command",
+        "sessionKeyVersion": 1,
+        "createdAt": 1755000000000,
+        "expiresAt": 1755000300000
+      },
+      "aadUtf8": "{\"protocolVersion\":2,\"pairId\":\"desktop-device-abc\",\"sourceDeviceId\":\"mobile-device-xyz\",\"targetDeviceId\":\"desktop-device-abc\",\"messageId\":\"cmd-11111111-2222-3333-4444-555555555555\",\"messageType\":\"command\",\"sessionKeyVersion\":1,\"createdAt\":1755000000000,\"expiresAt\":1755000300000}",
+      "aadBase64": "eyJwcm90b2NvbFZlcnNpb24iOjIsInBhaXJJZCI6ImRlc2t0b3AtZGV2aWNlLWFiYyIsInNvdXJjZURldmljZUlkIjoibW9iaWxlLWRldmljZS14eXoiLCJ0YXJnZXREZXZpY2VJZCI6ImRlc2t0b3AtZGV2aWNlLWFiYyIsIm1lc3NhZ2VJZCI6ImNtZC0xMTExMTExMS0yMjIyLTMzMzMtNDQ0NC01NTU1NTU1NTU1NTUiLCJtZXNzYWdlVHlwZSI6ImNvbW1hbmQiLCJzZXNzaW9uS2V5VmVyc2lvbiI6MSwiY3JlYXRlZEF0IjoxNzU1MDAwMDAwMDAwLCJleHBpcmVzQXQiOjE3NTUwMDAzMDAwMDB9"
+    },
+    {
+      "name": "command result envelope (same messageId as the command it answers, different type and direction)",
+      "fields": {
+        "protocolVersion": 2,
+        "pairId": "desktop-device-abc",
+        "sourceDeviceId": "desktop-device-abc",
+        "targetDeviceId": "mobile-device-xyz",
+        "messageId": "cmd-11111111-2222-3333-4444-555555555555",
+        "messageType": "commandResult",
+        "sessionKeyVersion": 1,
+        "createdAt": 1755000001000,
+        "expiresAt": 1755000301000
+      },
+      "aadUtf8": "{\"protocolVersion\":2,\"pairId\":\"desktop-device-abc\",\"sourceDeviceId\":\"desktop-device-abc\",\"targetDeviceId\":\"mobile-device-xyz\",\"messageId\":\"cmd-11111111-2222-3333-4444-555555555555\",\"messageType\":\"commandResult\",\"sessionKeyVersion\":1,\"createdAt\":1755000001000,\"expiresAt\":1755000301000}",
+      "aadBase64": "eyJwcm90b2NvbFZlcnNpb24iOjIsInBhaXJJZCI6ImRlc2t0b3AtZGV2aWNlLWFiYyIsInNvdXJjZURldmljZUlkIjoiZGVza3RvcC1kZXZpY2UtYWJjIiwidGFyZ2V0RGV2aWNlSWQiOiJtb2JpbGUtZGV2aWNlLXh5eiIsIm1lc3NhZ2VJZCI6ImNtZC0xMTExMTExMS0yMjIyLTMzMzMtNDQ0NC01NTU1NTU1NTU1NTUiLCJtZXNzYWdlVHlwZSI6ImNvbW1hbmRSZXN1bHQiLCJzZXNzaW9uS2V5VmVyc2lvbiI6MSwiY3JlYXRlZEF0IjoxNzU1MDAwMDAxMDAwLCJleHBpcmVzQXQiOjE3NTUwMDAzMDEwMDB9"
+    },
+    {
+      "name": "notification event addressed to one phone",
+      "fields": {
+        "protocolVersion": 2,
+        "pairId": "desktop-device-abc",
+        "sourceDeviceId": "desktop-device-abc",
+        "targetDeviceId": "mobile-device-xyz",
+        "messageId": "evt-99999999-8888-7777-6666-555555555555",
+        "messageType": "notificationEvent",
+        "sessionKeyVersion": 1,
+        "createdAt": 1755000002000,
+        "expiresAt": 1755604802000
+      },
+      "aadUtf8": "{\"protocolVersion\":2,\"pairId\":\"desktop-device-abc\",\"sourceDeviceId\":\"desktop-device-abc\",\"targetDeviceId\":\"mobile-device-xyz\",\"messageId\":\"evt-99999999-8888-7777-6666-555555555555\",\"messageType\":\"notificationEvent\",\"sessionKeyVersion\":1,\"createdAt\":1755000002000,\"expiresAt\":1755604802000}",
+      "aadBase64": "eyJwcm90b2NvbFZlcnNpb24iOjIsInBhaXJJZCI6ImRlc2t0b3AtZGV2aWNlLWFiYyIsInNvdXJjZURldmljZUlkIjoiZGVza3RvcC1kZXZpY2UtYWJjIiwidGFyZ2V0RGV2aWNlSWQiOiJtb2JpbGUtZGV2aWNlLXh5eiIsIm1lc3NhZ2VJZCI6ImV2dC05OTk5OTk5OS04ODg4LTc3NzctNjY2Ni01NTU1NTU1NTU1NTUiLCJtZXNzYWdlVHlwZSI6Im5vdGlmaWNhdGlvbkV2ZW50Iiwic2Vzc2lvbktleVZlcnNpb24iOjEsImNyZWF0ZWRBdCI6MTc1NTAwMDAwMjAwMCwiZXhwaXJlc0F0IjoxNzU1NjA0ODAyMDAwfQ=="
+    },
+    {
+      "name": "the SAME event re-addressed to the other phone must produce different AAD",
+      "fields": {
+        "protocolVersion": 2,
+        "pairId": "desktop-device-abc",
+        "sourceDeviceId": "desktop-device-abc",
+        "targetDeviceId": "mobile-device-second",
+        "messageId": "evt-99999999-8888-7777-6666-555555555555",
+        "messageType": "notificationEvent",
+        "sessionKeyVersion": 1,
+        "createdAt": 1755000002000,
+        "expiresAt": 1755604802000
+      },
+      "aadUtf8": "{\"protocolVersion\":2,\"pairId\":\"desktop-device-abc\",\"sourceDeviceId\":\"desktop-device-abc\",\"targetDeviceId\":\"mobile-device-second\",\"messageId\":\"evt-99999999-8888-7777-6666-555555555555\",\"messageType\":\"notificationEvent\",\"sessionKeyVersion\":1,\"createdAt\":1755000002000,\"expiresAt\":1755604802000}",
+      "aadBase64": "eyJwcm90b2NvbFZlcnNpb24iOjIsInBhaXJJZCI6ImRlc2t0b3AtZGV2aWNlLWFiYyIsInNvdXJjZURldmljZUlkIjoiZGVza3RvcC1kZXZpY2UtYWJjIiwidGFyZ2V0RGV2aWNlSWQiOiJtb2JpbGUtZGV2aWNlLXNlY29uZCIsIm1lc3NhZ2VJZCI6ImV2dC05OTk5OTk5OS04ODg4LTc3NzctNjY2Ni01NTU1NTU1NTU1NTUiLCJtZXNzYWdlVHlwZSI6Im5vdGlmaWNhdGlvbkV2ZW50Iiwic2Vzc2lvbktleVZlcnNpb24iOjEsImNyZWF0ZWRBdCI6MTc1NTAwMDAwMjAwMCwiZXhwaXJlc0F0IjoxNzU1NjA0ODAyMDAwfQ=="
+    },
+    {
+      "name": "quotes and non-ASCII in ids must escape identically in every language",
+      "fields": {
+        "protocolVersion": 2,
+        "pairId": "par-1-áčě",
+        "sourceDeviceId": "zarizeni/2-ž",
+        "targetDeviceId": "cíl-3-ř",
+        "messageId": "id-\"quoted\"",
+        "messageType": "command",
+        "sessionKeyVersion": 1,
+        "createdAt": 1755000003000,
+        "expiresAt": 1755000303000
+      },
+      "aadUtf8": "{\"protocolVersion\":2,\"pairId\":\"par-1-áčě\",\"sourceDeviceId\":\"zarizeni/2-ž\",\"targetDeviceId\":\"cíl-3-ř\",\"messageId\":\"id-\\\"quoted\\\"\",\"messageType\":\"command\",\"sessionKeyVersion\":1,\"createdAt\":1755000003000,\"expiresAt\":1755000303000}",
+      "aadBase64": "eyJwcm90b2NvbFZlcnNpb24iOjIsInBhaXJJZCI6InBhci0xLcOhxI3EmyIsInNvdXJjZURldmljZUlkIjoiemFyaXplbmkvMi3FviIsInRhcmdldERldmljZUlkIjoiY8OtbC0zLcWZIiwibWVzc2FnZUlkIjoiaWQtXCJxdW90ZWRcIiIsIm1lc3NhZ2VUeXBlIjoiY29tbWFuZCIsInNlc3Npb25LZXlWZXJzaW9uIjoxLCJjcmVhdGVkQXQiOjE3NTUwMDAwMDMwMDAsImV4cGlyZXNBdCI6MTc1NTAwMDMwMzAwMH0="
+    }
+  ]
+}

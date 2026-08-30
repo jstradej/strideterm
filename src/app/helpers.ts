@@ -313,6 +313,47 @@ export function writeMobileInputBarCollapsed(value: boolean): void {
   }
 }
 
+/**
+ * The unsent draft in the mobile input bar, per terminal session.
+ *
+ * `sessionStorage`, not `localStorage`: a draft belongs to this browsing context and must not
+ * outlive it — a phone that closed the remote view and opened another desktop's must not be handed
+ * the text it was typing at the first one. It survives what it has to survive, which is a RELOAD of
+ * the same context: the mobile app tears the relay session down after a grace period in the
+ * background and re-bootstraps on return, and losing what the user was typing across that would
+ * make the reconnect feel like a crash (production hardening §5 "Session" 6, "keep the unsent input
+ * locally, and do not send it without a new user action").
+ *
+ * It is a DRAFT and nothing else: restoring it puts characters in a field, and only the user
+ * pressing enter ever writes them to a PTY.
+ */
+const MOBILE_DRAFT_KEY_PREFIX = "strideterm-mobile-draft:";
+/** Bounded so a runaway paste cannot fill the origin's storage quota. */
+const MOBILE_DRAFT_MAX_CHARS = 4096;
+
+export function readMobileInputDraft(sessionId: string): string {
+  if (!sessionId) return "";
+  try {
+    return window.sessionStorage.getItem(`${MOBILE_DRAFT_KEY_PREFIX}${sessionId}`) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeMobileInputDraft(sessionId: string, value: string): void {
+  if (!sessionId) return;
+  try {
+    const key = `${MOBILE_DRAFT_KEY_PREFIX}${sessionId}`;
+    if (!value) {
+      window.sessionStorage.removeItem(key);
+      return;
+    }
+    window.sessionStorage.setItem(key, value.slice(0, MOBILE_DRAFT_MAX_CHARS));
+  } catch {
+    // Ignore sessionStorage failures in restricted browser contexts.
+  }
+}
+
 export function readSidebarWidth(): number | null {
   try {
     const raw = window.localStorage.getItem("strideterm-sidebar-width");

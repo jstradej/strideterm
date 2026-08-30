@@ -188,9 +188,13 @@
 .workspace {
   padding: 10px;
   min-height: 0;
+  /* Same reason as .workspace-main below: one implicit `auto` column is one column that grows to
+     fit its content rather than to fit the screen. */
+  min-width: 0;
   overflow: hidden;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .meta,
@@ -1053,11 +1057,26 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   overflow: auto;
 }
 
+/* `grid-template-columns: minmax(0, 1fr)` is why this column cannot be widened by what is in it.
+   A grid with rows declared and no columns gets ONE implicit column sized `auto`, which is
+   max-content in disguise: any child too wide to fit — a long cwd, a wide chip row, a server error
+   message with a path in it — made the column that wide, and everything else in the workspace
+   (toolbar, terminal stage) was laid out against the new width. `.workspace` clips the result with
+   `overflow: hidden`, so what a phone actually showed was the layout pushed off the right of the
+   viewport with no way to scroll back to it.
+
+   `minmax(0, 1fr)` is the same track with a floor of zero, which is what lets the children's own
+   overflow rules (ellipsis on the path, wrapping in the alert) apply instead of being ignored.
+   `min-width: 0` is the same argument one level up: this element is itself a grid item, and a grid
+   item defaults to `min-width: auto` — it would refuse to shrink below its content even with the
+   track fixed. On a viewport where everything fits, neither changes anything. */
 .workspace-main {
   min-height: 0;
+  min-width: 0;
   height: 100%;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   overflow: hidden;
 }

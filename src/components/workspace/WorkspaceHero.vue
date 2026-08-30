@@ -1,7 +1,21 @@
 <template>
   <section data-role="workspace-hero">
-    <div v-if="isRemote && store.remoteConnectionIssue" class="workspace-remote-alert">
-      <strong>Remote connection issue.</strong> {{ store.remoteConnectionIssue }}
+    <div v-if="isRemote && store.remoteConnectionIssue && !issueDismissed" class="workspace-remote-alert" role="alert">
+      <div class="workspace-remote-alert__body">
+        <p class="workspace-remote-alert__message">{{ store.remoteConnectionIssue }}</p>
+        <p v-if="store.remoteConnectionHint" class="workspace-remote-alert__hint">
+          {{ store.remoteConnectionHint }}
+        </p>
+      </div>
+      <button
+        type="button"
+        class="workspace-remote-alert__dismiss"
+        title="Dismiss this message"
+        aria-label="Dismiss this message"
+        @click="issueDismissed = true"
+      >
+        ×
+      </button>
     </div>
 
     <template v-if="!workspace">
@@ -103,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, ref } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention } from "../../app/helpers.js";
@@ -141,6 +155,17 @@ function copyPath() {
 }
 
 const isRemote = computed(() => api?.isRemote || false);
+
+// Dismissed per message, not for good: a NEW issue clears the flag, so hiding one banner can never
+// hide the next one. Without this the only way to get rid of a banner about something the user has
+// decided to live with was to fix it.
+const issueDismissed = ref(false);
+watch(
+  () => store.remoteConnectionIssue,
+  () => {
+    issueDismissed.value = false;
+  },
+);
 const workspace = computed<Record<string, any> | null>(() => (store.payload as any)?.workspace || null); // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 const activeWorkspace = computed(() => store.activeWorkspace);
 // The hero reads only light git fields (available/branch/dirty/dirtyCount), so

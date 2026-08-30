@@ -59,6 +59,11 @@
 
 .boot-copy {
   color: var(--muted);
+  /* Same reason as .workspace-remote-alert__body: what lands here is a server message, and a grid
+     item defaults to min-width:auto — one long unbreakable token would push the card wider than the
+     480px it asks for rather than wrapping inside it. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .boot-form {

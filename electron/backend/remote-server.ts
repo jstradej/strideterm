@@ -43,6 +43,7 @@ import {
   gitStashImportSchema,
   gitStashListSchema,
   gitSquashSchema,
+  mobileSessionBootstrapSchema,
   taskUpdateDescriptionSchema,
   taskCompanionCreateSchema,
   taskCompanionAnswerSchema,
@@ -64,6 +65,10 @@ import {
 import { resolveRemoteAccessPort } from "../../config/app-config.js";
 import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
+import {
+  RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS,
+  RELAY_MOBILE_SESSION_IDLE_TTL_MS,
+} from "./mobile/mobile-relay-protocol.js";
 import { remoteViewerId } from "./viewer-id.js";
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
@@ -103,6 +108,14 @@ import {
  *     ever sending the cookie back, breaking the LAN bootstrap. See
  *     `buildSessionCookieAttrs` below.
  */
+/**
+ * Header the managed relay's connector presents on every request and upgrade it forwards into the
+ * loopback origin. See `startRemoteServer`'s `loopbackOrigin.guardToken` for what it does and — just
+ * as importantly — what it does not: it says "this is the connector", never "this caller is
+ * authorized", which is still the WebView ticket's and the session cookie's job.
+ */
+const RELAY_ORIGIN_GUARD_HEADER = "x-strideterm-relay-origin";
+
 const SESSION_COOKIE_NAME = "strideterm_session";
 const SESSION_COOKIE_ATTRS_BASE = "HttpOnly; SameSite=Strict; Path=/";
 
@@ -385,7 +398,43 @@ interface Runtime {
   getInitialState(): Promise<unknown>;
   setRemoteInfo(info: { enabled: boolean; urls?: string[]; port?: number; host?: string; error?: string }): void;
   listRemoteUrls(): string[];
+  /**
+   * Every origin a mobile WebView ticket may currently be redeemed at on the LEGACY server.
+   *
+   * The runtime owns it because the runtime is the only party that sees all three sources at once —
+   * the bound LAN URLs, the live quick-tunnel URL and the operator's custom public URL — and because
+   * "which origins is this desktop reachable at right now" changes while the server runs. A ticket
+   * naming an origin that has dropped off this list is no longer redeemable, which is what stops one
+   * minted for a dead quick tunnel from working against its replacement (production hardening §5
+   * "Ticket" 4).
+   */
+  listMobileTicketOrigins?(): string[];
   on(channel: string, handler: AnyFn): () => void;
+  /** Wires this server's session-revoke function back into the runtime (see MobileManager.revokeDevice). */
+  setMobileRemoteSessionRevoker?(fn: (deviceId: string) => void): void;
+  /** Single-use WebView session ticket exchange (plan §9.2) — null on any failure, reason undisclosed. */
+  consumeMobileWebSessionTicket?(
+    ticketId: string,
+    secret: string,
+    context: { transport: "relay" | "legacy"; origins: readonly string[] },
+  ): {
+    deviceId: string;
+    pairId: string;
+    profileId: string;
+    allowedOrigin: string;
+    transport: "relay" | "legacy";
+    requiredCapability: "remote.webSession";
+    expiresAt: number;
+  } | null;
+  /**
+   * Whether [deviceId] may still hold a mobile session on [profileId], right now.
+   *
+   * Asked on every request a mobile session makes, because the two things that can change under a
+   * live session are not revokes and so nothing pushes them: the device's capability list and its
+   * profile allowlist (production hardening §5 "Session" 2/4). The runtime answers from the same
+   * device store every other authorization reads.
+   */
+  isMobileSessionStillAuthorized?(deviceId: string, profileId: string): boolean;
   writeToSession(sessionId: string, data: string, viewerId?: string, originWorkspaceId?: string): unknown;
   resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
   // getTerminalReplaySnapshot / getTerminalReplay and all other methods are
@@ -444,8 +493,69 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Cache-Control": "no-store",
 };
 
+/**
+ * How long a mobile (ticket-bootstrapped) session may live, and how long it may sit idle.
+ *
+ * From the shared protocol constants rather than spelled out here, because the relay enforces the
+ * same two numbers on its own side of the same session: the relay's cookie is renewable only inside
+ * the absolute window, and this is the window (production hardening §5 "Session" 1). They live in
+ * `relay-limits.json` because the relay path is where they are also enforced; a legacy-transport
+ * mobile session is held to the same pair on purpose — the transport is not what decides how long a
+ * phone may hold a remote session.
+ */
+const MOBILE_SESSION_ABSOLUTE_TTL_MS = RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS;
+const MOBILE_SESSION_IDLE_TTL_MS = RELAY_MOBILE_SESSION_IDLE_TTL_MS;
+/**
+ * How often the deadline sweep runs.
+ *
+ * A minute: the deadlines are eight hours and thirty minutes, so a minute of slack is invisible to a
+ * user and the sweep costs one pass over a map that holds at most a handful of entries. Its purpose
+ * is to close a socket nothing is talking on, which is precisely the case no request-path check can
+ * reach.
+ */
+const MOBILE_SESSION_SWEEP_MS = 60_000;
+
 function writeHead(response: ServerResponse, statusCode: number, headers: Record<string, string>): void {
   response.writeHead(statusCode, { ...SECURITY_HEADERS, ...headers });
+}
+
+/**
+ * One entry per active session (plan §9.2/§10.6 — this replaces the bare
+ * `activeSessions: Set<string>`). `deviceId`/`pairId` are non-null only for
+ * a session minted by the mobile ticket-bootstrap route; every existing
+ * browser/token-client/Telegram-`/tunnel` session keeps getting `null` here.
+ *
+ * A MOBILE SESSION IS FINITE NOW, and that is a change in behaviour rather than a refactor
+ * (production hardening §5 "Session"). It used to carry `expiresAt: null` — the ticket that created
+ * it had a sixty-second TTL, and the session it produced then lasted until the process restarted, so
+ * the shortest-lived credential in the system minted the longest-lived one. Three deadlines replace
+ * that:
+ *
+ *   - `expiresAt`: the ABSOLUTE end, eight hours from the bootstrap. Nothing moves it.
+ *   - `idleExpiresAt`: thirty minutes of no meaningful activity. Moved forward by real requests and
+ *     real client messages, and deliberately NOT by a heartbeat or a ping — a keep-alive frame is the
+ *     client saying its socket is open, not the user doing anything, and letting it hold a session
+ *     open forever would make the idle deadline decorative.
+ *   - and the device's own authorization, re-read on every request: a revoke, a capability change or
+ *     a profile-allowlist change ends the session at the next thing it tries to do, in addition to
+ *     the revoke path closing it immediately.
+ *
+ * `expiresAt` stays `null` for the pre-existing browser/token-client/Telegram sessions, whose
+ * lifetime question is a different one (they hold the master token or a desktop-issued cookie, and
+ * the user's own remote-access settings are what end them). Only a mobile session — the kind a phone
+ * bootstraps from a ticket — is bounded here.
+ */
+interface MobileSessionRecord {
+  sessionId: string;
+  deviceId: string | null;
+  pairId: string | null;
+  profileId: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /** Absolute deadline. Non-null exactly for a mobile (ticket-bootstrapped) session. */
+  expiresAt: number | null;
+  /** Idle deadline, moved forward by meaningful activity only. Null when `expiresAt` is. */
+  idleExpiresAt: number | null;
 }
 
 /**
@@ -569,6 +679,27 @@ export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = [
 ];
 
 /**
+ * `settings.integrations.mobile` (plan §10.5): "Remote HTTP klient nesmí
+ * měnit mobile credentials, pairing ani device settings." Unlike
+ * `remoteAccess` (blocked per-field, since most of its fields ARE safe to
+ * let a remote client change — see REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS), the
+ * ENTIRE `integrations.mobile` subtree is dropped wholesale: its only
+ * fields are the enabled flag and the full paired-device list (capability +
+ * profile allowlists, revocation status) — desktop-owned pairing state with
+ * no safe partial-write subset, same reasoning as `externalPathOpener`
+ * above. Sibling integrations (`integrations.telegram`, `.azureDevops`,
+ * `.github`) are untouched — only `mobile` is blocked.
+ */
+function sanitizeIntegrationsMobileFromRemote(settings: Record<string, unknown>): string[] {
+  const integrations = settings.integrations as Record<string, unknown> | undefined;
+  if (integrations && typeof integrations === "object" && "mobile" in integrations) {
+    delete integrations.mobile;
+    return ["integrations.mobile"];
+  }
+  return [];
+}
+
+/**
  * Apply the same blocklist `/api/settings/update` enforces. Exported for
  * tests; mutates `settings` in place to drop both the blocked top-level keys
  * and the blocked `remoteAccess` keys, and returns the names of fields that
@@ -604,6 +735,7 @@ export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): s
       }
     }
   }
+  removed.push(...sanitizeIntegrationsMobileFromRemote(settings));
   return removed;
 }
 
@@ -626,11 +758,40 @@ export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): s
  * safe to wrap every JSON response, including `{ ok: true }` and error
  * envelopes.
  */
-export function stripSecretsForRemote(body: unknown): unknown {
+export interface StripSecretsOptions {
+  /**
+   * Also blank `payload.remoteAccess.urls[*]` — the share URLs that embed
+   * `?token=<master>`.
+   *
+   * Set for the managed relay's loopback-origin server ONLY, and false
+   * everywhere else, because the two transports have different parties on the
+   * data path:
+   *
+   *  - On the user's own LAN listener or their own Cloudflare tunnel the share
+   *    URL travels desktop → the owner's own browser. That is the premise
+   *    SEC-004 / residual R1 accepted it under, and "Copy share URL" is a real
+   *    hand-off affordance there.
+   *  - Over the managed relay the same response crosses a hosted Worker that
+   *    TERMINATES TLS and forwards decrypted frames (there is no end-to-end
+   *    layer on the relay viewer path — see mobile-relay-connector.ts, which
+   *    passes bodies and cookies through in the clear by design). R1's premise
+   *    does not hold there: the token would be handed to the relay operator,
+   *    and unlike a relay session cookie it is long-lived, survives the
+   *    session, unlocks the whole remote API over the LAN independently of the
+   *    relay, and would appear in any relay-side request logging.
+   *
+   * Nothing is lost by blanking it: a phone reaches this desktop through the
+   * relay origin or a WebView ticket, never through a LAN share URL, so the
+   * field has no consumer on this transport.
+   */
+  stripShareUrls?: boolean;
+}
+
+export function stripSecretsForRemote(body: unknown, opts: StripSecretsOptions = {}): unknown {
   if (!body || typeof body !== "object") return body;
   const payload = body as Record<string, unknown>;
   // A top-level state payload (a getPayload() result) — strip its master token.
-  if (payload.appState) return stripStateToken(payload);
+  if (payload.appState) return stripStateSecrets(payload, opts);
   // A result envelope that WRAPS a state payload under `.payload` (git/docker
   // ops, verification results: `{ ok, payload: <full state> }`). Top-level-only
   // stripping missed these — a v1 nested mutation response could ship the master
@@ -638,9 +799,32 @@ export function stripSecretsForRemote(body: unknown): unknown {
   // state too, leaving the envelope's small fields intact.
   const nested = payload.payload;
   if (nested && typeof nested === "object" && (nested as Record<string, unknown>).appState) {
-    return { ...payload, payload: stripStateToken(nested as Record<string, unknown>) };
+    return { ...payload, payload: stripStateSecrets(nested as Record<string, unknown>, opts) };
   }
   return body;
+}
+
+/** Both strips, in one place, so the two payload shapes above stay one line each. */
+function stripStateSecrets(state: Record<string, unknown>, opts: StripSecretsOptions): Record<string, unknown> {
+  return stripShareUrls(stripStateToken(state), opts);
+}
+
+/**
+ * Blank the token-bearing share URLs in one state-payload object.
+ *
+ * Deliberately a SEPARATE pass from `stripStateToken` rather than a branch
+ * inside it: the token lives at `appState.settings.remoteAccess.token` and the
+ * URLs at the payload-level `remoteAccess.urls` (runtime.ts's `setRemoteInfo`
+ * spread, not the settings subtree). `stripStateToken` returns early when a
+ * payload carries no `settings.remoteAccess`, which would otherwise skip the
+ * URLs on exactly the payload shape that still has them.
+ */
+function stripShareUrls(state: Record<string, unknown>, opts: StripSecretsOptions): Record<string, unknown> {
+  if (!opts.stripShareUrls) return state;
+  const remoteAccess = state.remoteAccess as Record<string, unknown> | undefined;
+  if (!remoteAccess || typeof remoteAccess !== "object") return state;
+  if (!Array.isArray(remoteAccess.urls) || remoteAccess.urls.length === 0) return state;
+  return { ...state, remoteAccess: { ...remoteAccess, urls: [] } };
 }
 
 /** Zero the master remote-access token in one state-payload object. Returns the
@@ -694,6 +878,9 @@ interface RemoteAdaptContext {
   /** Parsed request body — set once the dispatch reads it; lets the ack pin the
    *  changed resource key(s) from prKey/workspaceId/projectId. */
   body?: Record<string, unknown>;
+  /** True on the managed relay's loopback-origin server, so the token-bearing
+   *  share URLs are blanked as well — see StripSecretsOptions.stripShareUrls. */
+  stripShareUrls?: boolean;
 }
 
 // Only compress JSON above this size — below it the framing/CPU overhead of
@@ -861,7 +1048,7 @@ function changedResourcesForRoute(route: string, body: Record<string, unknown> |
  * (protocol < 2) clients still get the full composed payload — no silent slim.
  */
 function adaptRemoteResponse(body: unknown, ctx: RemoteAdaptContext): unknown {
-  const stripped = stripSecretsForRemote(body);
+  const stripped = stripSecretsForRemote(body, { stripShareUrls: ctx.stripShareUrls });
   const v2 = servesRemoteCore(ctx.capabilities);
   // A v2 client receives a full slim core ONLY on the core-delivery paths
   // (bootstrap / activation / WS state). Every other state-bearing response is a
@@ -1678,6 +1865,12 @@ export async function startRemoteServer({
   socketStallGraceMs = SOCKET_STALL_GRACE_MS,
   socketStallSweepMs = SOCKET_STALL_SWEEP_MS,
   socketBufferedAmount = (socket) => socket.bufferedAmount,
+  mobileSessionAbsoluteTtlMs = MOBILE_SESSION_ABSOLUTE_TTL_MS,
+  mobileSessionIdleTtlMs = MOBILE_SESSION_IDLE_TTL_MS,
+  mobileSessionSweepMs = MOBILE_SESSION_SWEEP_MS,
+  wsHeartbeatIntervalMs = WS_HEARTBEAT_INTERVAL_MS,
+  wsHeartbeatMaxMissed = WS_HEARTBEAT_MAX_MISSED,
+  loopbackOrigin,
 }: {
   runtime: Runtime;
   staticRoot: string;
@@ -1689,14 +1882,88 @@ export async function startRemoteServer({
   socketStallGraceMs?: number;
   /** Stall-sweep sample interval. Injectable so tests can drive it fast. */
   socketStallSweepMs?: number;
+  /**
+   * The two mobile-session deadlines and the sweep interval, injectable for the same reason as
+   * everything above: eight hours and thirty minutes are the product's numbers, and a test that
+   * proves a deadline closes a live WebSocket cannot wait for either.
+   */
+  mobileSessionAbsoluteTtlMs?: number;
+  mobileSessionIdleTtlMs?: number;
+  mobileSessionSweepMs?: number;
+  /**
+   * The keep-alive tick and how many of them a silent client survives, injectable for the same
+   * reason: the shipped tolerance is a minute of unreachability and no test can wait for it. What
+   * they buy is the TOLERANCE ITSELF being provable — the difference between three strikes and one
+   * is invisible on a desk and is the whole difference on a phone.
+   */
+  wsHeartbeatIntervalMs?: number;
+  wsHeartbeatMaxMissed?: number;
   /** Reader for a socket's outbound buffered bytes. Defaults to the real
    *  `socket.bufferedAmount`. Injectable ONLY for tests: loopback kernel buffers
    *  absorb multi-MB queues so `bufferedAmount` never reflects a real backlog
    *  over 127.0.0.1, making the backlog/stall path impossible to exercise
    *  deterministically otherwise. Never overridden in production. */
   socketBufferedAmount?: (socket: import("ws").WebSocket) => number;
+  /**
+   * Starts this same server as the managed relay's INTERNAL ORIGIN instead of the user's
+   * configured LAN/tunnel listener (relay plan §5.4).
+   *
+   * The relay connector needs the real remote handlers, the real registry and the real runtime —
+   * "share the same handlers and runtime, but expose the connector a loopback-only origin" is what
+   * the plan asks for, and a second instance of this function is the smallest way to get exactly
+   * that. What it must NOT do is behave like the user's remote access: so when this is present the
+   * server
+   *
+   *   - starts regardless of `remoteAccess.enabled`, because the relay is a different feature with
+   *     its own flag, and turning the relay on must never open the LAN listener the user did not
+   *     ask for (nor turning it off close one they did);
+   *   - binds only the loopback address it is given, on a port the caller obtained from the OS;
+   *   - authenticates with a per-process random token only the connector holds — never the user's
+   *     master remote token, which is what a browser bookmark and a Telegram `/tunnel` message
+   *     carry;
+   *   - publishes nothing: no `setRemoteInfo` (which would overwrite the URLs the settings UI
+   *     shows), no `setRemoteClientRegistry` and no `setMobileRemoteSessionRevoker` (both are the
+   *     primary server's to own). The revoke hook is returned instead, for the relay manager to
+   *     wire up itself. It does ADD its own remote-client registry to the runtime
+   *     (`addRemoteClientRegistry`) and remove it again on close — without that the runtime cannot
+   *     resolve a relay viewer at all, and a per-viewer operation either fails or, worse, skips a
+   *     profile guard that reads an unresolvable viewer as "not a viewer".
+   */
+  loopbackOrigin?: {
+    /** `127.0.0.1` or `::1`. Rejected otherwise — this listener must never be reachable off-box. */
+    host: string;
+    /** A port the caller has already obtained from the OS, or 0 to let the OS pick one now. */
+    port: number;
+    /**
+     * Per-process random secret the connector presents on every request and upgrade, in the
+     * `X-Strideterm-Relay-Origin` header.
+     *
+     * It is a TRANSPORT guard, not an authorization: it answers "is this the connector talking",
+     * and nothing more. A viewer's own request still authenticates the ordinary way, with the
+     * one-time WebView ticket it exchanges for the session cookie — otherwise the relay would be
+     * handing every viewer the authority of a master token and letting it reach the API before the
+     * bootstrap it is supposed to go through.
+     *
+     * The master token of a loopback-origin server is a fresh random this process never emits
+     * anywhere, so that door is closed rather than merely unused (plan §5.4 "no publicly shared
+     * master token").
+     */
+    guardToken: string;
+    /**
+     * The PUBLIC origin viewers reach this relay at — e.g. `https://relay.strideterm.dev`.
+     *
+     * Supplied by `MobileRelayManager`, which learned it from the grant issuer's own answer, and never
+     * derived from a `Host`, `Origin` or `X-Forwarded-*` header on an incoming request. That is the
+     * whole point: the loopback listener sees only the connector's rewritten headers, so anything it
+     * inferred from a request would be a value a viewer could influence (production hardening §5
+     * "Ticket" 3). It is what a relay-minted ticket's `allowedOrigin` is compared against.
+     */
+    publicOrigin: string;
+  };
 }): Promise<{
   close: () => Promise<void>;
+  /** Present only for a `loopbackOrigin` server: the address it actually bound. */
+  address?: { host: string; port: number };
   _debugRouting?: () => { congested: boolean; hasCloseTimer: boolean }[];
   _debugCongestionTerminates?: () => number;
   _debugTelemetry?: () => ReturnType<ReturnType<typeof createRemoteTelemetry>["snapshot"]>;
@@ -1705,24 +1972,40 @@ export async function startRemoteServer({
    *  not rebuilt inside the request handler — this hook exists only so a test
    *  can prove that by comparing references across two live requests. */
   _debugRouteMapsIdentity?: () => { detailRoutes: unknown; slotAwareRoute: unknown };
+  /** Test/production hook: close a revoked device's active remote HTTP/WS session(s) (plan §9.2/§10.6). */
+  revokeMobileSessionsForDevice?: (deviceId: string) => void;
 }> {
-  const { enabled, host, token } = runtime.getPayload().appState.settings.remoteAccess;
-  // Through the resolver, not straight off the settings object: `STRIDETERM_REMOTE_PORT` has to be
-  // able to move a build that already has a settings file, which is the only situation anybody sets
-  // it in (a dev build beside a production install, both wanting 43123). See resolveRemoteAccessPort.
-  const port = resolveRemoteAccessPort(runtime.getPayload().appState.settings.remoteAccess.port);
-  if (!enabled) {
+  const configured = runtime.getPayload().appState.settings.remoteAccess;
+  // A loopback-origin server is the relay's internal origin, not the user's remote access: it never
+  // consults `remoteAccess.enabled`, never uses the master token, and never reports URLs.
+  const isLoopbackOrigin = loopbackOrigin !== undefined;
+  if (isLoopbackOrigin && loopbackOrigin.host !== "127.0.0.1" && loopbackOrigin.host !== "::1") {
+    throw new Error(`loopbackOrigin.host must be 127.0.0.1 or ::1 (got ${loopbackOrigin.host})`);
+  }
+  const host = isLoopbackOrigin ? loopbackOrigin.host : configured.host;
+  // The configured port goes through the resolver, not straight off the settings object:
+  // `STRIDETERM_REMOTE_PORT` has to be able to move a build that already HAS a settings file,
+  // which is the only situation anybody sets it in (a dev build beside a production install,
+  // both wanting 43123). A loopbackOrigin port is an explicit internal argument and is left
+  // alone — overriding that would move the relay's own origin, which nobody asked for.
+  const port = isLoopbackOrigin ? loopbackOrigin.port : resolveRemoteAccessPort(configured.port);
+  // A loopback-origin server has no usable master token: this value is never logged, never listed
+  // and never handed to anyone, so the `?token=`/`Authorization: Bearer` path simply has no key.
+  const token = isLoopbackOrigin ? randomBytes(32).toString("base64url") : configured.token;
+  if (!isLoopbackOrigin && !configured.enabled) {
     runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
     return { close: async () => {} };
   }
 
-  const audit = createAuditLogger("remote-api-audit");
+  const audit = createAuditLogger(isLoopbackOrigin ? "relay-origin-api-audit" : "remote-api-audit");
 
-  // Active session IDs minted after a valid token bootstrap. Lives only
-  // in process memory; restarts (settings change, token regenerate, app
-  // quit) wipe it, by design — that's how clients lose access when the
-  // user revokes the token. See SESSION_COOKIE_NAME for the threat model.
-  const activeSessions = new Set<string>();
+  // Active sessions, keyed by session id (cookie value or `token-client:*`).
+  // Lives only in process memory; restarts (settings change, token
+  // regenerate, app quit) wipe it, by design — that's how clients lose
+  // access when the user revokes the token. See SESSION_COOKIE_NAME for the
+  // threat model. `.has(id)` is still the authorization check everywhere —
+  // widening Set -> Map does not change what counts as authorized.
+  const activeSessions = new Map<string, MobileSessionRecord>();
 
   // Per-session remote client contexts — profile / workspace / session the
   // browser is currently looking at.  Never persisted; wiped on restart.
@@ -1730,7 +2013,24 @@ export async function startRemoteServer({
   registry.startCleanupSweep();
   // Expose the registry so runtime can call fallback helpers when profiles /
   // workspaces are deleted (runtime.setRemoteClientRegistry).
-  runtime.setRemoteClientRegistry?.(registry);
+  // The primary server owns the runtime-facing handles. A relay-origin instance has its own
+  // registry (that is what gives the mobile viewer its own profile/workspace/tab state) but must
+  // not replace the one the desktop windows and the LAN browser are using — so it is ADDED
+  // alongside, and the runtime routes each per-client operation to whichever registry holds that
+  // client. A relay viewer whose registry the runtime cannot see is a viewer whose workspace switch
+  // fails and whose profile guard silently does not apply.
+  let releaseRegistry: () => void = () => {};
+  if (isLoopbackOrigin) {
+    releaseRegistry = runtime.addRemoteClientRegistry?.(registry) ?? releaseRegistry;
+  } else {
+    runtime.setRemoteClientRegistry?.(registry);
+  }
+
+  /** Constant-time compare of the connector guard header against this server's own secret. */
+  function relayGuardPassed(headers: IncomingMessage["headers"]): boolean {
+    const presented = headers[RELAY_ORIGIN_GUARD_HEADER];
+    return typeof presented === "string" && tokensEqual(presented, loopbackOrigin?.guardToken || "");
+  }
 
   function isAuthorized(requestUrl: string, headers: IncomingMessage["headers"]): boolean {
     // Master token (URL `?token=` or `Authorization: Bearer …`) — used
@@ -1742,32 +2042,160 @@ export async function startRemoteServer({
     // browser. Avoids re-emitting the long-lived token on every
     // request.
     const sessionId = getSessionFromRequest(headers);
-    if (sessionId && activeSessions.has(sessionId)) return true;
+    // `touchMobileSession` is the whole enforcement point for a mobile session: it ends one that is
+    // past either deadline or whose device is no longer authorized, and returns false — so the answer
+    // to "is this request authorized" and "is this session still alive" cannot disagree.
+    if (sessionId && activeSessions.has(sessionId)) return touchMobileSession(sessionId);
     return false;
   }
 
   function mintSession(requestedProfileId = ""): string {
     const id = randomBytes(32).toString("base64url");
-    activeSessions.add(id);
     // Bootstrap default profile / workspace context for this new session.
-    registry.getOrCreate(id, (runtime.getPayload() as Record<string, unknown>).appState, requestedProfileId);
+    const client = registry.getOrCreate(
+      id,
+      (runtime.getPayload() as Record<string, unknown>).appState,
+      requestedProfileId,
+    );
+    const now = Date.now();
+    activeSessions.set(id, {
+      sessionId: id,
+      deviceId: null,
+      pairId: null,
+      profileId: client.profileId,
+      createdAt: now,
+      lastSeenAt: now,
+      expiresAt: null,
+      idleExpiresAt: null,
+    });
     return id;
   }
+
+  /** Mints a session bound to a mobile device, from an already-consumed WebView ticket record (never from client-supplied fields). */
+  function mintMobileSession(ticket: { deviceId: string; pairId: string; profileId: string }): string {
+    const id = randomBytes(32).toString("base64url");
+    registry.getOrCreate(id, (runtime.getPayload() as Record<string, unknown>).appState, ticket.profileId);
+    const now = Date.now();
+    activeSessions.set(id, {
+      sessionId: id,
+      deviceId: ticket.deviceId,
+      pairId: ticket.pairId,
+      profileId: ticket.profileId,
+      createdAt: now,
+      lastSeenAt: now,
+      // Both deadlines start here, and the absolute one is never moved again.
+      expiresAt: now + mobileSessionAbsoluteTtlMs,
+      idleExpiresAt: now + mobileSessionIdleTtlMs,
+    });
+    return id;
+  }
+
+  /**
+   * Whether [record] is past either of its deadlines, or belongs to a device that may no longer use it.
+   *
+   * One function for all three questions, called from every door: the HTTP authorization gate, the
+   * WebSocket upgrade, and the sweep that runs without traffic. A session that fails it is removed and
+   * its sockets closed — the plan's "mobile session past expiry answers 401 and the registry holds no
+   * stale state for it".
+   */
+  function mobileSessionExpiry(
+    record: MobileSessionRecord,
+    now: number,
+  ): "live" | "absolute-expired" | "idle-expired" | "unauthorized" {
+    if (record.expiresAt === null) return "live";
+    if (record.expiresAt <= now) return "absolute-expired";
+    if (record.idleExpiresAt !== null && record.idleExpiresAt <= now) return "idle-expired";
+    // The device's CURRENT authorization, not the one that produced the ticket. A capability or
+    // profile change is not a revoke, so nothing pushes it; asking here is what makes it take effect.
+    if (record.deviceId && runtime.isMobileSessionStillAuthorized) {
+      if (!runtime.isMobileSessionStillAuthorized(record.deviceId, record.profileId)) return "unauthorized";
+    }
+    return "live";
+  }
+
+  /**
+   * Ends [sessionId] and everything holding it: the record, its sockets, and its registry client.
+   *
+   * The registry entry matters as much as the record: a remote client left behind resolves for
+   * per-viewer operations and makes a dead session look like a live viewer to the runtime.
+   */
+  function endMobileSession(sessionId: string, reason: string): void {
+    activeSessions.delete(sessionId);
+    closeSessionSockets(sessionId, reason);
+    registry.remove(sessionId);
+    audit.info("mobile session ended", { sessionRef: remoteSessionRef(sessionId), reason });
+  }
+
+  /**
+   * Evaluates a session on the request path: ends it if it is over, and otherwise records activity.
+   *
+   * `activity` is false for the things that must NOT hold a session open — a heartbeat, a ping, a
+   * keep-alive. The absolute deadline is untouched either way, because that is what "absolute" means.
+   */
+  function touchMobileSession(sessionId: string, activity = true): boolean {
+    const record = activeSessions.get(sessionId);
+    if (!record) return false;
+    const now = Date.now();
+    const verdict = mobileSessionExpiry(record, now);
+    if (verdict !== "live") {
+      endMobileSession(sessionId, verdict);
+      return false;
+    }
+    if (activity && record.expiresAt !== null) {
+      activeSessions.set(sessionId, {
+        ...record,
+        lastSeenAt: now,
+        idleExpiresAt: now + mobileSessionIdleTtlMs,
+      });
+    }
+    return true;
+  }
+
+  /**
+   * The deadline sweep: ends what has run out of time whether or not anything is still talking.
+   *
+   * Without it an idle WebSocket would sit open past both deadlines until the next request that never
+   * comes — which is exactly the shape of session the deadlines exist to end (production hardening §5
+   * "Session" 3). One interval for the whole server, unref'd so it never holds the process open.
+   */
+  const mobileSessionSweep = setInterval(() => {
+    for (const [sessionId, record] of [...activeSessions]) {
+      if (record.expiresAt === null) continue;
+      const verdict = mobileSessionExpiry(record, Date.now());
+      if (verdict !== "live") endMobileSession(sessionId, verdict);
+    }
+  }, mobileSessionSweepMs);
+  mobileSessionSweep.unref?.();
 
   function sessionIdForRequest(requestUrl: string, headers: IncomingMessage["headers"]): string {
     const url = new URL(requestUrl, "http://localhost");
     const cookieSessionId = getSessionFromRequest(headers);
-    if (cookieSessionId && activeSessions.has(cookieSessionId)) return cookieSessionId;
+    if (cookieSessionId && activeSessions.has(cookieSessionId)) {
+      // Same check as `isAuthorized`, because this function is reached on paths that did not go
+      // through it — and a session id handed out here would otherwise outlive its own deadline.
+      return touchMobileSession(cookieSessionId) ? cookieSessionId : "";
+    }
     if (!tokensEqual(getTokenFromRequest(requestUrl, headers), token)) return "";
     const clientId = getClientIdFromRequest(requestUrl, headers);
     if (!clientId) return "";
     const tokenSessionId = `token-client:${clientId}`;
-    activeSessions.add(tokenSessionId);
-    registry.getOrCreate(
+    const existing = activeSessions.get(tokenSessionId);
+    const client = registry.getOrCreate(
       tokenSessionId,
       (runtime.getPayload() as Record<string, unknown>).appState,
       url.searchParams.get("profileId") || "",
     );
+    const now = Date.now();
+    activeSessions.set(tokenSessionId, {
+      sessionId: tokenSessionId,
+      deviceId: null,
+      pairId: null,
+      profileId: client.profileId,
+      createdAt: existing?.createdAt ?? now,
+      lastSeenAt: now,
+      expiresAt: null,
+      idleExpiresAt: null,
+    });
     return tokenSessionId;
   }
 
@@ -2117,18 +2545,43 @@ export async function startRemoteServer({
   // (handleApiRequest, the slot-aware dispatch) already guards its own body.
   async function handleHttpRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
+      // The relay origin answers only its own connector. This runs before routing, before the
+      // session lookup and before the unauthenticated bootstrap route, so no part of this server is
+      // reachable from another local process that merely learned the port.
+      if (isLoopbackOrigin && !relayGuardPassed(request.headers)) {
+        writeHead(response, 403, { "Content-Type": "text/plain; charset=utf-8" });
+        response.end("Forbidden");
+        return;
+      }
       const requestUrl = request.url || "/";
       const url = new URL(requestUrl, "http://localhost");
       const isApiRoute = url.pathname.startsWith("/api/");
 
+      // Unauthenticated-by-design (the ticket itself is the auth) — must be
+      // handled before the generic isAuthorized() gate below, which would
+      // otherwise 401 it since it carries no token/cookie. See plan §9.2.
+      if (request.method === "POST" && url.pathname === "/api/mobile/session/bootstrap") {
+        await handleMobileSessionBootstrap(request, response);
+        return;
+      }
+
       if (isApiRoute && !isAuthorized(requestUrl, request.headers)) {
         writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
         response.end("Unauthorized");
+        // WHY it was rejected, not just that it was. Three booleans separate three very different
+        // failures that all look like this line: a client that sent no credential at all, one whose
+        // session cookie names a session this server does not have (restarted, or swept), and one
+        // whose session exists but has run out of time. Diagnosing a mobile viewer that authenticated
+        // successfully and then got 401 on every call took a packet-level guess without them.
+        const rejectedCookie = getSessionFromRequest(request.headers);
         audit.warn("api request rejected", {
           method: request.method,
           path: url.pathname,
           statusCode: 401,
           remoteAddress: request.socket?.remoteAddress,
+          hasCookie: Boolean(rejectedCookie),
+          cookieKnown: Boolean(rejectedCookie && activeSessions.has(rejectedCookie)),
+          hasToken: Boolean(getTokenFromRequest(requestUrl, request.headers)),
         });
         return;
       }
@@ -2148,7 +2601,11 @@ export async function startRemoteServer({
 
         // Bump TTL and get session for per-client endpoints.
         const apiSessionId = sessionIdForRequest(requestUrl, request.headers);
-        if (apiSessionId && activeSessions.has(apiSessionId)) registry.bumpLastSeen(apiSessionId);
+        if (apiSessionId && activeSessions.has(apiSessionId)) {
+          registry.bumpLastSeen(apiSessionId);
+          const sessionRecord = activeSessions.get(apiSessionId);
+          if (sessionRecord) sessionRecord.lastSeenAt = Date.now();
+        }
 
         // Attach the remote-response context ONCE. From here every json() writer —
         // in the intercepts below AND in handleApiRequest — composes the response
@@ -2188,6 +2645,7 @@ export async function startRemoteServer({
           ifNoneMatch: Array.isArray(request.headers["if-none-match"])
             ? request.headers["if-none-match"][0]
             : request.headers["if-none-match"],
+          stripShareUrls: isLoopbackOrigin,
         };
 
         const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
@@ -2221,6 +2679,26 @@ export async function startRemoteServer({
         if (url.pathname.startsWith("/api/remote-client/")) {
           if (!apiSessionId || !activeSessions.has(apiSessionId)) {
             json(response, 401, { error: "No active session" });
+            return;
+          }
+          // A mobile-ticket-issued session is bound to exactly one profile for its entire
+          // lifetime — the profileId the issuing ticket named, itself gated by the device's
+          // profileAllowlist at issuance time (mobile-command-dispatch.ts's remote.webSession.issue
+          // handling). activateProfile (remote-client-registry.ts) has no allowlist check of its
+          // own — it only verifies the TARGET profile exists in appState, never that the caller is
+          // authorized to switch to it — so without this, a mobile session could bootstrap for its
+          // one allowed profile and then call profile/activate to pivot to ANY profile, entirely
+          // bypassing the device's profileAllowlist (plan §9.1/§8). Found via an adversarial
+          // security review. A mobile session that needs a different profile must bootstrap a
+          // fresh ticket instead, which re-runs the full allowlist check from scratch; blocking
+          // profile/activate here also transitively keeps workspace/activate and session/activate
+          // correctly scoped, since both already reject a workspace whose profileId doesn't match
+          // client.profileId, which can now never change for a mobile session.
+          if (
+            url.pathname === "/api/remote-client/profile/activate" &&
+            activeSessions.get(apiSessionId)?.deviceId != null
+          ) {
+            json(response, 403, { error: "Mobile sessions cannot switch profiles" });
             return;
           }
           let body: Record<string, unknown>;
@@ -2365,6 +2843,212 @@ export async function startRemoteServer({
   // Sockets we've already debug-logged a raw (uncomposed) broadcast for, so the
   // diagnostic below fires at most once per socket instead of once per broadcast.
   const rawBroadcastLogged = new WeakSet<import("ws").WebSocket>();
+
+  /**
+   * Closes every open WebSocket tagged with `sessionId` (plan §9.2/§10.6 device revoke, and now also
+   * the session deadlines).
+   *
+   * The reason travels to the client so the app can tell "you were revoked" from "your session ran
+   * out" — the first is final, the second is something a fresh ticket fixes.
+   */
+  function closeSessionSockets(sessionId: string, reason = "device revoked"): void {
+    for (const ws of sockets) {
+      if (socketSession.get(ws) === sessionId) {
+        try {
+          ws.close(1008, reason);
+        } catch {
+          // already closing/closed
+        }
+      }
+    }
+  }
+
+  /**
+   * Called when a mobile device is revoked (MobileManager.revokeDevice, via
+   * runtime.setMobileRemoteSessionRevoker below): removes every session this
+   * device bootstrapped so the next request bearing its cookie is treated as
+   * unauthenticated, and closes any of its open WebSocket(s).
+   */
+  function revokeMobileSessionsForDevice(deviceId: string): void {
+    for (const [sessionId, record] of activeSessions) {
+      if (record.deviceId === deviceId) {
+        activeSessions.delete(sessionId);
+        closeSessionSockets(sessionId);
+        audit.info("mobile device revoked: session closed", { sessionRef: remoteSessionRef(sessionId) });
+      }
+    }
+  }
+  if (!isLoopbackOrigin) runtime.setMobileRemoteSessionRevoker?.(revokeMobileSessionsForDevice);
+
+  // Minimal in-memory rate limiter scoped to the mobile ticket-bootstrap
+  // route only (no general rate-limiting middleware exists elsewhere in this
+  // file to reuse). The route is unauthenticated by design — the ticket IS
+  // the auth — so it must not become a brute-force oracle even though the
+  // ticket secret's 256 bits already make brute force computationally
+  // infeasible within the 60s TTL; this is defense in depth against request
+  // flooding, not the primary defense.
+  //
+  // WHAT IT IS KEYED ON, AND WHY THAT CHANGED (production hardening §5 "Session" 8). On the RELAY
+  // instance every request arrives from `127.0.0.1`, because the connector is the only client — so a
+  // per-address bucket was ONE bucket shared by every paired phone, and one malicious device could
+  // exhaust it for all of them. The relay states which device it verified in a header the desktop
+  // accepts only alongside the connector's guard secret (which every request to this instance must
+  // carry), so the bucket is now per device there. The LEGACY instance keeps the network principal,
+  // because that is genuinely all it knows about an unauthenticated caller, plus a global ceiling so
+  // a rotating source address cannot turn many small buckets into an unbounded one.
+  //
+  // NEITHER IS A DURABLE SECURITY BOUND, and the distinction matters (production hardening §9): both
+  // live in process memory and both reset on restart. The security bound on this route is the
+  // single-use 60-second ticket with a 256-bit secret; these are load shedding.
+  const MOBILE_BOOTSTRAP_RATE_LIMIT_WINDOW_MS = 60_000;
+  const MOBILE_BOOTSTRAP_RATE_LIMIT_MAX = 20;
+  /** The whole route, across every key. Bounds a caller that varies its key to get many buckets. */
+  const MOBILE_BOOTSTRAP_GLOBAL_MAX = 200;
+  const mobileBootstrapAttempts = new Map<string, { count: number; windowStart: number }>();
+  let mobileBootstrapGlobal = { count: 0, windowStart: 0 };
+
+  function countedInWindow(
+    entry: { count: number; windowStart: number },
+    now: number,
+  ): { count: number; windowStart: number } {
+    if (now - entry.windowStart >= MOBILE_BOOTSTRAP_RATE_LIMIT_WINDOW_MS) return { count: 1, windowStart: now };
+    return { count: entry.count + 1, windowStart: entry.windowStart };
+  }
+
+  function mobileBootstrapRateLimited(principal: string): boolean {
+    const now = Date.now();
+    // The global ceiling first, so a caller shopping for fresh keys is bounded even before its own
+    // bucket is. Deliberately an order of magnitude above the per-key limit: it is a backstop, not
+    // the limit.
+    mobileBootstrapGlobal = countedInWindow(mobileBootstrapGlobal, now);
+    if (mobileBootstrapGlobal.count > MOBILE_BOOTSTRAP_GLOBAL_MAX) return true;
+
+    const key = principal || "unknown";
+    const entry = mobileBootstrapAttempts.get(key);
+    if (!entry) {
+      // One entry per key per window, and stale ones are swept whenever the map grows past a small
+      // ceiling — the map itself must not become the unbounded thing.
+      if (mobileBootstrapAttempts.size > 512) {
+        for (const [existingKey, existing] of mobileBootstrapAttempts) {
+          if (now - existing.windowStart >= MOBILE_BOOTSTRAP_RATE_LIMIT_WINDOW_MS) {
+            mobileBootstrapAttempts.delete(existingKey);
+          }
+        }
+      }
+      mobileBootstrapAttempts.set(key, { count: 1, windowStart: now });
+      return false;
+    }
+    const next = countedInWindow(entry, now);
+    mobileBootstrapAttempts.set(key, next);
+    return next.count > MOBILE_BOOTSTRAP_RATE_LIMIT_MAX;
+  }
+
+  /**
+   * The device the RELAY says is presenting this request, or "".
+   *
+   * Only ever read on a loopback-origin instance, and only because every request to that instance has
+   * already passed the connector guard — so the header is the relay's statement rather than a client's
+   * claim. On the legacy instance it is ignored entirely: nothing upstream there verifies a device, so
+   * believing the header would be believing the caller.
+   */
+  function relayVerifiedDeviceId(headers: IncomingMessage["headers"]): string {
+    if (!isLoopbackOrigin) return "";
+    const value = headers["x-strideterm-relay-device"];
+    return typeof value === "string" ? value : "";
+  }
+
+  /**
+   * The origins THIS server currently answers on, for the ticket's origin binding.
+   *
+   * The relay instance has exactly one and it was given to it by the relay manager. The legacy
+   * instance's list is whatever the runtime is publishing right now, which is the point: a ticket
+   * minted for a quick tunnel that has since been replaced names an origin that is no longer in the
+   * list, so it stops being redeemable rather than working against the new tunnel (production
+   * hardening §5 "Ticket" 4).
+   */
+  function ticketRedemptionContext(): { transport: "relay" | "legacy"; origins: string[] } {
+    if (isLoopbackOrigin) return { transport: "relay", origins: [loopbackOrigin.publicOrigin] };
+    // The authoritative list, from the runtime. Falling back to the bound URLs keeps an older host
+    // (or a test double) working rather than refusing every ticket.
+    const urls = runtime.listMobileTicketOrigins?.() ?? runtime.listRemoteUrls?.() ?? [];
+    const origins = new Set<string>();
+    for (const url of urls) {
+      try {
+        origins.add(new URL(url).origin);
+      } catch {
+        // A malformed entry cannot match a normalized origin anyway; skipping it is the same answer.
+      }
+    }
+    return { transport: "legacy", origins: [...origins] };
+  }
+
+  /**
+   * `POST /api/mobile/session/bootstrap` (plan §9.2 steps 5-6): unauthenticated
+   * but ticket-authenticated exchange of a single-use WebView session ticket
+   * for the same HttpOnly session cookie the `?token=` bootstrap mints below.
+   * Never trusts profile/capabilities/deviceId from the request body — only
+   * from the consumed ticket record (plan §10.6).
+   */
+  async function handleMobileSessionBootstrap(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const remoteAddress = request.socket?.remoteAddress || "";
+    const relayDeviceId = relayVerifiedDeviceId(request.headers);
+    // On the relay instance the principal is the device the relay verified; on the legacy one it is
+    // the network address, which is all there is.
+    if (mobileBootstrapRateLimited(relayDeviceId ? `device:${relayDeviceId}` : `addr:${remoteAddress}`)) {
+      audit.warn("mobile session bootstrap rate-limited", { remoteAddress });
+      writeHead(response, 429, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Too Many Requests");
+      return;
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = await readRequestBody(request);
+    } catch {
+      writeHead(response, 400, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Bad Request");
+      return;
+    }
+
+    let parsed: { ticketId: string; secret: string };
+    try {
+      parsed = validateIpc(mobileSessionBootstrapSchema, body, "POST /api/mobile/session/bootstrap");
+    } catch {
+      writeHead(response, 400, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Bad Request");
+      return;
+    }
+
+    const ticket =
+      runtime.consumeMobileWebSessionTicket?.(parsed.ticketId, parsed.secret, ticketRedemptionContext()) ?? null;
+    if (!ticket) {
+      // Generic failure — don't disclose unknown vs. expired vs. wrong secret vs. wrong server vs. an
+      // origin this server no longer answers on. The store spends the ticket in the cases where the
+      // secret was right, so none of them is a retryable probe.
+      audit.warn("mobile session bootstrap rejected", { remoteAddress });
+      writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Unauthorized");
+      return;
+    }
+    // AND THE PRESENTER HAS TO BE THE DEVICE THE TICKET NAMES, when the relay is in a position to say
+    // who is presenting it. Without this, a viewer session belonging to device A could redeem a ticket
+    // minted for device B if it ever obtained one — the ticket is single-use and short-lived, but "who
+    // is holding it" is a check the relay can make for free and the desktop cannot make otherwise.
+    if (relayDeviceId && relayDeviceId !== ticket.deviceId) {
+      audit.warn("mobile session bootstrap rejected: relay device does not match the ticket", { remoteAddress });
+      writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Unauthorized");
+      return;
+    }
+
+    const sessionId = mintMobileSession(ticket);
+    audit.info("mobile session bootstrap succeeded", { remoteAddress, sessionRef: remoteSessionRef(sessionId) });
+    writeHead(response, 302, {
+      "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
+      Location: "/",
+    });
+    response.end();
+  }
 
   // Per-socket terminal-stream routing + backpressure state.
   //  - mode: "legacy" until the client sends its first terminal:subscribe, then
@@ -2628,6 +3312,7 @@ export async function startRemoteServer({
         deliverCore: true, // a catch-up frame IS a core push, not a mutation ack
         sessionId: wsSessionId || "",
         registry,
+        stripShareUrls: isLoopbackOrigin,
       });
       sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload }));
     } catch (err) {
@@ -2889,6 +3574,7 @@ export async function startRemoteServer({
           deliverCore: true, // a WS state:updated frame IS the authoritative core push
           sessionId: sessionId || "",
           registry,
+          stripShareUrls: isLoopbackOrigin,
         });
         sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload: adapted }));
         // Only protocol-2 sockets fetch details; a legacy socket carries the full
@@ -2965,6 +3651,11 @@ export async function startRemoteServer({
   ];
 
   server.on("upgrade", (request, socket, head) => {
+    if (isLoopbackOrigin && !relayGuardPassed(request.headers)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     const url = new URL(request.url || "/", "http://localhost");
     // WS upgrade accepts either the master token (Bearer header or
     // ?token= URL — useful for non-browser clients that don't carry
@@ -3077,6 +3768,28 @@ export async function startRemoteServer({
         if (wsSessionId) registry.bumpLastSeen(wsSessionId);
         try {
           const message = JSON.parse(raw.toString()) as { type: string };
+          // THE IDLE DEADLINE MOVES FOR MEANINGFUL TRAFFIC ONLY (production hardening §5 "Session" 7).
+          // Typing, resizing, subscribing and asking for state are the user doing something; a
+          // `state:sync` catch-up or a protocol keep-alive is the client saying its socket is open,
+          // and a session that could be held open forever by a keep-alive has no idle deadline at
+          // all. The absolute deadline is never moved by either — and a session already past a
+          // deadline is closed HERE rather than at the next HTTP request, which for an open terminal
+          // socket may be hours away.
+          const meaningful =
+            message.type === "terminal:input" ||
+            message.type === "terminal:resize" ||
+            message.type === "terminal:subscribe" ||
+            message.type === "docker:shell:write" ||
+            message.type === "docker:shell:resize" ||
+            message.type === "resource:interest";
+          if (wsSessionId && !touchMobileSession(wsSessionId, meaningful)) {
+            try {
+              ws.close(1008, "session expired");
+            } catch {
+              // Already closing.
+            }
+            return;
+          }
           if (message.type === "terminal:input") {
             const parsed = wsTerminalInputSchema.safeParse(message);
             if (parsed.success) {
@@ -3286,7 +3999,7 @@ export async function startRemoteServer({
     for (const ws of sockets) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const missed = (ws as any).missedPongs ?? 0;
-      if (missed >= WS_HEARTBEAT_MAX_MISSED) {
+      if (missed >= wsHeartbeatMaxMissed) {
         log.warn("WebSocket heartbeat timeout — terminating client", {
           sessionRef: remoteSessionRef(socketSession.get(ws) || ""),
           missedPongs: missed,
@@ -3305,7 +4018,7 @@ export async function startRemoteServer({
         // once missedPongs crosses the threshold.
       }
     }
-  }, WS_HEARTBEAT_INTERVAL_MS);
+  }, wsHeartbeatIntervalMs);
   // Ensure the heartbeat doesn't keep the event loop alive on shutdown.
   heartbeat.unref?.();
 
@@ -3395,38 +4108,63 @@ export async function startRemoteServer({
     clearInterval(heartbeat);
     clearInterval(stallSweep);
     clearInterval(telemetryLog);
+    clearInterval(mobileSessionSweep);
     audit.close();
     unsubscribe.forEach((dispose) => dispose());
     wss.close();
     server.close();
-    runtime.setRemoteInfo({ enabled: false, urls: [], port, host, error: listenResult.error!.message });
-    return { close: async () => {} };
+    if (!isLoopbackOrigin) {
+      runtime.setRemoteInfo({ enabled: false, urls: [], port, host, error: listenResult.error!.message });
+      return { close: async () => {} };
+    }
+    // A relay origin that cannot bind is a failure the relay manager has to see, not a silent
+    // no-op: without it the connector would attach to the relay and then answer nothing.
+    throw listenResult.error!;
   }
 
-  runtime.setRemoteInfo({
-    enabled: true,
-    host,
-    port,
-    urls: listRemoteUrls(host, port, token),
-  });
-  const urls = runtime.listRemoteUrls();
-  if (urls.length > 0) {
-    log.info("remote access ready", { url: urls[0] });
+  const bound = server.address();
+  const boundPort = typeof bound === "object" && bound !== null ? bound.port : port;
+  if (isLoopbackOrigin) {
+    // Deliberately no URL and no token in this line: the relay origin's address is not something a
+    // human ever types, and its token is a credential.
+    log.info("relay internal origin ready", { host, port: boundPort });
+  } else {
+    runtime.setRemoteInfo({
+      enabled: true,
+      host,
+      port,
+      urls: listRemoteUrls(host, port, token),
+    });
+    const urls = runtime.listRemoteUrls();
+    if (urls.length > 0) {
+      log.info("remote access ready", { url: urls[0] });
+    }
   }
 
   return {
+    address: { host, port: boundPort },
     async close() {
       clearInterval(heartbeat);
       clearInterval(stallSweep);
       clearInterval(telemetryLog);
+      clearInterval(mobileSessionSweep);
       if (telemetry.hasActivity()) log.debug("remote state delivery telemetry (final)", telemetry.snapshot());
       registry.stopCleanupSweep();
+      releaseRegistry();
       audit.close();
       unsubscribe.forEach((dispose) => dispose());
       for (const socket of sockets) {
         socket.close();
       }
       await new Promise<void>((resolve) => wss.close(() => resolve()));
+      // `server.close()` waits for every open connection, and a keep-alive pool holds them open
+      // indefinitely. Idle ones are ended in both cases; for the relay origin — whose only client is
+      // the connector that has already been stopped — every connection is ended, because "the relay
+      // is off" has to mean the listener is gone rather than waiting on a socket nobody will use
+      // again. This was observed for real: turning the relay off left `close()` pending on one
+      // pooled connection, so it could never be turned back on.
+      server.closeIdleConnections?.();
+      if (isLoopbackOrigin) server.closeAllConnections?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
     // Test-only: snapshot each live socket's congestion + close-timer state so
@@ -3452,5 +4190,9 @@ export async function startRemoteServer({
     // slotAwareRoute are built once (module/closure scope) rather than
     // rebuilt on every request.
     _debugRouteMapsIdentity: () => ({ detailRoutes: DETAIL_ROUTES, slotAwareRoute }),
+    // Exposed directly (in addition to runtime.setMobileRemoteSessionRevoker
+    // above) so tests can drive a device revoke without needing a real
+    // MobileManager/runtime wired up.
+    revokeMobileSessionsForDevice,
   };
 }

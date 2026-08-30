@@ -233,9 +233,45 @@ describe("sanitizeSettingsFromRemote", () => {
   test("REMOTE_BLOCKED_TOP_LEVEL_FIELDS includes clipboardImagePasteDir", () => {
     expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).toContain("clipboardImagePasteDir");
   });
+
+  test("drops integrations.mobile wholesale but leaves sibling integrations untouched", () => {
+    // Remote HTTP clients must never touch mobile pairing/device/credential
+    // state (plan §10.5) — the whole subtree is dropped, same as
+    // externalPathOpener, because every field in it (enabled flag + the full
+    // paired-device list) is desktop-owned pairing state.
+    const settings = {
+      integrations: {
+        mobile: { enabled: true, devices: [{ deviceId: "dev-1", capabilities: ["remote.request"] }] },
+        telegram: { enabled: true, defaultPollSeconds: 5, connections: [] },
+        azureDevops: { enabled: false, reviewRoot: "", defaultPollSeconds: 60, connections: [] },
+      },
+      theme: "dark",
+    };
+    const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);
+    expect(removed).toContain("integrations.mobile");
+    expect(settings.integrations).not.toHaveProperty("mobile");
+    // Sibling integrations survive untouched.
+    expect(settings.integrations.telegram).toEqual({ enabled: true, defaultPollSeconds: 5, connections: [] });
+    expect(settings.integrations.azureDevops).toEqual({
+      enabled: false,
+      reviewRoot: "",
+      defaultPollSeconds: 60,
+      connections: [],
+    });
+    expect(settings.theme).toBe("dark");
+  });
+
+  test("is a no-op when integrations.mobile is absent", () => {
+    const settings = { integrations: { telegram: { enabled: true, defaultPollSeconds: 5, connections: [] } } };
+    const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);
+    expect(removed).toEqual([]);
+    expect(settings.integrations.telegram).toEqual({ enabled: true, defaultPollSeconds: 5, connections: [] });
+  });
 });
 
 describe("stripSecretsForRemote", () => {
+  const MASTER = "super-secret-master-token";
+
   test("zeros the master token in a runtime payload", () => {
     const payload = {
       appState: {
@@ -295,6 +331,83 @@ describe("stripSecretsForRemote", () => {
     expect(envelope.payload.appState.settings.remoteAccess.token).toBe("super-secret-master-token");
     // No stray copy of the token survives anywhere in the serialized result.
     expect(JSON.stringify(stripped)).not.toContain("super-secret-master-token");
+  });
+
+  // --- stripShareUrls: the managed relay's extra strip ---
+  //
+  // `payload.remoteAccess.urls[*]` embeds `?token=<master>` and residual R1 accepts that, on the
+  // premise that the URL only ever travels desktop → the OWNER's own browser. Over the managed
+  // relay a hosted Worker terminates TLS and forwards decrypted frames, so that premise does not
+  // hold: the token would reach the relay operator, and unlike a relay session cookie it is
+  // long-lived and keeps unlocking the whole remote API over the LAN after the session ends.
+  //
+  // The pair of tests below is the point: the SAME payload strips differently per transport. If a
+  // refactor ever makes this unconditional it breaks "Copy share URL" on the desktop; if it makes
+  // it never apply, the relay leaks the token again.
+  function payloadWithShareUrls() {
+    return {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "0.0.0.0", port: 43123, token: MASTER } },
+      },
+      remoteAccess: {
+        enabled: true,
+        host: "0.0.0.0",
+        port: 43123,
+        urls: [`http://192.168.1.50:43123/?token=${MASTER}`, `http://127.0.0.1:43123/?token=${MASTER}`],
+        tunnel: { status: "connected", mode: "quick", url: "https://x.trycloudflare.com" },
+      },
+    };
+  }
+
+  test("with stripShareUrls, no copy of the master token survives anywhere in the payload", () => {
+    const payload = payloadWithShareUrls();
+    const stripped = stripSecretsForRemote(payload, { stripShareUrls: true }) as typeof payload;
+    expect(stripped.remoteAccess.urls).toEqual([]);
+    expect(stripped.appState.settings.remoteAccess.token).toBe("");
+    // The whole-serialization assertion is the one that matters — it is what a leak looks like.
+    expect(JSON.stringify(stripped)).not.toContain(MASTER);
+    // Everything a relay viewer legitimately reads off remoteAccess survives; only the URLs go.
+    expect(stripped.remoteAccess.enabled).toBe(true);
+    expect(stripped.remoteAccess.port).toBe(43123);
+    expect(stripped.remoteAccess.tunnel).toEqual({
+      status: "connected",
+      mode: "quick",
+      url: "https://x.trycloudflare.com",
+    });
+    // Immutable strip — the runtime's own payload object is not mutated for the desktop's benefit.
+    expect(payload.remoteAccess.urls).toHaveLength(2);
+  });
+
+  test("WITHOUT the option the share URLs are left alone — residual R1, deliberately", () => {
+    const stripped = stripSecretsForRemote(payloadWithShareUrls()) as ReturnType<typeof payloadWithShareUrls>;
+    expect(stripped.remoteAccess.urls).toHaveLength(2);
+    expect(stripped.remoteAccess.urls[0]).toContain(`?token=${MASTER}`);
+    // The settings-level strip (invariant A1) still applies on this path.
+    expect(stripped.appState.settings.remoteAccess.token).toBe("");
+  });
+
+  test("stripShareUrls reaches the share URLs inside a NESTED result envelope too", () => {
+    // Same reason the token strip had to: a v1 mutation result wraps the whole state under
+    // `.payload`, and a strip that only looked at the top level would miss it there.
+    const envelope = { ok: true, payload: payloadWithShareUrls() };
+    const stripped = stripSecretsForRemote(envelope, { stripShareUrls: true }) as typeof envelope;
+    expect(stripped.payload.remoteAccess.urls).toEqual([]);
+    expect(stripped.ok).toBe(true);
+    expect(JSON.stringify(stripped)).not.toContain(MASTER);
+  });
+
+  test("stripShareUrls is a no-op on payload shapes that carry no share URLs", () => {
+    // `stripStateToken` returns its input early when there is no `settings.remoteAccess`, which is
+    // why the URL strip is a separate pass — these shapes prove the pass neither throws nor
+    // invents a `remoteAccess` object that the client would then read as "relay off".
+    const noRemoteAccess = { appState: { settings: { logLevel: "info" } } };
+    expect(stripSecretsForRemote(noRemoteAccess, { stripShareUrls: true })).toEqual(noRemoteAccess);
+
+    const emptyUrls = { appState: { settings: {} }, remoteAccess: { enabled: false, urls: [] } };
+    expect(stripSecretsForRemote(emptyUrls, { stripShareUrls: true })).toEqual(emptyUrls);
+
+    expect(stripSecretsForRemote({ ok: true }, { stripShareUrls: true })).toEqual({ ok: true });
+    expect(stripSecretsForRemote(null, { stripShareUrls: true })).toBeNull();
   });
 });
 
@@ -3274,6 +3387,1324 @@ describe("GET /api/approvals/audit-log", () => {
       expect(wrongAuth.status).toBe(401);
 
       expect(queryCalls).toHaveLength(0);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => {
+  function makeMobileRuntime(
+    port: number,
+    // The ticket record the fake answers with, or null. Deliberately the record shape rather than
+    // `any`: these tests are about what the bootstrap route reads out of a consumed ticket, so the
+    // fake has to be held to the same fields the real store returns.
+    consumeMobileWebSessionTicket: (
+      ticketId: string,
+      secret: string,
+      context: { transport: "relay" | "legacy"; origins: readonly string[] },
+    ) => {
+      deviceId: string;
+      pairId: string;
+      profileId: string;
+      allowedOrigin: string;
+      transport: "relay" | "legacy";
+      requiredCapability: "remote.webSession";
+      expiresAt: number;
+    } | null,
+  ) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "unused-master-token" } },
+        profiles: [
+          { id: "default", name: "Default", color: "#fff", workspaceIds: [] },
+          { id: "other", name: "Other", color: "#000", workspaceIds: [] },
+        ],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    let activateProfileForRemoteClientCalls = 0;
+    return {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+      consumeMobileWebSessionTicket,
+      // Would succeed unconditionally if reached — used to prove the profile-switch block below
+      // stops the request BEFORE this ever runs, not just because the stub happens to be absent.
+      activateProfileForRemoteClient: async () => {
+        activateProfileForRemoteClientCalls++;
+      },
+      getActivateProfileForRemoteClientCalls: () => activateProfileForRemoteClientCalls,
+    };
+  }
+
+  test("a valid ticket mints a session cookie and redirects to a clean '/'", async () => {
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, (ticketId, secret) => {
+      if (ticketId === "ticket-1" && secret === "secret-1") {
+        return {
+          deviceId: "dev-1",
+          pairId: "pair-1",
+          profileId: "default",
+          allowedOrigin: "https://example.trycloudflare.com",
+          transport: "legacy" as const,
+          requiredCapability: "remote.webSession" as const,
+          expiresAt: Date.now() + 60_000,
+        };
+      }
+      return null;
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "ticket-1", secret: "secret-1" }),
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+      const setCookie = res.headers.get("set-cookie") || "";
+      expect(setCookie).toContain("strideterm_session=");
+      expect(setCookie).toContain("HttpOnly");
+      expect(setCookie).toContain("SameSite=Strict");
+
+      // The minted cookie authenticates subsequent requests — no master token needed.
+      const cookieValue = setCookie.split(";")[0];
+      const stateRes = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } });
+      expect(stateRes.status).toBe(200);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("an unknown/expired/wrong-secret ticket gets a generic 401 with no cookie set", async () => {
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, () => null);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "nope", secret: "nope" }),
+      });
+      expect(res.status).toBe(401);
+      expect(res.headers.get("set-cookie")).toBeNull();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("rejects a malformed body with 400 (missing ticketId/secret)", async () => {
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, () => null);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("this route requires no master token or existing session — it is reachable with no Authorization/cookie at all", async () => {
+    // Implicitly proven by every request above (none carry Authorization or
+    // a Cookie header) — asserted explicitly here so a future accidental
+    // insertion before the generic isAuthorized() gate is caught immediately.
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, () => null);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "x", secret: "y" }),
+      });
+      // Reached the route logic (401 from the ticket store, not 401 from the
+      // generic isAuthorized() gate that guards every other /api/* route).
+      expect(res.status).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("rate-limits repeated bootstrap attempts from the same client", async () => {
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, () => null);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 25; i++) {
+        const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticketId: `t-${i}`, secret: "x" }),
+        });
+        statuses.push(res.status);
+      }
+      expect(statuses.filter((s) => s === 401).length).toBeGreaterThan(0);
+      expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0);
+      // Once tripped, it stays tripped for the remainder of the window.
+      expect(statuses[statuses.length - 1]).toBe(429);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a mobile session cannot pivot to a different profile via /api/remote-client/profile/activate", async () => {
+    // Found via an adversarial security review: activateProfile (remote-client-registry.ts) only
+    // checks the TARGET profile exists, never that the caller is authorized to switch to it — so
+    // without this block, a mobile session bootstrapped for its one allowlisted profile ("default")
+    // could call profile/activate to pivot to any other profile ("other"), bypassing the device's
+    // profileAllowlist entirely.
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, (ticketId, secret) => {
+      if (ticketId === "ticket-1" && secret === "secret-1") {
+        return {
+          deviceId: "dev-1",
+          pairId: "pair-1",
+          profileId: "default",
+          allowedOrigin: "https://example.trycloudflare.com",
+          transport: "legacy" as const,
+          requiredCapability: "remote.webSession" as const,
+          expiresAt: Date.now() + 60_000,
+        };
+      }
+      return null;
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const bootstrapRes = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "ticket-1", secret: "secret-1" }),
+        redirect: "manual",
+      });
+      const cookieValue = (bootstrapRes.headers.get("set-cookie") || "").split(";")[0];
+
+      const activateRes = await fetch(`${baseUrl}/api/remote-client/profile/activate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookieValue },
+        body: JSON.stringify({ profileId: "other" }),
+      });
+      expect(activateRes.status).toBe(403);
+      expect(runtime.getActivateProfileForRemoteClientCalls()).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("the session is scoped by the ticket record, not by profile/capabilities/deviceId in the request body", async () => {
+    // Review §6 ("wrong origin/device/profile/secret is rejected") and plan §10.6: "Ticket endpoint
+    // nesmí přijímat profile/capabilities z klienta jako autoritativní; načte je z ticket recordu."
+    // handleMobileSessionBootstrap says so in a doc comment and the request schema happens to drop
+    // unknown keys — both of which a later edit could undo silently, because a session scoped to a
+    // client-declared profile/device behaves identically on the happy path.
+    //
+    // deviceId is the field with an observable consequence here, so it is the one asserted: it is
+    // what revocation matches on, and mintMobileSession builds the whole session record from that
+    // same one ticket object, so a body that cannot reach deviceId cannot reach profileId or
+    // capabilities either.
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, (ticketId, secret) => {
+      if (ticketId === "ticket-1" && secret === "secret-1") {
+        return {
+          deviceId: "dev-1",
+          pairId: "pair-1",
+          profileId: "default",
+          allowedOrigin: "https://example.trycloudflare.com",
+          transport: "legacy" as const,
+          requiredCapability: "remote.webSession" as const,
+          expiresAt: Date.now() + 60_000,
+        };
+      }
+      return null;
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const bootstrapRes = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Everything after `secret` is the attack: a client declaring the profile, capabilities and
+        // device it would rather the session had.
+        body: JSON.stringify({
+          ticketId: "ticket-1",
+          secret: "secret-1",
+          profileId: "other",
+          capabilities: ["remote.request", "remote.admin"],
+          deviceId: "some-other-device",
+          allowedOrigin: "https://attacker.example",
+        }),
+        redirect: "manual",
+      });
+      // The extra keys are ignored, not a 400 — the point is that they carry no authority, and a
+      // session is still minted from the ticket record alone.
+      expect(bootstrapRes.status).toBe(302);
+      const cookieValue = (bootstrapRes.headers.get("set-cookie") || "").split(";")[0];
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } })).status).toBe(200);
+
+      // The session is bound to the ticket record's device, not the one the body named: revoking
+      // the body's claim leaves it alive, revoking the record's kills it.
+      server.revokeMobileSessionsForDevice!("some-other-device");
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } })).status).toBe(200);
+      server.revokeMobileSessionsForDevice!("dev-1");
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } })).status).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("mobile device revoke closes remote sessions", () => {
+  function makeMobileRuntime(port: number) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "unused-master-token" } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [] }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    return {
+      payload,
+      seedTicket(ticketId: string, secret: string, deviceId: string) {
+        tickets.set(`${ticketId}:${secret}`, { deviceId, pairId: "pair-1", profileId: "default" });
+      },
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        on: () => () => undefined,
+        writeToSession: () => undefined,
+        resizeSession: () => undefined,
+        setRemoteClientRegistry: () => undefined,
+        // The origins this server answers on. A ticket is bound to one of them, so a server that
+        // reports none can redeem nothing — which is the new invariant, not an artefact of the fake.
+        listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
+        consumeMobileWebSessionTicket: (
+          ticketId: string,
+          secret: string,
+          context: { transport: "relay" | "legacy"; origins: readonly string[] },
+        ) => {
+          const record = tickets.get(`${ticketId}:${secret}`);
+          if (!record) return null;
+          tickets.delete(`${ticketId}:${secret}`); // single-use, mirrors the real store
+          // The real store compares the transport and the origin; this double records that it was
+          // ASKED, so a caller that stopped passing a context would fail here rather than silently.
+          if (context.transport !== "legacy" || context.origins.length === 0) return null;
+          return {
+            ...record,
+            allowedOrigin: "https://example.trycloudflare.com",
+            transport: "legacy" as const,
+            requiredCapability: "remote.webSession" as const,
+            expiresAt: Date.now() + 60_000,
+          };
+        },
+      },
+    };
+  }
+
+  async function bootstrapSession(baseUrl: string, ticketId: string, secret: string): Promise<string> {
+    const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticketId, secret }),
+      redirect: "manual",
+    });
+    const setCookie = res.headers.get("set-cookie") || "";
+    return setCookie.split(";")[0];
+  }
+
+  test("revoking a device removes its session and closes its open WebSocket; a subsequent request with the old cookie is unauthorized", async () => {
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeMobileRuntime(port);
+    seedTicket("t1", "s1", "dev-1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const cookieValue = await bootstrapSession(baseUrl, "t1", "s1");
+      expect(cookieValue).toContain("strideterm_session=");
+
+      // Confirm the session works before revoke.
+      const beforeRevoke = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } });
+      expect(beforeRevoke.status).toBe(200);
+
+      // Open a WS bound to this cookie session (the ws upgrade request carries
+      // the Cookie header, same as a browser would).
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: cookieValue } });
+      let closeCode: number | null = null;
+      const opened = new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      const closed = new Promise<void>((resolve) => {
+        ws.on("close", (code: number) => {
+          closeCode = code;
+          resolve();
+        });
+      });
+      await opened;
+
+      expect(server.revokeMobileSessionsForDevice).toBeDefined();
+      server.revokeMobileSessionsForDevice!("dev-1");
+      await closed;
+      expect(closeCode).toBe(1008);
+
+      const afterRevoke = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } });
+      expect(afterRevoke.status).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("revoking one device does not affect another device's active session", async () => {
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeMobileRuntime(port);
+    seedTicket("t1", "s1", "dev-1");
+    seedTicket("t2", "s2", "dev-2");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const cookie1 = await bootstrapSession(baseUrl, "t1", "s1");
+      const cookie2 = await bootstrapSession(baseUrl, "t2", "s2");
+
+      server.revokeMobileSessionsForDevice!("dev-1");
+
+      const dev1Res = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie1 } });
+      expect(dev1Res.status).toBe(401);
+
+      const dev2Res = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie2 } });
+      expect(dev2Res.status).toBe(200);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("the ticket-bootstrap limiter on the relay's loopback origin", () => {
+  // Production hardening §5 "Session" 8. Every request the relay forwards arrives from `127.0.0.1`,
+  // because the connector is the only client — so a per-address bucket was ONE bucket shared by every
+  // paired phone, and one malicious device could exhaust it for all of them. The relay states which
+  // device it verified in a header this instance accepts only alongside the connector's guard secret,
+  // and the bucket is keyed on that.
+  const GUARD_TOKEN = "guard-secret-for-the-bootstrap-limiter-test";
+
+  function makeLoopbackRuntime(port: number) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: false, host: "0.0.0.0", port, token: "unused-master-token" } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [] }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    return {
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        on: () => () => undefined,
+        writeToSession: () => undefined,
+        resizeSession: () => undefined,
+        addRemoteClientRegistry: () => () => undefined,
+        isMobileSessionStillAuthorized: () => true,
+        // Every attempt below carries a secret that matches nothing, so the store answers null and the
+        // route answers 401 — which is what makes the RATE the only thing under test. A double that
+        // succeeded would conflate "the limiter let this through" with "the ticket was good".
+        consumeMobileWebSessionTicket: () => null,
+      },
+    };
+  }
+
+  async function attempt(baseUrl: string, deviceId: string): Promise<number> {
+    const response = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Strideterm-Relay-Origin": GUARD_TOKEN,
+        // What the Durable Object stamps on a forwarded viewer request. A browser cannot set it: the
+        // relay strips both of its own prefixes from whatever arrived before it adds its own.
+        "X-Strideterm-Relay-Device": deviceId,
+      },
+      body: JSON.stringify({ ticketId: "t", secret: "s" }),
+      redirect: "manual",
+    });
+    return response.status;
+  }
+
+  test("one device exhausting its own bucket does not lock out another device", async () => {
+    const port = await getFreePort();
+    const { runtime } = makeLoopbackRuntime(port);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      loopbackOrigin: {
+        host: "127.0.0.1",
+        port: 0,
+        guardToken: GUARD_TOKEN,
+        publicOrigin: "https://relay.strideterm.test",
+      },
+    });
+    const baseUrl = `http://127.0.0.1:${server.address!.port}`;
+    try {
+      // The limiter's window allows twenty per key per minute. Twenty-five from one device.
+      const noisy: number[] = [];
+      for (let i = 0; i < 25; i++) noisy.push(await attempt(baseUrl, "mobile-noisy"));
+      expect(noisy.filter((status) => status === 429).length).toBeGreaterThan(0);
+
+      // The other phone is untouched: it gets the ordinary refusal for a bad ticket, not a 429.
+      // Before the header existed, both devices shared `127.0.0.1` and this was a 429.
+      expect(await attempt(baseUrl, "mobile-quiet")).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("the device header is ignored on the LAN server, where nothing upstream verified it", async () => {
+    // On the legacy instance the header is a claim by the caller, and believing it would hand every
+    // caller a fresh bucket per made-up device id — the sharding the plan warns about, in the one
+    // place where the relay is not there to have verified anything.
+    const port = await getFreePort();
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "unused-master-token" } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [] }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    const server = await startRemoteServer({
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        on: () => () => undefined,
+        writeToSession: () => undefined,
+        resizeSession: () => undefined,
+        setRemoteClientRegistry: () => undefined,
+        consumeMobileWebSessionTicket: () => null,
+      } as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 25; i++) {
+        const response = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // A different claimed device every time. If the LAN server believed it, every request
+            // would land in its own bucket and none of them would ever be limited.
+            "X-Strideterm-Relay-Device": `mobile-claimed-${i}`,
+          },
+          body: JSON.stringify({ ticketId: "t", secret: "s" }),
+          redirect: "manual",
+        });
+        statuses.push(response.status);
+      }
+      expect(statuses.filter((status) => status === 429).length).toBeGreaterThan(0);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("the mobile session cookie's attributes", () => {
+  // Production hardening §9's last row: assert `HttpOnly`, `Secure`, `SameSite=Strict`, the path and
+  // the clearing attributes explicitly rather than trusting the string that builds them.
+  //
+  // WHY THE FORWARDED HEADER IS THE INTERESTING CASE. Over the relay the socket this server sees is
+  // plain HTTP on loopback — the connector is the client — while the browser's own hop to the relay
+  // is TLS. `Secure` is therefore decided by `X-Forwarded-Proto`, which the connector sets, and that
+  // is exactly the decision worth testing: without it a phone reaching the desktop over HTTPS would
+  // be handed a cookie it also sends over plain HTTP, and with it wrong in the other direction the
+  // LAN bootstrap would hand out a cookie the browser refuses to return.
+  function makeCookieRuntime(port: number) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "unused-master-token" } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [] }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    return {
+      seedTicket(ticketId: string, secret: string) {
+        tickets.set(`${ticketId}:${secret}`, { deviceId: "dev-1", pairId: "pair-1", profileId: "default" });
+      },
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
+        on: () => () => undefined,
+        writeToSession: () => undefined,
+        resizeSession: () => undefined,
+        setRemoteClientRegistry: () => undefined,
+        isMobileSessionStillAuthorized: () => true,
+        consumeMobileWebSessionTicket: (ticketId: string, secret: string) => {
+          const record = tickets.get(`${ticketId}:${secret}`);
+          if (!record) return null;
+          tickets.delete(`${ticketId}:${secret}`);
+          return {
+            ...record,
+            allowedOrigin: "https://example.trycloudflare.com",
+            transport: "legacy" as const,
+            requiredCapability: "remote.webSession" as const,
+            expiresAt: Date.now() + 60_000,
+          };
+        },
+      },
+    };
+  }
+
+  async function bootstrapCookieHeader(baseUrl: string, headers: Record<string, string>): Promise<string> {
+    const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ ticketId: "t1", secret: "s1" }),
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    return res.headers.get("set-cookie") || "";
+  }
+
+  test("a session reached over HTTPS gets HttpOnly, Secure, SameSite=Strict and Path=/", async () => {
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeCookieRuntime(port);
+    seedTicket("t1", "s1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      // What the relay connector forwards: the browser's hop was TLS even though this one was not.
+      const cookie = await bootstrapCookieHeader(`http://127.0.0.1:${port}`, { "X-Forwarded-Proto": "https" });
+
+      expect(cookie).toMatch(/^strideterm_session=[A-Za-z0-9_-]+;/);
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("SameSite=Strict");
+      expect(cookie).toContain("Path=/");
+      expect(cookie).toContain("Secure");
+      // No `Domain`: a cookie scoped to a parent domain is one a sibling host can shadow, and the
+      // relay's own session verifier refuses a request carrying two of them for exactly that reason.
+      expect(cookie).not.toMatch(/Domain=/i);
+      // And no `Max-Age`/`Expires`: the desktop's session record is what bounds it, and a browser
+      // cookie that outlived the record would be a credential the server has already forgotten.
+      expect(cookie).not.toMatch(/Max-Age=|Expires=/i);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("the same cookie over plain LAN HTTP is not marked Secure, so the LAN bootstrap still works", async () => {
+    // The other half of the same decision. A `Secure` cookie is never returned over http://, so
+    // marking it unconditionally would break the LAN path — and browsers scope cookies by origin, so
+    // an HTTP and an HTTPS deployment never see each other's anyway.
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeCookieRuntime(port);
+    seedTicket("t1", "s1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const cookie = await bootstrapCookieHeader(`http://127.0.0.1:${port}`, {});
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("SameSite=Strict");
+      expect(cookie).toContain("Path=/");
+      expect(cookie).not.toContain("Secure");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a forged X-Forwarded-Proto cannot make a LAN cookie insecure, because it can only ADD Secure", async () => {
+    // The direction that matters: the header is attacker-influenceable on a LAN deployment, so the
+    // only thing it may do is make the cookie stricter. `http` — or anything unrecognised — must not
+    // strip `Secure` from a deployment that is genuinely behind TLS, and the way that is guaranteed is
+    // that the header's only effect is additive.
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeCookieRuntime(port);
+    seedTicket("t1", "s1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const cookie = await bootstrapCookieHeader(`http://127.0.0.1:${port}`, {
+        "X-Forwarded-Proto": "gopher, https",
+      });
+      // First value wins and it is not https, so no Secure — and nothing else about the cookie moved.
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("SameSite=Strict");
+      expect(cookie).not.toContain("Secure");
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("a mobile session is finite", () => {
+  /**
+   * The same fake as the revoke block above, plus a switch for the device's current authorization.
+   *
+   * `isMobileSessionStillAuthorized` is what the server asks on every request, and it is the only way
+   * a capability or profile-allowlist change reaches a live session — neither is a revoke, so nothing
+   * pushes it.
+   */
+  function makeFiniteSessionRuntime(port: number) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "unused-master-token" } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [] }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    const authorized = new Set<string>();
+    return {
+      seedTicket(ticketId: string, secret: string, deviceId: string) {
+        tickets.set(`${ticketId}:${secret}`, { deviceId, pairId: "pair-1", profileId: "default" });
+        authorized.add(deviceId);
+      },
+      deauthorize(deviceId: string) {
+        authorized.delete(deviceId);
+      },
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
+        on: () => () => undefined,
+        writeToSession: () => undefined,
+        resizeSession: () => undefined,
+        setRemoteClientRegistry: () => undefined,
+        isMobileSessionStillAuthorized: (deviceId: string) => authorized.has(deviceId),
+        consumeMobileWebSessionTicket: (
+          ticketId: string,
+          secret: string,
+          context: { transport: "relay" | "legacy"; origins: readonly string[] },
+        ) => {
+          const record = tickets.get(`${ticketId}:${secret}`);
+          if (!record) return null;
+          tickets.delete(`${ticketId}:${secret}`);
+          if (context.transport !== "legacy" || context.origins.length === 0) return null;
+          return {
+            ...record,
+            allowedOrigin: "https://example.trycloudflare.com",
+            transport: "legacy" as const,
+            requiredCapability: "remote.webSession" as const,
+            expiresAt: Date.now() + 60_000,
+          };
+        },
+      },
+    };
+  }
+
+  async function bootstrap(baseUrl: string, ticketId: string, secret: string): Promise<string> {
+    const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticketId, secret }),
+      redirect: "manual",
+    });
+    return (res.headers.get("set-cookie") || "").split(";")[0]!;
+  }
+
+  test("the absolute deadline closes a live WebSocket with no traffic at all, and the cookie then 401s", async () => {
+    // The case a request-path check cannot reach: an open terminal socket that nobody is typing on.
+    // Before the sweep existed, this session lived until the process restarted.
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+    seedTicket("t1", "s1", "dev-1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      mobileSessionAbsoluteTtlMs: 400,
+      mobileSessionIdleTtlMs: 60_000,
+      mobileSessionSweepMs: 50,
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(200);
+
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: cookie } });
+      let closeCode: number | null = null;
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      const closed = new Promise<void>((resolve) => {
+        ws.on("close", (code: number) => {
+          closeCode = code;
+          resolve();
+        });
+      });
+
+      // Nothing is sent on the socket, and nothing is requested over HTTP. The sweep is the only
+      // thing that can end this.
+      await closed;
+      expect(closeCode).toBe(1008);
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("the idle deadline ends a session that stops being used, and real activity postpones it", async () => {
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+    seedTicket("t1", "s1", "dev-1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      mobileSessionAbsoluteTtlMs: 60_000,
+      mobileSessionIdleTtlMs: 300,
+      mobileSessionSweepMs: 50,
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+
+      // Three requests inside the idle window keep it alive well past one window's worth of time.
+      for (let i = 0; i < 3; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(200);
+      }
+
+      // Then nothing, for longer than the window.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a keep-alive message does not postpone the idle deadline; typing does", async () => {
+    // Production hardening §5 "Session" 7. `state:sync` is the client telling the server its socket is
+    // open; `terminal:input` is the user doing something. A session that a keep-alive could hold open
+    // forever has no idle deadline at all.
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+    seedTicket("t1", "s1", "dev-1");
+    seedTicket("t2", "s2", "dev-2");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      mobileSessionAbsoluteTtlMs: 60_000,
+      mobileSessionIdleTtlMs: 400,
+      mobileSessionSweepMs: 1_000_000, // the sweep is out of the way: this is about the message path
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    async function pump(cookie: string, message: unknown, rounds: number): Promise<void> {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: cookie } });
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      for (let i = 0; i < rounds; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        ws.send(JSON.stringify(message));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      ws.close();
+    }
+
+    try {
+      // Four keep-alives at 200ms — 800ms of wall clock against a 400ms idle window.
+      const keepAliveCookie = await bootstrap(baseUrl, "t1", "s1");
+      await pump(keepAliveCookie, { type: "state:sync", rev: 1 }, 4);
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: keepAliveCookie } })).status).toBe(401);
+
+      // The same rhythm, with typing instead. Bootstrapped here rather than above, so its own idle
+      // window starts when its pump does — otherwise this would be measuring the first pump's runtime.
+      const typingCookie = await bootstrap(baseUrl, "t2", "s2");
+      await pump(typingCookie, { type: "terminal:input", sessionId: "s", data: "x" }, 4);
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: typingCookie } })).status).toBe(200);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a capability or profile change ends the session at its next request, without a revoke", async () => {
+    const port = await getFreePort();
+    const { seedTicket, deauthorize, runtime } = makeFiniteSessionRuntime(port);
+    seedTicket("t1", "s1", "dev-1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      mobileSessionAbsoluteTtlMs: 60_000,
+      mobileSessionIdleTtlMs: 60_000,
+      mobileSessionSweepMs: 50,
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(200);
+
+      // Not a revoke: the device is still paired, it just no longer holds what this session needs.
+      deauthorize("dev-1");
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a browser session with the master token is NOT bounded by these deadlines", async () => {
+    // The regression this could easily have been: the deadlines are for ticket-bootstrapped mobile
+    // sessions, and the ordinary `?token=` browser/Telegram flow has to be untouched.
+    const port = await getFreePort();
+    const { runtime } = makeFiniteSessionRuntime(port);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      mobileSessionAbsoluteTtlMs: 100,
+      mobileSessionIdleTtlMs: 100,
+      mobileSessionSweepMs: 50,
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      // The HTML entry point is where a browser session cookie is minted, which is the flow a person
+      // opening the share URL actually takes.
+      const first = await fetch(`${baseUrl}/?token=unused-master-token`, { redirect: "manual" });
+      expect([200, 302, 304]).toContain(first.status);
+      const cookie = (first.headers.get("set-cookie") || "").split(";")[0]!;
+      expect(cookie).toContain("strideterm_session=");
+
+      // Well past both deadlines, and several sweeps later.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(200);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("the managed relay's loopback-only internal origin", () => {
+  const MASTER_TOKEN = "the-users-own-remote-token";
+  const GUARD = "guard-secret-for-this-test";
+  /** The public origin the relay manager tells a loopback instance it is reachable at. */
+  const RELAY_PUBLIC_ORIGIN = "https://relay.strideterm.test";
+
+  /**
+   * A payload with remote access DISABLED, on purpose.
+   *
+   * The relay origin is a different feature with a different flag: turning the relay on must serve
+   * the connector even when the user has never enabled remote access, and must not open the LAN
+   * listener they did not ask for.
+   */
+  function makePayload(): Record<string, unknown> {
+    return {
+      appState: {
+        settings: {
+          remoteAccess: { enabled: false, host: "0.0.0.0", port: 43123, token: MASTER_TOKEN },
+        },
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [{ id: "ws1", name: "WS1", profileId: "p1", panels: [{ id: "a" }] }],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" }],
+      },
+    };
+  }
+
+  function makeRuntime(payload: Record<string, unknown>) {
+    const calls = {
+      setRemoteInfo: 0,
+      setRemoteClientRegistry: 0,
+      setMobileRemoteSessionRevoker: 0,
+      addRemoteClientRegistry: 0,
+      releasedRemoteClientRegistry: 0,
+    };
+    const runtime = {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => {
+        calls.setRemoteInfo += 1;
+      },
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => {
+        calls.setRemoteClientRegistry += 1;
+      },
+      addRemoteClientRegistry: () => {
+        calls.addRemoteClientRegistry += 1;
+        return () => {
+          calls.releasedRemoteClientRegistry += 1;
+        };
+      },
+      setMobileRemoteSessionRevoker: () => {
+        calls.setMobileRemoteSessionRevoker += 1;
+      },
+    };
+    return { runtime, calls };
+  }
+
+  test("starts although remote access is disabled, binds loopback, and publishes nothing", async () => {
+    const { runtime, calls } = makeRuntime(makePayload());
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      loopbackOrigin: { host: "127.0.0.1", port: 0, guardToken: GUARD, publicOrigin: RELAY_PUBLIC_ORIGIN },
+    });
+    try {
+      expect(server.address?.host).toBe("127.0.0.1");
+      expect(server.address!.port).toBeGreaterThan(0);
+      // Nothing the PRIMARY server owns: not the URLs the settings UI shows, not the registry the
+      // desktop windows and the LAN browser use, not the revoke hook. What it DOES do is add its own
+      // registry alongside — without that the runtime cannot resolve a relay viewer at all, so its
+      // workspace switch fails and its profile guard silently does not apply.
+      expect(calls).toEqual({
+        setRemoteInfo: 0,
+        setRemoteClientRegistry: 0,
+        setMobileRemoteSessionRevoker: 0,
+        addRemoteClientRegistry: 1,
+        releasedRemoteClientRegistry: 0,
+      });
+      // Its own revoke hook is handed back instead, for the relay manager to wire up.
+      expect(typeof server.revokeMobileSessionsForDevice).toBe("function");
+    } finally {
+      await server.close();
+    }
+    // And closing it takes the registry back out, so a stopped relay leaves no viewer behind.
+    expect(calls.releasedRemoteClientRegistry).toBe(1);
+  });
+
+  test("answers only a caller presenting the guard, on HTTP and on the WebSocket upgrade alike", async () => {
+    const { runtime } = makeRuntime(makePayload());
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      loopbackOrigin: { host: "127.0.0.1", port: 0, guardToken: GUARD, publicOrigin: RELAY_PUBLIC_ORIGIN },
+    });
+    const base = `http://127.0.0.1:${server.address!.port}`;
+    try {
+      // Another local process that merely learned the port gets nothing — not even the
+      // unauthenticated static route or the unauthenticated mobile bootstrap.
+      expect((await fetch(`${base}/`)).status).toBe(403);
+      expect((await fetch(`${base}/api/state`)).status).toBe(403);
+      expect(
+        (
+          await fetch(`${base}/api/mobile/session/bootstrap`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ticketId: "x", secret: "y" }),
+          })
+        ).status,
+      ).toBe(403);
+
+      // With the guard, the ordinary rules apply again: `/api/*` still needs a session or a token.
+      expect((await fetch(`${base}/api/state`, { headers: { "X-Strideterm-Relay-Origin": GUARD } })).status).toBe(401);
+
+      // The user's own master token is NOT this server's token. A leaked LAN token must not become
+      // a way into the relay origin.
+      expect(
+        (
+          await fetch(`${base}/api/state`, {
+            headers: { "X-Strideterm-Relay-Origin": GUARD, Authorization: `Bearer ${MASTER_TOKEN}` },
+          })
+        ).status,
+      ).toBe(401);
+
+      const rejected = await new Promise<string>((resolve) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${server.address!.port}/ws`);
+        socket.on("error", (error: Error) => resolve(error.message));
+        socket.on("open", () => resolve("opened"));
+      });
+      expect(rejected).toMatch(/403/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("refuses to bind anything that is not loopback", async () => {
+    const { runtime } = makeRuntime(makePayload());
+    await expect(
+      startRemoteServer({
+        runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+        staticRoot: process.cwd(),
+        loopbackOrigin: { host: "0.0.0.0", port: 0, guardToken: GUARD, publicOrigin: RELAY_PUBLIC_ORIGIN },
+      }),
+    ).rejects.toThrow(/127\.0\.0\.1 or ::1/);
+  });
+
+  test("a disabled remote access still returns an inert primary server, unchanged by any of this", async () => {
+    const { runtime, calls } = makeRuntime(makePayload());
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    // The pre-existing contract: `enabled: false` reports that and binds nothing.
+    expect(calls.setRemoteInfo).toBe(1);
+    expect(server.address).toBeUndefined();
+    await server.close();
+  });
+});
+
+describe("the WebSocket keep-alive is tolerant, and still reaps", () => {
+  // WHAT THIS GUARDS. The heartbeat used to be one strike: a socket that had not answered by the
+  // next tick was terminated. On a desk that is invisible. On a phone it fired constantly — a
+  // sub-second blip at a subway stop, a handover between cells, a radio the OS parked for a moment
+  // — and every one of them cost the user a terminated socket, a reconnect, a `WebSocket heartbeat
+  // timeout` warning, and any push that was in flight during the gap. The tolerance (a counter, not
+  // a flag) is what fixed it, and it is exactly the kind of constant a later refactor "simplifies"
+  // back to a boolean, because nothing on a developer's machine notices.
+  //
+  // WHY IT STILL REAPS. NAT boxes drop idle mappings without telling either end, and a leaked token
+  // reusing an idle channel would otherwise sit there until the process restarted. So the property
+  // is two-sided, and this test asserts both halves against one server.
+
+  function heartbeatRuntime(port: number, token: string) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token } },
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    return {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+    };
+  }
+
+  test("a client that misses one tick keeps its socket; one that answers nothing loses it", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-heartbeat";
+    const intervalMs = 60;
+    const server = await startRemoteServer({
+      runtime: heartbeatRuntime(port, auth) as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      wsHeartbeatIntervalMs: intervalMs,
+      wsHeartbeatMaxMissed: 3,
+    });
+    const url = `ws://127.0.0.1:${port}/ws?${new URLSearchParams({ token: auth }).toString()}`;
+    // `autoPong: false` is the point of the whole test: it is the only way to make a `ws` client
+    // behave like a phone whose radio is gone — the handshake completed, the socket looks open from
+    // both ends, and nothing comes back. Everything else about the two clients is identical.
+    const answering = new WebSocket(url);
+    const silent = new WebSocket(url, { autoPong: false });
+    try {
+      await Promise.all(
+        [answering, silent].map(
+          (ws) =>
+            new Promise<void>((resolve, reject) => {
+              ws.on("open", () => resolve());
+              ws.on("error", reject);
+            }),
+        ),
+      );
+      const openedAt = Date.now();
+      const silentClosed = new Promise<number>((resolve) => silent.on("close", () => resolve(Date.now() - openedAt)));
+
+      // One and a half ticks in: the silent client has already missed a ping and is still connected.
+      await new Promise((r) => setTimeout(r, intervalMs * 1.5));
+      expect(silent.readyState).toBe(WebSocket.OPEN);
+
+      // Left alone it is still reaped — the fourth tick is the one that finds three consecutive
+      // misses. Awaiting the close rather than sleeping past it keeps the test off a timing cliff.
+      const survivedMs = await silentClosed;
+
+      // AND IT LASTED. This is the half the old one-strike heartbeat failed: a lower bound on how
+      // long a silent socket keeps living, not merely a check that it eventually dies. Timers fire
+      // late, never early, so only this direction is safe to assert — and a tolerance quietly
+      // reduced back to a flag lands here rather than on a phone.
+      expect(survivedMs).toBeGreaterThan(intervalMs * 2.5);
+
+      // And the client that answered every ping sat through all four ticks untouched — a pong on any
+      // tick resets its counter, so a healthy socket is never on a clock at all.
+      expect(answering.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      answering.close();
+      silent.close();
+      await server.close();
+    }
+  });
+});
+
+describe("the master token in payload.remoteAccess.urls, per transport", () => {
+  // Residual R1 accepts that `payload.remoteAccess.urls[*]` keeps `?token=<master>` in the string,
+  // because "Copy share URL" is a real hand-off and the URL travels desktop → the OWNER's own
+  // browser. The managed relay breaks that premise: a hosted Worker terminates TLS and forwards
+  // decrypted frames, so the same response would hand a full-privilege, long-lived credential to
+  // the relay operator — one that keeps working over the LAN after the relay session is gone.
+  //
+  // These two tests are a matched pair on purpose. The same payload, the same route, two transports,
+  // two answers. Either one alone would pass under a wrong global rule; only together do they pin
+  // "blank it on the relay, keep it on the user's own listener".
+  const MASTER = "the-users-own-master-token";
+  const GUARD = "relay-origin-guard-secret";
+  const RELAY_ORIGIN = "https://relay.strideterm.test";
+
+  function makeRuntime(port: number, transport: "relay" | "legacy") {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: MASTER } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: ["ws1"] }],
+        workspaces: [{ id: "ws1", name: "WS1", profileId: "default", panels: [{ id: "a" }] }],
+        windowSlots: [{ id: "win-1", profileId: "default", activeWorkspaceId: "ws1" }],
+      },
+      // What runtime.ts's getPayload spreads out of `remoteInfo` once the LAN listener is up. Note
+      // this is the payload-level remoteAccess, NOT appState.settings.remoteAccess — the token strip
+      // (invariant A1) only ever touched the latter.
+      remoteAccess: {
+        enabled: true,
+        host: "127.0.0.1",
+        port,
+        urls: [`http://192.168.1.50:${port}/?token=${MASTER}`],
+        tunnel: { status: "idle", mode: "off", publicUrl: "" },
+      },
+    };
+    return {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => payload.remoteAccess.urls,
+      listMobileTicketOrigins: () => [RELAY_ORIGIN],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+      addRemoteClientRegistry: () => () => undefined,
+      setMobileRemoteSessionRevoker: () => undefined,
+      isMobileSessionStillAuthorized: () => true,
+      consumeMobileWebSessionTicket: (ticketId: string, secret: string) =>
+        ticketId === "t1" && secret === "s1"
+          ? {
+              deviceId: "dev-1",
+              pairId: "pair-1",
+              profileId: "default",
+              allowedOrigin: transport === "relay" ? RELAY_ORIGIN : "https://example.trycloudflare.com",
+              transport,
+              requiredCapability: "remote.webSession" as const,
+              expiresAt: Date.now() + 60_000,
+            }
+          : null,
+    };
+  }
+
+  test("a relay session's /api/state carries no copy of the master token, on v1 or v2", async () => {
+    const server = await startRemoteServer({
+      runtime: makeRuntime(43123, "relay") as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      loopbackOrigin: { host: "127.0.0.1", port: 0, guardToken: GUARD, publicOrigin: RELAY_ORIGIN },
+    });
+    const baseUrl = `http://127.0.0.1:${server.address!.port}`;
+    // Every request on this server carries the connector's guard and the relay's verified device id,
+    // exactly as the Durable Object stamps them.
+    const relayHeaders = {
+      "X-Strideterm-Relay-Origin": GUARD,
+      "X-Strideterm-Relay-Device": "dev-1",
+      "X-Forwarded-Proto": "https",
+    };
+    try {
+      const boot = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { ...relayHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "t1", secret: "s1" }),
+        redirect: "manual",
+      });
+      expect(boot.status).toBe(302);
+      const cookie = (boot.headers.get("set-cookie") || "").split(";")[0]!;
+      expect(cookie).toContain("strideterm_session=");
+
+      // Both response contracts: the legacy full payload and the v2 slim core, whose
+      // reduceRemoteAccess in remote-core.ts passes `urls` straight through.
+      for (const query of ["", "?sp=2"]) {
+        const res = await fetch(`${baseUrl}/api/state${query}`, { headers: { ...relayHeaders, Cookie: cookie } });
+        expect(res.status).toBe(200);
+        const body = await res.text();
+        expect(body).not.toContain(MASTER);
+        // And specifically that the URL list is empty rather than merely token-free — a rewritten
+        // URL that still pointed at the LAN listener would be a different bug, not a fix.
+        const parsed = JSON.parse(body) as { remoteAccess?: { urls?: unknown } };
+        expect(parsed.remoteAccess?.urls).toEqual([]);
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("the user's own LAN listener still serves the share URLs — R1 is unchanged there", async () => {
+    const port = await getFreePort();
+    const server = await startRemoteServer({
+      runtime: makeRuntime(port, "legacy") as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      for (const query of ["", "?sp=2"]) {
+        const res = await fetch(`${baseUrl}/api/state${query}`, {
+          headers: { Authorization: `Bearer ${MASTER}` },
+        });
+        expect(res.status).toBe(200);
+        const parsed = JSON.parse(await res.text()) as { remoteAccess?: { urls?: string[] } };
+        expect(parsed.remoteAccess?.urls).toEqual([`http://192.168.1.50:${port}/?token=${MASTER}`]);
+      }
     } finally {
       await server.close();
     }

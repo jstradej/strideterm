@@ -1,0 +1,119 @@
+{
+  "$comment": [
+    "SHARED, EXTERNALLY FIXED PAIRING-TRANSCRIPT TEST VECTORS (review 2 §P0.4).",
+    "",
+    "Read by:",
+    "  - protocol/typescript/src/crypto/pairing-transcript.ts",
+    "  - app/lib/core/crypto/pairing_transcript.dart",
+    "  - strideterm: electron/backend/mobile/mobile-crypto.ts (hand mirror)",
+    "",
+    "The fingerprint commits to the desktop public key, so a control plane that returns a",
+    "different key cannot match the digits the human is looking at. The SAS commits to BOTH",
+    "sides’ keys and device ids, so the two screens can only agree if both ends hold the same",
+    "two keys.",
+    "",
+    "Cases 2 and 3 are the negative properties as data: changing only the key, or only the device",
+    "id, must move both values.",
+    "",
+    "The keyProof/grantCommitment/approvalTranscriptHash fields are review 3 §P0.1: the claim-time",
+    "proof that the claiming device holds the private key behind its published public key and",
+    "scanned this desktop’s QR, the digest of the grants the server copied from the invitation, and",
+    "the transcript approvePairing recomputes before it will activate anything. Cases 2 and 3 pin",
+    "the same negative property for all three: substituting a key or a device id moves every value.",
+    "",
+    "sessionKeyBase64 is a fixed literal, not an X25519 output — key agreement itself is pinned by",
+    "protocol/test-vectors/x25519-hkdf-aead.json, and mixing the two would make a failure here",
+    "ambiguous between \"wrong HMAC\" and \"wrong ECDH\".",
+    "",
+    "Regenerate with: node scripts/generate-aad-vectors.mjs"
+  ],
+  "cases": [
+    {
+      "name": "canonical desktop/mobile pair",
+      "fields": {
+        "protocolVersion": 2,
+        "pairId": "desktop-device-abc",
+        "pairingId": "inv-44444444-3333-2222-1111-000000000000",
+        "desktopDeviceId": "desktop-device-abc",
+        "desktopPublicKeyBase64": "ERERERERERERERERERERERERERERERERERERERERERE=",
+        "mobileDeviceId": "mobile-device-xyz",
+        "mobilePublicKeyBase64": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="
+      },
+      "fingerprintTranscriptUtf8": "strideterm-mobile/pairing-fingerprint/v2\n2\ndesktop-device-abc\nERERERERERERERERERERERERERERERERERERERERERE=",
+      "fingerprint": "24C4:71C2:A183:FCDC:8819:1293:26B4:447F",
+      "sasTranscriptUtf8": "strideterm-mobile/pairing-sas/v2\n2\ndesktop-device-abc\ninv-44444444-3333-2222-1111-000000000000\ndesktop-device-abc\nERERERERERERERERERERERERERERERERERERERERERE=\nmobile-device-xyz\nIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+      "sas": "0678 7022",
+      "sessionKeyBase64": "REREREREREREREREREREREREREREREREREREREREREQ=",
+      "keyProofChallengeBase64Url": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "keyProofTranscriptUtf8": "strideterm-mobile/pairing-key-proof/v3\n2\ndesktop-device-abc\ninv-44444444-3333-2222-1111-000000000000\ndesktop-device-abc\nERERERERERERERERERERERERERERERERERERERERERE=\nmobile-device-xyz\nIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=\nVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "keyProof": "ZQpHe1y0X4CEW4flkqa3MfPL6t3thmzOcoMznLFGB4Q",
+      "approvedCapabilities": [
+        "notifications",
+        "task.control"
+      ],
+      "approvedProfileAllowlist": [
+        "profile-default"
+      ],
+      "grantCommitment": "3e4b684d009fc859b730a3763d056a8678d2911e631dd01ee1b7a6a82178ca63",
+      "approvalTranscriptHash": "b61f13773a8e8daf48d8513bd5270c25c0b1080f0c8764947dd14bfcadcf4fa9"
+    },
+    {
+      "name": "substituting the desktop key changes both the fingerprint and the SAS",
+      "fields": {
+        "protocolVersion": 2,
+        "pairId": "desktop-device-abc",
+        "pairingId": "inv-44444444-3333-2222-1111-000000000000",
+        "desktopDeviceId": "desktop-device-abc",
+        "desktopPublicKeyBase64": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
+        "mobileDeviceId": "mobile-device-xyz",
+        "mobilePublicKeyBase64": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="
+      },
+      "fingerprintTranscriptUtf8": "strideterm-mobile/pairing-fingerprint/v2\n2\ndesktop-device-abc\nMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
+      "fingerprint": "4AFA:D0CD:3632:21D5:CA1E:9B68:C9B5:85C0",
+      "sasTranscriptUtf8": "strideterm-mobile/pairing-sas/v2\n2\ndesktop-device-abc\ninv-44444444-3333-2222-1111-000000000000\ndesktop-device-abc\nMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=\nmobile-device-xyz\nIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+      "sas": "5707 1343",
+      "sessionKeyBase64": "REREREREREREREREREREREREREREREREREREREREREQ=",
+      "keyProofChallengeBase64Url": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "keyProofTranscriptUtf8": "strideterm-mobile/pairing-key-proof/v3\n2\ndesktop-device-abc\ninv-44444444-3333-2222-1111-000000000000\ndesktop-device-abc\nMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=\nmobile-device-xyz\nIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=\nVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "keyProof": "8qic3ISrJDBncHVmtBjdI5D0hJWzysxohhEtEt-2-9g",
+      "approvedCapabilities": [
+        "notifications",
+        "task.control"
+      ],
+      "approvedProfileAllowlist": [
+        "profile-default"
+      ],
+      "grantCommitment": "3e4b684d009fc859b730a3763d056a8678d2911e631dd01ee1b7a6a82178ca63",
+      "approvalTranscriptHash": "35bb01512c5e92dfe49c5e752835ec97d73a6225f9496986943f60e5093c2f88"
+    },
+    {
+      "name": "keeping the key but changing the desktop device id also changes the fingerprint",
+      "fields": {
+        "protocolVersion": 2,
+        "pairId": "desktop-device-other",
+        "pairingId": "inv-44444444-3333-2222-1111-000000000000",
+        "desktopDeviceId": "desktop-device-other",
+        "desktopPublicKeyBase64": "ERERERERERERERERERERERERERERERERERERERERERE=",
+        "mobileDeviceId": "mobile-device-xyz",
+        "mobilePublicKeyBase64": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="
+      },
+      "fingerprintTranscriptUtf8": "strideterm-mobile/pairing-fingerprint/v2\n2\ndesktop-device-other\nERERERERERERERERERERERERERERERERERERERERERE=",
+      "fingerprint": "0626:6D75:F6A5:D57E:AC8F:CFC9:16A3:C556",
+      "sasTranscriptUtf8": "strideterm-mobile/pairing-sas/v2\n2\ndesktop-device-other\ninv-44444444-3333-2222-1111-000000000000\ndesktop-device-other\nERERERERERERERERERERERERERERERERERERERERERE=\nmobile-device-xyz\nIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
+      "sas": "7889 6004",
+      "sessionKeyBase64": "REREREREREREREREREREREREREREREREREREREREREQ=",
+      "keyProofChallengeBase64Url": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "keyProofTranscriptUtf8": "strideterm-mobile/pairing-key-proof/v3\n2\ndesktop-device-other\ninv-44444444-3333-2222-1111-000000000000\ndesktop-device-other\nERERERERERERERERERERERERERERERERERERERERERE=\nmobile-device-xyz\nIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=\nVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "keyProof": "1Uug803qLbWEYGtqxbmd0RDv41JHuU1vJcZPELetsa4",
+      "approvedCapabilities": [
+        "notifications",
+        "task.control"
+      ],
+      "approvedProfileAllowlist": [
+        "profile-default"
+      ],
+      "grantCommitment": "428ddede6f9a96e08bbcb8ee3e73614c53ab7a4347569917357692d2722efc0c",
+      "approvalTranscriptHash": "67301cff2cd0583d1e461e2ad5fd98dd4aed7d8a75b3bb89f473a2818ada29a7"
+    }
+  ]
+}

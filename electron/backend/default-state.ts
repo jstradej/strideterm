@@ -11,6 +11,9 @@ import type {
   WorkspaceGridState,
   WorkspaceGridLayout,
   WindowSlot,
+  MobileCapability,
+  MobileDeviceRecord,
+  MobileDeviceState,
 } from "../shared/types/state.js";
 import { isCompanionPrimaryViewId, parseCompanionPrimaryViewId } from "../shared/companion-primary.js";
 
@@ -534,6 +537,13 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           enabled: true,
           defaultPollSeconds: 5,
           connections: [],
+        },
+        mobile: {
+          enabled: false,
+          devices: [],
+          // The managed relay is off until the user turns it on. Nothing about a fresh install, an
+          // upgrade, or enabling the mobile integration turns it on by itself.
+          relay: { enabled: false },
         },
       },
       git: {
@@ -1109,6 +1119,7 @@ export function normalizeState(
   const rawAzureDevops = rawIntegrations.azureDevops || {};
   const rawGithub = rawIntegrations.github || {};
   const rawTelegram = rawIntegrations.telegram || {};
+  const rawMobile = rawIntegrations.mobile || {};
   const rawRemoteAccess = rawSettings.remoteAccess || {};
   const rawTaskDefaults = rawSettings.taskDefaults || {};
   const rawGit = rawSettings.git || {};
@@ -1163,6 +1174,106 @@ export function normalizeState(
     mapFn: (connection: any, index: number) => T,
   ): T[] {
     return Array.isArray(raw.connections) ? raw.connections.map(mapFn) : [];
+  }
+
+  /** The closed platform set a persisted device record may hold — see Platform. */
+  const KNOWN_PLATFORMS = new Set<string>(["android", "ios"]);
+
+  /** The closed capability set a persisted device record may hold — see MobileCapability. */
+  const KNOWN_CAPABILITIES = new Set<string>([
+    "notifications",
+    "status.read",
+    "task.control",
+    "task.destructive",
+    "remote.request",
+    "remote.webSession",
+  ]);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
+  function normalizeMobileDevice(device: any): MobileDeviceRecord {
+    const rawFilter = device?.notificationFilter || {};
+    const validPriority =
+      rawFilter.minPriority === "high" || rawFilter.minPriority === "normal" ? rawFilter.minPriority : "low";
+    return {
+      deviceId: String(device?.deviceId || ""),
+      uid: String(device?.uid || ""),
+      pairId: String(device?.pairId || ""),
+      // Backfill for state persisted before review 3's pairing state machine. The empty strings are
+      // honest: this desktop genuinely does not know which invitation an old record came from, and it
+      // cannot recompute a grant commitment for grants it no longer has the invitation for. What
+      // matters is `state`, and the backfill is deliberately PERMISSIVE — an already-paired device
+      // stays `active` — because it was adopted and verified under the previous rules, and forcing
+      // every existing pairing through a fresh QR flow on upgrade would be a worse answer than
+      // accepting a record the user themselves paired. Every NEW record goes through the full
+      // claim -> keyProven -> active sequence.
+      pairingId: String(device?.pairingId || ""),
+      grantCommitment: String(device?.grantCommitment || ""),
+      keyProof: String(device?.keyProof || ""),
+      state: normalizeMobileDeviceState(device),
+      // Either platform the type allows is kept verbatim. The previous `=== "ios" ? "ios" : "android"`
+      // made Android the silent default for anything else — and since every path that stores a
+      // platform validates it against PlatformSchema first, "anything else" is only hand-edited or
+      // truncated state. The fallback still has to name one of the two, but it is now the unreachable
+      // arm rather than the rule.
+      platform: KNOWN_PLATFORMS.has(device?.platform) ? device.platform : "android",
+      label: String(device?.label || ""),
+      fingerprint: String(device?.fingerprint || ""),
+      publicKey: String(device?.publicKey || ""),
+      // Backfilled to 1 for state persisted before key versions existed. That is the generation
+      // every already-paired device is on, so nothing is invalidated by the migration; a later
+      // rotation increments it and the desktop's session-key cache follows.
+      sessionKeyVersion:
+        Number.isInteger(device?.sessionKeyVersion) && device.sessionKeyVersion >= 1 ? device.sessionKeyVersion : 1,
+      // Unknown capability strings are DROPPED rather than carried through as-is. Persisted state
+      // from before review 2 holds the old per-command-type labels ("task.pause") and the old
+      // coarse ones ("remote.request"), and the former never authorized anything — they were
+      // compared against a `requiredCapability` the mobile wrote, which no longer exists. Keeping a
+      // string that matches nothing in COMMAND_POLICY would only look like a grant; dropping it
+      // means the device is visibly missing capabilities in Settings and the user re-grants what
+      // they meant, which is the direction to be wrong in.
+      capabilities: Array.isArray(device?.capabilities)
+        ? device.capabilities.map(String).filter((c: string): c is MobileCapability => KNOWN_CAPABILITIES.has(c))
+        : [],
+      profileAllowlist: Array.isArray(device?.profileAllowlist) ? device.profileAllowlist.map(String) : [],
+      createdAt: Number(device?.createdAt) || 0,
+      lastSeenAt: Number(device?.lastSeenAt) || 0,
+      revoked: device?.revoked === true,
+      revokedAt: typeof device?.revokedAt === "number" ? device.revokedAt : null,
+      notificationFilter: {
+        minPriority: validPriority,
+        mutedKinds: Array.isArray(rawFilter.mutedKinds) ? rawFilter.mutedKinds.map(String) : [],
+      },
+      verifiedAt: typeof device?.verifiedAt === "number" ? device.verifiedAt : null,
+      // `activatedAt` is when a human approved this device. For a record that predates the state
+      // machine, the honest answer is "we do not know" — so it carries the verification timestamp when
+      // there is one, and null otherwise. Nothing reads it for authorization (`state` does); it is what
+      // Settings shows next to a device, so an approximate-but-truthful value beats a fabricated one.
+      activatedAt:
+        typeof device?.activatedAt === "number"
+          ? device.activatedAt
+          : typeof device?.verifiedAt === "number"
+            ? device.verifiedAt
+            : null,
+    };
+  }
+
+  /**
+   * The persisted device's pairing state, or a backfill for state written before review 3.
+   *
+   * The backfill maps the old two-value world (`verifiedAt` set or not) onto the new five: a verified
+   * device becomes `active`, a revoked one `revoked`, and an unverified one `claimed` — which is the
+   * conservative reading, since it never completed the old round trip either and so was already
+   * receiving nothing.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state
+  function normalizeMobileDeviceState(device: any): MobileDeviceState {
+    const raw = device?.state;
+    if (raw === "claimed" || raw === "keyProven" || raw === "userApproved" || raw === "active" || raw === "revoked") {
+      // A record whose `state` and `revoked` disagree is read in the safe direction.
+      return device?.revoked === true ? "revoked" : raw;
+    }
+    if (device?.revoked === true) return "revoked";
+    return typeof device?.verifiedAt === "number" ? "active" : "claimed";
   }
 
   const normalizedSettings = {
@@ -1272,6 +1383,18 @@ export function normalizeState(
           profileId: typeof connection.profileId === "string" ? connection.profileId : "",
           forwardKinds: migrateForwardKinds(connection.forwardKinds),
         })),
+      },
+      mobile: {
+        ...defaults.settings.integrations.mobile,
+        ...rawMobile,
+        enabled:
+          typeof rawMobile.enabled === "boolean" ? rawMobile.enabled : defaults.settings.integrations.mobile.enabled,
+        devices: Array.isArray(rawMobile.devices) ? rawMobile.devices.map(normalizeMobileDevice) : [],
+        // Every persisted state that predates the relay backfills to off: an upgrade must not
+        // silently acquire a new outbound connection.
+        relay: {
+          enabled: typeof rawMobile.relay?.enabled === "boolean" ? rawMobile.relay.enabled : false,
+        },
       },
     },
     taskDefaults: {

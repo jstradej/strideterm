@@ -4391,6 +4391,49 @@ describe("/tunnel command", () => {
     expect(text.toLowerCase()).toContain("off");
   });
 
+  test("/tunnel is the LAN/Cloudflare answer it has always been — the relay is not one of its transports", async () => {
+    // The managed relay is a third transport for the MOBILE APP only. Telegram's /tunnel hands a
+    // human a URL to paste into a browser, and a relay origin is useless there: it answers nothing
+    // without a signed viewer grant, which only the paired app can obtain. So this command must
+    // keep knowing nothing about the relay — and "must keep" is why this is a test and not a
+    // comment. Wiring it in later would be a product decision, and this is where it gets made.
+    const fsp = await import("node:fs");
+    const path = await import("node:path");
+    const source = fsp.readFileSync(path.resolve(process.cwd(), "electron/backend/telegram-manager.ts"), "utf8");
+    expect(source).not.toMatch(/relay/i);
+
+    // And the one input it has still carries only the two transports it always carried.
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    let info: Record<string, unknown> = {};
+    manager.setTunnelInfoGetter(() => {
+      info = {
+        remoteEnabled: true,
+        lanUrls: ["http://192.168.1.20:7333/?token=abc"],
+        cloudflareUrl: "",
+        remoteToken: "abc",
+        cloudflareStatus: "disconnected",
+        tunnelMode: "lan-only",
+      };
+      return info as unknown as ReturnType<Parameters<typeof manager.setTunnelInfoGetter>[0]>;
+    });
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8000 } };
+    };
+    const msg = { message_id: 808, chat: { id: 12345 }, text: "/tunnel" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(sentBodies).toHaveLength(1);
+    expect(sentBodies[0].text as string).toContain("192.168.1.20:7333");
+    expect(sentBodies[0].text as string).not.toMatch(/relay/i);
+  });
+
   test("plain 'tunnel' alias and '/url' alias both reach handler", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });

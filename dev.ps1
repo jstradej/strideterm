@@ -31,7 +31,10 @@ param(
     # main process loads backend modules once at startup — without this the
     # user has to manually Ctrl+C and re-run the script after every backend
     # edit to pick up new IPC handlers, runtime methods, etc.
-    [switch]$NoAutoRestart
+    [switch]$NoAutoRestart,
+    # Optional override for the mobile dev Firebase client config. When omitted, the script looks
+    # for a sibling strideterm-mobile checkout. Explicit Firebase env vars always win.
+    [string]$MobileFirebaseConfigPath = $env:STRIDETERM_MOBILE_FIREBASE_CONFIG
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +64,69 @@ function Write-Step($msg) { Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $ms
 function Write-Ok($msg)   { Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $msg" -ForegroundColor Yellow }
 function Write-Err($msg)  { Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] $msg" -ForegroundColor Red }
+
+function Import-MobileFirebaseDevConfig {
+    $projectVar = 'STRIDETERM_MOBILE_FIREBASE_PROJECT_ID'
+    $apiKeyVar = 'STRIDETERM_MOBILE_FIREBASE_API_KEY'
+    $databaseVar = 'STRIDETERM_MOBILE_FIREBASE_DATABASE_URL'
+
+    $existingProject = [Environment]::GetEnvironmentVariable($projectVar, 'Process')
+    $existingApiKey = [Environment]::GetEnvironmentVariable($apiKeyVar, 'Process')
+    $existingDatabase = [Environment]::GetEnvironmentVariable($databaseVar, 'Process')
+    if ($existingProject -and $existingApiKey -and $existingDatabase) {
+        Write-Ok 'Mobile Firebase client config already supplied by the environment.'
+        return
+    }
+
+    $candidates = @()
+    if ($MobileFirebaseConfigPath) {
+        $candidates += $MobileFirebaseConfigPath
+    }
+
+    # In a linked worktree, PSScriptRoot is under .strideterm/tree/... rather than beside the
+    # mobile repository. The common Git directory points back to the primary checkout, from which
+    # the normal sibling layout can still be derived.
+    try {
+        $gitCommonDir = (& git -C $PSScriptRoot rev-parse --path-format=absolute --git-common-dir 2>$null | Select-Object -First 1)
+        # Do not gate this on $LASTEXITCODE. In a long-running PowerShell launcher another native
+        # command or event can update that process-global value before this function inspects it;
+        # a non-empty path from git is the useful result and Test-Path below remains authoritative.
+        if ($gitCommonDir) {
+            $primaryCheckout = Split-Path -Parent ([string]$gitCommonDir).Trim()
+            $checkoutParent = Split-Path -Parent $primaryCheckout
+            $candidates += Join-Path $checkoutParent 'strideterm-mobile\app\android\app\src\dev\google-services.json'
+        }
+    }
+    catch {
+        # Git discovery is optional; the ordinary sibling candidate below still applies.
+    }
+    $candidates += Join-Path (Split-Path -Parent $PSScriptRoot) 'strideterm-mobile\app\android\app\src\dev\google-services.json'
+
+    $configPath = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    if (-not $configPath) {
+        $searched = ($candidates | Where-Object { $_ } | Select-Object -Unique) -join '; '
+        Write-Warn "Mobile Firebase dev config was not found (searched: $searched). Set STRIDETERM_MOBILE_FIREBASE_* or STRIDETERM_MOBILE_FIREBASE_CONFIG; mobile commands will be unavailable."
+        return
+    }
+
+    try {
+        $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+        $projectId = [string]$config.project_info.project_id
+        $databaseUrl = [string]$config.project_info.firebase_url
+        $apiKey = [string]$config.client[0].api_key[0].current_key
+        if (-not $projectId -or -not $databaseUrl -or -not $apiKey) {
+            throw 'project_id, firebase_url or client api_key is missing'
+        }
+
+        if (-not $existingProject) { Set-Item -Path "Env:$projectVar" -Value $projectId }
+        if (-not $existingApiKey) { Set-Item -Path "Env:$apiKeyVar" -Value $apiKey }
+        if (-not $existingDatabase) { Set-Item -Path "Env:$databaseVar" -Value $databaseUrl }
+        Write-Ok "Loaded Mobile Firebase client config from $configPath (values hidden)."
+    }
+    catch {
+        Write-Warn "Mobile Firebase dev config could not be loaded from $configPath; mobile commands will be unavailable. $($_.Exception.Message)"
+    }
+}
 
 function Stop-ProcessTree([int]$procId) {
     try {
@@ -208,6 +274,7 @@ function Cleanup {
         $script:backendWatcher.EnableRaisingEvents = $false
         foreach ($id in $script:watcherEventIds) {
             Unregister-Event -SourceIdentifier $id -ErrorAction SilentlyContinue
+            Get-Event -SourceIdentifier $id -ErrorAction SilentlyContinue | Remove-Event -ErrorAction SilentlyContinue
         }
         $script:backendWatcher.Dispose()
         $script:backendWatcher = $null
@@ -281,6 +348,7 @@ if (-not $env:STRIDETERM_LOG_LEVEL) {
 if (-not $env:STRIDETERM_REMOTE_PORT) {
     $env:STRIDETERM_REMOTE_PORT = '43124'
 }
+Import-MobileFirebaseDevConfig
 if (-not (Test-Path $DataDir)) {
     Write-Step "Creating data dir $DataDir..."
     New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
@@ -527,21 +595,14 @@ if (-not $NoAutoRestart) {
         $script:backendWatcher.IncludeSubdirectories = $true
         $script:backendWatcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::FileName
 
-        $onChange = {
-            # Suppress the watcher during Electron's startup window — the tsc
-            # --watch processes do their own initial full compile right after
-            # we hand off, which writes the same dist-electron files we just
-            # produced one-shot. Without this guard the watcher would catch
-            # those writes and bounce Electron seconds after it launched.
-            if ($script:electronStartedAt -ne [DateTime]::MinValue -and
-                ((Get-Date) - $script:electronStartedAt).TotalSeconds -lt $script:watcherWarmupSec) {
-                return
-            }
-            $script:backendChangeAt = Get-Date
-            $script:backendChangePending = $true
-        }
-        $idChanged = (Register-ObjectEvent -InputObject $script:backendWatcher -EventName Changed -Action $onChange).Name
-        $idCreated = (Register-ObjectEvent -InputObject $script:backendWatcher -EventName Created -Action $onChange).Name
+        # Do not use `-Action` here. PowerShell runs that script block in an event-job scope, so
+        # assigning `$script:backendChangePending` there changes the JOB's script scope, not this
+        # dev.ps1 process. The UI said auto-restart was on while the main loop could never observe a
+        # change. Queue the events and drain them in the loop below, in this script's own scope.
+        $idChanged = "strideterm-backend-changed-$PID"
+        $idCreated = "strideterm-backend-created-$PID"
+        Register-ObjectEvent -InputObject $script:backendWatcher -EventName Changed -SourceIdentifier $idChanged | Out-Null
+        Register-ObjectEvent -InputObject $script:backendWatcher -EventName Created -SourceIdentifier $idCreated | Out-Null
         $script:watcherEventIds = @($idChanged, $idCreated)
         $script:backendWatcher.EnableRaisingEvents = $true
     }
@@ -579,6 +640,23 @@ $frontendBuildWarned = $false
 $RestartDebounceMs = 1500   # wait this long after the LAST file change before restarting
 
 while ($script:exiting -eq $false -and $script:electronProc -and -not $script:electronProc.HasExited) {
+    $backendChangeObserved = $false
+    foreach ($id in $script:watcherEventIds) {
+        $queuedEvents = @(Get-Event -SourceIdentifier $id -ErrorAction SilentlyContinue)
+        if ($queuedEvents.Count -gt 0) {
+            $backendChangeObserved = $true
+            foreach ($queuedEvent in $queuedEvents) {
+                Remove-Event -EventIdentifier $queuedEvent.EventIdentifier -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    if ($backendChangeObserved -and
+        ($script:electronStartedAt -eq [DateTime]::MinValue -or
+         ((Get-Date) - $script:electronStartedAt).TotalSeconds -ge $script:watcherWarmupSec)) {
+        $script:backendChangeAt = Get-Date
+        $script:backendChangePending = $true
+    }
+
     if ($script:backendProc.HasExited -and -not $backendWarned) {
         Write-Warn "Backend tsc watch exited (code $($script:backendProc.ExitCode)) — TypeScript changes won't recompile."
         $backendWarned = $true

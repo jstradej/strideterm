@@ -95,10 +95,115 @@ export interface TelegramIntegrationSettings {
   connections: TelegramConnection[];
 }
 
+/** Per-device notification filter preferences (plan §10.4). */
+export interface MobileNotificationFilter {
+  minPriority: "high" | "normal" | "low";
+  mutedKinds: string[];
+}
+
+/**
+ * A paired mobile device as persisted in the main state JSON (plan §10.4):
+ * id/label/platform/timestamps/fingerprint/capability+profile allowlist/
+ * revocation status/notification filter prefs, plus the non-secret
+ * identifiers (uid/pairId/publicKey) needed to address the device over
+ * Firebase — never a private key or any runtime-only handle.
+ */
+/**
+ * The grants a paired device may hold (review 2 §P0.3).
+ *
+ * A closed set, deliberately coarser than the command type. The desktop's COMMAND_POLICY table
+ * (electron/backend/mobile/mobile-command-policy.ts) maps each command type to exactly one of
+ * these, so what a device is allowed to do is decided by the receiver from the type it decrypted —
+ * not from a `requiredCapability` label the sending client wrote onto the message, which is what
+ * this replaced.
+ */
+export type MobileCapability =
+  "notifications" | "status.read" | "task.control" | "task.destructive" | "remote.request" | "remote.webSession";
+
+/**
+ * Where a paired device is in the pairing state machine (review 3 §P0.1).
+ *
+ * `active` is the ONLY value that authorizes anything: no event is sent to a device in any other
+ * state, no command from one is dispatched, and no WebView ticket is issued. Reaching it takes a human
+ * comparing the pairing code on this desktop and the cloud committing the activation.
+ *
+ * `userApproved` is desktop-local — the human pressed the button and the cloud has not confirmed yet.
+ * Persisted so a crash in that window neither activates the device nor loses the ability to reject it.
+ */
+export type MobileDeviceState = "claimed" | "keyProven" | "userApproved" | "active" | "revoked";
+
+export interface MobileDeviceRecord {
+  deviceId: string;
+  uid: string;
+  pairId: string;
+  /**
+   * The invitation this device claimed, and the server's digest of the grants that invitation
+   * approved. Both are COMPARED at adoption time, not merely stored: a record claimed under a
+   * different invitation, or one whose recorded grants differ from what the human ticked, is refused
+   * (review 3 §P0.1).
+   */
+  pairingId: string;
+  grantCommitment: string;
+  /** The claim-time key proof, as submitted. Kept for the audit trail after verification. */
+  keyProof: string;
+  state: MobileDeviceState;
+  platform: "android" | "ios";
+  label: string;
+  fingerprint: string;
+  publicKey: string;
+  /**
+   * Which generation of `publicKey` this record pins. Part of the AAD and of the session-key cache
+   * key, so a key rotation cannot be applied silently: an envelope sealed under one sessionKeyVersion
+   * never opens against another.
+   */
+  sessionKeyVersion: number;
+  capabilities: MobileCapability[];
+  profileAllowlist: string[];
+  createdAt: number;
+  lastSeenAt: number;
+  revoked: boolean;
+  revokedAt: number | null;
+  notificationFilter: MobileNotificationFilter;
+  /**
+   * When THIS desktop verified the claim's cryptographic key proof, or null while it has not.
+   *
+   * A successful `claimPairing` proves the device held the invitation secret and nothing about the E2E
+   * keys, because that callable never touches them. The proof is an HMAC over the pairing transcript
+   * under the derived session key, with the QR's one-time challenge folded in — so only a device that
+   * holds the private key behind its published public key AND scanned this desktop's code can produce
+   * one. It replaced an automatic challenge/echo over the event mailbox, which required delivering a
+   * real event to a device no human had approved (review 3 §P0.1).
+   *
+   * Verification is NOT authorization: a `keyProven` device still does nothing until `activatedAt`.
+   */
+  verifiedAt: number | null;
+  /** When a human pressed "Codes match" AND the cloud confirmed. Null means nobody has approved this. */
+  activatedAt: number | null;
+}
+
+/**
+ * The managed relay: a THIRD remote transport, used only by the mobile app.
+ *
+ * Off by default and independent of everything else. Turning it on does not open a LAN listener,
+ * does not start or stop a Cloudflare tunnel and does not change the browser remote's URL or token;
+ * turning it off leaves no connector, no listener and no socket behind. It is its own flag
+ * precisely so that "I want a relay" and "I want remote access on my LAN" stay two decisions.
+ */
+export interface MobileRelaySettings {
+  enabled: boolean;
+}
+
+export interface MobileIntegrationSettings {
+  enabled: boolean;
+  devices: MobileDeviceRecord[];
+  relay: MobileRelaySettings;
+}
+
 export interface IntegrationSettings {
   azureDevops: AzureIntegrationSettings;
   github: GitHubIntegrationSettings;
   telegram: TelegramIntegrationSettings;
+  mobile: MobileIntegrationSettings;
 }
 
 export interface GitUiSettings {

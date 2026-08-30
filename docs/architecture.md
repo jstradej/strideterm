@@ -294,6 +294,32 @@ Settings sanitizer:
 
 - `remote-server.ts` filters every settings update and HTTP/WS request from remote clients through a denylist: `autoTunnel`, `cloudflaredPath`, `customPublicUrl`, remote-access `enabled` / `host` / `port`, `token`, and top-level `externalPathOpener` are dropped before reaching the runtime. The desktop owner can change these only via local IPC. Endpoints that accept JSON payloads (workspace grid, task description, etc.) validate against shared Zod schemas; mismatches return 400 instead of being silently coerced.
 
+Third transport — the managed relay (mobile app only):
+
+- behind its own flag, `settings.integrations.mobile.relay.enabled`, off by default. With it off no
+  connector, listener, socket or key is created — not a connector in a disabled state, none.
+- the desktop dials OUT to a Cloudflare Worker over WSS and proves possession of its installation
+  Ed25519 key against a server challenge. There is no inbound port and no LAN listener: the relay
+  neither opens nor closes the one `remoteAccess.enabled` governs.
+- the Worker routes to one Durable Object per desktop installation, derived from the verified claims
+  of a grant the mobile control plane signed. Nothing in a request selects a desktop.
+- the connector bridges HTTP and WebSocket streams into a SECOND instance of `remote-server.ts`,
+  started with `loopbackOrigin`: bound to `127.0.0.1` on an OS-chosen port, reachable only by a
+  caller holding this process’s random guard secret, with a master token this process never emits.
+  Same handlers, same registry, same runtime — a mobile relay session is a viewer like any other.
+- exactly one connector per installation whatever the window count, because the manager is built
+  once by `createRuntime`, which is itself built once per data directory.
+- a relay response is stripped harder than a LAN one. `payload.remoteAccess.urls[*]` embeds
+  `?token=<master>` and that is accepted on the user’s own listener (“Copy share URL” hand-off), on
+  the premise that the URL only travels desktop → the owner’s own browser. The relay puts a
+  TLS-terminating hop on that path, so `stripSecretsForRemote(..., { stripShareUrls: true })` blanks
+  the URL list for the loopback-origin server only — the token is long-lived and keeps unlocking the
+  remote API over the LAN after the session ends, and a phone never reaches this desktop through a
+  LAN share URL anyway. The notification/command plane is separately end-to-end encrypted; the
+  relay viewer path is not, and the relay can read a session while it is in flight.
+- `electron/backend/mobile/mobile-relay-{manager,connector,identity,protocol}.ts`; the decision and
+  its limits are in the sibling repo’s `docs/adr/0023-managed-relay-mvp.md` and `docs/RELAY-MVP.md`.
+
 Use cases:
 
 - check progress from a phone

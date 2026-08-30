@@ -601,6 +601,132 @@ describe("default state", () => {
     });
   });
 
+  describe("mobile integration settings", () => {
+    test("createDefaultState ships mobile disabled, with no devices and no relay", () => {
+      const state = createDefaultState();
+      expect(state.settings.integrations.mobile).toEqual({ enabled: false, devices: [], relay: { enabled: false } });
+    });
+
+    test("normalizeState backfills a missing mobile settings block for pre-mobile persisted state", () => {
+      const state = normalizeState({ settings: { theme: "dark" } });
+      expect(state.settings.integrations.mobile).toEqual({ enabled: false, devices: [], relay: { enabled: false } });
+    });
+
+    test("a persisted state that predates the relay backfills to off, even with mobile already on", () => {
+      // An upgrade must not acquire a new outbound connection on the user's behalf. The mobile
+      // integration being on says nothing about whether they want a relay.
+      const state = normalizeState({ settings: { integrations: { mobile: { enabled: true, devices: [] } } } });
+      expect(state.settings.integrations.mobile.relay).toEqual({ enabled: false });
+    });
+
+    test("an explicitly enabled relay survives normalization, and a malformed one does not enable itself", () => {
+      const enabled = normalizeState({
+        settings: { integrations: { mobile: { enabled: true, devices: [], relay: { enabled: true } } } },
+      });
+      expect(enabled.settings.integrations.mobile.relay).toEqual({ enabled: true });
+
+      for (const malformed of ["yes", 1, {}, null]) {
+        const state = normalizeState({
+          settings: { integrations: { mobile: { enabled: true, devices: [], relay: { enabled: malformed } } } },
+        });
+        expect(state.settings.integrations.mobile.relay).toEqual({ enabled: false });
+      }
+    });
+
+    test("normalizeState preserves an existing paired device record", () => {
+      const state = normalizeState({
+        settings: {
+          integrations: {
+            mobile: {
+              enabled: true,
+              devices: [
+                {
+                  deviceId: "dev-1",
+                  uid: "uid-1",
+                  pairId: "desktop-1",
+                  platform: "android",
+                  label: "Pixel 8",
+                  fingerprint: "AB:CD:EF",
+                  publicKey: "base64key",
+                  capabilities: ["task.control"],
+                  profileAllowlist: ["default"],
+                  createdAt: 1000,
+                  lastSeenAt: 2000,
+                  revoked: false,
+                  revokedAt: null,
+                  notificationFilter: { minPriority: "high", mutedKinds: ["info"] },
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      expect(state.settings.integrations.mobile.enabled).toBe(true);
+      expect(state.settings.integrations.mobile.devices[0]).toMatchObject({
+        deviceId: "dev-1",
+        platform: "android",
+        capabilities: ["task.control"],
+        profileAllowlist: ["default"],
+        revoked: false,
+        notificationFilter: { minPriority: "high", mutedKinds: ["info"] },
+      });
+    });
+
+    test("normalizeState defaults a malformed/partial device record's fields safely", () => {
+      const state = normalizeState({
+        settings: {
+          integrations: {
+            mobile: { enabled: true, devices: [{ deviceId: "dev-2" }] },
+          },
+        },
+      });
+
+      expect(state.settings.integrations.mobile.devices[0]).toMatchObject({
+        deviceId: "dev-2",
+        uid: "",
+        platform: "android",
+        capabilities: [],
+        profileAllowlist: [],
+        revoked: false,
+        revokedAt: null,
+        notificationFilter: { minPriority: "low", mutedKinds: [] },
+      });
+    });
+
+    test("normalizeState keeps an iOS device on ios", () => {
+      // The platform field used to be normalized as "ios or else android", so a phone that is not
+      // an iPhone was indistinguishable from a record the normalizer had given up on — and Settings
+      // renders this value verbatim. Both members of the enum are data, neither is the default.
+      const state = normalizeState({
+        settings: {
+          integrations: {
+            mobile: { enabled: true, devices: [{ deviceId: "dev-3", platform: "ios", label: "iPhone 15" }] },
+          },
+        },
+      });
+      expect(state.settings.integrations.mobile.devices[0].platform).toBe("ios");
+    });
+
+    test("normalizeState falls back to android for a platform outside the enum", () => {
+      const state = normalizeState({
+        settings: {
+          integrations: {
+            mobile: { enabled: true, devices: [{ deviceId: "dev-4", platform: "symbian" }] },
+          },
+        },
+      });
+      expect(state.settings.integrations.mobile.devices[0].platform).toBe("android");
+    });
+
+    test("normalizeState drops a non-array devices field back to an empty list", () => {
+      const state = normalizeState({
+        settings: { integrations: { mobile: { enabled: true, devices: "not-an-array" } } },
+      });
+      expect(state.settings.integrations.mobile.devices).toEqual([]);
+    });
+  });
+
   test("normalizeState migrates legacy docker project into docker manager mode", () => {
     const state = normalizeState({
       projects: [

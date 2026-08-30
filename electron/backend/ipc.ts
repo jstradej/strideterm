@@ -122,6 +122,11 @@ import {
   taskCompanionCreateSchema,
   taskCompanionAnswerSchema,
   telegramConnectionSchema,
+  mobileCreatePairingInvitationSchema,
+  mobileRejectDeviceSchema,
+  mobileRenameDeviceSchema,
+  mobileUpdateDeviceAllowlistSchema,
+  mobileAuditLogQuerySchema,
   workspaceIdSchema,
   workspaceDeleteOptionsSchema,
   workspaceGridEnableSchema,
@@ -175,6 +180,12 @@ export function registerIpc(
     // Same reasoning: each window keeps its own notification history, and an
     // auto-approval has to show up in all of them.
     runtime.on(APPROVAL_RECORDED_CHANNEL, (payload: unknown) => emitToRenderer(APPROVAL_RECORDED_CHANNEL, payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("mobile:status", (payload: any) => emitToRenderer("mobile:status", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("mobile:pairing-progress", (payload: any) => emitToRenderer("mobile:pairing-progress", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("mobile:device-revoked", (payload: any) => emitToRenderer("mobile:device-revoked", payload)),
   ];
 
   // Every ipcMain.handle/on call above goes through these two thin wrappers so
@@ -938,6 +949,74 @@ export function registerIpc(
   );
   handle("telegram:refresh", async () =>
     withOperationPromise({ opId: "telegram:refresh" }, () => runtime.refreshTelegramState()),
+  );
+
+  handle("mobile:pairing:create", async (_event, options) =>
+    withOperationPromise({ opId: "mobile:pairing:create" }, () =>
+      runtime.createMobilePairingInvitation(
+        validateIpc(mobileCreatePairingInvitationSchema, options, "mobile:pairing:create"),
+      ),
+    ),
+  );
+  handle("mobile:pairing:cancel", async () =>
+    withOperationPromise({ opId: "mobile:pairing:cancel" }, () => runtime.cancelMobilePairingInvitation()),
+  );
+  handle("mobile:device:list", async () =>
+    withOperationPromise({ opId: "mobile:device:list" }, () => runtime.listMobileDevices()),
+  );
+  handle("mobile:device:rename", async (_event, payload) => {
+    const { deviceId, label } = validateIpc(mobileRenameDeviceSchema, payload, "mobile:device:rename");
+    return withOperationPromise({ opId: "mobile:device:rename" }, () => runtime.renameMobileDevice(deviceId, label));
+  });
+  handle("mobile:device:revoke", async (_event, deviceId) =>
+    withOperationPromise({ opId: "mobile:device:revoke" }, () => runtime.revokeMobileDevice(String(deviceId || ""))),
+  );
+  // Review 3 §P0.1: the two halves of the human decision the SAS screen used to only pretend to ask
+  // for. "Approve" is the only path to a usable device; "reject" runs the full revocation.
+  handle("mobile:device:approve", async (_event, deviceId) =>
+    withOperationPromise({ opId: "mobile:device:approve" }, () => runtime.approveMobileDevice(String(deviceId || ""))),
+  );
+  handle("mobile:device:reject", async (_event, payload) => {
+    const { deviceId, reason } = validateIpc(mobileRejectDeviceSchema, payload, "mobile:device:reject");
+    return withOperationPromise({ opId: "mobile:device:reject" }, () => runtime.rejectMobileDevice(deviceId, reason));
+  });
+  handle("mobile:device:awaiting-approval", async () =>
+    withOperationPromise({ opId: "mobile:device:awaiting-approval" }, () =>
+      runtime.listMobileDevicesAwaitingApproval(),
+    ),
+  );
+  handle("mobile:device:update-allowlist", async (_event, payload) => {
+    const { deviceId, capabilities, profileAllowlist } = validateIpc(
+      mobileUpdateDeviceAllowlistSchema,
+      payload,
+      "mobile:device:update-allowlist",
+    );
+    return withOperationPromise({ opId: "mobile:device:update-allowlist" }, () =>
+      runtime.updateMobileDeviceAllowlist(deviceId, { capabilities, profileAllowlist }),
+    );
+  });
+  handle("mobile:set-enabled", async (_event, enabled) =>
+    withOperationPromise({ opId: "mobile:set-enabled" }, () => runtime.setMobileEnabled(Boolean(enabled))),
+  );
+  // The managed relay's own switch, and its status. Desktop-only like everything else in this group:
+  // the relay is this installation's outbound connector, and a remote HTTP client is on the far side
+  // of it.
+  handle("mobile:relay:set-enabled", async (_event, enabled) =>
+    withOperationPromise({ opId: "mobile:relay:set-enabled" }, () => runtime.setMobileRelayEnabled(Boolean(enabled))),
+  );
+  handle("mobile:relay:status", async () =>
+    withOperationPromise({ opId: "mobile:relay:status" }, async () => runtime.getMobileRelayStatus()),
+  );
+  handle("mobile:refresh", async () =>
+    withOperationPromise({ opId: "mobile:refresh" }, () => runtime.refreshMobileConnectionHealth()),
+  );
+  handle("mobile:test-push", async (_event, deviceId) =>
+    withOperationPromise({ opId: "mobile:test-push" }, () => runtime.sendMobileTestPush(String(deviceId || ""))),
+  );
+  handle("mobile:audit-log:query", async (_event, payload) =>
+    withOperationPromise({ opId: "mobile:audit-log:query" }, () =>
+      runtime.queryMobileAuditLog(validateIpc(mobileAuditLogQuerySchema, payload, "mobile:audit-log:query")),
+    ),
   );
 
   handle("session:activate", async (event, sessionId) => {

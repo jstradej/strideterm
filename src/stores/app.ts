@@ -172,6 +172,8 @@ export const useAppStore = defineStore("app", () => {
   const overlayProps = ref<Record<string, unknown>>({});
   const bootstrapError = ref("");
   const remoteConnectionIssue = ref("");
+  /** What to do about it, when the transport knows. See `createRemoteIssue`. */
+  const remoteConnectionHint = ref("");
   const remoteAccessMode = ref("lan"); // "lan" | "cloudflare" | "vps"
   const selectedLanUrl = ref("");
   const contextMenu = ref<{ x: number; y: number; viewId: string } | null>(null); // { x, y, viewId } | null
@@ -1391,12 +1393,14 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  function setRemoteConnectionIssue(message: string): void {
+  function setRemoteConnectionIssue(message: string, hint = ""): void {
     remoteConnectionIssue.value = String(message || "").trim();
+    remoteConnectionHint.value = String(hint || "").trim();
   }
 
   function clearRemoteConnectionIssue(): void {
     remoteConnectionIssue.value = "";
+    remoteConnectionHint.value = "";
   }
 
   // --- Selectors exposed for components ---
@@ -1651,13 +1655,70 @@ export const useAppStore = defineStore("app", () => {
       // without this reset the gate would wrongly drop every fresh snapshot and
       // wedge the client on stale state. A fresh connection starts a new baseline.
       lastAppliedCoreRevision = -1;
-      if ((connection as AnyApi)?.message) setRemoteConnectionIssue((connection as AnyApi).message);
+      if ((connection as AnyApi)?.message)
+        setRemoteConnectionIssue((connection as AnyApi).message, (connection as AnyApi).hint);
+    });
+
+    // Mobile (plan §10.5/§10.3 "mobile:* runtime events pouze pro renderer
+    // status/pairing UI"). Absent entirely on the remote transport (Electron-
+    // only), hence the optional chaining.
+    api.onMobilePairingProgress?.((progress) => {
+      // Either outcome consumes the invitation — clear local QR/countdown state.
+      mobilePairingInvitation.value = null;
+      const claim = progress as AnyApi;
+      if (claim?.status === "awaiting-approval") {
+        // The short authentication string the backend never saw. MobileManager derives it from
+        // both public keys, both device ids, the pair and the invitation; the phone derives the
+        // same value from the same transcript and shows it. Holding it here so the Mobile settings
+        // tab can render it is the desktop half of that comparison — a code shown on one screen
+        // only is not a comparison, and a substituted key would go unnoticed (review 2 §P0.4).
+        // `sas` is null when either key was unusable: show nothing rather than a placeholder the
+        // user would be trained to accept.
+        //
+        // The status changed from `claimed` to `awaiting-approval` because what happens next changed
+        // (review 3 §P0.1). A claim used to BE the pairing, and this code was advisory. Now the device
+        // is inert until the user chooses "Codes match" or "Mismatch" in the Mobile tab, so the value
+        // held here is what a decision is made against rather than something to acknowledge.
+        mobilePairingSas.value = claim.sas
+          ? { deviceId: claim.deviceId, label: claim.label, sas: claim.sas, state: "awaiting-approval" }
+          : null;
+        // Picks up the newly-claimed device without waiting on a broadcast:
+        // mobile-device-store.ts's mutateDevices (via the pairing claim path)
+        // does not itself call broadcastState().
+        void refreshMobileDevices();
+      } else if (claim?.status === "active" || claim?.status === "rejected") {
+        // The decision has been made — the prompt must go, or a user who approved would be asked again
+        // and a user who rejected would still be looking at a code for a device that no longer exists.
+        mobilePairingSas.value = null;
+        void refreshMobileDevices();
+      }
+    });
+    api.onMobileDeviceRevoked?.(() => {
+      void refreshMobileDevices();
+    });
+    api.onMobileStatus?.((status) => {
+      void refreshMobileConnectionHealth();
+      // Plan §7: "Desktop jednou denně ukáže souhrn Mobile push limit
+      // reached" — a one-time-per-UTC-day summary toast, never a per-event
+      // alert (the mobile-manager.ts side already guarantees the "once" part;
+      // this just surfaces the single event it emits).
+      if ((status as AnyApi)?.pushLimitReached) {
+        import("./notifications.js")
+          .then(({ useNotificationStore }) => {
+            useNotificationStore().pushPersistentToast({
+              title: "Mobile push limit reached",
+              body: "Today's mobile push quota is used up. Alerts still appear on the desktop, but won't be pushed to your phone until the quota resets.",
+              kind: "warning",
+            });
+          })
+          .catch(() => {});
+      }
     });
 
     window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
       const error = event.reason as AnyApi;
       if (!error?.isRemoteTransport) return;
-      if (error.message) setRemoteConnectionIssue(error.message);
+      if (error.message) setRemoteConnectionIssue(error.message, error.hint);
       event.preventDefault();
     });
 
@@ -1712,9 +1773,14 @@ export const useAppStore = defineStore("app", () => {
         }
       })
       .catch((error: AnyApi) => {
-        const message = error?.message?.includes("401")
-          ? "Remote token is missing or invalid. Use the token from the desktop strIDEterm state file."
-          : error?.message || "Unknown startup error.";
+        // The STATUS, not the text. This used to sniff for "401" inside the message, which stopped
+        // being true the moment the transport started mapping 401 to a sentence of its own — the
+        // branch had quietly become unreachable, and a token problem fell through to whatever the
+        // raw message happened to be. `createRemoteIssue` already produces both halves; read them.
+        const message =
+          error?.statusCode === 401
+            ? "Remote token is missing or invalid. Use the token from the desktop strIDEterm state file."
+            : error?.message || "Unknown startup error.";
         bootstrapError.value = message;
       });
   }
@@ -1823,6 +1889,223 @@ export const useAppStore = defineStore("app", () => {
     await apiActions.saveProfile({ ...profile, sidebarWorkspaceViewMode: mode });
   }
 
+  // --- Mobile (plan §10.5) ---
+  // `mobileEnabled` is derived from the normal state broadcast (every
+  // settings mutation that changes it — including setMobileEnabled below —
+  // calls broadcastState()). `mobileDevices` is a dedicated ref refreshed
+  // explicitly (listMobileDevices()) instead: a device claiming pairing goes
+  // through mobile-device-store.ts's mutateDevices WITHOUT a broadcastState()
+  // call (see mobile-manager.ts/mobile-pairing.ts), so deriving devices from
+  // `payload` alone would miss a freshly-paired device until some unrelated
+  // broadcast happened to fire. Every action below goes through the injected
+  // Transport (getApi()) — never window.electron directly — and is absent
+  // over the remote transport (Electron-only, plan §10.5), so each throws a
+  // clear error rather than silently no-op'ing when called there.
+  const mobileEnabled = computed<boolean>(
+    () => !!(payload.value as AnyApi)?.appState?.settings?.integrations?.mobile?.enabled,
+  );
+  /**
+   * The managed relay's own flag, read from the same state broadcast as `mobileEnabled`.
+   *
+   * Two flags, not one: the relay is an outbound connector to a hosted origin, and turning the mobile
+   * integration on must not start one by itself (relay plan §10). The UI shows it as a nested choice
+   * for exactly that reason.
+   */
+  const mobileRelayEnabled = computed<boolean>(
+    () => !!(payload.value as AnyApi)?.appState?.settings?.integrations?.mobile?.relay?.enabled,
+  );
+  /** Relay state/counters/origin, refreshed explicitly — runtime-only, never part of the payload. */
+  const mobileRelayStatus = ref<AnyApi | null>(null);
+  const mobileDevices = ref<AnyApi[]>([]);
+  const mobilePairingInvitation = ref<AnyApi | null>(null);
+  /**
+   * The just-claimed device's pairing SAS, until the user dismisses it.
+   *
+   * Kept in the store rather than in SettingsMobileTab.vue because the event that carries it
+   * (`mobile:pairing-progress`) arrives on the transport, not on any component, and a claim can
+   * land while the tab is being re-mounted. `{ deviceId, label, sas }` or null.
+   */
+  const mobilePairingSas = ref<AnyApi | null>(null);
+  const mobileConnectionHealth = ref<AnyApi | null>(null);
+  const mobileQuota = ref<AnyApi | null>(null);
+  const mobileAuditLog = ref<{ entries: AnyApi[]; total: number }>({ entries: [], total: 0 });
+
+  async function refreshMobileDevices(): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.listMobileDevices !== "function") return;
+    const devices = await api.listMobileDevices();
+    mobileDevices.value = Array.isArray(devices) ? devices : [];
+  }
+
+  async function createMobilePairingInvitation(options: {
+    profileAllowlist: string[];
+    capabilities: string[];
+  }): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.createMobilePairingInvitation !== "function") {
+      throw new Error("Mobile pairing is only available in the desktop app.");
+    }
+    // A new pairing invalidates the previous claim's code — leaving it up would put two codes on
+    // screen with nothing saying which pairing each belongs to.
+    mobilePairingSas.value = null;
+    mobilePairingInvitation.value = await api.createMobilePairingInvitation(options);
+  }
+
+  async function cancelMobilePairingInvitation(): Promise<void> {
+    const api = getApi() as AnyApi;
+    mobilePairingInvitation.value = null;
+    await api?.cancelMobilePairingInvitation?.();
+  }
+
+  /** The user has finished comparing the code against the phone. */
+  function dismissMobilePairingSas(): void {
+    mobilePairingSas.value = null;
+  }
+
+  async function renameMobileDevice(deviceId: string, label: string): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.renameMobileDevice !== "function") {
+      throw new Error("Managing mobile devices is only available in the desktop app.");
+    }
+    await api.renameMobileDevice({ deviceId, label });
+    await refreshMobileDevices();
+  }
+
+  async function revokeMobileDevice(deviceId: string): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.revokeMobileDevice !== "function") {
+      throw new Error("Managing mobile devices is only available in the desktop app.");
+    }
+    await api.revokeMobileDevice(deviceId);
+    await refreshMobileDevices();
+  }
+
+  /**
+   * "Codes match — activate": the one action that makes a paired phone usable (review 3 §P0.1).
+   *
+   * Returns the backend's outcome rather than swallowing it, because a failure here is meaningful and
+   * must not look like success: the cloud can refuse the activation (a record it still considers merely
+   * claimed cannot be activated by anyone) or be unreachable, and in both cases the device stays inert
+   * and the user needs to be told.
+   */
+  async function approveMobileDevice(deviceId: string): Promise<{ ok: boolean; reason?: string }> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.approveMobileDevice !== "function") {
+      throw new Error("Managing mobile devices is only available in the desktop app.");
+    }
+    const result = (await api.approveMobileDevice(deviceId)) as { ok?: boolean; reason?: string } | null;
+    // The prompt is cleared only on SUCCESS. A failed activation leaves the device inert, so the user
+    // still has a decision to make — retry, or reject — and taking the code off the screen would leave
+    // them with a phone that looks paired and does nothing.
+    if (result?.ok === true) mobilePairingSas.value = null;
+    await refreshMobileDevices();
+    return { ok: result?.ok === true, reason: result?.reason };
+  }
+
+  /** "Mismatch — revoke", or the dialog being dismissed. Revokes locally and in the cloud. */
+  async function rejectMobileDevice(deviceId: string, reason: string): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.rejectMobileDevice !== "function") {
+      throw new Error("Managing mobile devices is only available in the desktop app.");
+    }
+    await api.rejectMobileDevice({ deviceId, reason });
+    mobilePairingSas.value = null;
+    await refreshMobileDevices();
+  }
+
+  /**
+   * Re-reads the devices waiting for a human decision, with their pairing codes.
+   *
+   * Called when the Mobile tab opens, so a desktop that restarted between "the code appeared" and "the
+   * user pressed something" shows the prompt again instead of leaving a device stuck in a state only a
+   * TTL sweep can resolve (review 3 §P0.1's restart case).
+   */
+  async function refreshMobileDevicesAwaitingApproval(): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.listMobileDevicesAwaitingApproval !== "function") return;
+    const pending = (await api.listMobileDevicesAwaitingApproval()) as Array<{
+      deviceId: string;
+      label: string;
+      sas: string | null;
+      state: string;
+    }> | null;
+    const first = (pending || []).find((entry) => entry.sas);
+    mobilePairingSas.value = first
+      ? { deviceId: first.deviceId, label: first.label, sas: first.sas, state: first.state }
+      : null;
+  }
+
+  async function updateMobileDeviceAllowlist(
+    deviceId: string,
+    update: { capabilities?: string[]; profileAllowlist?: string[] },
+  ): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.updateMobileDeviceAllowlist !== "function") {
+      throw new Error("Managing mobile devices is only available in the desktop app.");
+    }
+    await api.updateMobileDeviceAllowlist({ deviceId, ...update });
+    await refreshMobileDevices();
+  }
+
+  async function setMobileEnabled(enabled: boolean): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.setMobileEnabled !== "function") {
+      throw new Error("The Mobile feature can only be toggled from the desktop app.");
+    }
+    const result = await api.setMobileEnabled(enabled);
+    if (result) {
+      payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(result as StatePayload) as AnyApi) as StatePayload;
+      _cacheCurrentWorkspace();
+    }
+  }
+
+  /** Turns the managed relay on or off. Desktop-only, like every other mobile action here. */
+  async function setMobileRelayEnabled(enabled: boolean): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.setMobileRelayEnabled !== "function") {
+      throw new Error("The managed relay can only be toggled from the desktop app.");
+    }
+    const result = await api.setMobileRelayEnabled(enabled);
+    if (result) {
+      payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(result as StatePayload) as AnyApi) as StatePayload;
+      _cacheCurrentWorkspace();
+    }
+    await refreshMobileRelayStatus();
+  }
+
+  /** Reads the relay's own state so the UI can say whether it actually connected. */
+  async function refreshMobileRelayStatus(): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.getMobileRelayStatus !== "function") return;
+    mobileRelayStatus.value = (await api.getMobileRelayStatus()) ?? null;
+  }
+
+  async function refreshMobileConnectionHealth(): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.refreshMobileConnectionHealth !== "function") return;
+    const result = await api.refreshMobileConnectionHealth();
+    mobileConnectionHealth.value = result?.health ?? null;
+    mobileQuota.value = result?.quota ?? null;
+  }
+
+  async function sendMobileTestPush(deviceId: string): Promise<{ ok: boolean; reason?: string }> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.sendMobileTestPush !== "function") {
+      throw new Error("Sending a test push is only available in the desktop app.");
+    }
+    return api.sendMobileTestPush(deviceId);
+  }
+
+  async function queryMobileAuditLog(filters: Record<string, unknown> = {}): Promise<void> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.queryMobileAuditLog !== "function") return;
+    const result = await api.queryMobileAuditLog(filters);
+    mobileAuditLog.value = {
+      entries: Array.isArray(result?.entries) ? result.entries : [],
+      total: Number(result?.total) || 0,
+    };
+  }
+
   return {
     // State
     payload,
@@ -1835,6 +2118,7 @@ export const useAppStore = defineStore("app", () => {
     overlayProps,
     bootstrapError,
     remoteConnectionIssue,
+    remoteConnectionHint,
     remoteAccessMode,
     selectedLanUrl,
     contextMenu,
@@ -1883,6 +2167,32 @@ export const useAppStore = defineStore("app", () => {
     captureRendererCpuProfile,
     revealCpuProfile,
     saveSidebarWorkspaceViewMode,
+    // Mobile state + actions (plan §10.5)
+    mobileEnabled,
+    mobileDevices,
+    mobilePairingInvitation,
+    mobilePairingSas,
+    mobileConnectionHealth,
+    mobileQuota,
+    mobileAuditLog,
+    refreshMobileDevices,
+    createMobilePairingInvitation,
+    cancelMobilePairingInvitation,
+    dismissMobilePairingSas,
+    renameMobileDevice,
+    revokeMobileDevice,
+    approveMobileDevice,
+    rejectMobileDevice,
+    refreshMobileDevicesAwaitingApproval,
+    updateMobileDeviceAllowlist,
+    setMobileEnabled,
+    mobileRelayEnabled,
+    mobileRelayStatus,
+    setMobileRelayEnabled,
+    refreshMobileRelayStatus,
+    refreshMobileConnectionHealth,
+    sendMobileTestPush,
+    queryMobileAuditLog,
     // Grid actions
     enableWorkspaceGrid,
     disableWorkspaceGrid,

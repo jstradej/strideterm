@@ -31,6 +31,7 @@
         {{ paused ? "Resume" : "Pause" }}
       </button>
       <button
+        v-if="hasProcessMetrics"
         type="button"
         class="perf__btn"
         :disabled="capturing"
@@ -68,136 +69,146 @@
       <p v-else-if="captureStatus" class="perf__note perf__note--info">{{ captureStatus }}</p>
       <p v-if="error" class="perf__note perf__note--warn">{{ error }} · showing last reading</p>
 
-      <div v-if="!snapshot" class="perf__empty">
+      <div v-if="!snapshot && !termDiag" class="perf__empty">
         <Spinner size="md" />
         <span>Sampling metrics…</span>
       </div>
 
       <template v-else>
-        <p v-if="snapshot.warmingUp" class="perf__note perf__note--info">
-          Warming up — CPU percentages need a second sample to be meaningful.
+        <p v-if="!hasProcessMetrics" class="perf__note perf__note--info">
+          Remote client — process and system metrics belong to the desktop host and are not sent over the wire. The
+          terminal counters below are measured here, in this client.
         </p>
 
-        <!-- Summary cards -->
-        <div class="perf__cards">
-          <div
-            class="perf__card"
-            title="CPU and working-set memory of the Chromium renderer process that draws THIS window. CPU is a percentage of one core over the last sample (100% ≈ one core fully busy), so a heavy render loop shows up here. The bar is capped at 100%."
-          >
-            <div class="perf__card-label">This window (renderer)</div>
-            <div class="perf__card-value" :class="cpuClass(rendererProc?.cpuPercent)">
-              {{ fmtCpu(rendererProc?.cpuPercent) }}
+        <template v-if="snapshot">
+          <p v-if="snapshot.warmingUp" class="perf__note perf__note--info">
+            Warming up — CPU percentages need a second sample to be meaningful.
+          </p>
+
+          <!-- Summary cards -->
+          <div class="perf__cards">
+            <div
+              class="perf__card"
+              title="CPU and working-set memory of the Chromium renderer process that draws THIS window. CPU is a percentage of one core over the last sample (100% ≈ one core fully busy), so a heavy render loop shows up here. The bar is capped at 100%."
+            >
+              <div class="perf__card-label">This window (renderer)</div>
+              <div class="perf__card-value" :class="cpuClass(rendererProc?.cpuPercent)">
+                {{ fmtCpu(rendererProc?.cpuPercent) }}
+              </div>
+              <div class="perf__card-sub">
+                {{ rendererProc ? fmtMem(rendererProc.workingSetKb) : "—" }} · pid {{ rendererProc?.pid ?? "—" }}
+              </div>
+              <div class="perf__bar">
+                <div
+                  class="perf__bar-fill perf__bar-fill--cpu"
+                  :style="{ width: barWidth(rendererProc?.cpuPercent) }"
+                />
+              </div>
             </div>
-            <div class="perf__card-sub">
-              {{ rendererProc ? fmtMem(rendererProc.workingSetKb) : "—" }} · pid {{ rendererProc?.pid ?? "—" }}
+            <div
+              class="perf__card"
+              title="Combined CPU and working set across every Electron process (main/browser, renderer windows, GPU, utilities). The summed CPU can exceed 100% because each process is measured against its own core; the bar normalises it by the process count."
+            >
+              <div class="perf__card-label">All Electron processes</div>
+              <div class="perf__card-value" :class="cpuClass(snapshot.totalCpuPercent, processCount)">
+                {{ fmtCpu(snapshot.totalCpuPercent) }}
+              </div>
+              <div class="perf__card-sub">
+                {{ processCount }} processes · {{ fmtMem(snapshot.totalWorkingSetKb) }} working set
+              </div>
+              <div class="perf__bar">
+                <div
+                  class="perf__bar-fill perf__bar-fill--cpu"
+                  :style="{ width: barWidth(snapshot.totalCpuPercent, processCount) }"
+                />
+              </div>
             </div>
-            <div class="perf__bar">
-              <div class="perf__bar-fill perf__bar-fill--cpu" :style="{ width: barWidth(rendererProc?.cpuPercent) }" />
+            <div
+              class="perf__card"
+              title="CPU and working set of the Chromium GPU process that composites terminal output. High values here point at rendering/WebGL cost (or a driver problem) rather than raw terminal data volume. Shows 'n/a' when no separate GPU process exists."
+            >
+              <div class="perf__card-label">GPU process</div>
+              <div class="perf__card-value" :class="cpuClass(gpuProc?.cpuPercent)">
+                {{ gpuProc ? fmtCpu(gpuProc.cpuPercent) : "n/a" }}
+              </div>
+              <div class="perf__card-sub">{{ gpuProc ? fmtMem(gpuProc.workingSetKb) : "no GPU process" }}</div>
+              <div class="perf__bar">
+                <div class="perf__bar-fill perf__bar-fill--gpu" :style="{ width: barWidth(gpuProc?.cpuPercent) }" />
+              </div>
+            </div>
+            <div
+              class="perf__card"
+              title="Machine-wide physical RAM in use (total minus free), from the last sample. This is the whole OS, not just this app — context for how much memory headroom is left."
+            >
+              <div class="perf__card-label">System memory</div>
+              <div class="perf__card-value">{{ systemUsedPercent }}%</div>
+              <div class="perf__card-sub">
+                {{ fmtMem(systemUsedKb) }} / {{ fmtMem(snapshot.systemMemory.totalKb) }} used
+              </div>
+              <div class="perf__bar">
+                <div class="perf__bar-fill perf__bar-fill--mem" :style="{ width: systemUsedPercent + '%' }" />
+              </div>
             </div>
           </div>
-          <div
-            class="perf__card"
-            title="Combined CPU and working set across every Electron process (main/browser, renderer windows, GPU, utilities). The summed CPU can exceed 100% because each process is measured against its own core; the bar normalises it by the process count."
-          >
-            <div class="perf__card-label">All Electron processes</div>
-            <div class="perf__card-value" :class="cpuClass(snapshot.totalCpuPercent, processCount)">
-              {{ fmtCpu(snapshot.totalCpuPercent) }}
+
+          <!-- History charts -->
+          <div class="perf__charts">
+            <div
+              class="perf__chart"
+              title="This window's renderer CPU over time (one point per sample, newest on the right). A rising trend that never settles is the signature of a runaway render loop. Hover any point for its exact value and how long ago it was taken."
+            >
+              <div class="perf__chart-head">
+                <span class="perf__chart-label">Renderer CPU</span>
+                <span class="perf__chart-meta" :title="historyMetaTitle">{{ historyWindowLabel }}</span>
+              </div>
+              <Sparkline
+                :data="rendererCpuHistory"
+                :max="cpuChartMax"
+                stroke="#63b3ed"
+                fill="rgba(99,179,237,0.18)"
+                :sample-interval-sec="refreshMs / 1000"
+                :value-formatter="fmtCpuChart"
+                aria-label="Renderer CPU history"
+              />
             </div>
-            <div class="perf__card-sub">
-              {{ processCount }} processes · {{ fmtMem(snapshot.totalWorkingSetKb) }} working set
+            <div
+              class="perf__chart"
+              title="Combined CPU across all Electron processes over time. Compare its shape with the renderer chart to tell whether the load is in this window or somewhere else (GPU, main, another window)."
+            >
+              <div class="perf__chart-head">
+                <span class="perf__chart-label">Total app CPU</span>
+                <span class="perf__chart-meta" :title="historyMetaTitle">{{ historyWindowLabel }}</span>
+              </div>
+              <Sparkline
+                :data="totalCpuHistory"
+                :max="totalCpuChartMax"
+                stroke="#b794f4"
+                fill="rgba(183,148,244,0.18)"
+                :sample-interval-sec="refreshMs / 1000"
+                :value-formatter="fmtCpuChart"
+                aria-label="Total app CPU history"
+              />
             </div>
-            <div class="perf__bar">
-              <div
-                class="perf__bar-fill perf__bar-fill--cpu"
-                :style="{ width: barWidth(snapshot.totalCpuPercent, processCount) }"
+            <div
+              class="perf__chart"
+              title="Total working-set memory of the whole app over time (MB). A steadily climbing line that never comes back down suggests a memory leak."
+            >
+              <div class="perf__chart-head">
+                <span class="perf__chart-label">Working set</span>
+                <span class="perf__chart-meta" :title="historyMetaTitle">{{ historyWindowLabel }}</span>
+              </div>
+              <Sparkline
+                :data="workingSetHistory"
+                :max="memChartMax"
+                stroke="#f6ad55"
+                fill="rgba(246,173,85,0.18)"
+                :sample-interval-sec="refreshMs / 1000"
+                :value-formatter="fmtMbChart"
+                aria-label="Total working set history"
               />
             </div>
           </div>
-          <div
-            class="perf__card"
-            title="CPU and working set of the Chromium GPU process that composites terminal output. High values here point at rendering/WebGL cost (or a driver problem) rather than raw terminal data volume. Shows 'n/a' when no separate GPU process exists."
-          >
-            <div class="perf__card-label">GPU process</div>
-            <div class="perf__card-value" :class="cpuClass(gpuProc?.cpuPercent)">
-              {{ gpuProc ? fmtCpu(gpuProc.cpuPercent) : "n/a" }}
-            </div>
-            <div class="perf__card-sub">{{ gpuProc ? fmtMem(gpuProc.workingSetKb) : "no GPU process" }}</div>
-            <div class="perf__bar">
-              <div class="perf__bar-fill perf__bar-fill--gpu" :style="{ width: barWidth(gpuProc?.cpuPercent) }" />
-            </div>
-          </div>
-          <div
-            class="perf__card"
-            title="Machine-wide physical RAM in use (total minus free), from the last sample. This is the whole OS, not just this app — context for how much memory headroom is left."
-          >
-            <div class="perf__card-label">System memory</div>
-            <div class="perf__card-value">{{ systemUsedPercent }}%</div>
-            <div class="perf__card-sub">
-              {{ fmtMem(systemUsedKb) }} / {{ fmtMem(snapshot.systemMemory.totalKb) }} used
-            </div>
-            <div class="perf__bar">
-              <div class="perf__bar-fill perf__bar-fill--mem" :style="{ width: systemUsedPercent + '%' }" />
-            </div>
-          </div>
-        </div>
-
-        <!-- History charts -->
-        <div class="perf__charts">
-          <div
-            class="perf__chart"
-            title="This window's renderer CPU over time (one point per sample, newest on the right). A rising trend that never settles is the signature of a runaway render loop. Hover any point for its exact value and how long ago it was taken."
-          >
-            <div class="perf__chart-head">
-              <span class="perf__chart-label">Renderer CPU</span>
-              <span class="perf__chart-meta" :title="historyMetaTitle">{{ historyWindowLabel }}</span>
-            </div>
-            <Sparkline
-              :data="rendererCpuHistory"
-              :max="cpuChartMax"
-              stroke="#63b3ed"
-              fill="rgba(99,179,237,0.18)"
-              :sample-interval-sec="refreshMs / 1000"
-              :value-formatter="fmtCpuChart"
-              aria-label="Renderer CPU history"
-            />
-          </div>
-          <div
-            class="perf__chart"
-            title="Combined CPU across all Electron processes over time. Compare its shape with the renderer chart to tell whether the load is in this window or somewhere else (GPU, main, another window)."
-          >
-            <div class="perf__chart-head">
-              <span class="perf__chart-label">Total app CPU</span>
-              <span class="perf__chart-meta" :title="historyMetaTitle">{{ historyWindowLabel }}</span>
-            </div>
-            <Sparkline
-              :data="totalCpuHistory"
-              :max="totalCpuChartMax"
-              stroke="#b794f4"
-              fill="rgba(183,148,244,0.18)"
-              :sample-interval-sec="refreshMs / 1000"
-              :value-formatter="fmtCpuChart"
-              aria-label="Total app CPU history"
-            />
-          </div>
-          <div
-            class="perf__chart"
-            title="Total working-set memory of the whole app over time (MB). A steadily climbing line that never comes back down suggests a memory leak."
-          >
-            <div class="perf__chart-head">
-              <span class="perf__chart-label">Working set</span>
-              <span class="perf__chart-meta" :title="historyMetaTitle">{{ historyWindowLabel }}</span>
-            </div>
-            <Sparkline
-              :data="workingSetHistory"
-              :max="memChartMax"
-              stroke="#f6ad55"
-              fill="rgba(246,173,85,0.18)"
-              :sample-interval-sec="refreshMs / 1000"
-              :value-formatter="fmtMbChart"
-              aria-label="Total working set history"
-            />
-          </div>
-        </div>
+        </template>
 
         <!-- Terminal diagnostics -->
         <div
@@ -290,69 +301,73 @@
           </div>
         </div>
 
-        <!-- Process table -->
-        <div
-          class="perf__section-head"
-          title="Every Electron/Chromium process in the app, sorted by CPU (hottest first). This is the fastest way to see WHICH process is burning CPU — a renderer window, the GPU process, the main/browser process, or a background utility."
-        >
-          Electron processes
-        </div>
-        <table class="perf__table">
-          <thead>
-            <tr>
-              <th
-                title="Process role: Browser = the main process, Tab = a renderer window, GPU = the compositor, Utility = a background helper (network, audio, …)."
-              >
-                Type
-              </th>
-              <th
-                class="perf__num"
-                title="OS process id. Combine with the process creation time to tell reused PIDs apart across samples."
-              >
-                PID
-              </th>
-              <th
-                class="perf__num"
-                title="Percentage of one CPU core used since the last sample. Can exceed 100% for a multithreaded process."
-              >
-                CPU
-              </th>
-              <th
-                class="perf__num"
-                title="Physical RAM the process currently has mapped (working set). 'priv' is private bytes — memory not shared with other processes (Windows only)."
-              >
-                Working set
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="p in snapshot.processes"
-              :key="`${p.pid}-${p.creationTime}`"
-              :class="{ 'perf__row--current': p.isCurrentRenderer }"
-              :title="`${p.type}${p.serviceName && p.serviceName !== p.type ? ' · ' + p.serviceName : ''} · pid ${p.pid} · started ${fmtStarted(p.creationTime)}`"
-            >
-              <td>
-                <!-- The service name (e.g. network.mojom.NetworkService) is
-                     often long and crowds the row, so it lives in the row's
-                     hover tooltip rather than inline. -->
-                <span class="perf__ptype">{{ p.type }}</span>
-                <span
-                  v-if="p.isCurrentRenderer"
-                  class="perf__tag"
-                  title="The renderer process backing the window you are looking at right now."
-                  >this window</span
+        <template v-if="snapshot">
+          <!-- Process table -->
+          <div
+            class="perf__section-head"
+            title="Every Electron/Chromium process in the app, sorted by CPU (hottest first). This is the fastest way to see WHICH process is burning CPU — a renderer window, the GPU process, the main/browser process, or a background utility."
+          >
+            Electron processes
+          </div>
+          <table class="perf__table">
+            <thead>
+              <tr>
+                <th
+                  title="Process role: Browser = the main process, Tab = a renderer window, GPU = the compositor, Utility = a background helper (network, audio, …)."
                 >
-              </td>
-              <td class="perf__num">{{ p.pid }}</td>
-              <td class="perf__num" :class="cpuClass(p.cpuPercent)">{{ fmtCpu(p.cpuPercent) }}</td>
-              <td class="perf__num">
-                {{ fmtMem(p.workingSetKb)
-                }}<span v-if="p.privateBytesKb != null" class="perf__psub"> · {{ fmtMem(p.privateBytesKb) }} priv</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                  Type
+                </th>
+                <th
+                  class="perf__num"
+                  title="OS process id. Combine with the process creation time to tell reused PIDs apart across samples."
+                >
+                  PID
+                </th>
+                <th
+                  class="perf__num"
+                  title="Percentage of one CPU core used since the last sample. Can exceed 100% for a multithreaded process."
+                >
+                  CPU
+                </th>
+                <th
+                  class="perf__num"
+                  title="Physical RAM the process currently has mapped (working set). 'priv' is private bytes — memory not shared with other processes (Windows only)."
+                >
+                  Working set
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="p in snapshot.processes"
+                :key="`${p.pid}-${p.creationTime}`"
+                :class="{ 'perf__row--current': p.isCurrentRenderer }"
+                :title="`${p.type}${p.serviceName && p.serviceName !== p.type ? ' · ' + p.serviceName : ''} · pid ${p.pid} · started ${fmtStarted(p.creationTime)}`"
+              >
+                <td>
+                  <!-- The service name (e.g. network.mojom.NetworkService) is
+                       often long and crowds the row, so it lives in the row's
+                       hover tooltip rather than inline. -->
+                  <span class="perf__ptype">{{ p.type }}</span>
+                  <span
+                    v-if="p.isCurrentRenderer"
+                    class="perf__tag"
+                    title="The renderer process backing the window you are looking at right now."
+                    >this window</span
+                  >
+                </td>
+                <td class="perf__num">{{ p.pid }}</td>
+                <td class="perf__num" :class="cpuClass(p.cpuPercent)">{{ fmtCpu(p.cpuPercent) }}</td>
+                <td class="perf__num">
+                  {{ fmtMem(p.workingSetKb)
+                  }}<span v-if="p.privateBytesKb != null" class="perf__psub">
+                    · {{ fmtMem(p.privateBytesKb) }} priv</span
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
       </template>
     </div>
   </div>
@@ -425,6 +440,14 @@ const historyMetaTitle = computed(
   () =>
     `Samples collected / max kept (${HISTORY_LEN}, oldest dropped) · time span these points cover at the current ${refreshMs.value / 1000}s interval.`,
 );
+
+/**
+ * Electron process/system metrics come from the desktop transport over IPC;
+ * the remote (mobile WebView) transport has no such call. The terminal
+ * counters below are renderer-local and work everywhere, so the panel stays
+ * useful on mobile — it just drops the host-side sections.
+ */
+const hasProcessMetrics = computed(() => appStore.supportsPerformanceMetrics === true);
 
 const webglTrouble = computed(
   () => !!termDiag.value && (termDiag.value.webglAttachFailures > 0 || termDiag.value.webglContextLosses > 0),
@@ -504,6 +527,11 @@ function fmtStarted(creationTime: number): string {
 
 async function poll(): Promise<void> {
   if (document.visibilityState !== "visible") return;
+  // Sampled first, and unconditionally: these counters are measured in this
+  // client, so they are the only thing the remote/mobile client can show.
+  const td = terminalStore.getTerminalDiagnostics();
+  if (td) termDiag.value = td;
+  if (!hasProcessMetrics.value) return;
   try {
     const snap = await appStore.getPerformanceSnapshot();
     if (!snap) {
@@ -512,8 +540,6 @@ async function poll(): Promise<void> {
     }
     error.value = "";
     snapshot.value = snap;
-    const td = terminalStore.getTerminalDiagnostics();
-    if (td) termDiag.value = td;
     pushHistory(rendererCpuHistory.value, snap.warmingUp ? 0 : (rendererProc.value?.cpuPercent ?? 0));
     pushHistory(totalCpuHistory.value, snap.warmingUp ? 0 : snap.totalCpuPercent);
     pushHistory(workingSetHistory.value, snap.totalWorkingSetKb / 1024);

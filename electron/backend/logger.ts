@@ -77,13 +77,27 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   // Authorization: Bearer <token>  /  authorization: bearer <token>
   [/(authorization\s*[:=]\s*"?\s*bearer\s+)[^\s",}\]]+/gi, `$1${REDACTED}`],
   [/(\bbearer\s+)[A-Za-z0-9._\-+/=]{16,}/gi, `$1${REDACTED}`],
-  // Azure PAT / generic ?token=... or &pat=... query strings
-  [/([?&](?:token|pat|access_token|api[_-]?key)=)[^&\s"']+/gi, `$1${REDACTED}`],
+  // Azure PAT / generic ?token=... or &pat=... query strings.
+  //
+  // `auth` and `key` are here because of the mobile Firebase REST client: the RTDB REST API takes
+  // the caller's ID TOKEN as `?auth=<jwt>` and the Auth endpoints take the web API key as
+  // `?key=<key>` (mobile-firebase-config.ts's rtdbUrl/secureTokenUrl). Undici surfaces the full
+  // request URL in several of its error messages, so without these two names a single failed fetch
+  // put a live Firebase credential in the log — review 2 §"Logy a diagnostika".
+  [/([?&](?:token|pat|access_token|api[_-]?key|auth|key)=)[^&\s"']+/gi, `$1${REDACTED}`],
   // JSON-style: "token":"...",  "pat":"...",  "password":"...", "secret":"..."
   [
-    /("(?:token|pat|access[_-]?token|api[_-]?key|password|passphrase|secret|botToken)"\s*:\s*")[^"]+/gi,
+    /("(?:token|pat|access[_-]?token|api[_-]?key|password|passphrase|secret|secretHash|botToken|idToken|refreshToken|refresh_token|id_token)"\s*:\s*")[^"]+/gi,
     `$1${REDACTED}`,
   ],
+  // Any JWT-shaped string, wherever it appears.
+  //
+  // Review 2 §"Logy a diagnostika" asks for redaction not to depend on the field NAME alone, since
+  // a value can be a composite URL or a JSON blob whose own key we never see — an error message
+  // like `TypeError: fetch failed (https://…?auth=eyJhbGciOi…)` has no field name at all. Firebase
+  // ID tokens and App Check tokens are JWTs, so matching the shape catches them in a message body,
+  // a query string, a header dump or a nested payload, no matter how they got there.
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/g, REDACTED],
 ];
 
 /**

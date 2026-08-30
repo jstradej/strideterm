@@ -13,6 +13,7 @@ const {
   getTerminalDiagnostics,
   showError,
   downloadSpy,
+  appStoreState,
 } = vi.hoisted(() => ({
   getPerformanceSnapshot: vi.fn(),
   captureRendererCpuProfile: vi.fn(),
@@ -21,10 +22,19 @@ const {
   getTerminalDiagnostics: vi.fn(),
   showError: vi.fn(),
   downloadSpy: vi.fn(),
+  // Desktop by default; the remote/mobile suite flips it to false.
+  appStoreState: { supportsPerformanceMetrics: true },
 }));
 
 vi.mock("../../stores/app.js", () => ({
-  useAppStore: () => ({ getPerformanceSnapshot, captureRendererCpuProfile, revealCpuProfile }),
+  useAppStore: () => ({
+    getPerformanceSnapshot,
+    captureRendererCpuProfile,
+    revealCpuProfile,
+    get supportsPerformanceMetrics() {
+      return appStoreState.supportsPerformanceMetrics;
+    },
+  }),
 }));
 vi.mock("../../stores/terminal.js", () => ({
   useTerminalStore: () => ({ setTerminalDiagnosticsEnabled, getTerminalDiagnostics }),
@@ -85,6 +95,7 @@ function setVisibility(state: "visible" | "hidden"): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  appStoreState.supportsPerformanceMetrics = true;
   setVisibility("visible");
   window.localStorage.clear();
   getPerformanceSnapshot.mockResolvedValue(snapshot());
@@ -265,6 +276,62 @@ describe("PerformancePanel — the live dot is not a heartbeat target", () => {
     expect(wrapper.get(".perf__dot").classes()).toContain("perf__dot--paused");
     expect(heartbeatTargetCount()).toBe(0);
 
+    wrapper.unmount();
+  });
+});
+
+describe("PerformancePanel — remote / mobile client", () => {
+  beforeEach(() => {
+    appStoreState.supportsPerformanceMetrics = false;
+  });
+
+  it("shows the terminal counters without ever asking for process metrics", async () => {
+    const wrapper = mount(PerformancePanel);
+    await flushPromises();
+
+    expect(getPerformanceSnapshot).not.toHaveBeenCalled();
+    expect(setTerminalDiagnosticsEnabled).toHaveBeenCalledWith(true);
+    // Host-side sections are gone; the renderer-local ones are all there.
+    expect(wrapper.findAll(".perf__card").length).toBe(0);
+    expect(wrapper.findAll(".sparkline").length).toBe(0);
+    expect(wrapper.findAll(".perf__table").length).toBe(0);
+    expect(wrapper.findAll(".perf__mini").length).toBeGreaterThan(0);
+    expect(wrapper.text()).toContain("WebGL/DOM");
+    expect(wrapper.text()).toContain("fail·loss·fallback");
+    wrapper.unmount();
+  });
+
+  it("hides the CPU profile capture button (it is an Electron round-trip)", async () => {
+    const wrapper = mount(PerformancePanel);
+    await flushPromises();
+    expect(wrapper.findAll(".perf__btn").some((b) => b.text().includes("CPU profile"))).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("exports a report with the counters it has and a null where the host metrics would be", async () => {
+    // The button being on screen is not the claim; the claim is that pressing it produces something.
+    // A report is assembled from `snapshot` and `termDiag` together, and on this transport the first
+    // is permanently null — so this is the one path where a report could throw instead of serialise.
+    const wrapper = mount(PerformancePanel);
+    await flushPromises();
+
+    await wrapper
+      .findAll(".perf__btn")
+      .find((b) => b.text() === "Export")!
+      .trigger("click");
+
+    expect(downloadSpy).toHaveBeenCalledTimes(1);
+    const [, content] = downloadSpy.mock.calls[0];
+    const report = JSON.parse(content as string) as { process: unknown; terminal: { webglRenderers: number } };
+    expect(report.process).toBeNull();
+    expect(report.terminal.webglRenderers).toBe(2);
+    wrapper.unmount();
+  });
+
+  it("never leaves the panel stuck on the sampling spinner", async () => {
+    const wrapper = mount(PerformancePanel);
+    await flushPromises();
+    expect(wrapper.findAll(".perf__empty").length).toBe(0);
     wrapper.unmount();
   });
 });

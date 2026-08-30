@@ -44,6 +44,11 @@ describe("MobileInputBar", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     window.localStorage.removeItem(COLLAPSED_KEY);
+    // The bar persists its unsent draft per terminal session in sessionStorage, so a return from the
+    // background restores what the user was typing (production hardening §5 "Session" 6). jsdom keeps
+    // one storage for the whole file, so without this a draft from one case would be restored into the
+    // next one's field — which is exactly what the store must NOT do across browsing contexts.
+    window.sessionStorage.clear();
     (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
     const store = useAppStore();
     store.payload = {
@@ -595,6 +600,55 @@ describe("MobileInputBar", () => {
     });
   });
 
+  describe("the unsent draft survives a re-bootstrap", () => {
+    // Production hardening §5 "Session" 6: the mobile app tears the relay session down after a grace
+    // period in the background and re-bootstraps on return — a full page load. What the user was
+    // typing has to come back, and it has to come back as a DRAFT: nothing may be written to the PTY
+    // without a new action from them.
+    it("restores what was typed after the page is reloaded, and sends nothing on its own", async () => {
+      const first = mountBar();
+      const input = first.wrapper.find("input");
+      await input.setValue("git rebase -i HEAD~3");
+      await nextTick();
+      first.wrapper.unmount();
+
+      // A brand-new component, as after a reload: same session, same origin, new page.
+      const second = mountBar();
+      await nextTick();
+      expect((second.wrapper.find("input").element as HTMLInputElement).value).toBe("git rebase -i HEAD~3");
+      expect(second.writeTerminal).not.toHaveBeenCalled();
+
+      // And submitting is what sends it — the draft was one deliberate action away, not zero. (The
+      // Enter follows as its own delayed write; the "composing and sending" suite covers that half.)
+      await second.wrapper.find("form").trigger("submit");
+      expect(second.writeTerminal).toHaveBeenCalledWith(SESSION_ID, "git rebase -i HEAD~3", ORIGIN_WS);
+    });
+
+    it("keeps one session's draft out of another session's field", async () => {
+      const first = mountBar();
+      await first.wrapper.find("input").setValue("only for the shell panel");
+      await nextTick();
+      first.wrapper.unmount();
+
+      const second = mountBar({ sessionId: "ws-a:panel-other" });
+      await nextTick();
+      expect((second.wrapper.find("input").element as HTMLInputElement).value).toBe("");
+    });
+
+    it("a draft cleared by sending is not resurrected by the next mount", async () => {
+      const first = mountBar();
+      await first.wrapper.find("input").setValue("echo done");
+      await nextTick();
+      await first.wrapper.find("form").trigger("submit");
+      await nextTick();
+      first.wrapper.unmount();
+
+      const second = mountBar();
+      await nextTick();
+      expect((second.wrapper.find("input").element as HTMLInputElement).value).toBe("");
+    });
+  });
+
   describe("collapse / expand", () => {
     it("collapses to the slim handle and persists the preference", async () => {
       const { wrapper } = mountBar();
@@ -617,6 +671,18 @@ describe("MobileInputBar", () => {
       expect(window.localStorage.getItem(COLLAPSED_KEY)).toBe("0");
       // Expanding alone never writes to the terminal.
       expect(writeTerminal).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(wrapper.find("[data-role='mobile-input-bar-input']").element);
+    });
+
+    it("does not autofocus the editor after expanding", async () => {
+      window.localStorage.setItem(COLLAPSED_KEY, "1");
+      const { wrapper } = mountBar();
+
+      await wrapper.find(".mobile-input-bar__expand").trigger("click");
+      await nextTick();
+      const input = wrapper.find("[data-role='mobile-input-bar-input']");
+      expect(document.activeElement).not.toBe(input.element);
+      expect(input.attributes()).not.toHaveProperty("autofocus");
     });
 
     it("starts collapsed when the persisted preference says so", () => {

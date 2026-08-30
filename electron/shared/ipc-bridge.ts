@@ -88,6 +88,11 @@ import type {
   ApprovalAuditLogDelete,
   ApprovalAuditLogStats,
   WorkspacePushOptions,
+  MobileCreatePairingInvitation,
+  MobileRejectDevice,
+  MobileRenameDevice,
+  MobileUpdateDeviceAllowlist,
+  MobileAuditLogQuery,
 } from "../backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "./types/ssh.js";
 import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "./performance.js";
@@ -313,6 +318,29 @@ export interface StridetermAPI {
   saveTelegramConnection: (connection: TelegramConnectionPayload) => Promise<unknown>;
   deleteTelegramConnection: (connectionId: string) => Promise<unknown>;
   refreshTelegram: () => Promise<unknown>;
+
+  // Mobile integration (plan §10.5) — Electron/desktop-only; the remote-HTTP
+  // transport does not implement these (see src/transport.ts).
+  createMobilePairingInvitation: (options: MobileCreatePairingInvitation) => Promise<unknown>;
+  cancelMobilePairingInvitation: () => Promise<unknown>;
+  listMobileDevices: () => Promise<unknown>;
+  renameMobileDevice: (payload: MobileRenameDevice) => Promise<unknown>;
+  revokeMobileDevice: (deviceId: string) => Promise<unknown>;
+  /** Review 3 §P0.1: the human said the codes match. The only path to a usable device. */
+  approveMobileDevice: (deviceId: string) => Promise<unknown>;
+  /** Review 3 §P0.1: the human said they do not match, or dismissed the dialog. Revokes. */
+  rejectMobileDevice: (payload: MobileRejectDevice) => Promise<unknown>;
+  /** Devices waiting for that decision, so a restart can re-present the code rather than lose it. */
+  listMobileDevicesAwaitingApproval: () => Promise<unknown>;
+  updateMobileDeviceAllowlist: (payload: MobileUpdateDeviceAllowlist) => Promise<unknown>;
+  setMobileEnabled: (enabled: boolean) => Promise<unknown>;
+  /** The managed relay's own flag — independent of `setMobileEnabled` (relay plan §10). */
+  setMobileRelayEnabled: (enabled: boolean) => Promise<unknown>;
+  /** Relay state, counters and origin — never a grant, a cookie or a payload. */
+  getMobileRelayStatus: () => Promise<unknown>;
+  refreshMobileConnectionHealth: () => Promise<unknown>;
+  sendMobileTestPush: (deviceId: string) => Promise<unknown>;
+  queryMobileAuditLog: (filters: MobileAuditLogQuery) => Promise<unknown>;
 
   // Review bridge
   createReviewBridgeDraftComment: (payload: ReviewBridgeDraftComment) => Promise<unknown>;
@@ -680,6 +708,13 @@ export interface StridetermAPI {
    */
   onNotificationTargetRemoved: (handler: (payload: unknown) => void) => void;
   onApprovalRecorded: (handler: (payload: unknown) => void) => void;
+  onMobileStatus: (
+    handler: (
+      payload: { running: boolean } | { pushLimitReached: true; suppressedCount: number; resetAt: number },
+    ) => void,
+  ) => void;
+  onMobilePairingProgress: (handler: (payload: Record<string, unknown>) => void) => void;
+  onMobileDeviceRevoked: (handler: (payload: { deviceId: string }) => void) => void;
 }
 
 // Re-export payload types needed by AttentionSync consumers

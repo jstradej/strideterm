@@ -364,6 +364,19 @@ export class RemoteClientRegistry {
     }
   }
 
+  /**
+   * Forgets one client immediately, rather than waiting for the TTL sweep.
+   *
+   * Used when a session ENDS for a reason the registry cannot see — a mobile session past its
+   * absolute or idle deadline, or one whose device was revoked. Leaving the entry behind would make
+   * a dead session still resolve for every per-viewer operation the runtime routes by session id,
+   * which reads as a live viewer (production hardening §5 "Session" 3, "remove the session and its
+   * registry state").
+   */
+  remove(sessionId: string): void {
+    this.clients.delete(sessionId);
+  }
+
   /** Expose raw client map for testing. */
   _clientsForTest(): Map<string, RemoteClientContext> {
     return this.clients;

@@ -1,0 +1,201 @@
+{
+  "$comment": [
+    "RELAY GRANT TEST VECTORS (plan §10 \"test vectors pro podpis a negativní varianty\").",
+    "",
+    "Read by:",
+    "  - protocol/typescript/test/relay-grant.test.ts",
+    "  - relay/worker/test/grant-verifier.test.mts",
+    "  - strideterm: electron/backend/mobile/relay/relay-grant.test.ts (hand mirror)",
+    "",
+    "The signing key below is a PUBLISHED TEST VECTOR derived from an all-0x27 seed. It is not a",
+    "credential: no runtime loads it, the local MVP harness generates a fresh keypair per run into",
+    "a temporary directory, and production signs with a key this repository never sees.",
+    "",
+    "Regenerate with: node scripts/generate-relay-grant-vectors.mjs"
+  ],
+  "signingKey": {
+    "kid": "relay-test-vector-key",
+    "seedBase64": "JycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJyc=",
+    "pkcs8Prefix": "302e020100300506032b657004220420",
+    "publicKeyBase64Url": "7kXsuaygGgq9g-9W3ZhcjIdObn9K687fIL2NiMKgrdc"
+  },
+  "audience": "https://relay.test.invalid",
+  "issuer": "strideterm-relay-test-issuer",
+  "now": 1755000001000,
+  "positive": [
+    {
+      "name": "connector grant",
+      "role": "connector",
+      "claims": {
+        "aud": "https://relay.test.invalid",
+        "cap": [
+          "relay.connector"
+        ],
+        "connectorKeyFingerprint": "thYL5VaGYAvvSO8iOFrKgIe8AqzrT3rqZ112urY9eQo",
+        "desktopInstallationId": "installation-AAAAAAAAAAAAAAAAAAAA",
+        "exp": 1755000900000,
+        "iat": 1755000000000,
+        "iss": "strideterm-relay-test-issuer",
+        "jti": "grant-connector-0000000000000001",
+        "role": "connector",
+        "v": 1
+      },
+      "canonicalPayloadJson": "{\"aud\":\"https://relay.test.invalid\",\"cap\":[\"relay.connector\"],\"connectorKeyFingerprint\":\"thYL5VaGYAvvSO8iOFrKgIe8AqzrT3rqZ112urY9eQo\",\"desktopInstallationId\":\"installation-AAAAAAAAAAAAAAAAAAAA\",\"exp\":1755000900000,\"iat\":1755000000000,\"iss\":\"strideterm-relay-test-issuer\",\"jti\":\"grant-connector-0000000000000001\",\"role\":\"connector\",\"v\":1}",
+      "signingInput": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZWxheS5jb25uZWN0b3IiXSwiY29ubmVjdG9yS2V5RmluZ2VycHJpbnQiOiJ0aFlMNVZhR1lBdnZTTzhpT0ZyS2dJZThBcXpyVDNycVoxMTJ1clk5ZVFvIiwiZGVza3RvcEluc3RhbGxhdGlvbklkIjoiaW5zdGFsbGF0aW9uLUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiZXhwIjoxNzU1MDAwOTAwMDAwLCJpYXQiOjE3NTUwMDAwMDAwMDAsImlzcyI6InN0cmlkZXRlcm0tcmVsYXktdGVzdC1pc3N1ZXIiLCJqdGkiOiJncmFudC1jb25uZWN0b3ItMDAwMDAwMDAwMDAwMDAwMSIsInJvbGUiOiJjb25uZWN0b3IiLCJ2IjoxfQ",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZWxheS5jb25uZWN0b3IiXSwiY29ubmVjdG9yS2V5RmluZ2VycHJpbnQiOiJ0aFlMNVZhR1lBdnZTTzhpT0ZyS2dJZThBcXpyVDNycVoxMTJ1clk5ZVFvIiwiZGVza3RvcEluc3RhbGxhdGlvbklkIjoiaW5zdGFsbGF0aW9uLUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiZXhwIjoxNzU1MDAwOTAwMDAwLCJpYXQiOjE3NTUwMDAwMDAwMDAsImlzcyI6InN0cmlkZXRlcm0tcmVsYXktdGVzdC1pc3N1ZXIiLCJqdGkiOiJncmFudC1jb25uZWN0b3ItMDAwMDAwMDAwMDAwMDAwMSIsInJvbGUiOiJjb25uZWN0b3IiLCJ2IjoxfQ.ebloDgkD7yWpfte_7yf6WzfFCMcudKp7EeUnIrWz4Hw1XscjkBXoEfTRxTuMu2rakCq_ZT8uwhyMrIGK89NICg"
+    },
+    {
+      "name": "viewer grant",
+      "role": "viewer",
+      "claims": {
+        "aud": "https://relay.test.invalid",
+        "cap": [
+          "remote.webSession"
+        ],
+        "desktopInstallationId": "installation-AAAAAAAAAAAAAAAAAAAA",
+        "exp": 1755000300000,
+        "iat": 1755000000000,
+        "iss": "strideterm-relay-test-issuer",
+        "jti": "grant-viewer-0000000000000001",
+        "mobileDeviceId": "mobile-AAAAAAAAAAAAAAAAAAAAAA",
+        "pairId": "pair-AAAAAAAAAAAAAAAAAAAAAAAA",
+        "role": "viewer",
+        "v": 1
+      },
+      "canonicalPayloadJson": "{\"aud\":\"https://relay.test.invalid\",\"cap\":[\"remote.webSession\"],\"desktopInstallationId\":\"installation-AAAAAAAAAAAAAAAAAAAA\",\"exp\":1755000300000,\"iat\":1755000000000,\"iss\":\"strideterm-relay-test-issuer\",\"jti\":\"grant-viewer-0000000000000001\",\"mobileDeviceId\":\"mobile-AAAAAAAAAAAAAAAAAAAAAA\",\"pairId\":\"pair-AAAAAAAAAAAAAAAAAAAAAAAA\",\"role\":\"viewer\",\"v\":1}",
+      "signingInput": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDAzMDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDAzMDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.CLXKevdcvnW-8guwuq50x_Mm4PskZBbnhbEQp6JjsYDMG7oEY7ugyoe548E6zOWrxBjO4YzsjQqK7QFjdtXDDw"
+    },
+    {
+      "name": "renewal grant",
+      "role": "renewal",
+      "claims": {
+        "aud": "https://relay.test.invalid",
+        "cap": [
+          "remote.webSession.renew"
+        ],
+        "desktopInstallationId": "installation-AAAAAAAAAAAAAAAAAAAA",
+        "exp": 1755028800000,
+        "iat": 1755000000000,
+        "iss": "strideterm-relay-test-issuer",
+        "jti": "grant-renewal-0000000000000001",
+        "mobileDeviceId": "mobile-AAAAAAAAAAAAAAAAAAAAAA",
+        "pairId": "pair-AAAAAAAAAAAAAAAAAAAAAAAA",
+        "renews": "grant-viewer-0000000000000001",
+        "role": "renewal",
+        "v": 1
+      },
+      "canonicalPayloadJson": "{\"aud\":\"https://relay.test.invalid\",\"cap\":[\"remote.webSession.renew\"],\"desktopInstallationId\":\"installation-AAAAAAAAAAAAAAAAAAAA\",\"exp\":1755028800000,\"iat\":1755000000000,\"iss\":\"strideterm-relay-test-issuer\",\"jti\":\"grant-renewal-0000000000000001\",\"mobileDeviceId\":\"mobile-AAAAAAAAAAAAAAAAAAAAAA\",\"pairId\":\"pair-AAAAAAAAAAAAAAAAAAAAAAAA\",\"renews\":\"grant-viewer-0000000000000001\",\"role\":\"renewal\",\"v\":1}",
+      "signingInput": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbi5yZW5ldyJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMjg4MDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXJlbmV3YWwtMDAwMDAwMDAwMDAwMDAwMSIsIm1vYmlsZURldmljZUlkIjoibW9iaWxlLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJwYWlySWQiOiJwYWlyLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInJlbmV3cyI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwicm9sZSI6InJlbmV3YWwiLCJ2IjoxfQ",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbi5yZW5ldyJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMjg4MDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXJlbmV3YWwtMDAwMDAwMDAwMDAwMDAwMSIsIm1vYmlsZURldmljZUlkIjoibW9iaWxlLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJwYWlySWQiOiJwYWlyLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInJlbmV3cyI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwicm9sZSI6InJlbmV3YWwiLCJ2IjoxfQ.RPsN0pATbCDuLxLFc8xDaw-FbTAcmCYzySDVsWL8xZrmXJZ9Thxr2mAK9nhZ73A1H37jSsKoD-jCdkJ80yCpDA"
+    }
+  ],
+  "negative": [
+    {
+      "name": "signed by a key the verifier does not hold",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDAzMDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.tcsadVg0eTCRc1YuFKlUjkLlgMCDy0aml17Ph3eSjD9mMAMFUwLsI8UjgnzmxSNNIZvVKmlfwOTiMWhCN6n9CA",
+      "role": "viewer",
+      "expectedCode": "bad-signature"
+    },
+    {
+      "name": "one signature byte flipped",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDAzMDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.ALXKevdcvnW-8guwuq50x_Mm4PskZBbnhbEQp6JjsYDMG7oEY7ugyoe548E6zOWrxBjO4YzsjQqK7QFjdtXDDw",
+      "role": "viewer",
+      "expectedCode": "bad-signature"
+    },
+    {
+      "name": "valid grant for the other desktop (verifier still accepts it; the DO refuses it)",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQkJCQkJCQkJCQkJCQkJCQkJCQkIiLCJleHAiOjE3NTUwMDAzMDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.AVTfWTHaKI9ZeUTMqfDrBvfirmvCK4IJfKv8ra2RNk3ImTXrNnFeCapfyTrBPRIelKtu9SjOmLVQ_G5sDNcUBA",
+      "role": "viewer",
+      "expectedCode": null,
+      "expectedInstallation": "installation-BBBBBBBBBBBBBBBBBBBB"
+    },
+    {
+      "name": "audience of another relay",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5Lm90aGVyLmludmFsaWQiLCJjYXAiOlsicmVtb3RlLndlYlNlc3Npb24iXSwiZGVza3RvcEluc3RhbGxhdGlvbklkIjoiaW5zdGFsbGF0aW9uLUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiZXhwIjoxNzU1MDAwMzAwMDAwLCJpYXQiOjE3NTUwMDAwMDAwMDAsImlzcyI6InN0cmlkZXRlcm0tcmVsYXktdGVzdC1pc3N1ZXIiLCJqdGkiOiJncmFudC12aWV3ZXItMDAwMDAwMDAwMDAwMDAwMSIsIm1vYmlsZURldmljZUlkIjoibW9iaWxlLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJwYWlySWQiOiJwYWlyLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInJvbGUiOiJ2aWV3ZXIiLCJ2IjoxfQ.Fl-b9TM_Uqd9_KPymlYzWTBC2vdVMXqhUKwIY8DmvkDicv_x6gR3RZP9iN5zfmWdQesBNV1hCHSRuynkFJqrAA",
+      "role": "viewer",
+      "expectedCode": "audience-mismatch"
+    },
+    {
+      "name": "already expired",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTQ5OTY3MDAwMDAsImlhdCI6MTc1NDk5NjQwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.iyVAro97PVzQQbY0dwq3CbXNQbP8Nbub12kue8s9wsLICZU0AKyu5yvgK9uMZdRLCOegw1jC0s90BrLb35UbAw",
+      "role": "viewer",
+      "expectedCode": "expired"
+    },
+    {
+      "name": "issued beyond the skew window",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDM5MDEwMDAsImlhdCI6MTc1NTAwMzYwMTAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.uYjlfsN1EnTbkwGfzr7o-y_BADLfJNQtCIWcWlObwjonv-PaLMbF1ASc7pBVt4RxfBmPMLRBxck97zE2rq5UCw",
+      "role": "viewer",
+      "expectedCode": "issued-in-the-future"
+    },
+    {
+      "name": "lifetime one millisecond over the role maximum",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDAzMDAwMDEsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.X5nN6oLkU_CstuO3pwBkC66ZGW_RVJbKDfyso1v799DFIJrEN14FeZJJifiFbOoi1wEAdyC3FFSWq3JGHMjkCA",
+      "role": "viewer",
+      "expectedCode": "ttl-too-long"
+    },
+    {
+      "name": "connector grant presented at the viewer door",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZWxheS5jb25uZWN0b3IiXSwiY29ubmVjdG9yS2V5RmluZ2VycHJpbnQiOiJ0aFlMNVZhR1lBdnZTTzhpT0ZyS2dJZThBcXpyVDNycVoxMTJ1clk5ZVFvIiwiZGVza3RvcEluc3RhbGxhdGlvbklkIjoiaW5zdGFsbGF0aW9uLUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiZXhwIjoxNzU1MDAwOTAwMDAwLCJpYXQiOjE3NTUwMDAwMDAwMDAsImlzcyI6InN0cmlkZXRlcm0tcmVsYXktdGVzdC1pc3N1ZXIiLCJqdGkiOiJncmFudC1jb25uZWN0b3ItMDAwMDAwMDAwMDAwMDAwMSIsInJvbGUiOiJjb25uZWN0b3IiLCJ2IjoxfQ.ebloDgkD7yWpfte_7yf6WzfFCMcudKp7EeUnIrWz4Hw1XscjkBXoEfTRxTuMu2rakCq_ZT8uwhyMrIGK89NICg",
+      "role": "viewer",
+      "expectedCode": "role-mismatch"
+    },
+    {
+      "name": "viewer role carrying the connector capability",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZWxheS5jb25uZWN0b3IiXSwiZGVza3RvcEluc3RhbGxhdGlvbklkIjoiaW5zdGFsbGF0aW9uLUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiZXhwIjoxNzU1MDAwMzAwMDAwLCJpYXQiOjE3NTUwMDAwMDAwMDAsImlzcyI6InN0cmlkZXRlcm0tcmVsYXktdGVzdC1pc3N1ZXIiLCJqdGkiOiJncmFudC12aWV3ZXItMDAwMDAwMDAwMDAwMDAwMSIsIm1vYmlsZURldmljZUlkIjoibW9iaWxlLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJwYWlySWQiOiJwYWlyLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInJvbGUiOiJ2aWV3ZXIiLCJ2IjoxfQ._XsVHiRdEmKX27MjBNCxYanDlqIiMg6WMtlQPfAVNzBZ-7os4loupDOwGOICiGL1DtvFjZKi00k99sznQ3lqCg",
+      "role": "viewer",
+      "expectedCode": "capability-mismatch"
+    },
+    {
+      "name": "key id the verifier has no key for",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXVua25vd24ta2V5IiwidHlwIjoiU1RSRUxBWSJ9.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDAzMDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.1QGVoz-L8td2UzhTWcyhl4H5B1HNtbhiUw9b_NHWe2rN0P_hj-R7jNse1MZ9u7Fr-Z9FLXJt0ciO-2n96FSBCQ",
+      "role": "viewer",
+      "expectedCode": "unknown-key"
+    },
+    {
+      "name": "pairId that is not a canonical identifier",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDAzMDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXIvLi4vb3RoZXIiLCJyb2xlIjoidmlld2VyIiwidiI6MX0.OXPUZlrGcjI2D3-BdKbcehNGtKSCJnYx6cvfbuPP-uKcP38Jb8Df8stywR-DH3WCyKrBrT_0EfiyNg_MpqeABg",
+      "role": "viewer",
+      "expectedCode": "id-not-canonical"
+    },
+    {
+      "name": "correctly signed but non-canonical JSON",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.ewogICJhdWQiOiAiaHR0cHM6Ly9yZWxheS50ZXN0LmludmFsaWQiLAogICJjYXAiOiBbCiAgICAicmVtb3RlLndlYlNlc3Npb24iCiAgXSwKICAiZGVza3RvcEluc3RhbGxhdGlvbklkIjogImluc3RhbGxhdGlvbi1BQUFBQUFBQUFBQUFBQUFBQUFBQSIsCiAgImV4cCI6IDE3NTUwMDAzMDAwMDAsCiAgImlhdCI6IDE3NTUwMDAwMDAwMDAsCiAgImlzcyI6ICJzdHJpZGV0ZXJtLXJlbGF5LXRlc3QtaXNzdWVyIiwKICAianRpIjogImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwKICAibW9iaWxlRGV2aWNlSWQiOiAibW9iaWxlLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLAogICJwYWlySWQiOiAicGFpci1BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLAogICJyb2xlIjogInZpZXdlciIsCiAgInYiOiAxCn0.1n8g8iCi3na2Vp_CMJ98E1CUTSJwy-DEfrIbxNtSEvpt9iJWlZOLiaEq8gM6EqQqXXzko5Knrr-f-hZZoSUODQ",
+      "role": "viewer",
+      "expectedCode": "payload-not-canonical"
+    },
+    {
+      "name": "alg: none with an empty signature",
+      "token": "eyJhbGciOiJub25lIiwia2lkIjoicmVsYXktdGVzdC12ZWN0b3Ita2V5IiwidHlwIjoiU1RSRUxBWSJ9.eyJhdWQiOiJodHRwczovL3JlbGF5LnRlc3QuaW52YWxpZCIsImNhcCI6WyJyZW1vdGUud2ViU2Vzc2lvbiJdLCJkZXNrdG9wSW5zdGFsbGF0aW9uSWQiOiJpbnN0YWxsYXRpb24tQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJleHAiOjE3NTUwMDAzMDAwMDAsImlhdCI6MTc1NTAwMDAwMDAwMCwiaXNzIjoic3RyaWRldGVybS1yZWxheS10ZXN0LWlzc3VlciIsImp0aSI6ImdyYW50LXZpZXdlci0wMDAwMDAwMDAwMDAwMDAxIiwibW9iaWxlRGV2aWNlSWQiOiJtb2JpbGUtQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInBhaXJJZCI6InBhaXItQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwicm9sZSI6InZpZXdlciIsInYiOjF9.",
+      "role": "viewer",
+      "expectedCode": "unsupported-alg"
+    },
+    {
+      "name": "unknown extra claim",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6InJlbGF5LXRlc3QtdmVjdG9yLWtleSIsInR5cCI6IlNUUkVMQVkifQ.eyJhZG1pbiI6dHJ1ZSwiYXVkIjoiaHR0cHM6Ly9yZWxheS50ZXN0LmludmFsaWQiLCJjYXAiOlsicmVtb3RlLndlYlNlc3Npb24iXSwiZGVza3RvcEluc3RhbGxhdGlvbklkIjoiaW5zdGFsbGF0aW9uLUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiZXhwIjoxNzU1MDAwMzAwMDAwLCJpYXQiOjE3NTUwMDAwMDAwMDAsImlzcyI6InN0cmlkZXRlcm0tcmVsYXktdGVzdC1pc3N1ZXIiLCJqdGkiOiJncmFudC12aWV3ZXItMDAwMDAwMDAwMDAwMDAwMSIsIm1vYmlsZURldmljZUlkIjoibW9iaWxlLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJwYWlySWQiOiJwYWlyLUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInJvbGUiOiJ2aWV3ZXIiLCJ2IjoxfQ.TT5S5PC-GEOpO7BfzR5eoMUKY6hsSdHudQQzQNfArAVxjkuFIyQAOtCzE0Ps0fCxh4McPJMahTRUNaaWIBLrAg",
+      "role": "viewer",
+      "expectedCode": "payload-field-count"
+    },
+    {
+      "name": "not three dot-separated segments",
+      "token": "not-a-token",
+      "role": "viewer",
+      "expectedCode": "malformed"
+    },
+    {
+      "name": "empty token",
+      "token": "",
+      "role": "viewer",
+      "expectedCode": "empty"
+    }
+  ],
+  "connectorChallenge": {
+    "audience": "https://relay.test.invalid",
+    "desktopInstallationId": "installation-AAAAAAAAAAAAAAAAAAAA",
+    "connectorKeyFingerprint": "thYL5VaGYAvvSO8iOFrKgIe8AqzrT3rqZ112urY9eQo",
+    "nonce": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+    "transcriptUtf8": "strideterm-relay-connector-challenge\nv=1\naud=https://relay.test.invalid\ninstallation=installation-AAAAAAAAAAAAAAAAAAAA\nkey=thYL5VaGYAvvSO8iOFrKgIe8AqzrT3rqZ112urY9eQo\nnonce=MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+    "identityPublicKeyBase64Url": "kTO-nGfUpvvkI6j_RttCBj4xKfbZ6q7DU_BzB6BSkno",
+    "signature": "h-4oTYZzRGe74y1nOKahye2xfkftxJUPzIp9m2Mlpba5napGH4O7dKHcEGieNmqm-1y9qXflYirJMotsE_IdDg"
+  }
+}

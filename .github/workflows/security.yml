@@ -9,6 +9,48 @@ permissions:
   contents: read
 
 jobs:
+  secret-scan:
+    name: Secret scan (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gitleaks scans history, not just the working tree: a secret committed and later removed
+          # is still fully recoverable from `git log`, and a repository that has ever held one has to
+          # find out from a scan rather than from an incident.
+          fetch-depth: 0
+      - name: Scan
+        # A pinned release binary rather than a third-party action, matching the sibling repository's
+        # own gate: this repo pins every action to a commit SHA, and there is no reason to take on
+        # another one when the tool is a single static binary. The download is verified against the
+        # release's own checksum file before it runs.
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          curl -sSL -o gitleaks.tar.gz "${BASE}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSL -o gitleaks-checksums.txt "${BASE}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks-checksums.txt | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks detect --source . --redact --no-banner --exit-code 1
+
+  licence-gate:
+    name: Licence gate (shipped dependencies only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Every production dependency carries a permissive licence
+        # Allowlist, not denylist: an unrecognised licence fails and has to be read and decided on.
+        # The production hardening plan asks for this gate in BOTH repositories — a permissive tree
+        # here and an unread obligation in the sibling repo is not a supply chain anybody has checked.
+        run: npm run check:licences
+
   dependency-audit:
     name: Dependency vulnerability scan
     runs-on: ubuntu-latest

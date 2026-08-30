@@ -30,7 +30,23 @@
   -webkit-app-region: drag;
 }
 
+/* The remote failure banner.
+ *
+ * WHY THE WRAPPING RULES ARE LOAD-BEARING. What lands in here is a server message, and the HTTP path
+ * used to hand it the raw response body — a single unbroken `{"error":"..."}` token. A token with no
+ * break opportunity does not wrap: it sets the width of its own line, the flex row it sits in grows
+ * to fit, and on a phone-width viewport the whole hero stretched sideways with it. The message is
+ * unwrapped at the source now (see `unwrapServerError` in src/transport.ts), and these three rules
+ * are the belt to that braces — any future message that is one long token wraps instead of resizing
+ * the page.
+ *
+ * `min-width: 0` on the body is the flex-child half of the same fix: a flex item defaults to
+ * `min-width: auto`, which refuses to shrink below its content, so the overflow rules on the text
+ * alone would never get the chance to apply. */
 .workspace-remote-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 0 0 8px;
   padding: 10px 12px;
   border: 1px solid rgba(255, 111, 141, 0.35);
@@ -39,10 +55,43 @@
   color: #ffd7df;
   font-size: 13px;
   line-height: 1.45;
+  max-width: 100%;
 }
 
-.workspace-remote-alert strong {
+.workspace-remote-alert__body {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.workspace-remote-alert__message {
+  margin: 0;
   color: #fff0f4;
+}
+
+/* The next step, set apart rather than run on: a person scanning a red box reads the first line and
+ * decides whether to care. Burying "here is what to do" in the same sentence is how it gets missed. */
+.workspace-remote-alert__hint {
+  margin: 4px 0 0;
+  color: #ffd7df;
+  opacity: 0.85;
+}
+
+.workspace-remote-alert__dismiss {
+  flex: none;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: #ffd7df;
+  font-size: 16px;
+  line-height: 1.2;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.workspace-remote-alert__dismiss:hover {
+  opacity: 1;
 }
 
 .workspace-meta__main {

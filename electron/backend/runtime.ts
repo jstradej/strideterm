@@ -1,8 +1,8 @@
 /// <reference types="node" />
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { watch, existsSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
@@ -33,7 +33,7 @@ import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
 import { DockerShellManager } from "./docker-shell-streamer.js";
 import { GitManager } from "./git-manager.js";
-import { CloudflareTunnelManager } from "./tunnel-manager.js";
+import { CloudflareTunnelManager, canReconnectTunnel } from "./tunnel-manager.js";
 import { createPluginManager } from "./plugin-loader.js";
 import { createCredentialStore } from "./credential-store.js";
 import { createAzureReviewStore } from "./azure-review-store.js";
@@ -47,6 +47,43 @@ import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { TelegramManager } from "./telegram-manager.js";
 import { createTelegramAuditLogStore } from "./telegram-audit-log-store.js";
 import { createApprovalAuditLogStore } from "./approval-audit-log-store.js";
+import { MobileManager, type PairingRejectionReason } from "./mobile/mobile-manager.js";
+import { createMobilePairing } from "./mobile/mobile-pairing.js";
+import {
+  createMobileDeviceStore,
+  deviceAllowsProfile as mobileDeviceAllowsProfile,
+  deviceHasCapability as mobileDeviceHasCapability,
+  isDeviceUsable as isMobileDeviceUsable,
+} from "./mobile/mobile-device-store.js";
+import { createMobileIdempotencyStore } from "./mobile/mobile-idempotency-store.js";
+import { createMobileAuditLogStore } from "./mobile/mobile-audit-log-store.js";
+import { createMobileCommandDispatcher, type MobileCommandRuntime } from "./mobile/mobile-command-dispatch.js";
+import { createMobileNotificationOriginStore } from "./mobile/mobile-notification-origin-store.js";
+import { createMobileWebSessionTicketStore } from "./mobile/mobile-web-session-ticket-store.js";
+import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
+import { createMobileFirebaseRestClient } from "./mobile/mobile-firebase-rest.js";
+import { resolveMobileFirebaseConfig } from "./mobile/mobile-firebase-config.js";
+import { FUNCTIONS_REGION } from "./mobile/mobile-rtdb-paths.js";
+import type { MobileFirebaseTransport } from "./mobile/mobile-firebase-transport.js";
+import {
+  createMobileRelayManager,
+  type MobileRelayManager,
+  type MobileRelayStatus,
+  type RelayOriginStarter,
+} from "./mobile/mobile-relay-manager.js";
+import {
+  computeKeyProof,
+  decodeCanonicalPublicKey,
+  deriveSessionKey,
+  exportRawPublicKey,
+  generateX25519KeyPair,
+  exportPrivateKeyPem,
+  importPrivateKeyPem,
+  keyProofsEqual,
+  publicKeyFromRaw,
+} from "./mobile/mobile-crypto.js";
+import { PROTOCOL_VERSION, SESSION_KEY_HKDF_INFO, type MobileDeviceRecord } from "./mobile/mobile-schemas.js";
+import { buildExternalNotificationEvent } from "./notifications/external-notification-event.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 import { createNotifyUrlRegistry } from "./notify-url-registry.js";
 import {
@@ -170,12 +207,25 @@ const reviewBridgeCliPath = fileURLToPath(new URL("./review-bridge-cli.js", impo
 // existing importers (and runtime.test.ts) pull it from runtime.js.
 export { hasMeaningfulUserInput };
 
-function createTunnelOriginUrl(remoteConfig: { host?: string; port?: number } = {}): string {
+/**
+ * The loopback URL of the remote server this process is running: what the tunnel publishes and what
+ * the reachability probe checks.
+ *
+ * Exported for its own test. The PORT goes through `resolveRemoteAccessPort`, and that is not
+ * cosmetic: with `STRIDETERM_REMOTE_PORT` set, the port in settings and the port actually bound are
+ * different numbers, and a tunnel built from the stored one publishes SOMEBODY ELSE'S SERVER.
+ * Observed end to end — a dev build bound 43124, built its tunnel for 127.0.0.1:43123, and 43123 was
+ * the production install; the paired phone therefore opened a remote session against a server that
+ * had never issued its cookie, and every session ended the instant it opened ("This session has
+ * ended", ST-RMT-04). Fixed here rather than at the two call sites so a third one cannot get it
+ * wrong.
+ */
+export function createTunnelOriginUrl(remoteConfig: { host?: string; port?: number } = {}): string {
   const rawHost = String(remoteConfig.host || "").trim();
   const host =
     !rawHost || rawHost === "0.0.0.0" ? "127.0.0.1" : rawHost === "::" || rawHost === "[::]" ? "::1" : rawHost;
   const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-  return `http://${formattedHost}:${remoteConfig.port}`;
+  return `http://${formattedHost}:${resolveRemoteAccessPort(remoteConfig.port)}`;
 }
 
 // Re-export for consumers that import from runtime.js
@@ -271,9 +321,21 @@ interface RuntimeDependencies {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   GitHubManager?: new (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  MobileManager?: new (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createMobileFirebaseTransport?: (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   createPluginManager?: (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execFileText?: (...args: any[]) => any;
+  /**
+   * Starts the managed relay's loopback-only internal origin.
+   *
+   * Injected rather than imported so this module never pulls in remote-server.ts (which would be a
+   * cycle), and so a build that has not wired one simply HAS no relay: without this dependency the
+   * relay manager is not constructed at all, whatever the setting says.
+   */
+  startRelayOrigin?: RelayOriginStarter;
   rmPath?: (dirPath: string) => Promise<void>;
   checkRemoteOrigin?: typeof checkRemoteOrigin;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -330,7 +392,47 @@ export async function createRuntime({
   let _rt: any = null;
 
   // Injected by startRemoteServer after the HTTP server starts.
-  let _remoteClientRegistry: RemoteClientRegistry | null = null;
+  //
+  // There can be MORE THAN ONE, and that is the whole reason this is a set rather than a reference.
+  // The user's LAN/tunnel listener and the managed relay's internal loopback origin are two
+  // instances of the same server on one runtime, and each keeps its OWN RemoteClientRegistry —
+  // which is what gives a mobile viewer its own profile/workspace/tab state (relay plan §4). So
+  // every per-client operation has to be routed to the registry that actually holds that client:
+  // resolving it through one global reference sent a relay viewer's activation to the browser's
+  // registry, or — with no LAN listener enabled, which is the ordinary case for a relay user — to
+  // nothing at all, and `getWindowProfileId` then answered "unknown viewer", which every
+  // `assertWorkspaceInViewerProfile` reads as "no guard to apply".
+  const _remoteClientRegistries = new Set<RemoteClientRegistry>();
+  /** The primary (LAN/tunnel) server's registry, replaced rather than accumulated when it restarts. */
+  let _primaryRemoteClientRegistry: RemoteClientRegistry | null = null;
+
+  /** The registry holding `clientId`, or null when no live remote client has that id. */
+  function registryOwning(clientId: string | undefined | null): RemoteClientRegistry | null {
+    if (!clientId) return null;
+    for (const registry of _remoteClientRegistries) {
+      if (registry.get(clientId)) return registry;
+    }
+    return null;
+  }
+
+  /**
+   * Same, for the operations that cannot proceed without one. The message names the SESSION rather
+   * than the registry: with more than one server, "no registry" is never the interesting case — an
+   * id no live registry knows is a client that has expired or never existed.
+   */
+  function requireRemoteClientRegistry(clientId: string): RemoteClientRegistry {
+    const registry = registryOwning(clientId);
+    if (!registry) throw new Error("Remote client session not found");
+    return registry;
+  }
+
+  // Injected by startRemoteServer (setMobileRemoteSessionRevoker) once the
+  // remote HTTP server's session registry exists. remote-server.ts isn't
+  // constructed until after createRuntime() returns (main.ts starts it
+  // afterwards), so MobileManager.revokeDevice() reaches it through this
+  // mutable indirection instead of a direct reference — same forward-
+  // reference shape as `_rt` above.
+  let _mobileRemoteSessionRevoker: ((deviceId: string) => void) | null = null;
 
   // --- Terminal input lease (multi-viewer sessions) ---
   // A PTY session may be VIEWED by any number of windows / remote clients,
@@ -770,6 +872,14 @@ export async function createRuntime({
     execFileTextImpl,
   });
   const events = new EventEmitter();
+  // Transport-neutral notification source (plan §10.1) — raiseAlert() and the
+  // PR/pipeline forwarders below emit ExternalNotificationEvent here, once,
+  // alongside their existing (unchanged) direct telegramManager.forwardAlert()
+  // call. MobileManager is this event source's second subscriber; Telegram
+  // itself is never rewired to consume it, so its formatting/behavior can't
+  // regress from adding a mobile listener (see runtime.test.ts's
+  // "external notification event" regression test).
+  const externalNotificationEvents = new EventEmitter();
   // Forward SSH events onto the runtime event bus so Electron IPC and the
   // remote WebSocket relay can pick them up via runtime.on("ssh:*", …).
   for (const channel of [
@@ -987,9 +1097,242 @@ export async function createRuntime({
       tunnelMode: APP_CONFIG.tunnel?.mode || "off",
       // Telegram may only re-establish a tunnel the user already configured
       // (remote access on + autoTunnel persisted) — never create new exposure.
-      canReconnect: !!remote.enabled && !!remote.autoTunnel,
+      // Same gate MobileCommandDispatcher reuses for remote.endpoint.request /
+      // remote.tunnel.reconnect — see tunnel-manager.ts's canReconnectTunnel().
+      canReconnect: canReconnectTunnel(remote),
     };
   });
+
+  // --- Mobile integration ---
+  // Desktop's own device identity: a stable device id + long-lived X25519
+  // keypair, persisted via credential-store (never in state.json/Firebase —
+  // plan §5.1/§10.4). Generated once on first run, then reused every start.
+  const MOBILE_DEVICE_ID_REF = "mobile:desktop-device-id";
+  const MOBILE_PRIVATE_KEY_REF = "mobile:desktop-device-private-key";
+  let mobileDeviceId = credentialStore.getSecret(MOBILE_DEVICE_ID_REF);
+  if (!mobileDeviceId) {
+    mobileDeviceId = randomUUID();
+    await credentialStore.setSecret(MOBILE_DEVICE_ID_REF, mobileDeviceId);
+  }
+  const existingMobilePrivateKeyPem = credentialStore.getSecret(MOBILE_PRIVATE_KEY_REF);
+  const mobileOwnKeyPair = existingMobilePrivateKeyPem
+    ? importPrivateKeyPem(existingMobilePrivateKeyPem)
+    : generateX25519KeyPair();
+  if (!existingMobilePrivateKeyPem) {
+    await credentialStore.setSecret(MOBILE_PRIVATE_KEY_REF, exportPrivateKeyPem(mobileOwnKeyPair.privateKey));
+  }
+  const mobileOwnPublicKeyBase64 = exportRawPublicKey(mobileOwnKeyPair.publicKey).toString("base64");
+
+  const mobileIdempotencyDbPath = path.join(reviewBridgeRoot, "mobile-idempotency.db");
+  const mobileIdempotencyStore = createMobileIdempotencyStore(mobileIdempotencyDbPath);
+  const mobileAuditLogDbPath = path.join(reviewBridgeRoot, "mobile-audit-log.db");
+  const mobileAuditLogStore = createMobileAuditLogStore(mobileAuditLogDbPath);
+
+  const mobileDeviceStore = createMobileDeviceStore({
+    getDevices: () => getState().settings.integrations.mobile.devices,
+    mutateDevices: async (fn) => {
+      await store.mutate("mobile:devices", (draft: AppState) => {
+        draft.settings.integrations.mobile.devices = fn(draft.settings.integrations.mobile.devices);
+      });
+      return getState().settings.integrations.mobile.devices;
+    },
+  });
+
+  // Runtime business methods MobileCommandDispatcher calls — the exact same
+  // methods Telegram/IPC/remote-server already call (runtime-task-handlers.ts,
+  // createCloudflareTunnel/getPayload below). Resolved lazily via _rt (not yet
+  // assigned to the final runtime object at this point in createRuntime) —
+  // same forward-reference pattern createTelegramDispatch's getRt() uses.
+  const mobileRuntimeAdapter: MobileCommandRuntime = {
+    pauseTask: (workspaceId) => _rt.pauseTask(workspaceId),
+    resumeTask: (workspaceId) => _rt.resumeTask(workspaceId),
+    stopTask: (workspaceId) => _rt.stopTask(workspaceId),
+    resetTask: (workspaceId) => _rt.resetTask(workspaceId),
+    updateTaskDescription: (workspaceId, description) => _rt.updateTaskDescription(workspaceId, description),
+    resendTaskInstruction: (workspaceId, role) => _rt.resendTaskInstruction(workspaceId, role),
+    createCloudflareTunnel: () => _rt.createCloudflareTunnel(),
+    getPayload: () => _rt.getPayload(),
+    clearAlertForSession: (sessionId, options) => _rt.clearAlertForSession(sessionId, options),
+  };
+
+  // Single shared instance (plan §9.2/§10.6): the dispatcher issues tickets
+  // from it below; remote-server.ts consumes/revokes from the SAME instance
+  // via runtime.consumeMobileWebSessionTicket / MobileManager's revoke hook —
+  // never a separate store, or an issued ticket would never be found.
+  const mobileWebSessionTicketStore = createMobileWebSessionTicketStore();
+
+  // Single shared instance for the same reason the ticket store is one: MobileManager records an
+  // event's origin as it sends it and the dispatcher reads that record when the acknowledgement
+  // comes back, so two instances would mean every ack finding nothing to clear.
+  const mobileNotificationOrigins = createMobileNotificationOriginStore();
+
+  // Forward reference: the relay manager needs the transport, which is built below this point, so
+  // the dispatcher reads its status through a closure rather than a value. A build with no relay
+  // answers "off" here forever, which is exactly what makes the Cloudflare path the only one it
+  // offers.
+  let mobileRelayManager: MobileRelayManager | null = null;
+  const RELAY_OFF: MobileRelayStatus = {
+    enabled: false,
+    state: "off",
+    relayOrigin: "",
+    internalPort: 0,
+    lastError: "",
+  };
+
+  const mobileCommandDispatcher = createMobileCommandDispatcher({
+    getState,
+    runtime: mobileRuntimeAdapter,
+    idempotencyStore: mobileIdempotencyStore,
+    auditLogStore: mobileAuditLogStore,
+    ticketIssuer: mobileWebSessionTicketStore,
+    notificationOrigins: mobileNotificationOrigins,
+    relay: { status: () => mobileRelayManager?.status() ?? RELAY_OFF },
+    // Read at mint time, not at dispatch time: a ticket outlives the authorisation that produced it
+    // by a minute, so the record is re-read immediately before it is issued (production hardening §5
+    // "Ticket" 5).
+    currentDevice: (deviceId: string) => mobileDeviceStore.getDevice(deviceId),
+  });
+
+  // The real, Firebase-backed transport (mobile-firebase-transport-rest.ts). Its configuration
+  // comes from the environment — no project id, API key or database URL is compiled in — and an
+  // install with none set still gets the real transport: it simply reports a
+  // MobileFirebaseNotConfiguredError from connect(), which surfaces in Settings -> Mobile as
+  // `lastError` alongside the exact variable names to set. The in-memory fake is a test double
+  // only; tests inject it through `dependencies.createMobileFirebaseTransport`.
+  //
+  // The Auth refresh token is the one piece of session material that has to outlive the process
+  // (Firebase Auth's own persistence does not work headlessly — strideterm-mobile ADR 0009), so
+  // it goes into the same credential store as the device private key above, never onto disk in
+  // the clear.
+  const MOBILE_FIREBASE_REFRESH_TOKEN_REF = "mobile:firebase-refresh-token";
+  const mobileFirebase = resolveMobileFirebaseConfig(process.env, FUNCTIONS_REGION);
+  const createMobileFirebaseTransportImpl =
+    dependencies.createMobileFirebaseTransport ||
+    (() =>
+      createFirebaseMobileTransport({
+        config: mobileFirebase.config,
+        missingConfig: mobileFirebase.missing,
+        createClient: (config) =>
+          createMobileFirebaseRestClient({
+            config,
+            credentialStore,
+            refreshTokenRef: MOBILE_FIREBASE_REFRESH_TOKEN_REF,
+          }),
+      }));
+  const mobileTransport: MobileFirebaseTransport = createMobileFirebaseTransportImpl();
+
+  const mobilePairing = createMobilePairing({
+    transport: mobileTransport,
+    deviceStore: mobileDeviceStore,
+    auditLogStore: mobileAuditLogStore,
+    identity: {
+      deviceId: mobileDeviceId,
+      label: os.hostname() || "strIDEterm Desktop",
+      publicKeyBase64: mobileOwnPublicKeyBase64,
+    },
+    // The claim-time key proof, recomputed with THIS installation's private key (review 3 §P0.1).
+    //
+    // Wired here rather than inside mobile-pairing.ts because the private key lives with the runtime,
+    // and pairing has never needed it for anything else. This is the check an attacker cannot pass: the
+    // proof is an HMAC under a session key derived from this key and the record's public key, over a
+    // transcript containing a challenge that only ever existed in the QR — so a device record inserted
+    // straight into the database, with any public key its author likes, cannot produce one.
+    verifyKeyProof: ({ device, pairingId, challengeBase64Url }) => {
+      try {
+        const sessionKey = deriveSessionKey(
+          mobileOwnKeyPair.privateKey,
+          publicKeyFromRaw(decodeCanonicalPublicKey(device.publicKey)),
+          Buffer.from(device.pairId),
+          Buffer.from(SESSION_KEY_HKDF_INFO),
+        );
+        const expected = computeKeyProof(sessionKey, {
+          protocolVersion: PROTOCOL_VERSION,
+          pairId: mobileDeviceId,
+          pairingId,
+          desktopDeviceId: mobileDeviceId,
+          desktopPublicKeyBase64: mobileOwnPublicKeyBase64,
+          mobileDeviceId: device.deviceId,
+          mobilePublicKeyBase64: device.publicKey,
+          challengeBase64Url,
+        });
+        return keyProofsEqual(expected, device.keyProof);
+      } catch {
+        // A malformed key or challenge is a failed proof, not a crash: the claim is refused and the
+        // reason is the fixed `key-proof-failed` code.
+        return false;
+      }
+    },
+  });
+
+  const MobileManagerImpl = dependencies.MobileManager || MobileManager;
+  const mobileManager = new MobileManagerImpl({
+    transport: mobileTransport,
+    pairing: mobilePairing,
+    deviceStore: mobileDeviceStore,
+    auditLogStore: mobileAuditLogStore,
+    commandDispatcher: mobileCommandDispatcher,
+    externalNotificationEvents,
+    ownDeviceId: mobileDeviceId,
+    ownPrivateKey: mobileOwnKeyPair.privateKey,
+    ticketStore: mobileWebSessionTicketStore,
+    notificationOrigins: mobileNotificationOrigins,
+    // Stable wrapper closure over the mutable _mobileRemoteSessionRevoker ref
+    // (set later by startRemoteServer) — same forward-reference trick as
+    // mobileRuntimeAdapter's _rt calls above.
+    revokeRemoteSessions: (deviceId: string) => {
+      _mobileRemoteSessionRevoker?.(deviceId);
+      // The relay is a second place a revoked device may still have a live session: the relay's own
+      // loopback origin, and the relay's record of the device. Both end here.
+      mobileRelayManager?.revokeDevice(deviceId);
+    },
+  });
+
+  // The managed relay (relay plan §10). Built once, like MobileManager and for the same reason: one
+  // per installation, whatever the window count. Absent when this build wired no origin starter,
+  // which is what makes "no relay" the default rather than a setting that could be missed.
+  mobileRelayManager = dependencies.startRelayOrigin
+    ? createMobileRelayManager({
+        installationId: mobileDeviceId,
+        credentialStore,
+        transport: mobileTransport,
+        startOrigin: dependencies.startRelayOrigin,
+        // Both flags: a relay without the mobile integration has no control plane to ask for a
+        // grant, and a relay the user did not switch on must not exist at all.
+        isEnabled: () =>
+          getState().settings.integrations.mobile.enabled && getState().settings.integrations.mobile.relay.enabled,
+        // The relay's revocation sync reads the PERSISTENT device list, not anything the relay
+        // accumulated while it happened to be running (plan §3.3). This closure is that wiring: the
+        // same atomically-written state file the rest of the mobile integration reads, so a revoke
+        // performed by the phone or by the cloud while this desktop was shut down is replayed to the
+        // relay before the first viewer request after the next start is answered.
+        listRevocations: () =>
+          mobileDeviceStore
+            .listDevices()
+            .filter((device) => device.revoked)
+            .map((device) => ({ deviceId: device.deviceId, revokedAt: device.revokedAt })),
+      })
+    : null;
+
+  /** Mirrors reconfigureTelegram()'s stop-then-conditionally-start shape. */
+  function reconfigureMobile(state = getState()) {
+    mobileManager.stop();
+    if (state.settings.integrations.mobile.enabled) mobileManager.start();
+    // AFTER the manager, not before: the relay's first act is to ask the control plane for a
+    // connector grant, and the transport carrying that call is the one `start()` connects. The
+    // manager retries on its own if the sign-in has not landed yet, but starting it into a
+    // guaranteed failure would burn the first attempt every time. It reads the flags itself rather
+    // than being told, so it and this function cannot disagree about whether a relay is wanted.
+    void mobileRelayManager?.reconfigure().catch(() => undefined);
+  }
+
+  // Forward MobileManager's status/pairing events onto the runtime event bus
+  // so Electron IPC can pick them up via runtime.on("mobile:*", …) — same
+  // generic forwarding as the SSH events loop above. Status/pairing-progress
+  // ONLY (plan §10.3 "neposílat přes ně secret") — MobileManager's own emit()
+  // call sites are what enforce that, not this loop.
+  for (const channel of ["mobile:status", "mobile:pairing-progress", "mobile:device-revoked"]) {
+    mobileManager.on(channel, (payload: unknown) => events.emit(channel, payload));
+  }
 
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
@@ -2346,6 +2689,25 @@ export async function createRuntime({
             err: (err as Error).message,
           });
         });
+      // Transport-neutral event (plan §10.1) — same local data as the
+      // Telegram payload above, built exactly once. MobileManager is the
+      // only current second subscriber; Telegram's own send above is
+      // untouched by this emit (no listeners attached when mobile is
+      // disabled, so this is a no-op EventEmitter#emit in that case).
+      externalNotificationEvents.emit(
+        "event",
+        buildExternalNotificationEvent({
+          eventId: randomUUID(),
+          profileId,
+          workspaceId: opts.projectId || "",
+          sessionId: opts.sessionId || null,
+          panelId: opts.panelId || null,
+          kind: opts.kind || "info",
+          urgency: opts.urgency === "urgent" ? "urgent" : "normal",
+          title: opts.title || "",
+          detail: opts.detail || "",
+        }),
+      );
     }
     return raised;
   }
@@ -2516,7 +2878,9 @@ export async function createRuntime({
   }
 
   function checkAndForwardPrNotificationsToTelegram(): void {
-    if (telegramManager.getSnapshot().connections.length === 0) return;
+    // Telegram is never a precondition for Mobile (plan §1/§10.1): only skip
+    // this scan when NEITHER adapter has anyone to forward to.
+    if (telegramManager.getSnapshot().connections.length === 0 && !mobileManager.isRunning()) return;
     const state = getState();
     const azureSnapshot = azure.getSnapshot();
     const githubSnapshot = github.getSnapshot();
@@ -2579,6 +2943,18 @@ export async function createRuntime({
               err: (err as Error).message,
             });
           });
+        externalNotificationEvents.emit(
+          "event",
+          buildExternalNotificationEvent({
+            eventId,
+            profileId,
+            workspaceId: targetWorkspaceId,
+            kind: "review",
+            urgency: ev.urgency === "urgent" ? "urgent" : "normal",
+            title: String(ev.title || "Pull request update"),
+            detail: String(ev.body || ev.pullRequestTitle || ""),
+          }),
+        );
       }
     }
 
@@ -2595,7 +2971,9 @@ export async function createRuntime({
   const pipelineCheckStartedAt = Date.now();
 
   function checkAndForwardPipelineNotificationsToTelegram(): void {
-    if (telegramManager.getSnapshot().connections.length === 0) return;
+    // Telegram is never a precondition for Mobile (plan §1/§10.1): only skip
+    // this scan when NEITHER adapter has anyone to forward to.
+    if (telegramManager.getSnapshot().connections.length === 0 && !mobileManager.isRunning()) return;
     const azureSnapshot = azure.getSnapshot();
     const githubSnapshot = github.getSnapshot();
     const inStartupGrace = Date.now() - pipelineCheckStartedAt < PIPELINE_CHECK_SEED_MS;
@@ -2677,6 +3055,18 @@ export async function createRuntime({
             .catch((err) => {
               log.warn("telegram: pipeline check forward failed", { prKey, err: (err as Error).message });
             });
+          externalNotificationEvents.emit(
+            "event",
+            buildExternalNotificationEvent({
+              eventId: key,
+              profileId: prProfileId,
+              workspaceId: prWorkspaceId,
+              kind: "pipeline",
+              urgency: curState === "failed" ? "urgent" : "normal",
+              title: `${icon} ${checkName} — ${prTitle}`,
+              detail,
+            }),
+          );
         }
       }
     }
@@ -4604,6 +4994,7 @@ export async function createRuntime({
   ensureGitPolling();
   syncTreeDirWatchers();
   reconfigureTelegram();
+  reconfigureMobile();
   if (deferInitialRefresh) {
     scheduleAzurePolling();
     scheduleGitHubPolling();
@@ -4727,7 +5118,7 @@ export async function createRuntime({
     getState,
     getPayload,
     broadcastState,
-    getRemoteClientRegistry: () => _remoteClientRegistry,
+    getRemoteClientRegistry: (remoteSessionId: string) => registryOwning(remoteSessionId),
   });
 
   const taskHandlers = createTaskHandlers({
@@ -4790,7 +5181,7 @@ export async function createRuntime({
     if (!windowId) return null;
     const remoteSessionId = parseRemoteViewerId(windowId);
     if (remoteSessionId) {
-      const client = _remoteClientRegistry?.get(remoteSessionId);
+      const client = registryOwning(remoteSessionId)?.get(remoteSessionId);
       return client ? client.profileId || "default" : null;
     }
     const slot = (getState().windowSlots || []).find((s) => s.id === windowId);
@@ -4800,7 +5191,7 @@ export async function createRuntime({
   function getViewerActiveWorkspaceId(viewerId: string | undefined): string {
     const remoteSessionId = parseRemoteViewerId(viewerId);
     if (remoteSessionId) {
-      return _remoteClientRegistry?.get(remoteSessionId)?.activeWorkspaceId || "";
+      return registryOwning(remoteSessionId)?.get(remoteSessionId)?.activeWorkspaceId || "";
     }
     if (viewerId) {
       return (getState().windowSlots || []).find((slot) => slot.id === viewerId)?.activeWorkspaceId || "";
@@ -4979,9 +5370,10 @@ export async function createRuntime({
    */
   function mirrorRemoteViewerWorkspace(viewerId: string | undefined, workspaceId: string): void {
     const remoteSessionId = parseRemoteViewerId(viewerId);
-    if (!remoteSessionId || !_remoteClientRegistry || !workspaceId) return;
+    const registry = registryOwning(remoteSessionId);
+    if (!remoteSessionId || !registry || !workspaceId) return;
     try {
-      _remoteClientRegistry.activateWorkspace(remoteSessionId, workspaceId, getState());
+      registry.activateWorkspace(remoteSessionId, workspaceId, getState());
     } catch {
       // Cross-profile or stale client — skip the mirror, same as the slot path.
     }
@@ -5613,9 +6005,220 @@ export async function createRuntime({
         });
     },
 
-    /** Called by startRemoteServer to hand the registry handle to the runtime. */
+    /**
+     * Called by the PRIMARY (LAN/tunnel) server to hand its registry handle to the runtime.
+     *
+     * Replaces the previous primary rather than accumulating: that server is stopped and restarted
+     * whenever the user changes the remote settings, and each start brings a new registry.
+     */
     setRemoteClientRegistry(registry: RemoteClientRegistry): void {
-      _remoteClientRegistry = registry;
+      if (_primaryRemoteClientRegistry) _remoteClientRegistries.delete(_primaryRemoteClientRegistry);
+      _primaryRemoteClientRegistry = registry;
+      _remoteClientRegistries.add(registry);
+    },
+
+    /**
+     * Called by a SECONDARY server — today only the managed relay's internal loopback origin — to
+     * add its own registry without displacing the primary's, and returns the handle that removes it
+     * again when that server closes.
+     *
+     * Without this, a relay viewer's `remote:<sessionId>` resolves to no client, and every
+     * per-viewer operation either fails ("registry not initialised") or, worse, silently skips a
+     * profile guard that reads an unresolvable viewer as "not a viewer".
+     */
+    addRemoteClientRegistry(registry: RemoteClientRegistry): () => void {
+      _remoteClientRegistries.add(registry);
+      return () => {
+        _remoteClientRegistries.delete(registry);
+      };
+    },
+
+    /**
+     * Called by startRemoteServer once its session registry exists, so
+     * MobileManager.revokeDevice() can close a revoked device's active
+     * remote HTTP/WS session(s) (plan §9.2/§10.6) without remote-server.ts
+     * and mobile-manager.ts referencing each other directly.
+     */
+    /**
+     * Whether a mobile session's device may still hold it — asked per request by remote-server.ts.
+     *
+     * Three conditions, all read from the persistent device store rather than from anything the
+     * session remembers: the device is still usable (active and not revoked), it still holds
+     * `remote.webSession`, and the profile the session is bound to is still on its allowlist. The
+     * first is also covered by the revoke path closing sessions immediately; the other two are not
+     * revokes, so nothing pushes them and the only way they take effect is by being asked
+     * (production hardening §5 "Session" 2/4).
+     */
+    isMobileSessionStillAuthorized(deviceId: string, profileId: string): boolean {
+      const device = mobileDeviceStore.getDevice(deviceId);
+      if (!isMobileDeviceUsable(device)) return false;
+      if (!mobileDeviceHasCapability(device, "remote.webSession")) return false;
+      return mobileDeviceAllowsProfile(device, profileId);
+    },
+
+    setMobileRemoteSessionRevoker(fn: (deviceId: string) => void): void {
+      _mobileRemoteSessionRevoker = fn;
+    },
+
+    /**
+     * Single-use WebView session ticket exchange (plan §9.2): called by
+     * remote-server.ts's unauthenticated bootstrap route. Delegates to the
+     * SAME store instance mobile-command-dispatch.ts issues tickets from —
+     * see mobileWebSessionTicketStore above. Returns null on any failure
+     * (unknown/expired ticket, wrong secret) without distinguishing why.
+     */
+    consumeMobileWebSessionTicket(
+      ticketId: string,
+      secret: string,
+      context: { transport: "relay" | "legacy"; origins: readonly string[] },
+    ) {
+      // The context comes from the SERVER, not from the request: whichever remote-server instance is
+      // asking knows which kind it is and which origins it answers on, and a ticket is redeemable only
+      // at the one it was minted for (production hardening §5 "Ticket" 2-4).
+      return mobileWebSessionTicketStore.consumeTicket(ticketId, secret, context);
+    },
+
+    /**
+     * Managed-relay diagnostics: state, counters and the origin — never a grant, a cookie or a
+     * payload.
+     *
+     * Read by the Settings UI and by the local MVP harness. Same shape whether a relay exists or
+     * not, so a caller never has to know which kind of build it is talking to.
+     */
+    getMobileRelayStatus() {
+      return {
+        ...(mobileRelayManager?.status() ?? RELAY_OFF),
+        stats: mobileRelayManager?.stats() ?? null,
+      };
+    },
+
+    // --- Mobile integration handlers (plan §10.5) ---
+    // Desktop-only IPC surface — remote-server.ts's sanitizeSettingsFromRemote/
+    // sanitizeIntegrationsMobileFromRemote already block `settings.integrations.
+    // mobile` writes from remote HTTP clients, and none of these methods are
+    // routed through remote-server.ts at all. Mutating methods mirror the
+    // Telegram handlers above: broadcastState() + return getPayload() so the
+    // renderer picks up the fresh device list from
+    // settings.integrations.mobile.devices without a separate round trip.
+
+    /** Creates a pairing invitation (QR payload) — plan §5.2. Returned directly (not via getPayload): the invitation/secret is ephemeral and never persisted to state.json. */
+    async createMobilePairingInvitation(options: { profileAllowlist: string[]; capabilities: string[] }) {
+      return mobileManager.createInvitation(options);
+    },
+
+    async cancelMobilePairingInvitation() {
+      await mobileManager.cancelInvitation();
+    },
+
+    listMobileDevices() {
+      return mobileManager.listDevices();
+    },
+
+    async renameMobileDevice(deviceId: string, label: string) {
+      await mobileManager.renameDevice(deviceId, label);
+      broadcastState();
+      return getPayload();
+    },
+
+    async revokeMobileDevice(deviceId: string) {
+      await mobileManager.revokeDevice(deviceId);
+      broadcastState();
+      return getPayload();
+    },
+
+    /**
+     * The human compared the pairing codes and they match (review 3 §P0.1).
+     *
+     * Returns the outcome AND the fresh payload, because both matter to the caller: the dialog has to
+     * know whether the activation actually landed (the cloud can refuse, or be unreachable, and the
+     * device then stays inert in `userApproved`), and the device list has to re-render.
+     */
+    async approveMobileDevice(deviceId: string) {
+      const outcome = await mobileManager.approveDevice(deviceId);
+      broadcastState();
+      return { ...outcome, payload: getPayload() };
+    },
+
+    /** The human said the codes do not match, or dismissed the dialog. Runs the full revocation. */
+    async rejectMobileDevice(deviceId: string, reason: PairingRejectionReason) {
+      await mobileManager.rejectDevice(deviceId, reason);
+      broadcastState();
+      return getPayload();
+    },
+
+    /**
+     * Devices waiting for that decision, each with the pairing code recomputed from the transcript.
+     *
+     * Recomputed rather than remembered: the code is never persisted (it is derived from both public
+     * keys, both device ids, the pair and the invitation), so a desktop that restarted mid-approval can
+     * still show the same value — which is what makes review 3 §P0.1's restart case recoverable instead
+     * of a pairing nobody can finish or reject.
+     */
+    listMobileDevicesAwaitingApproval() {
+      return mobileManager.listDevicesAwaitingApproval().map((device: MobileDeviceRecord) => ({
+        deviceId: device.deviceId,
+        label: device.label,
+        fingerprint: device.fingerprint,
+        state: device.state,
+        sas: mobileManager.sasForPendingDevice(device.deviceId),
+      }));
+    },
+
+    async updateMobileDeviceAllowlist(
+      deviceId: string,
+      update: { capabilities?: string[]; profileAllowlist?: string[] },
+    ) {
+      await mobileManager.updateDeviceAllowlist(deviceId, update);
+      broadcastState();
+      return getPayload();
+    },
+
+    /** Toggles the whole mobile feature — mirrors reconfigureMobile()'s existing settings:update reactivity, exposed as its own dedicated action (plan §10.5) rather than requiring a full settings payload. */
+    async setMobileEnabled(enabled: boolean) {
+      await store.mutate("mobile:enabled", (draft: AppState) => {
+        draft.settings.integrations.mobile.enabled = enabled;
+      });
+      reconfigureMobile(getState());
+      broadcastState();
+      return getPayload();
+    },
+
+    /**
+     * Turns the managed relay on or off — the second, independent decision (relay plan §10).
+     *
+     * Its own action rather than a `settings:update`, for the same reason `setMobileEnabled` is: the
+     * flag has a RUNTIME consequence (a connector, an outbound socket and a loopback origin start or
+     * stop) that a generic settings write would leave to whoever remembered to call
+     * `reconfigureMobile`. It goes through that same reconfigure, so the relay is running exactly
+     * when both flags say it should be.
+     *
+     * Until this existed the flag was reachable only by hand-editing state.json, while
+     * `docs/RELAY-MVP.md` §3 told the user to "turn the managed relay on in Settings → Mobile" — a
+     * feature with no way in (dev-environment finding 6).
+     */
+    async setMobileRelayEnabled(enabled: boolean) {
+      await store.mutate("mobile:relay:enabled", (draft: AppState) => {
+        draft.settings.integrations.mobile.relay.enabled = enabled;
+      });
+      reconfigureMobile(getState());
+      broadcastState();
+      return getPayload();
+    },
+
+    /** Status snapshot + best-effort reconnect attempt (plan §10.5 "refresh connection health"). Not wrapped in getPayload(): connection health/quota are runtime-only, never persisted. */
+    async refreshMobileConnectionHealth() {
+      const health = await mobileManager.refreshConnectionHealth();
+      return { health, quota: mobileManager.getQuotaSnapshot() };
+    },
+
+    /** Same outbox path a real push uses, visibly flagged as a test, counted against the same quota (plan §10.5). */
+    async sendMobileTestPush(deviceId: string) {
+      return mobileManager.sendTestPush(deviceId);
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    queryMobileAuditLog(filters: any = {}) {
+      return mobileManager.queryAuditLog(filters);
     },
 
     /** Test hook: dispatch a Telegram command and await its full handling. */
@@ -5629,49 +6232,63 @@ export async function createRuntime({
       return telegramManager;
     },
 
+    /** Test hook: the internal Mobile manager (for spying on event routing). */
+    _mobileManagerForTest() {
+      return mobileManager;
+    },
+
+    /**
+     * Test hook: the shared transport-neutral notification event source
+     * (plan §10.1) — lets a test attach an additional listener to prove
+     * adding a second (Mobile) subscriber doesn't duplicate/alter what
+     * Telegram's own forwardAlert() receives.
+     */
+    _externalNotificationEventsForTest() {
+      return externalNotificationEvents;
+    },
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateProfileForRemoteClient(clientId: string, profileId: any): Promise<unknown> {
-      if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
+      const registry = requireRemoteClientRegistry(clientId);
       // The remote client is an independent viewer — switching its profile
       // mutates only its own context; desktop windows are untouched. Any
       // EXISTING profile is valid, even one with no desktop window.
-      _remoteClientRegistry.activateProfile(clientId, profileId, getState());
+      registry.activateProfile(clientId, profileId, getState());
       // Spawn PTYs for the workspace the client landed on so the remote UI
       // paints live terminals instead of "0 running".
-      const restoredWorkspaceId = _remoteClientRegistry.get(clientId)?.activeWorkspaceId || "";
+      const restoredWorkspaceId = registry.get(clientId)?.activeWorkspaceId || "";
       if (restoredWorkspaceId) ensureVisibleSession(restoredWorkspaceId);
       broadcastState();
-      return _remoteClientRegistry.composePayload(clientId, getPayload());
+      return registry.composePayload(clientId, getPayload());
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateWorkspaceForRemoteClient(clientId: string, workspaceId: any): Promise<unknown> {
-      if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
+      const registry = requireRemoteClientRegistry(clientId);
       // Throws on an unknown/cross-profile workspace.
-      _remoteClientRegistry.activateWorkspace(clientId, workspaceId, getState());
+      registry.activateWorkspace(clientId, workspaceId, getState());
       if (workspaceId) {
         // No `lastWorkedAt` stamp: activation is navigation, not work.
         ensureVisibleSession(String(workspaceId));
       }
       broadcastState();
-      return _remoteClientRegistry.composePayload(clientId, getPayload());
+      return registry.composePayload(clientId, getPayload());
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateSessionForRemoteClient(clientId: string, workspaceId: any, sessionId: any): Promise<unknown> {
-      if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
-      _remoteClientRegistry.activateSession(clientId, workspaceId, sessionId, getState());
+      const registry = requireRemoteClientRegistry(clientId);
+      registry.activateSession(clientId, workspaceId, sessionId, getState());
       if (sessionId) {
         // No `lastWorkedAt` stamp: opening a tab is navigation, not work.
         ensureSessionSafe(String(sessionId));
       }
       broadcastState();
-      return _remoteClientRegistry.composePayload(clientId, getPayload());
+      return registry.composePayload(clientId, getPayload());
     },
 
     composeStatePayloadForRemoteClient(clientId: string): unknown {
-      if (!_remoteClientRegistry) return getPayload();
-      return _remoteClientRegistry.composePayload(clientId, getPayload());
+      return registryOwning(clientId)?.composePayload(clientId, getPayload()) ?? getPayload();
     },
     /**
      * Agent-notify HTTP hook status. Previously surfaced as
@@ -5962,9 +6579,10 @@ export async function createRuntime({
       // Remote viewer: the session activation lands on the caller's own
       // context — no desktop slot exists for a remote viewer id.
       const remoteSessionViewerId = parseRemoteViewerId(windowId);
-      if (remoteSessionViewerId && _remoteClientRegistry) {
+      const remoteViewerRegistry = registryOwning(remoteSessionViewerId);
+      if (remoteSessionViewerId && remoteViewerRegistry) {
         try {
-          _remoteClientRegistry.activateSession(remoteSessionViewerId, descriptor.workspaceId, sessionId, getState());
+          remoteViewerRegistry.activateSession(remoteSessionViewerId, descriptor.workspaceId, sessionId, getState());
         } catch {
           // Cross-profile or stale client — already guarded above; skip.
         }
@@ -6683,6 +7301,7 @@ export async function createRuntime({
 
       // Reconfigure Telegram if integrations changed
       reconfigureTelegram(getState());
+      reconfigureMobile(getState());
 
       // Invalidate docker backend-detection cache on any settings change so that
       // future docker-related settings (or any proxy/env change affecting docker)
@@ -7609,8 +8228,9 @@ export async function createRuntime({
           draft.profiles.push({ id: "default", name: "Default", color: "#6366f1", workspaceIds: [] });
         }
       });
-      // Fallback any remote clients that were on the deleted profile.
-      _remoteClientRegistry?.fallbackDeletedProfile(profileId, getState());
+      // Fallback any remote clients that were on the deleted profile — in EVERY registry, because a
+      // browser viewer and a mobile relay viewer can both be sitting on the profile being deleted.
+      for (const registry of _remoteClientRegistries) registry.fallbackDeletedProfile(profileId, getState());
       broadcastState();
       return getPayload();
     },
@@ -7663,6 +8283,10 @@ export async function createRuntime({
       azure.stopPolling();
       github.stopPolling();
       telegramManager.stop();
+      mobileManager.stop();
+      // The relay's own listener and outbound socket are not the mobile manager's to close, and a
+      // process that exits with either still open leaves a bound loopback port behind.
+      await mobileRelayManager?.stop().catch(() => undefined);
       await tunnel.stop({ preserveAvailability: true, quiet: true });
       await pluginManager.stopAll();
       sessions.stopAll();
@@ -7672,6 +8296,8 @@ export async function createRuntime({
       gitAuditLogStore.close?.();
       telegramAuditLogStore.close?.();
       approvalAuditLogStore.close?.();
+      mobileAuditLogStore.close?.();
+      mobileIdempotencyStore.close?.();
       // State is already persisted on each mutate/replace operation.
       // Avoid rewriting the file on shutdown, which can overwrite newer
       // on-disk state if another instance touched it more recently.
@@ -7693,6 +8319,38 @@ export async function createRuntime({
     },
     listRemoteUrls() {
       return remoteInfo?.urls || [];
+    },
+
+    /**
+     * Every origin a mobile WebView ticket may be redeemed at on the LAN/tunnel server right now.
+     *
+     * Three sources, because a desktop can be reachable through all three at once: the URLs the
+     * server actually bound, the live quick-tunnel URL, and the operator's configured custom public
+     * URL. Only the ORIGIN of each is kept — a ticket is bound to an origin, not to a path or a
+     * `?token=` query — and the list is recomputed per call, which is the property that matters: a
+     * quick tunnel that has been replaced drops out of it, so a ticket minted for the old one stops
+     * being redeemable instead of working against the new one (production hardening §5 "Ticket" 4).
+     */
+    listMobileTicketOrigins() {
+      const remoteAccess = getState().settings.remoteAccess;
+      // `remoteInfo` is the loosely-typed bag `setRemoteInfo` last wrote, so the URL list is narrowed
+      // here rather than assumed — a bag that lost its shape must produce no origins, not a crash.
+      const bound = Array.isArray(remoteInfo?.["urls"]) ? (remoteInfo["urls"] as unknown[]) : [];
+      const candidates = [
+        ...bound.filter((entry): entry is string => typeof entry === "string"),
+        tunnel.getSnapshot().publicUrl || "",
+        remoteAccess.customPublicUrl || "",
+      ];
+      const origins = new Set<string>();
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        try {
+          origins.add(new URL(candidate).origin);
+        } catch {
+          // Not a URL: it cannot be an origin a browser reached, so it cannot match one either.
+        }
+      }
+      return [...origins];
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     getSessionId(workspaceId: any, panelId: any) {
@@ -7733,7 +8391,7 @@ export async function createRuntime({
   // buttons and the typed-command path.
   telegramManager.setTunnelReconnectHandler(async () => {
     const remoteConfig = getState().settings.remoteAccess;
-    if (!remoteConfig.enabled || !remoteConfig.autoTunnel) {
+    if (!canReconnectTunnel(remoteConfig)) {
       throw new Error("Tunnel reconnect is only available after a Cloudflare tunnel was started from the desktop.");
     }
     await returnObj.createCloudflareTunnel();

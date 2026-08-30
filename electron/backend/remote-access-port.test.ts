@@ -59,3 +59,23 @@ describe("resolveRemoteAccessPort", () => {
     expect(without.APP_CONFIG.remoteAccess.port).toBe(43123);
   });
 });
+
+describe("createTunnelOriginUrl", () => {
+  it("publishes the port the server actually bound, not the stored one", async () => {
+    // The failure this closes: a dev build bound 43124, built its tunnel for 127.0.0.1:43123, and
+    // 43123 was the production install — so the paired phone opened a remote session against a
+    // server that had never issued its cookie and saw "This session has ended" immediately.
+    vi.resetModules();
+    vi.stubEnv("STRIDETERM_REMOTE_PORT", "43124");
+    const { createTunnelOriginUrl } = await import("./runtime.js");
+    expect(createTunnelOriginUrl({ host: "0.0.0.0", port: 43123 })).toBe("http://127.0.0.1:43124");
+  });
+
+  it("leaves the stored port alone when nothing overrides it", async () => {
+    vi.resetModules();
+    vi.stubEnv("STRIDETERM_REMOTE_PORT", "");
+    const { createTunnelOriginUrl } = await import("./runtime.js");
+    expect(createTunnelOriginUrl({ host: "0.0.0.0", port: 43123 })).toBe("http://127.0.0.1:43123");
+    expect(createTunnelOriginUrl({ host: "192.168.1.25", port: 51000 })).toBe("http://192.168.1.25:51000");
+  });
+});

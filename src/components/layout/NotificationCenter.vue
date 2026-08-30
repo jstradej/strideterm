@@ -73,11 +73,10 @@
             <span class="notification-center__tab-label">Approvals</span>
           </button>
           <button
-            v-if="supportsPerformance"
             type="button"
             class="notification-center__tab"
             :class="{ 'notification-center__tab--active': activeTab === 'performance' }"
-            title="Live CPU / memory of the Electron processes and this window's terminal rendering activity. Diagnostics only run while this tab is open."
+            :title="performanceTabTitle"
             @click="activeTab = 'performance'"
           >
             <span class="notification-center__tab-icon" aria-hidden="true">📈</span>
@@ -474,9 +473,18 @@ const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
 type TabId = "alerts" | "agents" | "telegram" | "approvals" | "performance";
 const activeTab = ref<TabId>("alerts");
-// The Performance tab needs Electron process metrics — only shown when the
-// transport advertises them (desktop), never on the remote/mobile client.
-const supportsPerformance = computed(() => appStore.supportsPerformanceMetrics);
+// The Performance tab is offered on every transport, including the remote /
+// mobile client: the terminal-rendering counters it shows (WebGL vs DOM
+// renderer, repaint and data rates) are measured inside whichever client is
+// looking at them, so they need no host support at all. Only the Electron
+// process metrics do — the panel drops those sections by itself when the
+// transport can't provide them, which is what this flag describes.
+const hasProcessMetrics = computed(() => appStore.supportsPerformanceMetrics);
+const performanceTabTitle = computed(() =>
+  hasProcessMetrics.value
+    ? "Live CPU / memory of the Electron processes and this window's terminal rendering activity. Diagnostics only run while this tab is open."
+    : "Terminal rendering activity for this client — WebGL vs DOM renderer, repaint and data rates. Diagnostics only run while this tab is open.",
+);
 
 // The app's transport, injected — never `createTransport()`, which mints a
 // second WebSocket on the remote client. Only the Approvals list uses it: it
@@ -567,7 +575,7 @@ const menuTabs = computed<{ id: TabId; label: string }[]>(() => {
     { id: "telegram", label: "Telegram" },
   ];
   if (showApprovals.value) tabs.push({ id: "approvals", label: "Approvals" });
-  if (supportsPerformance.value) tabs.push({ id: "performance", label: "Performance" });
+  tabs.push({ id: "performance", label: "Performance" });
   return tabs;
 });
 const activeTabLabel = computed(() => menuTabs.value.find((t) => t.id === activeTab.value)?.label ?? "Alerts");

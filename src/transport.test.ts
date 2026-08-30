@@ -91,6 +91,14 @@ describe("remote transport endpoint routing", () => {
   });
 
   afterEach(() => {
+    // A transport is never disposed: it keeps its visibilitychange/pageshow/focus listeners for the
+    // life of the page, and in a test file that is ONE page. So a transport left awake with an open
+    // socket answers the events a LATER test dispatches — using that test's fetch mock. That is how
+    // one test's 401 became another test's second `session-lost` report, and it made the file's
+    // outcome depend on which tests happened to leave a socket open. Suspending is the closest thing
+    // to disposal the bridge offers, and it is enough: a suspended transport ignores all three events.
+    (window as unknown as Record<string, { suspend?: () => void } | undefined>).__stridetermRemote?.suspend?.();
+    delete (window as unknown as Record<string, unknown>).StridetermHost;
     globalThis.fetch = originalFetch;
     globalThis.WebSocket = originalWebSocket;
     vi.useRealTimers();
@@ -120,6 +128,253 @@ describe("remote transport endpoint routing", () => {
     };
     expect(body?.workspaceId).toBe("ws1");
     expect(body?.sessionId).toBe("ws1:panel1");
+  });
+
+  it("suspend closes the socket and stops reconnecting; resume brings it back with a bounded catch-up", async () => {
+    // Production hardening §5 "Session" 6. A WebView in a backgrounded Android app is not a hidden
+    // tab: nothing suspends its JS or its sockets, so a streaming terminal keeps streaming over the
+    // relay behind a dark screen. The host — which is the only party that knows the app went to the
+    // background and how long ago — closes the transport, and the transport must then STAY closed.
+    vi.useFakeTimers();
+    const connections: { connected: boolean; reconnecting?: boolean; message?: string }[] = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((payload) => connections.push(payload));
+
+    const first = MockWebSocket.instances[0];
+    first.open();
+    // A revision, so the resumed socket has something to ask a bounded catch-up for. `coreRevision`
+    // is the field the transport records (see `noteCoreRevision`).
+    first.message({ type: "state:updated", payload: { coreRevision: 7 } });
+
+    const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void; isSuspended(): boolean }>)
+      .__stridetermRemote;
+    expect(bridge, "the host bridge must exist on a remote transport").toBeTruthy();
+    expect(bridge.isSuspended()).toBe(false);
+
+    bridge.suspend();
+    expect(first.readyState).toBe(MockWebSocket.CLOSED);
+    expect(bridge.isSuspended()).toBe(true);
+    // The UI is told it is paused rather than reconnecting: a spinner that never resolves would be a
+    // lie, and "stale terminal shown as live" is what the plan forbids.
+    const paused = connections.at(-1)!;
+    expect(paused.connected).toBe(false);
+    expect(paused.reconnecting).toBe(false);
+    expect(paused.message).toMatch(/background/i);
+
+    // And it stays closed: no timer, no probe, no new socket, however long we wait.
+    const socketsAfterSuspend = MockWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances.length).toBe(socketsAfterSuspend);
+
+    // Resume opens exactly one socket, and its URL carries the revision — so the server sends one
+    // catch-up core rather than the client re-fetching everything over HTTP.
+    bridge.resume();
+    expect(MockWebSocket.instances.length).toBe(socketsAfterSuspend + 1);
+    const resumed = MockWebSocket.instances.at(-1)!;
+    expect(resumed.url).toContain("rev=7");
+    expect(bridge.isSuspended()).toBe(false);
+  });
+
+  it("a resume onto a session that is gone reports it instead of reconnecting forever", async () => {
+    // WHY A RESUME CANNOT JUST OPEN A SOCKET. The gap before a resume is arbitrary — a glance at a
+    // notification, or a phone in a pocket overnight — so the session it reattaches to may be gone:
+    // the desktop's idle deadline, the relay's viewer TTL, a desktop that restarted. A REJECTED
+    // UPGRADE tells the page nothing a flaky network would not: a close event, no status, no body. So
+    // it answers with a reconnect backoff and retries a session that will never come back, the host
+    // is never told, and the phone says "reconnecting" until someone kills the screen. The request
+    // the resume also sends is what has a status code.
+    vi.useFakeTimers();
+    const posted: string[] = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(message),
+    };
+    const transport = createRemoteTransport();
+    transport.onConnectionState(() => {});
+    MockWebSocket.instances[0].open();
+
+    const bridge = (
+      window as unknown as Record<
+        string,
+        { suspend(): void; resume(): void; isSuspended(): boolean; isSessionLost(): boolean }
+      >
+    ).__stridetermRemote;
+    bridge.suspend();
+
+    // Away long enough that the session ended while nothing was watching.
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 401, text: async () => "" }) as Response);
+    bridge.resume();
+    const socketsAfterResume = MockWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The verdict is reached from the request, not from the socket — and it is the SAME verdict a
+    // live page reaches on its own 401, so the host needs no second path to handle it.
+    expect(bridge.isSessionLost()).toBe(true);
+    expect(bridge.isSuspended()).toBe(true);
+    expect(posted).toEqual([JSON.stringify({ type: "session-lost" })]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances.length).toBe(socketsAfterResume);
+    delete (window as unknown as Record<string, unknown>).StridetermHost;
+  });
+
+  it("a resume that lands on a live session re-syncs the state it missed", async () => {
+    // The other half of the same call: the request is not only a liveness check. A page that was away
+    // has stale state and a socket catch-up it cannot be sure arrived, so what comes back is handed
+    // to the ordinary state listeners.
+    vi.useFakeTimers();
+    const states: unknown[] = [];
+    const transport = createRemoteTransport();
+    transport.onStateUpdated((payload) => states.push(payload));
+    MockWebSocket.instances[0].open();
+
+    const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
+    bridge.suspend();
+    const before = states.length;
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ coreRevision: 42 }) }) as Response);
+
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(states.length).toBe(before + 1);
+    expect(states.at(-1)).toEqual({ coreRevision: 42 });
+    // And the revision it carried is now the one the NEXT socket asks its catch-up from.
+    bridge.suspend();
+    bridge.resume();
+    expect(MockWebSocket.instances.at(-1)!.url).toContain("rev=42");
+  });
+
+  it("a resume asks for the state once, not once per foreground event", async () => {
+    // A foreground fires visibilitychange, pageshow and focus within milliseconds of the host's
+    // resume(), and `probeAfterResume` answers each of them with the same /api/state the resume
+    // itself sends. The 2s throttle is what collapses those into one — and a resume has to claim
+    // that window, or every return from the background costs two identical requests on a phone's
+    // mobile data.
+    vi.useFakeTimers();
+    const transport = createRemoteTransport();
+    transport.onStateUpdated(() => {});
+    MockWebSocket.instances[0].open();
+
+    const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
+    bridge.suspend();
+    const before = capturedUrls.filter((u) => u.includes("/api/state")).length;
+
+    bridge.resume();
+    // The resumed socket reaches OPEN, which is what makes the probe take its fetch path rather than
+    // its reconnect path — the ordering a real foreground produces.
+    MockWebSocket.instances.at(-1)!.open();
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("pageshow"));
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(capturedUrls.filter((u) => u.includes("/api/state")).length).toBe(before + 1);
+  });
+
+  it("a 401 ends the session once: the transport goes quiet and the native host is told", async () => {
+    // THE BUG THIS CLOSES. A phone returning from the background re-bootstraps, which takes a
+    // control-plane round trip or two. Meanwhile the OLD page still had a cookie the host had just
+    // cleared, and it kept polling: /api/state, /api/attention/sync, a reconnecting socket. Every one
+    // came back 401, every 401 reached the host as an HTTP error, and the host tore down the
+    // re-bootstrap that was in flight. Six tickets were minted for one open; one was ever redeemed.
+    vi.useFakeTimers();
+    const posted: string[] = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(message),
+    };
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 401, text: async () => "" }) as Response);
+
+    const connections: { connected: boolean; reconnecting?: boolean; message?: string }[] = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((payload) => connections.push(payload));
+    MockWebSocket.instances[0].open();
+
+    await expect(transport.getState()).rejects.toThrow();
+
+    const bridge = (
+      window as unknown as Record<string, { resume(): void; isSuspended(): boolean; isSessionLost(): boolean }>
+    ).__stridetermRemote;
+    expect(bridge.isSessionLost()).toBe(true);
+    // Quiet: socket closed, and no reconnect however long we wait or however many resume probes fire.
+    expect(bridge.isSuspended()).toBe(true);
+    const socketsAfter401 = MockWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances.length).toBe(socketsAfter401);
+
+    // Nor does pull-to-refresh punch through. That gesture is what a person does at a screen that
+    // has gone quiet, and after a 401 that is every screen — so it is the one path most likely to
+    // reopen the storm by hand.
+    await transport.refresh!();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances.length).toBe(socketsAfter401);
+
+    // The host hears it exactly once, however many requests were already in flight.
+    await expect(transport.getState()).rejects.toThrow();
+    expect(posted).toEqual([JSON.stringify({ type: "session-lost" })]);
+
+    // And the banner says the session ended rather than "reconnecting" — the page is not coming back
+    // on its own, the host is what brings it back, and with a host listening the banner may say so.
+    const ended = connections.at(-1)!;
+    expect(ended.connected).toBe(false);
+    expect(ended.reconnecting).toBe(false);
+    expect(ended.message).toMatch(/session ended/i);
+    expect(ended.message).toMatch(/from the app/i);
+
+    // A host that re-bootstraps onto this same document resumes it, and that un-latches the verdict.
+    bridge.resume();
+    expect(bridge.isSessionLost()).toBe(false);
+    expect(MockWebSocket.instances.length).toBe(socketsAfter401 + 1);
+    delete (window as unknown as Record<string, unknown>).StridetermHost;
+  });
+
+  it("with no native host the banner asks the person to reload, and promises no app", async () => {
+    // The same 401, in a browser tab opened from a share URL. Nothing is going to re-bootstrap this
+    // page: the reader IS the recovery mechanism, so a banner saying the app is reopening it would be
+    // a promise with nobody behind it.
+    expect((window as unknown as Record<string, unknown>).StridetermHost).toBeUndefined();
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 401, text: async () => "" }) as Response);
+
+    const connections: { connected: boolean; message?: string }[] = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((payload) => connections.push(payload));
+    MockWebSocket.instances[0].open();
+
+    await expect(transport.getState()).rejects.toThrow();
+
+    // Quiet all the same — the protection of the desktop does not depend on anyone listening.
+    const bridge = (window as unknown as Record<string, { isSessionLost(): boolean; isSuspended(): boolean }>)
+      .__stridetermRemote;
+    expect(bridge.isSessionLost()).toBe(true);
+    expect(bridge.isSuspended()).toBe(true);
+
+    const ended = connections.at(-1)!;
+    expect(ended.message).toMatch(/session ended/i);
+    expect(ended.message).toMatch(/reload/i);
+    expect(ended.message).not.toMatch(/from the app/i);
+  });
+
+  it("a close that arrives while suspended does not start a reconnect loop", async () => {
+    // The ordering that actually happens on a phone: the socket is closing when the host suspends,
+    // and the close event lands afterwards. Before the suspend flag existed, that close scheduled a
+    // reconnect and the transport came back up behind a screen nobody was looking at.
+    vi.useFakeTimers();
+    const transport = createRemoteTransport();
+    transport.onConnectionState(() => undefined);
+    const first = MockWebSocket.instances[0];
+    first.open();
+
+    const bridge = (window as unknown as Record<string, { suspend(): void; isSuspended(): boolean }>)
+      .__stridetermRemote;
+    bridge.suspend();
+    const socketsAfterSuspend = MockWebSocket.instances.length;
+    // The late close, delivered on the socket the suspend already abandoned.
+    first.close(1006, "network went away");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(MockWebSocket.instances.length).toBe(socketsAfterSuspend);
   });
 
   it("reconnect resync is single-path: WS ?rev= catch-up, never a duplicate /api/state fetch", async () => {
@@ -545,6 +800,35 @@ describe("remote transport API parity — no method silently missing its remote 
     "getPerformanceSnapshot",
     "captureRendererCpuProfile",
     "revealCpuProfile",
+    // Mobile pairing/device management (plan §10.5): Electron/desktop-only.
+    // A remote HTTP client must never be able to pair/rename/revoke a mobile
+    // device or read its own audit log/quota — that's the same boundary
+    // remote-server.ts's sanitizeSettingsFromRemote already enforces for the
+    // persisted mobile settings themselves. SettingsMobileTab.vue hides the
+    // Mobile settings tab entirely when the transport doesn't advertise
+    // createMobilePairingInvitation (the WorkspaceDialog browseDirectory
+    // v-if precedent), rather than showing controls that would silently no-op.
+    "createMobilePairingInvitation",
+    "cancelMobilePairingInvitation",
+    "listMobileDevices",
+    "renameMobileDevice",
+    "revokeMobileDevice",
+    // Review 3 §P0.1: the human decision that activates a pairing, and its refusal. Desktop-only for
+    // the same reason the rest of this group is — the pairing code being compared is derived from this
+    // installation's own key material, and a remote client is not the party doing the comparing.
+    "approveMobileDevice",
+    "rejectMobileDevice",
+    "listMobileDevicesAwaitingApproval",
+    "updateMobileDeviceAllowlist",
+    "setMobileEnabled",
+    "setMobileRelayEnabled",
+    "getMobileRelayStatus",
+    "refreshMobileConnectionHealth",
+    "sendMobileTestPush",
+    "queryMobileAuditLog",
+    "onMobileStatus",
+    "onMobilePairingProgress",
+    "onMobileDeviceRevoked",
   ]);
 
   function extractDesktopApiKeys(): string[] {
@@ -727,5 +1011,112 @@ describe("notification:target-removed — transport boundary validation", () => 
 
       expect(seen).toEqual([]);
     });
+  });
+});
+
+/**
+ * What a failed remote request actually says to the person holding the phone.
+ *
+ * THE BUG THESE PIN. `request()` passed `await response.text()` — the whole HTTP response body — as
+ * the error's `rawMessage`, and any status without its own branch fell through to
+ * `message = rawMessage`. The server answers every failure as `{"error":"<sentence>"}` (see `json()`
+ * in electron/backend/remote-server.ts), so the workspace banner rendered the raw envelope, braces
+ * and quotes included, as a single unbreakable token. On a phone that is three faults at once: it
+ * reads as leaked plumbing, it stretches the hero sideways because the token cannot wrap, and the
+ * only actionable words in it are buried in punctuation.
+ *
+ * The case that surfaced it is the 403 below — the server refusing a profile switch inside a mobile
+ * session, which is by design and is not a fault at all.
+ */
+describe("remote transport failure messages", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let originalWebSocket: typeof globalThis.WebSocket;
+
+  function respondWith(status: number, body: string) {
+    globalThis.fetch = vi.fn(
+      async () =>
+        ({
+          ok: status >= 200 && status < 300,
+          status,
+          text: async () => body,
+          json: async () => JSON.parse(body || "{}"),
+          headers: { get: () => null },
+        }) as unknown as Response,
+    );
+  }
+
+  /** The error one request threw, with the fields the UI reads. */
+  async function failureOf(status: number, body: string) {
+    respondWith(status, body);
+    const transport = createRemoteTransport();
+    try {
+      await transport.getState();
+      throw new Error("expected the request to fail");
+    } catch (error) {
+      return error as Error & { statusCode: number; hint: string; rawMessage: string };
+    }
+  }
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    originalWebSocket = globalThis.WebSocket;
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  });
+
+  it("unwraps the server's {error} envelope instead of showing it", async () => {
+    const failure = await failureOf(409, '{"error":"That workspace is already open elsewhere."}');
+    expect(failure.message).toBe("That workspace is already open elsewhere.");
+    // The shape the banner used to render, and the reason it stretched the page.
+    expect(failure.message).not.toContain("{");
+    expect(failure.message).not.toContain('"error"');
+  });
+
+  it("turns the mobile profile-switch refusal into an instruction, not an error", async () => {
+    const failure = await failureOf(403, '{"error":"Mobile sessions cannot switch profiles"}');
+    // It is not a fault: a session's ticket is minted for one profile on purpose. So the banner says
+    // what is true and where the switch actually lives, rather than reporting a failure.
+    expect(failure.message).toBe("This session is tied to one profile.");
+    expect(failure.hint).toContain("strIDEterm app");
+  });
+
+  it("keeps a hint attached to the statuses a person can act on", async () => {
+    expect((await failureOf(401, '{"error":"no session"}')).hint).toContain("Open this terminal again");
+    expect((await failureOf(503, "")).hint).toContain("come back on its own");
+  });
+
+  it("leaves a non-JSON body exactly as it was", async () => {
+    // A proxy's HTML page, a plain-text body, a gateway's own words: none of those are the envelope
+    // this unwraps, and mangling them would lose the only information there is.
+    const failure = await failureOf(500, "upstream connect error");
+    expect(failure.message).toBe("upstream connect error");
+  });
+
+  it("a body that starts like JSON and is not falls back to the raw text", async () => {
+    const failure = await failureOf(500, '{"error": truncated');
+    expect(failure.message).toBe('{"error": truncated');
+  });
+
+  it("an empty body still says something", async () => {
+    const failure = await failureOf(418, "");
+    expect(failure.message).toBe("Remote connection failed.");
+  });
+
+  it("carries the hint to the connection-state listeners the banner reads", async () => {
+    respondWith(403, '{"error":"Mobile sessions cannot switch profiles"}');
+    const transport = createRemoteTransport();
+    const states: Array<{ connected: boolean; message?: string; hint?: string }> = [];
+    transport.onConnectionState((state) => states.push(state));
+    await transport.getState().catch(() => {});
+
+    const failed = states.find((state) => !state.connected);
+    expect(failed?.message).toBe("This session is tied to one profile.");
+    // The store reads the hint from here — a message that arrived without one would leave the
+    // banner saying what happened and not what to do, which is where this started.
+    expect(failed?.hint).toContain("strIDEterm app");
   });
 });

@@ -632,3 +632,34 @@ describe("NotificationCenter — alert card density", () => {
     expect(content.find(".notification-item__body .notification-item__profile-label").exists()).toBe(false);
   });
 });
+
+describe("NotificationCenter — Performance tab availability", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  // The remote/mobile client has no Electron process metrics, but the panel's
+  // terminal counters (WebGL vs DOM renderer) are measured client-side — so the
+  // tab has to be reachable from a phone too.
+  it("offers the tab even when the transport has no process metrics", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload() as AnyApi;
+    appStore.supportsPerformanceMetrics = false;
+    notifStore.panelOpen = true;
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+
+    const tab = wrapper.findAll(".notification-center__tab").find((b) => b.text().includes("Performance"));
+    expect(tab).toBeDefined();
+    expect(tab!.attributes("title")).toContain("Terminal rendering activity for this client");
+    // The narrow-panel dropdown (the one a phone actually gets) lists it too.
+    await wrapper.get(".notification-center__tabmenu-toggle").trigger("click");
+    expect(wrapper.findAll(".notification-center__tabmenu-item").some((b) => b.text().includes("Performance"))).toBe(
+      true,
+    );
+  });
+});

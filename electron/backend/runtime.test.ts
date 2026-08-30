@@ -8,6 +8,18 @@ import { AgentTaskRunner } from "./agent-task-runner.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { normalizeCwd } from "./notify-url-registry.js";
+import { createInMemoryMobileFirebaseTransport } from "./mobile/mobile-firebase-transport.js";
+import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
+import {
+  computeGrantCommitment,
+  computeKeyProof,
+  decodeCanonicalPublicKey,
+  deriveSessionKey,
+  exportRawPublicKey,
+  generateX25519KeyPair,
+  publicKeyFromRaw,
+} from "./mobile/mobile-crypto.js";
+import { PROTOCOL_VERSION, SESSION_KEY_HKDF_INFO } from "./mobile/mobile-schemas.js";
 
 // Lets a single test capture log calls made through getLogger(label), for any
 // label, without altering real logging behavior for the other ~230 tests in
@@ -119,7 +131,11 @@ function createMemoryStore(initialState?: any) {
       });
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async mutate(mutator: any) {
+    async mutate(labelOrMutator: any, maybeMutator?: any) {
+      // Mirrors store.ts's real mutate(mutator) / mutate(label, mutator)
+      // overload — some callers (e.g. mobile-device-store.ts's mutateDevices)
+      // pass an operation label as the first argument.
+      const mutator = typeof labelOrMutator === "string" ? maybeMutator : labelOrMutator;
       return enqueue(async () => {
         const draft = structuredClone(state);
         const result = await mutator(draft);
@@ -695,9 +711,13 @@ async function createFixture({
   initialState,
   execFileTextImpl,
   dependencies = {},
+  // A caller may pin the data dir instead of getting a fresh one. Two runtimes over the SAME path
+  // are the "second process, one installation" case; two runtimes over different paths are two
+  // independent desktops (review 2 §Multiwindow).
+  dataDir,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test fixture accepts open-ended initial state and dependencies
-}: { initialState?: any; execFileTextImpl?: any; dependencies?: any } = {}) {
-  const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-runtime-"));
+}: { initialState?: any; execFileTextImpl?: any; dependencies?: any; dataDir?: string } = {}) {
+  const userDataPath = dataDir || (await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-runtime-")));
   const store = createMemoryStore(initialState);
   const sessionManager = new FakeSessionManager();
   const docker = new FakeDockerManager();
@@ -7675,6 +7695,464 @@ describe("runtime integration", () => {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // Plan §10.1/§10.7: ExternalNotificationEvent must be transport-neutral —
+  // adding Mobile as a second subscriber of the shared event source must NOT
+  // cause Telegram to send a duplicate or altered message. raiseAlert() calls
+  // telegramManager.forwardAlert() directly (unchanged) AND separately emits
+  // on the runtime's internal `externalNotificationEvents` EventEmitter; these
+  // tests prove those two things stay independent.
+  // ---------------------------------------------------------------------------
+  describe("ExternalNotificationEvent — Mobile listener does not affect Telegram", () => {
+    test("attaching a second (Mobile-equivalent) listener does not duplicate Telegram's send, and both adapters observe the same event data", async () => {
+      vi.useFakeTimers();
+      try {
+        const fixture = await createTwoWorkspaceFixture();
+        fixtures.push(fixture);
+
+        const telegramManager = fixture.runtime._telegramManagerForTest();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const forwardAlertCalls: any[] = [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (telegramManager as any).forwardAlert = vi.fn(async (payload: any) => {
+          forwardAlertCalls.push(payload);
+        });
+
+        const externalEvents = fixture.runtime._externalNotificationEventsForTest();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mobileReceived: any[] = [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mobileListener = (event: any) => mobileReceived.push(event);
+        externalEvents.on("event", mobileListener);
+
+        await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+        await vi.advanceTimersByTimeAsync(16_000);
+        fixture.runtime.writeToSession("backend:shell", "claude\r");
+        fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+
+        // Telegram received exactly one forwardAlert call for this one alert —
+        // the added listener did not cause a duplicate send.
+        expect(forwardAlertCalls).toHaveLength(1);
+        // The second (Mobile) listener observed exactly one event too, built
+        // from the same local data — not a second, independently-derived copy.
+        expect(mobileReceived).toHaveLength(1);
+        expect(mobileReceived[0].workspaceId).toBe(forwardAlertCalls[0].workspaceId);
+        expect(mobileReceived[0].title).toBe(forwardAlertCalls[0].title);
+        expect(mobileReceived[0].kind).toBe(forwardAlertCalls[0].kind);
+
+        externalEvents.off("event", mobileListener);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("Telegram's forwardAlert call count and payload are identical whether or not a Mobile listener is attached", async () => {
+      vi.useFakeTimers();
+      try {
+        async function fireOneAlertAndCaptureTelegramCalls(attachMobileListener: boolean) {
+          const fixture = await createTwoWorkspaceFixture();
+          fixtures.push(fixture);
+          const telegramManager = fixture.runtime._telegramManagerForTest();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const calls: any[] = [];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (telegramManager as any).forwardAlert = vi.fn(async (payload: any) => {
+            calls.push(payload);
+          });
+          if (attachMobileListener) {
+            fixture.runtime._externalNotificationEventsForTest().on("event", () => {});
+          }
+          await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+          fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+          await vi.advanceTimersByTimeAsync(16_000);
+          fixture.runtime.writeToSession("backend:shell", "claude\r");
+          fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+          return calls;
+        }
+
+        const withoutMobile = await fireOneAlertAndCaptureTelegramCalls(false);
+        const withMobile = await fireOneAlertAndCaptureTelegramCalls(true);
+
+        expect(withoutMobile).toHaveLength(1);
+        expect(withMobile).toHaveLength(1);
+        expect(withMobile[0]).toEqual(withoutMobile[0]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Plan §7/§10.7: a quota-exceeded mobile push must be suppressed (no per-
+    // event desktop notification, rolled into a once-a-day summary) WITHOUT
+    // touching Telegram's send for the same underlying alert.
+    test("a quota-exceeded mobile push is suppressed (once-a-day summary only) while Telegram's forwardAlert for the same alert is unaffected", async () => {
+      vi.useFakeTimers();
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let capturedTransport: any = null;
+        const fixture = await createFixture({
+          initialState: {
+            activeProjectId: "frontend",
+            projects: [
+              {
+                id: "frontend",
+                name: "Frontend",
+                kind: "terminal",
+                cwd: "/tmp/frontend",
+                activePanelId: "claude",
+                panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+              },
+              {
+                id: "backend",
+                name: "Backend",
+                kind: "terminal",
+                cwd: "/tmp/backend",
+                activePanelId: "shell",
+                panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+              },
+            ],
+          },
+          dependencies: {
+            createMobileFirebaseTransport: () => {
+              capturedTransport = createInMemoryMobileFirebaseTransport();
+              return capturedTransport;
+            },
+          },
+        });
+        fixtures.push(fixture);
+
+        const telegramManager = fixture.runtime._telegramManagerForTest();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const forwardAlertCalls: any[] = [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (telegramManager as any).forwardAlert = vi.fn(async (payload: any) => {
+          forwardAlertCalls.push(payload);
+        });
+
+        await fixture.runtime.setMobileEnabled(true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const manager = fixture.runtime._mobileManagerForTest() as any;
+        const ownDeviceId = manager.ownDeviceId as string;
+
+        const qr = await fixture.runtime.createMobilePairingInvitation({
+          profileAllowlist: ["default"],
+          capabilities: ["task.control"],
+        });
+        const deviceKeyPair = generateX25519KeyPair();
+        const devicePublicKeyBase64 = exportRawPublicKey(deviceKeyPair.publicKey).toString("base64");
+        const deviceSessionKey = deriveSessionKey(
+          deviceKeyPair.privateKey,
+          publicKeyFromRaw(decodeCanonicalPublicKey(qr.desktopPublicKey)),
+          Buffer.from(ownDeviceId),
+          Buffer.from(SESSION_KEY_HKDF_INFO),
+        );
+        capturedTransport.simulateClaim(ownDeviceId, {
+          deviceId: "mobile-1",
+          uid: "uid-1",
+          pairId: ownDeviceId,
+          pairingId: qr.pairingId,
+          state: "claimed",
+          grantCommitment: computeGrantCommitment({
+            protocolVersion: PROTOCOL_VERSION,
+            pairId: ownDeviceId,
+            pairingId: qr.pairingId,
+            mobileDeviceId: "mobile-1",
+            capabilities: ["task.control"],
+            profileAllowlist: ["default"],
+          }),
+          keyProof: computeKeyProof(deviceSessionKey, {
+            protocolVersion: PROTOCOL_VERSION,
+            pairId: ownDeviceId,
+            pairingId: qr.pairingId,
+            desktopDeviceId: ownDeviceId,
+            desktopPublicKeyBase64: qr.desktopPublicKey,
+            mobileDeviceId: "mobile-1",
+            mobilePublicKeyBase64: devicePublicKeyBase64,
+            challengeBase64Url: qr.keyProofChallenge,
+          }),
+          keyProvenAt: null,
+          activatedAt: null,
+          platform: "android",
+          label: "Pixel",
+          publicKey: devicePublicKeyBase64,
+          sessionKeyVersion: 1,
+          capabilities: ["task.control"],
+          profileAllowlist: ["default"],
+          createdAt: Date.now(),
+          lastSeenAt: Date.now(),
+          revoked: false,
+          revokedAt: null,
+        });
+        await fixture.store.flush();
+        // A claimed device receives nothing at all now (review 3 §P0.1), so a test about the QUOTA has
+        // to get the device to `active` first — otherwise it would be asserting the approval gate by
+        // accident and would still pass if the quota check were removed entirely.
+        expect((await fixture.runtime.approveMobileDevice("mobile-1")).ok).toBe(true);
+        await fixture.store.flush();
+        capturedTransport.setQuotaExceeded(ownDeviceId, true);
+
+        const statusSpy = vi.fn();
+        manager.on("mobile:status", statusSpy);
+
+        await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+        await vi.advanceTimersByTimeAsync(16_000);
+        fixture.runtime.writeToSession("backend:shell", "claude\r");
+        fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+        // MobileManager's ExternalNotificationEvent handling is async
+        // (handleExternalEvent, not awaited by the emitter) — flush microtasks.
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+
+        // Telegram sent its normal single alert for this event, untouched by
+        // Mobile's quota rejection.
+        expect(forwardAlertCalls).toHaveLength(1);
+        // Mobile did NOT send the event (quota exceeded)...
+        expect(capturedTransport.getSentEvents(ownDeviceId)).toHaveLength(0);
+        // ...but raised exactly one push-limit summary, not a per-event alert.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const limitCalls = statusSpy.mock.calls.filter(([payload]: any[]) => payload?.pushLimitReached);
+        expect(limitCalls).toHaveLength(1);
+        expect(limitCalls[0][0]).toMatchObject({ pushLimitReached: true, suppressedCount: 1 });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Plan §10.5: the new mobile pairing/device-management runtime methods,
+  // wired directly onto the runtime object next to the existing Telegram
+  // handlers. Uses the in-memory Firebase transport fake (mobile-firebase-
+  // transport.ts) — the default fixture gets the real Firebase-backed
+  // transport (mobile-firebase-transport-rest.ts) with no Firebase config in
+  // the environment, so connect() would report MobileFirebaseNotConfiguredError.
+  // That is fine for tests that never call connect()/createInvitation(), but
+  // pairing needs a working fake.
+  // ---------------------------------------------------------------------------
+  describe("Mobile runtime methods (plan §10.5)", () => {
+    test("runtime startup completes when Mobile is persisted as enabled but Firebase is not configured", async () => {
+      const initialState = normalizeState();
+      initialState.settings.integrations.mobile.enabled = true;
+      const fixture = await createFixture({
+        initialState,
+        dependencies: {
+          createMobileFirebaseTransport: () =>
+            createFirebaseMobileTransport({
+              config: null,
+              missingConfig: ["STRIDETERM_MOBILE_FIREBASE_PROJECT_ID"],
+              createClient: () => {
+                throw new Error("an unconfigured transport must not construct a Firebase client");
+              },
+            }),
+        },
+      });
+      fixtures.push(fixture);
+
+      // connect() reports through a promise because MobileManager.start() intentionally remains
+      // synchronous. Let that health update settle before checking the stable public status.
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+
+      expect(fixture.runtime._mobileManagerForTest().getConnectionHealth()).toMatchObject({
+        running: true,
+        connectionState: "disconnected",
+        lastError: "not-configured",
+      });
+    });
+
+    async function createMobileFixture() {
+      let capturedTransport: ReturnType<typeof createInMemoryMobileFirebaseTransport> | null = null;
+      const fixture = await createFixture({
+        dependencies: {
+          createMobileFirebaseTransport: () => {
+            capturedTransport = createInMemoryMobileFirebaseTransport();
+            return capturedTransport;
+          },
+        },
+      });
+      return { ...fixture, getTransport: () => capturedTransport! };
+    }
+
+    test("setMobileEnabled(true) starts the manager; setMobileEnabled(false) stops it the same way an explicit stop() would", async () => {
+      const fixture = await createMobileFixture();
+      fixtures.push(fixture);
+      const manager = fixture.runtime._mobileManagerForTest();
+
+      expect(manager.isRunning()).toBe(false);
+      await fixture.runtime.setMobileEnabled(true);
+      expect(manager.isRunning()).toBe(true);
+      expect(fixture.store.getState().settings.integrations.mobile.enabled).toBe(true);
+
+      await fixture.runtime.setMobileEnabled(false);
+      expect(manager.isRunning()).toBe(false);
+      expect(fixture.store.getState().settings.integrations.mobile.enabled).toBe(false);
+    });
+
+    // Dev-environment finding 6: the relay flag had no way in. The runtime action is that way in, and
+    // it is a SECOND decision — `setMobileEnabled` must not imply it, and it must not imply
+    // `setMobileEnabled`, because one is a control plane and the other is an outbound connector.
+    test("setMobileRelayEnabled flips only the relay flag, in both directions, and reports the relay's state", async () => {
+      const fixture = await createMobileFixture();
+      fixtures.push(fixture);
+
+      expect(fixture.store.getState().settings.integrations.mobile.relay.enabled).toBe(false);
+
+      await fixture.runtime.setMobileRelayEnabled(true);
+      expect(fixture.store.getState().settings.integrations.mobile.relay.enabled).toBe(true);
+      // Turning the relay on is not turning the mobile integration on.
+      expect(fixture.store.getState().settings.integrations.mobile.enabled).toBe(false);
+
+      await fixture.runtime.setMobileEnabled(true);
+      expect(fixture.store.getState().settings.integrations.mobile.relay.enabled).toBe(true);
+
+      await fixture.runtime.setMobileRelayEnabled(false);
+      expect(fixture.store.getState().settings.integrations.mobile.relay.enabled).toBe(false);
+      // ...and turning the relay off leaves the mobile integration alone.
+      expect(fixture.store.getState().settings.integrations.mobile.enabled).toBe(true);
+
+      // The status has the same shape whether this build wired a relay or not (this fixture wires no
+      // `startRelayOrigin`, so there is no manager at all) — a UI reading it never has to know which
+      // kind of build it is talking to. What the relay itself does on each flag change is
+      // mobile-relay-manager.test.ts's subject.
+      expect(fixture.runtime.getMobileRelayStatus()).toMatchObject({
+        enabled: false,
+        state: "off",
+        relayOrigin: "",
+        internalPort: 0,
+      });
+    });
+
+    test("createMobilePairingInvitation/cancelMobilePairingInvitation delegate to MobileManager and refreshMobileConnectionHealth reports the pending invitation", async () => {
+      const fixture = await createMobileFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.setMobileEnabled(true);
+
+      const invitation = await fixture.runtime.createMobilePairingInvitation({
+        profileAllowlist: ["default"],
+        capabilities: ["task.control"],
+      });
+      expect(invitation).toMatchObject({
+        protocolVersion: PROTOCOL_VERSION,
+        pairingId: expect.any(String),
+        // v2 QR: the desktop's own id and its canonical public key travel in the code, so the
+        // phone can recompute the fingerprint itself and pin the key it will actually use
+        // (review 2 §P0.4).
+        desktopDeviceId: expect.any(String),
+        desktopPublicKey: expect.any(String),
+      });
+
+      const healthWithPending = await fixture.runtime.refreshMobileConnectionHealth();
+      expect(healthWithPending.health.pendingInvitation?.pairingId).toBe(invitation.pairingId);
+      expect(healthWithPending.quota).toMatchObject({ limit: 100, reservedHighPriorityRemaining: 10 });
+
+      await fixture.runtime.cancelMobilePairingInvitation();
+      const healthAfterCancel = await fixture.runtime.refreshMobileConnectionHealth();
+      expect(healthAfterCancel.health.pendingInvitation).toBeNull();
+    });
+
+    test("listMobileDevices/renameMobileDevice/updateMobileDeviceAllowlist/revokeMobileDevice manage a claimed device end to end", async () => {
+      const fixture = await createMobileFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.setMobileEnabled(true);
+      const manager = fixture.runtime._mobileManagerForTest();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only reach into a private field, mirrors this file's existing (telegramManager as any).forwardAlert pattern
+      const ownDeviceId = (manager as any).ownDeviceId as string;
+
+      const qr = await fixture.runtime.createMobilePairingInvitation({
+        profileAllowlist: ["default"],
+        capabilities: ["task.control"],
+      });
+      // A claim built exactly as a phone builds one (review 3 §P0.1): the pairingId it consumed, the
+      // server-computed grant commitment over the ticked grants, and a real key proof derived from the
+      // QR public key and the QR challenge. A stub proof would be refused here — which is the point.
+      const phoneKeyPair = generateX25519KeyPair();
+      const phonePublicKeyBase64 = exportRawPublicKey(phoneKeyPair.publicKey).toString("base64");
+      const phoneSessionKey = deriveSessionKey(
+        phoneKeyPair.privateKey,
+        publicKeyFromRaw(decodeCanonicalPublicKey(qr.desktopPublicKey)),
+        Buffer.from(ownDeviceId),
+        Buffer.from(SESSION_KEY_HKDF_INFO),
+      );
+      fixture.getTransport().simulateClaim(ownDeviceId, {
+        deviceId: "mobile-1",
+        uid: "uid-1",
+        pairId: ownDeviceId,
+        pairingId: qr.pairingId,
+        state: "claimed",
+        grantCommitment: computeGrantCommitment({
+          protocolVersion: PROTOCOL_VERSION,
+          pairId: ownDeviceId,
+          pairingId: qr.pairingId,
+          mobileDeviceId: "mobile-1",
+          capabilities: ["task.control"],
+          profileAllowlist: ["default"],
+        }),
+        keyProof: computeKeyProof(phoneSessionKey, {
+          protocolVersion: PROTOCOL_VERSION,
+          pairId: ownDeviceId,
+          pairingId: qr.pairingId,
+          desktopDeviceId: ownDeviceId,
+          desktopPublicKeyBase64: qr.desktopPublicKey,
+          mobileDeviceId: "mobile-1",
+          mobilePublicKeyBase64: phonePublicKeyBase64,
+          challengeBase64Url: qr.keyProofChallenge,
+        }),
+        keyProvenAt: null,
+        activatedAt: null,
+        platform: "android",
+        label: "Pixel",
+        publicKey: phonePublicKeyBase64,
+        sessionKeyVersion: 1,
+        capabilities: ["task.control"],
+        profileAllowlist: ["default"],
+        createdAt: Date.now(),
+        lastSeenAt: Date.now(),
+        revoked: false,
+        revokedAt: null,
+      });
+      // processNewDevice() is async (awaits deviceStore.addDevice, which queues
+      // a store.mutate) — flush the store's operation queue so it's settled.
+      await fixture.store.flush();
+
+      const devices = await fixture.runtime.listMobileDevices();
+      expect(devices).toHaveLength(1);
+      expect(devices[0].deviceId).toBe("mobile-1");
+      // Adopted but NOT usable: the human decision is a separate IPC call, and the device is listed as
+      // awaiting it with the pairing code recomputed from the transcript.
+      expect(devices[0].state).toBe("keyProven");
+      const awaiting = fixture.runtime.listMobileDevicesAwaitingApproval();
+      expect(awaiting.map((d: { deviceId: string }) => d.deviceId)).toEqual(["mobile-1"]);
+      expect(awaiting[0].sas).toMatch(/^\d{4} \d{4}$/);
+      const approved = await fixture.runtime.approveMobileDevice("mobile-1");
+      expect(approved.ok).toBe(true);
+      expect(manager.listDevices().find((d: { deviceId: string }) => d.deviceId === "mobile-1")?.state).toBe("active");
+
+      await fixture.runtime.renameMobileDevice("mobile-1", "My Pixel");
+      expect(manager.listDevices().find((d: { deviceId: string }) => d.deviceId === "mobile-1")?.label).toBe(
+        "My Pixel",
+      );
+
+      await fixture.runtime.updateMobileDeviceAllowlist("mobile-1", { profileAllowlist: ["default"] });
+      expect(
+        manager.listDevices().find((d: { deviceId: string }) => d.deviceId === "mobile-1")?.profileAllowlist,
+      ).toEqual(["default"]);
+
+      const auditBeforeRevoke = await fixture.runtime.queryMobileAuditLog({ deviceId: "mobile-1" });
+      expect(auditBeforeRevoke.total).toBeGreaterThan(0);
+
+      await fixture.runtime.revokeMobileDevice("mobile-1");
+      expect(manager.listDevices().find((d: { deviceId: string }) => d.deviceId === "mobile-1")?.revoked).toBe(true);
+    });
+
+    test("sendMobileTestPush rejects a nonexistent device cleanly and does not throw", async () => {
+      const fixture = await createMobileFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.setMobileEnabled(true);
+
+      const result = await fixture.runtime.sendMobileTestPush("no-such-device");
+      expect(result).toEqual({ ok: false, reason: "device-not-found" });
+    });
+  });
+
   test("completion-hook-capable agent session does NOT raise T3 silence alert", async () => {
     vi.useFakeTimers();
     try {
@@ -9640,6 +10118,63 @@ describe("multiple windows per profile — viewer model", () => {
     // ...the desktop slot did not.
     const slots = fixture.runtime.getPayload().appState.windowSlots!;
     expect(slots.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
+  });
+
+  // The managed relay's internal origin is a SECOND remote server on this runtime, with its own
+  // RemoteClientRegistry (relay plan §4/§5.4: the mobile viewer owns its profile/workspace/tab
+  // state). Before the runtime could hold more than one, a relay viewer's own switch went to the
+  // browser's registry — or, with no LAN listener enabled at all, to nothing: the switch answered
+  // "registry not initialised", and `getWindowProfileId` answered "unknown viewer", which every
+  // profile guard reads as "no guard to apply".
+  test("a relay viewer's registry is its own: its switch lands there, and its profile guard fires", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    // The primary (LAN/tunnel) server's registry, and the relay origin's own.
+    const browserRegistry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(browserRegistry);
+    browserRegistry.getOrCreate("browser-1", fixture.store.getState(), "profile-a");
+    const relayRegistry = new RemoteClientRegistry();
+    const releaseRelayRegistry = fixture.runtime.addRemoteClientRegistry(relayRegistry);
+    relayRegistry.getOrCreate("relay-1", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.activateWorkspaceForRemoteClient("relay-1", "ws-a2");
+    expect(relayRegistry.get("relay-1")!.activeWorkspaceId).toBe("ws-a2");
+    // The browser viewer on the same profile did not move, and neither did the desktop window.
+    expect(browserRegistry.get("browser-1")!.activeWorkspaceId).toBe("ws-a1");
+    expect(fixture.runtime.getPayload().appState.windowSlots!.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe(
+      "ws-a1",
+    );
+
+    // And the guard the relay viewer would otherwise slip past: a slot-aware mutation naming the
+    // OTHER profile's workspace is refused, because the runtime can now resolve which profile this
+    // viewer is bound to.
+    await expect(
+      fixture.runtime.setWorkspaceUIState("ws-b1", { activeViewId: "ws-b1:shell" }, "remote:relay-1"),
+    ).rejects.toThrow(/Cross-profile refused/i);
+
+    // When that server closes it takes its registry with it — a stale id is then a session nobody
+    // has, rather than a lookup that falls through to another server's registry.
+    releaseRelayRegistry();
+    await expect(fixture.runtime.activateWorkspaceForRemoteClient("relay-1", "ws-a1")).rejects.toThrow(
+      /session not found/i,
+    );
   });
 
   test("telegram screenshot-workspace prefers the window already showing the workspace", async () => {
@@ -12326,5 +12861,123 @@ describe("saveWorkspace releases the tracked review workspace on detach", () => 
     } as any);
 
     expect(reviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith(PR_KEY, { reviewWorkspaceId: "" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The desktop installation is the security principal (review 2 §"Multiwindow a více počítačů")
+// ---------------------------------------------------------------------------
+//
+// Three claims the review asks to be made explicit rather than left implicit:
+//
+//   - a BrowserWindow is not a principal. Windows are renderers; the runtime constructs exactly
+//     one MobileManager, one device id and one keypair, and no window path creates a Firebase
+//     identity or a crypto identity of its own.
+//   - a second process over the same data dir is the SAME installation, not another consumer. In
+//     production `requestSingleInstanceLock` — scoped per data dir via `app.name`, electron/main.ts
+//     — stops the second process before it ever builds a runtime; the security-relevant half, that
+//     it would in any case be the same identity rather than a new one, is what is asserted here,
+//     because that is what also holds across a restart, a crash recovery and a `--data-dir` relaunch.
+//   - two data dirs are two independent desktops, even for the same person on one OS account.
+describe("desktop installation identity (review 2 §Multiwindow)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: matches this file's fixture typing
+  async function mobileIdentityOf(fixture: any): Promise<{ deviceId: string; publicKey: string }> {
+    const manager = fixture.runtime._mobileManagerForTest();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only reach into a private field, mirrors this file's existing (telegramManager as any) pattern
+    const deviceId = (manager as any).ownDeviceId as string;
+    // The public key is only observable through the QR the desktop offers, which is the right
+    // place to read it: that is the value a phone pins, so "same installation" has to mean the
+    // same value here or every existing pairing is silently broken.
+    await fixture.runtime.setMobileEnabled(true);
+    const invitation = await fixture.runtime.createMobilePairingInvitation({
+      profileAllowlist: ["default"],
+      capabilities: ["task.control"],
+    });
+    await fixture.runtime.cancelMobilePairingInvitation();
+    return { deviceId, publicKey: invitation.desktopPublicKey as string };
+  }
+
+  async function createMobileFixture(dataDir?: string) {
+    return createFixture({
+      dataDir,
+      dependencies: { createMobileFirebaseTransport: () => createInMemoryMobileFirebaseTransport() },
+    });
+  }
+
+  test("the runtime builds exactly one MobileManager, whatever the window slots say", async () => {
+    // Two window slots in state — the closest a backend test gets to "two windows open" — and the
+    // manager is still one object. Nothing about windows reaches the mobile layer at all, which is
+    // why one command has one side effect and one event is sealed once per DEVICE rather than per
+    // window (asserted directly in mobile-manager.test.ts's multiwindow block).
+    const fixture = await createMobileFixture();
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: memory-store mutator
+    await fixture.store.mutate((state: any) => {
+      state.windowSlots = [
+        { id: "win-1", profileId: "default" },
+        { id: "win-2", profileId: "default" },
+      ];
+      return state;
+    });
+
+    const first = fixture.runtime._mobileManagerForTest();
+    const second = fixture.runtime._mobileManagerForTest();
+    expect(second).toBe(first);
+    expect(fixture.store.getState().windowSlots).toHaveLength(2);
+  });
+
+  test("a second process over the same data dir never reaches a runtime at all", async () => {
+    // Matrix item 2. This one cannot be exercised by running code here: it is decided in
+    // electron/main.ts, before any runtime exists, by Electron's own single-instance lock — and a
+    // test that imported main.ts would boot the app. So it is asserted at the source level, which
+    // is honest about being a structural check rather than a behavioural one, and still fails if
+    // somebody removes the lock or decouples it from the data directory.
+    //
+    // Two properties, and the second matters as much as the first: the lock has to be REQUESTED,
+    // and it has to be scoped per data directory. Electron keys the lock on `app.name`, so without
+    // the rename a `--data-dir` relaunch would collide with the ordinary instance — two genuinely
+    // independent desktops, one of which simply refuses to start.
+    const main = await fs.readFile(path.join(process.cwd(), "electron/main.ts"), "utf8");
+
+    expect(main).toContain("app.requestSingleInstanceLock()");
+    expect(main).toMatch(/if \(customDataDir\) \{[\s\S]*?app\.name = `strideterm-\$\{suffix\}`/);
+    // And the refusal path: holding no lock must quit rather than continue into bootstrap.
+    expect(main).toMatch(/!gotSingleInstanceLock\) \{\s*\n\s*app\.quit\(\);/);
+  });
+
+  test("a second runtime over the same data dir is the same installation, not a new identity", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-install-"));
+    tempPaths.push(dataDir);
+
+    const first = await createMobileFixture(dataDir);
+    const firstIdentity = await mobileIdentityOf(first);
+    await first.runtime.stop();
+
+    const second = await createMobileFixture(dataDir);
+    fixtures.push(second);
+    const secondIdentity = await mobileIdentityOf(second);
+
+    // Same device id AND same public key: the id alone would also be satisfied by a runtime that
+    // regenerated its keypair, which would break every existing pairing while still looking
+    // correct in the device list.
+    expect(secondIdentity.deviceId).toBe(firstIdentity.deviceId);
+    expect(secondIdentity.publicKey).toBe(firstIdentity.publicKey);
+  });
+
+  test("two data dirs are two desktops: different device id and different keypair", async () => {
+    const deskA = await createMobileFixture();
+    fixtures.push(deskA);
+    const deskB = await createMobileFixture();
+    fixtures.push(deskB);
+
+    const identityA = await mobileIdentityOf(deskA);
+    const identityB = await mobileIdentityOf(deskB);
+
+    expect(identityA.deviceId).not.toBe(identityB.deviceId);
+    expect(identityA.publicKey).not.toBe(identityB.publicKey);
+    // And the identity really is the data dir's rather than the process's: it lives in the per-dir
+    // credential store, which is what makes the previous test's answer stable across restarts.
+    await expect(fs.stat(path.join(deskA.userDataPath, "credentials.json"))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(deskB.userDataPath, "credentials.json"))).resolves.toBeTruthy();
   });
 });

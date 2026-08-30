@@ -46,6 +46,8 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.frontend.json && tsc --noEmit -p tsconfig.backend.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.scripts.json",
     "audit:security": "npm audit --audit-level=high",
     "audit:package-age": "tsx scripts/check-package-age.mts",
+    "check:mobile-schema-drift": "tsx scripts/check-mobile-schema-drift.mts",
+    "check:licences": "tsx scripts/check-licences.mts",
     "prepare": "husky"
   },
   "build": {

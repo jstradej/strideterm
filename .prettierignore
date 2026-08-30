@@ -10,3 +10,10 @@ blob-report/
 *.db-wal
 *.db-shm
 package-lock.json
+
+# Committed copies of strideterm-mobile's cross-runtime test vectors. They must stay byte-identical to
+# the originals — `npm run check:mobile-schema-drift` compares them — and Prettier's array wrapping
+# differs from `JSON.stringify(..., 2)`, which is what generates them.
+electron/backend/mobile/mobile-aad-vectors.json
+electron/backend/mobile/mobile-pairing-vectors.json
+electron/backend/mobile/mobile-relay-vectors.json

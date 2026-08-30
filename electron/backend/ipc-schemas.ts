@@ -1216,6 +1216,88 @@ export type WorkspaceGridSwapCells = z.infer<typeof workspaceGridSwapCellsSchema
 
 // ----------------------------------------
 
+/**
+ * The grants the pairing dialog may hand out.
+ *
+ * A closed enum, not `z.string()`: these values become the device's `capabilities`, and the
+ * desktop's COMMAND_POLICY table decides which one each command type requires. A free-form string
+ * here could only ever be a grant that matches nothing — which reads on screen as "this device may
+ * do X" while denying every X (review 2 §P0.3). It is duplicated from `MobileCapability` in
+ * shared/types/state.ts rather than derived, because zod needs a value and that is a type; the two
+ * are pinned together by `ipc-schemas.test.ts`.
+ */
+export const mobileCapabilitySchema = z.enum([
+  "notifications",
+  "status.read",
+  "task.control",
+  "task.destructive",
+  "remote.request",
+  "remote.webSession",
+]);
+
+/** `mobile:pairing:create` payload (plan §5.2/§10.5) — the allowlist/capabilities the user picks in the "Pair device" dialog. */
+export const mobileCreatePairingInvitationSchema = z.object({
+  profileAllowlist: z.array(nonEmptyString).min(1),
+  capabilities: z.array(mobileCapabilitySchema).min(1),
+});
+export type MobileCreatePairingInvitation = z.infer<typeof mobileCreatePairingInvitationSchema>;
+
+/** `mobile:device:rename` payload — desktop-local display label only. */
+export const mobileRenameDeviceSchema = z.object({
+  deviceId: nonEmptyString,
+  label: z.string().min(1).max(60),
+});
+export type MobileRenameDevice = z.infer<typeof mobileRenameDeviceSchema>;
+
+/**
+ * `mobile:device:reject` payload (review 3 §P0.1).
+ *
+ * The reason is a closed enum, not free text: it is written to the durable audit log and shown to a
+ * human during an incident, so a renderer must not be able to put arbitrary strings there.
+ */
+export const mobileRejectDeviceSchema = z.object({
+  deviceId: nonEmptyString,
+  reason: z.enum(["sas-mismatch", "dialog-dismissed", "key-proof-failed", "grant-mismatch", "timeout"]),
+});
+export type MobileRejectDevice = z.infer<typeof mobileRejectDeviceSchema>;
+
+/** `mobile:device:update-allowlist` payload (plan §10.5 "update device capabilities/profile allowlist"). */
+export const mobileUpdateDeviceAllowlistSchema = z.object({
+  deviceId: nonEmptyString,
+  capabilities: z.array(mobileCapabilitySchema).optional(),
+  profileAllowlist: z.array(nonEmptyString).optional(),
+});
+export type MobileUpdateDeviceAllowlist = z.infer<typeof mobileUpdateDeviceAllowlistSchema>;
+
+/** `mobile:audit-log:query` payload — mirrors azureAuditLogQuerySchema's shape, scoped to MobileAuditLogFilters' fields. */
+export const mobileAuditLogQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  deviceId: z.string().optional(),
+  action: z.string().optional(),
+  status: z.enum(["success", "failure"]).optional(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().min(0).optional(),
+});
+export type MobileAuditLogQuery = z.infer<typeof mobileAuditLogQuerySchema>;
+
+// ----------------------------------------
+
+/**
+ * Body of the unauthenticated `POST /api/mobile/session/bootstrap` route
+ * (remote-server.ts, plan §9.2/§10.6). The ticket IS the auth — no session
+ * cookie or master token is required to call this route — so both fields
+ * are validated as plain non-empty strings; the actual device/pair/profile
+ * identity is read from the consumed ticket record, never trusted from here.
+ */
+export const mobileSessionBootstrapSchema = z.object({
+  ticketId: nonEmptyString,
+  secret: nonEmptyString,
+});
+export type MobileSessionBootstrap = z.infer<typeof mobileSessionBootstrapSchema>;
+
+// ----------------------------------------
+
 export function validateIpc<T extends z.ZodTypeAny>(schema: T, payload: unknown, channel: string): z.infer<T> {
   const result = schema.safeParse(payload);
   if (!result.success) {

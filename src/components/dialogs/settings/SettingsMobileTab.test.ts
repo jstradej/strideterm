@@ -1,0 +1,486 @@
+import { mount, flushPromises } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import SettingsMobileTab from "./SettingsMobileTab.vue";
+import { useAppStore } from "../../../stores/app.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyApi = any;
+
+function makePayload(mobile: AnyApi): AnyApi {
+  return {
+    meta: { appVersion: "0.0.0", platform: "test", repositoryUrl: "", versionCheck: null, recoveryCandidates: [] },
+    appState: {
+      activeWorkspaceId: "",
+      profiles: [],
+      workspaces: [],
+      windowSlots: [],
+      settings: { integrations: { mobile } },
+      tabTemplates: [],
+      ssh: {
+        hosts: [],
+        keys: [],
+        certificates: [],
+        knownHosts: {},
+        settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+      },
+    },
+    workspace: null,
+    attention: { sessions: {}, alerts: [] },
+    docker: {
+      available: false,
+      backend: null,
+      contexts: [],
+      containers: [],
+      lazydocker: { available: false, backend: null, error: "" },
+      error: "",
+      lastUpdatedAt: null,
+    },
+    git: { workspaces: {}, activeWorkspace: null, connections: [] },
+    azureDevops: { inboxItems: [], connections: [], lastUpdatedAt: null, error: "" },
+    github: { inboxItems: [], connections: [], lastUpdatedAt: null, error: "" },
+    reviewBridge: { sessions: {}, enabled: false },
+    plugins: [],
+    environment: {},
+    remoteAccess: { enabled: false, host: "", port: 0, tunnel: { active: false, url: null, error: null } },
+    taskRunner: {},
+  };
+}
+
+function makeTransport(payload: AnyApi, overrides: AnyApi = {}) {
+  let stateHandler: ((p: AnyApi) => void) | null = null;
+  let pairingProgressHandler: ((p: AnyApi) => void) | null = null;
+  return {
+    isRemote: false,
+    getState: vi.fn(() => Promise.resolve(payload)),
+    onStateUpdated: (fn: (p: AnyApi) => void) => {
+      stateHandler = fn;
+    },
+    onConnectionState: vi.fn(),
+    onMobileStatus: vi.fn(),
+    onMobilePairingProgress: (fn: (p: AnyApi) => void) => {
+      pairingProgressHandler = fn;
+    },
+    onMobileDeviceRevoked: vi.fn(),
+    createMobilePairingInvitation: vi.fn(async () => ({
+      protocolVersion: 1,
+      pairingId: "pairing-1",
+      secret: "s",
+      desktopLabel: "Desktop",
+      desktopFingerprint: "AB:CD",
+      expiresAt: Date.now() + 120_000,
+    })),
+    cancelMobilePairingInvitation: vi.fn(async () => {}),
+    listMobileDevices: vi.fn(async () => []),
+    renameMobileDevice: vi.fn(async () => ({})),
+    revokeMobileDevice: vi.fn(async () => ({})),
+    approveMobileDevice: vi.fn(async () => ({ ok: true })),
+    rejectMobileDevice: vi.fn(async () => ({})),
+    listMobileDevicesAwaitingApproval: vi.fn(async () => []),
+    updateMobileDeviceAllowlist: vi.fn(async () => ({})),
+    setMobileEnabled: vi.fn(async () => payload),
+    setMobileRelayEnabled: vi.fn(async () => payload),
+    getMobileRelayStatus: vi.fn(async () => ({
+      enabled: false,
+      state: "off",
+      relayOrigin: "",
+      internalPort: 0,
+      lastError: "",
+      stats: null,
+    })),
+    refreshMobileConnectionHealth: vi.fn(async () => ({
+      health: {
+        running: true,
+        connectionState: "connected",
+        lastError: null,
+        deviceCount: 0,
+        pendingInvitation: null,
+      },
+      quota: { used: 3, limit: 100, reservedHighPriorityRemaining: 10, resetAt: Date.now() + 3_600_000 },
+    })),
+    sendMobileTestPush: vi.fn(async () => ({ ok: true })),
+    queryMobileAuditLog: vi.fn(async () => ({ entries: [], total: 0 })),
+    _push: (p: AnyApi) => stateHandler?.(p),
+    /** Replays what the backend emits on `mobile:pairing-progress` after a claim. */
+    _pairingProgress: (p: AnyApi) => pairingProgressHandler?.(p),
+    ...overrides,
+  };
+}
+
+const SAMPLE_DEVICE = {
+  deviceId: "mobile-1",
+  label: "Pixel 8",
+  platform: "android",
+  fingerprint: "AB:CD",
+  capabilities: ["task.control"],
+  profileAllowlist: ["default"],
+  createdAt: 1000,
+  lastSeenAt: 2000,
+  revoked: false,
+  revokedAt: null,
+  verifiedAt: 3000,
+  // Review 3 §P0.1: a device is usable when a human approved it, not when it merely exists.
+  state: "active",
+  activatedAt: 3500,
+};
+
+describe("SettingsMobileTab", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  async function mountTab(transportOverrides: AnyApi = {}, mobileSettings: AnyApi = { enabled: true, devices: [] }) {
+    const payload = makePayload(mobileSettings);
+    const transport = makeTransport(payload, transportOverrides);
+    const appStore = useAppStore();
+    appStore.init(transport as AnyApi);
+    await flushPromises();
+    const wrapper = mount(SettingsMobileTab, { props: { profiles: [{ id: "default", name: "Default" }] } });
+    await flushPromises();
+    return { wrapper, transport, appStore };
+  }
+
+  test("renders the device list with platform, fingerprint, last seen, profiles, and capabilities", async () => {
+    const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+
+    expect(wrapper.text()).toContain("Pixel 8");
+    expect(wrapper.text()).toContain("android");
+    expect(wrapper.text()).toContain("Control tasks");
+    expect(wrapper.text()).toContain("Default");
+    // Review 2 §P0.7: the list must name concrete INSTALLATIONS. A label is whatever the phone
+    // typed and two phones may share one; the fingerprint is the digest of the key the pairing
+    // actually pinned, and is what a user compares against their phone before revoking a row.
+    expect(wrapper.text()).toContain("AB:CD");
+  });
+
+  test("the device row renders an iOS device as ios", async () => {
+    // The row prints device.platform verbatim, and the whole suite used to pair only Android
+    // fixtures — so nothing held the desktop to being platform-agnostic about a client that is
+    // built for both.
+    const { wrapper } = await mountTab({
+      listMobileDevices: vi.fn(async () => [
+        { ...SAMPLE_DEVICE, deviceId: "mobile-2", label: "iPhone 15", platform: "ios" },
+      ]),
+    });
+
+    expect(wrapper.text()).toContain("iPhone 15");
+    expect(wrapper.text()).toContain("ios");
+  });
+
+  test("a device waiting for the human decision says WHICH step it is waiting on", async () => {
+    // Claimed is not paired, and "proving key" and "awaiting your confirmation" are different states a
+    // user can act on differently (review 3 §P0.1). Without this, either one is indistinguishable from
+    // "notifications are broken" — the support ticket the badge exists to prevent.
+    const proving = await mountTab({
+      listMobileDevices: vi.fn(async () => [
+        { ...SAMPLE_DEVICE, state: "claimed", verifiedAt: null, activatedAt: null },
+      ]),
+    });
+    expect(proving.wrapper.text()).toContain("proving key");
+
+    const awaiting = await mountTab({
+      listMobileDevices: vi.fn(async () => [{ ...SAMPLE_DEVICE, state: "keyProven", activatedAt: null }]),
+    });
+    expect(awaiting.wrapper.text()).toContain("awaiting your confirmation");
+  });
+
+  test("an active device carries no pending badge, and a revoked one carries only ", async () => {
+    const { wrapper } = await mountTab({
+      listMobileDevices: vi.fn(async () => [
+        SAMPLE_DEVICE,
+        {
+          ...SAMPLE_DEVICE,
+          deviceId: "mobile-2",
+          state: "revoked",
+          verifiedAt: null,
+          activatedAt: null,
+          revoked: true,
+          revokedAt: 4000,
+        },
+      ]),
+    });
+
+    // A revoked device's pairing progress is not the interesting fact about it, and stacking two badges
+    // would bury the one that matters.
+    expect(wrapper.text()).not.toContain("awaiting your confirmation");
+    expect(wrapper.text()).not.toContain("proving key");
+    expect(wrapper.text()).toContain("revoked");
+  });
+
+  test("shows a QR/countdown section after starting pairing, and returns to the pair button on cancel", async () => {
+    const { wrapper } = await mountTab();
+
+    const pairButton = wrapper.findAll("button").find((b) => b.text().includes("Pair device"));
+    expect(pairButton).toBeTruthy();
+
+    await pairButton!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Expires in");
+    expect(wrapper.text()).toMatch(/\d+s/);
+
+    const cancelButton = wrapper.findAll("button").find((b) => b.text() === "Cancel");
+    await cancelButton!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain("Expires in");
+    expect(wrapper.findAll("button").some((b) => b.text().includes("Pair device"))).toBe(true);
+  });
+
+  // Review 2 §P0.4: "pokud se kód potvrzuje na obou stranách, obě UI musí ukazovat hodnotu
+  // odvozenou z tohoto transcriptu". The phone's dialog tells the user "your desktop shows the same
+  // code" — if this desktop shows nothing, the comparison the key-pinning story leans on cannot
+  // happen, and a substituted key is invisible.
+  test("the pairing code is shown with the two decisions it gates", async () => {
+    // Review 3 §P0.1. This block used to have one button, "I compared them", which hid the code and did
+    // nothing else — the device was already live by then, and a mismatch was answered by prose telling
+    // the user to revoke afterwards. The two buttons ARE the gate now.
+    const { wrapper, transport } = await mountTab();
+
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sas: "1234 5678",
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("1234 5678");
+    expect(wrapper.text()).toContain("Compare this code with the phone");
+    expect(wrapper.text()).toContain("Pixel 8");
+    expect(wrapper.findAll("button").some((b) => b.text().includes("Codes match"))).toBe(true);
+    expect(wrapper.findAll("button").some((b) => b.text().includes("Mismatch"))).toBe(true);
+  });
+
+  test("Codes match activates the device through the desktop-only IPC call", async () => {
+    const { wrapper, transport } = await mountTab();
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sas: "1234 5678",
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Codes match"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(transport.approveMobileDevice).toHaveBeenCalledWith("mobile-1");
+    expect(wrapper.text()).not.toContain("1234 5678");
+  });
+
+  test("Mismatch revokes the device and names the reason", async () => {
+    const { wrapper, transport } = await mountTab();
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sas: "1234 5678",
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Mismatch"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(transport.rejectMobileDevice).toHaveBeenCalledWith({ deviceId: "mobile-1", reason: "sas-mismatch" });
+    expect(wrapper.text()).not.toContain("1234 5678");
+  });
+
+  test("a failed activation is reported, not silently swallowed", async () => {
+    // The device stays inert when the cloud refuses, so a user who pressed the button and saw nothing
+    // would reasonably assume pairing had completed — the exact fail-open reading this change removes.
+    const { wrapper, transport } = await mountTab({
+      approveMobileDevice: vi.fn(async () => ({ ok: false, reason: "key-proof-not-attested" })),
+    });
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sas: "1234 5678",
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Codes match"))!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Could not activate this device");
+    expect(wrapper.text()).toContain("key-proof-not-attested");
+  });
+
+  test("a claim whose SAS could not be derived shows no code rather than a placeholder", async () => {
+    // MobileManager returns null when either public key is unusable. A code the user is asked to
+    // compare, that was not actually derived from both real keys, is worse than no code: it trains
+    // them to accept whatever appears.
+    const { wrapper, transport } = await mountTab();
+
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sas: null,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain("Compare this code with the phone");
+  });
+
+  test("revoke requires confirmation before calling the transport", async () => {
+    const { wrapper, transport, appStore } = await mountTab({
+      listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]),
+    });
+
+    const confirmSpy = vi.spyOn(appStore, "confirmInApp").mockResolvedValue(false);
+    const revokeButton = () => wrapper.findAll("button").find((b) => b.text() === "Revoke");
+
+    await revokeButton()!.trigger("click");
+    await flushPromises();
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(transport.revokeMobileDevice).not.toHaveBeenCalled();
+
+    confirmSpy.mockResolvedValue(true);
+    await revokeButton()!.trigger("click");
+    await flushPromises();
+
+    expect(transport.revokeMobileDevice).toHaveBeenCalledWith("mobile-1");
+  });
+
+  test("renders today's push quota numbers", async () => {
+    const { wrapper } = await mountTab();
+
+    expect(wrapper.text()).toContain("3 / 100 pushes today");
+    expect(wrapper.text()).toContain("10");
+    expect(wrapper.text()).toContain("reserved for high-priority");
+  });
+
+  test("toggling Enable Mobile calls the setMobileEnabled transport action", async () => {
+    const { wrapper, transport } = await mountTab({}, { enabled: false, devices: [] });
+
+    const checkbox = wrapper.find('input[type="checkbox"]');
+    await checkbox.setValue(true);
+    await flushPromises();
+
+    expect(transport.setMobileEnabled).toHaveBeenCalledWith(true);
+  });
+
+  // Dev-environment finding 6: the flag existed, the runtime read it, and `docs/RELAY-MVP.md` told the
+  // user to turn it on in this tab — where there was no control at all. These two tests are what make
+  // "the feature is reachable" a thing that cannot silently regress.
+  test("the managed relay has its own switch, and toggling it calls setMobileRelayEnabled", async () => {
+    const { wrapper, transport } = await mountTab({}, { enabled: true, devices: [], relay: { enabled: false } });
+
+    const relayLabel = wrapper.findAll("label").find((l) => l.text().includes("Managed relay"));
+    expect(relayLabel).toBeTruthy();
+    await relayLabel!.find('input[type="checkbox"]').setValue(true);
+    await flushPromises();
+
+    expect(transport.setMobileRelayEnabled).toHaveBeenCalledWith(true);
+  });
+
+  test("a connected transport whose pair no longer recognises this desktop does not read as 'Connected'", async () => {
+    // The failure this closes: the desktop's cloud identity was re-minted, so its uid was no longer
+    // in the pair's members and every read and write was refused — while this badge said
+    // "Connected" and the phone said "Not reachable". Both were reporting the truth they could see.
+    const denied = await mountTab(
+      {
+        refreshMobileConnectionHealth: vi.fn(async () => ({
+          health: {
+            running: true,
+            connectionState: "connected",
+            lastError: null,
+            deviceCount: 1,
+            pendingInvitation: null,
+            pairAuthorization: "denied",
+          },
+          quota: null,
+        })),
+      },
+      { enabled: true, devices: [], relay: { enabled: false } },
+    );
+
+    const badge = denied.wrapper.find(".status-row .status-badge");
+    expect(badge.text()).toBe("Not authorized");
+    expect(badge.classes()).toContain("badge--warn");
+    expect(badge.attributes("title")).toContain("Re-pair the phone");
+  });
+
+  test("the relay row reports the relay's own state, so 'on' is not mistaken for 'connected'", async () => {
+    const connected = await mountTab(
+      {
+        getMobileRelayStatus: vi.fn(async () => ({
+          enabled: true,
+          state: "ready",
+          relayOrigin: "https://relay.example.test",
+          internalPort: 5123,
+          lastError: "",
+          stats: null,
+        })),
+      },
+      { enabled: true, devices: [], relay: { enabled: true } },
+    );
+    // Scoped to the relay block: the Firebase health row says "Connected" too, and the point of this
+    // test is that the RELAY's own state is what the relay row shows.
+    expect(connected.wrapper.find(".relay-block").text()).toContain("Connected");
+
+    const half = await mountTab(
+      {
+        getMobileRelayStatus: vi.fn(async () => ({
+          enabled: true,
+          state: "authenticating",
+          relayOrigin: "https://relay.example.test",
+          internalPort: 0,
+          lastError: "",
+          stats: null,
+        })),
+      },
+      { enabled: true, devices: [], relay: { enabled: true } },
+    );
+    // The switch is on in both cases; only one of them means a phone can open a session.
+    const halfText = half.wrapper.find(".relay-block").text();
+    expect(halfText).toContain("Connecting…");
+    expect(halfText).not.toContain("Connected");
+  });
+
+  test("the relay switch says what the relay can read, not only that no port is opened", async () => {
+    // "Nothing on this machine is exposed to the internet" is true about INBOUND reachability and
+    // silent about confidentiality — and because the notification/command plane genuinely IS
+    // end-to-end encrypted, silence there reads as "the relay is end-to-end too". It is not: the
+    // relay terminates TLS and forwards decrypted frames.
+    //
+    // Asserted on the copy rather than left to review because this paragraph is where the user
+    // actually consents, and a later edit tightening the wording must not drop the distinction.
+    const { wrapper } = await mountTab({}, { enabled: true, devices: [], relay: { enabled: false } });
+    const relayText = wrapper.find(".relay-block").text();
+    expect(relayText).toContain("readable by the relay while it is in flight");
+    // The other half of the sentence matters as much: without it the warning overstates the case
+    // and implies push content is readable too.
+    expect(relayText).toContain("end-to-end encrypted");
+    // Present before the user turns the relay on — the disclosure has to precede the decision.
+    expect(wrapper.find(".relay-block .status-row").exists()).toBe(false);
+  });
+
+  test("send test push button reports the result and is visibly labeled as a test", async () => {
+    const { wrapper, transport } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+
+    const testPushButton = wrapper.findAll("button").find((b) => b.text().includes("Send test push"));
+    await testPushButton!.trigger("click");
+    await flushPromises();
+
+    expect(transport.sendMobileTestPush).toHaveBeenCalledWith("mobile-1");
+    expect(wrapper.text()).toContain("Test push sent");
+  });
+});

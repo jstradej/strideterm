@@ -16,8 +16,14 @@ interface GridHandlerCtx<Payload> {
   getState: () => AppState;
   getPayload: () => Payload;
   broadcastState: () => void;
-  /** Live accessor — the registry is set (via setRemoteClientRegistry) after createRuntime starts. */
-  getRemoteClientRegistry: () => RemoteClientRegistry | null;
+  /**
+   * Live resolver for the registry that holds a given remote client.
+   *
+   * A runtime can have more than one remote server (the LAN/tunnel listener and the managed relay's
+   * internal origin), each with its own registry, so the caller's id is what decides which one
+   * answers — see `registryOwning` in runtime.ts.
+   */
+  getRemoteClientRegistry: (remoteSessionId: string) => RemoteClientRegistry | null;
 }
 
 /**
@@ -31,7 +37,7 @@ export function createGridHandlers<Payload>(ctx: GridHandlerCtx<Payload>) {
   function resolveWorkspaceGridProfile(draft: AppState, windowId?: string) {
     const remoteSessionId = parseRemoteViewerId(windowId);
     const profileId = remoteSessionId
-      ? getRemoteClientRegistry()?.get(remoteSessionId)?.profileId || "default"
+      ? getRemoteClientRegistry(remoteSessionId)?.get(remoteSessionId)?.profileId || "default"
       : windowId
         ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId
         : (draft.windowSlots || [])[0]?.profileId || "default";
@@ -51,11 +57,11 @@ export function createGridHandlers<Payload>(ctx: GridHandlerCtx<Payload>) {
   // never persisted). Grid mutations from a remote client mutate that
   // context instead of any desktop window slot.
   function readRemoteViewerGrid(remoteSessionId: string): WorkspaceGridState | null {
-    return getRemoteClientRegistry()?.get(remoteSessionId)?.workspaceGrid ?? null;
+    return getRemoteClientRegistry(remoteSessionId)?.get(remoteSessionId)?.workspaceGrid ?? null;
   }
 
   function writeRemoteViewerGrid(remoteSessionId: string, grid: WorkspaceGridState | null): void {
-    getRemoteClientRegistry()?.setWorkspaceGrid(remoteSessionId, grid, getState());
+    getRemoteClientRegistry(remoteSessionId)?.setWorkspaceGrid(remoteSessionId, grid, getState());
   }
 
   // Read the authoritative grid for a slot. Slots normally carry their own

@@ -186,7 +186,12 @@ import { resolveInputOriginWorkspaceId } from "../../app/selectors.js";
 import type { CompanionPrimaryTaskRunner } from "../../../electron/shared/companion-primary.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import { readMobileInputBarCollapsed, writeMobileInputBarCollapsed } from "../../app/helpers.js";
+import {
+  readMobileInputBarCollapsed,
+  readMobileInputDraft,
+  writeMobileInputBarCollapsed,
+  writeMobileInputDraft,
+} from "../../app/helpers.js";
 
 const api = inject<Transport>(apiKey);
 const store = useAppStore();
@@ -256,20 +261,68 @@ function dropAutofilledValue(): void {
   if (inputRef.value) inputRef.value.value = "";
 }
 
+/**
+ * Puts back what this client was typing at [sessionId], if anything.
+ *
+ * `touched` is set with it, and that is deliberate rather than incidental: the autofill guard drops
+ * unexplained text because an autofilled value is one ⏎ away from the PTY, and this text IS
+ * explained — it is the draft this same browsing context wrote and stored. Nothing here sends
+ * anything; the user still has to press enter (production hardening §5 "Session" 6).
+ */
+function restoreDraft(sessionId: string | null): void {
+  const stored = sessionId ? readMobileInputDraft(sessionId) : "";
+  if (!stored) return;
+  rewritingDraft = true;
+  draft.value = stored;
+  if (inputRef.value) inputRef.value.value = stored;
+  touched.value = true;
+  rewritingDraft = false;
+}
+
 // The input is created by Vue, so a manager can only reach it after mount —
 // one check once the fill window has passed is enough.
 onMounted(() => {
+  // Before the autofill sweep, so a restored draft is already "touched" when it runs. This is the
+  // path a background teardown and re-bootstrap comes back through: the page is new, the draft is
+  // not.
+  restoreDraft(targetSessionId.value);
   setTimeout(dropAutofilledValue, AUTOFILL_SETTLE_MS);
 });
 
+// Which session the CURRENT field contents belong to. A plain variable rather than a computed,
+// because it has to change at an exact point inside the session-switch handler below: between
+// clearing the outgoing session's text and restoring the incoming session's.
+let draftOwner: string | null = targetSessionId.value;
+// Set while the switch handler is rewriting the field, so its own clear/restore writes are not
+// mistaken for the user typing.
+let rewritingDraft = false;
+
+// Every keystroke, stored against the session it belongs to. `flush: "sync"` matters: the default
+// deferred flush would run these callbacks after the switch handler had finished, by which point
+// "which session was this text typed at" is no longer answerable.
+watch(
+  draft,
+  (value) => {
+    if (rewritingDraft || !draftOwner) return;
+    writeMobileInputDraft(draftOwner, value);
+  },
+  { flush: "sync" },
+);
+
 watch(targetSessionId, (sessionId, previousSessionId) => {
   if (sessionId !== previousSessionId) {
+    rewritingDraft = true;
     ignoreCompositionEnd.value = composing.value;
     valueAfterIgnoredComposition = "";
     draft.value = "";
     if (inputRef.value) inputRef.value.value = "";
     composing.value = false;
     submitAfterComposition.value = false;
+    draftOwner = sessionId;
+    rewritingDraft = false;
+    // The new session's own draft, if it has one. Empty is the ordinary case and leaves the field as
+    // the lines above just left it.
+    restoreDraft(sessionId);
   }
 });
 
@@ -447,7 +500,9 @@ function sendMenuKey(key: AccessoryKey): void {
 
 // Insert "/" into the draft so the user can build an agent slash command
 // (e.g. "/help") in the field and send it with ⏎. Mirrors the paste dance so
-// an in-flight IME composition can't clobber the inserted character.
+// an in-flight IME composition can't clobber the inserted character. Deliberately
+// does not focus the field: on a phone only a direct tap in the editor may open
+// the software keyboard.
 function insertSlash(): void {
   const current = composing.value ? (inputRef.value?.value ?? draft.value) : draft.value;
   ignoreCompositionEnd.value = composing.value;
@@ -458,7 +513,6 @@ function insertSlash(): void {
   if (inputRef.value) inputRef.value.value = draft.value;
   menuOpen.value = false;
   touched.value = true;
-  inputRef.value?.focus();
 }
 
 // Quick full slash commands. Unlike the "/" insert, these REPLACE the draft with
@@ -475,7 +529,6 @@ function setSlashCommand(cmd: string): void {
   if (inputRef.value) inputRef.value.value = draft.value;
   menuOpen.value = false;
   touched.value = true;
-  inputRef.value?.focus();
 }
 
 // Copy the visible terminal screen to the clipboard. Selecting text by hand is
@@ -571,7 +624,6 @@ async function pasteFromClipboard(): Promise<void> {
   // browser still considers the composition active.
   if (inputRef.value) inputRef.value.value = draft.value;
   touched.value = true;
-  inputRef.value?.focus();
 }
 
 function handleCompositionEnd(event: CompositionEvent): void {
@@ -596,11 +648,8 @@ function collapse(): void {
 function expand(): void {
   collapsed.value = false;
   writeMobileInputBarCollapsed(false);
-  // The input doesn't exist until the v-if re-renders, so focus has to wait
-  // for nextTick. Unlike showMobileKeyboard in App.vue (which focuses
-  // synchronously inside the click handler), a microtask-delayed focus is
-  // not guaranteed to keep the user-gesture context on iOS Safari — the
-  // on-screen keyboard may not auto-open there; tapping the field still works.
-  nextTick(() => inputRef.value?.focus());
+  // Expanding is a layout action, not an intent to type. Leaving focus alone
+  // prevents Android/iOS from opening the keyboard until the user taps the
+  // editor itself.
 }
 </script>

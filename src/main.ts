@@ -10,6 +10,7 @@ import { useGitUiStore } from "./stores/git-ui.js";
 import { useAzurePipelinesStore } from "./stores/azure-pipelines.js";
 import { rlog } from "./lib/renderer-log.js";
 import { apiKey } from "./types/keys.js";
+import { bootstrapMobileSessionFromFragment } from "./mobile-session-bootstrap.js";
 
 // crypto.randomUUID is gated to secure contexts (HTTPS / localhost / file://).
 // The remote web client served over LAN HTTP is not a secure context, so it
@@ -153,28 +154,36 @@ if (popoutView === "diff-popout") {
     popApp.mount("#app");
   });
 } else {
-  const api = createTransport();
+  // A mobile WebView open carries a one-time session ticket in the URL fragment (plan §9.2);
+  // exchange it for the session cookie before mounting. If that exchange succeeds it reloads the
+  // page itself, so skip mounting this now-stale load entirely. A page with no such fragment
+  // (the normal browser/Telegram `?token=` path) resolves this immediately with `false`.
+  void bootstrapMobileSessionFromFragment().then((reloading) => {
+    if (reloading) return;
 
-  const app = createApp(App);
-  app.use(createPinia());
-  app.provide(apiKey, api);
-  app.mount("#app");
+    const api = createTransport();
 
-  // Init stores after Pinia is mounted
-  const appStore = useAppStore();
-  const terminalStore = useTerminalStore();
-  const gitUiStore = useGitUiStore();
-  const azurePipelinesStore = useAzurePipelinesStore();
+    const app = createApp(App);
+    app.use(createPinia());
+    app.provide(apiKey, api);
+    app.mount("#app");
 
-  terminalStore.init(api, APP_CONFIG, {
-    getActiveSessionId: () => appStore.activeSessionId,
-    getOverlay: () => appStore.overlay,
-    getPayload: () => appStore.payload,
+    // Init stores after Pinia is mounted
+    const appStore = useAppStore();
+    const terminalStore = useTerminalStore();
+    const gitUiStore = useGitUiStore();
+    const azurePipelinesStore = useAzurePipelinesStore();
+
+    terminalStore.init(api, APP_CONFIG, {
+      getActiveSessionId: () => appStore.activeSessionId,
+      getOverlay: () => appStore.overlay,
+      getPayload: () => appStore.payload,
+    });
+
+    appStore.init(api);
+    gitUiStore.init(api);
+    azurePipelinesStore.init(api);
   });
-
-  appStore.init(api);
-  gitUiStore.init(api);
-  azurePipelinesStore.init(api);
 }
 
 // Pre-render noise texture to PNG once — replaces runtime SVG feTurbulence filter
