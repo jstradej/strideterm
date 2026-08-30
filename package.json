@@ -153,7 +153,7 @@
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "^6.0.0",
-    "effect": "4.0.0-rc.111",
+    "effect": "4.0.0-rc.112",
     "monaco-editor": "^0.56.0",
     "node-pty": "^1.1.0",
     "pinia": "^4.0.3",
