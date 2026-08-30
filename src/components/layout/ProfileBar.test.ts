@@ -34,8 +34,8 @@ describe("ProfileBar — sidebar view toggle", () => {
 
     const button = wrapper.get(".profile-bar__view-toggle");
     expect(button.classes()).not.toContain("profile-bar__view-toggle--active");
-    expect(button.attributes("title")).toContain("Click to switch to a view grouped by when you last opened");
-    expect(button.attributes("aria-label")).toContain("recently opened view");
+    expect(button.attributes("title")).toContain("Click to add shortcuts to the workspaces you worked in");
+    expect(button.attributes("aria-label")).toContain("recently worked in");
   });
 
   it("shows the active accent state and swapped copy when the profile's mode is recent", () => {
@@ -45,8 +45,8 @@ describe("ProfileBar — sidebar view toggle", () => {
 
     const button = wrapper.get(".profile-bar__view-toggle");
     expect(button.classes()).toContain("profile-bar__view-toggle--active");
-    expect(button.attributes("title")).toContain("Click to switch back to the manually ordered tree");
-    expect(button.attributes("aria-label")).toContain("manually ordered workspace tree");
+    expect(button.attributes("title")).toContain("Click to hide them");
+    expect(button.attributes("aria-label")).toContain("Hide the recently worked shortcuts");
   });
 
   it("clicking calls store.saveSidebarWorkspaceViewMode with the opposite mode", async () => {

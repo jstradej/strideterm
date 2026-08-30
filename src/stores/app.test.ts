@@ -1303,18 +1303,18 @@ describe("resolveViewerProfileId — pinned fallback order", () => {
   });
 });
 
-// The sidebar's "recent" view buckets workspaces by `lastUsedAt`, which the
-// backend stamps on every activation. `filteredWorkspaces` memoizes its result
-// behind a per-workspace fingerprint — if that fingerprint omits `lastUsedAt`,
-// a freshly activated workspace keeps the pre-activation object and stays
-// stuck in the "Older" section for the rest of the session.
-describe("useAppStore — filteredWorkspaces reflects a lastUsedAt stamp", () => {
+// The sidebar's "Recently worked" list sorts workspaces by `lastWorkedAt`,
+// which the backend stamps on confirmed user work. `filteredWorkspaces`
+// memoizes its result behind a per-workspace fingerprint — if that fingerprint
+// omits `lastWorkedAt`, a freshly worked-in workspace keeps the pre-stamp
+// object and the list stays frozen for the rest of the session.
+describe("useAppStore — filteredWorkspaces reflects a lastWorkedAt stamp", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
   });
 
-  it("a broadcast that only changes lastUsedAt invalidates the memo", async () => {
+  it("a broadcast that only changes lastWorkedAt invalidates the memo", async () => {
     const initial = makeBasePayload();
     const transport = makeElectronTransport(initial);
     const store = useAppStore();
@@ -1326,14 +1326,130 @@ describe("useAppStore — filteredWorkspaces reflects a lastUsedAt stamp", () =>
 
     // Prime the memo.
     expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws1", "ws2"]);
-    expect(store.filteredWorkspaces[0].lastUsedAt).toBeUndefined();
+    expect((store.filteredWorkspaces[0] as AnyApi).lastWorkedAt).toBeUndefined();
 
     const stampedAt = "2026-08-27T09:06:53.965Z";
     const next = makeBasePayload();
-    next.appState.workspaces[0] = { ...next.appState.workspaces[0], lastUsedAt: stampedAt };
+    next.appState.workspaces[0] = { ...next.appState.workspaces[0], lastWorkedAt: stampedAt };
     (transport as AnyApi)._push(next);
     await nextTick();
 
-    expect(store.filteredWorkspaces[0].lastUsedAt).toBe(stampedAt);
+    expect((store.filteredWorkspaces[0] as AnyApi).lastWorkedAt).toBe(stampedAt);
+  });
+});
+
+// V2 plan, Fáze 1 — `attention` is a GLOBAL runtime resource. It used to be
+// stored in `_workspacePayloadCache` under the active workspace's id and
+// restored on the next optimistic activation, which replayed a stale copy of
+// global state: a live alert briefly vanished, and an already-cleared alert
+// came back from the dead. `useNotificationCapture` deduplicates on the
+// presence edge, so every resurrection was captured as a brand-new event —
+// the observed "5×" on a single backend alert.
+describe("useAppStore — a global alert is never cached per workspace", () => {
+  const ALERT_A = {
+    projectId: "ws1",
+    panelId: "panel-a",
+    sessionId: "ws1:panel-a",
+    title: "claude",
+    exitCode: null,
+    kind: "waiting",
+    tier: 1,
+    urgency: "normal",
+    detail: "",
+    at: "2026-08-29T19:17:57.907Z",
+  };
+
+  function payloadWith(activeWorkspaceId: string, alerts: AnyApi[]): AnyApi {
+    const p = makeBasePayload();
+    p.appState.activeWorkspaceId = activeWorkspaceId;
+    p.appState.windowSlots = [{ id: "slot1", profileId: "p1", activeWorkspaceId, activeSessionId: "" }];
+    p.workspace = { id: activeWorkspaceId, sessions: [] };
+    p.attention = {
+      sessions: {},
+      byWorkspace: alerts.length ? { ws1: { count: alerts.length, latestAt: alerts[0].at, alerts } } : {},
+      byProject: alerts.length ? { ws1: { count: alerts.length, latestAt: alerts[0].at, alerts } } : {},
+    };
+    return p;
+  }
+
+  function liveAlerts(store: AnyApi): AnyApi[] {
+    return (store.payload?.attention as AnyApi)?.byWorkspace?.ws1?.alerts || [];
+  }
+
+  function makeActivationTransport(initialPayload: AnyApi) {
+    const transport = makeElectronTransport(initialPayload) as AnyApi;
+    transport._nextResponse = initialPayload;
+    transport.activateWorkspace = vi.fn(() => Promise.resolve(transport._nextResponse));
+    return transport;
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  it("keeps a live alert visible across repeated workspace switches", async () => {
+    // Start with NO alert so the caches recorded below are genuinely stale.
+    const transport = makeActivationTransport(payloadWith("ws1", []));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+
+    // Visit both workspaces once — each visit records an alert-free cache entry.
+    for (const target of ["ws2", "ws1"]) {
+      transport._nextResponse = payloadWith(target, []);
+      await store.activateWorkspace(target);
+      await nextTick();
+    }
+
+    // Backend raises alert A once and broadcasts it.
+    transport._push(payloadWith("ws1", [ALERT_A]));
+    await nextTick();
+    expect(liveAlerts(store)).toHaveLength(1);
+
+    // ws1 → ws2 → ws1 → ws2, four optimistic phases over caches recorded
+    // BEFORE the alert existed. The alert must never blink out.
+    for (const target of ["ws2", "ws1", "ws2", "ws1"]) {
+      transport._nextResponse = payloadWith(target, [ALERT_A]);
+      const pending = store.activateWorkspace(target);
+      // Synchronous optimistic phase — before the server response is adopted.
+      expect(liveAlerts(store)).toHaveLength(1);
+      await pending;
+      await nextTick();
+      expect(liveAlerts(store)).toHaveLength(1);
+    }
+  });
+
+  it("does not resurrect an alert the backend already cleared", async () => {
+    const transport = makeActivationTransport(payloadWith("ws1", [ALERT_A]));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+
+    // Prime a cache entry for ws2 while the alert is still live.
+    transport._nextResponse = payloadWith("ws2", [ALERT_A]);
+    await store.activateWorkspace("ws2");
+    await nextTick();
+    expect(liveAlerts(store)).toHaveLength(1);
+
+    // Backend clears the alert (user revealed the session) and broadcasts.
+    transport._push(payloadWith("ws2", []));
+    await nextTick();
+    expect(liveAlerts(store)).toHaveLength(0);
+
+    // Every subsequent activation — including back to ws1, whose cache entry
+    // was recorded while the alert was live — must leave it cleared.
+    for (const target of ["ws1", "ws2", "ws1"]) {
+      transport._nextResponse = payloadWith(target, []);
+      const pending = store.activateWorkspace(target);
+      expect(liveAlerts(store)).toHaveLength(0);
+      await pending;
+      await nextTick();
+      expect(liveAlerts(store)).toHaveLength(0);
+    }
   });
 });

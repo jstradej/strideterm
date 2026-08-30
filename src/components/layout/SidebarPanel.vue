@@ -8,11 +8,39 @@
     @dragleave="onListDragleave"
     @drop="onListDrop"
     @dragend="onListDragend"
+    @pointerenter="lock.onPointerEnter"
+    @pointerleave="lock.onPointerLeave"
+    @focusin="lock.onFocusIn"
+    @focusout="lock.onFocusOut"
   >
-    <!-- "In split" group: workspaces currently displayed in the workspace grid -->
+    <!-- RUNNING surface: what is working RIGHT NOW and where, on a fixed
+         position above the list in BOTH view modes. The canonical tree below
+         is untouched — a running workspace also keeps its usual place there —
+         but the top RECENT section is disjoint from this one, so the same task
+         never fills a slot in both (V5 review, §4). -->
+    <RunningAgentsPanel
+      v-if="!store.sidebarCollapsed"
+      :clusters="presentedRunningClusters"
+      :now="recentNow"
+      :active-workspace-id="store.myActiveWorkspaceId || ''"
+      :attention-counts="recentAttentionCounts"
+      :status-cues="workspaceStatusCues"
+      @activate="onActivateAgentRow"
+    />
+    <!-- "In split" group: workspaces currently displayed in the workspace grid.
+         SUSPENDED during a search, exactly like RUNNING and RECENT above: an
+         unfiltered third shortcut surface would put workspaces that do not
+         match the query above the results, and a matching grid workspace would
+         appear twice — once here and once in the canonical search tree (V7
+         review, §"P2 UX — `IN SPLIT` zůstává během search nefiltrovaný"). It is
+         not filtered into a fourth variant of the list: the grid state stays
+         readable because the card in the search tree still carries `inGrid` and
+         its `slotIndex`, `workspaceGrid` itself is untouched, and clearing the
+         query brings the section back in the same slot order. -->
     <div
-      v-if="splitGroupCards.length > 0"
+      v-if="!searchActive && splitGroupCards.length > 0"
       class="workspace-list__split-group"
+      data-role="split-group"
       :title="'These workspaces are pinned to slots in the active workspace grid. Click ✕ to disband the grid.'"
     >
       <p class="eyebrow workspace-list__split-title">
@@ -39,56 +67,87 @@
       />
       <hr class="workspace-list__divider" />
     </div>
-    <template v-if="!isRecentActive">
-      <WorkspaceCard
-        v-for="ws in treeCards"
-        :key="ws.id"
-        :workspace="ws"
-        :data-workspace-id="ws.id"
-        @activate="onActivate(ws.id)"
-        @open-menu="onOpenMenu($event, ws)"
-        @toggle-star="handleToggleStar(ws)"
-        @task-toggle="handleTaskToggle(ws)"
-        @task-stop="handleTaskStop(ws)"
-      />
-      <p v-if="searchQuery && treeCards.length === 0" class="workspace-list__no-match">
-        No workspace matches “{{ store.workspaceSearchQuery.trim() }}”.
+    <!-- RECENTLY WORKED: compact shortcuts to the workspaces the user really
+         worked in during the last 24h, as a minimal activity forest — connected
+         results share one cluster and each workspace is drawn exactly once.
+         Purely additive: every one of them is also still in the canonical tree
+         below, under its real parent. -->
+    <div v-if="showRecentShortcuts" class="recent-shortcuts" data-role="recent-shortcuts">
+      <p class="eyebrow recent-shortcuts__title">
+        <button
+          type="button"
+          class="recent-shortcuts__toggle"
+          :aria-expanded="!recentCollapsed"
+          :title="recentCollapsed ? 'Expand recently worked' : 'Collapse recently worked'"
+          @click="recentCollapsed = !recentCollapsed"
+        >
+          <span class="recent-shortcuts__caret" aria-hidden="true">{{ recentCollapsed ? "▸" : "▾" }}</span>
+          <span>Recently worked · 24h ({{ recentTotal }})</span>
+        </button>
       </p>
-    </template>
-    <template v-else>
-      <template v-for="item in visibleRecentItems" :key="item.key">
-        <p v-if="item.type === 'section'" class="workspace-list__section-header">
-          <button
-            v-if="item.sectionKey === 'older'"
-            type="button"
-            class="workspace-list__section-toggle"
-            :aria-expanded="!olderCollapsed"
-            :title="olderCollapsed ? 'Expand Older' : 'Collapse Older'"
-            @click="olderCollapsed = !olderCollapsed"
-          >
-            <span class="workspace-list__section-caret" aria-hidden="true">{{ olderCollapsed ? "▸" : "▾" }}</span>
-            <span>{{ item.label }} ({{ item.count }})</span>
-          </button>
-          <span v-else>{{ item.label }}</span>
-        </p>
-        <WorkspaceContextRow
-          v-else-if="item.type === 'context'"
-          :name="item.name"
-          :icon="item.icon"
-          :depth="item.depth"
+      <template v-if="!recentCollapsed">
+        <WorkspaceActivityCluster
+          v-for="cluster in recentRowsByCluster"
+          :key="cluster.key"
+          :cluster-key="cluster.key"
+          :nodes="cluster.rows"
+          @activate="onActivateRecentRow"
         />
-        <WorkspaceCard
-          v-else
-          :workspace="item.card"
-          :data-workspace-id="item.workspaceId"
-          @activate="onActivate(item.workspaceId)"
-          @open-menu="onOpenMenu($event, item.card)"
-          @toggle-star="handleToggleStar(item.card)"
-          @task-toggle="handleTaskToggle(item.card)"
-          @task-stop="handleTaskStop(item.card)"
-        />
+        <button
+          v-if="hiddenRecentCount > 0"
+          type="button"
+          class="recent-shortcuts__more"
+          data-role="recent-shortcuts-more"
+          @click="onToggleRecentExpanded"
+        >
+          {{ recentExpanded ? "Show less" : `Show ${hiddenRecentCount} more` }}
+        </button>
       </template>
-    </template>
+      <hr class="workspace-list__divider" />
+    </div>
+    <!-- ALL WORKSPACES: the canonical tree, always complete. Recent
+         workspaces are NOT filtered out of it — doing so would turn the tree
+         back into a fragment, with fresh children vanishing from their
+         parents. -->
+    <!-- ONE heading over the canonical tree, saying which question it is
+         answering. During a search that is `Search results (N)` — both dynamic
+         surfaces above are suspended, so this projection is the single answer,
+         and N counts real MATCHES, never the parents kept for orientation
+         (V6 review, §"P2 UX — search má být jeden explicitní režim"). With no
+         results there is nothing to head, and the empty state below speaks
+         alone.
+         Otherwise it is labelled whenever the recent surface is the active
+         mode, not merely when it has rows: RUNNING and RECENT are disjoint, so
+         a moment where every recent workspace is busy is ordinary — and the
+         canonical tree below still deserves its heading. -->
+    <p
+      v-if="searchActive && !store.sidebarCollapsed && searchMatchCount > 0"
+      class="eyebrow recent-shortcuts__all-title"
+      data-role="search-results-title"
+    >
+      Search results ({{ searchMatchCount }})
+    </p>
+    <p
+      v-else-if="isRecentActive && !store.sidebarCollapsed"
+      class="eyebrow recent-shortcuts__all-title"
+      data-role="all-workspaces-title"
+    >
+      All workspaces ({{ treeCards.length }})
+    </p>
+    <WorkspaceCard
+      v-for="ws in treeCards"
+      :key="ws.id"
+      :workspace="ws"
+      :data-workspace-id="ws.id"
+      @activate="onActivate(ws.id)"
+      @open-menu="onOpenMenu($event, ws)"
+      @toggle-star="handleToggleStar(ws)"
+      @task-toggle="handleTaskToggle(ws)"
+      @task-stop="handleTaskStop(ws)"
+    />
+    <p v-if="searchQuery && treeCards.length === 0" class="workspace-list__no-match">
+      No workspace matches “{{ store.workspaceSearchQuery.trim() }}”.
+    </p>
     <button
       type="button"
       class="workspace-new-tile"
@@ -221,15 +280,23 @@ import { useNotificationStore } from "../../stores/notifications.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { useContextMenu } from "../../composables/useContextMenu.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
-import {
-  resolveParentId,
-  buildRecentProjection,
-  type RecentRenderItem,
-} from "../../app/workspace-sidebar-projection.js";
+import { buildRecentWorkspaceShortcuts, type RecentWorkspaceShortcut } from "../../app/workspace-sidebar-projection.js";
+import { resolveParentId } from "../../app/workspace-tree.js";
+import { buildActivityForest, type ActivityCluster, type ActivityRowView } from "../../app/workspace-activity-tree.js";
+import { formatRelativeAge } from "../../app/relative-age.js";
+import { resolveWorkspaceStatusCue, type WorkspaceStatusCue } from "../../app/workspace-status.js";
 import type { Transport } from "../../transport.js";
 import type { GitSnapshot, StatePayload, WorkspaceState } from "../../../electron/shared/types/state.js";
+import { collectSupervisedAgents, type RunningAgentRow } from "../../app/selectors.js";
+import {
+  mergeRecentRowWhileLocked,
+  mergeRunningRowWhileLocked,
+  projectPresentedForest,
+} from "../../app/sidebar-presented-rows.js";
+import { useSidebarInteractionLock } from "../../composables/useSidebarInteractionLock.js";
 import WorkspaceCard from "./WorkspaceCard.vue";
-import WorkspaceContextRow from "./WorkspaceContextRow.vue";
+import WorkspaceActivityCluster from "./WorkspaceActivityCluster.vue";
+import RunningAgentsPanel from "./RunningAgentsPanel.vue";
 
 interface LiveTask {
   state?: string;
@@ -286,6 +353,17 @@ interface PluginEntry {
   error?: unknown;
   workspaceDefaults?: { name?: string };
 }
+
+const props = defineProps<{
+  /**
+   * True while the mobile / narrow sidebar DRAWER is open. `sidebarOpen` lives
+   * in App.vue, so it has to be handed down: on a touch drawer the user is
+   * already committed to navigating the moment it opens, well before a pointer
+   * lands on a row, so the whole open drawer is one interaction and the
+   * dynamic surfaces stay frozen for its entire lifetime (V3 review, §2).
+   */
+  drawerOpen?: boolean;
+}>();
 
 const store = useAppStore();
 const notifications = useNotificationStore();
@@ -356,46 +434,71 @@ watch(
   { immediate: true },
 );
 
-const starFilteredCards = computed(() => {
-  if (!store.starFilterActive) return workspaceCards.value;
+/**
+ * The star filter's TWO roles.
+ *
+ * `activityIds` is what the user actually pinned: a starred workspace and its
+ * descendants. `contextIds` is the ancestors kept only so the canonical tree
+ * keeps its shape — without them a starred child would float with no parent.
+ *
+ * The two used to be one set, and the recent surface took the whole union as
+ * its activity allowlist. Star a nested child whose unstarred parent happens to
+ * have its own `lastWorkedAt`, and that parent became a full recent ACTIVITY
+ * row rather than the orientation row it is (V6 review, §"P2 — star filter
+ * směšuje activity scope a context ancestry"). An ancestor that is itself
+ * starred, or sits under another starred root, is in `activityIds` already and
+ * legitimately keeps its time.
+ *
+ * `activityIds` is null when the filter is off — "everything qualifies", which
+ * is a different statement from "this empty set qualifies".
+ */
+const starRoles = computed((): { activityIds: Set<string> | null; contextIds: Set<string> } => {
+  if (!store.starFilterActive) return { activityIds: null, contextIds: new Set() };
   const allWs = store.filteredWorkspaces;
-  // Build parent→children and child→parent maps
-  const childrenOf = new Map(); // parentId → Set<childId>
-  const parentOf = new Map(); // childId → parentId
+  const childrenOf = new Map<string, Set<string>>();
+  const parentOf = new Map<string, string>();
   for (const ws of allWs) {
     const pid = resolveParentId(ws, allWs);
     if (pid) {
       parentOf.set(ws.id, pid);
       if (!childrenOf.has(pid)) childrenOf.set(pid, new Set());
-      childrenOf.get(pid).add(ws.id);
+      (childrenOf.get(pid) as Set<string>).add(ws.id);
     }
   }
-  // Recursively collect all descendants of a workspace
+
+  const activityIds = new Set<string>();
   function addDescendants(id: string): void {
-    const kids = childrenOf.get(id);
-    if (!kids) return;
-    for (const kid of kids) {
-      visible.add(kid);
+    for (const kid of childrenOf.get(id) || []) {
+      if (activityIds.has(kid)) continue;
+      activityIds.add(kid);
       addDescendants(kid);
     }
   }
-  // Walk up to the root ancestor
-  function addAncestors(id: string): void {
-    const pid = parentOf.get(id);
-    if (pid) {
-      visible.add(pid);
-      addAncestors(pid);
-    }
-  }
-  // Collect visible IDs
-  const visible = new Set();
   for (const ws of allWs) {
     if (!ws.starred) continue;
-    visible.add(ws.id);
-    addAncestors(ws.id);
+    activityIds.add(ws.id);
     addDescendants(ws.id);
   }
-  return workspaceCards.value.filter((card) => visible.has(card.id));
+
+  // Ancestors LAST, and never over an id that already earned its activity
+  // role: the two sets are roles, not a priority list.
+  const contextIds = new Set<string>();
+  for (const id of activityIds) {
+    let pid = parentOf.get(id);
+    const walked = new Set<string>();
+    while (pid && !walked.has(pid)) {
+      walked.add(pid);
+      if (!activityIds.has(pid)) contextIds.add(pid);
+      pid = parentOf.get(pid);
+    }
+  }
+  return { activityIds, contextIds };
+});
+
+const starFilteredCards = computed(() => {
+  const { activityIds, contextIds } = starRoles.value;
+  if (!activityIds) return workspaceCards.value;
+  return workspaceCards.value.filter((card) => activityIds.has(card.id) || contextIds.has(card.id));
 });
 
 // Free-text name filter (sidebar profile row). Matches the query as a
@@ -403,29 +506,174 @@ const starFilteredCards = computed(() => {
 // a match are kept so an indented child never floats without its parent.
 const searchQuery = computed(() => store.workspaceSearchQuery.trim().toLowerCase());
 
-const displayedCards = computed(() => {
+/**
+ * SEARCH is its own presentation mode (V6 review, §"P2 UX — search má být jeden
+ * explicitní režim, ne Recent plus další seznam").
+ *
+ * The 15:12 screenshot showed what was missing: the Recent heading simply
+ * vanished, the tree below it gained no heading of its own, and RUNNING kept
+ * rendering UNFILTERED above the results — so a task that matched the query
+ * could appear twice, and nothing on screen said what had happened.
+ *
+ * So a non-empty query hides BOTH dynamic surfaces and labels the canonical
+ * tree as the single answer. It does not touch `sidebarWorkspaceViewMode`:
+ * recent mode is SUSPENDED, and clearing the query brings it back in the same
+ * collapsed / Show-more state it had.
+ */
+const searchActive = computed(() => searchQuery.value.length > 0);
+
+/**
+ * The two roles again, for the search projection: workspaces whose NAME
+ * matched, and the parents kept purely so the matches keep their place in the
+ * tree. `SEARCH RESULTS (N)` counts the first kind only.
+ *
+ * ORDER MATTERS, and it used to be wrong (V7 review, §"P1 UX correctness —
+ * star scope a search ancestry se skládají v nesprávném pořadí"). Matches were
+ * collected over the whole profile and their ancestry closed first; the star
+ * projection closed its own ancestry independently; `displayedCards` then
+ * INTERSECTED the two finished closures. Two consequences, both visible:
+ *
+ *   - a root that sits in both closures survived even when every real match
+ *     had been filtered out by the star scope, so the user got a lone parent
+ *     with no match under it, no heading (the count was 0) and no empty state
+ *     (the tree was not empty);
+ *   - an unstarred ancestor present in the star projection only as CONTEXT
+ *     could match the query itself and be counted as a genuine result,
+ *     although it is not in `activityIds`.
+ *
+ * So the pipeline is now: scope → match → close. Eligibility is the star
+ * filter's ACTIVITY ids alone (the whole profile when the filter is off);
+ * ancestry is computed from the SURVIVING matches over the full
+ * profile-scoped tree, so a parent returns only as an ancestor of a real
+ * result. Star `contextIds` go back to their single meaning — orientation in
+ * the canonical star tree — and are never implicitly searchable.
+ */
+const searchRoles = computed((): { matchIds: Set<string>; contextIds: Set<string> } => {
+  const matchIds = new Set<string>();
+  const contextIds = new Set<string>();
   const query = searchQuery.value;
-  if (!query) return starFilteredCards.value;
+  if (!query) return { matchIds, contextIds };
   const allWs = store.filteredWorkspaces;
   const parentOf = new Map<string, string>();
   for (const ws of allWs) {
     const pid = resolveParentId(ws, allWs);
     if (pid) parentOf.set(ws.id, pid);
   }
-  const visible = new Set<string>();
+  // 1. The eligible scope, BEFORE any matching: everything in the profile, or
+  //    — with the star filter on — only what the user actually pinned.
+  const eligibleIds = starRoles.value.activityIds;
+  // 2. Match inside that scope only.
   for (const ws of allWs) {
-    if (!ws.name.toLowerCase().includes(query)) continue;
-    visible.add(ws.id);
-    let pid = parentOf.get(ws.id);
-    while (pid && !visible.has(pid)) {
-      visible.add(pid);
+    if (eligibleIds && !eligibleIds.has(ws.id)) continue;
+    if (
+      !String(ws.name || "")
+        .toLowerCase()
+        .includes(query)
+    )
+      continue;
+    matchIds.add(ws.id);
+  }
+  // 3. Ancestry, from the survivors only, over the full profile-scoped tree —
+  //    so a match keeps its place even under a parent the star scope excluded.
+  for (const id of matchIds) {
+    let pid = parentOf.get(id);
+    const walked = new Set<string>();
+    while (pid && !walked.has(pid)) {
+      walked.add(pid);
+      if (!matchIds.has(pid)) contextIds.add(pid);
       pid = parentOf.get(pid);
     }
   }
-  return starFilteredCards.value.filter((card) => visible.has(card.id));
+  return { matchIds, contextIds };
 });
 
-// --- "recent" workspace view ---------------------------------------------
+// The search runs over the WHOLE profile, narrowed by the star scope that is
+// already active — never over the recent list alone. During a search the
+// projection comes STRAIGHT from `searchRoles`, not from an intersection with
+// `starFilteredCards`: the star scope has already been applied, in step 1
+// above, to the matches themselves.
+const displayedCards = computed(() => {
+  if (!searchActive.value) return starFilteredCards.value;
+  const { matchIds, contextIds } = searchRoles.value;
+  return workspaceCards.value.filter((card) => matchIds.has(card.id) || contextIds.has(card.id));
+});
+
+/**
+ * Real matches — what the heading counts. The star scope is already inside
+ * `matchIds`, and with no match there is no context either, so
+ * `searchMatchCount === 0` and an empty tree are now the same statement: the
+ * empty state below is the single thing on screen.
+ */
+const searchMatchCount = computed(() => searchRoles.value.matchIds.size);
+
+// --- RUNNING agents surface ----------------------------------------------
+
+// The one row model, shared verbatim with the dock's Agents tab and the hero
+// chip — SUPERVISED runs only (a task agent or an attached/Companion task), so
+// the three surfaces cannot disagree about the count and a plain Claude Code
+// turn no longer appears and disappears here (V3 review, Fáze 1). The grid
+// goes in as an explicit argument because it is viewer-owned: this window's
+// slot numbers must not leak into another window's rows.
+//
+// This is the LIVE list. What the surface renders is
+// `presentedRunningClusters`, which freezes it while the user is aiming.
+const liveRunningRows = computed((): RunningAgentRow[] => {
+  const payload = store.payload;
+  if (!payload) return [];
+  return collectSupervisedAgents({
+    workspaces: store.filteredWorkspaces as WorkspaceState[],
+    taskRunnerSnapshot: (payload.taskRunner as Record<string, { state?: string }>) || null,
+    workspaceGrid: store.workspaceGrid,
+  });
+});
+
+// The same activity-tree projection RECENT uses, so a nested task and a nested
+// recent workspace get one hierarchy, one dedupe and one order (V5 review,
+// §3). The metric is NEGATED start time: this surface has always put the
+// longest-running agent on top — the ten-hour run the user is trying not to
+// lose — while the forest sorts by "newest metric first", so an older start
+// has to score higher. A row with no start time scores lowest and lands last,
+// exactly as before.
+const liveRunningClusters = computed((): ActivityCluster<RunningAgentRow>[] => {
+  // Search is a single-answer mode: an unfiltered RUNNING section above the
+  // results would show a matching task twice and answer a question the user
+  // did not ask (V6 review, §"P2 UX — search má být jeden explicitní režim").
+  // Suspended at the SOURCE, so the freeze, the shared clock and the section's
+  // own visibility all follow from one decision.
+  if (searchActive.value) return [];
+  return buildActivityForest({
+    selected: liveRunningRows.value.map((row) => ({
+      key: row.key,
+      workspaceId: row.hostWorkspaceId,
+      metric: row.startedAtMs ? -row.startedAtMs : Number.NEGATIVE_INFINITY,
+      payload: row,
+    })),
+    workspaces: store.filteredWorkspaces as WorkspaceState[],
+  });
+});
+
+// Workspaces RUNNING is already speaking for. RECENT subtracts them, so the
+// two top sections answer different questions and the limit of seven is spent
+// on workspaces the user cannot already see above (V5 review, §4). Taken from
+// the LIVE rows: while the lock holds, both presented sections are frozen
+// anyway, so the exclusion can only take effect at the same atomic unlock.
+const runningWorkspaceIds = computed(() => new Set(liveRunningRows.value.map((row) => row.hostWorkspaceId)));
+
+// Re-uses the sidebar's existing `activate` emit (App.vue closes the mobile
+// drawer on it) instead of inventing a reveal API, then navigates through the
+// store. Nothing is acknowledged — a running agent is not a notification.
+async function onActivateAgentRow(target: { hostWorkspaceId: string; viewId: string }): Promise<void> {
+  emit("activate", target.hostWorkspaceId);
+  const opened = await notifications.runWithToast("Open workspace failed", () =>
+    store.activateWorkspaceInGrid(target.hostWorkspaceId),
+  );
+  if (!opened) return;
+  if (target.viewId) {
+    await notifications.runWithToast("Open tab failed", () => store.activateView(target.viewId));
+  }
+}
+
+// --- "Recently worked" shortcuts -----------------------------------------
 
 const viewMode = computed<"tree" | "recent">(() =>
   (store.activeProfile as { sidebarWorkspaceViewMode?: string } | null)?.sidebarWorkspaceViewMode === "recent"
@@ -433,13 +681,20 @@ const viewMode = computed<"tree" | "recent">(() =>
     : "tree",
 );
 
-// Active search always wins — it flattens buckets away entirely so an old
-// (Older-bucket) workspace is never one profile-switch-away from findable.
-const isRecentActive = computed(() => viewMode.value === "recent" && !searchQuery.value);
+// The recent mode adds a shortcut list ABOVE the canonical tree; it never
+// replaces it. An active search SUSPENDS it — two filtered result sets for one
+// query would be indistinguishable, so the canonical tree is the single answer
+// and it wears the `Search results (N)` heading while the query lasts. The mode
+// itself is untouched, so clearing the query brings the section back in the
+// same collapsed / Show-more state. The collapsed icon strip suppresses them
+// too (see showRecentShortcuts) — two identical icons for the same workspace
+// cannot be told apart.
+const isRecentActive = computed(() => viewMode.value === "recent" && !searchActive.value);
 
-// One shared minute clock for the whole recent view (never per-card), so
-// items cross the 1h/24h/7d boundaries live. Only ticks while recent mode
-// is actually visible and the document isn't hidden.
+// One shared minute clock for the recent shortcuts AND the RUNNING surface
+// (never per-row), so rows drop out at the 24h boundary without a reload and
+// every elapsed advances together. Only ticks while one of the two actually
+// needs it and the document is not hidden.
 const recentNow = ref(Date.now());
 let recentClockTimer: ReturnType<typeof setInterval> | null = null;
 function startRecentClock(): void {
@@ -455,14 +710,19 @@ function stopRecentClock(): void {
     recentClockTimer = null;
   }
 }
+// The collapsed icon strip renders neither surface, so a collapsed sidebar
+// needs no clock at all.
+const needsRecentClock = computed(
+  () => !store.sidebarCollapsed && !searchActive.value && (isRecentActive.value || liveRunningRows.value.length > 0),
+);
 function onRecentClockVisibilityChange(): void {
   if (document.hidden) stopRecentClock();
-  else if (isRecentActive.value) startRecentClock();
+  else if (needsRecentClock.value) startRecentClock();
 }
 watch(
-  isRecentActive,
-  (active) => {
-    if (active && !document.hidden) startRecentClock();
+  needsRecentClock,
+  (needed) => {
+    if (needed && !document.hidden) startRecentClock();
     else stopRecentClock();
   },
   { immediate: true },
@@ -475,83 +735,364 @@ onUnmounted(() => {
   stopRecentClock();
 });
 
-// "Older" starts collapsed and is purely local UI state — not persisted.
-const olderCollapsed = ref(true);
+/**
+ * How many shortcuts render before the "Show N more" affordance. The whole
+ * point of the section is to stay small enough that the canonical tree is
+ * still reachable underneath it.
+ */
+const DEFAULT_RECENT_VISIBLE_LIMIT = 7;
 
-// Real-workspace ids eligible to show, post profile-scope + star filter —
-// exactly the pipeline stage the recent projection is documented to run
-// after. Context-path resolution below still uses the full profile-scoped
-// list so a shared ancestor resolves even when the star filter hid it.
-const recentVisibleIds = computed(() => new Set(starFilteredCards.value.map((card) => card.id)));
+// Both are transient renderer state, deliberately not persisted: a reload
+// starts back at the safe maximum of seven rows.
+const recentCollapsed = ref(false);
+const recentExpanded = ref(false);
 
-const rawRecentItems = computed((): RecentRenderItem[] => {
-  if (!isRecentActive.value) return [];
-  return buildRecentProjection({
-    workspaces: store.filteredWorkspaces as WorkspaceState[],
-    cards: workspaceCards.value,
-    activeWorkspaceId: store.myActiveWorkspaceId || "",
-    now: recentNow.value,
-    visibleIds: recentVisibleIds.value,
-  });
+// Ids eligible to be an ACTIVITY, post profile-scope + star filter. With the
+// filter on that is the starred scope ONLY: an ancestor kept purely so the
+// canonical tree keeps its shape must stay a context row even when it has its
+// own `lastWorkedAt` (V6 review, §"P2 — star filter směšuje activity scope a
+// context ancestry"). The forest re-adds whatever orientation it needs from
+// the full profile-scoped tree, and breadcrumbs still resolve against that
+// same list — so a star-filtered-out ancestor is still named.
+const recentVisibleIds = computed(() => {
+  const { activityIds } = starRoles.value;
+  if (activityIds) return new Set(activityIds);
+  return new Set(workspaceCards.value.map((card) => card.id));
 });
 
-// Same in-grid ghost treatment as the tree view — a workspace pinned to a
-// grid slot still renders in its recent-time section, just dimmed.
-const recentItems = computed((): RecentRenderItem[] => {
-  const occ = gridCellIds.value;
-  const slotByWs = new Map<string, number>();
+// The COMPLETE qualifying set — never truncated, and MINUS anything RUNNING is
+// already showing, so the two top sections stay disjoint. This is the LIVE
+// list; what renders is `presentedRecentClusters`, which freezes during
+// interaction.
+const liveRecentRows = computed((): RecentWorkspaceShortcut[] => {
+  if (!isRecentActive.value) return [];
+  return buildRecentWorkspaceShortcuts({
+    workspaces: store.filteredWorkspaces as WorkspaceState[],
+    now: recentNow.value,
+    visibleIds: recentVisibleIds.value,
+  }).filter((row) => !runningWorkspaceIds.value.has(row.workspaceId));
+});
+
+// The limit is applied HERE, to real workspaces, BEFORE the forest adds any
+// ancestor context — so seven still means seven workspaces the user worked in,
+// however many orientation rows the resulting shape needs (V5 review, §"Limit
+// 7 se vždy počítá z activity nodes"). `Show more` widens this set and the
+// whole forest is rebuilt from it.
+const selectedRecentRows = computed((): RecentWorkspaceShortcut[] =>
+  recentExpanded.value ? liveRecentRows.value : liveRecentRows.value.slice(0, DEFAULT_RECENT_VISIBLE_LIMIT),
+);
+
+const liveRecentClusters = computed((): ActivityCluster<RecentWorkspaceShortcut>[] =>
+  buildActivityForest({
+    selected: selectedRecentRows.value.map((row) => ({
+      key: row.workspaceId,
+      workspaceId: row.workspaceId,
+      metric: row.lastWorkedAtMs,
+      payload: row,
+    })),
+    workspaces: store.filteredWorkspaces as WorkspaceState[],
+  }),
+);
+
+// --- Interaction lock ----------------------------------------------------
+//
+// A navigation target must not move between the moment the user aims at it and
+// the click (V3 review, §2). While the pointer is over the list, the focus is
+// inside it, or the mobile drawer is open, both DYNAMIC surfaces keep the
+// FOREST they had when the interaction started. Live data still flows into
+// rows that are already presented, so attention, active/grid state, a fresher
+// `lastWorkedAt` and the elapsed keep updating — none of which changes a row's
+// height or position.
+//
+// The canonical tree is NOT locked: it sits in its manual order and ordinary
+// status changes do not move it, so there is nothing to freeze. Explicit user
+// commands (Show more, collapsing a section, disbanding the split) are never
+// deferred either — the lock only holds back BACKGROUND reflow.
+const lock = useSidebarInteractionLock({
+  element: listRef,
+  drawerOpen: computed(() => props.drawerOpen === true),
+});
+const interactionLocked = lock.locked;
+
+// The frozen unit is the WHOLE FOREST, not a key order: cluster membership, a
+// node's role, the parent-child edges and each row's navigation target are all
+// derived from the live workspace list, so holding keys alone would still let
+// a background reparent restructure the section under the pointer (V5 review,
+// §2, last bullets). `total` is frozen alongside it so the section header
+// cannot count something the list is not showing.
+const lockedRunning = ref<ActivityCluster<RunningAgentRow>[] | null>(null);
+const lockedRecent = ref<{ clusters: ActivityCluster<RecentWorkspaceShortcut>[]; total: number } | null>(null);
+
+/** Take the frozen forest for both surfaces from their live state. */
+function freezeSurfaces(): void {
+  lockedRunning.value = liveRunningClusters.value;
+  lockedRecent.value = { clusters: liveRecentClusters.value, total: liveRecentRows.value.length };
+}
+
+watch(
+  interactionLocked,
+  (isLocked) => {
+    if (isLocked) freezeSurfaces();
+    else {
+      // Unlocking is one atomic step: dropping the frozen forests applies the
+      // whole pending set at once, BOTH sections together — which is what makes
+      // a task moving between RUNNING and RECENT a single commit rather than
+      // two visible hops (V5 review, §4). Deliberately un-animated — an
+      // animated reflow is as bad for an accurate click as an instant jump.
+      lockedRunning.value = null;
+      lockedRecent.value = null;
+    }
+  },
+  // `immediate` matters for the narrow drawer: the sidebar can mount with
+  // `drawerOpen` ALREADY true, and that open drawer is one interaction from
+  // its very first frame.
+  { immediate: true },
+);
+
+// An explicit user command lands immediately — the lock only holds back
+// BACKGROUND reflow. Typing a search query, toggling the star filter,
+// collapsing the sidebar and switching the view mode are all commands the user
+// just gave, and they change which rows may exist at all. So instead of being
+// deferred they RE-FREEZE both surfaces from their new live state, which
+// becomes the baseline the rest of the interaction holds still. Without this,
+// a search typed while the mouse happened to rest over the list would leave
+// the stale shortcut list on screen next to the filtered tree — two answers to
+// one query, which is exactly what the single-result-set rule forbids.
+watch([() => store.workspaceSearchQuery, () => store.starFilterActive, () => store.sidebarCollapsed, viewMode], () => {
+  if (interactionLocked.value) freezeSurfaces();
+});
+
+// Switching the ACTIVE PROFILE is the largest explicit command of them all: it
+// replaces the whole workspace set. Deferring it was the worst case of the
+// lock's reach — a narrow drawer holds the lock for its entire lifetime, so the
+// old profile's rows stayed on screen and then decayed into `gone` placeholders
+// as they fell out of `liveWorkspaceIds`, and the new profile only appeared
+// once the drawer closed (V4 review, §"P2 — změna aktivního profilu"). The
+// snapshot is rebuilt synchronously from the NEW profile, so no row of the old
+// one survives in the frozen maps.
+watch(
+  () => store.myActiveProfileId,
+  () => {
+    // Every profile starts from the safe default of at most seven rows rather
+    // than inheriting a "Show more" the user expanded in another one.
+    recentExpanded.value = false;
+    if (interactionLocked.value) freezeSurfaces();
+  },
+);
+
+// Ids that still exist for this viewer — the test that separates "the run
+// finished / the item aged out" (keep showing the frozen row) from "the
+// workspace was hard-deleted" (show an inert, equally tall placeholder).
+const liveWorkspaceIds = computed(() => new Set(store.filteredWorkspaces.map((ws) => ws.id)));
+
+// `mergePayloadWhileLocked` is what makes the lock hold the ROW and not just
+// its slot: while frozen, a node keeps its structure, its geometry and its
+// navigation target, and only the values that render in reserved,
+// dimension-stable slots keep flowing (V4 review, §"P2 — lock drží key a
+// pořadí, ale ne strukturální význam stejného řádku").
+const presentedRunningClusters = computed(() =>
+  projectPresentedForest({
+    live: liveRunningClusters.value,
+    lockedForest: lockedRunning.value,
+    isAlive: (node) => liveWorkspaceIds.value.has(node.workspaceId),
+    mergePayloadWhileLocked: mergeRunningRowWhileLocked,
+  }),
+);
+
+const presentedRecentClusters = computed(() =>
+  projectPresentedForest({
+    live: liveRecentClusters.value,
+    lockedForest: lockedRecent.value?.clusters || null,
+    isAlive: (node) => liveWorkspaceIds.value.has(node.workspaceId),
+    mergePayloadWhileLocked: mergeRecentRowWhileLocked,
+  }),
+);
+
+/** Recent workspaces in the window — the header's count, frozen with the list. */
+const recentTotal = computed(() => lockedRecent.value?.total ?? liveRecentRows.value.length);
+
+// The section only exists when it has something to show, and never in the
+// collapsed icon strip. Driven by the PRESENTED forest so a frozen row cannot
+// have its whole section pulled out from under it. The canonical tree below is
+// unconditional.
+const showRecentShortcuts = computed(() => !store.sidebarCollapsed && presentedRecentClusters.value.length > 0);
+
+const hiddenRecentCount = computed(() => Math.max(0, recentTotal.value - DEFAULT_RECENT_VISIBLE_LIMIT));
+
+/**
+ * The recent forest as rows. Identity (accent, summary), active/grid state and
+ * attention are joined from the ONE canonical `workspaceCards` mapping, so a
+ * recent row is literally its tree card's twin; the hierarchy comes from the
+ * forest, so this maps content only.
+ */
+const recentRowsByCluster = computed((): { key: string; rows: ActivityRowView[] }[] =>
+  presentedRecentClusters.value.map((cluster) => ({
+    key: cluster.key,
+    rows: cluster.nodes.map((node): ActivityRowView => {
+      const identity = recentCardIdentity.value.get(node.workspaceId);
+      // Present on CONTEXT rows too when that parent has a state of its own —
+      // the parent's dot is exactly as informative here as it is on its card.
+      const statusCue = workspaceStatusCues.value.get(node.workspaceId) || null;
+      // Named, never colour-only (V6 review, §"P2 UX", oprava 6).
+      const status = statusCue ? ` — ${statusCue.label}` : "";
+      const base = {
+        key: node.key,
+        workspaceId: node.workspaceId,
+        depth: node.depth,
+        icon: node.icon,
+        color: identity?.color || node.color,
+        active: node.workspaceId === store.myActiveWorkspaceId,
+        attentionCount: recentAttentionCounts.value.get(node.workspaceId) || 0,
+        statusCue,
+        missing: node.missing,
+      };
+      if (node.role === "context") {
+        const label = node.path.join(" › ");
+        // The visible breadcrumb can be ellipsised by a narrow sidebar; the
+        // accessible name spells out the whole chain, so two workspaces that
+        // share a name are still told apart.
+        const where = node.fullPath.join(" › ");
+        return {
+          ...base,
+          role: "context" as const,
+          label,
+          ariaLabel: node.missing ? `${where} — no longer available` : `Open ${where}${status}`,
+          title: node.missing
+            ? `${where} — this workspace is no longer available.`
+            : `${where} — click to open this workspace.${statusCue ? ` ${statusCue.label}.` : ""}`,
+        };
+      }
+      const row = node.payload as RecentWorkspaceShortcut;
+      const path = node.fullPath.join(" › ");
+      const relativeAge = formatRelativeAge(row.lastWorkedAt, recentNow.value);
+      // formatRelativeAge says "now" for anything under a minute, which does
+      // not read as a duration — spell that case out instead of "now ago".
+      const when = relativeAge === "now" ? "just now" : `${relativeAge} ago`;
+      const slotIndex = gridSlotByWorkspace.value.get(node.workspaceId);
+      const ariaLabel = node.missing
+        ? `${row.name} — no longer available, ${path}`
+        : `${row.name} — worked in ${when}, in ${path}${slotIndex ? `, grid slot ${slotIndex}` : ""}${status}`;
+      return {
+        ...base,
+        role: "activity" as const,
+        label: row.name,
+        summary: identity?.summary || "",
+        trailing: relativeAge,
+        inGrid: gridCellIds.value.has(node.workspaceId),
+        slotIndex,
+        ariaLabel,
+        // The tooltip IS the accessible name here: the row's own label can be
+        // ellipsised by a narrow sidebar, and both readings should then give
+        // the same complete path and time.
+        title: ariaLabel,
+      };
+    }),
+  })),
+);
+
+function onActivateRecentRow(node: ActivityRowView): void {
+  // Opening a workspace is navigation, not work — nothing here stamps
+  // `lastWorkedAt`, so a click can never reorder the list it was made in.
+  void onActivate(node.workspaceId);
+}
+
+/** `Show more` changes which ACTIVITIES are selected, so the forest is rebuilt
+ *  from the new set — an explicit command lands now, like every other one. */
+function onToggleRecentExpanded(): void {
+  recentExpanded.value = !recentExpanded.value;
+  if (interactionLocked.value) freezeSurfaces();
+}
+
+// Card identity for a recent shortcut, joined from the ONE canonical
+// `workspaceCards` mapping rather than re-derived — so the accent colour and
+// the short summary are literally the tree card's (V3 review, §3).
+const recentCardIdentity = computed((): Map<string, { color: string; summary: string }> => {
+  const byId = new Map<string, { color: string; summary: string }>();
+  for (const card of workspaceCards.value) {
+    byId.set(card.id, { color: String(card.color || ""), summary: String(card.summary || "") });
+  }
+  return byId;
+});
+
+// The canonical status dot per workspace — the same `{ state, label,
+// heartbeat }` the tree card draws, from the SAME card mapping and the SAME
+// resolver (V6 review, §"P2 UX — Recent zahazuje kanonický status dot").
+// Recent joins it here and RUNNING gets it as a prop, so there is exactly one
+// place that decides what a workspace's state is.
+//
+// It is deliberately NOT an input to membership, ordering or `lastWorkedAt`:
+// a plain Claude Code session flipping running/done still stays out of the
+// task-only RUNNING section, and only ever changes a pixel-stable overlay.
+const workspaceStatusCues = computed((): Map<string, WorkspaceStatusCue> => {
+  const cues = new Map<string, WorkspaceStatusCue>();
+  for (const card of workspaceCards.value) {
+    // `workspaceCards` is typed with an index signature here, so the four
+    // fields the resolver reads are narrowed at the boundary. This is a shape
+    // adapter, not a second mapping — every condition still lives in
+    // `resolveWorkspaceStatusCue`.
+    const cue = resolveWorkspaceStatusCue({
+      kind: card.kind === undefined ? undefined : String(card.kind),
+      taskState: card.taskState == null ? null : String(card.taskState),
+      prStatus: card.prStatus == null ? null : String(card.prStatus),
+      agentActivityState: card.agentActivityState == null ? null : String(card.agentActivityState),
+      agentActivityLabel: card.agentActivityLabel === undefined ? undefined : String(card.agentActivityLabel),
+    });
+    if (cue) cues.set(card.id, cue);
+  }
+  return cues;
+});
+
+// Grid slot number per workspace, 1-based to match what the cards show.
+const gridSlotByWorkspace = computed((): Map<string, number> => {
+  const slots = new Map<string, number>();
   const grid = store.workspaceGrid;
   if (grid) {
     (grid.cellWorkspaceIds as (string | null)[]).forEach((id, idx) => {
-      if (id) slotByWs.set(id, idx + 1);
+      if (id) slots.set(id, idx + 1);
     });
   }
-  return rawRecentItems.value.map((item) => {
-    if (item.type !== "workspace") return item;
-    return {
-      ...item,
-      card: {
-        ...item.card,
-        inGrid: occ.has(item.workspaceId),
-        slotIndex: slotByWs.get(item.workspaceId),
-      },
-    };
-  });
+  return slots;
 });
 
-// What actually renders: "Older" hides its non-header rows while collapsed;
-// the collapsed icon-strip sidebar drops section headers and context rows
-// entirely — only real workspace icons remain, in recent order.
-const visibleRecentItems = computed((): RecentRenderItem[] => {
-  if (store.sidebarCollapsed) return recentItems.value.filter((item) => item.type === "workspace");
-  return recentItems.value.filter(
-    (item) => !(item.type !== "section" && item.sectionKey === "older" && olderCollapsed.value),
-  );
+// Attention counts for the recent rows — a subtle indicator only, never a
+// membership or ordering input.
+const recentAttentionCounts = computed((): Map<string, number> => {
+  const counts = new Map<string, number>();
+  for (const card of workspaceCards.value) {
+    if (card.attentionCount > 0) counts.set(card.id, card.attentionCount);
+  }
+  return counts;
 });
 
-// Drag-and-drop reordering only makes sense for the manually-ordered tree —
-// recent order is derived from lastUsedAt and cannot be dragged. Wrapping
-// (rather than conditionally binding the listeners) keeps tree-mode
-// behaviour byte-for-byte identical to before this view existed.
+// Drag-and-drop reordering belongs to the manually ordered canonical tree,
+// which is now present in BOTH view modes — so the listeners are no longer
+// gated on the mode. A recent shortcut is neither a drag source nor a drop
+// target: it is a plain button outside `.workspace-card`, and any drag event
+// originating in or landing on the shortcut list is dropped here.
 function onListDragstart(event: DragEvent): void {
-  if (isRecentActive.value) return;
+  if (isRecentRowEvent(event)) return;
   dragDrop.onDragstart(event);
 }
 function onListDragover(event: DragEvent): void {
-  if (isRecentActive.value) return;
+  if (isRecentRowEvent(event)) return;
   dragDrop.onDragover(event);
 }
 function onListDragleave(event: DragEvent): void {
-  if (isRecentActive.value) return;
+  if (isRecentRowEvent(event)) return;
   dragDrop.onDragleave(event);
 }
 function onListDrop(event: DragEvent): void {
-  if (isRecentActive.value) return;
+  if (isRecentRowEvent(event)) return;
   dragDrop.onDrop(event);
 }
 function onListDragend(): void {
-  if (isRecentActive.value) return;
   dragDrop.onDragend();
+}
+
+/** True for any drag event that started on, or is over, a recent shortcut. */
+function isRecentRowEvent(event: DragEvent): boolean {
+  const target = event.target as Element | null;
+  return Boolean(target?.closest?.(".recent-shortcuts"));
 }
 
 const suggestions = computed(() => {
@@ -613,6 +1154,20 @@ async function onActivate(workspaceId: string): Promise<void> {
 
 const api = inject<Transport>(apiKey);
 
+/** Write `starred` back onto one workspace in the local payload, by id. */
+function setStarredLocally(workspaceId: string, starred: boolean): void {
+  const allWs = store.payload?.appState?.workspaces;
+  if (!allWs) return;
+  const idx = allWs.findIndex((w) => w.id === workspaceId);
+  if (idx < 0 || !!allWs[idx].starred === starred) return;
+  const nextWorkspaces = [...allWs];
+  nextWorkspaces[idx] = { ...nextWorkspaces[idx], starred };
+  store.payload = {
+    ...store.payload,
+    appState: { ...store.payload!.appState, workspaces: nextWorkspaces },
+  } as StatePayload;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function handleToggleStar(ws: any): void {
   if (!api) return;
@@ -622,13 +1177,18 @@ function handleToggleStar(ws: any): void {
   if (idx < 0) return;
 
   // Optimistic UI update — flip starred immediately
-  const nextStarred = !allWs[idx].starred;
-  const nextWorkspaces = [...allWs];
-  nextWorkspaces[idx] = { ...nextWorkspaces[idx], starred: nextStarred };
-  store.payload = {
-    ...store.payload,
-    appState: { ...store.payload!.appState, workspaces: nextWorkspaces },
-  } as StatePayload;
+  const previousStarred = !!allWs[idx].starred;
+  const nextStarred = !previousStarred;
+  setStarredLocally(ws.id, nextStarred);
+
+  // Starring is an explicit command, so its consequences land now rather than
+  // at unlock. Under an active star filter an unstar REMOVES the workspace
+  // from both surfaces, and a frozen recent list would otherwise keep showing
+  // it until the pointer left the sidebar (V4 review, §"P2 — explicitní
+  // unstar"). The re-freeze is bound to this local action only: watching
+  // `starred` membership globally would reintroduce exactly the background
+  // reflow the lock exists to block.
+  if (interactionLocked.value) freezeSurfaces();
 
   // Persist in background
   api
@@ -639,6 +1199,10 @@ function handleToggleStar(ws: any): void {
     })
     .catch((err) => {
       console.error("[sidebar] toggle star failed:", err);
+      // The optimistic flip never made it to disk — put it back, and re-freeze
+      // so the frozen list tells the truth about what is starred again.
+      setStarredLocally(ws.id, previousStarred);
+      if (interactionLocked.value) freezeSurfaces();
     });
 }
 

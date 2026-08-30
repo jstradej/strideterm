@@ -335,6 +335,32 @@ describe("buildRemoteCore", () => {
     expect(Object.keys(core.taskRunner)).toEqual(["ws1"]);
   });
 
+  // V2 plan, Fáze 2 — a remote/mobile viewer must see the SAME alert identity
+  // as the desktop, or its notification history deduplicates against different
+  // keys and the two drift apart.
+  test("alert identity survives remote scoping unchanged", () => {
+    const p = fullPayload();
+    const alert = {
+      alertId: "alert-abc-1",
+      projectId: "ws1",
+      panelId: "shell",
+      sessionId: "ws1:shell",
+      title: "claude",
+      exitCode: null,
+      kind: "completed",
+      tier: 1,
+      urgency: "normal",
+      detail: "",
+      at: "2026-08-29T19:17:57.907Z",
+    };
+    (p.attention as Rec).byWorkspace = { ws1: { count: 1, latestAt: alert.at, alerts: [alert] } };
+    (p.attention as Rec).byProject = { ws1: { count: 1, latestAt: alert.at, alerts: [alert] } };
+
+    const core = buildRemoteCore(p);
+    const scoped = ((core.attention as Rec).byWorkspace as Rec).ws1 as Rec;
+    expect((scoped.alerts as Rec[])[0]).toEqual(alert);
+  });
+
   test("meta.recoveryCandidates span profiles by design (cross-profile triage dialog)", () => {
     // The startup recovery dialog is a deliberate cross-profile triage UI — it
     // lists EVERY unfinished agent task with a per-item profile badge, and each

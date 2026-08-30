@@ -269,24 +269,40 @@ export function findWorkspace(
 
 /**
  * Single choke point for "the user actually worked in this workspace" —
- * stamps `lastUsedAt` on the target workspace inside a store-mutation draft.
- * Two callers qualify: activation handlers (after any profile-aware guard —
- * assertWorkspaceInViewerProfile / RemoteClientRegistry validation — has
- * passed), and viewer-originated typing into one of its sessions
- * (runtime's stampWorkspaceUsedByTyping, which throttles the persist).
- * Automatic signals — PTY output, git/PR polling, task runner progress,
- * attention events — must never call this; they would otherwise make the
- * sidebar's "recent" view track background activity instead of what the
- * user actually did.
+ * stamps `lastWorkedAt` on the target workspace inside a store-mutation draft.
+ *
+ * The caller list is a CLOSED, positive allowlist (V2 plan, "Co timestamp
+ * posouvá"). Only these qualify, and only once the action has succeeded:
+ *
+ *   - viewer-originated meaningful terminal input, after the input lease was
+ *     granted (runtime's `stampWorkspaceWorkedByTyping`, which throttles the
+ *     persist);
+ *   - creating a workspace, a worktree, a review/quickfix workspace or a task
+ *     workspace;
+ *   - task create / start / resume / reset, a user edit of the brief, and an
+ *     answer to input the task asked for;
+ *   - successful workspace-scoped mutations from the built-in Git/review UI:
+ *     stage/unstage, commit, push/pull, checkout/branch, merge/rebase/stash,
+ *     and sending a review action or comment.
+ *
+ * Everything else must NOT call this — activating a workspace or session,
+ * switching a tab, focusing a grid cell, opening a launch panel, organisational
+ * sidebar changes, passive terminal focus/mouse sequences, PTY output,
+ * agent-internal writes, polling, hooks, running/progress/completion signals,
+ * attention alerts, and background refreshes. Those made the sidebar's recent
+ * view track "what I opened" (and what an agent did in the background) rather
+ * than "where I worked", which is exactly what this field exists to fix.
+ *
+ * Replaces `markWorkspaceUsed` / `lastUsedAt`.
  */
-export function markWorkspaceUsed(
+export function markWorkspaceWorked(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   state: { workspaces: Array<any> },
   workspaceId: string,
   atIso: string = new Date().toISOString(),
 ): void {
   const workspace = findWorkspace(state, workspaceId);
-  if (workspace) workspace.lastUsedAt = atIso;
+  if (workspace) workspace.lastWorkedAt = atIso;
 }
 
 export function createAttentionContext(): {
@@ -415,6 +431,7 @@ export function createSessionSignal(sessionId: string): {
   inputBuffer: string;
   lastAnimationAt: number;
   activity: string;
+  activityStartedAt: number;
   lastExitCode: number | null;
   lastCommandFinishedAt: number;
   activeSubagents: number;
@@ -467,6 +484,12 @@ export function createSessionSignal(sessionId: string): {
     // "running" — command executing (shell OSC 133;C → ;D, or agent UserPromptSubmit → Stop)
     // "done"    — recently finished; lastExitCode drives tone; fades to "idle" after ~3 s
     activity: "idle",
+    // Epoch ms the CURRENT "running" stretch began; 0 whenever the session is
+    // not running. Deliberately NOT derived from lastOutputAt/lastPromptAt &c —
+    // those keep advancing while the agent works, so an elapsed computed from
+    // them would read seconds for a six-hour run. Only the two controlled
+    // paths in runtime.ts (setSessionActivity / scheduleActivityFade) write it.
+    activityStartedAt: 0,
     lastExitCode: null,
     lastCommandFinishedAt: 0,
     // Number of agent subagents (Claude "Agent"/"Task" tool) currently running,

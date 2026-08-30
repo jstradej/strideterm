@@ -38,7 +38,14 @@ import { isMobileViewport } from "../composables/useIsNarrow.js";
 import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
 import { useRemoteDetailsStore } from "./remote-details.js";
-import type { StatePayload, RecoveryCandidate } from "../../electron/shared/types/state.js";
+import type {
+  StatePayload,
+  RecoveryCandidate,
+  RecoveryDecisionReport,
+  RecoveryOutcome,
+  RecoveryResult,
+} from "../../electron/shared/types/state.js";
+import { RECOVERY_OUTCOMES, SETTLED_RECOVERY_OUTCOMES } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
 import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "../../electron/shared/performance.js";
 
@@ -50,10 +57,24 @@ interface SplitGroup {
   viewIds: string[];
 }
 
+/**
+ * Workspace-specific payload parts, cached per workspace id so a switch-back
+ * can restore them during the optimistic phase.
+ *
+ * ONLY genuinely workspace-scoped resources may live here. `attention` and
+ * `docker` used to be cached too and both were global runtime resources:
+ * `payload.attention` is the whole-install alert/session map and
+ * `payload.docker` is `DockerManager.getSnapshot()` (backends/containers/
+ * images across the machine). Storing a global snapshot under one workspace
+ * id and restoring it on the next activation replayed a stale copy of global
+ * state — for attention that both blinked a live alert out and resurrected an
+ * already-cleared one, which `useNotificationCapture` then re-captured as a
+ * brand-new event (V2 plan §"Zjištěné příčiny" 3). `git.activeWorkspace`
+ * stays: the backend builds it as `git.getSnapshot(state.activeWorkspaceId)`,
+ * so it really is per-workspace.
+ */
 interface WorkspacePayloadCache {
   workspace: unknown;
-  docker: unknown;
-  attention: unknown;
   activeWorkspaceGit: unknown;
 }
 
@@ -280,13 +301,13 @@ export const useAppStore = defineStore("app", () => {
     const result = workspaces.filter((ws: AnyApi) => (ws.profileId || "default") === activeProfileId);
     // Include names, panel counts, and badge/accent — these change on
     // rename/add-tab/remove-tab and on editing the workspace icon/color.
-    // `lastUsedAt` belongs here too: the sidebar's recent view buckets by it,
-    // so leaving it out kept every activation stamp invisible and pinned a
-    // just-opened workspace in "Older" for the rest of the session.
+    // `lastWorkedAt` belongs here too: the sidebar's "Recently worked" list
+    // sorts by it, so leaving it out would keep every work stamp invisible and
+    // freeze the list for the rest of the session.
     const key = result
       .map(
         (ws: AnyApi) =>
-          `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}:${ws.icon || ""}:${ws.color || ""}:${ws.lastUsedAt || ""}`,
+          `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}:${ws.icon || ""}:${ws.color || ""}:${ws.lastWorkedAt || ""}`,
       )
       .join(",");
     if (key === _prevFilteredWsKey) return _prevFilteredWs;
@@ -642,8 +663,6 @@ export const useAppStore = defineStore("app", () => {
     if (!wsId || !p?.workspace) return;
     _workspacePayloadCache.set(wsId, {
       workspace: p.workspace,
-      docker: p.docker,
-      attention: p.attention,
       activeWorkspaceGit: p.git?.activeWorkspace,
     });
   }
@@ -1018,11 +1037,12 @@ export const useAppStore = defineStore("app", () => {
       },
       ...(updatedRemoteClient !== undefined ? { remoteClient: updatedRemoteClient } : {}),
       workspace: buildWorkspacePayloadSnapshot(workspaceId),
-      // Restore cached workspace-specific data (docker, attention, active git)
+      // Restore cached workspace-specific data (active git only). `attention`
+      // and `docker` are deliberately NOT restored — they are global
+      // resources, so the newest broadcast value is always the correct one and
+      // is carried through untouched by the spread above.
       ...(cached
         ? {
-            docker: cached.docker ?? (payload.value as AnyApi).docker,
-            attention: cached.attention ?? (payload.value as AnyApi).attention,
             git: {
               ...prevGit,
               activeWorkspace: cached.activeWorkspaceGit ?? prevGit?.activeWorkspace,
@@ -1675,19 +1695,63 @@ export const useAppStore = defineStore("app", () => {
     return api.revealCpuProfile(filePath);
   }
 
-  async function resolveTaskRecovery(decisions: Record<string, "continue" | "fresh" | "skip">): Promise<void> {
+  /**
+   * Resolve a recovery batch and report its per-workspace outcomes; the
+   * payload half of the backend's result is applied by the transport.
+   *
+   * Nothing here trusts the response's shape. The previous version read
+   * `outcomes[id] !== "failed"` and `ok: result?.ok !== false`, so a missing,
+   * malformed or absent response meant "everything succeeded" AND dropped
+   * every candidate from the local list — the exact false success the backend
+   * side of V4 was written to remove (V5 review, §"P2 — recovery kontrakt
+   * končí před transportní hranicí"). A candidate is now dropped only for an
+   * outcome that EXPLICITLY says it is settled; anything else keeps it, and
+   * the ids that came back unanswered are named so the dialog can report a
+   * protocol failure instead of closing on a lie.
+   */
+  async function resolveTaskRecovery(
+    decisions: Record<string, "continue" | "fresh" | "skip">,
+  ): Promise<RecoveryDecisionReport> {
     const api = getApi();
-    await api.resolveTaskRecovery?.({ decisions });
-    // Drop the resolved candidates from the local list. The dialog uses this
-    // both to decide when to close (list empty) and to know which candidate
-    // to show next in sequential mode.
-    const decided = new Set(Object.keys(decisions));
-    recoveryCandidates.value = recoveryCandidates.value.filter((c) => !decided.has(c.workspaceId));
+    const response = (await api.resolveTaskRecovery?.({ decisions })) as Partial<RecoveryResult> | undefined;
+    const raw = (response?.outcomes || {}) as Record<string, unknown>;
+    const requested = Object.keys(decisions);
+
+    // Keep only values that are actually part of the contract — an unknown
+    // string is as unusable as a missing key and must not settle anything.
+    const outcomes: Record<string, RecoveryOutcome> = {};
+    for (const id of requested) {
+      const value = raw[id];
+      if (typeof value === "string" && (RECOVERY_OUTCOMES as readonly string[]).includes(value)) {
+        outcomes[id] = value as RecoveryOutcome;
+      }
+    }
+    const unanswered = requested.filter((id) => !outcomes[id]);
+
+    // Drop the SETTLED candidates from the local list. The dialog uses this
+    // both to decide when to close (list empty) and to know which candidate to
+    // show next in sequential mode. A `failed` one stays so a recovery that did
+    // not actually happen keeps its entry to retry or skip (V4 review, §"P1 —
+    // task recovery hlásí úspěch", oprava 4); a `stale` one is dropped, because
+    // another window already settled it.
+    const settled = new Set(
+      Object.entries(outcomes)
+        .filter(([, outcome]) => SETTLED_RECOVERY_OUTCOMES.includes(outcome))
+        .map(([id]) => id),
+    );
+    recoveryCandidates.value = recoveryCandidates.value.filter((c) => !settled.has(c.workspaceId));
+
+    return {
+      ok: response?.ok === true && unanswered.length === 0,
+      outcomes,
+      unanswered,
+    };
   }
 
   /**
-   * Switch the active profile's sidebar workspace list between "tree" and
-   * "recent". Saves a copy of the CURRENT profile with the new mode and
+   * Switch the active profile's sidebar workspace list between "tree" (the
+   * canonical tree alone) and "recent" (the same tree with the recently-worked
+   * shortcuts above it). Saves a copy of the CURRENT profile with the new mode and
    * adopts the authoritative payload the runtime returns — on failure
    * nothing is mutated locally, so the previous mode simply stays in place
    * and the caller's error toast is the only visible effect.

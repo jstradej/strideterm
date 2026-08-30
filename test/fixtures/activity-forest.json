@@ -1,0 +1,360 @@
+{
+  "meta": {
+    "appVersion": "1.3.1-test",
+    "repositoryUrl": "https://github.com/example/strideterm"
+  },
+  "appState": {
+    "activeWorkspaceId": "ws-az",
+    "activeProjectId": "ws-az",
+    "activeProfileId": "default",
+    "settings": {
+      "theme": "dark",
+      "sidebarWidth": 248,
+      "sidebarCollapsed": false,
+      "remoteAccess": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 3999,
+        "token": "test-token",
+        "customPublicUrl": "",
+        "cloudflaredPath": ""
+      },
+      "integrations": {
+        "azureDevops": {
+          "enabled": false,
+          "connections": [],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        },
+        "github": {
+          "enabled": false,
+          "connections": [],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        }
+      },
+      "tabTemplates": [
+        {
+          "id": "shell",
+          "title": "Shell",
+          "command": "",
+          "icon": "terminal"
+        },
+        {
+          "id": "claude",
+          "title": "Claude Code",
+          "command": "claude",
+          "icon": "bot"
+        }
+      ]
+    },
+    "tabTemplates": [
+      {
+        "id": "shell",
+        "title": "Shell",
+        "command": "",
+        "icon": "terminal"
+      },
+      {
+        "id": "claude",
+        "title": "Claude Code",
+        "command": "claude",
+        "icon": "bot"
+      }
+    ],
+    "profiles": [
+      {
+        "id": "default",
+        "name": "Default",
+        "color": "",
+        "sidebarWorkspaceViewMode": "recent",
+        "workspaceIds": ["ws-az", "ws-repo", "ws-pr", "ws-review", "ws-deep", "ws-deepest", "ws-task"],
+        "projectIds": ["ws-az", "ws-repo", "ws-pr", "ws-review", "ws-deep", "ws-deepest", "ws-task"]
+      }
+    ],
+    "workspaces": [
+      {
+        "id": "ws-az",
+        "name": "Azure DevOps",
+        "icon": "AZ",
+        "color": "#0af",
+        "kind": "azure",
+        "source": "manual",
+        "cwd": "Azure inbox",
+        "notes": "",
+        "profileId": "default",
+        "panels": [
+          {
+            "id": "panel-inbox",
+            "title": "Inbox",
+            "command": "",
+            "shell": false,
+            "startup": "none"
+          }
+        ],
+        "review": null,
+        "quickfix": null
+      },
+      {
+        "id": "ws-repo",
+        "name": "messagehub-integration-platform",
+        "icon": "MH",
+        "color": "#7c5cff",
+        "kind": "terminal",
+        "source": "manual",
+        "cwd": "C:\\work\\mhub",
+        "notes": "",
+        "profileId": "default",
+        "quickfix": {
+          "parentWorkspaceId": "ws-az"
+        },
+        "panels": [
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "shell": true,
+            "startup": "default"
+          }
+        ],
+        "review": null
+      },
+      {
+        "id": "ws-pr",
+        "name": "mhub PR #30746 — streams-core watcher backpressure",
+        "icon": "PR",
+        "color": "#ffa424",
+        "kind": "terminal",
+        "source": "manual",
+        "cwd": "C:\\work\\mhub\\pr-30746",
+        "notes": "",
+        "profileId": "default",
+        "quickfix": {
+          "parentWorkspaceId": "ws-repo"
+        },
+        "panels": [
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "shell": true,
+            "startup": "default"
+          }
+        ],
+        "review": null
+      },
+      {
+        "id": "ws-review",
+        "name": "review worktree pr-30746",
+        "icon": "RW",
+        "color": "#42d392",
+        "kind": "terminal",
+        "source": "manual",
+        "cwd": "C:\\work\\mhub\\reviews\\pr-30746",
+        "notes": "",
+        "profileId": "default",
+        "quickfix": {
+          "parentWorkspaceId": "ws-pr"
+        },
+        "panels": [
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "shell": true,
+            "startup": "default"
+          }
+        ],
+        "review": null
+      },
+      {
+        "id": "ws-deep",
+        "name": "fix backpressure on the watcher queue",
+        "icon": "FX",
+        "color": "#ff6f8d",
+        "kind": "terminal",
+        "source": "manual",
+        "cwd": "C:\\work\\mhub\\reviews\\pr-30746\\fix",
+        "notes": "",
+        "profileId": "default",
+        "quickfix": {
+          "parentWorkspaceId": "ws-review"
+        },
+        "panels": [
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "shell": true,
+            "startup": "default"
+          }
+        ],
+        "review": null
+      },
+      {
+        "id": "ws-deepest",
+        "name": "companion notes for the backpressure fix",
+        "icon": "CN",
+        "color": "#f5c14b",
+        "kind": "terminal",
+        "source": "manual",
+        "cwd": "C:\\work\\mhub\\reviews\\pr-30746\\fix\\notes",
+        "notes": "",
+        "profileId": "default",
+        "quickfix": {
+          "parentWorkspaceId": "ws-deep"
+        },
+        "panels": [
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "shell": true,
+            "startup": "default"
+          }
+        ],
+        "review": null
+      },
+      {
+        "id": "ws-task",
+        "name": "judge the backpressure verdict",
+        "icon": "TA",
+        "color": "#8b5cf6",
+        "kind": "task",
+        "source": "manual",
+        "cwd": "C:\\work\\mhub\\.strideterm\\tree\\pr-30746",
+        "notes": "",
+        "profileId": "default",
+        "quickfix": {
+          "parentWorkspaceId": "ws-repo"
+        },
+        "panels": [
+          {
+            "id": "panel-dashboard",
+            "title": "Dashboard",
+            "command": "__task-dashboard__",
+            "shell": false,
+            "startup": "none"
+          },
+          {
+            "id": "panel-worker",
+            "title": "Worker (Claude Code)",
+            "command": "claude",
+            "shell": true,
+            "startup": "none"
+          },
+          {
+            "id": "panel-judge",
+            "title": "Judge (Codex)",
+            "command": "codex",
+            "shell": true,
+            "startup": "none"
+          }
+        ],
+        "task": {
+          "taskId": "task-backpressure",
+          "state": "judge-evaluating",
+          "mode": "standard",
+          "workerPanelId": "panel-worker",
+          "judgePanelId": "panel-judge",
+          "currentRound": 3,
+          "maxRounds": 8,
+          "totalPausedMs": 0,
+          "pausedAt": null,
+          "finishedAt": null
+        },
+        "review": null
+      }
+    ],
+    "projects": [],
+    "workspaceGrid": {
+      "layout": "cols",
+      "cellWorkspaceIds": ["ws-task", "ws-pr"]
+    }
+  },
+  "workspace": null,
+  "taskRunner": {
+    "ws-task": {
+      "state": "judge-evaluating",
+      "currentRound": 3,
+      "maxRounds": 8
+    }
+  },
+  "attention": {
+    "byWorkspace": {
+      "ws-task": {
+        "count": 3,
+        "alerts": [
+          {
+            "title": "Judge needs input",
+            "kind": "agent",
+            "at": "2026-08-30T15:07:00.000Z"
+          }
+        ],
+        "latestAt": "2026-08-30T15:07:00.000Z"
+      }
+    },
+    "byProject": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
+  "docker": {
+    "containers": [],
+    "available": false,
+    "error": null
+  },
+  "git": {
+    "workspaces": {},
+    "projects": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
+  "azureDevops": {
+    "connections": [],
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": {
+      "running": false,
+      "lastStartedAt": null,
+      "lastCompletedAt": null
+    }
+  },
+  "github": {
+    "connections": [],
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": {
+      "running": false,
+      "lastStartedAt": null,
+      "lastCompletedAt": null
+    }
+  },
+  "reviewBridge": {
+    "pullRequests": {},
+    "agentPrompts": []
+  },
+  "plugins": [],
+  "environment": {
+    "platform": "win32",
+    "shell": "bash"
+  },
+  "themeSource": "dark",
+  "remoteAccess": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3999,
+    "urls": ["http://127.0.0.1:3999/?token=test-token"]
+  }
+}

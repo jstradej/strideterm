@@ -554,6 +554,28 @@ export async function startMockServer({
           return;
         }
 
+        // Task recovery answers the typed RecoveryResult contract: one outcome
+        // per REQUESTED id, so the renderer can tell a settled decision from a
+        // response it could not read (V5 review, §"P2 — recovery kontrakt
+        // končí před transportní hranicí"). A body without outcomes is a
+        // protocol failure there, not a silent success — which is exactly why
+        // this route cannot fall through to the generic payload echo.
+        if (url.pathname.endsWith("/task-recovery/resolve")) {
+          const decisions = (body.decisions || {}) as Record<string, string>;
+          const outcomes: Record<string, string> = {};
+          for (const [workspaceId, decision] of Object.entries(decisions)) {
+            outcomes[workspaceId] = decision === "skip" ? "skipped" : decision === "fresh" ? "fresh" : "continued";
+          }
+          // The fixture's candidate list is deliberately left alone (and no
+          // broadcast is sent): each test in the suite shares one server and
+          // starts from the same two candidates. The renderer trims its own
+          // list from these outcomes, which is what the dialog's advance and
+          // close behaviour is driven by.
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, outcomes }));
+          return;
+        }
+
         res.writeHead(200, { "Content-Type": "application/json" });
         // Navigation mutations (activate/save/reorder/grid/settings) fall through
         // here and the client ADOPTS the response — so a v2 client must receive

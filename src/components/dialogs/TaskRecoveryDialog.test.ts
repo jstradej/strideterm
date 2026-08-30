@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import TaskRecoveryDialog from "./TaskRecoveryDialog.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import type { RecoveryCandidate } from "../../../electron/shared/types/state.js";
+import type { RecoveryCandidate, RecoveryOutcome } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -27,16 +27,25 @@ function makeCandidate(overrides: Partial<RecoveryCandidate> = {}): RecoveryCand
 function seedStore(
   candidates: RecoveryCandidate[],
   profiles: Array<{ id: string; name: string; color?: string }> = [],
+  failing: string[] = [],
 ) {
   const store = useAppStore();
   store.recoveryCandidates = [...candidates];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (store as any).payload = { appState: { profiles } };
-  // Mock resolveTaskRecovery to mirror the real wrapper: trim resolved
-  // candidates from the reactive list so the dialog advances naturally.
+  // Mock resolveTaskRecovery to mirror the real wrapper: report a per-workspace
+  // outcome and trim only the SETTLED candidates from the reactive list, so a
+  // failed one stays and the dialog advances naturally over the rest.
+  const failed = new Set(failing);
   store.resolveTaskRecovery = vi.fn(async (decisions: Record<string, "continue" | "fresh" | "skip">) => {
-    const decided = new Set(Object.keys(decisions));
-    store.recoveryCandidates = store.recoveryCandidates.filter((c) => !decided.has(c.workspaceId));
+    const outcomes: Record<string, RecoveryOutcome> = {};
+    for (const [id, choice] of Object.entries(decisions)) {
+      if (failed.has(id)) outcomes[id] = "failed";
+      else outcomes[id] = choice === "skip" ? "skipped" : choice === "fresh" ? "fresh" : "continued";
+    }
+    const settled = new Set(Object.keys(outcomes).filter((id) => outcomes[id] !== "failed"));
+    store.recoveryCandidates = store.recoveryCandidates.filter((c) => !settled.has(c.workspaceId));
+    return { ok: Object.values(outcomes).every((outcome) => outcome !== "failed"), outcomes, unanswered: [] };
   });
   store.activateWorkspace = vi.fn().mockResolvedValue(undefined);
   return store;
@@ -253,6 +262,106 @@ describe("TaskRecoveryDialog", () => {
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Resume all failed");
     expect(notifications.sessions[0].events[0].body).toBe("agent pool exhausted");
+  });
+
+  // V4 review, §"P1 — task recovery hlásí úspěch", oprava 5. A resolved-but-
+  // failed decision used to be indistinguishable from success: the promise
+  // resolved, so `runWithToast` said nothing and the candidate was dropped
+  // locally even though the agent never came back.
+  test("a Resume the backend reports as failed keeps the candidate and names it in a toast", async () => {
+    const store = seedStore([makeCandidate({ workspaceId: "ws-a", workspaceName: "Auth" })], [], ["ws-a"]);
+    const wrapper = mount(TaskRecoveryDialog);
+    await flushPromises();
+
+    const resumeBtn = wrapper.findAll("button").find((b) => b.text().startsWith("Resume") && b.text() !== "Resume all");
+    await resumeBtn!.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.persistentToasts).toHaveLength(1);
+    expect(notifications.persistentToasts[0].title).toBe("Task could not be recovered");
+    expect(notifications.persistentToasts[0].body).toContain("Auth");
+    // The candidate is still listed, so the dialog stays open on it.
+    expect(store.recoveryCandidates.map((c) => c.workspaceId)).toEqual(["ws-a"]);
+    expect(wrapper.text()).toContain("Auth");
+    // The buttons are usable again for a retry or a Skip.
+    expect(wrapper.find(".button--ghost").attributes("disabled")).toBeUndefined();
+  });
+
+  test("a mixed Resume all reports the partial failure and keeps only the failed candidate", async () => {
+    const store = seedStore(
+      [
+        makeCandidate({ workspaceId: "ws-a", workspaceName: "Auth" }),
+        makeCandidate({ workspaceId: "ws-b", workspaceName: "Billing" }),
+      ],
+      [],
+      ["ws-b"],
+    );
+    const wrapper = mount(TaskRecoveryDialog);
+    await flushPromises();
+
+    const resumeAllBtn = wrapper.findAll("button").find((b) => b.text() === "Resume all");
+    await resumeAllBtn!.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.persistentToasts).toHaveLength(1);
+    expect(notifications.persistentToasts[0].body).toContain("Billing");
+    expect(notifications.persistentToasts[0].body).not.toContain("Auth");
+    expect(store.recoveryCandidates.map((c) => c.workspaceId)).toEqual(["ws-b"]);
+  });
+
+  // V5 review, §"P2 — recovery kontrakt končí před transportní hranicí",
+  // oprava 4: a response the store could not read an outcome from is a
+  // PROTOCOL failure. The candidate stays and the user is told, rather than
+  // the dialog closing as if the task had come back.
+  test("a decision the backend never answered is reported and keeps the candidate", async () => {
+    const store = seedStore([makeCandidate({ workspaceId: "ws-a", workspaceName: "Auth" })]);
+    store.resolveTaskRecovery = vi.fn(async () => ({ ok: false, outcomes: {}, unanswered: ["ws-a"] }));
+    const wrapper = mount(TaskRecoveryDialog);
+    await flushPromises();
+
+    const resumeBtn = wrapper.findAll("button").find((b) => b.text().startsWith("Resume") && b.text() !== "Resume all");
+    await resumeBtn!.trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.persistentToasts).toHaveLength(1);
+    expect(notifications.persistentToasts[0].title).toBe("Recovery answered nothing");
+    expect(notifications.persistentToasts[0].body).toContain("Auth");
+    expect(store.recoveryCandidates.map((c) => c.workspaceId)).toEqual(["ws-a"]);
+    expect(wrapper.find(".button--ghost").attributes("disabled")).toBeUndefined();
+  });
+
+  test("a 'stale' decision settles quietly — another window already handled it", async () => {
+    const store = seedStore([makeCandidate({ workspaceId: "ws-a", workspaceName: "Auth" })]);
+    store.resolveTaskRecovery = vi.fn(async () => {
+      store.recoveryCandidates = [];
+      return { ok: true, outcomes: { "ws-a": "stale" as const }, unanswered: [] };
+    });
+    const onClose = vi.fn();
+    const wrapper = mount(TaskRecoveryDialog, { props: { onClose } });
+    await flushPromises();
+
+    const resumeBtn = wrapper.findAll("button").find((b) => b.text().startsWith("Resume") && b.text() !== "Resume all");
+    await resumeBtn!.trigger("click");
+    await flushPromises();
+
+    expect(useNotificationStore().persistentToasts).toHaveLength(0);
+    expect(store.recoveryCandidates).toEqual([]);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  test("a fully successful batch reports nothing extra", async () => {
+    seedStore([makeCandidate({ workspaceId: "ws-a" }), makeCandidate({ workspaceId: "ws-b" })]);
+    const wrapper = mount(TaskRecoveryDialog);
+    await flushPromises();
+
+    const resumeAllBtn = wrapper.findAll("button").find((b) => b.text() === "Resume all");
+    await resumeAllBtn!.trigger("click");
+    await flushPromises();
+
+    expect(useNotificationStore().persistentToasts).toHaveLength(0);
   });
 
   test("shows profile badge for non-default profile when profile exists in store", async () => {

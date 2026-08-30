@@ -13,6 +13,8 @@ import {
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { useAppStore } from "./app.js";
+import { resolveInputOriginWorkspaceId } from "../app/selectors.js";
+import type { CompanionPrimaryTaskRunner } from "../../electron/shared/companion-primary.js";
 import { useNotificationStore } from "./notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -22,6 +24,25 @@ interface InitOptions {
   getActiveSessionId: () => string | null;
   getOverlay: () => unknown;
   getPayload: () => StatePayload | null | undefined;
+}
+
+/**
+ * Workspace whose UI a terminal write came from. Reads the live payload
+ * (workspaces + task runner) so an attached task's Primary tab credits the
+ * task workspace instead of the source workspace that owns the session.
+ */
+function inputOriginWorkspaceId(sessionId: string): string {
+  try {
+    const payload = useAppStore().payload;
+    return resolveInputOriginWorkspaceId(
+      payload?.appState?.workspaces,
+      (payload?.taskRunner as CompanionPrimaryTaskRunner) || null,
+      sessionId,
+    );
+  } catch {
+    // A missing/partial payload must never block a keystroke.
+    return "";
+  }
 }
 
 export const useTerminalStore = defineStore("terminal", () => {
@@ -47,6 +68,12 @@ export const useTerminalStore = defineStore("terminal", () => {
     // avoids threading refs through the layout tree.
     const apiWithSearch = {
       ...api,
+      // Every terminal write declares the workspace whose UI it came from, so
+      // the backend credits the right workspace with `lastWorkedAt`. Wrapped
+      // here (rather than inside the controller) because this is the one place
+      // that already has both the transport and the store.
+      writeTerminal: (sessionId: string, data: string) =>
+        api.writeTerminal(sessionId, data, inputOriginWorkspaceId(sessionId)),
       onSearchRequested: (sessionId: string) => {
         window.dispatchEvent(new CustomEvent("strideterm:terminal-search", { detail: { sessionId } }));
       },

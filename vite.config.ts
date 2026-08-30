@@ -90,6 +90,11 @@ export default defineConfig({
     // useIsNarrow / responsive composables don't crash with "matchMedia
     // is not a function" the moment they hit onMounted.
     setupFiles: [resolve(__dirname, "test/vitest-setup.ts")],
+    // App.vue references the splash image as a root-absolute public asset
+    // ("/splash.png"), which the browser resolves against publicDir but the
+    // test transformer reads as a filesystem path. Test-only alias so App.vue
+    // can be mounted in jsdom; the dev server and the build are untouched.
+    alias: { "/splash.png": resolve(__dirname, "src/public/splash.png") },
     execArgv: testExecArgv,
   },
 });

@@ -462,18 +462,30 @@ export function registerIpc(
       runtime.openAzurePullRequest(validateIpc(openPrSchema, payload, "azure:pull-request:open"), windowId),
     );
   });
-  handle("azure:pull-request:comment", async (_event, payload) =>
-    withOperationPromise({ opId: "azure:pull-request:comment" }, () =>
-      runtime.commentAzurePullRequest(validateIpc(azureCommentSchema, payload, "azure:pull-request:comment")),
-    ),
-  );
-  handle("azure:pull-request:thread-status", async (_event, payload) =>
-    withOperationPromise({ opId: "azure:pull-request:thread-status" }, () =>
+  // The five review MUTATIONS below pass the window slot id, exactly like
+  // `azure:pull-request:open` and the recovery route already do. Dropping
+  // `event` here left `resolveReviewWorkTarget` asking
+  // `getViewerActiveWorkspaceId(undefined)`, which falls back to the LEGACY
+  // global `activeWorkspaceId` — so in a multi-window / multi-profile session
+  // the provider-root stamp could land on another window's workspace, or not
+  // happen at all, and `assertPrInViewerProfile` had no caller profile to
+  // refuse a foreign PR with (V6 review, §"P1 — desktop Azure/GitHub mutation
+  // ztrácí viewer/window kontext").
+  handle("azure:pull-request:comment", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "azure:pull-request:comment" }, () =>
+      runtime.commentAzurePullRequest(validateIpc(azureCommentSchema, payload, "azure:pull-request:comment"), windowId),
+    );
+  });
+  handle("azure:pull-request:thread-status", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "azure:pull-request:thread-status" }, () =>
       runtime.updateAzureThreadStatus(
         validateIpc(azureThreadStatusSchema, payload, "azure:pull-request:thread-status"),
+        windowId,
       ),
-    ),
-  );
+    );
+  });
   handle("review-bridge:draft-comment:create", async (event, payload) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "review-bridge:draft-comment:create" }, () =>
@@ -619,11 +631,12 @@ export function registerIpc(
   handle("ssh:known-hosts:import", async (_event, payload) =>
     withOperationPromise({ opId: "ssh:known-hosts:import" }, () => runtime["ssh:known-hosts:import"](payload)),
   );
-  handle("azure:pull-request:vote", async (_event, payload) =>
-    withOperationPromise({ opId: "azure:pull-request:vote" }, () =>
-      runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote")),
-    ),
-  );
+  handle("azure:pull-request:vote", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "azure:pull-request:vote" }, () =>
+      runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote"), windowId),
+    );
+  });
   handle("azure:workspace:fetch", async (_event, workspaceId) =>
     withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "azure:workspace:fetch" }, () =>
       runtime.fetchAzureReviewWorkspace(workspaceId),
@@ -789,16 +802,24 @@ export function registerIpc(
       runtime.openGitHubPullRequest(validateIpc(openPrSchema, payload, "github:pull-request:open"), windowId),
     );
   });
-  handle("github:pull-request:comment", async (_event, payload) =>
-    withOperationPromise({ opId: "github:pull-request:comment" }, () =>
-      runtime.commentGitHubPullRequest(validateIpc(githubCommentSchema, payload, "github:pull-request:comment")),
-    ),
-  );
-  handle("github:pull-request:review", async (_event, payload) =>
-    withOperationPromise({ opId: "github:pull-request:review" }, () =>
-      runtime.submitGitHubPullRequestReview(validateIpc(githubReviewSchema, payload, "github:pull-request:review")),
-    ),
-  );
+  handle("github:pull-request:comment", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "github:pull-request:comment" }, () =>
+      runtime.commentGitHubPullRequest(
+        validateIpc(githubCommentSchema, payload, "github:pull-request:comment"),
+        windowId,
+      ),
+    );
+  });
+  handle("github:pull-request:review", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "github:pull-request:review" }, () =>
+      runtime.submitGitHubPullRequestReview(
+        validateIpc(githubReviewSchema, payload, "github:pull-request:review"),
+        windowId,
+      ),
+    );
+  });
   handle("github:rerun-check", async (_event, prKey, checkItem) =>
     withOperationPromise({ opId: "github:rerun-check" }, async () => {
       const validated = validateIpc(rerunCheckSchema, { prKey, checkItem }, "github:rerun-check");
@@ -1131,10 +1152,15 @@ export function registerIpc(
       runtime.getTaskStatus(workspaceId),
     ),
   );
-  handle("task-recovery:resolve", async (_event, payload) =>
+  handle("task-recovery:resolve", async (event, payload) =>
     withOperationPromise({ opId: "task-recovery:resolve" }, async () => {
       const parsed = validateIpc(taskRecoveryResolveSchema, payload, "task-recovery:resolve");
-      return runtime.resolveTaskRecovery(parsed.decisions);
+      // The deciding WINDOW is the viewer: a successful Resume / Start fresh
+      // is stamped as work in that window's own context, and the dialog can
+      // triage candidates from more than one profile (V5 review, §"P1 —
+      // recovery dialog obchází work stamp").
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+      return runtime.resolveTaskRecovery(parsed.decisions, windowId);
     }),
   );
   handle("task:create-companion", async (event, payload) => {
@@ -2085,14 +2111,17 @@ export function registerIpc(
     }
   });
 
-  on("terminal:input", (event, sessionId, data) => {
+  on("terminal:input", (event, sessionId, data, originWorkspaceId) => {
     if (typeof sessionId === "string" && typeof data === "string") {
       // Pass the caller window as the viewer so the input lease can detect
       // two windows typing into the same PTY. A blocked write notifies the
       // sender, which shows the "Take control?" prompt.
       const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+      // `originWorkspaceId` is the workspace whose UI the user typed in; the
+      // runtime validates it before crediting that workspace with work.
+      const origin = typeof originWorkspaceId === "string" ? originWorkspaceId : undefined;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = runtime.writeToSession(sessionId, data, windowId || undefined) as any;
+      const result = runtime.writeToSession(sessionId, data, windowId || undefined, origin) as any;
       if (result?.blocked && windowId) {
         emitToWindow?.(windowId, "terminal:input-blocked", {
           sessionId,

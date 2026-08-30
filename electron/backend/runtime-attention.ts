@@ -5,6 +5,15 @@ import type { Logger } from "./logger.js";
 type SessionSignal = ReturnType<typeof import("./runtime-utils.js").createSessionSignal>;
 
 interface ProjectAlertEntry {
+  /**
+   * Stable identity of this alert INSTANCE. Minted exactly once, here in
+   * `addProjectAlert()`, and carried unchanged through every rebroadcast,
+   * reconnect and payload copy. Replacing a panel's alert with a genuinely new
+   * one mints a new id, so the renderer can distinguish "same alert seen
+   * again" (idempotent) from "second real alert on the same panel" (a new
+   * notification event that may reopen a resolved thread). V2 plan, Fáze 2.
+   */
+  alertId: string;
   projectId: string;
   panelId: string;
   sessionId: string;
@@ -111,6 +120,18 @@ export function createRuntimeAttentionManager({
   const projectAlerts = new Map<string, ProjectAlertBucket>();
   const sessionSignals = new Map<string, SessionSignal>();
 
+  // Monotonic per-process counter behind the alert id. `randomUUID` would do
+  // just as well, but a counter keeps the id greppable in the logs and makes
+  // ordering obvious when reading a captured payload by hand. The process
+  // start time keeps ids distinct across restarts, which matters because the
+  // renderer persists `sourceAlertId` into localStorage.
+  const alertIdPrefix = `alert-${Date.now().toString(36)}`;
+  let alertIdCounter = 0;
+  function newAlertId(): string {
+    alertIdCounter += 1;
+    return `${alertIdPrefix}-${alertIdCounter}`;
+  }
+
   function getAttentionSnapshot() {
     const sessionsSnapshot: Record<string, unknown> = {};
     for (const [sessionId, signal] of sessionSignals) {
@@ -132,6 +153,9 @@ export function createRuntimeAttentionManager({
         alertKind: panelAlert?.kind ?? null,
         alertedAt: panelAlert?.at ?? null,
         activity: signal.activity || "idle",
+        // Epoch ms, 0 when not running — same numeric shape as
+        // lastCommandFinishedAt below. Runtime-only, never persisted.
+        activityStartedAt: signal.activityStartedAt || 0,
         agentLike: Boolean(signal.agentLike),
         hasUserInput: Boolean(signal.hasUserInput),
         lastExitCode: signal.lastExitCode,
@@ -191,7 +215,6 @@ export function createRuntimeAttentionManager({
     tier = 1,
     urgency = "normal",
   }: AddProjectAlertOptions): void {
-    log.debug("addProjectAlert", { projectId, panelId, sessionId, title, kind, tier, urgency, detail, exitCode });
     const current = projectAlerts.get(projectId) || {
       count: 0,
       latestAt: null,
@@ -199,6 +222,7 @@ export function createRuntimeAttentionManager({
     };
     const nextAlerts = [
       {
+        alertId: newAlertId(),
         projectId,
         panelId,
         sessionId,
@@ -217,6 +241,18 @@ export function createRuntimeAttentionManager({
       count: nextAlerts.length,
       latestAt: nextAlerts[0]?.at || null,
       alerts: nextAlerts,
+    });
+    log.debug("addProjectAlert", {
+      alertId: nextAlerts[0]?.alertId,
+      projectId,
+      panelId,
+      sessionId,
+      title,
+      kind,
+      tier,
+      urgency,
+      detail,
+      exitCode,
     });
   }
 

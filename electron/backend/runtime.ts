@@ -93,7 +93,7 @@ import { SshManager } from "./ssh/ssh-manager.js";
 import {
   clone,
   findWorkspace,
-  markWorkspaceUsed,
+  markWorkspaceWorked,
   createAttentionContext,
   stripAnsi,
   lastNonEmptyLine,
@@ -126,6 +126,7 @@ import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
+import { sessionIdFor } from "../shared/task-states.js";
 import { hasMeaningfulUserInput } from "../shared/terminal-input.js";
 import type { NotifyServerHandle } from "./notify-server.js";
 
@@ -330,14 +331,14 @@ export async function createRuntime({
   const INPUT_LEASE_TTL_MS = 45_000;
   const sessionInputLeases = new Map<string, { viewerId: string; expiresAt: number }>();
 
-  // --- Recency stamping from real typing ---
-  // Activation alone is a weak "the user works here" signal: you can leave a
-  // workspace open for hours in another window while actually typing in this
-  // one. Typing into a session is the strongest signal there is, so it stamps
-  // `lastUsedAt` too — but every keystroke goes through writeToSession, and
-  // every store.mutate persists the state file, so the stamp is throttled per
-  // workspace. A minute of granularity is invisible in a sidebar that buckets
-  // by the hour and renders ages in whole minutes.
+  // --- Work stamping from real typing ---
+  // Typing into a session is the strongest "the user works here" signal there
+  // is, so accepted viewer input stamps `lastWorkedAt`. Activation does NOT:
+  // you can leave a workspace open for hours in another window while actually
+  // typing in this one. Every keystroke goes through writeToSession and every
+  // store.mutate persists the state file, so the stamp is throttled per
+  // workspace. A minute of granularity is invisible in a sidebar that renders
+  // ages in whole minutes and cuts off at 24 hours.
   const TYPING_STAMP_INTERVAL_MS = 60_000;
   const lastTypingStampAt = new Map<string, number>();
 
@@ -1683,6 +1684,10 @@ export async function createRuntime({
       if (!signal) return;
       if (signal.activity === "done") {
         signal.activity = "idle";
+        // Writes `activity` directly, bypassing setSessionActivity — so the
+        // run-start stamp has to be cleared here too, otherwise a faded-out
+        // session would keep a non-zero start and show a growing elapsed.
+        signal.activityStartedAt = 0;
         broadcastState();
       }
     }, ACTIVITY_FADE_MS);
@@ -1702,6 +1707,10 @@ export async function createRuntime({
     if (!signal) return;
     if (signal.activity === activity && activity !== "done") return;
     signal.activity = activity;
+    // Run-start stamp for elapsed. The early return above means a repeated
+    // running → running never re-stamps, so a long run keeps its original
+    // start; every non-running state clears it.
+    signal.activityStartedAt = activity === "running" ? Date.now() : 0;
     if (activity === "done") {
       signal.lastExitCode = exitCode;
       signal.lastCommandFinishedAt = Date.now();
@@ -3918,6 +3927,7 @@ export async function createRuntime({
     resolveGitConnection,
     resolveGitRootPath,
     runGitWorkspaceAction,
+    recordWorkspaceWork,
     emitGitProgress: (payload) => events.emit("git:push-progress", payload),
     syncWorktrees: async () => {
       await syncWorktrees();
@@ -3969,6 +3979,7 @@ export async function createRuntime({
     getViewerProfileId: getWindowProfileId,
     getViewerActiveWorkspaceId,
     mirrorRemoteViewerWorkspace,
+    recordWorkspaceWork,
   });
 
   const gridHandlers = createGridHandlers({
@@ -3990,6 +4001,7 @@ export async function createRuntime({
     execFileTextImpl,
     recheckClaudeAvailability,
     assertWorkspaceInViewerProfile,
+    recordWorkspaceWork,
     resolveCallerProfileId,
     assertNoConflictingActiveTask,
     worktreeTreePath,
@@ -4126,21 +4138,94 @@ export async function createRuntime({
   }
 
   /**
-   * Stamp `lastUsedAt` because the user typed into this workspace. Throttled
+   * Stamp `lastWorkedAt` because the user typed into this workspace. Throttled
    * (see TYPING_STAMP_INTERVAL_MS) and fire-and-forget: writeToSession is
    * synchronous and must never wait on a state persist. Only viewer-originated
-   * meaningful input reaches here — never task-runner writes or PTY output.
+   * meaningful input that the input lease accepted reaches here — never
+   * task-runner writes, PTY output, or focus/mouse escape sequences.
    */
-  function stampWorkspaceUsedByTyping(workspaceId: string): void {
+  function stampWorkspaceWorkedByTyping(workspaceId: string): void {
     const now = Date.now();
     if (now - (lastTypingStampAt.get(workspaceId) ?? 0) < TYPING_STAMP_INTERVAL_MS) return;
     lastTypingStampAt.set(workspaceId, now);
     store
-      .mutate((draft: AppState) => markWorkspaceUsed(draft, workspaceId))
+      .mutate((draft: AppState) => markWorkspaceWorked(draft, workspaceId))
       .then(() => broadcastState())
       .catch((error: unknown) => {
-        log.warn("lastUsedAt typing stamp failed", { workspaceId, err: (error as Error)?.message });
+        log.warn("lastWorkedAt typing stamp failed", { workspaceId, err: (error as Error)?.message });
       });
+  }
+
+  /**
+   * Which workspace owns a terminal write.
+   *
+   * Usually the workspace that owns the panel. An ATTACHED task (Companion
+   * loop) breaks that assumption: its Primary tab is presented inside the task
+   * workspace while the physical session id still names the source workspace,
+   * so a user typing in the task card would otherwise bump the SOURCE
+   * workspace's recency. The viewer therefore declares the workspace whose UI
+   * it typed in (`originWorkspaceId`) and this function validates the claim —
+   * an unvalidated claim is ignored, never trusted.
+   *
+   * Accepted when the session is
+   *   (a) directly a panel of the claimed workspace, or
+   *   (b) that workspace's attached worker/"Primary" or judge/"Companion"
+   *       session (`sessionIdFor`, the same helper every task write path uses).
+   *
+   * Branch (a) is the very workspace that owns the session. Branch (b) is
+   * additionally required to be in the SAME profile as the session's owner —
+   * an attached binding is already refused across profiles at create time, so
+   * this only makes the invariant true by code rather than by upstream
+   * convention. Anything else falls back to the session's own workspace.
+   */
+  function resolveWorkOriginWorkspaceId(sessionId: string, claimedWorkspaceId?: string): string {
+    const descriptor = parseSessionId(sessionId);
+    const owner = descriptor?.workspaceId || "";
+    const claimed = String(claimedWorkspaceId || "");
+    if (!claimed || claimed === owner) return owner;
+    const state = getState();
+    const workspace = findWorkspace(state, claimed);
+    const ownerWorkspace = findWorkspace(state, owner);
+    const sameProfile =
+      !!workspace && !!ownerWorkspace && (workspace.profileId || "default") === (ownerWorkspace.profileId || "default");
+    if (sameProfile && workspace.kind === "task" && workspace.task) {
+      if (sessionIdFor(workspace, "worker") === sessionId || sessionIdFor(workspace, "judge") === sessionId) {
+        return workspace.id;
+      }
+    }
+    log.debug("terminal input: ignoring unvalidated originWorkspaceId", { sessionId, claimed });
+    return owner;
+  }
+
+  /**
+   * Persist "the user worked here" for one of the allowlisted actions
+   * (see markWorkspaceWorked's doc block for the closed list). Called only
+   * AFTER the action succeeded — a failed or refused action is not work.
+   *
+   * `viewerId` is the window slot / remote viewer that requested the action.
+   * Every allowlisted call site already ran its own cross-profile guard, so
+   * this is a belt-and-braces check: a mismatch skips the stamp rather than
+   * throwing, because the action itself has already succeeded and must not be
+   * reported as failed.
+   */
+  async function recordWorkspaceWork(workspaceId: string, viewerId?: string): Promise<void> {
+    const id = String(workspaceId || "");
+    if (!id) return;
+    const workspace = findWorkspace(getState(), id);
+    if (!workspace) return;
+    if (viewerId) {
+      const viewerProfileId = getWindowProfileId(viewerId);
+      if (viewerProfileId && (workspace.profileId || "default") !== viewerProfileId) {
+        log.debug("recordWorkspaceWork: skipping cross-profile stamp", { workspaceId: id, viewerId });
+        return;
+      }
+    }
+    try {
+      await store.mutate((draft: AppState) => markWorkspaceWorked(draft, id));
+      broadcastState();
+    } catch (error: unknown) {
+      log.warn("lastWorkedAt stamp failed", { workspaceId: id, err: (error as Error)?.message });
+    }
   }
 
   /**
@@ -4297,7 +4382,6 @@ export async function createRuntime({
       }
 
       draft.activeWorkspaceId = targetWorkspaceId;
-      markWorkspaceUsed(draft, targetWorkspaceId);
       workspace.activePanelId = panelId;
     });
 
@@ -4822,11 +4906,10 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateWorkspaceForRemoteClient(clientId: string, workspaceId: any): Promise<unknown> {
       if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
-      // Throws on an unknown/cross-profile workspace — markWorkspaceUsed below
-      // only runs once the registry has validated the target.
+      // Throws on an unknown/cross-profile workspace.
       _remoteClientRegistry.activateWorkspace(clientId, workspaceId, getState());
       if (workspaceId) {
-        await store.mutate((draft: AppState) => markWorkspaceUsed(draft, String(workspaceId)));
+        // No `lastWorkedAt` stamp: activation is navigation, not work.
         ensureVisibleSession(String(workspaceId));
       }
       broadcastState();
@@ -4838,7 +4921,7 @@ export async function createRuntime({
       if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
       _remoteClientRegistry.activateSession(clientId, workspaceId, sessionId, getState());
       if (sessionId) {
-        await store.mutate((draft: AppState) => markWorkspaceUsed(draft, String(workspaceId)));
+        // No `lastWorkedAt` stamp: opening a tab is navigation, not work.
         ensureSessionSafe(String(sessionId));
       }
       broadcastState();
@@ -4913,7 +4996,6 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         if (draft.workspaces.some((workspace) => workspace.id === workspaceId)) {
           draft.activeWorkspaceId = workspaceId;
-          markWorkspaceUsed(draft, String(workspaceId));
           // Also update the first window slot (primary window compat) — but
           // never for remote viewers: a remote activation must not flip any
           // desktop window's view.
@@ -4970,7 +5052,6 @@ export async function createRuntime({
         }
 
         draft.activeWorkspaceId = descriptor.workspaceId;
-        markWorkspaceUsed(draft, descriptor.workspaceId);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if ((workspace as any).panels?.some((panel: any) => panel.id === descriptor.panelId)) {
           workspace.activePanelId = descriptor.panelId;
@@ -5054,7 +5135,6 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const targetWorkspace = draft.workspaces.find((ws) => ws.id === workspaceId);
         if (!targetWorkspace) return;
-        markWorkspaceUsed(draft, workspaceId);
         // Update per-window slot
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
         if (slot) {
@@ -5119,7 +5199,6 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, descriptor.workspaceId);
         if (!workspace) return;
-        markWorkspaceUsed(draft, descriptor.workspaceId);
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
         if (slot) {
           slot.activeWorkspaceId = descriptor.workspaceId;
@@ -5393,9 +5472,20 @@ export async function createRuntime({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const index = draft.workspaces.findIndex((item: any) => item.id === normalized.id);
         if (index >= 0) {
+          // Editing a workspace is not work — and `lastWorkedAt` is a
+          // BACKEND-OWNED field on an existing workspace, so the incoming
+          // value is discarded entirely rather than merely used as a fallback.
+          // A long-open editor round-trips whatever stamp it loaded, and an
+          // older-but-truthy value used to overwrite newer work (V3 review,
+          // §4 P2). No client has a legitimate reason to move this timestamp.
+          const priorWorkedAt = draft.workspaces[index]?.lastWorkedAt;
+          if (priorWorkedAt) normalized.lastWorkedAt = priorWorkedAt;
+          else delete normalized.lastWorkedAt;
           draft.workspaces[index] = normalized;
         } else {
           insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
+          // Creating a workspace IS work (V2 plan allowlist).
+          markWorkspaceWorked(draft, normalized.id);
         }
 
         if (!draft.activeWorkspaceId) {
@@ -5931,7 +6021,7 @@ export async function createRuntime({
       sessions.resizeSession(sessionId, size.cols, size.rows);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    writeToSession(sessionId: any, data: any, viewerId?: string) {
+    writeToSession(sessionId: any, data: any, viewerId?: string, originWorkspaceId?: string) {
       const isUserTyping = hasMeaningfulUserInput(data);
       // Input lease: only viewer-originated MEANINGFUL typing participates —
       // mouse-reporting escapes from a viewer that merely clicked to watch
@@ -5976,8 +6066,12 @@ export async function createRuntime({
       if (descriptor) {
         // Same rule as the lease: a viewer typing is the user working here.
         // An internal writer (no viewerId) is the task runner driving an
-        // agent, which must never look like manual use.
-        if (viewerId && isUserTyping) stampWorkspaceUsedByTyping(descriptor.workspaceId);
+        // agent, which must never look like manual use. The workspace credited
+        // is the one whose UI the viewer typed in, not blindly the session's
+        // owner — see resolveWorkOriginWorkspaceId for the attached-task case.
+        if (viewerId && isUserTyping) {
+          stampWorkspaceWorkedByTyping(resolveWorkOriginWorkspaceId(String(sessionId), originWorkspaceId));
+        }
         const current = projectAlerts.get(descriptor.workspaceId);
         const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
         if (alert && Date.now() - new Date(alert.at).getTime() >= ATTENTION_MIN_DISPLAY_MS) {
@@ -6485,7 +6579,8 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = newProject.id;
-        markWorkspaceUsed(draft, newProject.id);
+        // Creating a worktree workspace is work (V2 plan allowlist).
+        markWorkspaceWorked(draft, newProject.id);
         // Entry check (assertWorkspaceInViewerProfile) already refused any
         // cross-profile request, so the mirror here is always in-profile.
         if (windowId) {

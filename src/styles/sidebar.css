@@ -395,9 +395,22 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   min-width: 0;
   max-width: 100%;
   overflow-y: auto;
+  /* Belt and braces only. Nothing inside may overflow horizontally in the
+     first place — the activity rows shrink to the panel instead of being
+     clipped by it, and no horizontal scrollbar is ever offered (V6 review,
+     §"P1 UX", oprava 7). */
   overflow-x: hidden;
   padding: 3px;
   align-content: start;
+}
+
+/* The width the activity rows adapt to. The sidebar is user-resizable
+   independently of the viewport, so this is a CONTAINER query context, not a
+   media query one. `inline-size` contains the inline axis only, so the list
+   keeps its auto block size and its own vertical scrolling. */
+.workspace-list {
+  container-type: inline-size;
+  container-name: workspace-list;
 }
 
 .workspace-suggestions {
@@ -1679,27 +1692,72 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   text-align: center;
 }
 
-/* "Recent" workspace view — time sections, ancestor context rows ──────── */
+/* RUNNING agents surface ─────────────────────────────────────────────── */
 
-.workspace-list__section-header {
+.running-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 0 6px;
+  margin-bottom: 4px;
+  /* The containment chain starts here: a grid child keeps an auto min-content
+     width unless it is told otherwise, which is what let a long row push the
+     whole section out under the workspace panel (V6 review, §"P1 UX"). */
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Sticky so the count stays readable while the list below scrolls. Sits above
+   the recent view's section headers, which use z-index 1. */
+.running-agents__title {
   position: sticky;
   top: 0;
-  z-index: 1;
-  margin: 8px 0 4px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 4px;
   padding: 3px 4px;
   font-size: 10px;
-  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.06em;
   color: var(--muted);
   background: var(--panel);
 }
 
-.workspace-list__section-header:first-child {
-  margin-top: 0;
+/* "Recently worked" shortcuts ─────────────────────────────────────────── */
+
+.recent-shortcuts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 0 6px;
+  margin-bottom: 4px;
+  /* Same shrink contract as .running-agents — both sections host clusters. */
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
-.workspace-list__section-toggle {
+/* Sticky like the RUNNING title, one level below it so the two never
+   overlap when both are pinned while the list scrolls. */
+.recent-shortcuts__title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 4px;
+  padding: 3px 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+.recent-shortcuts__toggle {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1714,44 +1772,503 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   cursor: pointer;
 }
 
-.workspace-list__section-toggle:hover {
+.recent-shortcuts__toggle:hover {
   color: var(--text);
 }
 
-.workspace-list__section-caret {
+.recent-shortcuts__caret {
   display: inline-block;
   width: 8px;
   flex-shrink: 0;
 }
 
-.workspace-context-row {
+.recent-shortcuts__all-title {
+  margin: 4px 0;
+  padding: 3px 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.recent-shortcuts__more {
+  align-self: flex-start;
+  margin: 2px 0 0 7px;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.recent-shortcuts__more:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* Shared ACTIVITY CLUSTER ─────────────────────────────────────────────
+   One visual grammar for both dynamic sections (V5 review, §1–§3).
+
+   V4 drew one closed box-in-box block per recent result. That stopped a child
+   attaching itself optically to an unrelated time-neighbour, but it repeated a
+   shared branch once per result — a recent PR and its recent task produced two
+   `Azure DevOps › mhub PR` blocks — and RUNNING drew the very same hierarchy
+   flat, as inline `parent / parent / name` text.
+
+   So the box is now per CLUSTER, and inside it hierarchy is plain indentation
+   with a rail, exactly like a normal tree. No new rectangle per level: a deep
+   Azure/GitHub/task branch stays readable instead of turning into nested
+   frames. Every row is a sibling button, so a parent is a real navigation
+   target without ever nesting one button inside another. */
+.activity-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Never wider than the section that holds it, so the right border and the
+     trailing time are always on screen. */
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel-elevated), transparent 45%);
+
+  /* One knob per dimension, so the narrow container query below re-tunes the
+     whole row geometry in one place instead of overriding five rules. */
+  --activity-indent-step: 12px;
+  --activity-gap: 6px;
+  --activity-badge-size: 22px;
+  --activity-state-width: 52px;
+  /* Wide enough for the longest elapsed the formatter produces (`12h 34m`),
+     because the trailing value is the one thing that must never be clipped. */
+  --activity-trailing-width: 50px;
+}
+
+.activity-cluster + .activity-cluster {
+  margin-top: 4px;
+}
+
+/* THREE columns, and only the middle one may grow: an out-of-flow-safe badge,
+   a `minmax(0, 1fr)` text column, and a compact tail. A free flex row let the
+   text push the tail past the cluster's right border — the time and part of
+   the name ended up under the workspace panel with nothing but the list's
+   `overflow-x: hidden` masking it (V6 review, §"P1 UX", oprava 3). With a
+   `minmax(0, 1fr)` track the text column is the ONLY thing that can absorb the
+   pressure, so it ellipsises first and the tail always stays visible. */
+.activity-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--activity-gap, 6px);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  /* The indent lives INSIDE the cluster's own border, so it can never read as
+     a relationship to whatever sits above the cluster. It is fed the BOUNDED
+     visual depth (see `visualDepthOf`), so a sixth level cannot eat the whole
+     text budget on a narrow panel. */
+  padding-left: calc(6px + var(--activity-depth, 0) * var(--activity-indent-step, 12px));
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The rail: one thin line per nesting level, drawn out of flow so it adds no
+   height and cannot move a target when a row's depth is frozen. */
+.activity-row::before {
+  content: "";
+  position: absolute;
+  left: calc(10px + (var(--activity-depth, 0) - 1) * var(--activity-indent-step, 12px));
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--border), transparent 20%);
+}
+
+.activity-row[data-depth="0"]::before {
+  display: none;
+}
+
+.activity-row:hover {
+  border-color: var(--border);
+  background: rgba(var(--tint), 0.06);
+}
+
+.activity-row:focus-visible {
+  outline: 2px solid var(--accent, #6ea8fe);
+  outline-offset: -2px;
+}
+
+/* A context row is COMPACT and carries no metric: a parent that has not been
+   worked in must never wear a recent time. It is still a full hit target —
+   24px on a desktop pointer, 32px on a coarse one, so a narrow drawer never
+   asks the user to hit a line of small text. */
+.activity-row--context {
+  min-height: 24px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* An activity row is a CARD-LITE: it borrows the tree card's accent border,
+   tinted ground, icon badge and active outline so the user recognises the same
+   workspace in both places — but it carries no star, no status pill, no menu,
+   no order index and no drag handle (V3 review, §3). */
+.activity-row--activity {
+  min-height: 34px;
+  border-color: color-mix(in srgb, var(--accent), transparent 84%);
+  background: color-mix(in srgb, var(--panel-elevated), var(--accent) 6%);
+}
+
+.activity-row--activity:hover {
+  border-color: color-mix(in srgb, var(--accent), transparent 60%);
+}
+
+@media (pointer: coarse) {
+  .activity-row--context {
+    min-height: 32px;
+  }
+
+  .activity-row--activity {
+    min-height: 40px;
+  }
+}
+
+/* Same active outline the tree card uses. */
+.activity-row--active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+/* Subtle attention cue, one shade lighter than the tree card's so the shortcut
+   stays the quieter of the two renderings. It is an inset shadow — it can
+   arrive from a background provider poll without changing any geometry. */
+.activity-row--attention {
+  box-shadow: inset 2px 0 0 rgba(255, 111, 141, 0.45);
+}
+
+.activity-row--active.activity-row--attention {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+/* Ghost treatment for a workspace pinned to a grid slot, matching the tree. */
+.activity-row--in-grid {
+  border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
+  opacity: 0.6;
+}
+
+.activity-row--in-grid.activity-row--active {
+  opacity: 1;
+}
+
+/* Interaction-lock placeholder: the workspace was hard-deleted while the list
+   was frozen. The row keeps its geometry and goes inert, so nothing shifts and
+   no click reaches a dead id until unlock (V3 review, §2). */
+.activity-row--missing {
+  cursor: default;
+  border-style: dashed;
+  background: none;
+  opacity: 0.4;
+}
+
+.activity-row__badge {
+  position: relative;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: var(--activity-badge-size, 22px);
+  height: var(--activity-badge-size, 22px);
+  border-radius: 3px;
+  font-weight: 800;
+  font-size: 10px;
+  background: color-mix(in srgb, var(--accent), transparent 76%);
+}
+
+.activity-row--context .activity-row__badge {
+  width: calc(var(--activity-badge-size, 22px) - 7px);
+  height: calc(var(--activity-badge-size, 22px) - 7px);
+  border-radius: 2px;
+  font-size: 8px;
+}
+
+/* The CANONICAL status dot, on the same corner of the same badge as the tree
+   card's (V6 review, §"P2 UX"). Same semantic states, same colours, same
+   glyphs, same heartbeat rule — they are one resolver
+   (`resolveWorkspaceStatusCue`), so a workspace cannot wear two different
+   answers in two sections. Compact here, because the badge is smaller.
+
+   Absolutely positioned and pointer-inert on purpose: the dot is one of the
+   values a background poll may change while the list is frozen, so it must not
+   move the badge, the text or the row's bounding box by a pixel. */
+.activity-row__status-dot {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid var(--panel);
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 7px;
+  justify-content: center;
+  font-size: 7px;
+  line-height: 1;
+  font-weight: 700;
+  color: #fff;
+  pointer-events: none;
+}
+
+.activity-row--context .activity-row__status-dot {
+  bottom: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-width: 1.5px;
+  font-size: 6px;
+}
+
+.activity-row__status-dot--running {
+  background: var(--status-running);
+  --heartbeat-on-opacity: 0.72;
+  --heartbeat-on-scale: 1.23;
+}
+.activity-row__status-dot--completed {
+  background: var(--status-success);
+}
+.activity-row__status-dot--completed::before {
+  content: "✓";
+}
+.activity-row__status-dot--merged {
+  background: var(--status-merged);
+}
+.activity-row__status-dot--merged::before {
+  content: "✓";
+}
+.activity-row__status-dot--failed {
+  background: var(--status-failed);
+}
+.activity-row__status-dot--failed::before {
+  content: "✕";
+}
+.activity-row__status-dot--stopped {
+  background: var(--status-stopped);
+  opacity: 0.8;
+}
+.activity-row__status-dot--paused {
+  background: var(--status-paused);
+}
+/* Pause glyph drawn as two CSS bars — unicode ‖ renders inconsistently this
+   small, exactly as on the canonical card. */
+.activity-row__status-dot--paused::before,
+.activity-row__status-dot--paused::after {
+  content: "";
+  display: block;
+  width: 1.5px;
+  height: 5px;
+  background: #2a1a00;
+  border-radius: 1px;
+}
+.activity-row__status-dot--paused::after {
+  margin-left: 1.5px;
+}
+.activity-row__status-dot--pr-active {
+  background: var(--status-review);
+  --heartbeat-on-opacity: 0.72;
+  --heartbeat-on-scale: 1.23;
+}
+.activity-row__status-dot--abandoned {
+  background: var(--status-muted);
+}
+
+/* Anchored like the tree card's slot badge, top-right of the icon badge — out
+   of flow, so it cannot resize the row when a grid slot appears mid-gesture. */
+.activity-row__slot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+/* The one column allowed to grow — and therefore the one that shrinks. It sits
+   in the `minmax(0, 1fr)` track, so `min-width: 0` here is what actually lets
+   the label ellipsise instead of forcing the row wider. */
+.activity-row__text {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  gap: 1px;
+}
+
+.activity-row__title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.activity-row--context .activity-row__title {
   font-size: 11px;
+}
+
+/* A narrow sidebar clips the LABEL — a context row's breadcrumb path or an
+   activity's name — never the time beside it. The untruncated path is on the
+   button's own `title` and in its accessible name. */
+.activity-row__label {
+  min-width: 0;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-row--context .activity-row__label {
+  font-weight: 400;
+}
+
+/* An OVERLAY, not a slot in the flow. Attention is the one cue a background
+   provider poll is allowed to change while the list is frozen (V5 review, the
+   Azure/GitHub matrix), so its arrival must not move a single pixel of the row
+   the user is aiming at — not its height, not its label, not its hit target.
+   Drawn out of flow in the row's top-right corner and inert to the pointer,
+   exactly like the grid-slot badge. */
+.activity-row__attention {
+  position: absolute;
+  top: 1px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 9px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.activity-row__attention-count {
+  font-weight: 700;
+}
+
+/* min-height keeps every activity row exactly as tall as its neighbours,
+   whether or not it has a summary to show. */
+.activity-row__summary {
+  min-width: 0;
+  min-height: 13px;
+  font-size: 10px;
+  line-height: 1.3;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.workspace-context-row__icon {
+/* The compact TAIL: the third grid column. It never shrinks and never grows —
+   whatever the panel width, the state and the trailing time keep exactly these
+   reserved widths, and the text column absorbs the difference. */
+.activity-row__tail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
-  opacity: 0.7;
+  min-width: 0;
 }
 
-.workspace-context-row__name {
+/* A RESERVED slot. A task state keeps updating on a locked row, so it gets a
+   FIXED width instead of resizing the label beside it (V4 review, §"P2" —
+   live values live only in geometrically stable slots). `width`, not
+   `min-width`: a long state used to widen the slot and squeeze the label, and
+   a wrapped one changed the row's HEIGHT mid-gesture (V6 review, §"P1 UX",
+   oprava 4). The labels themselves are short (see RunningAgentsPanel's
+   STATE_LABELS) and anything unexpected ellipsises inside this box. */
+.activity-row__state {
+  flex: 0 0 auto;
+  width: var(--activity-state-width, 58px);
   min-width: 0;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.8;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Collapsed icon-strip: section headers and context rows carry no useful
-   information at icon width — only real workspace icons remain. */
-.frame--sidebar-collapsed .workspace-list__section-header,
-.frame--sidebar-collapsed .workspace-context-row {
+/* Reserved for the same reason: the age and the elapsed both tick with the
+   shared minute clock while the pointer rests on the row. */
+.activity-row__trailing {
+  flex: 0 0 auto;
+  width: var(--activity-trailing-width, 40px);
+  min-width: 0;
+  align-self: center;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* NARROW PANEL. The sidebar resizes down to 180 px and the row has to adapt to
+   it rather than demand a wider panel (V6 review, §"P1 UX", oprava 6 and 7).
+   Only the negotiable things give way — the indent step, the gaps, the badge
+   and the two reserved widths, plus the optional second summary line. The
+   trailing time, the focus outline and the cluster's right border are never
+   touched, and no horizontal scrollbar is introduced. */
+@container workspace-list (max-width: 210px) {
+  .activity-cluster {
+    --activity-indent-step: 8px;
+    --activity-gap: 4px;
+    --activity-badge-size: 18px;
+    --activity-state-width: 44px;
+    --activity-trailing-width: 46px;
+  }
+
+  /* The summary is the one genuinely optional line: the name, the state and
+     the time all still fit, and the row keeps a stable height because the
+     min-height comes from .activity-row--activity, not from this line. */
+  .activity-row__summary {
+    display: none;
+  }
+}
+
+/* The narrowest supported panel (~200px and below). The plan's own width
+   budget asks for the whole border and the whole time here, and allows the
+   name to be heavily ellipsised — it does NOT ask for the running state, which
+   it requires only at the default 248 px. Keeping the state at this width
+   would leave a nested running row with single digits of pixels for its name,
+   so the reserved state slot is the thing that goes; the phase is still spelled
+   out in full in the row's tooltip and accessible name. */
+@container workspace-list (max-width: 180px) {
+  .activity-row__state {
+    display: none;
+  }
+}
+/* Collapsed icon-strip: neither surface carries useful information at icon
+   width, and a duplicated icon could not be told apart from its tree entry —
+   only the canonical tree's icons remain. */
+.frame--sidebar-collapsed .recent-shortcuts,
+.frame--sidebar-collapsed .recent-shortcuts__all-title,
+.frame--sidebar-collapsed .running-agents {
   display: none;
 }
 

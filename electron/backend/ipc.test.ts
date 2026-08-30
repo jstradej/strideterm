@@ -180,3 +180,106 @@ describe("registerIpc teardown", () => {
     expect(removeHandlerCalls).not.toContain("state:get");
   });
 });
+
+/**
+ * V6 review, §"P1 — desktop Azure/GitHub mutation ztrácí viewer/window
+ * kontext".
+ *
+ * The runtime handlers and the remote slot-aware routes both took a
+ * `windowId`, but five desktop IPC adapters threw `event` away. The runtime
+ * then asked `getViewerActiveWorkspaceId(undefined)`, which falls back to the
+ * legacy global `activeWorkspaceId` — so in a multi-window / multi-profile
+ * session the provider-root stamp could land on another window's workspace, or
+ * not happen at all, and `assertPrInViewerProfile` had no caller profile with
+ * which to refuse a foreign PR.
+ *
+ * The existing helper tests call the runtime handler directly with a
+ * hand-written `"win-1"`, so they could never see an adapter that drops it.
+ * These dispatch the REGISTERED channel instead.
+ */
+describe("registerIpc — provider review mutations carry the viewer's window", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+  });
+
+  /** A runtime that records the arguments each provider mutation was called with. */
+  function makeRecordingRuntime(): {
+    runtime: Parameters<typeof registerIpc>[0];
+    calls: Array<{ method: string; args: unknown[] }>;
+  } {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, method: string) => {
+          // `runtime.on(...)` must still return a callable unsubscribe.
+          if (method === "on") return callable;
+          return (...args: unknown[]) => {
+            calls.push({ method, args });
+            return { ok: true };
+          };
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    return { runtime, calls };
+  }
+
+  const MUTATIONS = [
+    {
+      channel: "azure:pull-request:comment",
+      method: "commentAzurePullRequest",
+      payload: { prKey: "pr", content: "x" },
+    },
+    {
+      channel: "azure:pull-request:thread-status",
+      method: "updateAzureThreadStatus",
+      payload: { prKey: "pr", threadId: 1, status: "closed" },
+    },
+    { channel: "azure:pull-request:vote", method: "voteAzurePullRequest", payload: { prKey: "pr", vote: 10 } },
+    { channel: "github:pull-request:comment", method: "commentGitHubPullRequest", payload: { prKey: "pr", body: "x" } },
+    {
+      channel: "github:pull-request:review",
+      method: "submitGitHubPullRequestReview",
+      payload: { prKey: "pr", event: "APPROVE", body: "x" },
+    },
+  ];
+
+  test("all five adapters resolve the deciding window from event.sender and pass it on", async () => {
+    const { runtime, calls } = makeRecordingRuntime();
+    const dispose = registerIpc(runtime, () => {}, {
+      // Two windows, two profiles — window B is the one acting.
+      getWindowIdByWebContentsId: (id) => (id === 7 ? "win-B" : "win-A"),
+    });
+
+    for (const mutation of MUTATIONS) {
+      const listener = handleRegistry.get(mutation.channel) as (event: unknown, payload: unknown) => Promise<unknown>;
+      expect(listener, mutation.channel).toBeTypeOf("function");
+      await listener({ sender: { id: 7 } }, mutation.payload);
+    }
+
+    expect(calls.map((call) => call.method)).toEqual(MUTATIONS.map((m) => m.method));
+    for (const call of calls) {
+      // The validated payload first, the viewer's window slot id second —
+      // exactly the shape `azure:pull-request:open` and the recovery route use.
+      expect(call.args[1], call.method).toBe("win-B");
+    }
+
+    dispose();
+  });
+
+  test("a window the map does not know resolves to an empty id, never to another window's", async () => {
+    const { runtime, calls } = makeRecordingRuntime();
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => undefined });
+
+    const listener = handleRegistry.get("azure:pull-request:comment") as (
+      event: unknown,
+      payload: unknown,
+    ) => Promise<unknown>;
+    await listener({ sender: { id: 99 } }, { prKey: "pr", content: "x" });
+
+    expect(calls[0].args[1]).toBe("");
+
+    dispose();
+  });
+});

@@ -2438,24 +2438,43 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
 });
 
 describe("resetTask", () => {
+  /** A task workspace whose on-disk task directory really exists — reset
+   *  recreates WORK_LOCK there BEFORE it touches the task record, so a reset
+   *  against a directory that isn't there is refused (see the transactional
+   *  test at the end of this block). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function createTaskWorkspaceOnDisk(runner: any): Promise<{ ws: any; tmp: string }> {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-reset-"));
+    const ws = createTaskWorkspace(runner, { cwd: tmp });
+    await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+    return { ws, tmp };
+  }
+
   test("resets a failed task to idle", async () => {
     const runner = new AgentTaskRunner();
-    const ws = createTaskWorkspace(runner);
+    const { ws, tmp } = await createTaskWorkspaceOnDisk(runner);
     const deps = createMockDeps([ws]);
     runner.init(deps);
 
-    ws.task.state = "failed";
-    ws.task.currentRound = 5;
-    ws.task.rounds = [{ round: 1 }, { round: 2 }];
-    ws.task.pausedFromState = "evaluating";
+    try {
+      ws.task.state = "failed";
+      ws.task.currentRound = 5;
+      ws.task.rounds = [{ round: 1 }, { round: 2 }];
+      ws.task.pausedFromState = "evaluating";
 
-    const result = await runner.resetTask(ws.id);
-    expect(result).toBe(true);
-    expect(ws.task.state).toBe("idle");
-    expect(ws.task.currentRound).toBe(0);
-    expect(ws.task.rounds).toEqual([]);
-    expect(ws.task.promptSent).toBe(false);
-    expect(ws.task.pausedFromState).toBe("");
+      const result = await runner.resetTask(ws.id);
+      expect(result).toBe(true);
+      expect(ws.task.state).toBe("idle");
+      expect(ws.task.currentRound).toBe(0);
+      expect(ws.task.rounds).toEqual([]);
+      expect(ws.task.promptSent).toBe(false);
+      expect(ws.task.pausedFromState).toBe("");
+      await expect(fs.readFile(path.join(taskDir(tmp, ws.task.taskId), WORK_LOCK_FILE), "utf8")).resolves.toContain(
+        "Work remains",
+      );
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 
   test("returns false for running task", async () => {
@@ -2475,16 +2494,54 @@ describe("resetTask", () => {
     // — otherwise the agents would re-run with stale memory of the previous
     // attempt, which is confusing especially if the user edited the brief.
     const runner = new AgentTaskRunner();
-    const ws = createTaskWorkspace(runner);
+    const { ws, tmp } = await createTaskWorkspaceOnDisk(runner);
     const deps = createMockDeps([ws]);
     runner.init(deps);
 
-    ws.task.state = "completed";
-    expect(ws.task.needsContextClear).toBeFalsy();
+    try {
+      ws.task.state = "completed";
+      expect(ws.task.needsContextClear).toBeFalsy();
 
-    const result = await runner.resetTask(ws.id);
-    expect(result).toBe(true);
-    expect(ws.task.needsContextClear).toBe(true);
+      const result = await runner.resetTask(ws.id);
+      expect(result).toBe(true);
+      expect(ws.task.needsContextClear).toBe(true);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // V5 review, §"P1", oprava "fresh musí být transakční": the WORK_LOCK write
+  // used to run LAST, after the task record had already been emptied, and its
+  // failure was swallowed. That left a task that was neither reset nor
+  // resettable — `idle` is not in `resettable`, so the retry was refused.
+  test("a reset whose WORK_LOCK cannot be written is refused and changes nothing", async () => {
+    const runner = new AgentTaskRunner();
+    // No directory on disk at all, so the WORK_LOCK write fails.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-reset-fail-"));
+    const ws = createTaskWorkspace(runner, { cwd: path.join(tmp, "not-created") });
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    try {
+      ws.task.state = "paused";
+      ws.task.currentRound = 4;
+      ws.task.rounds = [{ round: 1 }, { round: 2 }];
+      ws.task.promptSent = true;
+
+      expect(await runner.resetTask(ws.id)).toBe(false);
+      expect(ws.task.state).toBe("paused");
+      expect(ws.task.currentRound).toBe(4);
+      expect(ws.task.rounds).toHaveLength(2);
+      expect(ws.task.promptSent).toBe(true);
+
+      // Still resettable, so the retry is a real retry.
+      await fs.mkdir(taskDir(path.join(tmp, "not-created"), ws.task.taskId), { recursive: true });
+      expect(await runner.resetTask(ws.id)).toBe(true);
+      expect(ws.task.state).toBe("idle");
+      expect(ws.task.rounds).toEqual([]);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 });
 

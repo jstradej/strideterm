@@ -77,6 +77,8 @@ import { ensureGitRepo, getGitContext } from "./agent-task-git.js";
 import type { AppState, WorkspaceState, RecoveryCandidate } from "../shared/types/state.js";
 import type { CompanionRole, TaskState } from "../shared/types/task.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
+import { sessionIdFor as sharedSessionIdFor } from "../shared/task-states.js";
+import type { TaskBindingRole } from "../shared/task-states.js";
 
 const log: Logger = getLogger("task-runner");
 const COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE = "JUDGE_INPUT.md";
@@ -241,8 +243,6 @@ function isTaskWorkspace(workspace: WorkspaceState): workspace is TaskWorkspaceS
   return workspace.kind === "task" && workspace.task != null;
 }
 
-type TaskBindingRole = "worker" | "judge";
-
 interface TaskBinding {
   workspace: TaskWorkspaceState;
   task: RuntimeTaskState;
@@ -251,21 +251,13 @@ interface TaskBinding {
 
 /**
  * Canonical session id for a task workspace's worker/"Primary" or
- * judge/"Companion" role. Standard tasks: both roles live in the task
- * workspace itself, so this returns exactly what every call site used to
- * hardcode inline. Attached (Companion loop) tasks: the worker/"Primary"
- * role is an EXTERNALLY OWNED session living in a different workspace
- * (`task.workerWorkspaceId`) — every write path (inject/clear/restart/alert)
- * must go through this helper instead of hardcoding
- * `${workspace.id}:${task.workerPanelId}`.
+ * judge/"Companion" role. The implementation now lives in
+ * `electron/shared/task-states.ts` so the renderer's running-agent selector
+ * resolves the exact same id; this typed wrapper keeps the runner's call
+ * sites (which always hold a narrowed TaskWorkspaceState) unchanged.
  */
 export function sessionIdFor(workspace: TaskWorkspaceState, role: TaskBindingRole): string {
-  const task = workspace.task;
-  if (role === "judge") return `${workspace.id}:${task.judgePanelId}`;
-  if (task.mode === "attached" && task.workerWorkspaceId) {
-    return `${task.workerWorkspaceId}:${task.workerPanelId}`;
-  }
-  return `${workspace.id}:${task.workerPanelId}`;
+  return sharedSessionIdFor(workspace, role);
 }
 
 /**
@@ -1120,6 +1112,28 @@ export class AgentTaskRunner {
     const previousState = task.state;
     const isAttached = task.mode === "attached";
 
+    // The ONE step of a reset that can fail is the filesystem one, and it used
+    // to run last — after the state had already been flipped to `idle` and the
+    // round history wiped. A failure there left a task that was neither reset
+    // nor retryable: `idle` is not in `resettable`, so a second Reset was
+    // refused outright, and recovery reported `failed` on a task it had
+    // already destroyed (V5 review, §"P1 — failed recovery může zanechat task
+    // jako running", oprava "fresh musí být transakční").
+    //
+    // So the file is written FIRST and the destructive mutation is committed
+    // only once it is on disk. A failure is then a true no-op: the task keeps
+    // its state, its rounds and its resettability, and the caller's `false`
+    // means "nothing happened", not "half of it happened".
+    if (!isAttached && !(await this.#recreateWorkLock(workspace, "reset"))) {
+      log.warn("task reset refused: WORK_LOCK could not be recreated", { workspaceId, previousState });
+      void this.#logTaskEvent(
+        workspace,
+        "task-reset-failed",
+        "Reset did not run — WORK_LOCK could not be written. The task is unchanged and can be reset again.",
+      );
+      return false;
+    }
+
     this.#setTaskState(task, "idle");
     task.currentRound = 0;
     task.rounds = [];
@@ -1175,10 +1189,6 @@ export class AgentTaskRunner {
     for (const sid of [sessionIdFor(workspace, "worker"), sessionIdFor(workspace, "judge")]) {
       this.#lastInjected.delete(sid);
       this.#dropoutCtx.delete(sid);
-    }
-
-    if (!isAttached) {
-      await this.#recreateWorkLock(workspace, "reset");
     }
 
     log.info("task reset", { workspaceId, previousState });
@@ -2326,7 +2336,7 @@ export class AgentTaskRunner {
     }
   }
 
-  async #recreateWorkLock(workspace: TaskWorkspaceState, context: string): Promise<void> {
+  async #recreateWorkLock(workspace: TaskWorkspaceState, context: string): Promise<boolean> {
     try {
       const dir = taskDir(workspace.cwd, workspace.task.taskId);
       await writeFile(
@@ -2335,12 +2345,14 @@ export class AgentTaskRunner {
         "utf8",
       );
       log.debug("WORK_LOCK recreated", { workspaceId: workspace.id, context });
+      return true;
     } catch (err: unknown) {
       log.warn("failed to recreate WORK_LOCK", {
         workspaceId: workspace.id,
         context,
         err: (err as Error)?.message,
       });
+      return false;
     }
   }
 

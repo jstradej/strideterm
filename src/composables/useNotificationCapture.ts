@@ -5,6 +5,8 @@ import { useNotificationStore } from "../stores/notifications.js";
 import { fireNotificationAlert } from "./useNotificationSound.js";
 
 interface AttentionAlertEntry {
+  /** Stable backend identity — see AttentionAlert.alertId. */
+  alertId?: string;
   panelId?: string;
   sessionId?: string;
   title?: string;
@@ -13,6 +15,8 @@ interface AttentionAlertEntry {
   exitCode?: number | null;
   tier?: number;
   urgency?: string;
+  /** Backend event time; becomes the notification event's `occurredAt`. */
+  at?: string;
 }
 
 interface AttentionAlertBucket {
@@ -42,16 +46,34 @@ export function useNotificationCapture() {
   // unwrap to a value and break `.value = …` writes in this composable).
   const { latestToast } = storeToRefs(notifStore);
 
-  // Track alert IDs we have already seen so we only fire once per alert.
-  const seenAlertKeys = new Set<string>();
+  /**
+   * Backend `alertId`s this renderer has already handled.
+   *
+   * Keyed on the alert's OWN identity, never on the presence edge of
+   * `workspaceId:panelId`. The old key was pruned whenever the alert dropped
+   * out of the payload, so anything that made an alert momentarily absent —
+   * a stale cached `attention` replayed by an optimistic workspace
+   * activation, a reconnect, an out-of-order broadcast — turned the same
+   * backend alert into a brand new "arrival" and appended a duplicate event
+   * (V2 plan, Fáze 2). Ids therefore accumulate for the life of the
+   * renderer: an alert that disappears and comes back is the SAME alert, and
+   * a genuinely new one always carries a new id. The store's
+   * `addAlertEvent()` is the second, persistent line of defence for the
+   * cases this in-memory set cannot cover (reload, a second window).
+   */
+  const seenAlertIds = new Set<string>();
 
   // Track viewIds that currently have active alerts (for auto-read on disappear).
   let activeAlertViewIds = new Set<string>();
 
-  // Build a stable key for an alert to detect duplicates.
-  // Uses panelId only (no timestamp) so repeated alerts for the same tab are suppressed.
+  /**
+   * Identity used for deduplication. A backend that predates `alertId`
+   * (or a hand-built test payload) falls back to the legacy composite key so
+   * the capture still fires exactly once per panel — the fallback is a
+   * degraded mode, not a second identity for a modern alert.
+   */
   function alertKey(workspaceId: string, alert: AttentionAlertEntry): string {
-    return `${workspaceId}:${alert.panelId || alert.sessionId}`;
+    return alert.alertId || `legacy:${workspaceId}:${alert.panelId || alert.sessionId}`;
   }
 
   // Collect all viewIds that currently have active alerts.
@@ -72,10 +94,34 @@ export function useNotificationCapture() {
     const byWs: AttentionByWs = attention?.byWorkspace || attention?.byProject || {};
     for (const [wsId, entry] of Object.entries(byWs)) {
       for (const alert of entry?.alerts || []) {
-        seenAlertKeys.add(alertKey(wsId, alert));
+        seenAlertIds.add(alertKey(wsId, alert));
       }
     }
     activeAlertViewIds = collectActiveViewIds(byWs);
+  }
+
+  /**
+   * Structured capture diagnostic (V2 plan, Fáze 6). Identity and the
+   * decision only — never the alert title, body or task detail, which can
+   * carry the user's own prompt text.
+   *
+   * Only reached for an alert this renderer had not seen before, so the
+   * steady state (the same live alert re-broadcast every few seconds) logs
+   * nothing. An `inserted: false` line therefore means a real duplicate got
+   * past the in-memory guard — a reload, a second window, a stale snapshot —
+   * which is exactly the case worth being able to grep for.
+   */
+  function logAlertCapture(info: { alertId: string; workspaceId: string; panelId: string; inserted: boolean }): void {
+    try {
+      (
+        window as unknown as { strideterm?: { logRenderer?: (l: string, m: string, x?: unknown) => void } }
+      ).strideterm?.logRenderer?.("debug", "notification capture", {
+        ...info,
+        ...(info.inserted ? {} : { skipped: "duplicate-source-alert" }),
+      });
+    } catch {
+      // logging never throws
+    }
   }
 
   seedSeen();
@@ -105,8 +151,8 @@ export function useNotificationCapture() {
       for (const [wsId, entry] of Object.entries(byWs) as [string, AttentionAlertBucket][]) {
         for (const alert of entry?.alerts || []) {
           const key = alertKey(wsId, alert);
-          if (seenAlertKeys.has(key)) continue;
-          seenAlertKeys.add(key);
+          if (seenAlertIds.has(key)) continue;
+          seenAlertIds.add(key);
 
           // During startup grace period, mark as seen but don't notify
           if (inStartupGrace) continue;
@@ -120,10 +166,22 @@ export function useNotificationCapture() {
           const wsName = ws?.name || wsId;
           const tabName = alert.title || alert.panelId || "";
 
-          // Skip if there's already an unread notification for this tab
+          // An alert that carries a stable `alertId` is its own identity, so
+          // exactly-once is already guaranteed by `addAlertEvent()` below.
+          // Suppressing it because the panel happens to have an unread thread
+          // dropped the SECOND real alert of that panel FOREVER: the id was
+          // added to `seenAlertIds` a few lines up, so it could never be
+          // reconsidered (V3 review, §4 P1). Thread grouping is the store's
+          // job; a new source alert must always reach the history.
+          //
+          // The id-less legacy fallback keeps the old suppression — without a
+          // per-alert identity it is the only guard against one panel's
+          // re-broadcast piling up events.
           const alertViewId = alert.sessionId || "";
-          const hasUnread = alertViewId && notifStore.items.some((n) => !n.read && n.viewId === alertViewId);
-          if (hasUnread) continue;
+          if (!alert.alertId) {
+            const hasUnread = alertViewId && notifStore.items.some((n) => !n.read && n.viewId === alertViewId);
+            if (hasUnread) continue;
+          }
 
           // Detect task-specific alerts (detail starts with "task-")
           const alertDetail = alert.detail as string | undefined;
@@ -157,7 +215,10 @@ export function useNotificationCapture() {
 
           const category = isRateLimitAlert ? "rate-limit" : isTaskAlert ? "task" : "terminal";
           const wsProfileId = ws?.profileId || "default";
-          const entry = notifStore.add({
+          // Exactly-once against the PERSISTED history: this renderer's
+          // in-memory `seenAlertIds` cannot see what another window already
+          // wrote, nor what this window wrote before a reload.
+          const { event: entry, inserted } = notifStore.addAlertEvent({
             title,
             body,
             kind: alert.kind || "completed",
@@ -169,7 +230,12 @@ export function useNotificationCapture() {
             viewId: alert.sessionId || "",
             category,
             meta: { profileId: wsProfileId },
+            sourceAlertId: key,
+            occurredAt: alert.at || new Date().toISOString(),
           });
+          logAlertCapture({ alertId: key, workspaceId: wsId, panelId: alert.panelId || "", inserted });
+          // A duplicate is silent: no toast, no sound, no OS notification.
+          if (!inserted) continue;
 
           // Attach category on the toast payload so NotificationToast can pick
           // the right icon without reaching into the session store.
@@ -211,17 +277,9 @@ export function useNotificationCapture() {
         }
       }
       activeAlertViewIds = nextActiveViewIds;
-
-      // Prune seen keys that no longer have active alerts so they can re-trigger
-      const currentKeys = new Set<string>();
-      for (const [wsId, wsEntry] of Object.entries(byWs) as [string, AttentionAlertBucket][]) {
-        for (const alert of wsEntry?.alerts || []) {
-          currentKeys.add(alertKey(wsId, alert));
-        }
-      }
-      for (const key of seenAlertKeys) {
-        if (!currentKeys.has(key)) seenAlertKeys.delete(key);
-      }
+      // NOTE: `seenAlertIds` is deliberately NOT pruned here. Pruning on the
+      // absence of an alert is precisely the bug this phase removes — see the
+      // comment on the set itself.
     },
   );
 

@@ -98,6 +98,7 @@
 
       <ProfileBar @click="store.openProfilesDialog()" />
       <SidebarPanel
+        :drawer-open="sidebarOpen"
         @activate="closeSidebar"
         @create-worktree="store.createWorktreeWithDialog($event)"
         @edit-workspace="onEditWorkspace($event)"

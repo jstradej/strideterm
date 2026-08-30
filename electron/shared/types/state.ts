@@ -196,9 +196,11 @@ export interface Profile {
   lastActiveSessionId?: string;
   /**
    * Which sidebar workspace list layout this profile uses: the manually
-   * ordered/hierarchical `tree` (default), or `recent` — a time-grouped view
-   * of recently-opened workspaces. Purely a per-profile UI preference, not a
-   * security boundary; normalized to "tree" when missing/invalid.
+   * ordered/hierarchical `tree` alone (default), or `recent` — the same tree
+   * with a compact "Recently worked · 24h" shortcut list added above it.
+   * `recent` is additive: it never hides, reorders or fragments the tree.
+   * Purely a per-profile UI preference, not a security boundary; normalized
+   * to "tree" when missing/invalid.
    */
   sidebarWorkspaceViewMode?: "tree" | "recent";
 }
@@ -365,14 +367,26 @@ export interface WorkspaceState {
   starred: boolean;
   task: TaskState | null;
   /**
-   * ISO timestamp of the last time the user actually navigated to this
-   * workspace (or a session inside it) — set only by activation handlers,
-   * never by background signals (PTY output, git/PR polling, attention
-   * events, task-runner progress). Drives the sidebar's "recent" view;
-   * absent for a workspace never explicitly activated since this field was
-   * introduced.
+   * ISO timestamp of the last CONFIRMED, workspace-scoped piece of user work
+   * — meaningful terminal input that the backend accepted, creating this
+   * workspace, a task lifecycle action, or a successful git/review mutation
+   * driven from the built-in UI. Stamped only after the action succeeded,
+   * never optimistically, and only through `markWorkspaceWorked()`.
+   *
+   * Explicitly NOT moved by: activating a workspace or session, switching a
+   * tab, focusing a grid cell, opening a launch panel, searching, starring,
+   * collapsing, reordering, passive terminal focus/mouse sequences, PTY
+   * output, agent-internal writes, polling, hooks, running/progress/
+   * completion signals, attention alerts, or background refreshes. An agent's
+   * ongoing work therefore does not extend it — `RUNNING` already answers
+   * "what is working"; this field answers "where did I work".
+   *
+   * Replaces the old `lastUsedAt`, which conflated navigation with work.
+   * Deliberately NOT backfilled from it: the historical values are
+   * contaminated by activations and cannot be told apart after the fact, so
+   * the recent section starts empty after an upgrade and fills with real work.
    */
-  lastUsedAt?: string;
+  lastWorkedAt?: string;
 }
 
 // ------- SSH app state -------
@@ -456,6 +470,12 @@ export interface AttentionState {
       alertKind: string | null;
       alertedAt: string | null;
       activity?: "idle" | "running" | "done" | string;
+      /**
+       * Epoch ms when the current "running" stretch began; 0 (or absent) when
+       * the session is not running. Runtime-only — like the rest of this
+       * snapshot it is never persisted into AppState.
+       */
+      activityStartedAt?: number;
       agentLike?: boolean;
       hasUserInput?: boolean;
       lastExitCode?: number | null;
@@ -472,18 +492,29 @@ export interface AttentionState {
 export interface AttentionBucket {
   count: number;
   latestAt: string | null;
-  alerts: Array<{
-    projectId: string;
-    panelId: string;
-    sessionId: string;
-    title: string;
-    exitCode: number | null;
-    kind: string;
-    tier: number;
-    urgency: string;
-    detail: string;
-    at: string;
-  }>;
+  alerts: AttentionAlert[];
+}
+
+export interface AttentionAlert {
+  /**
+   * Stable identity of ONE backend alert instance, minted once in
+   * `addProjectAlert()` and never regenerated. A rebroadcast, a reconnect or a
+   * renderer-side cache replay carries the same id, so the notification
+   * capture can tell "the same alert again" from "a genuinely new alert for
+   * the same panel" — the latter always gets a fresh id. V2 plan, Fáze 2.
+   */
+  alertId: string;
+  projectId: string;
+  panelId: string;
+  sessionId: string;
+  title: string;
+  exitCode: number | null;
+  kind: string;
+  tier: number;
+  urgency: string;
+  detail: string;
+  /** Backend event time. The renderer uses it as the event's `occurredAt`. */
+  at: string;
 }
 
 export type DockerBackendId = string;
@@ -756,6 +787,77 @@ export interface RecoveryCandidate {
   maxRounds: number;
   /** The task state at the time the app was closed (e.g. "running", "judge-evaluating"). */
   previousState: string;
+}
+
+/**
+ * What actually happened to ONE recovery candidate.
+ *
+ * The recovery batch used to answer `{ ok: true }` unconditionally, so a
+ * refused resume, a dangling attached Primary or a failed session spawn all
+ * reported success — and an explicit Resume stamped `lastWorkedAt` on a
+ * workspace whose agent never came back (V4 review, §"P1 — task recovery
+ * hlásí úspěch"). Every processed candidate now reports its own result:
+ *
+ *   - "continued" — the agent was resumed AND the session it must re-orient in
+ *     is up. The only outcome that counts as work.
+ *   - "fresh"     — the round history was reset; the task is idle and startable.
+ *   - "skipped"   — the user left it paused. Nothing was attempted.
+ *   - "stale"     — the workspace was not (or no longer) a candidate: this
+ *     window already settled it, or another window got there first. Settled,
+ *     not failed — the renderer may drop it, and nothing is stamped. Without
+ *     it the backend answered such a request by omitting the key, which the
+ *     renderer read as success (V5 review, §"P2 — recovery kontrakt končí
+ *     před transportní hranicí", oprava 2).
+ *   - "failed"    — the decision could not be carried out. The candidate stays
+ *     in the list so it can be retried or skipped, and never stamps work.
+ */
+export type RecoveryOutcome = "continued" | "fresh" | "skipped" | "stale" | "failed";
+
+/** Every value the contract defines. A response carrying anything else is as
+ *  unusable as one carrying nothing, so the renderer validates against this. */
+export const RECOVERY_OUTCOMES: readonly RecoveryOutcome[] = ["continued", "fresh", "skipped", "stale", "failed"];
+
+/** Every outcome that means "this candidate is done with"; the renderer may
+ *  drop those from its local list. Anything else — `failed`, or a missing /
+ *  unrecognised value — keeps the candidate. */
+export const SETTLED_RECOVERY_OUTCOMES: readonly RecoveryOutcome[] = ["continued", "fresh", "skipped", "stale"];
+
+/**
+ * Who asked for a recovery batch.
+ *
+ * "interactive" is a person clicking Resume / Start fresh / Resume all, and is
+ * the only origin that stamps `lastWorkedAt`. "internal" is a delegation from
+ * another endpoint that owns its own stamp (`resumeTask`), or a future
+ * automatic recovery, and stamps nothing.
+ */
+export type RecoveryOrigin = "interactive" | "internal";
+
+/**
+ * The result of one `resolveTaskRecovery` batch. `ok` is derived — it is false
+ * as soon as ANY processed candidate failed — so a mixed batch can no longer
+ * present itself as a clean success.
+ */
+export interface RecoveryResult<Payload = unknown> {
+  ok: boolean;
+  /** Keyed by workspace id. EVERY requested id gets an outcome. */
+  outcomes: Record<string, RecoveryOutcome>;
+  payload: Payload;
+}
+
+/**
+ * What the renderer learned from one recovery batch.
+ *
+ * `unanswered` lists the requested ids the response carried no recognisable
+ * outcome for. That is a PROTOCOL failure, not a success: those candidates
+ * stay in the local list and the dialog says so, instead of the old
+ * `ok: result?.ok !== false` / `outcomes[id] !== "failed"` pair silently
+ * turning a missing or malformed response into "all done" (V5 review,
+ * §"P2 — recovery kontrakt končí před transportní hranicí").
+ */
+export interface RecoveryDecisionReport {
+  ok: boolean;
+  outcomes: Record<string, RecoveryOutcome>;
+  unanswered: string[];
 }
 
 export interface MetaState {

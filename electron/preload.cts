@@ -283,7 +283,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   browseFile: (options) => ipcRenderer.invoke("dialog:browse-file", options),
   saveFile: (options) => ipcRenderer.invoke("dialog:save-file", options),
   resizeTerminal: (sessionId, size) => ipcRenderer.send("terminal:resize", sessionId, size),
-  writeTerminal: (sessionId, data) => ipcRenderer.send("terminal:input", sessionId, data),
+  writeTerminal: (sessionId, data, originWorkspaceId) =>
+    ipcRenderer.send("terminal:input", sessionId, data, originWorkspaceId),
   takeSessionControl: (sessionId) => ipcRenderer.invoke("session:take-control", sessionId),
   getPerformanceSnapshot: () => ipcRenderer.invoke("perf:get-snapshot"),
   captureRendererCpuProfile: () => ipcRenderer.invoke("perf:capture-cpu-profile"),

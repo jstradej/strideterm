@@ -384,7 +384,7 @@ interface Runtime {
   setRemoteInfo(info: { enabled: boolean; urls?: string[]; port?: number; host?: string; error?: string }): void;
   listRemoteUrls(): string[];
   on(channel: string, handler: AnyFn): () => void;
-  writeToSession(sessionId: string, data: string, viewerId?: string): unknown;
+  writeToSession(sessionId: string, data: string, viewerId?: string, originWorkspaceId?: string): unknown;
   resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
   // getTerminalReplaySnapshot / getTerminalReplay and all other methods are
   // accessed dynamically via the string index signature below.
@@ -1246,7 +1246,9 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   // /api/task/create is handled in the outer dispatch (slot-aware).
   "/api/task/reject-verdict": (runtime, body) => runtime.rejectTaskVerdict(body.workspaceId, body.feedback),
   "/api/task/resend-instruction": (runtime, body) => runtime.resendTaskInstruction(body.workspaceId, body.role),
-  "/api/task-recovery/resolve": (runtime, body) => runtime.resolveTaskRecovery(body.decisions),
+  // /api/task-recovery/resolve is handled in the outer dispatch (slotAwareRoute)
+  // so it resolves the caller's viewer id: an interactive Resume / Start fresh
+  // stamps `lastWorkedAt` in the deciding viewer's own context.
   "/api/task/status": (runtime, body) => runtime.getTaskStatus(body.workspaceId),
 
   "/api/session/activate": (runtime, body) => runtime.activateSession(body.sessionId),
@@ -1757,6 +1759,12 @@ export async function startRemoteServer({
     // Sync publishes queued draft comments to the PR provider — an
     // externally visible side effect that must refuse cross-profile prKeys.
     "/api/review-bridge/pull-request/sync": (body, windowId) => runtime.syncReviewBridgePullRequest(body, windowId),
+    // A recovery decision resumes or resets a supervised task and, when it
+    // succeeds, stamps `lastWorkedAt`. Both need the caller's viewer id: the
+    // dialog can list candidates from more than one profile, so the target is
+    // taken from the authoritative candidate and the stamp is credited in the
+    // deciding viewer's context (V5 review, Fáze 1).
+    "/api/task-recovery/resolve": (body, windowId) => runtime.resolveTaskRecovery(body.decisions, windowId),
     "/api/azure/quickfix/create": (body, windowId) => runtime.azureQuickFixCreate(body, windowId),
     "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
     "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
@@ -2957,8 +2965,13 @@ export async function startRemoteServer({
               // The remote client is a viewer — its typing participates in
               // the per-session input lease like a desktop window's.
               const viewerId = wsSessionId ? remoteViewerId(wsSessionId) : undefined;
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const result = runtime.writeToSession(parsed.data.sessionId, parsed.data.data, viewerId) as any;
+              const result = runtime.writeToSession(
+                parsed.data.sessionId,
+                parsed.data.data,
+                viewerId,
+                parsed.data.originWorkspaceId,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              ) as any;
               if (result?.blocked) {
                 checkedSend(
                   ws,

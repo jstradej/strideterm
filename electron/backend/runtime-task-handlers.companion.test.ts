@@ -108,6 +108,7 @@ function createTestRuntime({
     ensureWorktree: vi.fn(async () => ""),
     getRecoveryCandidates: () => recoveryCandidates,
     setRecoveryCandidates: vi.fn(),
+    recordWorkspaceWork: vi.fn(async () => {}),
   });
 
   const runtime = {

@@ -7,7 +7,7 @@ import type {
   TerminalExitPayload,
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
-import type { RemoteStateV2 } from "../electron/shared/types/state.js";
+import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "../electron/shared/types/ssh.js";
 import {
@@ -117,7 +117,13 @@ export interface Transport extends Partial<Omit<StridetermAPI, "onConnectionStat
   /** Fetch one detail resource on demand ({ resource, revision, data }). Remote-only. */
   fetchResourceDetail?: (resource: string) => Promise<ResourceDetail | null>;
   resizeTerminal: (sessionId: string, size: TerminalSize) => void;
-  writeTerminal: (sessionId: string, data: string) => void;
+  /**
+   * `originWorkspaceId` names the workspace whose UI the user typed in — a
+   * hint the backend validates against the session before crediting it with
+   * work (an attached task's Primary tab lives in the task workspace while
+   * its session id names the source workspace).
+   */
+  writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) => void;
   /** Take over the per-session input lease ("Take control?" confirmation). */
   takeSessionControl: (sessionId: string) => Promise<{ ok: boolean }>;
   /** Fired when typed input was blocked because another viewer holds the input lease. */
@@ -881,7 +887,8 @@ export function createRemoteTransport(): Transport {
     rejectTaskVerdict: (payload) => fetchJson("/api/task/reject-verdict", payload),
     resendTaskInstruction: (payload) => fetchJson("/api/task/resend-instruction", payload),
     updateTaskDescription: (payload) => fetchJson("/api/task/update-description", payload),
-    resolveTaskRecovery: (decisions) => fetchJson("/api/task-recovery/resolve", decisions),
+    resolveTaskRecovery: (decisions) =>
+      fetchJson("/api/task-recovery/resolve", decisions) as Promise<RecoveryResult<StatePayload>>,
     getTaskStatus: (workspaceId) => fetchJson("/api/task/status", { workspaceId }),
     createCompanionTask: (payload) => fetchJson("/api/task/create-companion", payload),
     answerCompanionTask: (payload) => fetchJson("/api/task/answer-companion", payload),
@@ -1124,7 +1131,8 @@ export function createRemoteTransport(): Transport {
 
     resizeTerminal: (sessionId: string, size: TerminalSize) =>
       send({ type: "terminal:resize", sessionId, cols: size.cols, rows: size.rows }),
-    writeTerminal: (sessionId: string, data: string) => send({ type: "terminal:input", sessionId, data }),
+    writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) =>
+      send({ type: "terminal:input", sessionId, data, ...(originWorkspaceId ? { originWorkspaceId } : {}) }),
     takeSessionControl: (sessionId: string) =>
       fetchJson("/api/session/take-control", { sessionId }) as Promise<{ ok: boolean }>,
     onTerminalInputBlocked: (handler: Handler<{ sessionId: string; ownerLabel: string }>) => {

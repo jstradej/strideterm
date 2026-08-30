@@ -46,6 +46,22 @@
             <span class="notification-center__tab-label">Telegram</span>
           </button>
           <button
+            type="button"
+            class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'agents' }"
+            title="Agents — every agent currently working in this profile, with how long it has been running. Click a row to open it."
+            @click="activeTab = 'agents'"
+          >
+            <span class="notification-center__tab-icon" aria-hidden="true">🤖</span>
+            <span class="notification-center__tab-label">Agents</span>
+            <span
+              v-if="runningAgents.length > 0"
+              class="notification-center__title-badge"
+              :title="`${runningAgents.length} agents running`"
+              >{{ runningAgents.length }}</span
+            >
+          </button>
+          <button
             v-if="supportsPerformance"
             type="button"
             class="notification-center__tab"
@@ -67,7 +83,7 @@
             :class="{ 'notification-center__tabmenu-toggle--open': tabMenuOpen }"
             :aria-expanded="tabMenuOpen ? 'true' : 'false'"
             aria-haspopup="menu"
-            title="Switch section (Alerts · Telegram · Performance)"
+            title="Switch section (Alerts · Agents · Telegram · Performance)"
             @click="tabMenuOpen = !tabMenuOpen"
           >
             <span class="notification-center__tabmenu-hamburger" aria-hidden="true">☰</span>
@@ -77,6 +93,12 @@
               class="notification-center__title-badge"
               :title="`${profileUnreadCount} unread in this profile`"
               >{{ profileUnreadCount > 99 ? "99+" : profileUnreadCount }}</span
+            >
+            <span
+              v-else-if="activeTab === 'agents' && runningAgents.length > 0"
+              class="notification-center__title-badge"
+              :title="`${runningAgents.length} agents running`"
+              >{{ runningAgents.length }}</span
             >
           </button>
           <div v-if="tabMenuOpen" class="notification-center__tabmenu-list" role="menu">
@@ -93,6 +115,11 @@
               <span v-if="t.id === 'alerts' && profileUnreadCount > 0" class="notification-center__title-badge">{{
                 profileUnreadCount > 99 ? "99+" : profileUnreadCount
               }}</span>
+              <span
+                v-else-if="t.id === 'agents' && runningAgents.length > 0"
+                class="notification-center__title-badge"
+                >{{ runningAgents.length }}</span
+              >
             </button>
           </div>
         </div>
@@ -271,6 +298,12 @@
                   </strong>
                   <span class="notification-item__meta">
                     <span
+                      v-if="sessionProfileLabel(row.session)"
+                      class="notification-item__profile-label"
+                      :title="`Profile: ${sessionProfileLabel(row.session)}`"
+                      >{{ sessionProfileLabel(row.session) }}</span
+                    >
+                    <span
                       v-if="row.session.events && row.session.events.length > 1"
                       class="notification-item__count"
                       :title="`${row.session.events.length} events on this session`"
@@ -281,13 +314,7 @@
                     </time>
                   </span>
                 </div>
-                <p class="notification-item__body">{{ sessionBody(row.session) }}</p>
-                <span
-                  v-if="sessionProfileLabel(row.session)"
-                  class="notification-item__profile-label"
-                  :title="`Profile: ${sessionProfileLabel(row.session)}`"
-                  >{{ sessionProfileLabel(row.session) }}</span
-                >
+                <p class="notification-item__body" :title="sessionBody(row.session)">{{ sessionBody(row.session) }}</p>
                 <div v-if="row.session.state === 'waiting'" class="notification-item__quick-actions">
                   <button
                     class="quick-action"
@@ -328,6 +355,37 @@
         </div>
       </div>
 
+      <!-- Agents tab — the same rows the sidebar surface renders, with room
+           for the full ancestry and the elapsed. The tab stays in the bar even
+           when empty: a tab is a place, the chip is the signal. -->
+      <div v-if="activeTab === 'agents'" class="notification-center__body">
+        <div v-if="runningAgents.length === 0" class="notification-center__empty">No agents running.</div>
+        <div v-else class="agent-run-list">
+          <button
+            v-for="row in runningAgents"
+            :key="row.key"
+            type="button"
+            class="agent-run-item"
+            :class="{ 'agent-run-item--in-grid': row.inGrid }"
+            :data-agent-key="row.key"
+            @click="openAgentRow(row)"
+          >
+            <span class="agent-run-item__icon" aria-hidden="true">🤖</span>
+            <span class="agent-run-item__content">
+              <span class="agent-run-item__head">
+                <strong class="agent-run-item__title">{{ row.workspaceName }} › {{ row.label }}</strong>
+                <span class="agent-run-item__elapsed">{{ elapsedOf(row) }}</span>
+              </span>
+              <span class="agent-run-item__meta">
+                <span v-if="row.ancestry.length" class="agent-run-item__ancestry">{{ row.ancestry.join(" / ") }}</span>
+                <span class="agent-run-item__state">{{ row.state }}</span>
+                <span v-if="row.gridSlotIndex" class="agent-run-item__slot">slot {{ row.gridSlotIndex }}</span>
+              </span>
+            </span>
+          </button>
+        </div>
+      </div>
+
       <!-- Performance diagnostics tab -->
       <div v-if="activeTab === 'performance'" class="notification-center__body notification-center__body--perf">
         <PerformancePanel />
@@ -342,6 +400,13 @@ import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationProfileScope } from "../../composables/useNotificationProfileScope.js";
 import { useDismissable } from "../../composables/useDismissable.js";
+import {
+  collectSupervisedAgents,
+  runningAgentElapsedMs,
+  formatRunningAgentElapsed,
+  type RunningAgentRow,
+} from "../../app/selectors.js";
+import type { WorkspaceState } from "../../../electron/shared/types/state.js";
 import PerformancePanel from "./PerformancePanel.vue";
 
 interface NotificationSession {
@@ -364,7 +429,7 @@ interface NotificationSession {
 
 const notifStore = useNotificationStore();
 const appStore = useAppStore();
-const { sessionInActiveProfile } = useNotificationProfileScope();
+const { sessionInActiveProfile, activeProfileId } = useNotificationProfileScope();
 const profileUnreadCount = computed(() => notifStore.unreadCountFor(sessionInActiveProfile));
 const hasFinishedInProfile = computed(() => notifStore.finishedSessions.some((s) => sessionInActiveProfile(s)));
 const hasSessionsInProfile = computed(() => notifStore.sessions.some((s) => sessionInActiveProfile(s)));
@@ -378,7 +443,7 @@ function clearAllInProfile(): void {
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
-type TabId = "alerts" | "telegram" | "performance";
+type TabId = "alerts" | "agents" | "telegram" | "performance";
 const activeTab = ref<TabId>("alerts");
 // The Performance tab needs Electron process metrics — only shown when the
 // transport advertises them (desktop), never on the remote/mobile client.
@@ -393,6 +458,7 @@ const tabMenuRef = ref<HTMLElement | null>(null);
 const menuTabs = computed<{ id: TabId; label: string }[]>(() => {
   const tabs: { id: TabId; label: string }[] = [
     { id: "alerts", label: "Alerts" },
+    { id: "agents", label: "Agents" },
     { id: "telegram", label: "Telegram" },
   ];
   if (supportsPerformance.value) tabs.push({ id: "performance", label: "Performance" });
@@ -402,6 +468,31 @@ const activeTabLabel = computed(() => menuTabs.value.find((t) => t.id === active
 function selectTab(id: TabId): void {
   activeTab.value = id;
   tabMenuOpen.value = false;
+}
+
+// --- Running agents -------------------------------------------------------
+// Exactly the same task-only row model the sidebar's RUNNING surface and the
+// hero chip render — no second logic and no grid lookup of its own; the
+// viewer-owned grid goes in as an explicit argument. Both the list below and
+// the tab badge count read this, so the badge can never disagree with the
+// sidebar.
+const runningAgents = computed((): RunningAgentRow[] => {
+  const payload = appStore.payload;
+  if (!payload) return [];
+  return collectSupervisedAgents({
+    workspaces: appStore.filteredWorkspaces as WorkspaceState[],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    taskRunnerSnapshot: ((payload as any).taskRunner as Record<string, { state?: string }>) || null,
+    workspaceGrid: appStore.workspaceGrid,
+  });
+});
+
+// One shared minute clock for the elapsed column — the panel's own 30s tick
+// already only runs while the dock is visible or something is snoozed, so the
+// rows re-render on it without a second timer.
+function elapsedOf(row: RunningAgentRow): string {
+  void tick.value;
+  return formatRunningAgentElapsed(runningAgentElapsedMs(row, now.value));
 }
 
 // Telegram connection statuses from live snapshot
@@ -622,6 +713,18 @@ watch(
   },
 );
 
+// External "open the dock on tab X" requests (the hero's running-agent chip).
+// Counter-based for the same reason as focusRequestSignal: a repeat click must
+// retrigger even when nothing else changed. Transient UI only.
+watch(
+  () => notifStore.panelTabRequestSignal,
+  () => {
+    const requested = notifStore.requestedPanelTab as TabId;
+    if (!requested) return;
+    if (menuTabs.value.some((t) => t.id === requested)) activeTab.value = requested;
+  },
+);
+
 // External focus requests (e.g. Ctrl+Shift+N shortcut). Counter-based so
 // repeated presses retrigger focus even when state didn't change.
 watch(
@@ -775,6 +878,12 @@ function sessionTitle(s: NotificationSession): string {
 function sessionProfileLabel(s: NotificationSession): string {
   const profileId = s.meta?.profileId || "";
   if (!profileId) return "";
+  // The active profile is where the user already is — naming it on every card
+  // costs a row and tells them nothing. Only a FOREIGN profile is worth the
+  // tag, and that is exactly when the click also asks to switch profiles.
+  // Compared against the SAME activeProfileId the visibility filter above
+  // uses, so the tag and the filter can never disagree about "mine".
+  if (profileId === activeProfileId.value) return "";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const profiles = (appStore.payload?.appState?.profiles || []) as any[];
   const profile = profiles.find((p) => p.id === profileId);
@@ -844,12 +953,14 @@ function resolveJumpTarget(s: NotificationSession): { workspaceId: string; viewI
   return { workspaceId: inbox?.id || "", viewId: "" };
 }
 
-async function jump(s: NotificationSession): Promise<void> {
-  const target = resolveJumpTarget(s);
-  if (!target.workspaceId || !appStore.payload) {
-    if (!notifStore.pinned) notifStore.closePanel();
-    return;
-  }
+/**
+ * Navigate the app to a workspace/view, asking first when the target lives in
+ * another profile. Shared by the Alerts jump and the Agents tab so the two
+ * cannot drift; it performs navigation ONLY — no thread is resolved, cleared
+ * or acknowledged here.
+ */
+async function navigateToTarget(target: { workspaceId: string; viewId: string }): Promise<boolean> {
+  if (!target.workspaceId || !appStore.payload) return false;
 
   // Resolve the target workspace's profile and compare with the active profile.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -871,11 +982,11 @@ async function jump(s: NotificationSession): Promise<void> {
       confirmLabel: "Switch",
       cancelLabel: "Cancel",
     });
-    if (!confirmed) return;
+    if (!confirmed) return false;
     const switched = await notifStore.runWithToast("Switch profile failed", () =>
       appStore.activateProfile(targetProfileId),
     );
-    if (!switched) return;
+    if (!switched) return false;
   }
 
   const activeWsId = appStore.myActiveWorkspaceId;
@@ -885,12 +996,24 @@ async function jump(s: NotificationSession): Promise<void> {
     const opened = await notifStore.runWithToast("Open workspace failed", () =>
       appStore.activateWorkspaceInGrid(target.workspaceId),
     );
-    if (!opened) return;
+    if (!opened) return false;
   }
   if (target.viewId) {
     const opened = await notifStore.runWithToast("Open tab failed", () => appStore.activateView(target.viewId));
-    if (!opened) return;
+    if (!opened) return false;
   }
+  return true;
+}
+
+async function jump(s: NotificationSession): Promise<void> {
+  const target = resolveJumpTarget(s);
+  if (!target.workspaceId || !appStore.payload) {
+    if (!notifStore.pinned) notifStore.closePanel();
+    return;
+  }
+  const navigated = await navigateToTarget(target);
+  if (!navigated) return;
+
   // Connection-error notifications have no PR / review workspace to land on —
   // resolveJumpTarget routed us to the provider inbox above. Ask that inbox to
   // switch to its Connections tab and highlight the failing connection so the
@@ -908,6 +1031,18 @@ async function jump(s: NotificationSession): Promise<void> {
   }
   notifStore.setState(s.id, "resolved");
   // Pinned dock stays open — the item greys in place instead of the panel closing.
+  if (!notifStore.pinned) notifStore.closePanel();
+}
+
+/**
+ * Open the workspace/view a running agent lives in. Navigation only: a running
+ * agent is not a notification, so no thread is resolved and no badge changes.
+ */
+async function openAgentRow(row: RunningAgentRow): Promise<void> {
+  const navigated = await navigateToTarget({ workspaceId: row.hostWorkspaceId, viewId: row.viewId });
+  if (!navigated) return;
+  // A pinned dock is a place the user chose to keep open; an overlay would
+  // otherwise cover the very thing they just navigated to.
   if (!notifStore.pinned) notifStore.closePanel();
 }
 
@@ -981,7 +1116,10 @@ function onKeydown(ev: KeyboardEvent): void {
 useDismissable(() => notifStore.panelOpen && !notifStore.pinned, panelRef, {
   onDismiss: () => notifStore.closePanel(),
   eventName: "pointerdown",
-  ignoreSelector: "[data-role='notification-bell']",
+  // The bell and the running-agent chip are openers living outside the panel:
+  // their own click already decides what the panel should do, so the outside-
+  // click dismiss must not fire first and close what they are about to open.
+  ignoreSelector: "[data-role='notification-bell'], [data-role='agent-run-chip']",
 });
 
 // Close the narrow-panel tab dropdown on any pointer-down outside it. Runs

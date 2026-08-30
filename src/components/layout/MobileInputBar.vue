@@ -173,6 +173,8 @@ import { computed, inject, nextTick, onMounted, ref, watch } from "vue";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import { useAppStore } from "../../stores/app.js";
+import { resolveInputOriginWorkspaceId } from "../../app/selectors.js";
+import type { CompanionPrimaryTaskRunner } from "../../../electron/shared/companion-primary.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { readMobileInputBarCollapsed, writeMobileInputBarCollapsed } from "../../app/helpers.js";
@@ -388,12 +390,31 @@ function toggleMenu(): void {
   menuOpen.value = !menuOpen.value;
 }
 
+/**
+ * Workspace whose UI this write came from — the backend credits it with
+ * `lastWorkedAt` after validating the claim. Same rule as the desktop
+ * terminal store: an attached task's Primary tab belongs to the task
+ * workspace, not to the source workspace that owns the session.
+ */
+function originWorkspaceIdFor(sessionId: string): string {
+  const payload = store.payload;
+  return resolveInputOriginWorkspaceId(
+    payload?.appState?.workspaces,
+    (payload?.taskRunner as CompanionPrimaryTaskRunner) || null,
+    sessionId,
+  );
+}
+
+function writeTerminal(sessionId: string, data: string): void {
+  api?.writeTerminal(sessionId, data, originWorkspaceIdFor(sessionId));
+}
+
 function sendData(data: string): void {
   if (!targetSessionId.value) return;
   // The composer writes straight to the transport (no xterm instance on
   // mobile), so it has to report engagement itself.
   notifications.resolveByEngagement(targetSessionId.value, data);
-  api?.writeTerminal(targetSessionId.value, data);
+  writeTerminal(targetSessionId.value, data);
 }
 
 // Accessory keys use @mousedown.prevent so tapping them never steals focus:
@@ -487,16 +508,16 @@ function sendComposed(): void {
   notifications.resolveByEngagement(sessionId, draft.value || "\r");
   // Empty draft sends a bare Enter — confirming TUI prompts without typing.
   if (!draft.value) {
-    api?.writeTerminal(sessionId, "\r");
+    writeTerminal(sessionId, "\r");
     return;
   }
   // No trimming: predictive-text picks leave a trailing space, which is
   // harmless, and intentional leading/trailing spaces must survive.
-  api?.writeTerminal(sessionId, draft.value);
+  writeTerminal(sessionId, draft.value);
   draft.value = "";
   // The session id is captured above so switching tabs mid-delay can't route
   // the pending Enter to a different terminal than the one that got the text.
-  setTimeout(() => api?.writeTerminal(sessionId, "\r"), SUBMIT_DELAY_MS);
+  setTimeout(() => writeTerminal(sessionId, "\r"), SUBMIT_DELAY_MS);
 }
 
 function handleCompositionStart(): void {

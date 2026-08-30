@@ -7351,6 +7351,46 @@ describe("clearAlertForSession + syncAttentionContext — profile scoping", () =
       vi.useRealTimers();
     }
   });
+
+  // V2 plan, Fáze 2 — an alert INSTANCE has a stable identity. Every renderer
+  // copy of the same alert carries the same `alertId`, so the notification
+  // capture can be exactly-once; a genuinely new alert on the same panel gets
+  // a new id so it still counts as a second event.
+  test("addProjectAlert mints one stable alertId per alert instance", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoProfileFixture();
+      fixtures.push(fixture);
+      await raiseAlertsOnBoth(fixture);
+
+      const first = fixture.runtime.getPayload().attention.byWorkspace["ws-default"].alerts[0];
+      expect(typeof first.alertId).toBe("string");
+      expect(first.alertId).toBeTruthy();
+
+      // Rebroadcast: the very same alert, read again from a fresh payload.
+      const rebroadcast = fixture.runtime.getPayload().attention.byWorkspace["ws-default"].alerts[0];
+      expect(rebroadcast.alertId).toBe(first.alertId);
+      expect(rebroadcast.at).toBe(first.at);
+
+      // Two workspaces alerting at the same time never share an id.
+      const otherProfile = fixture.runtime.getPayload().attention.byWorkspace["ws-b"].alerts[0];
+      expect(otherProfile.alertId).not.toBe(first.alertId);
+
+      // Clear it, then raise a genuinely new alert on the same panel.
+      fixture.runtime.clearAlertForSession("ws-default:shell");
+      expect(fixture.runtime.getPayload().attention.byWorkspace["ws-default"]).toBeUndefined();
+      fixture.sessionManager.emit("terminal:data", { sessionId: "ws-default:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("ws-default:shell", "claude\r");
+      fixture.runtime.notifyAgentHook("ws-default:shell", "idle_prompt");
+
+      const second = fixture.runtime.getPayload().attention.byWorkspace["ws-default"].alerts[0];
+      expect(second.alertId).toBeTruthy();
+      expect(second.alertId).not.toBe(first.alertId);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -7463,7 +7503,12 @@ describe("task recovery: resolveTaskRecovery", () => {
   });
 
   test("'fresh' decision resets the round counter", async () => {
-    const ws = makeTaskWorkspace({ id: "ws-fresh", state: "running", currentRound: 7 });
+    // A reset recreates WORK_LOCK BEFORE it empties the task record, so it
+    // needs a real task directory on disk — a failed write is now a refused
+    // reset rather than a half-reset task (V5 review, Fáze 0).
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-fresh-"));
+    const ws = makeTaskWorkspace({ id: "ws-fresh", state: "running", currentRound: 7, cwd });
+    await fs.mkdir(path.join(cwd, ".strideterm", "tasks", ws.task.taskId), { recursive: true });
     const fixture = await createFixture({ initialState: { workspaces: [ws] } });
     fixtures.push(fixture);
 
@@ -7473,6 +7518,7 @@ describe("task recovery: resolveTaskRecovery", () => {
     expect(wsAfter?.task?.currentRound).toBe(0);
     expect(wsAfter?.task?.rounds).toHaveLength(0);
     expect(wsAfter?.task?.state).toBe("idle");
+    await fs.rm(cwd, { recursive: true, force: true });
   });
 
   test("ignores decisions for workspaces that aren't recovery candidates", async () => {
@@ -9742,105 +9788,94 @@ describe("low-severity silent-catch batch — each now logs on failure", () => {
 });
 
 // ---------------------------------------------------------------------------
-// workspace.lastUsedAt — stamped only by genuine user activation
+// workspace.lastWorkedAt — stamped only by confirmed user WORK
+//
+// V2 plan, Fáze 3. The predecessor (`lastUsedAt`) was stamped by every
+// activation, so merely clicking through workspaces reordered the sidebar's
+// recent view. The contract is now a closed positive allowlist: navigation
+// never stamps, and an action stamps only once it has succeeded.
 // ---------------------------------------------------------------------------
 
-describe("workspace lastUsedAt — activation stamping", () => {
+describe("workspace lastWorkedAt — the work allowlist", () => {
   function recentIso(iso: string | undefined): boolean {
     if (!iso) return false;
     const age = Date.now() - Date.parse(iso);
     return Number.isFinite(age) && age >= 0 && age < 10_000;
   }
 
-  test("desktop activateWorkspaceInWindow stamps lastUsedAt on the activated workspace", async () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function workedAt(fixture: any, workspaceId: string): string | undefined {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return fixture.store.getState().workspaces.find((w: any) => w.id === workspaceId)?.lastWorkedAt;
+  }
+
+  // --- Navigation is not work -------------------------------------------
+
+  test("desktop activateWorkspaceInWindow stamps nothing", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
 
     await fixture.runtime.activateWorkspaceInWindow("ws-a1", "win-1");
 
-    const ws = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1");
-    expect(recentIso(ws?.lastUsedAt)).toBe(true);
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
 
-  test("desktop activateSessionInWindow stamps lastUsedAt on the session's workspace", async () => {
+  test("desktop activateSessionInWindow (tab switch) stamps nothing", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
 
     await fixture.runtime.activateSessionInWindow("ws-a1:shell", "win-1");
 
-    const ws = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1");
-    expect(recentIso(ws?.lastUsedAt)).toBe(true);
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
 
-  test("legacy activateWorkspace (no windowId) stamps the target workspace only", async () => {
+  test("legacy activateWorkspace / activateSession stamp nothing", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
 
     await fixture.runtime.activateWorkspace("ws-a1");
+    await fixture.runtime.activateSession("ws-a1:shell");
 
-    const state = fixture.store.getState();
-    expect(recentIso(state.workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt)).toBe(true);
-    expect(state.workspaces.find((w) => w.id === "ws-b1")?.lastUsedAt).toBeUndefined();
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
 
-  test("remote activateWorkspaceForRemoteClient stamps the workspace and never touches the desktop slot", async () => {
-    const state = makeProfileSwitchState();
-    state.projects.push({
-      id: "ws-a2",
-      name: "A2",
-      kind: "terminal",
-      profileId: "profile-a",
-      cwd: "/tmp/a2",
-      activePanelId: "shell",
-      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
-    });
-    const fixture = await createFixture({ initialState: state });
-    fixtures.push(fixture);
-    const registry = new RemoteClientRegistry();
-    fixture.runtime.setRemoteClientRegistry(registry);
-    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
-
-    await fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-a2");
-
-    const stored = fixture.store.getState();
-    expect(recentIso(stored.workspaces.find((w) => w.id === "ws-a2")?.lastUsedAt)).toBe(true);
-    // The desktop window's own slot never followed the remote activation.
-    expect(stored.windowSlots!.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
-  });
-
-  test("remote activateSessionForRemoteClient stamps the workspace", async () => {
+  test("remote activate workspace/session stamp nothing", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
     const registry = new RemoteClientRegistry();
     fixture.runtime.setRemoteClientRegistry(registry);
     registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
 
+    await fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-a1");
     await fixture.runtime.activateSessionForRemoteClient("mobile-1", "ws-a1", "ws-a1:shell");
 
-    const ws = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1");
-    expect(recentIso(ws?.lastUsedAt)).toBe(true);
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
+    // The desktop window's own slot still never follows a remote activation.
+    expect(fixture.store.getState().windowSlots!.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
   });
 
-  test("a refused cross-profile activateWorkspaceInWindow stamps nothing", async () => {
+  test("putting a workspace in the grid and focusing it stamps nothing", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
 
-    await expect(fixture.runtime.activateWorkspaceInWindow("ws-b1", "win-1")).rejects.toThrow();
+    // The grid + a cell activation is also the "reveal from RUNNING" path —
+    // both are pure navigation.
+    await fixture.runtime.enableWorkspaceGrid("grid", ["ws-a1", null, null, null], "win-1");
+    await fixture.runtime.activateWorkspaceInWindow("ws-a1", "win-1");
 
-    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-b1")?.lastUsedAt).toBeUndefined();
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
 
-  test("a refused cross-profile activateWorkspaceForRemoteClient stamps nothing", async () => {
+  test("a background git refresh stamps nothing (same principle covers PR polling and attention)", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
-    const registry = new RemoteClientRegistry();
-    fixture.runtime.setRemoteClientRegistry(registry);
-    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
 
-    await expect(fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-b1")).rejects.toThrow();
+    await fixture.runtime.refreshGitState("ws-a1");
 
-    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-b1")?.lastUsedAt).toBeUndefined();
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
+
+  // --- Terminal input ----------------------------------------------------
 
   test("a viewer typing into a session stamps its workspace", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
@@ -9849,17 +9884,17 @@ describe("workspace lastUsedAt — activation stamping", () => {
     fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
     await fixture.store.flush();
 
-    expect(recentIso(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt)).toBe(true);
+    expect(recentIso(workedAt(fixture, "ws-a1"))).toBe(true);
   });
 
   test("an internal writer (task runner injecting a prompt) stamps nothing", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
 
-    fixture.runtime.writeToSession("ws-a1:shell", "injected prompt\r");
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r");
     await fixture.store.flush();
 
-    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBeUndefined();
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
 
   test("clicking into a pane to watch it (mouse escapes only) stamps nothing", async () => {
@@ -9869,7 +9904,7 @@ describe("workspace lastUsedAt — activation stamping", () => {
     fixture.runtime.writeToSession("ws-a1:shell", "\x1b[<0;10;5M", "win-1");
     await fixture.store.flush();
 
-    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBeUndefined();
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
 
   test("keystrokes within the throttle window cost a single persist", async () => {
@@ -9878,13 +9913,14 @@ describe("workspace lastUsedAt — activation stamping", () => {
 
     fixture.runtime.writeToSession("ws-a1:shell", "l", "win-1");
     await fixture.store.flush();
-    const firstStamp = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt;
+    const firstStamp = workedAt(fixture, "ws-a1");
     expect(firstStamp).toBeDefined();
 
-    for (const char of "s -la\r") fixture.runtime.writeToSession("ws-a1:shell", char, "win-1");
+    for (const char of "s -la") fixture.runtime.writeToSession("ws-a1:shell", char, "win-1");
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
     await fixture.store.flush();
 
-    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBe(firstStamp);
+    expect(workedAt(fixture, "ws-a1")).toBe(firstStamp);
   });
 
   test("input blocked by another viewer's lease stamps nothing", async () => {
@@ -9894,26 +9930,437 @@ describe("workspace lastUsedAt — activation stamping", () => {
     // win-1 owns the lease; its own typing stamps.
     fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
     await fixture.store.flush();
-    const stampedAt = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt;
+    const stampedAt = workedAt(fixture, "ws-a1");
 
     // A second viewer is blocked — those keystrokes never reached the PTY, so
     // they are not "the user working here" either.
     expect(fixture.runtime.writeToSession("ws-a1:shell", "x", "win-2")).toMatchObject({ blocked: true });
     await fixture.store.flush();
 
-    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBe(stampedAt);
+    expect(workedAt(fixture, "ws-a1")).toBe(stampedAt);
   });
 
-  test("a background git refresh never touches lastUsedAt (same principle covers PR polling and attention)", async () => {
+  // --- Attached task ownership -------------------------------------------
+
+  /**
+   * An attached (Companion loop) task presents the SOURCE workspace's Primary
+   * tab inside the task workspace. The physical session id still names the
+   * source workspace, so without an origin claim the user's typing would bump
+   * the wrong workspace's recency.
+   */
+  function makeAttachedTaskState() {
+    const state = makeProfileSwitchState();
+    state.projects.push({
+      id: "ws-task",
+      name: "Companion loop",
+      kind: "task",
+      profileId: "profile-a",
+      cwd: "/tmp/a1",
+      activePanelId: "panel-dashboard",
+      panels: [
+        { id: "panel-dashboard", title: "Dashboard", command: "__task-dashboard__", shell: false, startup: "none" },
+        { id: "panel-judge", title: "Companion", command: "echo judge", shell: true, startup: "default" },
+      ],
+      task: {
+        taskId: "task-1",
+        description: "review",
+        parentWorkspaceId: "ws-a1",
+        worktreeBase: "",
+        worktreeBranch: "",
+        workerPanelId: "shell",
+        judgePanelId: "panel-judge",
+        maxRounds: 5,
+        state: "running",
+        mode: "attached",
+        workerWorkspaceId: "ws-a1",
+        companionRole: "reviewer",
+        rounds: [],
+        currentRound: 1,
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    return state;
+  }
+
+  test("typing into an attached Primary credits the TASK workspace, not the source", async () => {
+    const fixture = await createFixture({ initialState: makeAttachedTaskState() });
+    fixtures.push(fixture);
+
+    // The session id is the source workspace's; the viewer typed in the task card.
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1", "ws-task");
+    await fixture.store.flush();
+
+    expect(recentIso(workedAt(fixture, "ws-task"))).toBe(true);
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
+  });
+
+  test("typing into the same session from the source workspace credits the source", async () => {
+    const fixture = await createFixture({ initialState: makeAttachedTaskState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1", "ws-a1");
+    await fixture.store.flush();
+
+    expect(recentIso(workedAt(fixture, "ws-a1"))).toBe(true);
+    expect(workedAt(fixture, "ws-task")).toBeUndefined();
+  });
+
+  test("an unvalidated origin claim is ignored and the session's own workspace is credited", async () => {
+    const fixture = await createFixture({ initialState: makeAttachedTaskState() });
+    fixtures.push(fixture);
+
+    // ws-b1 neither owns the session nor binds it as a task role.
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1", "ws-b1");
+    await fixture.store.flush();
+
+    expect(workedAt(fixture, "ws-b1")).toBeUndefined();
+    expect(recentIso(workedAt(fixture, "ws-a1"))).toBe(true);
+  });
+
+  test("a cross-profile task workspace cannot claim another profile's session", async () => {
+    const state = makeAttachedTaskState();
+    // Same attached binding, but the task workspace now lives in the OTHER
+    // profile — the claim must be refused even though the binding matches.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (state.projects.find((project: any) => project.id === "ws-task") as any).profileId = "profile-b";
+    const fixture = await createFixture({ initialState: state });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1", "ws-task");
+    await fixture.store.flush();
+
+    expect(workedAt(fixture, "ws-task")).toBeUndefined();
+    expect(recentIso(workedAt(fixture, "ws-a1"))).toBe(true);
+  });
+
+  // --- Creation, tasks, git ----------------------------------------------
+
+  test("creating a workspace stamps it; a later edit does not, and never erases the stamp", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
 
-    await fixture.runtime.activateWorkspaceInWindow("ws-a1", "win-1");
-    const stampedAt = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt;
-    expect(stampedAt).toBeDefined();
+    await fixture.runtime.saveWorkspace({
+      id: "ws-new",
+      name: "Fresh",
+      kind: "terminal",
+      profileId: "profile-a",
+      cwd: "/tmp/new",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    });
+    const created = workedAt(fixture, "ws-new");
+    expect(recentIso(created)).toBe(true);
 
-    await fixture.runtime.refreshGitState("ws-a1");
+    // A rename round-trips the workspace object WITHOUT lastWorkedAt (the
+    // editor never sends it) — the stamp must survive, unchanged.
+    await fixture.runtime.saveWorkspace({
+      id: "ws-new",
+      name: "Renamed",
+      kind: "terminal",
+      profileId: "profile-a",
+      cwd: "/tmp/new",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    });
+    expect(workedAt(fixture, "ws-new")).toBe(created);
+  });
 
-    expect(fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")?.lastUsedAt).toBe(stampedAt);
+  test("a git mutation stamps the workspace, a read-only git call does not", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).logPage = vi.fn(async () => ({ entries: [], hasMore: false }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).commitAll = vi.fn(async () => ({ ok: true }));
+
+    // Reading the log is looking, not working.
+    await fixture.runtime.gitLogPage({ workspaceId: "ws-a1" });
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
+
+    await fixture.runtime.gitCommitAll({ workspaceId: "ws-a1", message: "wip" });
+    await fixture.store.flush();
+    expect(recentIso(workedAt(fixture, "ws-a1"))).toBe(true);
+  });
+
+  test("a git mutation that resolves with { ok: false } stamps nothing", async () => {
+    // V3 review, §4 P1. The manager reports a refused operation as a RESOLVED
+    // structured failure, so "the promise resolved" was never a success test.
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).push = vi.fn(async () => ({ ok: false, summary: "remote rejected the push" }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).checkoutBranch = vi.fn(async () => ({ ok: false, summary: "Invalid branch name." }));
+
+    const pushed = await fixture.runtime.gitPush({ workspaceId: "ws-a1" });
+    const checked = await fixture.runtime.gitCheckoutBranch({ workspaceId: "ws-a1", branch: "-oops" });
+    await fixture.store.flush();
+
+    // The refusal still reaches the caller verbatim.
+    expect(pushed.result.ok).toBe(false);
+    expect(checked.result.ok).toBe(false);
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
+  });
+
+  test("a successful git mutation stamps the persisted state AND the returned payload", async () => {
+    // V3 review, §4 P2. `runGitWorkspaceAction` built the response payload
+    // before the stamp, so a renderer adopting it overwrote the fresh
+    // broadcast with a pre-stamp snapshot.
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).commitAll = vi.fn(async () => ({ ok: true, summary: "1 file committed." }));
+
+    const response = await fixture.runtime.gitCommitAll({ workspaceId: "ws-a1", message: "wip" });
+    await fixture.store.flush();
+
+    expect(recentIso(workedAt(fixture, "ws-a1"))).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const inPayload = (response.payload as any).appState.workspaces.find((w: any) => w.id === "ws-a1")?.lastWorkedAt;
+    expect(inPayload).toBe(workedAt(fixture, "ws-a1"));
+  });
+
+  test("a git mutation with no structured status still stamps on resolve", async () => {
+    // A few mutations resolve with a plain payload and no `ok` field at all;
+    // for those the resolution IS the success signal.
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).commitAll = vi.fn(async () => ({ summary: "done" }));
+
+    await fixture.runtime.gitCommitAll({ workspaceId: "ws-a1", message: "wip" });
+    await fixture.store.flush();
+
+    expect(recentIso(workedAt(fixture, "ws-a1"))).toBe(true);
+  });
+
+  test("a workspace edit can never move lastWorkedAt — the field is backend-owned", async () => {
+    // V3 review, §4 P2. A long-open editor round-trips whatever stamp it
+    // loaded; an older-but-truthy value used to overwrite newer work.
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).commitAll = vi.fn(async () => ({ ok: true }));
+
+    await fixture.runtime.gitCommitAll({ workspaceId: "ws-a1", message: "wip" });
+    await fixture.store.flush();
+    const stamped = workedAt(fixture, "ws-a1");
+    expect(recentIso(stamped)).toBe(true);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const current = fixture.store.getState().workspaces.find((w: any) => w.id === "ws-a1") as any;
+
+    // A stale editor payload carrying an OLD timestamp.
+    await fixture.runtime.saveWorkspace({ ...current, name: "Renamed", lastWorkedAt: "2020-01-01T00:00:00.000Z" });
+    expect(workedAt(fixture, "ws-a1")).toBe(stamped);
+
+    // …and a NEWER one is refused just as flatly: no client owns this field.
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await fixture.runtime.saveWorkspace({ ...current, name: "Renamed twice", lastWorkedAt: future });
+    expect(workedAt(fixture, "ws-a1")).toBe(stamped);
+  });
+
+  test("editing a never-worked workspace cannot invent a lastWorkedAt", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const current = fixture.store.getState().workspaces.find((w: any) => w.id === "ws-a1") as any;
+    expect(current.lastWorkedAt).toBeUndefined();
+
+    await fixture.runtime.saveWorkspace({ ...current, name: "Renamed", lastWorkedAt: "2026-08-30T09:00:00.000Z" });
+
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
+  });
+
+  test("a FAILED git mutation stamps nothing", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).push = vi.fn(() => Promise.reject(new Error("remote rejected")));
+
+    await expect(fixture.runtime.gitPush({ workspaceId: "ws-a1" })).rejects.toThrow();
+    await fixture.store.flush();
+
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
+  });
+
+  test("creating a task workspace stamps it, and editing its brief stamps it again", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-work-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    const created = await fixture.runtime.createTaskWorkspace({
+      cwd,
+      description: "First brief",
+      activate: false,
+    });
+    const taskWorkspaceId = created.workspaceId;
+    const createdStamp = workedAt(fixture, taskWorkspaceId);
+    expect(recentIso(createdStamp)).toBe(true);
+
+    // Roll the stamp back so a second, later stamp is observable.
+    await fixture.store.mutate((draft: { workspaces: Array<{ id: string; lastWorkedAt?: string }> }) => {
+      const ws = draft.workspaces.find((w) => w.id === taskWorkspaceId);
+      if (ws) ws.lastWorkedAt = "2020-01-01T00:00:00.000Z";
+    });
+
+    const edited = await fixture.runtime.updateTaskDescription(taskWorkspaceId, "Second brief");
+    expect(edited.ok).toBe(true);
+    expect(recentIso(workedAt(fixture, taskWorkspaceId))).toBe(true);
+  });
+
+  test("editing the brief of a workspace that is not a task stamps nothing", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.updateTaskDescription("ws-a1", "not a task");
+
+    expect(result.ok).toBe(false);
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
+  });
+});
+
+describe("session activityStartedAt — run-start stamp for elapsed", () => {
+  function agentState() {
+    return {
+      activeProjectId: "backend",
+      projects: [
+        {
+          id: "backend",
+          name: "Backend",
+          kind: "terminal",
+          cwd: "/tmp/backend",
+          activePanelId: "claude",
+          panels: [{ id: "claude", title: "Claude", command: "claude", shell: true, startup: "default" }],
+        },
+      ],
+    };
+  }
+
+  function stampOf(fixture: { runtime: { getPayload: () => { attention: { sessions: Record<string, unknown> } } } }) {
+    const session = fixture.runtime.getPayload().attention.sessions["backend:claude"] as
+      { activity?: string; activityStartedAt?: number } | undefined;
+    return session;
+  }
+
+  test("idle → running stamps a start; a repeated running → running never re-stamps", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: agentState() });
+      fixtures.push(fixture);
+
+      // Not running yet: no start.
+      fixture.runtime.notifyAgentHook("backend:claude", "", "Notification");
+      expect(stampOf(fixture)?.activityStartedAt || 0).toBe(0);
+
+      fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+      const first = stampOf(fixture)!;
+      expect(first.activity).toBe("running");
+      expect(first.activityStartedAt).toBeGreaterThan(0);
+
+      // Six hours later the same turn is still running — a second
+      // UserPromptSubmit-driven "running" must not move the start, otherwise a
+      // long run would read as seconds. The clock is jumped with setSystemTime
+      // rather than advanceTimersByTime so six hours of the runtime's periodic
+      // timers don't have to actually run.
+      vi.setSystemTime(new Date(Date.now() + 6 * 60 * 60 * 1000));
+      fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+      expect(stampOf(fixture)?.activityStartedAt).toBe(first.activityStartedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("running → done clears the start, and the fade to idle keeps it cleared", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: agentState() });
+      fixtures.push(fixture);
+
+      fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+      expect(stampOf(fixture)?.activityStartedAt).toBeGreaterThan(0);
+
+      fixture.runtime.notifyAgentHook("backend:claude", "", "Stop");
+      expect(stampOf(fixture)?.activity).toBe("done");
+      expect(stampOf(fixture)?.activityStartedAt).toBe(0);
+
+      // scheduleActivityFade writes signal.activity directly, outside
+      // setSessionActivity — it has to clear the stamp itself.
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(stampOf(fixture)?.activity).toBe("idle");
+      expect(stampOf(fixture)?.activityStartedAt).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the fade to idle clears a start that was still set (done reached via a subagent turn)", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: agentState() });
+      fixtures.push(fixture);
+
+      // Background subagent keeps the session running past Stop…
+      fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+      const started = stampOf(fixture)?.activityStartedAt;
+      fixture.runtime.notifyAgentHook("backend:claude", "", "PreToolUse");
+      fixture.runtime.notifyAgentHook("backend:claude", "", "Stop");
+      expect(stampOf(fixture)?.activity).toBe("running");
+      expect(stampOf(fixture)?.activityStartedAt).toBe(started);
+
+      // …then finishes, and the chip fades out.
+      fixture.runtime.notifyAgentHook("backend:claude", "", "SubagentStop");
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(stampOf(fixture)?.activity).toBe("idle");
+      expect(stampOf(fixture)?.activityStartedAt).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("output during the run does not move the start (the regression that ruled out lastActivity)", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: agentState() });
+      fixtures.push(fixture);
+
+      fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+      const started = stampOf(fixture)?.activityStartedAt;
+      const lastActivityAtStart = (
+        fixture.runtime.getPayload().attention.sessions["backend:claude"] as { lastActivity?: string }
+      ).lastActivity;
+
+      // Mid-turn traffic: a subagent starts, a minute passes, the user sends
+      // another prompt into the same still-running turn.
+      vi.setSystemTime(new Date(Date.now() + 60_000));
+      fixture.runtime.notifyAgentHook("backend:claude", "", "PreToolUse");
+      vi.setSystemTime(new Date(Date.now() + 60_000));
+      fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+
+      const after = fixture.runtime.getPayload().attention.sessions["backend:claude"] as {
+        activityStartedAt?: number;
+        lastActivity?: string;
+      };
+      expect(after.activityStartedAt).toBe(started);
+      // lastActivity DID move — which is exactly why it cannot stand in for a
+      // run start.
+      expect(after.lastActivity).not.toBe(lastActivityAtStart);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the snapshot publishes epoch ms as a number, 0 when the session is not running", async () => {
+    const fixture = await createFixture({ initialState: agentState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+    const running = stampOf(fixture)!;
+    expect(typeof running.activityStartedAt).toBe("number");
+    expect(running.activityStartedAt).toBeGreaterThan(1_600_000_000_000);
+
+    fixture.runtime.notifyAgentHook("backend:claude", "", "Stop");
+    const done = stampOf(fixture)!;
+    expect(typeof done.activityStartedAt).toBe("number");
+    expect(done.activityStartedAt).toBe(0);
   });
 });

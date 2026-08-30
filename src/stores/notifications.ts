@@ -54,7 +54,20 @@ interface NotificationEvent {
   kind: NotificationKind;
   tier: number;
   urgency: NotificationUrgency;
+  /**
+   * When the event happened. For a backend attention alert this is the
+   * alert's own `at` — NOT the renderer's capture time, which varies per
+   * window and would make the same source event look like several.
+   */
   at: string;
+  /**
+   * Backend `alertId` this event was captured from, when it came from an
+   * attention alert. The store's exactly-once guarantee keys on it.
+   * Absent on events persisted before V2 and on non-alert sources
+   * (review/pipeline notifications, app errors) — those are never
+   * retroactively deduplicated, since their identity cannot be recovered.
+   */
+  sourceAlertId?: string;
 }
 
 interface NotificationSession {
@@ -88,6 +101,16 @@ interface AddEventPayload {
   category?: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   meta?: Record<string, any> | null;
+  /** Source event time. Defaults to now for locally-originated events. */
+  occurredAt?: string;
+  /** Backend alert identity — see NotificationEvent.sourceAlertId. */
+  sourceAlertId?: string;
+}
+
+/** Payload for the alert-capture entry point, where both fields are required. */
+interface AddAlertEventPayload extends AddEventPayload {
+  sourceAlertId: string;
+  occurredAt: string;
 }
 
 type SessionFilter = (_s: NotificationSession) => boolean;
@@ -240,6 +263,13 @@ export const useNotificationStore = defineStore("notifications", () => {
   // focus() — a ref-bump is used so repeated requests retrigger even when
   // pinned/open state hasn't changed.
   const focusRequestSignal = ref(0);
+  // Purely transient UI seam for "open the dock on tab X" (the hero's running-
+  // agent chip uses it). Same counter pattern as focusRequestSignal: the
+  // requested tab plus a bumped signal so a repeat press retriggers even when
+  // nothing else changed. Nothing here is persisted, nothing enters `sessions`,
+  // and no thread state or badge is touched.
+  const requestedPanelTab = ref("");
+  const panelTabRequestSignal = ref(0);
   // Transient toast payload. Lives in the store (not in a composable) so any
   // part of the app can trigger a toast via showError/showToast without
   // threading a ref through prop drilling or custom event buses.
@@ -314,6 +344,8 @@ export const useNotificationStore = defineStore("notifications", () => {
     viewId = "",
     category = "terminal",
     meta = null,
+    occurredAt = "",
+    sourceAlertId = "",
   }: AddEventPayload): NotificationEvent {
     const id = threadId(workspaceId, viewId);
     const eventEntry: NotificationEvent = {
@@ -323,7 +355,8 @@ export const useNotificationStore = defineStore("notifications", () => {
       kind,
       tier,
       urgency,
-      at: new Date().toISOString(),
+      at: occurredAt || new Date().toISOString(),
+      ...(sourceAlertId ? { sourceAlertId } : {}),
     };
 
     const existing = findSession(workspaceId, viewId);
@@ -373,6 +406,40 @@ export const useNotificationStore = defineStore("notifications", () => {
   // Back-compat alias for existing call sites.
   function add(payload: AddEventPayload): NotificationEvent {
     return addEvent(payload);
+  }
+
+  /** The already-recorded event for this backend alert, if there is one. */
+  function findEventBySourceAlertId(sourceAlertId: string): NotificationEvent | null {
+    if (!sourceAlertId) return null;
+    for (const session of sessions.value) {
+      for (const event of session.events) {
+        if (event.sourceAlertId === sourceAlertId) return event;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Exactly-once entry point for backend attention alerts (V2 plan, Fáze 2).
+   *
+   * One backend `addProjectAlert()` produces at most ONE event in this
+   * history, no matter how many times the alert comes back in a payload — a
+   * rebroadcast, a reconnect, a renderer-side cache replay, a remounted
+   * capture composable or a second window all carry the same `alertId`.
+   *
+   * The whole history is searched BEFORE anything is touched, so a duplicate
+   * is completely side-effect free: no append, no thread-state change, no
+   * bubbling, no `latestAt` move — and the caller, seeing `inserted: false`,
+   * fires no toast, no sound and no OS notification.
+   *
+   * A genuinely new alert on the same panel carries a NEW `alertId`, so it
+   * inserts a second event and keeps the intended reopen semantics for an
+   * already-resolved thread.
+   */
+  function addAlertEvent(payload: AddAlertEventPayload): { event: NotificationEvent; inserted: boolean } {
+    const duplicate = findEventBySourceAlertId(payload.sourceAlertId);
+    if (duplicate) return { event: duplicate, inserted: false };
+    return { event: addEvent(payload), inserted: true };
   }
 
   function setState(sessionRef: string | NotificationSession, newState: NotificationState): void {
@@ -565,6 +632,13 @@ export const useNotificationStore = defineStore("notifications", () => {
     focusRequestSignal.value += 1;
   }
 
+  /** Show the dock (if it isn't pinned open already) on a specific tab. */
+  function openPanelOnTab(tab: string): void {
+    requestedPanelTab.value = tab;
+    panelTabRequestSignal.value += 1;
+    if (!pinned.value) panelOpen.value = true;
+  }
+
   // Surface an app-level error to the user: persistent entry in the dock
   // (so it survives scroll-away) plus a transient toast (so it grabs
   // attention even when the dock is closed behind a dialog). Callers should
@@ -700,6 +774,8 @@ export const useNotificationStore = defineStore("notifications", () => {
     panelOpen,
     pinned,
     focusRequestSignal,
+    requestedPanelTab,
+    panelTabRequestSignal,
     latestToast,
     persistentToasts,
     // Computed
@@ -710,6 +786,8 @@ export const useNotificationStore = defineStore("notifications", () => {
     // Event API
     add,
     addEvent,
+    addAlertEvent,
+    findEventBySourceAlertId,
     setState,
     snooze,
     markAllRead,
@@ -724,6 +802,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     closePanel,
     togglePin,
     requestFocus,
+    openPanelOnTab,
     showError,
     runWithToast,
     pushPersistentToast,

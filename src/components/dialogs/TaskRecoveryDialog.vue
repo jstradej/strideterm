@@ -89,7 +89,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import type { RecoveryCandidate } from "../../../electron/shared/types/state.js";
+import type { RecoveryCandidate, RecoveryDecisionReport } from "../../../electron/shared/types/state.js";
 
 interface Props {
   onClose?: () => void;
@@ -164,14 +164,67 @@ watch(current, (next, prev) => {
   }
 });
 
+/**
+ * A batch can now come back PARTIALLY failed: the runner refused a resume, an
+ * attached task's Primary is gone, or the session the agent must re-orient in
+ * never came up. `runWithToast` only catches a rejection, so a resolved-but-
+ * failed decision used to look exactly like success while the task stayed
+ * paused (V4 review, §"P1 — task recovery hlásí úspěch", oprava 5).
+ *
+ * The failed candidates stay in the list, so the dialog simply keeps showing
+ * them; this names them so the user knows the click did not do what it looked
+ * like it did.
+ */
+function reportFailedOutcomes(report: RecoveryDecisionReport | undefined, namesById: Map<string, string>): void {
+  const outcomes = report?.outcomes || {};
+  const failed = Object.keys(outcomes).filter((id) => outcomes[id] === "failed");
+  if (failed.length > 0) {
+    const names = failed.map((id) => namesById.get(id) || id).join(", ");
+    notifications.pushEphemeralToast({
+      title: failed.length === 1 ? "Task could not be recovered" : `${failed.length} tasks could not be recovered`,
+      body: `${names} stayed paused — the agent was not brought back. Still listed here, so you can retry or skip it.`,
+      kind: "error",
+      durationMs: 8000,
+    });
+  }
+
+  // A decision the backend gave no usable answer for is a PROTOCOL failure,
+  // not a quiet success: the candidate stays in the list and the user is told
+  // that nothing is known about it, rather than the dialog closing as if the
+  // task had been recovered (V5 review, §"P2 — recovery kontrakt končí před
+  // transportní hranicí", oprava 4).
+  const unanswered = report?.unanswered || [];
+  if (unanswered.length > 0) {
+    const names = unanswered.map((id) => namesById.get(id) || id).join(", ");
+    notifications.pushEphemeralToast({
+      title: "Recovery answered nothing",
+      body: `The app gave no result for ${names}. Nothing was changed as far as we can tell — the task is still listed here, so retry or skip it.`,
+      kind: "error",
+      durationMs: 8000,
+    });
+  }
+}
+
+/** Names of the candidates a decision covers, captured before the queue trims. */
+function namesFor(ids: string[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const c of candidates.value) {
+    if (ids.includes(c.workspaceId)) names.set(c.workspaceId, c.workspaceName);
+  }
+  return names;
+}
+
 async function decide(choice: "continue" | "fresh" | "skip"): Promise<void> {
   if (!current.value || busy.value) return;
   const id = current.value.workspaceId;
+  const names = namesFor([id]);
   busy.value = true;
   try {
-    await notifications.runWithToast("Task recovery decision failed", () =>
-      store.resolveTaskRecovery({ [id]: choice }),
-    );
+    let report: RecoveryDecisionReport | undefined;
+    await notifications.runWithToast("Task recovery decision failed", async () => {
+      report = await store.resolveTaskRecovery({ [id]: choice });
+    });
+    reportFailedOutcomes(report, names);
   } finally {
     busy.value = false;
   }
@@ -184,7 +237,12 @@ async function skipAll(): Promise<void> {
   try {
     const decisions: Record<string, "skip"> = {};
     for (const c of candidates.value) decisions[c.workspaceId] = "skip";
-    await notifications.runWithToast("Skip all failed", () => store.resolveTaskRecovery(decisions));
+    const names = namesFor(Object.keys(decisions));
+    let report: RecoveryDecisionReport | undefined;
+    await notifications.runWithToast("Skip all failed", async () => {
+      report = await store.resolveTaskRecovery(decisions);
+    });
+    reportFailedOutcomes(report, names);
   } finally {
     busy.value = false;
   }
@@ -196,7 +254,12 @@ async function resumeAll(): Promise<void> {
   try {
     const decisions: Record<string, "continue"> = {};
     for (const c of candidates.value) decisions[c.workspaceId] = "continue";
-    await notifications.runWithToast("Resume all failed", () => store.resolveTaskRecovery(decisions));
+    const names = namesFor(Object.keys(decisions));
+    let report: RecoveryDecisionReport | undefined;
+    await notifications.runWithToast("Resume all failed", async () => {
+      report = await store.resolveTaskRecovery(decisions);
+    });
+    reportFailedOutcomes(report, names);
   } finally {
     busy.value = false;
   }

@@ -912,25 +912,35 @@ describe("default state", () => {
     });
   });
 
-  describe("workspace lastUsedAt", () => {
+  describe("workspace lastWorkedAt", () => {
     test("normalizeWorkspace preserves a valid ISO timestamp", () => {
-      const workspace = normalizeWorkspace({ id: "w1", lastUsedAt: "2024-01-15T12:00:00.000Z" });
-      expect(workspace.lastUsedAt).toBe("2024-01-15T12:00:00.000Z");
+      const workspace = normalizeWorkspace({ id: "w1", lastWorkedAt: "2024-01-15T12:00:00.000Z" });
+      expect(workspace.lastWorkedAt).toBe("2024-01-15T12:00:00.000Z");
     });
 
-    test("normalizeWorkspace drops an invalid lastUsedAt instead of fabricating history", () => {
-      const workspace = normalizeWorkspace({ id: "w1", lastUsedAt: "not-a-date" });
-      expect(workspace.lastUsedAt).toBeUndefined();
+    test("normalizeWorkspace drops an invalid lastWorkedAt instead of fabricating history", () => {
+      const workspace = normalizeWorkspace({ id: "w1", lastWorkedAt: "not-a-date" });
+      expect(workspace.lastWorkedAt).toBeUndefined();
     });
 
-    test("normalizeWorkspace leaves lastUsedAt absent when never set (no backfill)", () => {
+    test("normalizeWorkspace leaves lastWorkedAt absent when never set (no backfill)", () => {
       const workspace = normalizeWorkspace({ id: "w1" });
-      expect(workspace.lastUsedAt).toBeUndefined();
+      expect(workspace.lastWorkedAt).toBeUndefined();
     });
 
-    test("normalizeWorkspace drops a non-string lastUsedAt", () => {
-      const workspace = normalizeWorkspace({ id: "w1", lastUsedAt: 12345 });
-      expect(workspace.lastUsedAt).toBeUndefined();
+    test("normalizeWorkspace drops a non-string lastWorkedAt", () => {
+      const workspace = normalizeWorkspace({ id: "w1", lastWorkedAt: 12345 });
+      expect(workspace.lastWorkedAt).toBeUndefined();
+    });
+
+    // V2 plan: the legacy field conflated navigation with work, and the two
+    // cannot be told apart after the fact. Normalising drops it from the next
+    // state write instead of migrating it into lastWorkedAt, which would show
+    // up to 24 hours of false "recently worked" rows after an upgrade.
+    test("normalizeWorkspace drops the legacy lastUsedAt and never backfills from it", () => {
+      const workspace = normalizeWorkspace({ id: "w1", lastUsedAt: "2024-01-15T12:00:00.000Z" });
+      expect((workspace as unknown as Record<string, unknown>).lastUsedAt).toBeUndefined();
+      expect(workspace.lastWorkedAt).toBeUndefined();
     });
   });
 

@@ -15,6 +15,8 @@ import { useAppStore } from "../../stores/app.js";
 type AnyApi = any;
 
 const SESSION_ID = "ws-a:panel-shell";
+// Workspace credited with the work for a write into SESSION_ID.
+const ORIGIN_WS = "ws-a";
 const COLLAPSED_KEY = "strideterm-mobile-input-collapsed";
 
 function mountBar({
@@ -101,7 +103,7 @@ describe("MobileInputBar", () => {
       expect(wrapper.find("[data-role='mobile-input-bar']").exists()).toBe(true);
       await wrapper.find("[data-role='mobile-input-bar-input']").setValue("pwd");
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "pwd");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "pwd", ORIGIN_WS);
     });
 
     it.each([
@@ -163,12 +165,12 @@ describe("MobileInputBar", () => {
       await wrapper.find("form").trigger("submit");
 
       expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo mobile-composer");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo mobile-composer", ORIGIN_WS);
       expect((input.element as HTMLInputElement).value).toBe("");
 
       vi.advanceTimersByTime(200);
       expect(writeTerminal).toHaveBeenCalledTimes(2);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
     });
 
     it("preserves leading/trailing whitespace in the composed line", async () => {
@@ -176,9 +178,9 @@ describe("MobileInputBar", () => {
       await wrapper.find("[data-role='mobile-input-bar-input']").setValue("ls ");
       await wrapper.find("form").trigger("submit");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "ls ");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "ls ", ORIGIN_WS);
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
     });
 
     it("sends a bare Enter immediately when the field is empty", async () => {
@@ -186,7 +188,7 @@ describe("MobileInputBar", () => {
       await wrapper.find("form").trigger("submit");
 
       expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r", ORIGIN_WS);
       // No stray delayed write follows a bare Enter.
       vi.advanceTimersByTime(500);
       expect(writeTerminal).toHaveBeenCalledTimes(1);
@@ -197,7 +199,7 @@ describe("MobileInputBar", () => {
       const store = useAppStore();
       await wrapper.find("[data-role='mobile-input-bar-input']").setValue("echo hi");
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo hi");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo hi", ORIGIN_WS);
 
       // Tab switch during the submit delay — the pending Enter still belongs
       // to the terminal that got the text, not the newly active one.
@@ -206,7 +208,7 @@ describe("MobileInputBar", () => {
       await nextTick();
 
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
     });
 
     it("sends the committed IME composition result", async () => {
@@ -221,9 +223,9 @@ describe("MobileInputBar", () => {
       await input.trigger("compositionend");
       await wrapper.find("form").trigger("submit");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz", ORIGIN_WS);
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
     });
 
     it("defers submit until the active IME composition commits", async () => {
@@ -242,10 +244,10 @@ describe("MobileInputBar", () => {
       await nextTick();
 
       expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz", ORIGIN_WS);
       vi.advanceTimersByTime(200);
       expect(writeTerminal).toHaveBeenCalledTimes(2);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r");
+      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
     });
 
     it("clears a pending draft when the target session changes", async () => {
@@ -260,7 +262,7 @@ describe("MobileInputBar", () => {
 
       expect((input.element as HTMLInputElement).value).toBe("");
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith("ws-a:panel-other", "\r");
+      expect(writeTerminal).toHaveBeenCalledWith("ws-a:panel-other", "\r", ORIGIN_WS);
     });
   });
 
@@ -284,7 +286,7 @@ describe("MobileInputBar", () => {
       const item = wrapper.findAll("button.mobile-input-bar__menu-item").find((b) => b.text().startsWith(glyph));
       expect(item, `menu key "${glyph}" should exist`).toBeTruthy();
       await item!.trigger("click");
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq);
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq, ORIGIN_WS);
     });
 
     it("inserts '/' into the draft without sending it", async () => {
@@ -341,7 +343,7 @@ describe("MobileInputBar", () => {
       await button!.trigger("click");
 
       expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq);
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq, ORIGIN_WS);
     });
 
     it.each([["Esc", "\x1b"]])("discards the local draft before sending cancel key %s", async (label, seq) => {
@@ -352,7 +354,7 @@ describe("MobileInputBar", () => {
       const button = wrapper.findAll("button.mobile-input-bar__key").find((b) => b.text() === label);
       await button!.trigger("click");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq);
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq, ORIGIN_WS);
       expect((input.element as HTMLInputElement).value).toBe("");
     });
 
@@ -370,7 +372,7 @@ describe("MobileInputBar", () => {
       element.value = "unfinished";
       await input.trigger("compositionend");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b", ORIGIN_WS);
       expect(element.value).toBe("");
     });
 
@@ -382,7 +384,7 @@ describe("MobileInputBar", () => {
       const tab = wrapper.findAll("button.mobile-input-bar__key").find((b) => b.text() === "Tab");
       await tab!.trigger("click");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "git che\t");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "git che\t", ORIGIN_WS);
       expect((input.element as HTMLInputElement).value).toBe("");
     });
   });
@@ -467,7 +469,7 @@ describe("MobileInputBar", () => {
       expect(element.value).toBe("prikpasted");
 
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "prikpasted");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "prikpasted", ORIGIN_WS);
     });
   });
 
@@ -511,7 +513,7 @@ describe("MobileInputBar", () => {
         // The foreign value is gone from the draft too — ⏎ sends a bare Enter.
         await wrapper.find("form").trigger("submit");
         expect(writeTerminal).toHaveBeenCalledTimes(1);
-        expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r");
+        expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r", ORIGIN_WS);
       });
 
       it.each([
@@ -545,7 +547,7 @@ describe("MobileInputBar", () => {
 
         expect((input.element as HTMLInputElement).value).toBe("echo typed");
         await wrapper.find("form").trigger("submit");
-        expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo typed");
+        expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo typed", ORIGIN_WS);
       });
     });
   });
@@ -653,8 +655,10 @@ describe("MobileInputBar — relocated Companion Primary", () => {
     await wrapper.find("form").trigger("submit");
     await nextTick();
 
-    // The virtual view id must never reach the PTY layer.
-    expect(writeTerminal).toHaveBeenCalledWith("ws-source:panel-primary", "hello");
+    // The virtual view id must never reach the PTY layer — and the write is
+    // credited to the TASK workspace the user is actually typing in, not to
+    // the source workspace that happens to own the session (V2 plan, Fáze 3).
+    expect(writeTerminal).toHaveBeenCalledWith("ws-source:panel-primary", "hello", "ws-task");
   });
 
   it("has no write target once the loop finishes and the alias is gone", async () => {

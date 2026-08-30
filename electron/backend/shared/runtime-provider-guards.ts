@@ -150,3 +150,83 @@ export function computeMinPollSeconds(
     Math.min(...enabledConnections.map((c) => Number(c.pollSeconds) || Number(defaultPollSeconds) || 120)),
   );
 }
+
+/**
+ * Decide WHICH workspace a successful, explicit review mutation (a comment, a
+ * thread status, a vote, a submitted review) counts as work in.
+ *
+ * Review actions are addressed by `prKey`, not by workspace id, so the owning
+ * workspace has to be resolved. The local review/quickfix workspace the PR is
+ * checked out in stays the answer whenever one exists — that is where the work
+ * belongs and where the recent surface should show it.
+ *
+ * When there is none, the action was performed straight from the provider
+ * inbox. That used to stamp NOTHING, which is right for background polling but
+ * wrong for a person who really did write a comment: their work simply never
+ * appeared in "Recently worked" (V5 review, §"P2 — explicitní práce přímo v
+ * provider inboxu se ztrácí z Recent"). The fallback is deliberately narrow —
+ * it credits the provider inbox workspace ONLY when
+ *
+ *   - the viewer is actually looking at it (it is their active workspace),
+ *   - it is that provider's own inbox (`kind`), and
+ *   - the PR belongs to the same profile that owns the inbox.
+ *
+ * The inbox is one workspace per provider per profile and it aggregates every
+ * connection that profile owns, so the profile match IS the connection match.
+ * Anything else — an action fired from an unrelated workspace, a PR the
+ * snapshot does not know, a poll, a passive open — resolves to `null` and
+ * stamps nothing rather than guessing.
+ *
+ * The PR SNAPSHOT is the authority on which profile all of this happens in, and
+ * it is consulted FIRST (V6 review, §"P1 — desktop Azure/GitHub mutation
+ * ztrácí viewer/window kontext", oprava 2–4). The local lookup used to take
+ * the first global `review.prKey` match: a stale or duplicated review marker in
+ * another profile then won ahead of the correct provider root, and because the
+ * helper had already committed to it, the fallback was never tried — the
+ * profile guard inside `recordWorkspaceWork` just dropped the stamp. Scoping
+ * the local lookup to the PR's own profile makes local-review-first true only
+ * where it means anything, and lets the inbox fallback run everywhere else.
+ *
+ * When the snapshot does not know the PR there is no authoritative profile; the
+ * VIEWER's own profile is then the scope, and the inbox fallback is refused
+ * outright.
+ */
+export function resolveReviewWorkTarget(
+  deps: {
+    getState: () => { workspaces: unknown[] };
+    getPayload: () => unknown;
+    getViewerActiveWorkspaceId: (viewerId?: string) => string;
+    getViewerProfileId?: (viewerId?: string) => string | null;
+  },
+  descriptor: { snapshotKey: string; workspaceKind: string },
+  prKey: string,
+  windowId?: string,
+): string | null {
+  if (!prKey) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const workspaces = deps.getState().workspaces as any[];
+
+  const snapshot = (deps.getPayload() as Record<string, { pullRequests?: Record<string, { profileId?: string }> }>)?.[
+    descriptor.snapshotKey
+  ];
+  const pr = snapshot?.pullRequests?.[prKey];
+  // The PR's own profile when the snapshot knows it; otherwise the caller's,
+  // which is the only other context this decision may legitimately use.
+  const authoritativeProfileId = pr ? String(pr.profileId || "default") : deps.getViewerProfileId?.(windowId) || null;
+
+  const reviewWorkspace = workspaces.find(
+    (ws) =>
+      ws?.review?.prKey === prKey &&
+      (authoritativeProfileId === null || String(ws.profileId || "default") === authoritativeProfileId),
+  );
+  if (reviewWorkspace) return String(reviewWorkspace.id);
+
+  if (!pr) return null;
+  const activeId = deps.getViewerActiveWorkspaceId(windowId);
+  if (!activeId) return null;
+  const active = workspaces.find((ws) => ws?.id === activeId);
+  if (!active || active.kind !== descriptor.workspaceKind) return null;
+  if (String(active.profileId || "default") !== authoritativeProfileId) return null;
+
+  return String(active.id);
+}

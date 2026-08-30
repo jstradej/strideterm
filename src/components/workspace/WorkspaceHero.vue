@@ -43,6 +43,7 @@
           </span>
           <WorkspaceLayoutChip />
         </div>
+        <AgentRunChip />
         <NotificationBell />
       </div>
     </template>
@@ -94,6 +95,7 @@
           </span>
           <WorkspaceLayoutChip />
         </div>
+        <AgentRunChip />
         <NotificationBell />
       </div>
     </template>
@@ -107,6 +109,7 @@ import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention } from "../../app/helpers.js";
 import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
 import NotificationBell from "../layout/NotificationBell.vue";
+import AgentRunChip from "../layout/AgentRunChip.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>(apiKey);

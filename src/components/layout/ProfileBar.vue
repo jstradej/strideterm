@@ -49,12 +49,14 @@
       class="profile-bar__view-toggle"
       :class="{ 'profile-bar__view-toggle--active': viewMode === 'recent' }"
       :aria-label="
-        viewMode === 'recent' ? 'Switch to the manually ordered workspace tree' : 'Switch to the recently opened view'
+        viewMode === 'recent'
+          ? 'Hide the recently worked shortcuts'
+          : 'Show shortcuts to the workspaces you recently worked in'
       "
       :title="
         viewMode === 'recent'
-          ? 'Showing recently opened workspaces, grouped by when you last opened them. Click to switch back to the manually ordered tree.'
-          : 'Showing the manually ordered workspace tree. Click to switch to a view grouped by when you last opened each workspace.'
+          ? 'Showing shortcuts to the workspaces you actually worked in over the last 24 hours, above the full workspace tree. Click to hide them.'
+          : 'Showing the manually ordered workspace tree. Click to add shortcuts to the workspaces you worked in over the last 24 hours above it.'
       "
       @click="toggleViewMode"
     >

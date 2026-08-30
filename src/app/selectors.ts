@@ -1,11 +1,19 @@
-import type { StatePayload, WorkspaceState, PanelState } from "../../electron/shared/types/state.js";
+import type {
+  StatePayload,
+  WorkspaceState,
+  PanelState,
+  WorkspaceGridState,
+} from "../../electron/shared/types/state.js";
 import {
   companionPrimaryHostedPanelIds,
+  findCompanionPrimaryHost,
   isCompanionPrimaryViewId,
   resolveCompanionPrimaryBinding,
   type CompanionPrimaryTaskRunner,
   type CompanionPrimaryWorkspaceLike,
 } from "../../electron/shared/companion-primary.js";
+import { TASK_ACTIVE_STATES, sessionIdFor } from "../../electron/shared/task-states.js";
+import { ancestorIdentities, buildWorkspaceTree, type WorkspaceAncestorIdentity } from "./workspace-tree.js";
 
 // ---------------------------------------------------------------------------
 // Local structural types used by selectors
@@ -72,6 +80,30 @@ export interface WorkspaceTab {
  * resize, find, export, clear, attention and remote subscriptions all go
  * through this — `tab.id` is a location, not a session.
  */
+/**
+ * Which workspace a terminal write should be credited to — the workspace whose
+ * UI the user is actually typing in.
+ *
+ * Usually the workspace that owns the panel. An ATTACHED task (Companion loop)
+ * presents its Primary tab INSIDE the task workspace while the physical
+ * session id still names the source workspace, so typing there is work done in
+ * the task workspace, not in the source one. The backend re-validates whatever
+ * this returns before stamping (`resolveWorkOriginWorkspaceId`), so this is a
+ * hint, never an authority.
+ */
+export function resolveInputOriginWorkspaceId(
+  workspaces: readonly CompanionPrimaryWorkspaceLike[] | null | undefined,
+  taskRunner: CompanionPrimaryTaskRunner,
+  sessionId: string,
+): string {
+  const separator = String(sessionId || "").indexOf(":");
+  if (separator <= 0) return "";
+  const sourceWorkspaceId = sessionId.slice(0, separator);
+  const sourcePanelId = sessionId.slice(separator + 1);
+  const host = findCompanionPrimaryHost(workspaces, taskRunner, sourceWorkspaceId, sourcePanelId);
+  return host?.taskWorkspaceId || sourceWorkspaceId;
+}
+
 export function tabSessionId(tab: { id: string; sessionId?: string } | null | undefined): string {
   return tab ? tab.sessionId || tab.id : "";
 }
@@ -605,4 +637,301 @@ export function getWorkspacePanelByViewId(
   }
 
   return { workspace: activeWorkspace, panel };
+}
+
+// ---------------------------------------------------------------------------
+// Running agents — the single row model behind the sidebar RUNNING surface,
+// the dock's Agents tab and the hero chip.
+// ---------------------------------------------------------------------------
+
+/** Session record as published in `payload.attention.sessions`. */
+export interface RunningAgentSessionLike {
+  workspaceId?: string;
+  panelId?: string;
+  activity?: string;
+  agentLike?: boolean;
+  hasUserInput?: boolean;
+  activityStartedAt?: number;
+}
+
+/** Live task record as published in `payload.taskRunner`. */
+export interface RunningAgentTaskLike {
+  state?: string;
+  startedAt?: string | number | null;
+  pausedAt?: string | number | null;
+  finishedAt?: string | number | null;
+  totalPausedMs?: number | null;
+  [key: string]: unknown;
+}
+
+export interface RunningAgentRow {
+  /** Canonical session id — dedupe key and Vue key. Never a workspace id. */
+  key: string;
+  /** Workspace to activate (the HOST — for an attached task the task workspace). */
+  hostWorkspaceId: string;
+  /** View to activate inside that workspace. */
+  viewId: string;
+  /** Name of the host workspace. */
+  workspaceName: string;
+  /** Icon of the host workspace — the row wears its own tree identity. */
+  workspaceIcon: string;
+  /** Accent colour of the host workspace. */
+  workspaceColor: string;
+  /** Ancestor names, root first — the flat form the chip and Agents tab glue inline. */
+  ancestry: string[];
+  /**
+   * The SAME ancestry with identity, root first, from the same tree index the
+   * recent shortcuts use — so the sidebar can draw a running task's hierarchy
+   * with the same guards, the same dedupe and the same order as everything
+   * else (V5 review, §"3. RUNNING použije stejnou activity-tree projekci").
+   */
+  ancestors: WorkspaceAncestorIdentity[];
+  /** Panel title / role of the agent inside its workspace. */
+  label: string;
+  /** Task state for task rows, "running" for plain agent sessions. */
+  state: string;
+  startedAtMs: number;
+  pausedAtMs: number;
+  finishedAtMs: number;
+  totalPausedMs: number;
+  /** True when the HOST workspace is pinned to a slot in the caller's grid. */
+  inGrid: boolean;
+  /** 1-based slot number, matching the sidebar's `slotIndex` badge contract. */
+  gridSlotIndex?: number;
+  source: "task" | "session";
+}
+
+/**
+ * Elapsed work time for a row with paused stretches removed — the same formula
+ * TaskDashboardPane.vue's `updateElapsed` uses, so a task shows the same number
+ * in both places. Clock-free: `now` is an explicit input. For a plain session
+ * (`pausedAtMs` / `finishedAtMs` / `totalPausedMs` all 0) it reduces to
+ * `now - startedAtMs`.
+ */
+export function runningAgentElapsedMs(
+  row: Pick<RunningAgentRow, "startedAtMs" | "pausedAtMs" | "finishedAtMs" | "totalPausedMs">,
+  now: number,
+): number {
+  if (!row.startedAtMs) return 0;
+  const paused = row.totalPausedMs || 0;
+  if (row.finishedAtMs) return Math.max(0, row.finishedAtMs - row.startedAtMs - paused);
+  if (row.pausedAtMs) return Math.max(0, row.pausedAtMs - row.startedAtMs - paused);
+  return Math.max(0, now - row.startedAtMs - paused);
+}
+
+/**
+ * Elapsed rendered for a minute-granularity clock: the running-agent surfaces
+ * tick once a minute, so seconds would only ever be stale. Shared by all three
+ * so they cannot disagree about what "3h 07m" means.
+ */
+export function formatRunningAgentElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "<1m";
+  const totalMinutes = Math.floor(ms / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return "<1m";
+}
+
+/**
+ * Task timestamps are written by the runner as `Date.now()` values cast to
+ * `string` (agent-task-runner.ts `#setTaskState`), so they arrive as numbers
+ * behind a string type. Tolerate both shapes and never produce NaN.
+ */
+function toMs(value: unknown): number {
+  if (value == null || value === "") return 0;
+  const direct = Number(value);
+  if (Number.isFinite(direct)) return direct;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Every agent currently working in `workspaces`, one row per agent.
+ *
+ * Purely derived — nothing here is persisted or acknowledged: an agent leaves
+ * the list by ceasing to run. The criterion is kind-agnostic (a running task
+ * or a running agent session, never `workspace.kind`), so an agent inside a
+ * review or quickfix worktree shows up without a special case.
+ *
+ * Identity is the canonical SESSION id, never a workspace id. That makes the
+ * consequences fall out on their own: an attached task and the same session
+ * seen as a plain agent session collapse into one row, a judge session never
+ * doubles its own task, and two parallel agent sessions in one workspace stay
+ * two rows.
+ *
+ * `workspaces` must already be profile-scoped (the sidebar's
+ * `filteredWorkspaces`). `workspaceGrid` is viewer-owned state and is passed
+ * in explicitly — never read from a global — so two windows with different
+ * grids get different slot numbers over the same rest of the input.
+ */
+export function collectRunningAgents({
+  workspaces,
+  taskRunnerSnapshot,
+  sessionActivities,
+  workspaceGrid,
+}: {
+  workspaces: WorkspaceState[];
+  taskRunnerSnapshot?: Record<string, RunningAgentTaskLike | undefined> | null;
+  sessionActivities?: Record<string, RunningAgentSessionLike | undefined> | null;
+  workspaceGrid?: WorkspaceGridState | null;
+}): RunningAgentRow[] {
+  const list = workspaces || [];
+  const byId = new Map(list.map((workspace) => [workspace.id, workspace]));
+
+  // 1-based, matching SidebarPanel's slotIndex contract — WorkspaceCard only
+  // renders the badge for a truthy value, so slot 0 must never be 0.
+  const slotByWorkspace = new Map<string, number>();
+  (workspaceGrid?.cellWorkspaceIds || []).forEach((id, index) => {
+    if (id) slotByWorkspace.set(id, index + 1);
+  });
+
+  // ONE hierarchy index, the same one ALL WORKSPACES and the recent shortcuts
+  // build — so the cycle, missing-parent and cross-profile guards cannot drift
+  // apart between the sections that draw the same relationship (V5 review,
+  // §"3. RUNNING použije stejnou activity-tree projekci").
+  const tree = buildWorkspaceTree(list);
+
+  function panelTitle(workspaceId: string, panelId: string): string {
+    return byId.get(workspaceId)?.panels?.find((panel) => panel.id === panelId)?.title || "";
+  }
+
+  function hostFields(hostWorkspaceId: string): {
+    workspaceName: string;
+    workspaceIcon: string;
+    workspaceColor: string;
+    ancestry: string[];
+    ancestors: WorkspaceAncestorIdentity[];
+    inGrid: boolean;
+    gridSlotIndex?: number;
+  } {
+    const slot = slotByWorkspace.get(hostWorkspaceId);
+    const host = byId.get(hostWorkspaceId);
+    const ancestors = ancestorIdentities(tree, list, hostWorkspaceId);
+    return {
+      workspaceName: host?.name || hostWorkspaceId,
+      workspaceIcon: host?.icon || "",
+      workspaceColor: host?.color || "",
+      ancestry: ancestors.map((ancestor) => ancestor.name),
+      ancestors,
+      inGrid: slot != null,
+      ...(slot != null ? { gridSlotIndex: slot } : {}),
+    };
+  }
+
+  const rows: RunningAgentRow[] = [];
+  /** Session ids already spoken for by an active task — worker AND judge. */
+  const claimedSessionIds = new Set<string>();
+
+  for (const workspace of list) {
+    const persisted = workspace.task as RunningAgentTaskLike | null | undefined;
+    if (!persisted) continue;
+    const live = taskRunnerSnapshot?.[workspace.id];
+    const state = String(live?.state || persisted.state || "");
+    if (!TASK_ACTIVE_STATES.has(state)) continue;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const workspaceLike = workspace as any;
+    const workerSessionId = sessionIdFor(workspaceLike, "worker");
+    claimedSessionIds.add(workerSessionId);
+    claimedSessionIds.add(sessionIdFor(workspaceLike, "judge"));
+
+    // Navigation target. `viewId` and `sessionId` are not interchangeable, so
+    // the attached case is resolved by companion-primary.ts rather than
+    // assembled by hand; when the Primary is not (or no longer) hosted the
+    // session is reached where it actually lives.
+    const binding = resolveCompanionPrimaryBinding(
+      list as unknown as CompanionPrimaryWorkspaceLike[],
+      (taskRunnerSnapshot || null) as CompanionPrimaryTaskRunner,
+      workspace.id,
+    );
+    const sessionWorkspaceId = workerSessionId.split(":")[0] || workspace.id;
+    const sessionPanelId = workerSessionId.split(":").slice(1).join(":");
+    const hostWorkspaceId = binding ? binding.taskWorkspaceId : sessionWorkspaceId;
+    const viewId = binding ? binding.viewId : workerSessionId;
+
+    const timings = { ...persisted, ...(live || {}) };
+    rows.push({
+      key: workerSessionId,
+      hostWorkspaceId,
+      viewId,
+      ...hostFields(hostWorkspaceId),
+      label: (binding ? binding.sourcePanelTitle : panelTitle(sessionWorkspaceId, sessionPanelId)) || "Worker",
+      state,
+      startedAtMs: toMs(timings.startedAt),
+      pausedAtMs: toMs(timings.pausedAt),
+      finishedAtMs: toMs(timings.finishedAt),
+      totalPausedMs: Number(timings.totalPausedMs || 0) || 0,
+      source: "task",
+    });
+  }
+
+  for (const [sessionId, session] of Object.entries(sessionActivities || {})) {
+    if (!session) continue;
+    // Same gate as buildWorkspaceCards (workspace-render.ts): only work the
+    // user actually started in an agent-like session counts.
+    if (!session.agentLike || !session.hasUserInput || session.activity !== "running") continue;
+    if (claimedSessionIds.has(sessionId)) continue;
+    const workspaceId = String(session.workspaceId || "");
+    if (!byId.has(workspaceId)) continue;
+
+    const panelId = String(session.panelId || "");
+    rows.push({
+      key: sessionId,
+      hostWorkspaceId: workspaceId,
+      viewId: sessionId,
+      ...hostFields(workspaceId),
+      label: panelTitle(workspaceId, panelId) || panelId || "Agent",
+      state: "running",
+      startedAtMs: Number(session.activityStartedAt || 0) || 0,
+      pausedAtMs: 0,
+      finishedAtMs: 0,
+      totalPausedMs: 0,
+      source: "session",
+    });
+  }
+
+  // Longest-running first: the ten-hour agent the user is trying not to lose
+  // stays at the top. Rows without a start time sort last; the key breaks ties
+  // so the order is stable across renders.
+  return rows.sort((left, right) => {
+    const leftStart = left.startedAtMs || Infinity;
+    const rightStart = right.startedAtMs || Infinity;
+    if (leftStart !== rightStart) return leftStart - rightStart;
+    return left.key.localeCompare(right.key);
+  });
+}
+
+/**
+ * THE definition of "Running agents" for every user-facing surface — the
+ * sidebar RUNNING section, the hero chip, and the dock's Agents tab list and
+ * count (V3 review, Fáze 1).
+ *
+ * Only SUPERVISED runs qualify: a standard task agent, an attached/Companion
+ * task hosted in a task workspace, and its worker/judge phases, which are one
+ * row on the stable worker session key either way. A plain agent-like terminal
+ * session — a hand-opened Claude Code panel in a normal workspace — does not.
+ *
+ * Why the narrowing: a task has a long, legible lifecycle identity, while a
+ * single Claude Code turn flips `running`/`done` constantly, so including it
+ * turned navigation into an activity monitor whose rows appeared and vanished
+ * under the pointer. That state has not been lost — it is still on the tab and
+ * on the workspace card's status dot, where it does not move a click target.
+ *
+ * All three surfaces call THIS function, never `collectRunningAgents`
+ * directly, so the chip can never say 2 while the sidebar shows 1. Should
+ * plain AI terminals ever want their own surface, they get a separate
+ * `Active terminal sessions` subsection rather than being mixed in here.
+ *
+ * There is deliberately no `sessionActivities` input: a supervised row is
+ * derived from the workspace's task and the live runner snapshot alone, so
+ * session activity cannot influence membership, order or count.
+ */
+export function collectSupervisedAgents(input: {
+  workspaces: WorkspaceState[];
+  taskRunnerSnapshot?: Record<string, RunningAgentTaskLike | undefined> | null;
+  workspaceGrid?: WorkspaceGridState | null;
+}): RunningAgentRow[] {
+  return collectRunningAgents(input).filter((row) => row.source === "task");
 }

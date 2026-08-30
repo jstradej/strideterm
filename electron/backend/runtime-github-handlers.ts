@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { findWorkspace, markWorkspaceUsed } from "./runtime-utils.js";
+import { findWorkspace, markWorkspaceWorked } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { insertWorkspace } from "./workspace-order.js";
 import {
@@ -7,6 +7,7 @@ import {
   assertPrInViewerProfile as assertPrInViewerProfileShared,
   mirrorActivationIntoSlot,
   assertWorktreeCleanForPush,
+  resolveReviewWorkTarget,
 } from "./shared/runtime-provider-guards.js";
 import type { WorkspaceState, AppState } from "../shared/types/state.js";
 
@@ -49,6 +50,8 @@ interface GitHubHandlerCtx {
   mirrorRemoteViewerWorkspace: (viewerId: string | undefined, workspaceId: string) => void;
   /** Refuse a workspace-id-addressed op when it does not belong to the caller's profile. */
   assertWorkspaceInViewerProfile: (workspaceId: string, windowId?: string) => void;
+  /** Stamp `lastWorkedAt` after an allowlisted user action succeeded. */
+  recordWorkspaceWork: (workspaceId: string, viewerId?: string) => Promise<void>;
 }
 
 /**
@@ -81,10 +84,28 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     getViewerActiveWorkspaceId,
     mirrorRemoteViewerWorkspace,
     assertWorkspaceInViewerProfile,
+    recordWorkspaceWork,
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
     return resolveRootPathShared(resolveGitRootPath, workspace, rawRootPath);
+  }
+
+  /**
+   * Credit a successful review action to the workspace it belongs to: the
+   * review workspace this PR is checked out in, or — when there is none and
+   * the viewer is acting from this profile's own GitHub inbox — that inbox.
+   * Symmetric with the Azure handler; see `resolveReviewWorkTarget` for the
+   * rationale and the guards.
+   */
+  async function recordWorkForPr(prKey: string, windowId?: string): Promise<void> {
+    const target = resolveReviewWorkTarget(
+      { getState, getPayload, getViewerActiveWorkspaceId, getViewerProfileId },
+      { snapshotKey: "github", workspaceKind: "github" },
+      prKey,
+      windowId,
+    );
+    if (target) await recordWorkspaceWork(target, windowId);
   }
 
   /**
@@ -250,12 +271,17 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const index = draft.workspaces.findIndex((ws: any) => ws.id === normalized.id);
         if (index >= 0) {
+          // Re-opening an existing review workspace is navigation, not work,
+          // and must not erase the stamp the workspace already carries.
+          const priorWorkedAt = draft.workspaces[index]?.lastWorkedAt;
+          if (priorWorkedAt) normalized.lastWorkedAt = priorWorkedAt;
           draft.workspaces[index] = normalized;
         } else {
           insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
+          // Creating a review workspace IS work (V2 plan allowlist).
+          markWorkspaceWorked(draft, normalized.id);
         }
         draft.activeWorkspaceId = normalized.id;
-        markWorkspaceUsed(draft, normalized.id);
         // Mirror only when the review workspace's profile matches the slot's.
         // See shared/runtime-provider-guards.ts#mirrorActivationIntoSlot for
         // the full cross-profile bug story.
@@ -283,6 +309,9 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     async commentGitHubPullRequest(payload: any, windowId?: string) {
       assertPrInViewerProfile(payload?.prKey, windowId);
       await github.addPullRequestComment(payload);
+      // Sending a review comment IS work, credited to the review workspace
+      // this PR is checked out in — after the API call succeeded.
+      await recordWorkForPr(payload?.prKey, windowId);
       await refreshGitHub();
       return getPayload();
     },
@@ -290,6 +319,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     async submitGitHubPullRequestReview(payload: any, windowId?: string) {
       assertPrInViewerProfile(payload?.prKey, windowId);
       await github.submitPullRequestReview(payload);
+      await recordWorkForPr(payload?.prKey, windowId);
       await refreshGitHub();
       return getPayload();
     },
@@ -494,7 +524,8 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
         const normalized = normalizeWorkspace(result.workspace);
         insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = normalized.id;
-        markWorkspaceUsed(draft, normalized.id);
+        // Creating a quickfix workspace IS work (V2 plan allowlist).
+        markWorkspaceWorked(draft, normalized.id);
         // See openAzurePullRequest for the cross-profile guard rationale.
         const mirrorResult = mirrorActivationIntoSlot(draft, windowId, normalized);
         if (mirrorResult && !mirrorResult.mirrored) {

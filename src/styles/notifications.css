@@ -668,27 +668,31 @@
   letter-spacing: 0.02em;
 }
 
+/* One line, ellipsised. The body is not dropped — for task alerts it carries
+   the elapsed and the reason the run ended — but it no longer wraps to two
+   lines, which is half of what made the card four rows tall. */
 .notification-item__body {
   margin: 2px 0 0;
   font-size: 12px;
   color: var(--muted);
   line-height: 1.4;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
 }
 
+/* Rendered inside .notification-item__meta, beside the event count and the
+   time, instead of owning a row of its own — and only for a FOREIGN profile
+   (NotificationCenter.sessionProfileLabel returns "" for the active one). */
 .notification-item__profile-label {
   display: inline-block;
-  margin-top: 3px;
   font-size: 10px;
   color: var(--muted);
   background: var(--bg-secondary, rgba(255, 255, 255, 0.07));
   border-radius: 3px;
   padding: 1px 5px;
   letter-spacing: 0.03em;
+  white-space: nowrap;
 }
 
 .notification-item__remove {
@@ -1016,6 +1020,137 @@
   .notification-center__tabmenu {
     display: flex;
   }
+}
+
+/* ── Agents tab — running-agent rows ── */
+/* Same row model as the sidebar's RUNNING surface; the tab just has room for
+   the full ancestry and the elapsed. */
+.agent-run-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+}
+
+.agent-run-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-run-item:hover {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.agent-run-item--in-grid {
+  border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
+  opacity: 0.72;
+}
+
+.agent-run-item__icon {
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.agent-run-item__content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-run-item__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.agent-run-item__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-run-item__elapsed {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.agent-run-item__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.agent-run-item__ancestry {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-run-item__state,
+.agent-run-item__slot {
+  flex-shrink: 0;
+}
+
+.agent-run-item__slot {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 700;
+}
+
+/* ── Running-agent chip in the workspace hero ── */
+/* Sits directly in .workspace-meta next to the bell (never inside
+   .workspace-meta__stats, which mobile.css hides below 768px / under 500px of
+   height), so it stays visible on remote/mobile without any new CSS
+   exception. Unlike the bell it also stays visible while the dock is pinned. */
+.agent-run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.agent-run-chip:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.agent-run-chip strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Telegram status list ── */

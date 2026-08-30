@@ -1,4 +1,4 @@
-import type { StatePayload, Settings } from "./types/state.js";
+import type { StatePayload, Settings, RecoveryResult } from "./types/state.js";
 import type {
   Workspace,
   WorkspaceUIState,
@@ -353,7 +353,14 @@ export interface StridetermAPI {
   rejectTaskVerdict: (payload: TaskRejectVerdict) => Promise<unknown>;
   resendTaskInstruction: (payload: TaskResendInstruction) => Promise<unknown>;
   updateTaskDescription: (payload: TaskUpdateDescription) => Promise<unknown>;
-  resolveTaskRecovery: (decisions: TaskRecoveryResolve) => Promise<unknown>;
+  /**
+   * The recovery batch is one of the few calls whose RESULT the renderer
+   * reasons about rather than just re-applying — which candidate settled and
+   * which failed — so the contract is typed all the way across the transport
+   * instead of being cast back from `unknown` on the far side (V5 review,
+   * §"P2 — recovery kontrakt končí před transportní hranicí", oprava 1).
+   */
+  resolveTaskRecovery: (decisions: TaskRecoveryResolve) => Promise<RecoveryResult<StatePayload>>;
   getTaskStatus: (workspaceId: string) => Promise<unknown>;
   createCompanionTask: (payload: TaskCompanionCreate) => Promise<unknown>;
   answerCompanionTask: (payload: TaskCompanionAnswer) => Promise<unknown>;
@@ -368,7 +375,13 @@ export interface StridetermAPI {
   closeTerminal: (sessionId: string) => Promise<unknown>;
   getTerminalReplay: (sessionId: string) => Promise<TerminalReplayPayload>;
   resizeTerminal: (sessionId: string, size: TerminalSize) => void;
-  writeTerminal: (sessionId: string, data: string) => void;
+  /**
+   * `originWorkspaceId` names the workspace whose UI the user typed in. It is
+   * a hint the backend validates against the session — needed because an
+   * attached task's Primary tab is presented inside the task workspace while
+   * its session id still names the source workspace.
+   */
+  writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) => void;
   /** Take over the per-session input lease ("Take control?" confirmation). */
   takeSessionControl: (sessionId: string) => Promise<{ ok: boolean }>;
   /** Fired when typed input was blocked because another viewer holds the input lease. */

@@ -45,7 +45,7 @@ function defaultCwd(): string {
   return os.homedir();
 }
 
-/** Valid ISO timestamp string, or undefined — used to normalize `lastUsedAt` without fabricating history. */
+/** Valid ISO timestamp string, or undefined — used to normalize `lastWorkedAt` without fabricating history. */
 function normalizeIsoTimestamp(value: unknown): string | undefined {
   if (typeof value !== "string" || !value) return undefined;
   return Number.isNaN(Date.parse(value)) ? undefined : value;
@@ -433,7 +433,15 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
           autoStartAfterCapture: workspace.task.autoStartAfterCapture || undefined,
         }
       : null,
-    ...(normalizeIsoTimestamp(workspace.lastUsedAt) ? { lastUsedAt: normalizeIsoTimestamp(workspace.lastUsedAt) } : {}),
+    // `lastWorkedAt` only — the legacy `lastUsedAt` is deliberately dropped
+    // here rather than migrated: it recorded mere navigation as well as work,
+    // and the two cannot be told apart after the fact. Carrying it over would
+    // show up to 24 hours of false "recently worked" entries after an upgrade
+    // (V2 plan, "Datový kontrakt lastWorkedAt"). Normalising drops it from the
+    // next state write, so it disappears on its own.
+    ...(normalizeIsoTimestamp(workspace.lastWorkedAt)
+      ? { lastWorkedAt: normalizeIsoTimestamp(workspace.lastWorkedAt) }
+      : {}),
   };
 }
 

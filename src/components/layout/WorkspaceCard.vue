@@ -23,7 +23,7 @@
       >{{ workspace.icon }}
       <span
         v-if="statusDot"
-        v-heartbeat="statusDot.state === 'running' || statusDot.state === 'pr-active'"
+        v-heartbeat="statusDot.heartbeat"
         :class="['workspace-card__status-dot', `workspace-card__status-dot--${statusDot.state}`]"
         :title="statusDot.label"
       ></span>
@@ -126,6 +126,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { vHeartbeat } from "../../app/heartbeat-directive.js";
+import { isTaskRunningState, resolveWorkspaceStatusCue } from "../../app/workspace-status.js";
 
 interface WorkspaceCardData {
   active: boolean;
@@ -152,52 +153,22 @@ interface WorkspaceCardData {
   relativeAge?: string;
   lastActivity?: string;
   lastActivityTitle?: string;
-  /** Recent-view only: relative "last opened" time + tooltip, set by the sidebar projection. */
-  lastUsedRelative?: string;
-  lastUsedTitle?: string;
 }
 
 const props = defineProps<{
   workspace: WorkspaceCardData;
 }>();
 
-const RUNNING_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing", "showering"]);
+// The ONE shared semantic resolver, also used by the RUNNING and RECENT
+// activity rows — so the same workspace wears the same dot, colour, glyph and
+// tooltip wherever it is drawn (V6 review, §"P2 UX — Recent zahazuje
+// kanonický status dot na icon badge").
+const statusDot = computed(() => resolveWorkspaceStatusCue(props.workspace));
 
-function isTaskRunningState(state: string | null | undefined): boolean {
-  return Boolean(state && RUNNING_STATES.has(state));
-}
-
-const statusDot = computed((): { state: string; label: string } | null => {
-  const { taskState, prStatus, kind, agentActivityState, agentActivityLabel } = props.workspace;
-
-  if (kind === "task" && taskState) {
-    if (isTaskRunningState(taskState)) return { state: "running", label: "Running…" };
-    if (taskState === "failed") return { state: "failed", label: "Failed" };
-    if (taskState === "stopped") return { state: "stopped", label: "Stopped" };
-    if (taskState === "paused") return { state: "paused", label: "Paused" };
-    if (taskState === "completed" || taskState === "done") {
-      if (prStatus === "completed") return { state: "merged", label: "Done · PR merged" };
-      return { state: "completed", label: "Completed" };
-    }
-  }
-
-  if (agentActivityState === "running") return { state: "running", label: agentActivityLabel || "Agent is working" };
-  if (agentActivityState === "done") return { state: "completed", label: agentActivityLabel || "Agent finished" };
-
-  if (prStatus === "active") return { state: "pr-active", label: "PR open" };
-  if (prStatus === "completed") return { state: "merged", label: "PR merged" };
-  if (prStatus === "abandoned") return { state: "abandoned", label: "PR abandoned" };
-
-  return null;
-});
-
-// Recent-view timestamp takes priority over the tree-view "last activity"
-// chip — they read as different things (user-opened vs. PR/git/attention
-// activity) and only one applies to any given render of a card.
+// The card's right-hand chip: PR/git/attention "last activity". The old
+// recent view also fed a "last opened" time in here; V2 moved that to the
+// compact recent shortcut card, so a card now has exactly one meaning for it.
 const rightTimestamp = computed((): { relative: string; title?: string } | null => {
-  if (props.workspace.lastUsedRelative) {
-    return { relative: props.workspace.lastUsedRelative, title: props.workspace.lastUsedTitle };
-  }
   if (props.workspace.lastActivity) {
     return { relative: props.workspace.lastActivity, title: props.workspace.lastActivityTitle };
   }

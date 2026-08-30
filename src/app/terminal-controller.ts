@@ -127,7 +127,7 @@ function decodeOsc52Clipboard(data: string): string | null {
 
 interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
-  writeTerminal: (sessionId: string, data: string) => void;
+  writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) => void;
   getTerminalReplay?: (sessionId: string) => Promise<{ data: string }>;
   /** Optional — desktop only. Path link clicks are no-ops in remote mode. */
   openTerminalPath?: (request: {

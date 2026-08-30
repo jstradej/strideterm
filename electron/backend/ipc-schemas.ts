@@ -864,6 +864,14 @@ export const wsTerminalInputSchema = z.object({
   type: z.literal("terminal:input"),
   sessionId: nonEmptyString,
   data: z.string(),
+  /**
+   * Workspace whose UI the viewer typed in. Only ever a HINT — the runtime
+   * validates it against the session before crediting the workspace with
+   * work, so a crafted value can at worst be ignored. Needed because an
+   * attached task's Primary tab is presented in the task workspace while its
+   * session id still names the source workspace.
+   */
+  originWorkspaceId: z.string().optional(),
 });
 export type WsTerminalInput = z.infer<typeof wsTerminalInputSchema>;
 

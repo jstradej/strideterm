@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { findWorkspace, markWorkspaceUsed } from "./runtime-utils.js";
+import { findWorkspace, markWorkspaceWorked } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { normalizeConnectionInput } from "./azure-devops-manager.js";
 import { insertWorkspace } from "./workspace-order.js";
@@ -8,6 +8,7 @@ import {
   assertPrInViewerProfile as assertPrInViewerProfileShared,
   mirrorActivationIntoSlot,
   assertWorktreeCleanForPush,
+  resolveReviewWorkTarget,
 } from "./shared/runtime-provider-guards.js";
 import type { WorkspaceState, AppState } from "../shared/types/state.js";
 
@@ -51,6 +52,8 @@ interface AzureHandlerCtx {
   mirrorRemoteViewerWorkspace: (viewerId: string | undefined, workspaceId: string) => void;
   /** Refuse a workspace-id-addressed op when it does not belong to the caller's profile. */
   assertWorkspaceInViewerProfile: (workspaceId: string, windowId?: string) => void;
+  /** Stamp `lastWorkedAt` after an allowlisted user action succeeded. */
+  recordWorkspaceWork: (workspaceId: string, viewerId?: string) => Promise<void>;
 }
 
 /**
@@ -82,10 +85,31 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     getViewerActiveWorkspaceId,
     mirrorRemoteViewerWorkspace,
     assertWorkspaceInViewerProfile,
+    recordWorkspaceWork,
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
     return resolveRootPathShared(resolveGitRootPath, workspace, rawRootPath);
+  }
+
+  /**
+   * Credit a successful review action to the workspace it belongs to: the
+   * review workspace this PR is checked out in, or — when there is none and
+   * the viewer is acting from this profile's own Azure inbox — that inbox.
+   * See `resolveReviewWorkTarget` for the full rationale and the guards.
+   *
+   * Only ever called after an allowlisted MUTATION succeeded. Background
+   * polling, a new PR event and a passive open reach none of these paths, so
+   * they still move no timestamp.
+   */
+  async function recordWorkForPr(prKey: string, windowId?: string): Promise<void> {
+    const target = resolveReviewWorkTarget(
+      { getState, getPayload, getViewerActiveWorkspaceId, getViewerProfileId },
+      { snapshotKey: "azureDevops", workspaceKind: "azure" },
+      prKey,
+      windowId,
+    );
+    if (target) await recordWorkspaceWork(target, windowId);
   }
 
   /**
@@ -286,12 +310,17 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const index = draft.workspaces.findIndex((entry: any) => entry.id === normalized.id);
         if (index >= 0) {
+          // Re-opening an existing review workspace is navigation, not work,
+          // and must not erase the stamp the workspace already carries.
+          const priorWorkedAt = draft.workspaces[index]?.lastWorkedAt;
+          if (priorWorkedAt) normalized.lastWorkedAt = priorWorkedAt;
           draft.workspaces[index] = normalized;
         } else {
           insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
+          // Creating a review workspace IS work (V2 plan allowlist).
+          markWorkspaceWorked(draft, normalized.id);
         }
         draft.activeWorkspaceId = normalized.id;
-        markWorkspaceUsed(draft, normalized.id);
         // Mirror activation into the calling window's slot ONLY when the
         // review workspace lives in the same profile as the slot — see
         // shared/runtime-provider-guards.ts#mirrorActivationIntoSlot for the
@@ -320,6 +349,9 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     async commentAzurePullRequest(payload: any, windowId?: string) {
       assertPrInViewerProfile(payload.prKey, windowId);
       await azure.addPullRequestComment(payload);
+      // Sending a review comment IS work, credited to the review workspace
+      // this PR is checked out in — after the API call succeeded.
+      await recordWorkForPr(payload.prKey, windowId);
       await refreshAzure();
       return getPayload();
     },
@@ -327,6 +359,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     async updateAzureThreadStatus(payload: any, windowId?: string) {
       assertPrInViewerProfile(payload.prKey, windowId);
       await azure.updateThreadStatus(payload);
+      await recordWorkForPr(payload.prKey, windowId);
       await refreshAzure();
       return getPayload();
     },
@@ -334,6 +367,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     async voteAzurePullRequest(payload: any, windowId?: string) {
       assertPrInViewerProfile(payload.prKey, windowId);
       await azure.setPullRequestVote(payload);
+      await recordWorkForPr(payload.prKey, windowId);
       await refreshAzure();
       return getPayload();
     },
@@ -675,7 +709,8 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         const normalized = normalizeWorkspace(result.workspace);
         insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
         draft.activeWorkspaceId = normalized.id;
-        markWorkspaceUsed(draft, normalized.id);
+        // Creating a quickfix workspace IS work (V2 plan allowlist).
+        markWorkspaceWorked(draft, normalized.id);
         // See openAzurePullRequest for the cross-profile guard rationale.
         const mirrorResult = mirrorActivationIntoSlot(draft, windowId, normalized);
         if (mirrorResult && !mirrorResult.mirrored) {

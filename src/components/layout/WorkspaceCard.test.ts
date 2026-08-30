@@ -26,8 +26,6 @@ interface CardWorkspace {
   starred?: boolean;
   lastActivity?: string;
   lastActivityTitle?: string;
-  lastUsedRelative?: string;
-  lastUsedTitle?: string;
 }
 
 function props(overrides: Partial<CardWorkspace> = {}): { workspace: CardWorkspace } {
@@ -155,25 +153,12 @@ describe("WorkspaceCard — shared heartbeat targets", () => {
   });
 });
 
-describe("WorkspaceCard — recent-view timestamp", () => {
-  test("shows the recent-view 'last opened' timestamp with its own tooltip, not the tree-view last activity", () => {
-    const wrapper = mount(WorkspaceCard, {
-      props: props({
-        lastActivity: "2h",
-        lastActivityTitle: "Last activity: yesterday",
-        lastUsedRelative: "5m",
-        lastUsedTitle: "Last opened: just now",
-      }),
-    });
-
-    const chip = wrapper.get(".workspace-card__last-activity");
-    expect(chip.text()).toBe("5m");
-    expect(chip.attributes("title")).toBe("Last opened: just now");
-
-    wrapper.unmount();
-  });
-
-  test("falls back to the tree-view last activity when no recent-view timestamp is set", () => {
+// The card's timestamp chip has exactly one meaning again: PR/git/attention
+// "last activity". V2 moved "when did I last work here" out of the card and
+// into the recent shortcut card, so the card no longer takes a second,
+// recent-view-only timestamp that silently outranked this one.
+describe("WorkspaceCard — last-activity timestamp", () => {
+  test("shows the tree-view last activity with its own tooltip", () => {
     const wrapper = mount(WorkspaceCard, {
       props: props({ lastActivity: "2h", lastActivityTitle: "Last activity: yesterday" }),
     });
@@ -185,21 +170,21 @@ describe("WorkspaceCard — recent-view timestamp", () => {
     wrapper.unmount();
   });
 
-  test("shows no timestamp chip when neither field is set", () => {
+  test("shows no timestamp chip when there is no activity to report", () => {
     const wrapper = mount(WorkspaceCard, { props: props() });
     expect(wrapper.find(".workspace-card__last-activity").exists()).toBe(false);
     wrapper.unmount();
   });
 
-  test("existing status indicators (task dot, star, attention) render unchanged alongside the recent timestamp", () => {
+  test("existing status indicators (task dot, star, attention) render unchanged alongside it", () => {
     const wrapper = mount(WorkspaceCard, {
       props: props({
         kind: "task",
         taskState: "running",
         starred: true,
         attentionCount: 2,
-        lastUsedRelative: "5m",
-        lastUsedTitle: "Last opened: just now",
+        lastActivity: "5m",
+        lastActivityTitle: "Last activity: 5 minutes ago",
       }),
     });
 
