@@ -180,7 +180,7 @@
     "@types/ws": "8.18.1",
     "@vitejs/plugin-vue": "^6",
     "@vue/eslint-config-typescript": "14.9.0",
-    "@vue/test-utils": "^2.4",
+    "@vue/test-utils": "^2.5",
     "concurrently": "^10.0.5",
     "electron": "^43.4.1",
     "electron-builder": "^26.15.3",
