@@ -65,6 +65,7 @@ import { resolveRemoteAccessPort } from "../../config/app-config.js";
 import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { remoteViewerId } from "./viewer-id.js";
+import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
 import {
   buildRemoteCore,
   buildResourceDetail,
@@ -2839,6 +2840,21 @@ export async function startRemoteServer({
     runtime.on("ssh:host-key-change", (payload: unknown) => broadcast({ type: "ssh:host-key-change", payload })),
     runtime.on("ssh:state", (payload: unknown) => broadcast({ type: "ssh:state", payload })),
     runtime.on("ssh:connection-state", (payload: unknown) => broadcast({ type: "ssh:connection-state", payload })),
+    // Notification history is per-viewer, so this is deliberately NOT a
+    // broadcast: a client bound to another profile never saw the removed
+    // workspace and its own history must not be touched. Unauthenticated /
+    // unbound sockets have no resolvable profile and are skipped.
+    runtime.on(NOTIFICATION_TARGET_REMOVED_CHANNEL, (payload: unknown) => {
+      const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
+      if (!eventProfileId) return;
+      const serialized = JSON.stringify({ type: NOTIFICATION_TARGET_REMOVED_CHANNEL, payload });
+      for (const socket of sockets) {
+        const clientSessionId = socketSession.get(socket);
+        if (!clientSessionId) continue;
+        if (registry.get(clientSessionId)?.profileId !== eventProfileId) continue;
+        checkedSend(socket, serialized);
+      }
+    }),
   ];
 
   server.on("upgrade", (request, socket, head) => {

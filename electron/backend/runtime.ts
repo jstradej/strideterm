@@ -21,6 +21,10 @@ import {
   parseSessionId,
 } from "./default-state.js";
 import { parseRemoteViewerId } from "./viewer-id.js";
+import {
+  NOTIFICATION_TARGET_REMOVED_CHANNEL,
+  type NotificationTargetRemoved,
+} from "../shared/notification-lifecycle.js";
 import { filterConnectionsByOpenProfiles } from "./shared/runtime-provider-guards.js";
 import { execFileText } from "./process-utils.js";
 import { DockerManager } from "./docker-manager.js";
@@ -2464,7 +2468,13 @@ export async function createRuntime({
   // destroy drops it entirely.)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:removed", (payload: any) => {
-    destroyTerminalReplay(String(payload.sessionId || ""));
+    const sessionId = String(payload.sessionId || "");
+    destroyTerminalReplay(sessionId);
+    // A removed panel's attention alert has nothing left to point at. Workspace
+    // deletion clears alerts wholesale via cleanupWorkspaceRuntimeState, but a
+    // panel removed on its own only reached syncSessionSignalsWithState, which
+    // drops the signal and leaves the raised alert behind.
+    if (sessionId) clearAlertSession(sessionId);
     // Forward to remote clients so the remote-server can prune the id from every
     // socket's live subscription set. Without this a socket keeps the removed id
     // subscribed: a recreated same-id panel would stream live frames with no
@@ -3461,6 +3471,46 @@ export async function createRuntime({
   }
 
   /**
+   * Post-commit teardown for a workspace that has just been removed from
+   * authoritative state: run the full runtime cleanup AND tell every connected
+   * renderer to drop the workspace's notification history.
+   *
+   * Every workspace-removal path goes through here so the two can no longer
+   * drift apart — the reason syncWorktreesImpl used to clear only the replay
+   * buffer while direct deletion cleared sessions, timers and alerts too.
+   *
+   * Call it only AFTER `store.mutate` resolves. A mutation refused or thrown
+   * before commit leaves the workspace in place, and a renderer that had
+   * already purged its history could never recover it. Failures that happen
+   * after the commit (disk cleanup, a git refresh) do not retract the removal.
+   *
+   * The descriptor must be captured BEFORE the mutation: afterwards the
+   * workspace is gone from state and its owning profile is unresolvable, which
+   * is exactly why `profileId` travels in the event payload.
+   *
+   * Returns the same "sessions fully exited" promise cleanupWorkspaceRuntimeState
+   * does, so callers keep their existing await / fire-and-forget semantics.
+   */
+  function finalizeWorkspaceRemoval(workspace: Pick<WorkspaceState, "id" | "profileId">): Promise<void> {
+    const sessionsExited = cleanupWorkspaceRuntimeState(workspace.id);
+    emitNotificationTargetRemoved({
+      target: "workspace",
+      workspaceId: workspace.id,
+      profileId: workspace.profileId || "default",
+    });
+    return sessionsExited;
+  }
+
+  /**
+   * Single typed emit site for the notification-lifecycle event, so every
+   * removal path produces the same shape. Receivers validate at their own
+   * transport boundary.
+   */
+  function emitNotificationTargetRemoved(event: NotificationTargetRemoved): void {
+    events.emit(NOTIFICATION_TARGET_REMOVED_CHANNEL, event);
+  }
+
+  /**
    * Drop workspaces whose `cwd` no longer exists on disk. Covers the orphan
    * case: user nuked the worktree externally (or a previous deleteFromDisk
    * left only stragglers behind), and the sidebar entry is now useless —
@@ -3504,10 +3554,11 @@ export async function createRuntime({
           /* best-effort; task may already be stopped */
         }
       }
-      // Krok 2: same runtime-state cleanup as deleteWorkspace. Discarded
-      // (not awaited) — matches this function's original fire-and-forget
-      // behavior, per cleanupWorkspaceRuntimeState's own doc comment.
-      void cleanupWorkspaceRuntimeState(ws.id);
+      // Krok 2: same runtime-state cleanup as deleteWorkspace, plus the
+      // notification-removal event. Discarded (not awaited) — matches this
+      // function's original fire-and-forget behavior, per
+      // cleanupWorkspaceRuntimeState's own doc comment.
+      void finalizeWorkspaceRemoval(ws);
     }
     log.info("pruneOrphanedWorkspaces removed orphans", {
       count: toRemove.length,
@@ -3529,7 +3580,10 @@ export async function createRuntime({
     const worktrees = state.workspaces.filter((w) => (w.notes || "").startsWith("Worktree of "));
 
     const toAdd: WorkspaceState[] = [];
-    const toRemove: string[] = [];
+    // Full descriptors, not ids: the removal event needs the workspace's
+    // effective profile, which is unresolvable once the mutation has dropped it
+    // from state.
+    const toRemove: WorkspaceState[] = [];
     const toRepair: Array<{ id: string; profileId: string }> = [];
 
     // 6a: pre-build lookup indexes to avoid O(n²) find/some inside the scan loop.
@@ -3608,14 +3662,14 @@ export async function createRuntime({
       try {
         await access(wt.cwd);
       } catch {
-        toRemove.push(wt.id);
+        toRemove.push(wt);
       }
     }
 
     if (toAdd.length === 0 && toRemove.length === 0 && toRepair.length === 0) return false;
 
     await store.mutate((draft: AppState) => {
-      removeWorkspacesFromDraft(draft, new Set(toRemove));
+      removeWorkspacesFromDraft(draft, new Set(toRemove.map((wt) => wt.id)));
       for (const repair of toRepair) {
         const ws = draft.workspaces.find((w) => w.id === repair.id);
         if (ws) ws.profileId = repair.profileId;
@@ -3624,8 +3678,12 @@ export async function createRuntime({
         draft.workspaces.push(workspace);
       }
     });
-    for (const workspaceId of toRemove) {
-      clearWorkspaceTerminalReplay(workspaceId);
+    // Previously this cleared only the replay buffer, leaving the removed
+    // worktree's sessions, timers and attention alerts behind — a lifecycle
+    // that silently diverged from direct deletion and orphan pruning. Fire-and-
+    // forget, matching this function's existing non-awaiting behavior.
+    for (const workspace of toRemove) {
+      void finalizeWorkspaceRemoval(workspace);
     }
 
     return true;
@@ -4010,6 +4068,7 @@ export async function createRuntime({
     setRecoveryCandidates: (next) => {
       _recoveryCandidates = next;
     },
+    finalizeWorkspaceRemoval,
   });
 
   // Restore invariant: a valid saved session is the authority, and the
@@ -5462,6 +5521,16 @@ export async function createRuntime({
         await mkdir(workspace.cwd, { recursive: true }).catch(() => {});
       }
 
+      // Panel removal is what a closed tab actually is, and this is the only
+      // authoritative place it happens. Read from the pre-mutation snapshot the
+      // companion guard above already took, and compared against committed
+      // state afterwards — so any refusal that throws before the commit emits
+      // nothing and the renderer keeps its history.
+      const savedWorkspaceId = String(workspace.id || "");
+      const priorPanelIds = ((priorWorkspace?.panels as Array<{ id: string }> | undefined) || []).map(
+        (panel) => panel.id,
+      );
+
       await store.mutate((draft: AppState) => {
         const normalized = normalizeWorkspace(workspace);
         log.debug("saveWorkspace: normalized", {
@@ -5492,6 +5561,22 @@ export async function createRuntime({
           draft.activeWorkspaceId = normalized.id;
         }
       });
+
+      if (priorPanelIds.length > 0) {
+        const committed = findWorkspace(getState(), savedWorkspaceId) as WorkspaceState | null;
+        const survivingPanelIds = new Set((committed?.panels || []).map((panel) => panel.id));
+        for (const panelId of priorPanelIds) {
+          if (survivingPanelIds.has(panelId)) continue;
+          emitNotificationTargetRemoved({
+            target: "view",
+            workspaceId: savedWorkspaceId,
+            // Same helper session ids are built with everywhere else, and the
+            // same value notification capture stamps on a thread's viewId.
+            viewId: createSessionId(savedWorkspaceId, panelId),
+            profileId: committed?.profileId || "default",
+          });
+        }
+      }
 
       for (const companionId of orphanedCompanionIds) {
         taskRunner.markAttachedSourceMissing(companionId);
@@ -5635,7 +5720,10 @@ export async function createRuntime({
           taskRunner.markAttachedSourceMissing(companionId);
         }
 
-        sessionsExited = cleanupWorkspaceRuntimeState(workspaceId);
+        sessionsExited = finalizeWorkspaceRemoval({
+          id: String(workspaceId),
+          profileId: workspace?.profileId || "default",
+        });
         for (const sessionId of [...sessionSignals.keys()]) {
           if (sessionId.startsWith(`${workspaceId}:`)) {
             clearActivityFade(sessionId);
@@ -5716,6 +5804,11 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async reorderWorkspaces(workspaceIds: any, windowId?: string) {
+      // Omitting a workspace from the submitted order REMOVES it (scoped to the
+      // caller's profile, or globally in the legacy no-viewer fallback below).
+      // Diff against committed state rather than trying to predict which branch
+      // ran, so both paths get the same cleanup and removal event.
+      const beforeWorkspaces = new Map(getState().workspaces.map((ws) => [ws.id, ws]));
       await store.mutate((draft: AppState) => {
         // Scope the reorder to the caller viewer's profile. The old logic
         // replaced the entire workspaces array with whatever IDs the caller
@@ -5764,6 +5857,12 @@ export async function createRuntime({
         }
         draft.workspaces = next;
       });
+
+      const survivingIds = new Set(getState().workspaces.map((ws) => ws.id));
+      for (const [workspaceId, workspace] of beforeWorkspaces) {
+        if (survivingIds.has(workspaceId)) continue;
+        void finalizeWorkspaceRemoval(workspace);
+      }
 
       broadcastState();
       return getPayload();

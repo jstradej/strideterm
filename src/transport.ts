@@ -11,6 +11,11 @@ import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/sta
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "../electron/shared/types/ssh.js";
 import {
+  NOTIFICATION_TARGET_REMOVED_CHANNEL,
+  notificationTargetRemovedSchema,
+  type NotificationTargetRemoved,
+} from "../electron/shared/notification-lifecycle.js";
+import {
   performanceSnapshotSchema,
   cpuProfileCaptureResultSchema,
   revealResultSchema,
@@ -74,6 +79,7 @@ interface EventHub {
   dockerShellClose: Set<Handler<{ sessionId: string; code: number | null }>>;
   terminalInputBlocked: Set<Handler<{ sessionId: string; ownerLabel: string }>>;
   resourceInvalidate: Set<Handler<ResourceInvalidate>>;
+  notificationTargetRemoved: Set<Handler<NotificationTargetRemoved>>;
 }
 
 /** Extended transport interface covering both Electron and remote modes.
@@ -135,6 +141,10 @@ export interface Transport extends Partial<Omit<StridetermAPI, "onConnectionStat
   saveProfile: (profile: ProfilePayload) => Promise<unknown>;
   deleteProfile: (profileId: string, options?: { taskAction?: "pause" | "stop" }) => Promise<unknown>;
   activateProfile: (profileId: string) => Promise<unknown>;
+  /** Authoritative notice that a workspace or panel was removed from state, so
+   *  its notification history can be dropped. Validated at this boundary, so a
+   *  handler only ever sees a well-formed payload. */
+  onNotificationTargetRemoved: (handler: Handler<NotificationTargetRemoved>) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +169,7 @@ function createEventHub(): EventHub {
     dockerShellClose: new Set(),
     terminalInputBlocked: new Set(),
     resourceInvalidate: new Set(),
+    notificationTargetRemoved: new Set(),
   };
 }
 
@@ -234,6 +245,19 @@ function bindElectronTransport(): Transport {
     // IPC getTerminalReplay; the WS subscribe/replay handshake is remote-only.
     onTerminalReplay: () => {},
     subscribeTerminals: () => {},
+    // Validated here for the same reason the remote transport validates it: a
+    // malformed payload must be dropped at the boundary rather than reaching a
+    // store action that would delete the wrong history.
+    onNotificationTargetRemoved: (handler: Handler<NotificationTargetRemoved>) => {
+      window.strideterm.onNotificationTargetRemoved((payload: unknown) => {
+        const parsed = notificationTargetRemovedSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "notification:target-removed ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
   };
 }
 
@@ -486,6 +510,14 @@ export function createRemoteTransport(): Transport {
         // idempotence guard (which compares against lastTerminalSubscription).
         lastTerminalSubscription = lastTerminalSubscription.filter((id) => id !== removedId);
         safeDispatch(listeners.terminalRemoved, { sessionId: removedId }, "terminalRemoved");
+      }
+    }
+    if (message.type === NOTIFICATION_TARGET_REMOVED_CHANNEL) {
+      const parsed = notificationTargetRemovedSchema.safeParse(message.payload);
+      if (parsed.success) {
+        safeDispatch(listeners.notificationTargetRemoved, parsed.data, "notificationTargetRemoved");
+      } else {
+        rlog("warn", "notification:target-removed ignored: malformed payload");
       }
     }
     if (message.type === "ssh:auth-prompt") {
@@ -1196,6 +1228,9 @@ export function createRemoteTransport(): Transport {
     onSshHostKeyChange: (handler: Handler<Record<string, unknown>>) => listeners.sshHostKeyChange.add(handler),
     onSshState: (handler: Handler<Record<string, unknown>>) => listeners.sshState.add(handler),
     onSshConnectionState: (handler: Handler<SshConnectionState>) => listeners.sshConnectionState.add(handler),
+    onNotificationTargetRemoved: (handler: Handler<NotificationTargetRemoved>) => {
+      listeners.notificationTargetRemoved.add(handler);
+    },
     getRemoteToken: () => token,
     setRemoteToken: (nextToken: string) => {
       persistToken(nextToken);

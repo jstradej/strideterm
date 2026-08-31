@@ -10364,3 +10364,414 @@ describe("session activityStartedAt — run-start stamp for elapsed", () => {
     expect(done.activityStartedAt).toBe(0);
   });
 });
+
+describe("notification:target-removed lifecycle events", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function captureRemovals(fixture: any): any[] {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const seen: any[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fixture.runtime.on("notification:target-removed", (event: any) => seen.push(event));
+    return seen;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function shellWorkspace(id: string, cwd: string, extra: Record<string, unknown> = {}): any {
+    return {
+      id,
+      name: id,
+      kind: "terminal",
+      cwd,
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+      ...extra,
+    };
+  }
+
+  test("deleteWorkspace emits once, with the workspace's effective profile", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-del-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: { workspaces: [shellWorkspace("ws-del", cwd), shellWorkspace("ws-keep", cwd)] },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    await fixture.runtime.deleteWorkspace("ws-del");
+
+    expect(removals).toEqual([{ target: "workspace", workspaceId: "ws-del", profileId: "default" }]);
+  });
+
+  test("a delete refused before the mutation emits nothing", async () => {
+    // The cross-profile guard throws before store.mutate runs, so the workspace
+    // survives — and so must its notification history.
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-refuse-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default", color: "#fff" },
+          { id: "other", name: "Other", color: "#000" },
+        ],
+        workspaces: [shellWorkspace("ws-del", cwd, { profileId: "default" })],
+        windowSlots: [
+          {
+            id: "win-other",
+            profileId: "other",
+            activeWorkspaceId: "",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    await expect(fixture.runtime.deleteWorkspace("ws-del", {}, "win-other")).rejects.toThrow(/Cross-profile refused/);
+
+    expect(fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "ws-del")).toBeDefined();
+    expect(removals).toEqual([]);
+  });
+
+  test("a disk-cleanup failure after the commit still emits", async () => {
+    // deleteWorkspaceError means state removal succeeded and only the on-disk
+    // files survived. The workspace is gone, so the history must go too.
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-diskfail-"));
+    tempPaths.push(diskPath);
+    const execFileText = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "worktree" && args[1] === "remove") {
+        throw new Error("git worktree remove failed");
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const fixture = await createFixture({
+      execFileTextImpl: execFileText,
+      dependencies: { rmPath: vi.fn().mockRejectedValue(new Error("rmPath failed")) },
+      initialState: { workspaces: [shellWorkspace("ws-del", diskPath)] },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("ws-del", { deleteFromDisk: true, diskPath });
+
+    expect(result.deleteWorkspaceError).toBeTruthy();
+    expect(removals).toEqual([{ target: "workspace", workspaceId: "ws-del", profileId: "default" }]);
+  });
+
+  test("pruneOrphanedWorkspaces emits once per removed workspace", async () => {
+    const liveCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-prune-"));
+    tempPaths.push(liveCwd);
+    const goneCwd = path.join(liveCwd, "does-not-exist");
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [shellWorkspace("ws-live", liveCwd), shellWorkspace("ws-orphan", goneCwd)],
+      },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    await fixture.runtime.pruneOrphanedWorkspaces();
+
+    expect(removals).toEqual([{ target: "workspace", workspaceId: "ws-orphan", profileId: "default" }]);
+  });
+
+  test("syncWorktrees removal emits and runs the FULL workspace cleanup", async () => {
+    // It used to clear only the replay buffer, leaving sessions, timers and
+    // alerts behind — a lifecycle that silently diverged from direct deletion.
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-wt-"));
+    tempPaths.push(parentRoot);
+    const goneTree = path.join(parentRoot, ".strideterm", "tree", "vanished");
+    // Present on disk while the runtime boots — createRuntime runs its own
+    // syncWorktrees pass, which would otherwise remove the entry before this
+    // test can attach a listener.
+    await fs.mkdir(goneTree, { recursive: true });
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          shellWorkspace("parent", parentRoot),
+          shellWorkspace("wt-gone", goneTree, { notes: "Worktree of parent" }),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await fs.rm(goneTree, { recursive: true, force: true });
+    const removals = captureRemovals(fixture);
+    fixture.sessionManager.removedProjects.length = 0;
+
+    await fixture.runtime.syncWorktrees();
+
+    expect(removals).toEqual([{ target: "workspace", workspaceId: "wt-gone", profileId: "default" }]);
+    expect(fixture.sessionManager.removedProjects).toContain("wt-gone");
+  });
+
+  test("reorderWorkspaces emits for a workspace omitted from the submitted order", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-reorder-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: { workspaces: [shellWorkspace("ws-a", cwd), shellWorkspace("ws-b", cwd)] },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    await fixture.runtime.reorderWorkspaces(["ws-b"]);
+
+    expect(fixture.runtime.getPayload().appState.workspaces.map((w) => w.id)).toEqual(["ws-b"]);
+    expect(removals).toEqual([{ target: "workspace", workspaceId: "ws-a", profileId: "default" }]);
+  });
+
+  test("saveWorkspace emits a canonical view removal only for panels actually removed", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-panel-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "ws-1",
+            name: "ws-1",
+            kind: "terminal",
+            cwd,
+            activePanelId: "a",
+            panels: [
+              { id: "a", title: "A", command: "", shell: true, startup: "default" },
+              { id: "b", title: "B", command: "", shell: true, startup: "default" },
+            ],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    const current = fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "ws-1")!;
+    await fixture.runtime.saveWorkspace({
+      ...current,
+      activePanelId: "a",
+      panels: current.panels.filter((p) => p.id !== "b"),
+    });
+
+    expect(removals).toEqual([
+      { target: "view", workspaceId: "ws-1", viewId: createSessionId("ws-1", "b"), profileId: "default" },
+    ]);
+  });
+
+  test("a panel close refused by an active companion loop emits nothing", async () => {
+    // The refusal throws before store.mutate, so the panel survives — and the
+    // renderer must keep the history it would otherwise have purged.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-companion-"));
+    tempPaths.push(sharedCwd);
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "ws-source",
+            name: "Live conversation",
+            kind: "manual",
+            cwd: sharedCwd,
+            activePanelId: "panel-primary",
+            panels: [
+              { id: "panel-primary", title: "Claude", command: "claude", shell: true, startup: "default" },
+              { id: "panel-other", title: "Shell", command: "bash", shell: true, startup: "none" },
+            ],
+            task: null,
+          },
+          {
+            id: "task-companion",
+            name: "Reviewer companion",
+            kind: "task",
+            cwd: sharedCwd,
+            activePanelId: "panel-dashboard",
+            panels: [
+              { id: "panel-dashboard", title: "Dashboard", command: "__task-dashboard__", startup: "none" },
+              { id: "panel-companion", title: "Reviewer", command: "codex", shell: true, startup: "default" },
+            ],
+            task: {
+              taskId: "task-companion-tid",
+              state: "running",
+              mode: "attached",
+              workerWorkspaceId: "ws-source",
+              workerPanelId: "panel-primary",
+              judgePanelId: "panel-companion",
+              companionRole: "reviewer",
+              currentRound: 1,
+              description: "",
+            },
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    // The runner's startup reconcile pauses active tasks; put it back to
+    // running so the guard actually fires.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.store.mutate((draft: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ws = draft.workspaces.find((w: any) => w.id === "task-companion");
+      if (ws?.task) ws.task.state = "running";
+    });
+    const removals = captureRemovals(fixture);
+
+    const source = fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "ws-source")!;
+    await expect(
+      fixture.runtime.saveWorkspace({
+        ...source,
+        activePanelId: "panel-other",
+        panels: source.panels.filter((p) => p.id !== "panel-primary"),
+      }),
+    ).rejects.toThrow(/Cannot close this tab/);
+
+    expect(removals).toEqual([]);
+  });
+
+  test("saveWorkspace that only adds a panel emits nothing", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-panel-add-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: { workspaces: [shellWorkspace("ws-1", cwd)] },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    const current = fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "ws-1")!;
+    await fixture.runtime.saveWorkspace({
+      ...current,
+      panels: [...current.panels, { id: "extra", title: "Extra", command: "", shell: true, startup: "default" }],
+    });
+
+    expect(removals).toEqual([]);
+  });
+
+  test("createTaskWorkspace emits for the discovered worktree entry it replaces", async () => {
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-task-"));
+    tempPaths.push(parentRoot);
+    const treePath = path.join(parentRoot, ".strideterm", "tree", "task-branch");
+    await fs.mkdir(treePath, { recursive: true });
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          shellWorkspace("parent", parentRoot, { name: "MyProject" }),
+          shellWorkspace("plain-wt", treePath, { name: "MyProject / task-branch", notes: "Worktree of MyProject" }),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    await fixture.runtime.createTaskWorkspace({
+      cwd: parentRoot,
+      useWorktree: true,
+      worktreeBranch: "task-branch",
+      parentWorkspaceId: "parent",
+      description: "Test task",
+      activate: false,
+    });
+
+    expect(fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "plain-wt")).toBeUndefined();
+    expect(removals).toContainEqual({ target: "workspace", workspaceId: "plain-wt", profileId: "default" });
+  });
+
+  test("createTaskWorkspace does not remove a same-cwd worktree entry from another profile", async () => {
+    // Two profiles legitimately hold workspaces at the same path, so the old
+    // cwd-only filter deleted the other profile's entry as collateral damage.
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-task-profile-"));
+    tempPaths.push(parentRoot);
+    const treePath = path.join(parentRoot, ".strideterm", "tree", "task-branch");
+    await fs.mkdir(treePath, { recursive: true });
+
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default", color: "#fff" },
+          { id: "other", name: "Other", color: "#000" },
+        ],
+        workspaces: [
+          shellWorkspace("parent", parentRoot, { name: "MyProject", profileId: "default" }),
+          shellWorkspace("wt-other-profile", treePath, {
+            name: "MyProject / task-branch",
+            notes: "Worktree of MyProject",
+            profileId: "other",
+          }),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    await fixture.runtime.createTaskWorkspace({
+      cwd: parentRoot,
+      useWorktree: true,
+      worktreeBranch: "task-branch",
+      parentWorkspaceId: "parent",
+      description: "Test task",
+      activate: false,
+    });
+
+    const after = fixture.runtime.getPayload().appState.workspaces;
+    expect(after.find((w) => w.id === "wt-other-profile")).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(removals.some((e: any) => e.workspaceId === "wt-other-profile")).toBe(false);
+  });
+
+  test("disconnecting a session emits no notification removal", async () => {
+    // closeSession keeps the panel in state — it is a disconnect, not a removal.
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-disconnect-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({ initialState: { workspaces: [shellWorkspace("ws-1", cwd)] } });
+    fixtures.push(fixture);
+    const removals = captureRemovals(fixture);
+
+    fixture.runtime.closeSession(createSessionId("ws-1", "shell"));
+
+    expect(removals).toEqual([]);
+  });
+
+  test("terminal:removed clears the panel's attention alert", async () => {
+    // Workspace deletion clears alerts wholesale; a panel removed on its own
+    // used to leave its raised alert pointing at a tab that no longer exists.
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-notif-alert-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "ws-1",
+            name: "ws-1",
+            kind: "terminal",
+            cwd,
+            activePanelId: "shell",
+            panels: [
+              { id: "shell", title: "Shell", command: "", shell: true, startup: "default" },
+              // Shell-completion alerts are globally suppressed by
+              // notifications.agentsOnly; opt this panel back in so the exit
+              // actually raises the alert this test then expects to be cleared.
+              {
+                id: "tests",
+                title: "Tests",
+                command: "npm test",
+                shell: true,
+                startup: "manual",
+                alertsForceOn: true,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const sessionId = createSessionId("ws-1", "tests");
+    // The alerting session must not be the visible one, or the alert is
+    // suppressed as "the user is already looking at it".
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: [createSessionId("ws-1", "shell")] });
+
+    fixture.sessionManager.emit("terminal:data", { sessionId, data: "$ " });
+    fixture.runtime.writeToSession(sessionId, "npm test\r");
+    fixture.sessionManager.emit("terminal:exit", { sessionId, exitCode: 2, intentional: false });
+    expect(fixture.runtime.getPayload().attention.byProject["ws-1"]).toMatchObject({ count: 1 });
+
+    fixture.sessionManager.emit("terminal:removed", { sessionId });
+
+    expect(fixture.runtime.getPayload().attention.byProject["ws-1"]).toBeUndefined();
+  });
+});

@@ -16,6 +16,7 @@ import type {
   RecoveryOrigin,
   RecoveryOutcome,
   RecoveryResult,
+  WorkspaceState,
 } from "../shared/types/state.js";
 
 /**
@@ -72,6 +73,12 @@ interface TaskHandlerCtx<Payload> {
   ) => Promise<string>;
   getRecoveryCandidates: () => RecoveryCandidate[];
   setRecoveryCandidates: (next: RecoveryCandidate[]) => void;
+  /**
+   * Post-commit teardown + notification-removal event for a workspace that has
+   * just been dropped from state. See runtime.ts for the full contract; call
+   * only AFTER the mutation commits.
+   */
+  finalizeWorkspaceRemoval: (workspace: { id: string; profileId: string }) => Promise<void>;
 }
 
 /**
@@ -107,6 +114,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
     ensureWorktree,
     getRecoveryCandidates,
     setRecoveryCandidates,
+    finalizeWorkspaceRemoval,
   } = ctx;
 
   /**
@@ -666,11 +674,25 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       // workspace was registered (race-condition cleanup).
       if (worktreeBase) {
         const taskCwd = workspace.cwd || "";
+        const taskProfileId = workspace.profileId || "default";
+        // Scoped by profile as well as cwd. Two profiles legitimately hold
+        // workspaces at the same path (CLAUDE.md: profiles group workspaces,
+        // they do not isolate storage), and a cwd-only filter silently deleted
+        // the other profile's worktree entry.
+        const isReplacedWorktree = (w: WorkspaceState): boolean =>
+          w.id !== workspace.id &&
+          w.cwd === taskCwd &&
+          (w.notes || "").startsWith("Worktree of ") &&
+          (w.profileId || "default") === taskProfileId;
+        const replaced = getState().workspaces.filter(isReplacedWorktree);
         await store.mutate((draft: AppState) => {
-          draft.workspaces = draft.workspaces.filter(
-            (w) => w.id === workspace.id || !(w.cwd === taskCwd && (w.notes || "").startsWith("Worktree of ")),
-          );
+          draft.workspaces = draft.workspaces.filter((w) => !isReplacedWorktree(w));
         });
+        // The discovered entry is gone for good — same lifecycle as any other
+        // workspace removal, including its notification history.
+        for (const removed of replaced) {
+          void finalizeWorkspaceRemoval(removed);
+        }
       }
       // Activate the new workspace unless the caller explicitly opted out
       // (e.g. Telegram-driven creation, where the user is in another workspace

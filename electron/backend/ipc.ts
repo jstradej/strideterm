@@ -127,6 +127,7 @@ import {
   workspaceGridSwapCellsSchema,
 } from "./ipc-schemas.js";
 import { shouldShowSystemNotification } from "./notifications/system-notification-dedupe.js";
+import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 
@@ -162,6 +163,11 @@ export function registerIpc(
     runtime.on("ssh:connection-state", (payload: any) => emitToRenderer("ssh:connection-state", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("ssh:state", (payload: any) => emitToRenderer("ssh:state", payload)),
+    // Broadcast to every window: notification history is per-renderer, and a
+    // second window of the same profile holds its own copy of the threads.
+    runtime.on(NOTIFICATION_TARGET_REMOVED_CHANNEL, (payload: unknown) =>
+      emitToRenderer(NOTIFICATION_TARGET_REMOVED_CHANNEL, payload),
+    ),
   ];
 
   // Every ipcMain.handle/on call above goes through these two thin wrappers so

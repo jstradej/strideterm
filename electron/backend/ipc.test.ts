@@ -283,3 +283,46 @@ describe("registerIpc — provider review mutations carry the viewer's window", 
     dispose();
   });
 });
+
+describe("notification:target-removed IPC forwarding", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+  });
+
+  /** Runtime stub that hands back the `on` callbacks so a test can fire one. */
+  function makeSubscribableRuntime(): {
+    runtime: Parameters<typeof registerIpc>[0];
+    handlers: Map<string, (payload: unknown) => void>;
+  } {
+    const handlers = new Map<string, (payload: unknown) => void>();
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop !== "on") return callable;
+          return (event: string, cb: (payload: unknown) => void) => {
+            handlers.set(event, cb);
+            return () => {};
+          };
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    return { runtime, handlers };
+  }
+
+  test("forwards the event to every renderer window", () => {
+    // Broadcast rather than targeted: notification history is per-renderer, so
+    // a second window of the same profile holds its own copy of the threads.
+    const { runtime, handlers } = makeSubscribableRuntime();
+    const emitted: Array<{ channel: string; payload: unknown }> = [];
+    const dispose = registerIpc(runtime, (channel, payload) => emitted.push({ channel, payload }));
+
+    const event = { target: "workspace", workspaceId: "ws-1", profileId: "default" };
+    handlers.get("notification:target-removed")!(event);
+
+    expect(emitted).toContainEqual({ channel: "notification:target-removed", payload: event });
+
+    dispose();
+  });
+});

@@ -2941,4 +2941,51 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       },
     );
   });
+
+  describe("notification:target-removed routing", () => {
+    test("reaches only clients bound to the event's profile", async () => {
+      // Notification history is per-viewer. A client bound to another profile
+      // never saw the removed workspace, so purging its history would delete
+      // threads that are still perfectly valid for it.
+      await withServer("tok-notif", async ({ port, runtime }) => {
+        const inProfile = connectWs(port, "tok-notif", "notif-p1", "p1");
+        const otherProfile = connectWs(port, "tok-notif", "notif-p2", "p2");
+        await inProfile.opened;
+        await otherProfile.opened;
+
+        runtime._emit("notification:target-removed", {
+          target: "workspace",
+          workspaceId: "ws1",
+          profileId: "p1",
+        });
+
+        expect(
+          await waitUntil(() =>
+            inProfile.messages.some(
+              (m) =>
+                m.type === "notification:target-removed" &&
+                (m.payload as { workspaceId?: string })?.workspaceId === "ws1",
+            ),
+          ),
+        ).toBe(true);
+        await delay(50);
+        expect(otherProfile.messages.some((m) => m.type === "notification:target-removed")).toBe(false);
+        inProfile.ws.close();
+        otherProfile.ws.close();
+      });
+    });
+
+    test("an event with no profileId is dropped rather than broadcast", async () => {
+      await withServer("tok-notif-noprofile", async ({ port, runtime }) => {
+        const c = connectWs(port, "tok-notif-noprofile", "notif-np1", "p1");
+        await c.opened;
+
+        runtime._emit("notification:target-removed", { target: "workspace", workspaceId: "ws1", profileId: "" });
+
+        await delay(80);
+        expect(c.messages.some((m) => m.type === "notification:target-removed")).toBe(false);
+        c.ws.close();
+      });
+    });
+  });
 });

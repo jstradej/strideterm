@@ -299,6 +299,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   onSshHostKeyChange: (handler) => ipcRenderer.on("ssh:host-key-change", (_event, payload) => handler(payload)),
   onSshState: (handler) => ipcRenderer.on("ssh:state", (_event, payload) => handler(payload)),
   onSshConnectionState: (handler) => ipcRenderer.on("ssh:connection-state", (_event, payload) => handler(payload)),
+  onNotificationTargetRemoved: (handler) =>
+    ipcRenderer.on("notification:target-removed", (_event, payload) => handler(payload)),
   // --- SSH actions ---
   sshHostsList: () => ipcRenderer.invoke("ssh:hosts:list"),
   sshHostsCreate: (payload) => ipcRenderer.invoke("ssh:hosts:create", payload),

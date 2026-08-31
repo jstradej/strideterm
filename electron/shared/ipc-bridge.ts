@@ -663,6 +663,11 @@ export interface StridetermAPI {
   onSshHostKeyChange: (handler: (payload: Record<string, unknown>) => void) => void;
   onSshState: (handler: (payload: Record<string, unknown>) => void) => void;
   onSshConnectionState: (handler: (payload: SshConnectionState) => void) => void;
+  /**
+   * Authoritative "a notification target disappeared" lifecycle event. The
+   * payload is UNVALIDATED here; consumers parse it at the transport boundary.
+   */
+  onNotificationTargetRemoved: (handler: (payload: unknown) => void) => void;
 }
 
 // Re-export payload types needed by AttentionSync consumers

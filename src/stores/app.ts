@@ -38,6 +38,7 @@ import { isMobileViewport } from "../composables/useIsNarrow.js";
 import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
 import { useRemoteDetailsStore } from "./remote-details.js";
+import { useNotificationStore } from "./notifications.js";
 import type {
   StatePayload,
   RecoveryCandidate,
@@ -654,6 +655,42 @@ export const useAppStore = defineStore("app", () => {
   function adoptPayload(nextPayload: StatePayload): void {
     payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
     _cacheCurrentWorkspace();
+    reconcileNotificationHistory(nextPayload);
+  }
+
+  // --- Notification lifecycle -------------------------------------------
+  // Resolved once in init() rather than per call: reconciliation has to run
+  // synchronously with payload acceptance, and looking the store up lazily
+  // raced the bootstrap payload — getState() resolves in one microtask, so the
+  // very first (and most valuable) reconnect sweep silently no-opped.
+  let _notifications: ReturnType<typeof useNotificationStore> | null = null;
+  let _notificationLifecycleBound = false;
+
+  /**
+   * Drop notification history for workspaces that no longer exist.
+   *
+   * `sourcePayload` must be AUTHORITATIVE — an accepted broadcast, the
+   * bootstrap/reconnect getState result, or an API response. A locally composed
+   * payload must never reach here: an optimistic delete strips a workspace the
+   * backend may yet refuse to remove, and the history purged on its behalf
+   * could not be brought back.
+   *
+   * A no-op before init() has resolved the notification store. This is a
+   * best-effort sweep for events missed while disconnected, and every
+   * subsequent payload repeats it.
+   */
+  function reconcileNotificationHistory(sourcePayload: StatePayload | null): void {
+    const workspaces = (sourcePayload as AnyApi)?.appState?.workspaces as AnyApi[] | undefined;
+    if (!Array.isArray(workspaces)) return;
+    _notifications?.reconcileWorkspaces(new Set(workspaces.map((ws: AnyApi) => String(ws.id))), {
+      // A remote protocol-v2 core carries only the viewer's own profile, so
+      // absence from it does not prove deletion for every session.
+      partialByProfile: isRemoteTransport.value,
+      viewerProfileId: resolveViewerProfileId(sourcePayload, {
+        isRemote: isRemoteTransport.value,
+        windowId: myWindowId,
+      }),
+    });
   }
 
   /** Save workspace-specific payload parts for the current workspace. */
@@ -1062,6 +1099,10 @@ export const useAppStore = defineStore("app", () => {
     // snapshot older than what we've already applied must not drive activation
     // completion or overwrite fresher state (bootstrap→WS handoff).
     if (!acceptCoreRevision(nextPayload)) return;
+    // The backend's own view, captured before the optimistic-delete strip below
+    // rewrites `nextPayload`. Reconciliation must never read the stripped list:
+    // a workspace we removed locally can still come back if the delete fails.
+    const authoritativePayload = nextPayload;
     const pendingWsId = pendingWorkspaceActivationId.value;
     const isBootstrap = Boolean((nextPayload as AnyApi)?.meta?.bootstrap);
 
@@ -1185,6 +1226,7 @@ export const useAppStore = defineStore("app", () => {
     payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
     // Keep workspace cache fresh on every broadcast for the active workspace
     _cacheCurrentWorkspace();
+    reconcileNotificationHistory(authoritativePayload);
 
     // Recovery decisions are GLOBAL per task: when another window resolves a
     // candidate, the backend drops it from meta.recoveryCandidates and
@@ -1581,6 +1623,23 @@ export const useAppStore = defineStore("app", () => {
     // accessors, so this single boundary cast is where the two shapes converge.
     api.onStateUpdated((nextPayload) => handleBroadcastPayload(nextPayload as StatePayload));
 
+    // Authoritative "a notification target disappeared" events. The transport's
+    // listener API is renderer-lifetime and has no unsubscribe contract, so the
+    // registration is guarded rather than torn down — a second init() must not
+    // leave two handlers purging the same history twice.
+    const notifications = useNotificationStore();
+    _notifications = notifications;
+    if (!_notificationLifecycleBound) {
+      _notificationLifecycleBound = true;
+      api.onNotificationTargetRemoved?.((event) => {
+        if (event.target === "workspace") {
+          notifications.removeByWorkspaceId(event.workspaceId);
+        } else {
+          notifications.removeByViewId(event.workspaceId, event.viewId);
+        }
+      });
+    }
+
     api.onConnectionState?.((connection) => {
       if ((connection as AnyApi)?.connected) {
         clearRemoteConnectionIssue();
@@ -1641,6 +1700,8 @@ export const useAppStore = defineStore("app", () => {
           payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(p as StatePayload) as AnyApi) as StatePayload;
           // Seed cache with the initial workspace state on bootstrap
           _cacheCurrentWorkspace();
+          // Reconnect sweep: catches removals this renderer was disconnected for.
+          reconcileNotificationHistory(p as StatePayload);
         }
         // Show recovery dialog if there are crash-recovery candidates.
         // The dialog is the only resume path — silent auto-resume was unreliable.

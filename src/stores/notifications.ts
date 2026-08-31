@@ -123,7 +123,8 @@ type NotificationSyncMessage =
   | { type: "set-state"; sessionIds: string[]; state: NotificationState }
   | { type: "snooze"; sessionId: string; snoozedUntil: number }
   | { type: "remove"; id: string }
-  | { type: "remove-by-view"; viewId: string }
+  | { type: "remove-by-view"; workspaceId: string; viewId: string }
+  | { type: "remove-by-workspace"; workspaceId: string }
   | { type: "clear-sessions"; sessionIds: string[] };
 
 function threadId(workspaceId: string, viewId: string): string {
@@ -246,9 +247,13 @@ export const useNotificationStore = defineStore("notifications", () => {
         break;
       }
       case "remove-by-view": {
-        if (!message.viewId) return;
-        sessions.value = sessions.value.filter((s) => s.viewId !== message.viewId);
-        saveToStorage(sessions.value);
+        if (!message.workspaceId || !message.viewId) return;
+        applyRemoval((s) => s.workspaceId === message.workspaceId && s.viewId === message.viewId);
+        break;
+      }
+      case "remove-by-workspace": {
+        if (!message.workspaceId) return;
+        applyRemoval((s) => s.workspaceId === message.workspaceId);
         break;
       }
       case "clear-sessions": {
@@ -544,11 +549,86 @@ export const useNotificationStore = defineStore("notifications", () => {
     broadcastSync({ type: "remove", id: sessionIdOrEventId });
   }
 
-  function removeByViewId(viewId: string): void {
-    if (!viewId) return;
-    sessions.value = sessions.value.filter((s) => s.viewId !== viewId);
+  /**
+   * Drop every session matching `doomed`, persisting only when something
+   * actually changed; returns whether it did.
+   *
+   * The changed-only guard is what makes duplicate delivery harmless. The same
+   * removal reaches a window twice — once as the runtime's authoritative event,
+   * once as a sibling window's BroadcastChannel echo — and the second pass must
+   * not re-broadcast (an endless echo between two windows) or rewrite
+   * localStorage for nothing.
+   */
+  function applyRemoval(doomed: SessionFilter): boolean {
+    const next = sessions.value.filter((s) => !doomed(s));
+    if (next.length === sessions.value.length) return false;
+    sessions.value = next;
     saveToStorage(sessions.value);
-    broadcastSync({ type: "remove-by-view", viewId });
+    return true;
+  }
+
+  /**
+   * Drop the history of one removed panel.
+   *
+   * Keyed on (workspaceId, viewId) rather than viewId alone: a view id is only
+   * unique within its workspace, so a legacy or custom id that repeats in
+   * another workspace would take that workspace's history down with it.
+   */
+  function removeByViewId(workspaceId: string, viewId: string): void {
+    if (!workspaceId || !viewId) return;
+    if (!applyRemoval((s) => s.workspaceId === workspaceId && s.viewId === viewId)) return;
+    broadcastSync({ type: "remove-by-view", workspaceId, viewId });
+  }
+
+  /**
+   * Drop the history of a removed workspace — every thread, resolved ones
+   * included. The workspace no longer exists, so nothing in those threads can
+   * be jumped to, and an unstamped session left behind would lose the workspace
+   * its owning profile was inferred from and start showing in every profile.
+   */
+  function removeByWorkspaceId(workspaceId: string): void {
+    if (!workspaceId) return;
+    if (!applyRemoval((s) => s.workspaceId === workspaceId)) return;
+    broadcastSync({ type: "remove-by-workspace", workspaceId });
+  }
+
+  /**
+   * Reconnect reconciliation for workspace-level history.
+   *
+   * The lifecycle event is transient, so a renderer that was disconnected when a
+   * workspace disappeared never sees it. Call this only with an AUTHORITATIVE
+   * workspace list — an accepted broadcast, the bootstrap/reconnect getState
+   * result, or an API response — never with a locally composed optimistic
+   * delete payload or a snapshot the coreRevision gate rejected. Absence from
+   * one of those is not proof of deletion, and the history it would remove
+   * cannot be recovered.
+   *
+   * Desktop payloads carry the GLOBAL workspace list, so absence proves
+   * deletion. A remote protocol-v2 payload carries only the viewer's own
+   * profile, so absence proves deletion only for a session stamped with that
+   * same profile — a foreign-profile or unstamped session is retained, since
+   * from a partial payload the two are indistinguishable from a deleted one.
+   */
+  function reconcileWorkspaces(
+    liveWorkspaceIds: Set<string>,
+    { partialByProfile, viewerProfileId }: { partialByProfile: boolean; viewerProfileId: string | null },
+  ): void {
+    if (partialByProfile && !viewerProfileId) return;
+    const doomedIds = new Set(
+      sessions.value
+        .filter((s) => {
+          if (!s.workspaceId) return false;
+          if (liveWorkspaceIds.has(s.workspaceId)) return false;
+          if (partialByProfile && String(s.meta?.profileId || "") !== viewerProfileId) return false;
+          return true;
+        })
+        .map((s) => s.id),
+    );
+    if (doomedIds.size === 0) return;
+    applyRemoval((s) => doomedIds.has(s.id));
+    // Explicit ids, matching clearAll: a blanket message would also wipe
+    // sessions a sibling window holds that this window never had a payload for.
+    broadcastSync({ type: "clear-sessions", sessionIds: [...doomedIds] });
   }
 
   function clearAll(filter?: SessionFilter): void {
@@ -796,6 +876,8 @@ export const useNotificationStore = defineStore("notifications", () => {
     resolveByEngagement,
     remove,
     removeByViewId,
+    removeByWorkspaceId,
+    reconcileWorkspaces,
     clearAll,
     clearOnBackend,
     togglePanel,

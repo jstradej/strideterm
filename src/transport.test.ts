@@ -615,3 +615,109 @@ describe("electron transport — performance diagnostics validation", () => {
     });
   });
 });
+
+describe("notification:target-removed — transport boundary validation", () => {
+  describe("remote transport", () => {
+    let originalWebSocket: typeof globalThis.WebSocket;
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+      MockWebSocket.instances.length = 0;
+      originalWebSocket = globalThis.WebSocket;
+      originalFetch = globalThis.fetch;
+      globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+      globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
+    });
+
+    afterEach(() => {
+      globalThis.WebSocket = originalWebSocket;
+      globalThis.fetch = originalFetch;
+    });
+
+    function connected(): { transport: ReturnType<typeof createRemoteTransport>; socket: MockWebSocket } {
+      const transport = createRemoteTransport();
+      const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+      socket.open();
+      return { transport, socket };
+    }
+
+    it("dispatches a well-formed workspace removal", () => {
+      const { transport, socket } = connected();
+      const seen: unknown[] = [];
+      transport.onNotificationTargetRemoved((event) => seen.push(event));
+
+      socket.message({
+        type: "notification:target-removed",
+        payload: { target: "workspace", workspaceId: "ws-1", profileId: "default" },
+      });
+
+      expect(seen).toEqual([{ target: "workspace", workspaceId: "ws-1", profileId: "default" }]);
+    });
+
+    it("dispatches a well-formed view removal", () => {
+      const { transport, socket } = connected();
+      const seen: unknown[] = [];
+      transport.onNotificationTargetRemoved((event) => seen.push(event));
+
+      socket.message({
+        type: "notification:target-removed",
+        payload: { target: "view", workspaceId: "ws-1", viewId: "ws-1:a", profileId: "work" },
+      });
+
+      expect(seen).toEqual([{ target: "view", workspaceId: "ws-1", viewId: "ws-1:a", profileId: "work" }]);
+    });
+
+    // Dropping it here rather than downstream matters: a payload with an empty
+    // or missing workspaceId reaching the store would delete the wrong history.
+    it("drops a malformed payload instead of dispatching it", () => {
+      const { transport, socket } = connected();
+      const seen: unknown[] = [];
+      transport.onNotificationTargetRemoved((event) => seen.push(event));
+
+      socket.message({ type: "notification:target-removed", payload: { target: "workspace", workspaceId: "" } });
+      socket.message({ type: "notification:target-removed", payload: { target: "view", workspaceId: "ws-1" } });
+      socket.message({ type: "notification:target-removed", payload: null });
+
+      expect(seen).toEqual([]);
+    });
+  });
+
+  describe("electron transport", () => {
+    afterEach(() => {
+      delete (window as unknown as Record<string, unknown>).strideterm;
+    });
+
+    function stubElectron(): (payload: unknown) => void {
+      let bridged: ((payload: unknown) => void) | null = null;
+      (window as unknown as Record<string, unknown>).strideterm = {
+        onNotificationTargetRemoved: (handler: (payload: unknown) => void) => {
+          bridged = handler;
+        },
+      };
+      return (payload: unknown) => bridged?.(payload);
+    }
+
+    it("subscribes through the preload bridge and dispatches a valid event", () => {
+      const emitFromMain = stubElectron();
+      const transport = createTransport();
+      const seen: unknown[] = [];
+      transport.onNotificationTargetRemoved((event) => seen.push(event));
+
+      emitFromMain({ target: "workspace", workspaceId: "ws-1", profileId: "default" });
+
+      expect(seen).toEqual([{ target: "workspace", workspaceId: "ws-1", profileId: "default" }]);
+    });
+
+    it("drops a malformed event", () => {
+      const emitFromMain = stubElectron();
+      const transport = createTransport();
+      const seen: unknown[] = [];
+      transport.onNotificationTargetRemoved((event) => seen.push(event));
+
+      emitFromMain({ target: "workspace", workspaceId: "ws-1", profileId: "default", viewId: "extra" });
+      emitFromMain("not an object");
+
+      expect(seen).toEqual([]);
+    });
+  });
+});

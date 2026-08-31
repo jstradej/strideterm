@@ -410,3 +410,78 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
   });
 });
+
+describe("workspace actions leave notification history to the runtime event", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function answerConfirm(ctx: AnyApi, accept = true): Promise<void> {
+    await Promise.resolve();
+    expect(ctx.overlay.value).toBe("ConfirmDialog");
+    const props = ctx.overlayProps.value as AnyApi;
+    if (accept) props.onConfirm();
+    else props.onCancel();
+    await Promise.resolve();
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function seed(store: any, workspaceId: string, viewId: string): void {
+    store.add({ title: "t", body: "b", kind: "waiting", workspaceId, viewId, meta: { profileId: "default" } });
+  }
+
+  // Purging here would only cover the initiating renderer, miss every other
+  // client and backend-originated removal path, and — because the optimistic
+  // delete can still be rolled back — destroy history that must come back.
+  it("deleteWorkspace does not purge history optimistically", async () => {
+    const initial = { appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" } };
+    const { ctx } = makeCtx(initial, { deleteWorkspace: vi.fn(() => new Promise(() => {})) });
+    const notifs = useNotificationStore();
+    seed(notifs, "ws-B", "ws-B:shell");
+    const actions = createWorkspaceActions(ctx);
+
+    void actions.deleteWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await answerConfirm(ctx, true);
+    await Promise.resolve();
+
+    expect(ctx.payload.value.appState.workspaces.find((w: AnyApi) => w.id === "ws-B")).toBeUndefined();
+    expect(notifs.sessions.map((s: AnyApi) => s.workspaceId)).toEqual(["ws-B"]);
+  });
+
+  it("forceRemoveWorkspace does not purge history optimistically either", async () => {
+    const initial = { appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" } };
+    const { ctx } = makeCtx(initial, { deleteWorkspace: vi.fn(() => new Promise(() => {})) });
+    const notifs = useNotificationStore();
+    seed(notifs, "ws-B", "ws-B:shell");
+    const actions = createWorkspaceActions(ctx);
+
+    void actions.forceRemoveWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await Promise.resolve();
+
+    expect(ctx.payload.value.appState.workspaces.find((w: AnyApi) => w.id === "ws-B")).toBeUndefined();
+    expect(notifs.sessions.map((s: AnyApi) => s.workspaceId)).toEqual(["ws-B"]);
+  });
+
+  // A Git or Docker tab is only added to hiddenViewIds — it can be reopened,
+  // so nothing was removed and no history may be dropped.
+  it("hiding a Git tab leaves its notification history alone", async () => {
+    const initial = { appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" } };
+    const { ctx } = makeCtx(initial);
+    const notifs = useNotificationStore();
+    seed(notifs, "ws-A", "git:ws-A");
+    const actions = createWorkspaceActions(ctx);
+
+    actions.closeTab("git:ws-A");
+    await Promise.resolve();
+
+    expect(ctx.hiddenViewIds.value.has("git:ws-A")).toBe(true);
+    expect(notifs.sessions).toHaveLength(1);
+  });
+});
