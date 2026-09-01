@@ -99,7 +99,7 @@ describe("resolveWorkspaceStatusCue", () => {
       resolveWorkspaceStatusCue({
         kind: "task",
         taskState: "failed",
-        agentActivityState: "running",
+        agentActivityState: "done",
         prStatus: "active",
       })?.state,
     ).toBe("failed");
@@ -107,6 +107,34 @@ describe("resolveWorkspaceStatusCue", () => {
     expect(
       resolveWorkspaceStatusCue({ kind: "terminal", agentActivityState: "running", prStatus: "abandoned" })?.state,
     ).toBe("running");
+  });
+
+  /**
+   * A task workspace outlives its task: the worktree stays and the user opens
+   * a Claude tab in it by hand. That tab shows "running" — the sidebar dot has
+   * to pulse with it instead of still reporting the run that ended.
+   */
+  it("lets a session that is running now outrank a settled task state", () => {
+    for (const taskState of ["completed", "failed", "stopped", "paused"]) {
+      expect(
+        resolveWorkspaceStatusCue({
+          kind: "task",
+          taskState,
+          agentActivityState: "running",
+          agentActivityLabel: "Claude Code is working",
+        }),
+      ).toEqual({ state: "running", label: "Claude Code is working", heartbeat: true });
+    }
+
+    // …but a task that is still running keeps its own label.
+    expect(
+      resolveWorkspaceStatusCue({ kind: "task", taskState: "running", agentActivityState: "running" })?.label,
+    ).toBe("Running…");
+
+    // …and a finished session never overwrites the settled outcome.
+    expect(resolveWorkspaceStatusCue({ kind: "task", taskState: "failed", agentActivityState: "done" })?.state).toBe(
+      "failed",
+    );
   });
 
   /**

@@ -84,7 +84,9 @@ export interface WorkspaceStatusSource {
  *
  * Precedence, unchanged from the card's original mapping: a task's own
  * lifecycle first (it is the most specific thing the workspace is doing), then
- * a plain agent session, then the pull request the workspace reviews.
+ * a plain agent session, then the pull request the workspace reviews — with
+ * one exception, spelled out below: a session that is running RIGHT NOW
+ * outranks a task that has already settled.
  */
 export function resolveWorkspaceStatusCue(source: WorkspaceStatusSource | null | undefined): WorkspaceStatusCue | null {
   if (!source) return null;
@@ -92,6 +94,17 @@ export function resolveWorkspaceStatusCue(source: WorkspaceStatusSource | null |
 
   if (kind === "task" && taskState) {
     if (isTaskRunningState(taskState)) return { state: "running", label: "Running…", heartbeat: true };
+    // A settled task does not end the workspace: its worktree stays open and
+    // the user drives it by hand. A panel that is running right now is the
+    // more current truth than the run that finished earlier — the tab already
+    // says "running", so the sidebar dot has to pulse with it instead of
+    // showing the workspace as idle while an agent types in it.
+    //
+    // Only `running` outranks the settled state. A `done` session adds nothing
+    // over "Completed" and would wrongly soften "Failed" into a green dot.
+    if (agentActivityState === "running") {
+      return { state: "running", label: agentActivityLabel || "Agent is working", heartbeat: true };
+    }
     if (taskState === "failed") return { state: "failed", label: "Failed", heartbeat: false };
     if (taskState === "stopped") return { state: "stopped", label: "Stopped", heartbeat: false };
     if (taskState === "paused") return { state: "paused", label: "Paused", heartbeat: false };

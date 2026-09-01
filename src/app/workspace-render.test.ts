@@ -307,6 +307,39 @@ describe("buildWorkspaceCards", () => {
     expect(card.agentActivityLabel).toBe("2 agents finished");
   });
 
+  test("surfaces a hand-opened agent tab in a task workspace whose task already finished", () => {
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "ws-task",
+          name: "strideterm - mobile",
+          kind: "task",
+          color: "#7C4DFF",
+          icon: "🤖",
+          panels: [{ id: "claude", title: "Claude Code", command: "claude" }],
+          task: { state: "completed", currentRound: 2, maxRounds: 10 },
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "ws-task",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+      sessionActivities: {
+        "ws-task:claude": {
+          workspaceId: "ws-task",
+          panelId: "claude",
+          activity: "running",
+          agentLike: true,
+          hasUserInput: true,
+        },
+      },
+    });
+
+    expect(card.agentActivityState).toBe("running");
+    expect(card.agentActivityLabel).toBe("Claude Code is working");
+    // The settled task still describes the run itself; only the dot moves.
+    expect(card.summary).toBe("Completed · R2/10");
+  });
+
   test("does not surface generic or passive session activity as agent work", () => {
     const [card] = buildWorkspaceCards({
       workspaces: [

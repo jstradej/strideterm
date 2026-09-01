@@ -176,7 +176,11 @@ export function buildWorkspaceCards({
     const liveTask = taskRunnerSnapshot?.[workspace.id];
     const taskState = liveTask?.state || workspace.task?.state;
     const agentActivity = agentActivityByWorkspace.get(workspace.id);
-    const workspaceAgentState = workspace.kind === "task" ? null : agentActivity?.state || null;
+    // Task workspaces are included on purpose. A finished task does not close
+    // its worktree — the user keeps working in it by hand, and a Claude tab
+    // they start there is exactly as live as one in a plain workspace. Which
+    // of the two signals wins is decided once, in resolveWorkspaceStatusCue().
+    const workspaceAgentState = agentActivity?.state || null;
     const taskCurrentRound = liveTask?.currentRound ?? workspace.task?.currentRound ?? 0;
     const taskMaxRounds = liveTask?.maxRounds ?? workspace.task?.maxRounds ?? 10;
     const taskSummary = taskState
