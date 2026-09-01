@@ -485,3 +485,162 @@ describe("workspace actions leave notification history to the runtime event", ()
     expect(notifs.sessions).toHaveLength(1);
   });
 });
+
+// Seba's report: a PR attached to the wrong workspace left a Review tab that
+// nothing in the tab bar could remove — closing it was a silent no-op, and the
+// only detach buttons live in the sidebar menu, the Git tab and the workspace
+// editor.
+describe("createWorkspaceActions — detaching a workspace from its PR review", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function answerConfirm(ctx: AnyApi, accept = true): Promise<void> {
+    await Promise.resolve();
+    expect(ctx.overlay.value).toBe("ConfirmDialog");
+    const props = ctx.overlayProps.value as AnyApi;
+    if (accept) props.onConfirm();
+    else props.onCancel();
+    await flush();
+  }
+
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  // `review: null` (the default) means "the standard PR-linked marker"; pass an
+  // explicit object to vary it.
+  function makeReviewPayload(review: AnyApi | null = null): AnyApi {
+    return {
+      appState: {
+        activeWorkspaceId: "ws-pr",
+        workspaces: [
+          {
+            id: "ws-pr",
+            name: "web-app",
+            cwd: "C:/work/a",
+            notes: "Azure DevOps review workspace for web-app PR #123",
+            panels: [{ id: "shell", title: "Shell" }],
+            review:
+              review === null
+                ? {
+                    provider: "azure-devops",
+                    prKey: "ado-main:repo-1:123",
+                    checkout: { mode: "linked-existing-workspace", rootPath: "C:/work/a" },
+                  }
+                : review,
+          },
+        ],
+      },
+    };
+  }
+
+  function makeReviewCtx(payload: AnyApi = makeReviewPayload()) {
+    const saveWorkspace = vi.fn(async (ws: AnyApi) => ({
+      appState: { workspaces: [ws], activeWorkspaceId: "ws-pr" },
+    }));
+    const harness = makeCtx(payload, { saveWorkspace });
+    return { ...harness, saveWorkspace };
+  }
+
+  it("closing the Review tab offers the detach instead of silently doing nothing", async () => {
+    const { ctx, saveWorkspace } = makeReviewCtx();
+    const actions = createWorkspaceActions(ctx);
+
+    actions.closeTab("review:ws-pr");
+    await answerConfirm(ctx, true);
+
+    expect(saveWorkspace).toHaveBeenCalledTimes(1);
+    expect(saveWorkspace.mock.calls[0][0]).toMatchObject({ id: "ws-pr", review: null });
+    // Hiding it would leave the PR link — and therefore the tab — in place.
+    expect(ctx.hiddenViewIds.value.has("review:ws-pr")).toBe(false);
+  });
+
+  it("cancelling the prompt keeps the review link", async () => {
+    const { ctx, saveWorkspace } = makeReviewCtx();
+    const actions = createWorkspaceActions(ctx);
+
+    actions.closeTab("review:ws-pr");
+    await answerConfirm(ctx, false);
+
+    expect(saveWorkspace).not.toHaveBeenCalled();
+    expect(ctx.payload.value.appState.workspaces[0].review).not.toBeNull();
+  });
+
+  it("does not prompt for a Review tab whose workspace is no longer PR-linked", async () => {
+    const { ctx, saveWorkspace } = makeReviewCtx(makeReviewPayload({ provider: "azure-devops", prKey: "" }));
+    const actions = createWorkspaceActions(ctx);
+
+    actions.closeTab("review:ws-pr");
+    await flush();
+
+    expect(ctx.overlay.value).toBeNull();
+    expect(saveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("closing a normal tab of a PR-linked workspace is unaffected by the Review-tab branch", async () => {
+    const { ctx, saveWorkspace } = makeReviewCtx();
+    const actions = createWorkspaceActions(ctx);
+
+    actions.closeTab("ws-pr:shell");
+    await flush();
+
+    // No prompt, and the tab takes the ordinary close path — the review link
+    // is only ever cleared for the "review:" view id.
+    expect(ctx.overlay.value).toBeNull();
+    expect(ctx.hiddenViewIds.value.has("ws-pr:shell")).toBe(true);
+    expect(saveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("confirmAndDetachWorkspaceReview clears the marker and the auto-set notes prefix", async () => {
+    const { ctx, saveWorkspace } = makeReviewCtx();
+    const actions = createWorkspaceActions(ctx);
+
+    const detached = actions.confirmAndDetachWorkspaceReview("ws-pr");
+    await answerConfirm(ctx, true);
+
+    await expect(detached).resolves.toBe(true);
+    expect(saveWorkspace.mock.calls[0][0]).toMatchObject({ review: null, notes: "" });
+  });
+
+  it("keeps user-written notes when detaching", async () => {
+    const payload = makeReviewPayload();
+    payload.appState.workspaces[0].notes = "my own note";
+    const { ctx, saveWorkspace } = makeReviewCtx(payload);
+    const actions = createWorkspaceActions(ctx);
+
+    void actions.confirmAndDetachWorkspaceReview("ws-pr");
+    await answerConfirm(ctx, true);
+
+    expect(saveWorkspace.mock.calls[0][0].notes).toBe("my own note");
+  });
+
+  it("resolves false and toasts when the save fails", async () => {
+    const harness = makeCtx(makeReviewPayload(), {
+      saveWorkspace: vi.fn(async () => {
+        throw new Error("disk full");
+      }),
+    });
+    const notifs = useNotificationStore();
+    const actions = createWorkspaceActions(harness.ctx);
+
+    const detached = actions.confirmAndDetachWorkspaceReview("ws-pr");
+    await answerConfirm(harness.ctx, true);
+
+    await expect(detached).resolves.toBe(false);
+    expect(notifs.persistentToasts.map((t: AnyApi) => t.title)).toContain("Detach failed");
+  });
+
+  it("ignores an unknown workspace id without prompting", async () => {
+    const { ctx } = makeReviewCtx();
+    const actions = createWorkspaceActions(ctx);
+
+    await expect(actions.confirmAndDetachWorkspaceReview("ws-nope")).resolves.toBe(false);
+    expect(ctx.overlay.value).toBeNull();
+  });
+});

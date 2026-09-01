@@ -81,6 +81,68 @@ describe("ContextMenu", () => {
     wrapper.unmount();
   });
 
+  // The Review tab is not a panel, so it has no Close action — detaching the
+  // workspace from its PR is what removes it, and this menu is the first place
+  // users look (Seba's report).
+  function seedReviewWorkspace(store: ReturnType<typeof useAppStore>, review: unknown): void {
+    store.payload = {
+      appState: {
+        workspaces: [{ id: "ws-pr", name: "web-app", panels: [{ id: "shell" }], review }],
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+  }
+
+  test("offers 'Detach from PR review' on the Review tab and passes the workspace id", async () => {
+    const store = useAppStore();
+    seedReviewWorkspace(store, { provider: "azure-devops", prKey: "ado-main:repo-1:123" });
+    const calls: string[] = [];
+    store.confirmAndDetachWorkspaceReview = (async (workspaceId: string) => {
+      calls.push(workspaceId);
+      return true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    store.contextMenu = { viewId: "review:ws-pr", x: 0, y: 0 };
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const menu = document.querySelector(".context-menu") as Element;
+    // The provider refresh stays available alongside it.
+    expect(menu.textContent || "").toContain("Refresh Azure DevOps");
+    const btn = Array.from(menu.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Detach from PR review"),
+    );
+    expect(btn).toBeDefined();
+    (btn as HTMLElement).click();
+    await wrapper.vm.$nextTick();
+    expect(calls).toEqual(["ws-pr"]);
+    // The menu closes on the way out — the confirm dialog takes over.
+    expect(store.contextMenu).toBeNull();
+    wrapper.unmount();
+  });
+
+  test("does not offer the detach for a GitHub review tab whose workspace lost its prKey", () => {
+    const store = useAppStore();
+    seedReviewWorkspace(store, { provider: "github", prKey: "" });
+    store.contextMenu = { viewId: "review:ws-pr", x: 0, y: 0 };
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const menu = document.querySelector(".context-menu") as Element;
+    expect(menu.textContent || "").not.toContain("Detach from PR review");
+    wrapper.unmount();
+  });
+
+  test("does not offer the detach on a terminal tab of the same workspace", () => {
+    const store = useAppStore();
+    seedReviewWorkspace(store, { provider: "azure-devops", prKey: "ado-main:repo-1:123" });
+    const resolvePanel = (viewId: string) =>
+      viewId === "ws-pr:shell" ? { workspace: { id: "ws-pr", kind: "manual" }, panel: { id: "shell" } } : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store.getPanelByViewId = resolvePanel as any;
+    store.contextMenu = { viewId: "ws-pr:shell", x: 0, y: 0 };
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const menu = document.querySelector(".context-menu") as Element;
+    expect(menu.textContent || "").not.toContain("Detach from PR review");
+    wrapper.unmount();
+  });
+
   test("renders group actions when tab is in split group", () => {
     const store = useAppStore();
     store.contextMenu = { viewId: "term:1", x: 50, y: 50 };

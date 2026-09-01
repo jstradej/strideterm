@@ -103,6 +103,16 @@
       </button>
 
       <button
+        v-if="reviewDetachWorkspaceId"
+        type="button"
+        class="context-menu__item"
+        title="Unlink this workspace from its pull request. The Review tab disappears, agent tabs stop getting the review MCP bridge, and git operations behave like a normal workspace again. The PR on the server is not touched."
+        @click="onDetachReview"
+      >
+        <span class="context-menu__icon">&#x1F517;</span><span>Detach from PR review</span>
+      </button>
+
+      <button
         v-if="canAttachCompanion"
         type="button"
         class="context-menu__item"
@@ -245,6 +255,17 @@ const refreshKind = computed(() => {
     return ws?.review?.provider === "github" ? "github" : "azure";
   }
   return "";
+});
+
+// The Review tab has no panel to close — detaching the workspace from its PR
+// is what removes it, and this menu is where users look for that (the sidebar
+// workspace menu, the Git tab and the workspace editor also offer it).
+const reviewDetachWorkspaceId = computed(() => {
+  const id = viewId.value;
+  if (!isReviewViewId(id)) return "";
+  const workspaceId = id.replace(/^review:/, "");
+  const ws = store.payload?.appState?.workspaces?.find((w) => w.id === workspaceId);
+  return ws?.review?.prKey ? workspaceId : "";
 });
 
 const refreshLabel = computed(() => {
@@ -477,6 +498,12 @@ function onRefresh() {
   if (kind === "docker") store.refreshDocker();
   else if (kind === "azure") store.refreshAzure();
   else if (kind === "github") store.refreshGitHub();
+}
+
+function onDetachReview() {
+  const workspaceId = reviewDetachWorkspaceId.value;
+  store.hideContextMenu();
+  void store.confirmAndDetachWorkspaceReview(workspaceId);
 }
 
 function onRemoveFromGroup() {

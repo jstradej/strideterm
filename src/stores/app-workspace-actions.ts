@@ -158,6 +158,37 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   /**
+   * Confirm-then-detach for the affordances that hang off the Review tab itself
+   * — its context-menu entry and the close gesture on it. The sidebar and
+   * Git-tab buttons keep their own prompts. Resolves true when the review link
+   * was actually cleared.
+   */
+  async function confirmAndDetachWorkspaceReview(workspaceId: string): Promise<boolean> {
+    const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
+    if (!(ws as AnyApi)?.review?.prKey) return false;
+    const confirmed = await confirmInApp({
+      title: "Detach from PR review?",
+      message:
+        "Unlink this workspace from its pull request. The Review tab disappears and agent tabs stop being launched with the review MCP bridge; git operations behave like a normal workspace again. The pull request on the server is not touched.",
+      confirmLabel: "Detach",
+    });
+    if (!confirmed) return false;
+    try {
+      await detachWorkspaceReview(workspaceId);
+      return true;
+    } catch (err) {
+      const { useNotificationStore } = await import("./notifications.js");
+      useNotificationStore().pushEphemeralToast({
+        title: "Detach failed",
+        body: (err as Error)?.message || "Could not detach the workspace from its PR review.",
+        kind: "error",
+        durationMs: 6000,
+      });
+      return false;
+    }
+  }
+
+  /**
    * Opt a reviewer-role PR checkout into git write operations (rebase/merge/
    * push). The workspace stays linked to the review; push targets the PR
    * source branch. Authors get write access without this flag.
@@ -356,7 +387,15 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
   function closeTab(viewId: string): void {
     if (!viewId) return;
-    if (isAzureViewId(viewId) || isGitHubViewId(viewId) || isReviewViewId(viewId)) return;
+    if (isAzureViewId(viewId) || isGitHubViewId(viewId)) return;
+    // The Review tab is not a panel — it exists for as long as the workspace is
+    // linked to a PR, so there is nothing to hide and closing it used to be a
+    // silent no-op. Offer the detach that actually removes it instead, so the
+    // close gesture (Ctrl+W, tab menu) leads somewhere.
+    if (isReviewViewId(viewId)) {
+      void confirmAndDetachWorkspaceReview(viewId.replace(/^review:/, ""));
+      return;
+    }
     // A borrowed Companion Primary is only HOSTED here — closing it is the
     // owning workspace's call. Falling through would hide the alias locally
     // (it matches no panel of this workspace) and the live conversation would
@@ -735,6 +774,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     confirmInApp,
     saveWorkspace,
     detachWorkspaceReview,
+    confirmAndDetachWorkspaceReview,
     setWorkspaceReviewWritable,
     deleteWorkspace,
     forceRemoveWorkspace,

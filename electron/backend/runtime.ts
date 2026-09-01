@@ -5578,6 +5578,45 @@ export async function createRuntime({
         }
       }
 
+      // Losing the review marker also has to release the PR's tracked review
+      // workspace. The inbox row resolves its target through that tracked id as
+      // a fallback (azure-devops-pr-summary.ts / github-pr-summary.ts), and the
+      // poll re-persists it as `summary.reviewWorkspaceId || tracked...`, so a
+      // marker-only detach leaves the row offering "Open" on a workspace that is
+      // no longer attached — and blocks a fresh review workspace for that PR.
+      // Same cleanup the post-merge auto-detach does in
+      // runtime-provider-lifecycle.ts; every manual detach path (sidebar menu,
+      // Git tab, workspace editor, remote client) lands here.
+      const priorReviewPrKey = String(priorWorkspace?.review?.prKey || "");
+      const nextReviewPrKey = String(workspace?.review?.prKey || "");
+      if (priorReviewPrKey && priorReviewPrKey !== nextReviewPrKey) {
+        const tracked = azureReviewStore.getTrackedPullRequest(priorReviewPrKey);
+        // Only release a link that still points at THIS workspace — the PR may
+        // already have been re-attached elsewhere.
+        if (String(tracked?.reviewWorkspaceId || "") === savedWorkspaceId) {
+          try {
+            await azureReviewStore.upsertTrackedPullRequest(priorReviewPrKey, { reviewWorkspaceId: "" });
+            log.info("saveWorkspace: released the tracked review workspace after a detach", {
+              workspaceId: savedWorkspaceId,
+              prKey: priorReviewPrKey,
+            });
+          } catch (error) {
+            log.warn("saveWorkspace: could not release the tracked review workspace", {
+              prKey: priorReviewPrKey,
+              err: (error as Error)?.message,
+            });
+          }
+          // refreshAzure() already runs at the end of this handler; GitHub needs
+          // its own nudge so the inbox row recomputes without waiting for the
+          // next poll.
+          if (priorWorkspace?.review?.provider === "github") {
+            refreshGitHub().catch((err: unknown) => {
+              log.warn("saveWorkspace: refreshGitHub failed", { err: (err as Error)?.message });
+            });
+          }
+        }
+      }
+
       for (const companionId of orphanedCompanionIds) {
         taskRunner.markAttachedSourceMissing(companionId);
       }

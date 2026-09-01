@@ -10775,3 +10775,121 @@ describe("notification:target-removed lifecycle events", () => {
     expect(fixture.runtime.getPayload().attention.byProject["ws-1"]).toBeUndefined();
   });
 });
+
+// A workspace can be unlinked from its PR from the sidebar menu, the Git tab,
+// the Review tab's context menu or the workspace editor — all four land in
+// saveWorkspace with review: null. Clearing only the marker used to leave the
+// PR's tracked review workspace pointing at it, so the inbox row kept offering
+// "Open" on a workspace that was no longer attached and no fresh review
+// workspace could be created for that PR.
+describe("saveWorkspace releases the tracked review workspace on detach", () => {
+  const PR_KEY = "ado-main:repo-1:123";
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeReviewStore(tracked: any) {
+    return {
+      getState: () => ({ trackedPullRequests: tracked ? { [PR_KEY]: tracked } : {}, connections: {} }),
+      getTrackedPullRequest: (key: string) => (key === PR_KEY ? tracked : null),
+      upsertTrackedPullRequest: vi.fn().mockResolvedValue(undefined),
+      upsertConnectionState: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  function makeReviewWorkspace(provider = "azure-devops") {
+    return {
+      id: "workspace-review",
+      name: "web-app PR #123",
+      kind: "terminal",
+      cwd: "C:/work/web-app",
+      // Deliberately NOT the "<Provider> review workspace for ..." prefix: that
+      // is the lifecycle repair pass's re-attach hint and would fire its own
+      // tracked-store write during startup.
+      notes: "attached to a PR",
+      profileId: "default",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+      review: {
+        provider,
+        prKey: PR_KEY,
+        connectionId: "ado-main",
+        checkout: { mode: "linked-existing-workspace", rootPath: "C:/work/web-app", cacheRepoPath: "" },
+        role: "author",
+      },
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function setup(reviewStore: any, workspace: any = makeReviewWorkspace()) {
+    const fixture = await createFixture({
+      initialState: { activeWorkspaceId: workspace.id, workspaces: [workspace] },
+      dependencies: { createAzureReviewStore: async () => reviewStore },
+    });
+    fixtures.push(fixture);
+    // Ignore whatever startup did — only the save under test is interesting.
+    reviewStore.upsertTrackedPullRequest.mockClear();
+    const saved = fixture.runtime
+      .getPayload()
+      .appState.workspaces.find((entry) => entry.id === workspace.id) as unknown as Record<string, unknown>;
+    return { fixture, saved };
+  }
+
+  test("clears it when the review marker is removed", async () => {
+    const reviewStore = makeReviewStore({ key: PR_KEY, reviewWorkspaceId: "workspace-review" });
+    const { fixture, saved } = await setup(reviewStore);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.runtime.saveWorkspace({ ...saved, review: null } as any);
+
+    expect(reviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith(PR_KEY, { reviewWorkspaceId: "" });
+    expect(
+      fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "workspace-review")?.review,
+    ).toBeNull();
+  });
+
+  test("clears it for a GitHub review too", async () => {
+    const reviewStore = makeReviewStore({ key: PR_KEY, reviewWorkspaceId: "workspace-review" });
+    const { fixture, saved } = await setup(reviewStore, makeReviewWorkspace("github"));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.runtime.saveWorkspace({ ...saved, review: null } as any);
+
+    expect(reviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith(PR_KEY, { reviewWorkspaceId: "" });
+  });
+
+  test("leaves a link that points at a different workspace alone", async () => {
+    const reviewStore = makeReviewStore({ key: PR_KEY, reviewWorkspaceId: "workspace-other" });
+    const { fixture, saved } = await setup(reviewStore);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.runtime.saveWorkspace({ ...saved, review: null } as any);
+
+    expect(reviewStore.upsertTrackedPullRequest).not.toHaveBeenCalled();
+  });
+
+  test("does not touch it when the review marker survives the save", async () => {
+    const reviewStore = makeReviewStore({ key: PR_KEY, reviewWorkspaceId: "workspace-review" });
+    const { fixture, saved } = await setup(reviewStore);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.runtime.saveWorkspace({ ...saved, name: "renamed" } as any);
+
+    expect(reviewStore.upsertTrackedPullRequest).not.toHaveBeenCalled();
+    expect(
+      fixture.runtime.getPayload().appState.workspaces.find((w) => w.id === "workspace-review")?.review?.prKey,
+    ).toBe(PR_KEY);
+  });
+
+  test("releases the old PR when the workspace is re-linked to a different one", async () => {
+    const reviewStore = makeReviewStore({ key: PR_KEY, reviewWorkspaceId: "workspace-review" });
+    const { fixture, saved } = await setup(reviewStore);
+
+    await fixture.runtime.saveWorkspace({
+      ...saved,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      review: { ...(saved.review as any), prKey: "ado-main:repo-1:456" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    expect(reviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith(PR_KEY, { reviewWorkspaceId: "" });
+  });
+});
