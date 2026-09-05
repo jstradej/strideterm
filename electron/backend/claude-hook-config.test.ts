@@ -14,7 +14,7 @@ import {
   findExistingHook,
   HOOKS_TO_REGISTER,
 } from "./claude-hook-config.js";
-import { SHARD_LEASE_TTL_MS } from "./notify-url-registry.js";
+import { SHARD_LEASE_TTL_MS, normalizeCwd } from "./notify-url-registry.js";
 
 let tempDir: string;
 let mockHomedir: string;
@@ -586,7 +586,7 @@ describe("notify.mjs retry", () => {
     try {
       // notify-urls.json next to the script maps the project dir to our server.
       const projectDir = path.join(tempDir, "proj");
-      const key = projectDir.replace(/\\/g, "/").toLowerCase();
+      const key = normalizeCwd(projectDir);
       await fs.writeFile(
         path.join(userDataPath, "hooks", "notify-urls.json"),
         JSON.stringify({ [key]: [`http://127.0.0.1:${port}/notify?sid=ws%3Ap&secret=s`] }),
@@ -716,7 +716,7 @@ async function runNotifyForPermissionRequest(
 
   try {
     const projectDir = path.join(tempDir, "proj");
-    const key = projectDir.replace(/\\/g, "/").toLowerCase();
+    const key = normalizeCwd(projectDir);
     await fs.writeFile(path.join(userDataPath, "hooks", "notify-urls.json"), JSON.stringify({ [key]: urls }));
 
     const stdout = await new Promise<string>((resolve, reject) => {
@@ -823,7 +823,7 @@ describe("notify.mjs PermissionRequest decisions", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     try {
       const projectDir = path.join(tempDir, "proj");
-      const key = projectDir.replace(/\\/g, "/").toLowerCase();
+      const key = normalizeCwd(projectDir);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const url = `http://127.0.0.1:${(server.address() as any).port}/notify?sid=ws%3Ap&secret=s`;
       await fs.writeFile(path.join(userDataPath, "hooks", "notify-urls.json"), JSON.stringify({ [key]: [url] }));
@@ -935,7 +935,7 @@ describe("notify.mjs registry resolution", () => {
       const sharedDir = path.join(tempDir, "shared-registry");
       await fs.mkdir(sharedDir, { recursive: true });
       const projectDir = path.join(tempDir, "shared-proj");
-      const key = projectDir.replace(/\\/g, "/").toLowerCase();
+      const key = normalizeCwd(projectDir);
       // Written in the new entry shape, with the OTHER instance's identity.
       await fs.writeFile(
         path.join(sharedDir, "notify-urls.json"),
@@ -1013,7 +1013,7 @@ describe("notify.mjs registry resolution", () => {
       const instancesDir = path.join(sharedDir, "instances");
       await fs.mkdir(instancesDir, { recursive: true });
       const projectDir = path.join(tempDir, "two-instance-proj");
-      const key = projectDir.replace(/\\/g, "/").toLowerCase();
+      const key = normalizeCwd(projectDir);
       await fs.writeFile(
         path.join(instancesDir, "aaaaaaaaaaaa.json"),
         JSON.stringify({ [key]: [{ url: urls[0], instanceId: "aaaaaaaaaaaa", sid: "ws:p" }] }),
@@ -1086,7 +1086,7 @@ describe("notify.mjs registry resolution", () => {
       const instancesDir = path.join(sharedDir, "instances");
       await fs.mkdir(instancesDir, { recursive: true });
       const projectDir = path.join(tempDir, "lease-proj");
-      const key = projectDir.replace(/\\/g, "/").toLowerCase();
+      const key = normalizeCwd(projectDir);
       await fs.writeFile(
         path.join(instancesDir, "aaaaaaaaaaaa.json"),
         JSON.stringify({
@@ -1179,7 +1179,7 @@ describe("notify.mjs registry resolution", () => {
       await fs.mkdir(instancesDir, { recursive: true });
       const projectDir = path.join(tempDir, `${label}-proj`);
       const childDir = path.join(projectDir, "sub");
-      const norm = (dir: string) => dir.replace(/\\/g, "/").toLowerCase();
+      const norm = normalizeCwd;
       await write({
         instancesDir,
         sharedUrlsPath: path.join(sharedDir, "notify-urls.json"),
@@ -1374,7 +1374,7 @@ describe("notify.mjs registry resolution", () => {
       const instancesDir = path.join(sharedDir, "instances");
       await fs.mkdir(instancesDir, { recursive: true });
       const projectDir = path.join(tempDir, "sibling-proj");
-      const key = projectDir.replace(/\\/g, "/").toLowerCase();
+      const key = normalizeCwd(projectDir);
       await fs.writeFile(
         path.join(instancesDir, "dddddddddddd.json"),
         JSON.stringify({
@@ -1449,7 +1449,7 @@ describe("notify.mjs registry resolution", () => {
       const instancesDir = path.join(sharedDir, "instances");
       await fs.mkdir(instancesDir, { recursive: true });
       const projectDir = path.join(tempDir, "stale-env-proj");
-      const key = projectDir.replace(/\\/g, "/").toLowerCase();
+      const key = normalizeCwd(projectDir);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const liveUrl = `http://127.0.0.1:${(server.address() as any).port}/notify?sid=ws%3Ap&secret=s`;
       await fs.writeFile(
