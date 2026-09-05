@@ -35,6 +35,7 @@ import {
   RELAY_CONNECTOR_SYNC_TIMEOUT_MS,
   RELAY_CONNECTOR_SUBPROTOCOL,
   RELAY_FLOW_CREDIT_BYTES,
+  RELAY_GRANT_DEFINITIVE_REFUSAL_RETRY_DELAY_MS,
   RELAY_HTTP_REQUEST_TIMEOUT_MS,
   RELAY_MAX_HTTP_RESPONSE_BODY_BYTES,
   RELAY_MAX_WS_MESSAGE_BYTES,
@@ -48,6 +49,7 @@ import {
   type RelayHeaderList,
   type RelayReason,
 } from "./mobile-relay-protocol.js";
+import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 import type { RelayInstallationIdentity } from "./mobile-relay-identity.js";
 
 const log = getLogger("mobile-relay-connector");
@@ -140,6 +142,14 @@ export interface RelayConnectorOptions {
   /** Injectable so a test can drive reconnection without waiting real seconds. */
   reconnectDelayMs?: (attempt: number) => number;
   /**
+   * How long to wait before asking for another grant after a DEFINITIVE refusal — the entitlement
+   * itself, not the network (plan §6, package 2). Injectable for the same reason `reconnectDelayMs`
+   * is. Defaults to the shared `RELAY_GRANT_DEFINITIVE_REFUSAL_RETRY_DELAY_MS`, deliberately fixed
+   * rather than exponential: a lapsed entitlement does not become less lapsed by waiting longer, and
+   * this is what lets a resubscribe be picked up automatically without restarting the app.
+   */
+  definitiveRefusalRetryDelayMs?: () => number;
+  /**
    * How long an open socket may stay un-ready before it is closed and retried.
    *
    * Defaults to the shared `RELAY_CONNECTOR_HANDSHAKE_TIMEOUT_MS`, which is also the deadline the
@@ -211,6 +221,7 @@ export interface RelayConnector {
 
 export function createRelayConnector(options: RelayConnectorOptions): RelayConnector {
   const reconnectDelayMs = options.reconnectDelayMs ?? defaultReconnectDelay;
+  const definitiveRefusalRetryDelayMs = options.definitiveRefusalRetryDelayMs ?? defaultDefinitiveRefusalRetryDelay;
   const handshakeTimeoutMs = options.handshakeTimeoutMs ?? RELAY_CONNECTOR_HANDSHAKE_TIMEOUT_MS;
   const syncTimeoutMs = options.syncTimeoutMs ?? RELAY_CONNECTOR_SYNC_TIMEOUT_MS;
   const createSocket = options.createSocket ?? ((url: string, protocols: string[]) => new WebSocket(url, protocols));
@@ -348,6 +359,15 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       })
       .catch((error: Error) => {
         stats.lastError = error.message;
+        if (error instanceof MobileRelayGrantDefinitiveRefusalError) {
+          // The entitlement, not the network (plan §6). Retrying on the ordinary bounded backoff
+          // would still be a paid callable invoked roughly every 30 seconds for as long as the
+          // subscription stays lapsed — this is the "opakovat placené požadavky v rychlé smyčce" the
+          // plan refuses, at a much smaller multiple.
+          log.warn("relay grant definitively refused", { status: error.status });
+          scheduleDefinitiveRefusalRetry();
+          return;
+        }
         log.warn("relay grant unavailable", { err: error.message });
         scheduleReconnect();
       });
@@ -379,6 +399,22 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       reconnectTimer = null;
       connect();
     }, delay);
+    reconnectTimer.unref?.();
+  }
+
+  /**
+   * Same shape as {@link scheduleReconnect}, on the same timer slot (so the two can never double up),
+   * but with the fixed, much longer delay a definitive refusal calls for. Deliberately does not touch
+   * `attempt`: the exponential counter is for the network-error path, and a spell of definitive
+   * refusals must neither inflate it nor be inflated by whatever it already was.
+   */
+  function scheduleDefinitiveRefusalRetry(): void {
+    if (stopped || reconnectTimer) return;
+    setState("connecting");
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, definitiveRefusalRetryDelayMs());
     reconnectTimer.unref?.();
   }
 
@@ -1094,6 +1130,16 @@ export function defaultReconnectDelay(attempt: number): number {
   );
   const jitter = (randomBytes(1)[0] as number) / 255;
   return Math.round(exponential * (0.5 + 0.5 * jitter));
+}
+
+/**
+ * Fixed (not exponential — see {@link RelayConnectorOptions.definitiveRefusalRetryDelayMs}), with the
+ * same light jitter as {@link defaultReconnectDelay} and for the same thundering-herd reason: every
+ * desktop whose entitlement lapsed at once must not all ask again at the same instant.
+ */
+export function defaultDefinitiveRefusalRetryDelay(): number {
+  const jitter = (randomBytes(1)[0] as number) / 255;
+  return Math.round(RELAY_GRANT_DEFINITIVE_REFUSAL_RETRY_DELAY_MS * (0.9 + 0.2 * jitter));
 }
 
 function* sliceBody(chunk: Buffer): Generator<Buffer> {

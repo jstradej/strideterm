@@ -94,6 +94,35 @@ export class MobileQuotaExceededError extends Error {
 }
 
 /**
+ * Thrown by MobileFirebaseTransport.issueRelayConnectorGrant() when the refusal is DEFINITIVE rather
+ * than transient (plan 2026-09-14 §6 / package 2): the caller's own entitlement does not currently
+ * justify a relay grant at all (`permission-denied`) or its relay-grant issuance budget is exhausted
+ * (`resource-exhausted`) — as opposed to a network failure, a timeout, or the deployment having no
+ * relay configured at all (`failed-precondition`, which is a supported "no relay here" state, not a
+ * refusal to distinguish this way).
+ *
+ * WHY THIS MATTERS TO THE CALLER AND NOT JUST TO A LOG LINE. `mobile-relay-connector.ts`'s reconnect
+ * loop asks for a fresh grant on every attempt (grants are short-lived by design), and before this
+ * distinction existed it answered EVERY refusal — a dropped packet and a lapsed subscription alike —
+ * with the same bounded exponential backoff capped at `RELAY_RECONNECT_MAX_DELAY_MS` (30s). That is
+ * the right answer to a network blip and the wrong one to an entitlement that will not become valid
+ * again in 30 seconds: retrying that fast forever is exactly the "opakovat placené požadavky v
+ * rychlé smyčce" (repeating paid requests in a fast loop) the plan calls out, since each attempt is
+ * still a real, budget-metered callable invocation. A definitive refusal instead backs off to
+ * `RELAY_GRANT_DEFINITIVE_REFUSAL_RETRY_DELAY_MS` — long enough to stop being a fast loop, still
+ * periodic enough that a resubscribe is picked up automatically without restarting the app.
+ */
+export class MobileRelayGrantDefinitiveRefusalError extends Error {
+  readonly status: string;
+
+  constructor(status: string) {
+    super(`issueRelayConnectorGrant rejected: ${status}`);
+    this.name = "MobileRelayGrantDefinitiveRefusalError";
+    this.status = status;
+  }
+}
+
+/**
  * Narrow seam over Firebase Auth + RTDB + the pairing/revoke Cloud
  * Functions. Every method mirrors one real call in strideterm-mobile/cloud;
  * see that repo's rtdb-paths.ts for the exact branch shape each corresponds

@@ -122,6 +122,16 @@ import {
   taskCompanionCreateSchema,
   taskCompanionAnswerSchema,
   telegramConnectionSchema,
+  accountCheckoutSchema,
+  accountDeleteSchema,
+  accountDiagnosticsSchema,
+  accountEmailSchema,
+  accountEnrolSchema,
+  accountNoticeAckSchema,
+  accountRevokeSchema,
+  accountSignInLinkSchema,
+  accountSignInStartSchema,
+  accountSignOutSchema,
   mobileCreatePairingInvitationSchema,
   mobileRejectDeviceSchema,
   mobileRenameDeviceSchema,
@@ -186,7 +196,32 @@ export function registerIpc(
     runtime.on("mobile:pairing-progress", (payload: any) => emitToRenderer("mobile:pairing-progress", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:device-revoked", (payload: any) => emitToRenderer("mobile:device-revoked", payload)),
+    // One derived account state, broadcast to EVERY window. The renderer computes nothing from it —
+    // see account-state.ts for what it carries and, more to the point, what it never does.
+    runtime.on("account:updated", (payload: unknown) => emitToRenderer("account:updated", payload)),
   ];
+
+  // Electron's `shell` lives here, and the runtime is constructed before this registration runs, so
+  // the opener is handed over rather than imported. It applies the SAME strict scheme check as
+  // `shell:open-external` below: `vscode://file/etc/passwd` is not a thing to pass on.
+  //
+  // THIS IS A BACKSTOP, NOT THE BILLING CHECK, and the distinction is the design. This closure is
+  // shared by every external URL the app opens — the docs, a release page, a file in a browser — so a
+  // merchant exact-host allowlist here would refuse all of them. The billing allowlist lives in
+  // `account/billing-url.ts`, comes from the SIGNED bootstrap envelope (`billingCheckoutHosts`), and
+  // is applied by the account manager BEFORE a checkout or portal URL ever reaches this function.
+  // That is what makes plan §2's "both boundaries" real: the server checks the URL it hands out, and
+  // the desktop checks the URL it is about to hand to the operating system.
+  runtime.setExternalUrlOpener?.(async (url: string) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return;
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return;
+    await shell.openExternal(parsed.toString());
+  });
 
   // Every ipcMain.handle/on call above goes through these two thin wrappers so
   // the channel name is recorded exactly once, in exactly one place, at the
@@ -950,6 +985,110 @@ export function registerIpc(
   handle("telegram:refresh", async () =>
     withOperationPromise({ opId: "telegram:refresh" }, () => runtime.refreshTelegramState()),
   );
+
+  // --- account (plan §8.2) ---------------------------------------------------------------------
+  //
+  // DESKTOP-ONLY, EVERY ONE. `remote-server.ts` routes none of these and the parity test in
+  // src/transport.test.ts lists them: signing in, paying and revoking are acts whose consequences
+  // land at this machine, and a credential crossing a remote HTTP hop is a credential in one more
+  // place than it needs to be — and since this flow is passwordless, that credential is a live
+  // sign-in code rather than a password, which is worse rather than better.
+  handle("account:state", async () => withOperationPromise({ opId: "account:state" }, () => runtime.getAccountState()));
+  // THE FOUR SIGN-IN CHANNELS, and none of them is a long-running call. `start` returns as soon as
+  // the link has been requested; the wait is carried by `account:updated`, which every window already
+  // subscribes to. That is what makes "all windows see the same state" and "the flow can be cancelled
+  // or resent while waiting" true at the same time (plan §8, Fáze 3).
+  handle("account:sign-in:start", async (event, payload) => {
+    const { email, purpose, offerId } = validateIpc(accountSignInStartSchema, payload, "account:sign-in:start");
+    // WHICH window started it. Every window renders the same attempt, but only this one's closing
+    // means "never mind" — see `signInOwnerWindowId` in the runtime.
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "account:sign-in:start" }, () =>
+      runtime.accountBeginSignIn(email, purpose, offerId, windowId || undefined),
+    );
+  });
+  handle("account:sign-in:confirm", async () =>
+    withOperationPromise({ opId: "account:sign-in:confirm" }, () => runtime.accountConfirmSignIn()),
+  );
+  handle("account:sign-in:resend", async () =>
+    withOperationPromise({ opId: "account:sign-in:resend" }, () => runtime.accountResendSignIn()),
+  );
+  handle("account:sign-in:cancel", async () => {
+    runtime.accountCancelSignIn();
+    return { ok: true };
+  });
+  // THE OWNING PANEL CLOSING, which is not the same act as a cancel (F09). The window id is resolved
+  // HERE, from the sender, exactly as `account:sign-in:start` resolves it — a renderer that could
+  // name the owner could end somebody else's flow.
+  handle("account:sign-in:release", async (event) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    runtime.accountReleaseSignInFlow(windowId || undefined);
+    return { ok: true };
+  });
+  // The manual fallback. The link reaches the backend and nothing else: no operation promise carrying
+  // it, no broadcast, no log line. `validateIpc` names the channel and never the payload.
+  handle("account:sign-in:link", async (_event, payload) => {
+    const { link } = validateIpc(accountSignInLinkSchema, payload, "account:sign-in:link");
+    runtime.accountSubmitSignInLink(link);
+    return { ok: true };
+  });
+  handle("account:change-email", async (_event, payload) => {
+    const { email } = validateIpc(accountEmailSchema, payload, "account:change-email");
+    return withOperationPromise({ opId: "account:change-email" }, () => runtime.accountChangeLoginEmail(email));
+  });
+  handle("account:change-email:clear", async () => {
+    runtime.accountClearPendingEmailChange();
+    return { ok: true };
+  });
+  handle("account:enrol", async (_event, payload) => {
+    const { mode, pairHints } = validateIpc(accountEnrolSchema, payload, "account:enrol");
+    return withOperationPromise({ opId: "account:enrol" }, () =>
+      runtime.accountEnrolInstallation(mode, pairHints ?? []),
+    );
+  });
+  handle("account:start-trial", async () =>
+    withOperationPromise({ opId: "account:start-trial" }, () => runtime.accountStartTrial()),
+  );
+  handle("account:refresh", async () =>
+    withOperationPromise({ opId: "account:refresh" }, () => runtime.accountRefreshOverview()),
+  );
+  // The URL is opened by the MAIN process and never returned: a URL that reaches a renderer reaches
+  // a state diff, a devtools console and a crash report.
+  handle("account:checkout", async (_event, payload) => {
+    const { offerId } = validateIpc(accountCheckoutSchema, payload, "account:checkout");
+    return withOperationPromise({ opId: "account:checkout" }, () => runtime.accountOpenCheckout(offerId));
+  });
+  handle("account:portal", async () =>
+    withOperationPromise({ opId: "account:portal" }, () => runtime.accountOpenBillingPortal()),
+  );
+  handle("account:revoke", async (_event, payload) => {
+    const { kind, targetId } = validateIpc(accountRevokeSchema, payload, "account:revoke");
+    return withOperationPromise({ opId: "account:revoke" }, () => runtime.accountRevoke(kind, targetId));
+  });
+  handle("account:notice-ack", async (_event, payload) => {
+    const { noticeId } = validateIpc(accountNoticeAckSchema, payload, "account:notice-ack");
+    return withOperationPromise({ opId: "account:notice-ack" }, () => runtime.accountAcknowledgeNotice(noticeId));
+  });
+  handle("account:sign-out", async (_event, payload) => {
+    const { disconnect } = validateIpc(accountSignOutSchema, payload, "account:sign-out");
+    return withOperationPromise({ opId: "account:sign-out" }, () => runtime.accountSignOutInstallation(disconnect));
+  });
+  handle("account:delete", async (_event, payload) => {
+    const { confirmationPhrase } = validateIpc(accountDeleteSchema, payload, "account:delete");
+    return withOperationPromise({ opId: "account:delete" }, () => runtime.accountDelete(confirmationPhrase));
+  });
+  // Opt-in, both of them. The report is assembled in the main process from this installation's own
+  // bounded log; the renderer supplies the note and nothing else.
+  handle("account:diagnostics:submit", async (_event, payload) => {
+    const { note } = validateIpc(accountDiagnosticsSchema, payload ?? {}, "account:diagnostics:submit");
+    return withOperationPromise({ opId: "account:diagnostics:submit" }, () => runtime.accountSubmitDiagnostics(note));
+  });
+  // Deliberately NOT behind `withOperationPromise`: the local export is the fallback for when the
+  // hosted path is the thing that is broken, and it neither waits on anything nor can fail slowly.
+  handle("account:diagnostics:export", async (_event, payload) => {
+    const { note } = validateIpc(accountDiagnosticsSchema, payload ?? {}, "account:diagnostics:export");
+    return runtime.accountExportDiagnostics(note);
+  });
 
   handle("mobile:pairing:create", async (_event, options) =>
     withOperationPromise({ opId: "mobile:pairing:create" }, () =>

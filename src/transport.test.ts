@@ -829,6 +829,37 @@ describe("remote transport API parity — no method silently missing its remote 
     "onMobileStatus",
     "onMobilePairingProgress",
     "onMobileDeviceRevoked",
+    // Account (plan §8.2). Every one of these is desktop-only on purpose, and the reason is not
+    // "not yet": signing in, paying and revoking are acts whose consequences land at THIS machine,
+    // and a credential crossing a remote HTTP hop is a credential in one more place than it needs to
+    // be. It used to say "a password" here, and there is no longer one to say it about — what crosses
+    // now is a live sign-in code, which is worse rather than better.
+    // `remote-server.ts` routes none of them — asserted separately in remote-server.test.ts.
+    "getAccountState",
+    // The passwordless sign-in, which is desktop-only for a sharper reason than the rest: the flow
+    // holds a live sign-in code and a claim secret in the backend for a few minutes, and the manual
+    // fallback carries the whole email link across one IPC hop. None of that belongs on a remote HTTP
+    // transport, and the confirmation that redeems the code has to happen at the machine being signed
+    // in.
+    "accountBeginSignIn",
+    "accountConfirmSignIn",
+    "accountResendSignIn",
+    "accountCancelSignIn",
+    "accountReleaseSignInFlow",
+    "accountSubmitSignInLink",
+    "accountChangeLoginEmail",
+    "accountClearPendingEmailChange",
+    "accountEnrolInstallation",
+    "accountStartTrial",
+    "accountRefreshOverview",
+    "accountOpenCheckout",
+    "accountOpenBillingPortal",
+    "accountRevoke",
+    "accountAcknowledgeNotice",
+    "accountSignOut",
+    "accountDelete",
+    "accountSubmitDiagnostics",
+    "accountExportDiagnostics",
   ]);
 
   function extractDesktopApiKeys(): string[] {

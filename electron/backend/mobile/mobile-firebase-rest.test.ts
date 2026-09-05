@@ -12,6 +12,7 @@ import { FUNCTIONS_REGION } from "./mobile-rtdb-paths.js";
 
 const CONFIG = resolveMobileFirebaseConfig(
   {
+    STRIDETERM_ENV: "local",
     [MOBILE_FIREBASE_ENV_VARS.projectId]: "demo-strideterm",
     [MOBILE_FIREBASE_ENV_VARS.authEmulator]: "127.0.0.1:9099",
     [MOBILE_FIREBASE_ENV_VARS.databaseEmulator]: "127.0.0.1:9000",

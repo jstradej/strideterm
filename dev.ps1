@@ -70,6 +70,12 @@ function Import-MobileFirebaseDevConfig {
     $apiKeyVar = 'STRIDETERM_MOBILE_FIREBASE_API_KEY'
     $databaseVar = 'STRIDETERM_MOBILE_FIREBASE_DATABASE_URL'
 
+    if ($env:STRIDETERM_BOOTSTRAP_URL -and $env:STRIDETERM_BOOTSTRAP_TRUST_KEYS -and
+        $env:STRIDETERM_ENV -eq 'dev' -and -not $MobileFirebaseConfigPath) {
+        Write-Ok 'DEV Firebase configuration will be loaded from the signed bootstrap.'
+        return
+    }
+
     $existingProject = [Environment]::GetEnvironmentVariable($projectVar, 'Process')
     $existingApiKey = [Environment]::GetEnvironmentVariable($apiKeyVar, 'Process')
     $existingDatabase = [Environment]::GetEnvironmentVariable($databaseVar, 'Process')
@@ -78,34 +84,61 @@ function Import-MobileFirebaseDevConfig {
         return
     }
 
+    # OUTSIDE LOCAL, NOTHING IS INFERRED FROM WHERE THE FILES ARE (review R06; plan §5.5). The sibling
+    # `src/local/google-services.json` is a committed, synthetic `demo-` fixture with no real project
+    # and no secret in it (see M's app/android/app/src/local/README.md) — safe to auto-import for the
+    # one environment that never leaves this machine. `dev`, `qa` and `prod` are real servers: for any
+    # declared environment other than `local` the Firebase project/key/database are read only when
+    # NAMED (-MobileFirebaseConfigPath / STRIDETERM_MOBILE_FIREBASE_CONFIG / the three env vars), and a
+    # console that supplies none of those is refused before Electron starts, naming what is missing.
+    # Nothing here judges a project by its NAME: a recovery may use any project id, so the declaration
+    # and the explicit values are the only inputs.
+    $declaredEnvironment = [Environment]::GetEnvironmentVariable('STRIDETERM_ENV', 'Process')
+    $isLocal = (-not $declaredEnvironment) -or ($declaredEnvironment -eq 'local')
+    if (-not $isLocal -and -not $MobileFirebaseConfigPath) {
+        $missing = @()
+        if (-not $existingProject) { $missing += $projectVar }
+        if (-not $existingApiKey) { $missing += $apiKeyVar }
+        if (-not $existingDatabase) { $missing += $databaseVar }
+        throw "STRIDETERM_ENV is '$declaredEnvironment', so the sibling local google-services.json is not imported. Set $($missing -join ', ') for that environment's Firebase project, or pass -MobileFirebaseConfigPath <that project's google-services.json>. See docs/development.md, 'Which remote environment a dev build talks to'."
+    }
+
     $candidates = @()
     if ($MobileFirebaseConfigPath) {
         $candidates += $MobileFirebaseConfigPath
     }
 
-    # In a linked worktree, PSScriptRoot is under .strideterm/tree/... rather than beside the
-    # mobile repository. The common Git directory points back to the primary checkout, from which
-    # the normal sibling layout can still be derived.
-    try {
-        $gitCommonDir = (& git -C $PSScriptRoot rev-parse --path-format=absolute --git-common-dir 2>$null | Select-Object -First 1)
-        # Do not gate this on $LASTEXITCODE. In a long-running PowerShell launcher another native
-        # command or event can update that process-global value before this function inspects it;
-        # a non-empty path from git is the useful result and Test-Path below remains authoritative.
-        if ($gitCommonDir) {
-            $primaryCheckout = Split-Path -Parent ([string]$gitCommonDir).Trim()
-            $checkoutParent = Split-Path -Parent $primaryCheckout
-            $candidates += Join-Path $checkoutParent 'strideterm-mobile\app\android\app\src\dev\google-services.json'
+    if ($isLocal) {
+        # In a linked worktree, PSScriptRoot is under .strideterm/tree/... rather than beside the
+        # mobile repository. The common Git directory points back to the primary checkout, from which
+        # the normal sibling layout can still be derived.
+        try {
+            $gitCommonDir = (& git -C $PSScriptRoot rev-parse --path-format=absolute --git-common-dir 2>$null | Select-Object -First 1)
+            # Do not gate this on $LASTEXITCODE. In a long-running PowerShell launcher another native
+            # command or event can update that process-global value before this function inspects it;
+            # a non-empty path from git is the useful result and Test-Path below remains authoritative.
+            if ($gitCommonDir) {
+                $primaryCheckout = Split-Path -Parent ([string]$gitCommonDir).Trim()
+                $checkoutParent = Split-Path -Parent $primaryCheckout
+                $candidates += Join-Path $checkoutParent 'strideterm-mobile\app\android\app\src\local\google-services.json'
+            }
         }
+        catch {
+            # Git discovery is optional; the ordinary sibling candidate below still applies.
+        }
+        $candidates += Join-Path (Split-Path -Parent $PSScriptRoot) 'strideterm-mobile\app\android\app\src\local\google-services.json'
     }
-    catch {
-        # Git discovery is optional; the ordinary sibling candidate below still applies.
-    }
-    $candidates += Join-Path (Split-Path -Parent $PSScriptRoot) 'strideterm-mobile\app\android\app\src\dev\google-services.json'
 
     $configPath = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
     if (-not $configPath) {
         $searched = ($candidates | Where-Object { $_ } | Select-Object -Unique) -join '; '
-        Write-Warn "Mobile Firebase dev config was not found (searched: $searched). Set STRIDETERM_MOBILE_FIREBASE_* or STRIDETERM_MOBILE_FIREBASE_CONFIG; mobile commands will be unavailable."
+        if (-not $isLocal) {
+            # A NAMED file that is not there is a refusal, not a warning: the declared environment has
+            # no other source of its project, key and database, and starting anyway would start a
+            # qa/prod build with no Firebase configuration or — worse — with an inherited one.
+            throw "STRIDETERM_ENV is '$declaredEnvironment' and the named Firebase config was not found ($searched)."
+        }
+        Write-Warn "Mobile Firebase local demo config was not found (searched: $searched). Set STRIDETERM_MOBILE_FIREBASE_* or STRIDETERM_MOBILE_FIREBASE_CONFIG; mobile commands will be unavailable."
         return
     }
 
@@ -118,13 +151,26 @@ function Import-MobileFirebaseDevConfig {
             throw 'project_id, firebase_url or client api_key is missing'
         }
 
+        # ONE PROJECT, OR NONE OF IT (follow-up F10). These three values describe ONE Firebase
+        # project, and they used to be filled in one at a time: an operator who overrode only the
+        # project id — which is precisely what the emulator-only procedure does — kept the REAL dev
+        # project's Web API key and RTDB instance. The desktop then addressed a `demo-` project with
+        # the live project's key, so the sign-in link it produced carried that key and the local
+        # broker refused it as another environment's (`GET /c`, wrong-environment), while its
+        # database calls still went to the live instance. A file describing a different project
+        # supplies nothing at all.
+        if ($existingProject -and $existingProject -ne $projectId) {
+            Write-Warn "Mobile Firebase local demo config at $configPath describes project '$projectId', but $projectVar names '$existingProject' - not importing that project's key or database URL. Set $apiKeyVar and $databaseVar explicitly for '$existingProject'."
+            return
+        }
+
         if (-not $existingProject) { Set-Item -Path "Env:$projectVar" -Value $projectId }
         if (-not $existingApiKey) { Set-Item -Path "Env:$apiKeyVar" -Value $apiKey }
         if (-not $existingDatabase) { Set-Item -Path "Env:$databaseVar" -Value $databaseUrl }
         Write-Ok "Loaded Mobile Firebase client config from $configPath (values hidden)."
     }
     catch {
-        Write-Warn "Mobile Firebase dev config could not be loaded from $configPath; mobile commands will be unavailable. $($_.Exception.Message)"
+        Write-Warn "Mobile Firebase local demo config could not be loaded from $configPath; mobile commands will be unavailable. $($_.Exception.Message)"
     }
 }
 
@@ -336,6 +382,20 @@ try {
 #   - sets Electron userData to $DataDir\electron-data (isolates cache + single-instance lock)
 #   - renames app to strideterm-<basename($DataDir)> so it does NOT fight prod for the lock
 $env:STRIDETERM_DATA_DIR = $DataDir
+# WHICH REMOTE ENVIRONMENT this desktop talks to, declared rather than inferred (follow-up F11).
+#
+# The data dir above says where this installation keeps its FILES. It used to also decide the auth
+# environment — `bootstrapEnvironmentFor` short-circuited to 'dev' whenever STRIDETERM_DATA_DIR was
+# set — and those are different questions: a desktop pointed at the qa Firebase project still chose
+# the dev broker and still sent /start with environment 'local', which the qa Worker refuses.
+#
+# THE BARE LAUNCHER DEFAULTS TO 'local' (plan §3.1), not 'dev'. `dev` is now a real, remote server —
+# emulators plus a `demo-` project is `local` — so a plain `.\dev.ps1` with nothing else set must not
+# quietly start talking to the real dev-tier backend. Set STRIDETERM_ENV before invoking this script
+# (e.g. 'dev' or 'qa') to run with isolated data against another backend; see docs/development.md.
+if (-not $env:STRIDETERM_ENV) {
+    $env:STRIDETERM_ENV = 'local'
+}
 # Default log level "trace" in dev — surfaces every detector decision, IPC
 # call, telegram message, etc. for debugging. Override by setting
 # STRIDETERM_LOG_LEVEL before invoking this script (e.g. 'info' or 'warn').
@@ -353,7 +413,7 @@ if (-not (Test-Path $DataDir)) {
     Write-Step "Creating data dir $DataDir..."
     New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 }
-Write-Ok "Using isolated data dir: $DataDir (log level: $($env:STRIDETERM_LOG_LEVEL))"
+Write-Ok "Using isolated data dir: $DataDir (log level: $($env:STRIDETERM_LOG_LEVEL), auth env: $($env:STRIDETERM_ENV))"
 
 # --- Step 1: Kill stale Electron processes ---------------------------------
 

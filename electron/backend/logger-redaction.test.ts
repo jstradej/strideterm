@@ -92,6 +92,51 @@ describe("logger secret redaction", () => {
     }
   });
 
+  test("a passwordless sign-in code is redacted in a bare link", () => {
+    // `oobCode` is a bearer credential for somebody's ACCOUNT for as long as Firebase honours it. It
+    // arrives in a URL, which is exactly the shape undici puts into a failed-fetch message.
+    const line = "sendOobCode failed: https://auth.strideterm.com/c?attempt=abc&oobCode=LIVE-SIGN-IN-CODE&mode=signIn";
+    const out = redact(line);
+    expect(out).not.toContain("LIVE-SIGN-IN-CODE");
+    expect(out).toContain("[REDACTED]");
+    // The path survives, because that is the part that makes the log useful.
+    expect(out).toContain("/c?attempt=abc");
+  });
+
+  test("the code is redacted inside a URL-ENCODED continueUrl too", () => {
+    // THE CASE A NAME-ONLY RULE MISSES. What arrives in the mail is Firebase's own action handler
+    // with our URL nested inside it, percent-encoded — so the code appears twice, and the second copy
+    // is not preceded by a bare `oobCode=` at all.
+    const nested =
+      "https://demo.firebaseapp.com/__/auth/action?mode=signIn&oobCode=OUTER-CODE-VALUE" +
+      "&continueUrl=https%3A%2F%2Fauth.strideterm.com%2Fc%3Fattempt%3Dabc%26oobCode%3DINNER-CODE-VALUE&lang=en";
+    const out = redact(`pasted link rejected: ${nested}`);
+    expect(out).not.toContain("OUTER-CODE-VALUE");
+    expect(out).not.toContain("INNER-CODE-VALUE");
+    expect(out).toContain("[REDACTED]");
+  });
+
+  test("the claim secret is redacted wherever it appears", () => {
+    for (const line of [
+      '{"claimSecret":"NsdV0eXaMPLEsecretVALUE"}',
+      "POST /claim?claimSecret=NsdV0eXaMPLEsecretVALUE",
+      "encoded as claimSecret%3DNsdV0eXaMPLEsecretVALUE&next=1",
+      '{"claimSecretHash":"NsdV0eXaMPLEsecretVALUE"}',
+    ]) {
+      const out = redact(line);
+      expect(out, line).not.toContain("NsdV0eXaMPLEsecretVALUE");
+      expect(out).toContain("[REDACTED]");
+    }
+  });
+
+  test("a whole pasted sign-in link is redacted when it is logged as a JSON field", () => {
+    // The manual fallback carries the entire link across one IPC hop. Nothing logs that payload — the
+    // IPC wrapper carries an opId and no arguments — but the field name is covered anyway, because a
+    // redactor that depends on nobody ever adding a log line is not a control.
+    const out = redact('{"link":"https://auth.strideterm.com/c?attempt=abc&oobCode=WHOLE-LINK-CODE"}');
+    expect(out).not.toContain("WHOLE-LINK-CODE");
+  });
+
   test("non-secret content is left alone", () => {
     const safe = "starting workspace ws-1 with 3 panels and exit code 0";
     expect(redact(safe)).toBe(safe);

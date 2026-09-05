@@ -17,3 +17,4 @@ package-lock.json
 electron/backend/mobile/mobile-aad-vectors.json
 electron/backend/mobile/mobile-pairing-vectors.json
 electron/backend/mobile/mobile-relay-vectors.json
+electron/backend/mobile/mobile-bootstrap-vectors.json

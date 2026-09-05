@@ -34,6 +34,7 @@
  */
 import {
   MobileQuotaExceededError,
+  MobileRelayGrantDefinitiveRefusalError,
   type CreateInvitationRequest,
   type CreateInvitationResponse,
   type MobileConnectionState,
@@ -42,7 +43,11 @@ import {
 } from "./mobile-firebase-transport.js";
 import type { Device, EncryptedEnvelope, NotificationEvent } from "./mobile-schemas.js";
 import { DeviceSchema, EncryptedEnvelopeSchema } from "./mobile-schemas.js";
-import { MobileFirebaseNotConfiguredError, type MobileFirebaseConfig } from "./mobile-firebase-config.js";
+import {
+  MobileFirebaseNotConfiguredError,
+  type MobileFirebaseConfig,
+  type MobileFirebaseConfigRefusal,
+} from "./mobile-firebase-config.js";
 import { MobileFirebaseCallableError, type MobileFirebaseRestClient } from "./mobile-firebase-rest.js";
 import {
   pairCommandsPath,
@@ -99,11 +104,25 @@ function isQuotaRejection(err: unknown): boolean {
   return err instanceof MobileFirebaseCallableError && err.status === "resource-exhausted";
 }
 
+/**
+ * Whether a relay-grant callable failure is DEFINITIVE — the caller's own entitlement, not the
+ * network — rather than a `failed-precondition` ("no relay configured here", a supported state) or a
+ * transport-level failure (plan 2026-09-14 §6). See {@link MobileRelayGrantDefinitiveRefusalError}.
+ */
+function isDefinitiveRelayGrantRefusal(err: unknown): boolean {
+  return (
+    err instanceof MobileFirebaseCallableError &&
+    (err.status === "permission-denied" || err.status === "resource-exhausted")
+  );
+}
+
 export interface FirebaseMobileTransportDeps {
   /** `null` when the install has no Firebase configuration yet — see `missingConfig`. */
   config: MobileFirebaseConfig | null;
   /** Names of the environment variables that were missing, for the error message. */
   missingConfig: string[];
+  /** Why a complete configuration was refused (R06), so the error names the contradiction, not a missing variable. */
+  configRefusal?: MobileFirebaseConfigRefusal | null;
   /** Built lazily from `config`, so an unconfigured install constructs no client at all. */
   createClient: (config: MobileFirebaseConfig) => MobileFirebaseRestClient;
   now?: () => number;
@@ -119,7 +138,7 @@ export function createFirebaseMobileTransport(deps: FirebaseMobileTransportDeps)
   const handledCommandIds = new Set<string>();
 
   function requireClient(): MobileFirebaseRestClient {
-    if (!deps.config) throw new MobileFirebaseNotConfiguredError(deps.missingConfig);
+    if (!deps.config) throw new MobileFirebaseNotConfiguredError(deps.missingConfig, deps.configRefusal);
     if (!client) client = deps.createClient(deps.config);
     return client;
   }
@@ -286,10 +305,17 @@ export function createFirebaseMobileTransport(deps: FirebaseMobileTransportDeps)
      * LAN and Cloudflare transports exactly as they were.
      */
     async issueRelayConnectorGrant(pairId: string, connectorKeyFingerprint: string): Promise<RelayConnectorGrant> {
-      return requireClient().callFunction<RelayConnectorGrant>("issueRelayConnectorGrant", {
-        pairId,
-        connectorKeyFingerprint,
-      });
+      try {
+        return await requireClient().callFunction<RelayConnectorGrant>("issueRelayConnectorGrant", {
+          pairId,
+          connectorKeyFingerprint,
+        });
+      } catch (err) {
+        if (isDefinitiveRelayGrantRefusal(err)) {
+          throw new MobileRelayGrantDefinitiveRefusalError((err as MobileFirebaseCallableError).status);
+        }
+        throw err;
+      }
     },
 
     /**

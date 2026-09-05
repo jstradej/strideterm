@@ -1,27 +1,71 @@
 <template>
   <div class="mobile-tab">
+    <!--
+      THE ACCOUNT COMES FIRST, because it is what everything below it is billed against: without a
+      subscription there is a pairing screen that cannot complete. It is a section here rather than a
+      tab of its own (see SettingsDialog's MOBILE_TAB comment) — the desktop itself needs no account,
+      and a second tab implied otherwise.
+    -->
+    <section v-if="accountAvailable" class="mobile-tab__section">
+      <h3 class="mobile-tab__section-title">Account and subscription</h3>
+      <SettingsAccountTab />
+    </section>
+
+    <!-- id targeted by SettingsAccountTab.vue's "Connect phone" button (plan §6, Fáze B) -->
+    <h3 v-if="accountAvailable" id="mobile-tab-phone-pairing" class="mobile-tab__section-title">Phone pairing</h3>
     <p class="mobile-tab__intro">
       Pair a phone running strIDEterm Mobile to receive push notifications and act on them (pause/resume a task,
       acknowledge an alert) without opening Telegram.
     </p>
-    <p
-      class="mobile-tab__intro mobile-tab__intro--note"
-      title="A paired phone cannot start a brand-new public exposure by itself — it can only resume a tunnel mechanism this desktop already explicitly enabled in Remote Access settings."
-    >
-      A paired phone can only <strong>resume</strong> a remote tunnel this desktop has already explicitly enabled — it
-      can never turn on a new public exposure by itself.
+
+    <!-- THE ONE STEP THAT IS ACTUALLY AVAILABLE, and nothing else. A phone pairs to an installation,
+         so there is nothing to pair to until this computer is registered — and every control below
+         would fail for a reason that is not where the person is looking. -->
+    <p v-if="accountAvailable && !installationRegistered" class="mobile-tab__intro mobile-tab__intro--note">
+      Register this computer first, in <strong>Account and subscription</strong> above. Pairing becomes available as
+      soon as it is registered.
     </p>
+    <!-- `pairingReady` rather than `installationRegistered` so a build with NO account surface at all
+         (the remote web client already loses the whole section; a build with no control plane keeps
+         it) behaves as it always did, instead of being told to go and register somewhere that does
+         not exist. -->
+    <template v-if="pairingReady">
+      <p
+        class="mobile-tab__intro mobile-tab__intro--note"
+        title="A paired phone cannot start a brand-new public exposure by itself — it can only resume a tunnel mechanism this desktop already explicitly enabled in Remote Access settings."
+      >
+        A paired phone can only <strong>resume</strong> a remote tunnel this desktop has already explicitly enabled — it
+        can never turn on a new public exposure by itself.
+      </p>
 
-    <label
-      class="form-label form-label--inline"
-      title="Turns the whole Mobile feature on or off. Disabling stops the Firebase connection and any paired device stops receiving pushes/commands immediately (devices themselves stay paired)."
-    >
-      <input type="checkbox" :checked="mobileEnabled" :disabled="enableBusy" @change="onToggleEnabled" />
-      <span>Enable Mobile</span>
-    </label>
-    <p v-if="enableError" class="mobile-tab__error">{{ enableError }}</p>
+      <!-- BEFORE THE FIRST PHONE, THE STEP — NOT THE SETTING. The checkbox's real job is the ongoing
+           one its own tooltip describes: silence a paired phone without unpairing it. As the gate in
+           front of a first pairing it was a second, unexplained question asked of somebody who had
+           just registered this computer and started a trial FOR these features, and who then found
+           an unticked box and no stated reason. So until there is something to silence, the page
+           offers the thing they came to do; the switch appears once it has a job. -->
+      <template v-if="!mobileEnabled && mobileDevices.length === 0">
+        <button type="button" class="button" :disabled="enableBusy" @click="enableMobile">
+          <span v-if="enableBusy" class="mobile-tab__spinner" aria-hidden="true"></span>
+          Turn on phone pairing
+        </button>
+        <p class="mobile-tab__intro mobile-tab__intro--muted">
+          This opens the connection to the account service so a phone can be paired and receive pushes. You can turn it
+          off again at any time, without unpairing anything.
+        </p>
+      </template>
+      <label
+        v-else
+        class="form-label form-label--inline"
+        title="Turns the whole Mobile feature on or off. Disabling stops the Firebase connection and any paired device stops receiving pushes/commands immediately (devices themselves stay paired)."
+      >
+        <input type="checkbox" :checked="mobileEnabled" :disabled="enableBusy" @change="onToggleEnabled" />
+        <span>Enable Mobile</span>
+      </label>
+      <p v-if="enableError" class="mobile-tab__error">{{ enableError }}</p>
+    </template>
 
-    <template v-if="mobileEnabled">
+    <template v-if="pairingReady && mobileEnabled">
       <!-- Connection health -->
       <div class="status-row">
         <span class="status-badge" :class="healthBadgeClass" :title="healthTitle">
@@ -216,6 +260,18 @@
       </div>
 
       <!-- Devices -->
+      <!--
+        THE CAPS LIVE ON THE ACCOUNT PAGE, and this points at them rather than repeating them
+        (plan §8.3). What is listed below is what THIS desktop has paired; how many phones and
+        desktops the ACCOUNT is allowed, and which of them are enrolled, is one account-wide fact and
+        must have one place that states it. Two pages each computing "how many are left" is how they
+        end up disagreeing on the screen where somebody is trying to work out why they cannot add
+        another one.
+      -->
+      <p v-if="accountUsageAvailable" class="mobile-tab__account-link">
+        Phones on this account: <strong>{{ accountPhoneUsage }}</strong> — the limits and billing are in
+        <strong>Account and subscription</strong> above.
+      </p>
       <div class="device-list">
         <p v-if="mobileDevices.length === 0" class="mobile-tab__empty">No devices paired yet.</p>
         <div
@@ -365,6 +421,8 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { useAppStore } from "../../../stores/app.js";
+import { useAccountStore } from "../../../stores/account.js";
+import SettingsAccountTab from "./SettingsAccountTab.vue";
 import { QR_COLORS_FOR_SCANNING, useQrCode } from "../../../composables/useQrCode.js";
 
 interface ProfileOption {
@@ -382,6 +440,38 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const appStore = useAppStore();
+const accountStore = useAccountStore();
+/** Whether this transport has the account surface at all — desktop-only, so absent on the web client. */
+const accountAvailable = computed(() => accountStore.available);
+/**
+ * Whether this computer is registered against an account.
+ *
+ * PAIRING CANNOT PRECEDE IT, and until now the page let somebody try. A phone pairs to an
+ * INSTALLATION, and the invitation, the relay grant and the device row are all written against the
+ * account this machine is enrolled in — so with no registration there is nothing for a phone to pair
+ * to. Worse, enrolment itself needs the installation session that turning Mobile on happens to
+ * create, so the old order let a person switch Mobile on, scan a QR and get a failure whose real
+ * cause was three steps earlier. Showing the pairing controls only once the machine is registered
+ * makes the sequence the page's shape rather than something the user has to know.
+ *
+ * On a build with no hosted control plane there is no account surface at all, and `accountAvailable`
+ * already hides the whole section.
+ */
+const installationRegistered = computed(() => accountStore.state.installationRegistered === true);
+/**
+ * Whether the pairing controls are worth showing at all.
+ *
+ * Two ways to be ready, and the second is not a loophole: where there is no account surface there is
+ * no registration to wait for, and hiding pairing behind one would make a control-plane-less build
+ * unusable while pointing at a section it does not render.
+ */
+const pairingReady = computed(() => !accountAvailable.value || installationRegistered.value);
+/** Absent on the remote web client and in a build with no hosted control plane. */
+const accountUsageAvailable = computed(() => accountStore.overview !== null);
+const accountPhoneUsage = computed(() => {
+  const usage = accountStore.overview?.usage.mobileDevices;
+  return usage ? `${usage.used} / ${usage.limit}` : "";
+});
 const mobileEnabled = computed(() => appStore.mobileEnabled);
 const mobileDevices = computed(() => appStore.mobileDevices);
 const mobileConnectionHealth = computed(() => appStore.mobileConnectionHealth);
@@ -535,8 +625,7 @@ function formatResetTime(ts: number): string {
 // --- Enable/disable ---
 const enableBusy = ref(false);
 const enableError = ref("");
-async function onToggleEnabled(event: Event) {
-  const checked = (event.target as HTMLInputElement).checked;
+async function setEnabled(checked: boolean) {
   enableBusy.value = true;
   enableError.value = "";
   try {
@@ -546,6 +635,15 @@ async function onToggleEnabled(event: Event) {
   } finally {
     enableBusy.value = false;
   }
+}
+
+async function onToggleEnabled(event: Event) {
+  await setEnabled((event.target as HTMLInputElement).checked);
+}
+
+/** The first-run button. Same call as ticking the box — a different sentence, not a different act. */
+async function enableMobile() {
+  await setEnabled(true);
 }
 
 // --- Managed relay ---
@@ -829,6 +927,23 @@ onBeforeUnmount(() => {
   gap: 14px;
 }
 
+/* The two halves of this tab. A rule rather than a blank line, because the account half is a whole
+   page's worth of controls and the pairing half below it is a different subject. */
+.mobile-tab__section {
+  display: grid;
+  gap: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.mobile-tab__section-title {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
 .mobile-tab__intro {
   color: var(--muted);
   font-size: 13px;
@@ -843,6 +958,31 @@ onBeforeUnmount(() => {
   border-radius: 4px;
 }
 
+.mobile-tab__intro--muted {
+  opacity: 0.75;
+}
+.mobile-tab__spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.8;
+  animation: mobile-tab-spin 0.8s linear infinite;
+}
+@keyframes mobile-tab-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mobile-tab__spinner {
+    animation: none;
+  }
+}
 .mobile-tab__error {
   color: var(--danger);
   font-size: 12px;

@@ -3349,6 +3349,49 @@ describe("GET /api/approvals/audit-log", () => {
     expect(ipc).toContain("approvals:audit-log:delete");
   });
 
+  test("no remote route reaches the account surface at all", async () => {
+    // Plan §8.2. Signing in, paying, revoking and deleting are acts whose consequences land at the
+    // DESKTOP, and a password crossing a remote HTTP hop is a password in one more place than it
+    // needs to be. A source check rather than a request, so a route added later fails here even
+    // before it is reachable — the same discipline as the trail-delete assertion above.
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(path.resolve(process.cwd(), "electron/backend/remote-server.ts"), "utf8");
+    for (const forbidden of [
+      "account:sign-in:start",
+      "account:sign-in:confirm",
+      "account:sign-in:link",
+      "account:checkout",
+      "account:portal",
+      "account:delete",
+      "account:revoke",
+      "accountBeginSignIn",
+      "accountConfirmSignIn",
+      "accountSubmitSignInLink",
+      "accountOpenCheckout",
+      "accountDelete",
+      // Diagnostics too: what a remote caller could send from this machine, in this machine's name,
+      // is this machine's own log.
+      "account:diagnostics",
+      "accountSubmitDiagnostics",
+      "accountExportDiagnostics",
+      "api/account",
+    ]) {
+      expect(src).not.toContain(forbidden);
+    }
+
+    // ...and the DESKTOP does have them, so the assertion above is about where the capability lives
+    // rather than about it being missing everywhere.
+    const ipc = fs.readFileSync(path.resolve(process.cwd(), "electron/backend/ipc.ts"), "utf8");
+    expect(ipc).toContain("account:sign-in:start");
+    // The manual link paste is the sharpest of these: its payload is a live sign-in code. It exists
+    // as ONE desktop IPC channel and has no remote counterpart at all.
+    expect(ipc).toContain("account:sign-in:link");
+    expect(ipc).toContain("account:checkout");
+    expect(ipc).toContain("account:delete");
+    expect(ipc).toContain("account:diagnostics:submit");
+  });
+
   test("a POST to the read endpoint's path is not a delete in disguise", async () => {
     const port = await getFreePort();
     const token = "test-token";

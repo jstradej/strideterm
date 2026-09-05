@@ -524,6 +524,16 @@ export const NotificationPayloadSchema = z.object({
   body: z.string(),
   actions: z.array(z.string()),
   isTest: z.boolean(),
+  // What the phone's Activity list reads at a glance, so a row does not have to hide its answer
+  // behind a tap. All optional: an event from an older desktop carries none of them and is still a
+  // valid event.
+  workspaceName: z.string().optional(),
+  taskId: z.string().min(1).optional(),
+  tab: z.string().optional(),
+  activity: z.string().optional(),
+  prompt: z.string().optional(),
+  exitCode: z.number().int().optional(),
+  durationMs: z.number().int().min(0).optional(),
   // `verificationCode` used to be here — a random value sealed into an event addressed to a
   // freshly-claimed device, echoed back to prove it could decrypt. Gone with the challenge event
   // itself (review 3 §P0.1): delivering a real event to, and accepting a real command from, a device
@@ -559,6 +569,319 @@ export const QuotaWindowSchema = z.object({
 export type QuotaWindow = z.infer<typeof QuotaWindowSchema>;
 
 // ---------------------------------------------------------------------------
+// Mirrors of generated/account.ts
+//
+// The sanitized account/entitlement documents a client is allowed to see. None of it is an
+// authorization input — the three entitlement claims on the ID token are — and none of it may
+// carry a Paddle identifier, a raw email or the internal account id.
+// ---------------------------------------------------------------------------
+
+export const EntitlementSummarySchema = z.object({
+  state: z.enum(["unbound", "trial", "active", "past_due", "lapsed", "revoked", "billing_unconfigured"]),
+  notAfter: z.number().int().min(0).optional(),
+  renewalAt: z.number().int().min(0).optional(),
+  planLabel: z.string().optional(),
+  source: z.enum(["none", "trial", "subscription", "operator", "incident"]),
+});
+export type EntitlementSummary = z.infer<typeof EntitlementSummarySchema>;
+
+export const BillingOfferSchema = z.object({
+  offerId: z.string().min(1),
+  planLabel: z.string().min(1),
+  formattedPrice: z.string().min(1),
+  billingPeriod: z.enum(["monthly", "annual"]),
+});
+export type BillingOffer = z.infer<typeof BillingOfferSchema>;
+
+export const AccountUsageCounterSchema = z.object({
+  used: z.number().int().min(0),
+  limit: z.number().int().min(0),
+});
+export type AccountUsageCounter = z.infer<typeof AccountUsageCounterSchema>;
+
+export const AccountUsageSchema = z.object({
+  installations: AccountUsageCounterSchema,
+  mobileDevices: AccountUsageCounterSchema,
+  activeRelaySessions: AccountUsageCounterSchema,
+});
+export type AccountUsage = z.infer<typeof AccountUsageSchema>;
+
+export const AccountPairSummarySchema = z.object({
+  pairId: z.string().min(1),
+  pairDeviceId: z.string().min(1),
+  desktopInstallationId: z.string().min(1),
+  desktopLabel: z.string().optional(),
+});
+export type AccountPairSummary = z.infer<typeof AccountPairSummarySchema>;
+
+export const AccountInstallationSummarySchema = z.object({
+  installationId: z.string().min(1),
+  label: z.string().optional(),
+  keyFingerprintSuffix: z.string().optional(),
+  registeredAt: z.number().int().min(0),
+  lastSeenAt: z.number().int().min(0).optional(),
+  isThisInstallation: z.boolean(),
+  state: z.enum(["active", "revoked"]),
+});
+export type AccountInstallationSummary = z.infer<typeof AccountInstallationSummarySchema>;
+
+export const AccountMobileDeviceSummarySchema = z.object({
+  mobileDeviceKeySuffix: z.string(),
+  label: z.string().optional(),
+  platform: PlatformSchema,
+  boundAt: z.number().int().min(0),
+  lastSeenAt: z.number().int().min(0).optional(),
+  state: z.enum(["active", "revoked"]),
+  pairs: z.array(AccountPairSummarySchema),
+});
+export type AccountMobileDeviceSummary = z.infer<typeof AccountMobileDeviceSummarySchema>;
+
+export const AccountNoticeSummarySchema = z.object({
+  noticeId: z.string().min(1),
+  kind: z.enum(["trial-ending-3d", "trial-ending-1d", "trial-ended", "cap-reached", "payment-issue", "access-ended"]),
+  effectiveAt: z.number().int().min(0),
+  createdAt: z.number().int().min(0),
+  acknowledgedAt: z.number().int().min(0).optional(),
+});
+export type AccountNoticeSummary = z.infer<typeof AccountNoticeSummarySchema>;
+
+export const AccountDeletionStatusSchema = z.object({
+  phase: z.enum(["requested", "blocked", "billing-settled", "claims-settled", "completed", "needs-operator"]),
+  requestedAt: z.number().int().min(0),
+  completedAt: z.number().int().min(0).optional(),
+});
+export type AccountDeletionStatus = z.infer<typeof AccountDeletionStatusSchema>;
+
+export const AccountOverviewSchema = z.object({
+  accountDisplay: z.string().optional(),
+  supportReference: z.string().min(1),
+  entitlement: EntitlementSummarySchema,
+  offers: z.array(BillingOfferSchema),
+  usage: AccountUsageSchema,
+  installations: z.array(AccountInstallationSummarySchema),
+  mobileDevices: z.array(AccountMobileDeviceSummarySchema),
+  notices: z.array(AccountNoticeSummarySchema),
+  billingConfigured: z.boolean(),
+  deletion: AccountDeletionStatusSchema.optional(),
+  generatedAt: z.number().int().min(0),
+});
+export type AccountOverview = z.infer<typeof AccountOverviewSchema>;
+
+// The details block of a fair-use cap rejection (`resource-exhausted`), which is NOT a member of
+// ControlPlaneErrorDetails: it never travels in a success-shaped response body. `cap` and `limit`
+// are both required — a UI has to be able to say "five of five desktops" without hard-coding the
+// number, and WHICH cap decides which screen the user is sent to.
+export const CapExhaustedErrorDetailsSchema = z.object({
+  reason: z.enum(["cap-exceeded"]),
+  cap: z.enum(["installations", "mobileDevices", "pairedMobileDevices", "relaySessions"]),
+  limit: z.number().int().min(0),
+});
+export type CapExhaustedErrorDetails = z.infer<typeof CapExhaustedErrorDetailsSchema>;
+
+export const ControlPlaneErrorDetailsSchema = z.object({
+  reason: z.enum(["account-mismatch", "billing-unconfigured", "no-subscription"]),
+});
+export type ControlPlaneErrorDetails = z.infer<typeof ControlPlaneErrorDetailsSchema>;
+
+// ---------------------------------------------------------------------------
+// Mirrors of generated/account-requests.ts
+//
+// Request/response pairs for the account, installation, trial, billing and revoke callables.
+// Every one of these is DESKTOP-ONLY at the IPC boundary (see electron/backend/ipc-schemas.ts):
+// the remote web renderer does not route them, and the parity test names them.
+// ---------------------------------------------------------------------------
+
+export const EnsureAccountRequestSchema = z.object({
+  idempotencyKey: z.string().min(1),
+});
+export type EnsureAccountRequest = z.infer<typeof EnsureAccountRequestSchema>;
+
+export const EnsureAccountResponseSchema = z.object({
+  status: z.enum(["created", "existing"]),
+  supportReference: z.string().min(1),
+  claimsChanged: z.boolean(),
+});
+export type EnsureAccountResponse = z.infer<typeof EnsureAccountResponseSchema>;
+
+export const InstallationChallengeRequestSchema = z.object({
+  installationId: z.string().min(1),
+  publicKey: z.string(),
+  label: z.string().optional(),
+});
+export type InstallationChallengeRequest = z.infer<typeof InstallationChallengeRequestSchema>;
+
+export const InstallationChallengeResponseSchema = z.object({
+  challengeId: z.string().min(1),
+  transcript: z.string().min(1),
+  expiresAt: z.number().int().min(0),
+});
+export type InstallationChallengeResponse = z.infer<typeof InstallationChallengeResponseSchema>;
+
+export const InstallationRegistrationRequestSchema = z.object({
+  challengeId: z.string().min(1),
+  signature: z.string(),
+  idempotencyKey: z.string().min(1),
+  label: z.string().optional(),
+  mode: z.enum(["register", "recover-uid"]),
+  pairHints: z.array(z.string().min(1)).optional(),
+});
+export type InstallationRegistrationRequest = z.infer<typeof InstallationRegistrationRequestSchema>;
+
+export const InstallationRegistrationResponseSchema = z.object({
+  status: z.enum(["registered", "already-registered", "uid-recovered", "refused"]),
+  installationId: z.string().min(1).optional(),
+  claimsChanged: z.boolean(),
+  adoptedPairIds: z.array(z.string().min(1)).optional(),
+  refusedPairIds: z.array(z.string().min(1)).optional(),
+  errorReason: ControlPlaneErrorDetailsSchema.optional(),
+});
+export type InstallationRegistrationResponse = z.infer<typeof InstallationRegistrationResponseSchema>;
+
+export const TrialStartRequestSchema = z.object({
+  installationId: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+});
+export type TrialStartRequest = z.infer<typeof TrialStartRequestSchema>;
+
+export const TrialStartResponseSchema = z.object({
+  status: z.enum(["started", "already-started", "not-eligible"]),
+  notAfter: z.number().int().min(0).optional(),
+  reason: z
+    .enum(["installation-already-trialed", "account-has-billing-history", "account-has-active-entitlement"])
+    .optional(),
+  claimsChanged: z.boolean(),
+});
+export type TrialStartResponse = z.infer<typeof TrialStartResponseSchema>;
+
+export const CheckoutRequestSchema = z.object({
+  offerId: z.string().min(1),
+  installationId: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+});
+export type CheckoutRequest = z.infer<typeof CheckoutRequestSchema>;
+
+export const CheckoutResponseSchema = z.object({
+  status: z.enum(["ready", "checkout-pending", "refused"]),
+  checkoutUrl: z.string().optional(),
+  intentId: z.string().min(1).optional(),
+  errorReason: ControlPlaneErrorDetailsSchema.optional(),
+});
+export type CheckoutResponse = z.infer<typeof CheckoutResponseSchema>;
+
+export const PortalSessionRequestSchema = z.object({
+  installationId: z.string().min(1),
+});
+export type PortalSessionRequest = z.infer<typeof PortalSessionRequestSchema>;
+
+export const PortalSessionResponseSchema = z.object({
+  status: z.enum(["ready", "refused"]),
+  portalUrl: z.string().optional(),
+  expiresAt: z.number().int().min(0).optional(),
+  errorReason: ControlPlaneErrorDetailsSchema.optional(),
+});
+export type PortalSessionResponse = z.infer<typeof PortalSessionResponseSchema>;
+
+export const AccountRevokeRequestSchema = z.object({
+  kind: z.enum(["installation", "mobile-device", "pair", "account-wide"]),
+  targetId: z.string().min(1).optional(),
+  idempotencyKey: z.string().min(1),
+});
+export type AccountRevokeRequest = z.infer<typeof AccountRevokeRequestSchema>;
+
+export const AccountRevokeResponseSchema = z.object({
+  status: z.enum(["revoked", "already-revoked", "not-found"]),
+  revokedPairDeviceIds: z.array(z.string().min(1)),
+  relayCommandsQueued: z.number().int().min(0),
+});
+export type AccountRevokeResponse = z.infer<typeof AccountRevokeResponseSchema>;
+
+export const AccountDeletionRequestSchema = z.object({
+  confirmationPhrase: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+});
+export type AccountDeletionRequest = z.infer<typeof AccountDeletionRequestSchema>;
+
+export const AccountDeletionResponseSchema = z.object({
+  status: z.enum(["accepted", "already-pending", "refused"]),
+  deletionJobId: z.string().min(1).optional(),
+  providerCancellationRequired: z.boolean(),
+});
+export type AccountDeletionResponse = z.infer<typeof AccountDeletionResponseSchema>;
+
+/**
+ * `confirmOwnerForInstallation` — the passwordless flow's owner check.
+ *
+ * The request carries a LOCATOR and nothing else: the server reads the installation out of the
+ * caller's own account and never trusts the id to name which account is meant. The response carries
+ * no email, no owner uid and no account id, because a confirmation door that answered with an
+ * identity would be a way to read one.
+ */
+export const ConfirmOwnerRequestSchema = z.object({
+  installationId: z.string().min(1),
+});
+export type ConfirmOwnerRequest = z.infer<typeof ConfirmOwnerRequestSchema>;
+
+export const ConfirmOwnerResponseSchema = z.object({
+  status: z.enum(["confirmed", "refused"]),
+  reason: z.enum(["owner-mismatch", "installation-not-active", "account-unavailable"]).optional(),
+});
+export type ConfirmOwnerResponse = z.infer<typeof ConfirmOwnerResponseSchema>;
+
+export const AccountNoticeAckRequestSchema = z.object({
+  noticeId: z.string().min(1),
+});
+export type AccountNoticeAckRequest = z.infer<typeof AccountNoticeAckRequestSchema>;
+
+export const AccountNoticeAckResponseSchema = z.object({
+  status: z.enum(["acknowledged", "not-found"]),
+});
+export type AccountNoticeAckResponse = z.infer<typeof AccountNoticeAckResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Mirrors of generated/control-plane-bootstrap.ts
+//
+// The signed document that tells an already-released build which control plane to talk to.
+// The desktop verifies it with the same canonical serialisation and the same trust-key
+// allowlist the Flutter app uses; the cross-runtime vectors are what hold the two together.
+// ---------------------------------------------------------------------------
+
+export const ControlPlaneBootstrapPayloadSchema = z.object({
+  schemaVersion: z.number().int().min(1),
+  environment: z.enum(["local", "dev", "qa", "prod"]),
+  configEpoch: z.number().int().min(1),
+  issuedAt: z.number().int().min(0),
+  notBefore: z.number().int().min(0).optional(),
+  projectId: z.string().min(1),
+  apiKey: z.string().min(1),
+  appId: z.string().min(1),
+  messagingSenderId: z.string().min(1),
+  databaseUrl: z.string().min(1),
+  functionsBaseUrl: z.string().min(1),
+  relayOrigin: z.string().optional(),
+  appCheckAndroidAppId: z.string().optional(),
+  appCheckWebAppId: z.string().optional(),
+  /**
+   * The EXACT hostnames a checkout or portal URL may point at. Lower-cased, no scheme, no port.
+   *
+   * Schema version 2. Here because this runtime's external opener needs an allowlist and a signed,
+   * environment-scoped envelope is the only place it can get one from — it used to hand any `https:`
+   * (indeed any `http:`) URL from a callable response straight to `shell.openExternal`. Empty means
+   * this build opens NO billing URL, which is the right default for one that has not been told which
+   * merchant it uses.
+   */
+  billingCheckoutHosts: z.array(z.string().min(1)).optional(),
+});
+export type ControlPlaneBootstrapPayload = z.infer<typeof ControlPlaneBootstrapPayloadSchema>;
+
+export const ControlPlaneBootstrapEnvelopeSchema = z.object({
+  v: z.literal(1),
+  keyId: z.string().min(1),
+  payload: ControlPlaneBootstrapPayloadSchema,
+  signature: z.string(),
+});
+export type ControlPlaneBootstrapEnvelope = z.infer<typeof ControlPlaneBootstrapEnvelopeSchema>;
+
+// ---------------------------------------------------------------------------
 // Mirror of generated/pairing.ts
 // ---------------------------------------------------------------------------
 
@@ -574,9 +897,48 @@ export const PairingInvitationSchema = z.object({
   /** The grants the human ticked in the desktop's pairing dialog; claimPairing copies THESE. */
   approvedCapabilities: z.array(CapabilitySchema),
   approvedProfileAllowlist: z.array(z.string().min(1)),
+  /**
+   * The principal `claimPairing` charges and authorizes against, resolved by the server from the
+   * DESKTOP's own token when the human approved the pairing.
+   *
+   * A phone that has never paired has no entitlement of its own, so charging the caller at claim
+   * time meant either refusing every first pairing or opening the door to any anonymous caller. The
+   * invitation is the desktop's authorization, made durable — and neither field reaches the QR, so
+   * this desktop writes neither and the phone never sees them.
+   */
+  admissionPrincipalId: z.string().min(1).optional(),
+  principalNotAfter: z.number().int().min(0).optional(),
   createdAt: z.number().int().min(0),
   expiresAt: z.number().int().min(0),
   status: PairingStatusSchema,
+  /**
+   * WHICH claim consumed the invitation, and what that claim produced.
+   *
+   * Server-written and never in the QR — this desktop reads them and writes neither. Their reason is
+   * that a claim whose HTTP response was lost used to meet a permanent `already-claimed` on every
+   * retry: a pairing that HAD completed, presented to the phone as one that had not, with no way to
+   * tell that apart from somebody else consuming the invitation. `completion`'s ABSENCE on a consumed
+   * invitation is the signal that the claim consumed the credential and did not finish.
+   */
+  claimedBy: z.string().min(1).optional(),
+  claimedAt: z.number().int().min(0).optional(),
+  completion: z
+    .object({
+      mobileDeviceId: z.string().min(1),
+      claimsChanged: z.boolean(),
+      completedAt: z.number().int().min(0),
+      /**
+       * The COMPLETE success response the first call returned, replayed byte for byte to a retry.
+       *
+       * A replay used to be rebuilt from the device id and the pair id alone, and the phone refused
+       * it: `PairingRepository` requires `desktopDeviceId`, `desktopLabel` and `desktopPublicKey` and
+       * compares them against the scanned QR, so a claim whose response was lost ended as an invalid
+       * response instead of a finished pairing. A record with no `response` (written by an earlier
+       * build) is RESUMED rather than replayed.
+       */
+      response: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
 });
 export type PairingInvitation = z.infer<typeof PairingInvitationSchema>;
 
@@ -601,7 +963,19 @@ export const PairingClaimRequestSchema = z.object({
 export type PairingClaimRequest = z.infer<typeof PairingClaimRequestSchema>;
 
 export const PairingClaimResponseSchema = z.object({
-  status: z.enum(["claimed", "expired", "invalid", "already-claimed"]),
+  status: z.enum(["claimed", "expired", "invalid", "already-claimed", "refused"]),
+  /**
+   * The structured half of a `refused`. Added because the phone was previously left to GUESS which
+   * of several very different problems it had hit — a device cap, a pairing cap, or an invitation
+   * belonging to somebody else's account — from one undifferentiated failure.
+   */
+  errorReason: ControlPlaneErrorDetailsSchema.optional(),
+  /**
+   * True when the claim bound the phone's uid to an account and raised the claim-sync revision, so
+   * the phone must force an ID-token refresh BEFORE registering a push token or asking for a relay
+   * grant: its current token predates the claim.
+   */
+  claimsChanged: z.boolean().optional(),
   pairId: z.string().min(1).optional(),
   desktopDeviceId: z.string().min(1).optional(),
   desktopLabel: z.string().min(1).optional(),
@@ -693,12 +1067,21 @@ export const MAX_EVENT_ENVELOPE_BYTES = 8192 as const;
 export const MAX_COMMAND_ENVELOPE_BYTES = 8192 as const;
 export const MAX_RESULT_ENVELOPE_BYTES = 16384 as const;
 export const RESERVED_HIGH_PRIORITY_DAILY_PUSH_SLOTS = 10 as const;
-// The phone's own diagnostics-report door (`submitDiagnosticsReport`). Mirrored because the drift
-// check compares the whole limit set; the desktop is not a caller of it.
+// The diagnostics-report door (`submitDiagnosticsReport`). The desktop IS a caller of it — the
+// Account page's opt-in "send diagnostics" — so these are the bounds `account-diagnostics.ts`
+// trims to before sending, not merely a mirrored set the drift check compares.
 export const MAX_DIAGNOSTIC_REPORTS_PER_PRINCIPAL_PER_UTC_DAY = 5 as const;
 export const MAX_DIAGNOSTIC_REPORT_BYTES = 65536 as const;
 export const MAX_DIAGNOSTIC_REPORT_ENTRIES = 400 as const;
 export const DIAGNOSTIC_REPORT_RETENTION_MS = 1209600000 as const;
+export const MAX_DIAGNOSTIC_NOTE_LENGTH = 500 as const;
+export const MAX_DIAGNOSTIC_EVENT_LENGTH = 80 as const;
+export const MAX_DIAGNOSTIC_STATUS_LENGTH = 120 as const;
+export const MAX_DIAGNOSTIC_LEVEL_LENGTH = 8 as const;
+export const MAX_DIAGNOSTIC_APP_FIELD_LENGTH = 80 as const;
+export const MAX_DIAGNOSTIC_FIELDS_PER_ENTRY = 12 as const;
+export const MAX_DIAGNOSTIC_FIELD_KEY_LENGTH = 40 as const;
+export const MAX_DIAGNOSTIC_FIELD_VALUE_LENGTH = 200 as const;
 export const MAX_CLIENT_CLOCK_SKEW_MS = 120000 as const;
 export const MAX_ID_LENGTH = 128 as const;
 export const MAX_LABEL_LENGTH = 64 as const;
@@ -712,6 +1095,56 @@ export const MAX_ACTIVE_DEVICES_PER_PAIR_UID = 1 as const;
 export const PENDING_PAIRING_APPROVAL_TTL_MS = 600000 as const;
 export const COMMAND_RESERVATION_TTL_MS = 60000 as const;
 export const EVENT_RESERVATION_TTL_MS = 60000 as const;
+
+// The account/billing bounds. The two caps are the ones a user sees on the Account tab as
+// `installations / 5` and `mobile devices / 5`; the rest bound server work the desktop never
+// performs and are mirrored because the drift check compares the whole limit set.
+export const MAX_INSTALLATIONS_PER_ENTITLEMENT = 5 as const;
+export const MAX_MOBILE_DEVICES_PER_ENTITLEMENT = 5 as const;
+export const MAX_ACCOUNT_BOOTSTRAP_REQUESTS_PER_UID_PER_UTC_DAY = 20 as const;
+export const MAX_INSTALLATION_CHALLENGES_PER_ACCOUNT_PER_UTC_DAY = 40 as const;
+export const MAX_TRIAL_REQUESTS_PER_ACCOUNT_PER_UTC_DAY = 10 as const;
+export const MAX_CHECKOUT_REQUESTS_PER_ACCOUNT_PER_UTC_DAY = 20 as const;
+export const MAX_PORTAL_SESSIONS_PER_ACCOUNT_PER_UTC_DAY = 20 as const;
+export const MAX_ACCOUNT_OVERVIEW_REQUESTS_PER_UID_PER_MINUTE = 12 as const;
+/** A durable per-account ceiling on the owner-confirmation door. */
+export const MAX_OWNER_CONFIRMATIONS_PER_ACCOUNT_PER_UTC_DAY = 40 as const;
+export const INSTALLATION_CHALLENGE_TTL_MS = 120000 as const;
+export const CHECKOUT_INTENT_TTL_MS = 3600000 as const;
+export const PROVIDER_MUTATION_AMBIGUOUS_OBSERVATION_MS = 900000 as const;
+export const PADDLE_WEBHOOK_FRESHNESS_TOLERANCE_MS = 300000 as const;
+export const CLAIM_SYNC_REPAIR_BATCH_SIZE = 25 as const;
+export const CLAIM_SYNC_MAX_UIDS_PER_ACCOUNT = 32 as const;
+export const RECONCILIATION_BATCH_SIZE = 50 as const;
+/** A durable per-uid ceiling on the challenge leg, so an anonymous caller cannot mint server state. */
+export const MAX_INSTALLATION_CHALLENGES_PER_UID_PER_UTC_DAY = 20 as const;
+/** One PAGE of the incident compensation walk. A cursor is what makes the walk finishable. */
+export const INCIDENT_COMPENSATION_ACCOUNTS_PER_RUN = 200 as const;
+/** How many adjustments one repair sweep re-asks the merchant about. */
+export const ADJUSTMENT_REPAIRS_PER_SWEEP = 25 as const;
+/** Bounded provider fallback when a late adjustment's local transaction index has been swept. */
+export const ADJUSTMENT_ROUTING_PROVIDER_LOOKUP_MAX = 5 as const;
+/** One PAGE of a durable RTDB branch in a backup export. Paged with a keyset cursor, not truncated. */
+export const RTDB_EXPORT_PAGE_SIZE = 5000 as const;
+export const ACCOUNT_NOTICE_DELIVERY_BATCH_SIZE = 50 as const;
+export const RELAY_REVOCATION_DISPATCH_BATCH_SIZE = 25 as const;
+export const MAX_ACCOUNT_OVERVIEW_LIST_ENTRIES = 32 as const;
+export const MAX_ACCOUNT_NOTICES_IN_OVERVIEW = 10 as const;
+export const MAX_PAIR_HINTS_PER_REGISTRATION = 32 as const;
+export const ACCOUNT_NOTICE_RETENTION_MS = 3024000000 as const;
+export const BILLING_BOOKKEEPING_RETENTION_MS = 3024000000 as const;
+
+// --- control-plane params (protocol/schemas/control-plane-params.json) ------
+//
+// The names the entitlement boundary is spelled with. They appear in the Cloud Functions, in the
+// Firebase Security Rules (which cannot import anything), here, and in the Flutter app — a mismatch
+// between any two is an outage with no error message, because every token verifies and every rule
+// refuses.
+export const ENTITLEMENT_ISSUER_NAME = "strideterm-control-plane" as const;
+export const ENTITLEMENT_CLAIM_ID = "entitlementId" as const;
+export const ENTITLEMENT_CLAIM_ISSUER = "entitlementIssuer" as const;
+export const ENTITLEMENT_CLAIM_NOT_AFTER = "entitlementNotAfter" as const;
+export const RECOVERY_ACCOUNT_CLAIM_KEY = "stridetermRecoveryAccountId" as const;
 
 // ---------------------------------------------------------------------------
 // Local-only additions — no protocol-package equivalent. These describe how

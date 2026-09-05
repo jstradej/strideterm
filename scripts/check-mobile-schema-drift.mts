@@ -65,6 +65,7 @@ const AAD_VECTORS_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mo
 const PAIRING_VECTORS_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-pairing-vectors.json");
 const RELAY_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-relay-protocol.ts");
 const RELAY_VECTORS_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-relay-vectors.json");
+const BOOTSTRAP_VECTORS_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-bootstrap-vectors.json");
 
 // Exports in mobile-schemas.ts that are deliberately local-only (no protocol-package equivalent
 // — see the "Local-only additions" section at the bottom of that file). Excluded from comparison
@@ -130,17 +131,37 @@ async function main(): Promise<void> {
   // mobile-schemas.ts would make one very large file that changes for two unrelated reasons.
   const generatedRelayLimitsPath = path.join(siblingRepo, "protocol/typescript/src/generated/relay-limits.ts");
   const generatedRelayFramesPath = path.join(siblingRepo, "protocol/typescript/src/relay/frames.ts");
+  // Two generated modules the desktop deliberately does NOT mirror. The operator API is the
+  // IAM-only support/recovery surface — its consumers are cloud/functions and the private
+  // `strideterm-ops` CLI, which generates its own client from the same schemas — and the backup
+  // manifest is written and verified by scheduled internal jobs. Mirroring either here would put a
+  // support-tooling contract inside a shipped desktop binary and give it a second place to drift.
+  // Excluded by MODULE rather than by a hand-written name list, so adding a type to one of them
+  // does not quietly become a desktop obligation.
+  const generatedOperatorApiPath = path.join(siblingRepo, "protocol/typescript/src/generated/operator-api.ts");
+  const generatedBackupManifestPath = path.join(siblingRepo, "protocol/typescript/src/generated/backup-manifest.ts");
 
-  const [mirror, generated, pathsMirror, generatedPaths, relayMirror, generatedRelayLimits, generatedRelayFrames] =
-    await Promise.all([
-      import(pathToFileURL(MIRROR_PATH).href) as Promise<Record<string, unknown>>,
-      import(pathToFileURL(generatedIndexPath).href) as Promise<Record<string, unknown>>,
-      import(pathToFileURL(PATHS_MIRROR_PATH).href) as Promise<Record<string, unknown>>,
-      import(pathToFileURL(generatedPathsPath).href) as Promise<Record<string, unknown>>,
-      import(pathToFileURL(RELAY_MIRROR_PATH).href) as Promise<Record<string, unknown>>,
-      import(pathToFileURL(generatedRelayLimitsPath).href) as Promise<Record<string, unknown>>,
-      import(pathToFileURL(generatedRelayFramesPath).href) as Promise<Record<string, unknown>>,
-    ]);
+  const [
+    mirror,
+    generated,
+    pathsMirror,
+    generatedPaths,
+    relayMirror,
+    generatedRelayLimits,
+    generatedRelayFrames,
+    generatedOperatorApi,
+    generatedBackupManifest,
+  ] = await Promise.all([
+    import(pathToFileURL(MIRROR_PATH).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(generatedIndexPath).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(PATHS_MIRROR_PATH).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(generatedPathsPath).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(RELAY_MIRROR_PATH).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(generatedRelayLimitsPath).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(generatedRelayFramesPath).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(generatedOperatorApiPath).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(generatedBackupManifestPath).href) as Promise<Record<string, unknown>>,
+  ]);
 
   // The generated index re-exports the path contract too, but that is a *different* mirror in
   // this repo (mobile-rtdb-paths.ts, checked below) — excluded here so it isn't also reported as
@@ -148,10 +169,14 @@ async function main(): Promise<void> {
   const PATH_CONTRACT_EXPORTS = new Set(Object.keys(generatedPaths));
   // Same exclusion, same reason, for the relay transport contract.
   const RELAY_CONTRACT_EXPORTS = new Set(Object.keys(generatedRelayLimits));
+  // The server-only surfaces. See the comment where these modules are located above.
+  const SERVER_ONLY_EXPORTS = new Set([...Object.keys(generatedOperatorApi), ...Object.keys(generatedBackupManifest)]);
 
   const mirrorKeys = new Set(Object.keys(mirror).filter((k) => !LOCAL_ONLY_EXPORTS.has(k)));
   const generatedKeys = new Set(
-    Object.keys(generated).filter((k) => !PATH_CONTRACT_EXPORTS.has(k) && !RELAY_CONTRACT_EXPORTS.has(k)),
+    Object.keys(generated).filter(
+      (k) => !PATH_CONTRACT_EXPORTS.has(k) && !RELAY_CONTRACT_EXPORTS.has(k) && !SERVER_ONLY_EXPORTS.has(k),
+    ),
   );
 
   const mismatches: Mismatch[] = [];
@@ -236,12 +261,26 @@ async function main(): Promise<void> {
   // --- 2. RTDB path contract mirror ----------------------------------------
   // Placeholder arguments, so each builder's output can be compared as a template rather than by
   // reading the two implementations side by side.
-  const PLACEHOLDERS = ["{a}", "{b}", "{c}"];
+  // Four, not three: `accountMobileDevicePairPath` takes four segments, and a slice shorter than
+  // the arity leaves the last parameter unsubstituted on BOTH sides — so the comparison would agree
+  // about a segment neither side had filled in.
+  const PLACEHOLDERS = ["{a}", "{b}", "{c}", "{d}"];
   let comparedPaths = 0;
   for (const [name, generatedValue] of Object.entries(generatedPaths)) {
     if (name === "RTDB_PATH_TEMPLATES") {
       // Compared implicitly through the builders below; the desktop mirror does not carry the
       // trigger-template table (it declares no RTDB triggers).
+      continue;
+    }
+    if (name === "RTDB_BRANCH_CLASSIFICATION" || name === "RECOVERY_MINIMUM_ALLOWLIST") {
+      // The authority/retention table and the backup allowlist derived from it. Consumed by
+      // cloud/functions' cleanup sweep, the recovery jobs and the ops CLI — never by a desktop,
+      // which neither backs anything up nor sweeps anything. Mirroring it here would put a backup
+      // policy inside a shipped desktop binary and give it a second place to drift.
+      //
+      // It is not left unchecked: `protocol/codegen/generate.mjs` refuses to emit a branch that
+      // does not declare both, and `protocol/typescript/test/rtdb-classification.test.ts` pins the
+      // closed sets and the allowlist against the manifest.
       continue;
     }
     const mirrorValue = pathsMirror[name];
@@ -336,6 +375,16 @@ async function main(): Promise<void> {
       mirror: RELAY_VECTORS_MIRROR_PATH,
       original: path.join(siblingRepo, "protocol/test-vectors/relay-grants.json"),
       name: "relay-grants.json",
+    },
+    {
+      // The sharpest of the four. This desktop, the Flutter app and `strideterm-ops
+      // recovery bootstrap-verify` each implement the bootstrap rules separately, and the last of
+      // those exists so an operator can learn BEFORE publishing whether the released clients will
+      // accept an envelope. A copy that had gone stale here would let this desktop drift from the
+      // answer that tool gives, and it would be discovered during a recovery.
+      mirror: BOOTSTRAP_VECTORS_MIRROR_PATH,
+      original: path.join(siblingRepo, "protocol/test-vectors/control-plane-bootstrap.json"),
+      name: "control-plane-bootstrap.json",
     },
   ];
   for (const fixture of fixtureMirrors) {

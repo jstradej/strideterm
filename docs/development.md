@@ -69,6 +69,170 @@ sleep 3 && npm run dev:electron &
 
 Avoid `npm run dev` from a non-interactive shell — `concurrently -k` kills all four processes when any one exits, which fights with backgrounded shells.
 
+### Which remote environment a dev build talks to
+
+`STRIDETERM_ENV` — `local`, `dev`, `qa` or `prod` — is the **one** declaration of which backend this
+desktop uses. It is read by the Firebase configuration, the bootstrap trust set and the sign-in
+broker, so those three cannot disagree. `dev.ps1` defaults it to `local` when nothing else names one,
+so an ordinary bare loop talks only to the Firebase emulators — never to a real server by default.
+
+It exists because the answer used to be inferred from `STRIDETERM_DATA_DIR`, which is a statement
+about where an installation keeps its **files**. Two different questions:
+
+- `dev.ps1` sets the data directory to keep a developer's state out of the way, and that used to
+  silently declare the remote backend to be `dev` — so a desktop pointed at the qa Firebase project
+  still chose the dev broker and still announced itself as environment `local`, which the qa Worker
+  refuses.
+- `--data-dir`, which exists so a **second production** instance can keep separate state, made that
+  instance's sign-in unavailable for the same reason.
+
+A value this build does not recognise — including the retired `staging`/`production` spellings, or
+nothing declared at all by anything in the launch chain — blocks a **new** sign-in and says so (the
+refusal is `environment-unresolved`); it never falls back to `prod`, and it never disconnects a
+working installation. A packaged install with nothing declared gets an explicit BUILD default instead
+of ever reaching that refusal: `electron/main.ts` sets `STRIDETERM_ENV=prod` for a packaged run and
+`local` for an unpackaged one, only when nothing set it already — a declaration made once, by the
+launcher, never a guess made from a project id, a data directory or a Git branch.
+
+#### Running against dev, qa or prod
+
+`STRIDETERM_ENV=dev` (or `qa`, or `prod`) on its own is **not** a complete configuration for that
+tier, and the launcher refuses it. The declaration chooses the broker (`https://auth-dev.strideterm.com`,
+`https://auth-qa.strideterm.com` or `https://auth.strideterm.com`) and the bootstrap trust set; the
+Firebase **project, Web API key and database** are three more values, and `dev.ps1`'s auto-import —
+the sibling `strideterm-mobile/app/android/app/src/local/google-services.json` — is for `local` alone,
+and it is a committed synthetic `demo-` fixture with no real project or secret in it. Outside `local`
+the launcher imports nothing it was not told to, and stops before Electron starts if the three values
+are not supplied.
+
+The complete procedure, in a **fresh console** (nothing from configuration A below may still be set):
+
+```powershell
+# The target tier's own google-services.json, downloaded from the Firebase console for that project.
+# It is NOT checked in for dev/qa/prod — app/android/app/src/{dev,qa}/ carry none — so name it.
+$env:STRIDETERM_ENV = "qa"
+.\dev.ps1 -DataDir "$env:USERPROFILE\.strideterm-qa" -MobileFirebaseConfigPath "C:\secrets\strideterm-qa\google-services.json"
+```
+
+Or set the three variables yourself instead of naming the file (`STRIDETERM_MOBILE_FIREBASE_PROJECT_ID`,
+`STRIDETERM_MOBILE_FIREBASE_API_KEY`, `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL`, all three, all from
+the target project). Either way:
+
+- **They have to be that tier's project's values.** `GET /c` no longer compares the link's `apiKey`
+  against anything (security review 2026-09-13, I2) — a client key never proved which project minted
+  a code, and the Worker no longer reads `AUTHLINK_FIREBASE_PROJECT_ID`/`AUTHLINK_FIREBASE_API_KEY` at
+  all. What actually establishes project identity is the desktop's own allowlisted action-handler
+  check (`parseSignInLink`, `authlink-config.ts`) plus Firebase's own redemption of the `oobCode`
+  against the pinned project: a desktop configured for the wrong tier's project has its code refused
+  by Firebase when it tries to redeem it, not by the broker comparing keys. Configure the three
+  values from the target project's own `google-services.json` regardless — a mismatch still fails,
+  just later and from Firebase rather than from a broker-side key comparison.
+- **No emulator variable, no plain-HTTP database URL.** `FIREBASE_AUTH_EMULATOR_HOST`,
+  `FIREBASE_DATABASE_EMULATOR_HOST`, `FIREBASE_FUNCTIONS_EMULATOR_HOST` and an
+  `http://` `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL` are honoured **only** in a `local` build. Outside
+  one they are not ignored — they are a **contradiction**, and the whole Firebase configuration is
+  refused: Settings → Account says `environment-contradiction`, no sign-in can start, and the
+  process talks to no backend at all rather than to a mixture (the old behaviour dropped the
+  emulator hosts and kept the emulator's database URL, so a "qa" desktop wrote to a loopback
+  database while its identity calls went to the cloud). The fix is one line: unset them, or declare
+  `local`.
+- **Nothing is inferred from the project's name.** A recovery can restore a tier into a project called
+  anything; the declaration and the explicit values are the only inputs, which is why the launcher asks
+  for them rather than guessing from `-qa` in an id.
+
+`electron/backend/mobile/dev-script-firebase-import.test.ts` runs the launcher's import function
+against these documented commands — a clean qa console, the named file, and the two contradictions —
+and fails if the document and the launcher drift apart.
+
+The dev, qa and prod **broker origins are fixed in the build** (`authlink-config.ts`) and cannot be
+pointed elsewhere by anything in the environment.
+
+### Exercising passwordless sign-in in a local build
+
+A `local` build has **no sign-in broker until you name one**, and that is deliberate rather than an
+oversight: defaulting it to `https://auth.strideterm.com` is how a test address ends up in a real
+account. Without a broker origin, Settings → Account reports that sign-in is unavailable, says which
+of the reasons it is, and nothing else is affected — an already-enrolled desktop keeps its
+installation credential, its pairings and its device list.
+
+**There is one configuration exercisable from this desktop today.** Its exact steps live in the cloud
+repository, beside the Worker whose configuration they pin, and a CI check keeps them honest:
+
+> **`docs/PASSWORDLESS-LOCAL-TESTING.md`** in `C:/work/strideterm-mobile`, verified by
+> `npm run check:authlink-local-config` there.
+
+**A — emulator only.** The Auth, database and Functions emulators, all on `127.0.0.1`, plus the
+Worker's own `wrangler dev --local` defaults. Nothing leaves the machine and no message is delivered
+anywhere: the emulator prints the link. The origin is **`http://127.0.0.1:8788`**, because `POST /c`
+compares the browser's `Origin` against the Worker's `AUTHLINK_ORIGIN` byte for byte and that file's
+default says `127.0.0.1`. **All three `STRIDETERM_MOBILE_FIREBASE_*` variables have to be assigned**,
+and that is what the procedure there does: `dev.ps1` imports every one it finds unset from the
+committed `local` demo `google-services.json` fixture, so an omission is not a default but the demo
+project's own value — a fake project id and key with no live quota behind them. The launcher refuses
+to import a _different_ project's key or database URL at all, and warns; the assignments are what
+make the configuration complete.
+
+```powershell
+# STRIDETERM_ENV defaults to "local"; the broker origin still has to be named explicitly (F11 — a
+# local build is not defaulted to a broker either, only the ONE loopback address a real one may be).
+$env:STRIDETERM_MOBILE_AUTHLINK_ORIGIN = "http://127.0.0.1:8788"
+.\dev.ps1
+```
+
+**A local build is the whole Emulator Suite on this machine, or no Firebase configuration at all**
+(follow-up 2026-09-11, item 1; `electron/backend/mobile/mobile-firebase-config.ts`):
+
+- **All three emulator variables are required** — `FIREBASE_AUTH_EMULATOR_HOST`,
+  `FIREBASE_DATABASE_EMULATOR_HOST` and `FIREBASE_FUNCTIONS_EMULATOR_HOST`. A `local` build with two of
+  them set used to send the third service's calls to Google (`identitytoolkit.googleapis.com` for a
+  missing Auth host, `cloudfunctions.net` for a missing Functions host). Now a missing one is reported
+  as _not configured_, naming exactly that variable, and nothing is built: there is no cloud fallback
+  for `local`.
+- **Every host is validated as a loopback `host:port`.** `127.0.0.1`, `localhost` and `[::1]` with a
+  port in 1–65535, an optional `http://` and trailing slash tolerated. A LAN address is not this
+  machine; `127.0.0.1.evil.example` and `localhost.example` are lookalikes, not loopback; `https://`,
+  credentials, a path or a query in the value are refused. The refusal is
+  `local-endpoint-invalid` (Settings → Account says so), and it names the variable, never its value.
+- **An explicit `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL` may only be the database emulator's own URL
+  for the declared demo project** — `http://<FIREBASE_DATABASE_EMULATOR_HOST>?ns=<project>-default-rtdb`
+  — or unset, in which case it is derived. A cloud `firebasedatabase.app` URL inherited from a
+  `google-services.json`, a different host or port, or another project's namespace is the same
+  `local-endpoint-invalid` refusal.
+- **A `demo-` project id outside `local` is an `environment-contradiction`**, for the mirror-image
+  reason: a demo project exists in no cloud, so a `dev`/`qa`/`prod` declaration naming one has no
+  endpoint that could answer, and deriving cloud URLs for it — which the old resolver did — could only
+  send requests off the machine for a project that lives only on one.
+
+**There is no configuration B against a real project any more, and that is deliberate rather than a
+gap.** The real dev Firebase project reached through a LOCALLY run authlink Worker — what this section
+used to call configuration B — is exactly the combination plan §2.1 rules out: `dev` now means a
+personal test against `https://auth-dev.strideterm.com`, a REMOTE broker, and pointing a
+`local`-declared desktop at the real dev project's data through a locally-run Worker would need its
+own, separately-described diagnostic mode and its own HTTP policy — v2 does not introduce one. Until
+`dev` is activated (plan §7 — the Worker deployed, the project provisioned, the Authorized domain set),
+there is no way to exercise a real e-mail end to end from this desktop: `STRIDETERM_ENV=dev` with no
+reachable `https://auth-dev.strideterm.com` fails at `/start` rather than falling back to anything
+local.
+
+Configuration A does not need the broker running at all: with nothing listening the attempt falls back
+to **manual-only**, the emulator's line still carries the link, and "Paste the link from the email"
+finishes it. **Copy the link's address, not the words.** The message's plain-text part carries the
+anchor's text and no URL at all (measured — `docs/PASSWORDLESS-PHASE0.md` row 31), so selecting what
+you can see and pasting it gets you `invalid-code`; right-click the "Sign in to …" link and copy the
+address.
+
+**The manual pass itself — the concrete steps and the result each should produce — is
+[`docs/PASSWORDLESS-MANUAL-TESTS.md`](PASSWORDLESS-MANUAL-TESTS.md).**
+
+**Configuration A does not support finishing the sign-in from a phone**, and not because of a missing
+feature: `127.0.0.1`/`localhost` on a phone is _the phone_. That route needs a reachable HTTPS origin,
+the same origin on both sides, and that origin's host in Firebase's Authorized domains — so it waits
+for a deployment rather than being approximated locally. Do not point a local build at the prod broker
+to get an HTTPS origin.
+
+A dev, qa or prod build ignores `STRIDETERM_MOBILE_AUTHLINK_ORIGIN` entirely; it is not a way to point
+a real build at another broker.
+
 ## Commands
 
 ```bash

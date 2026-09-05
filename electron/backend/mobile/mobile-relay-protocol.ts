@@ -25,7 +25,7 @@ import { createHash, createPublicKey, type KeyObject } from "node:crypto";
 // ---------------------------------------------------------------------------
 
 export const RELAY_PROTOCOL_VERSION = 2;
-export const RELAY_GRANT_VERSION = 1;
+export const RELAY_GRANT_VERSION = 2;
 export const RELAY_MAX_GRANT_TOKEN_BYTES = 4096;
 export const RELAY_MAX_CLOCK_SKEW_MS = 120000;
 export const RELAY_CONNECTOR_GRANT_TTL_MS = 900000;
@@ -50,12 +50,14 @@ export const RELAY_CONNECTOR_HANDSHAKE_TIMEOUT_MS = 10000;
 export const RELAY_CONNECTOR_SYNC_TIMEOUT_MS = 15000;
 export const RELAY_CONNECTOR_HEARTBEAT_MS = 20000;
 export const RELAY_CONNECTOR_HEARTBEAT_TIMEOUT_MS = 60000;
+export const RELAY_CONNECTOR_LEASE_MS = 28800000;
 export const RELAY_VIEWER_SESSION_TTL_MS = 3600000;
 export const RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS = 28800000;
 export const RELAY_MOBILE_SESSION_IDLE_TTL_MS = 1800000;
 export const RELAY_REVOCATION_TOMBSTONE_TTL_MS = 36000000;
 export const RELAY_RECONNECT_BASE_DELAY_MS = 500;
 export const RELAY_RECONNECT_MAX_DELAY_MS = 30000;
+export const RELAY_GRANT_DEFINITIVE_REFUSAL_RETRY_DELAY_MS = 300000;
 export const RELAY_MAX_BOOTSTRAPS_PER_INSTALLATION_PER_MINUTE = 20;
 export const RELAY_MAX_SESSIONS_PER_INSTALLATION_PER_MINUTE = 30;
 export const RELAY_MAX_REQUESTS_PER_SESSION_PER_MINUTE = 600;
@@ -88,12 +90,14 @@ export const RELAY_LIMITS: Readonly<Record<string, number>> = {
   RELAY_CONNECTOR_SYNC_TIMEOUT_MS,
   RELAY_CONNECTOR_HEARTBEAT_MS,
   RELAY_CONNECTOR_HEARTBEAT_TIMEOUT_MS,
+  RELAY_CONNECTOR_LEASE_MS,
   RELAY_VIEWER_SESSION_TTL_MS,
   RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS,
   RELAY_MOBILE_SESSION_IDLE_TTL_MS,
   RELAY_REVOCATION_TOMBSTONE_TTL_MS,
   RELAY_RECONNECT_BASE_DELAY_MS,
   RELAY_RECONNECT_MAX_DELAY_MS,
+  RELAY_GRANT_DEFINITIVE_REFUSAL_RETRY_DELAY_MS,
   RELAY_MAX_BOOTSTRAPS_PER_INSTALLATION_PER_MINUTE,
   RELAY_MAX_SESSIONS_PER_INSTALLATION_PER_MINUTE,
   RELAY_MAX_REQUESTS_PER_SESSION_PER_MINUTE,
@@ -157,6 +161,8 @@ export type RelayReason =
   | "unauthorized"
   | "revoked"
   | "session-expired"
+  /** The CONNECTOR's own final lease ended (plan 2026-09-14 D4) — mirrors the generated original. */
+  | "lease-expired"
   | "shutting-down"
   | "normal";
 
@@ -171,6 +177,7 @@ export const RELAY_REASONS: readonly RelayReason[] = [
   "unauthorized",
   "revoked",
   "session-expired",
+  "lease-expired",
   "shutting-down",
   "normal",
 ];

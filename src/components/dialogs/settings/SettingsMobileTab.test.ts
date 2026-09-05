@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import SettingsMobileTab from "./SettingsMobileTab.vue";
 import { useAppStore } from "../../../stores/app.js";
+import { useAccountStore } from "../../../stores/account.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -368,7 +369,12 @@ describe("SettingsMobileTab", () => {
   });
 
   test("toggling Enable Mobile calls the setMobileEnabled transport action", async () => {
-    const { wrapper, transport } = await mountTab({}, { enabled: false, devices: [] });
+    // A paired device, because that is when the CHECKBOX exists: before the first phone the page
+    // offers "Turn on phone pairing" instead (see the first-run test below). Same transport call.
+    const { wrapper, transport } = await mountTab(
+      { listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) },
+      { enabled: false, devices: [] },
+    );
 
     const checkbox = wrapper.find('input[type="checkbox"]');
     await checkbox.setValue(true);
@@ -482,5 +488,124 @@ describe("SettingsMobileTab", () => {
 
     expect(transport.sendMobileTestPush).toHaveBeenCalledWith("mobile-1");
     expect(wrapper.text()).toContain("Test push sent");
+  });
+
+  test("the account-wide caps are pointed at, not repeated here", async () => {
+    // Plan §8.3: the pairing half stays about pairing and relay diagnostics; how many phones and
+    // desktops the ACCOUNT allows is one account-wide fact with one place that states it. Two
+    // places each computing "how many are left" is how they end up disagreeing. The account is now
+    // a SECTION of this tab rather than a tab of its own, so the pointer is to a heading above
+    // rather than to another tab — but it is still a pointer and not a second computation.
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        busy: false,
+        needsRecentAuth: false,
+        // REGISTERED, because that is the only state in which the pairing half renders at all. A
+        // phone pairs to an installation, so the controls below — and the usage line this test is
+        // about — are not offered to a machine that has no account to pair against.
+        installationRegistered: true,
+        overview: {
+          supportReference: "STR-1-ABCDEFGHJKMN",
+          usage: {
+            installations: { used: 2, limit: 5 },
+            mobileDevices: { used: 3, limit: 5 },
+            activeRelaySessions: { used: 0, limit: 8 },
+          },
+          notices: [],
+        },
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+
+    expect(wrapper.text()).toContain("Phones on this account: 3 / 5");
+    // The section it names is on this page, and the pairing half never states a limit of its own.
+    expect(wrapper.text()).toContain("Account and subscription");
+    expect(wrapper.findComponent({ name: "SettingsAccountTab" }).exists()).toBe(true);
+  });
+
+  test("pairing is not offered until this computer is registered, and says which step comes first", async () => {
+    // THE ORDER IS THE PAGE'S SHAPE, NOT SOMETHING TO KNOW. A phone pairs to an INSTALLATION, so an
+    // unregistered machine has nothing for it to pair to — and every control below would fail for a
+    // reason three steps away from where the person is looking. Worse, enrolment needs the
+    // installation session, which turning Mobile on happened to create, so the old order invited
+    // exactly the sequence that cannot work: tick Mobile, scan a QR, fail.
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "signed-out",
+        busy: false,
+        needsRecentAuth: true,
+        installationRegistered: false,
+        signInAvailable: true,
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+
+    expect(wrapper.text()).toContain("Register this computer first");
+    // Not merely disabled: absent. A tick-box that cannot lead anywhere is a question with no answer.
+    expect(wrapper.text()).not.toContain("Enable Mobile");
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false);
+  });
+
+  test("before the first phone the page offers the STEP, not the setting", async () => {
+    // Somebody who has just registered this computer and started a trial FOR the hosted features
+    // met an unticked checkbox and no stated reason — a second gate in front of the thing they came
+    // to do. The switch's real job (silence a paired phone without unpairing it) does not exist yet,
+    // so neither does the switch.
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        busy: false,
+        needsRecentAuth: false,
+        installationRegistered: true,
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper, transport } = await mountTab({}, { enabled: false, devices: [] });
+
+    expect(wrapper.text()).toContain("Turn on phone pairing");
+    expect(wrapper.text()).not.toContain("Enable Mobile");
+
+    const turnOn = wrapper.findAll("button").find((b) => b.text().includes("Turn on phone pairing"));
+    await turnOn!.trigger("click");
+    await flushPromises();
+    // The same call the checkbox makes: a different sentence, not a different act.
+    expect(transport.setMobileEnabled).toHaveBeenCalledWith(true);
+  });
+
+  test("once there is something to silence, the switch is back", async () => {
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        busy: false,
+        needsRecentAuth: false,
+        installationRegistered: true,
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+
+    expect(wrapper.text()).toContain("Enable Mobile");
+    expect(wrapper.text()).not.toContain("Turn on phone pairing");
+  });
+
+  test("a build with no hosted account keeps pairing, rather than pointing at a section it lacks", async () => {
+    // `accountAvailable` is false here — the remote web client, and a build with no control plane.
+    // There is no registration to wait for, so gating pairing on one would make the feature
+    // unreachable while naming a section that is not rendered.
+    const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+    expect(wrapper.text()).not.toContain("Register this computer first");
+    expect(wrapper.text()).toContain("Enable Mobile");
+  });
+
+  test("without a hosted account there is no dangling reference to a page that is not there", async () => {
+    const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+    expect(wrapper.text()).not.toContain("Phones on this account");
   });
 });

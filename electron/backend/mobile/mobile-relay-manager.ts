@@ -23,6 +23,7 @@ import { randomBytes } from "node:crypto";
 import { getLogger } from "../logger.js";
 import {
   createRelayConnector,
+  defaultDefinitiveRefusalRetryDelay,
   defaultReconnectDelay,
   type RelayConnector,
   type RelayConnectorState,
@@ -30,7 +31,11 @@ import {
 } from "./mobile-relay-connector.js";
 import { RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
 import { loadRelayInstallationIdentity, type RelayInstallationIdentity } from "./mobile-relay-identity.js";
-import type { MobileFirebaseTransport, RelayConnectorGrant } from "./mobile-firebase-transport.js";
+import {
+  MobileRelayGrantDefinitiveRefusalError,
+  type MobileFirebaseTransport,
+  type RelayConnectorGrant,
+} from "./mobile-firebase-transport.js";
 import type { RelayIdentityCredentialStore } from "./mobile-relay-identity.js";
 
 const log = getLogger("mobile-relay-manager");
@@ -81,6 +86,12 @@ export interface MobileRelayManagerOptions {
   createConnector?: typeof createRelayConnector;
   /** Injectable so a test can drive the start-failure retry without waiting real seconds. */
   retryDelayMs?: (attempt: number) => number;
+  /**
+   * Injectable so a test can drive the DEFINITIVE-refusal start-failure retry without waiting real
+   * seconds. See `RelayConnectorOptions.definitiveRefusalRetryDelayMs` — the same distinction applies
+   * to the very first grant fetch, before any connector exists to apply it inside its own loop.
+   */
+  definitiveRefusalRetryDelayMs?: () => number;
 }
 
 export interface MobileRelayStatus {
@@ -108,6 +119,7 @@ export interface MobileRelayManager {
 export function createMobileRelayManager(options: MobileRelayManagerOptions): MobileRelayManager {
   const createConnector = options.createConnector ?? createRelayConnector;
   const retryDelayMs = options.retryDelayMs ?? defaultReconnectDelay;
+  const definitiveRefusalRetryDelayMs = options.definitiveRefusalRetryDelayMs ?? defaultDefinitiveRefusalRetryDelay;
 
   /**
    * The snapshot the connector replays during `conn.sync`, filtered to what can still matter.
@@ -204,6 +216,7 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
       },
       listRelayRevocations: relayRevocations,
       onStateChange: (state) => log.info("relay connector state", { state }),
+      definitiveRefusalRetryDelayMs,
     });
     connector.start();
     log.info("managed relay started", { internalPort: address.port });
@@ -242,9 +255,13 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
    * unreachable. Neither should mean "this desktop has no relay until the user visits Settings".
    * The retry is cancelled by disabling the relay, by `stop()`, and by a start that succeeds.
    */
-  function scheduleRetry(): void {
+  function scheduleRetry(definitive: boolean): void {
     if (retryTimer || !options.isEnabled()) return;
-    const delay = retryDelayMs(retryAttempt++);
+    // A DEFINITIVE refusal (the entitlement, not the network — plan §6, package 2) does not use the
+    // exponential counter at all: it must neither inflate it nor inherit whatever it already was from
+    // an unrelated spell of network errors, the same reasoning `mobile-relay-connector.ts`'s own
+    // `scheduleDefinitiveRefusalRetry` documents.
+    const delay = definitive ? definitiveRefusalRetryDelayMs() : retryDelayMs(retryAttempt++);
     retryTimer = setTimeout(() => {
       retryTimer = null;
       void manager.reconfigure().catch(() => undefined);
@@ -280,9 +297,10 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
             retryAttempt = 0;
           } catch (error) {
             lastError = (error as Error).message;
-            log.warn("managed relay unavailable", { err: lastError });
+            const definitive = error instanceof MobileRelayGrantDefinitiveRefusalError;
+            log.warn("managed relay unavailable", { err: lastError, definitive });
             await stopInternal();
-            scheduleRetry();
+            scheduleRetry(definitive);
           }
         });
       await starting;

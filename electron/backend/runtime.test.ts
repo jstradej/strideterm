@@ -12981,3 +12981,598 @@ describe("desktop installation identity (review 2 §Multiwindow)", () => {
     await expect(fs.stat(path.join(deskB.userDataPath, "credentials.json"))).resolves.toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// The passwordless sign-in, as the RUNTIME wires it
+// ---------------------------------------------------------------------------
+//
+// WHY THIS IS NOT COVERED BY THE BROKER'S OWN SUITE (plan §8, Fáze 2: "Doplnit testy konfigurace i
+// runtime wiring; samotné testy izolovaného brokeru tuto chybu nezachytí"). Every failure below is a
+// failure of ASSEMBLY, and each one leaves both halves working perfectly on their own:
+//
+//   - a broker built but never handed to the account manager, so the sign-in is unreachable;
+//   - a broker built from a different environment answer than the Firebase configuration, so a dev
+//     build brokers through the production host;
+//   - a build with no auth-link configuration that falls back to production instead of refusing;
+//   - a shutdown that leaves an attempt and its timers behind.
+describe("the runtime's passwordless sign-in wiring", () => {
+  const fixtures: Awaited<ReturnType<typeof createFixture>>[] = [];
+
+  afterEach(async () => {
+    for (const fixture of fixtures.splice(0)) await fixture.runtime.stop();
+    vi.unstubAllEnvs();
+  });
+
+  /** A demo Firebase project against the Auth emulator, declared `local`. */
+  function stubDemoFirebase(): void {
+    vi.stubEnv("STRIDETERM_ENV", "local");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "demo-strideterm-runtime");
+    vi.stubEnv("FIREBASE_AUTH_EMULATOR_HOST", "127.0.0.1:9099");
+    vi.stubEnv("FIREBASE_DATABASE_EMULATOR_HOST", "127.0.0.1:9000");
+    vi.stubEnv("FIREBASE_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001");
+  }
+
+  test("the installation session does not hang off the Mobile toggle (source shape)", async () => {
+    // THE REGRESSION THIS PINS. `beginInstallationRegistration` authenticates as the INSTALLATION,
+    // and the installation's Firebase client used to be born only inside the pairing transport's
+    // lazy `createClient` — which is reached on the transport's first real use, i.e. when somebody
+    // turns Mobile ON. So registering a computer with Mobile off found `installationRestClient`
+    // null, threw a BARE `Error`, and `codeOf` answered `unknown`: the one code the UI has no
+    // sentence for, on the one screen where the person is waiting to be told what to do.
+    //
+    // A source check because the failure lives in a wiring decision rather than in a branch: what
+    // went wrong was WHERE the client was constructed, and a behavioural test would need a live
+    // emulator plus an owner session to reach the token at all.
+    const source = await fs.readFile(path.join(import.meta.dirname, "runtime.ts"), "utf8");
+    // One construction site, reachable without the transport.
+    expect(source).toMatch(/const ensureInstallationRestClient = \(config: MobileFirebaseConfig\)/);
+    expect(source.match(/createMobileFirebaseRestClient\(\{/g) ?? []).toHaveLength(1);
+    // The transport shares it rather than owning it.
+    expect(source).toMatch(/createClient: \(config\) => ensureInstallationRestClient\(config\)/);
+    // And the refusal is a mapped code, never a bare Error.
+    expect(source).toMatch(/throw new AccountCallableError\("not-configured", 0\)/);
+    expect(source).not.toContain('throw new Error("the mobile control plane is not configured")');
+  });
+
+  test("a build with no auth-link configuration refuses a NEW sign-in and nothing else", async () => {
+    // A local build gets no broker unless it names one, and it must NOT fall back to prod: a test
+    // address brokered through the real host is how one ends up in a real account.
+    stubDemoFirebase();
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    expect(fixture.runtime.getAccountState().signInAvailable).toBe(false);
+    await expect(fixture.runtime.accountBeginSignIn("owner@example.test", "reauth")).rejects.toMatchObject({
+      code: "auth-unavailable",
+    });
+  });
+
+  test("with an explicit dev origin the broker exists and the manager can reach it", async () => {
+    stubDemoFirebase();
+    // A port nothing is listening on: the assertion is that the attempt got as far as TRYING, which
+    // is only possible if the broker was built AND handed to the account manager.
+    vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:9");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    expect(fixture.runtime.getAccountState().signInAvailable).toBe(true);
+    // The broker is unreachable, so the attempt falls back to manual-only; Firebase is unreachable
+    // too, so the send has an UNKNOWN result (F03) — and an unknown result keeps the attempt open, so
+    // this resolves rather than rejecting. What is being asserted is that the attempt EXISTS: the
+    // pinned address, `manualOnly` and `sendOutcome: "unknown"` are all only reachable if the broker
+    // was built AND handed to the account manager. `auth-unavailable`, or no attempt at all, would
+    // mean the wiring itself was missing.
+    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth");
+    const auth = fixture.runtime.getAccountState().auth;
+    expect(auth?.email).toBe("owner@example.test");
+    expect(auth?.manualOnly).toBe(true);
+    expect(auth?.sendOutcome).toBe("unknown");
+    expect(auth?.sendsUsed).toBe(1);
+  });
+
+  test("a build with no Firebase configuration at all has the whole feature absent", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    expect(fixture.runtime.getAccountState().phase).toBe("unconfigured");
+    expect(fixture.runtime.getAccountState().signInAvailable).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // F11 — the environment is declared, and one answer serves every party
+  // -------------------------------------------------------------------------
+  //
+  // WHY THESE ARE RUNTIME TESTS AND NOT RESOLVER TESTS. The follow-up says so in as many words:
+  // "Samotné testy resolveru nestačí." Each failure below is a failure of ASSEMBLY — the resolver
+  // answering one thing and the broker being built for another — and the resolver's own suite cannot
+  // see it. What makes them observable is `authEnvironment` and `signInUnavailableReason` in the
+  // broadcast state: exactly one of the two is present, and it says which backend a sign-in would
+  // reach or which of four operator problems is in the way.
+  test("an isolated data directory alone no longer chooses the dev environment, or any other", async () => {
+    // THE WHOLE OF F11, PLUS PLAN §3.1's STRENGTHENING. `bootstrapEnvironmentFor` used to
+    // short-circuit to `dev` whenever `STRIDETERM_DATA_DIR` was set — which `dev.ps1` always sets, and
+    // which `--data-dir` sets for a second PRODUCTION instance. So a production build with separate
+    // state had no broker at all (`dev-origin-missing`), and a desktop pointed at qa still chose the
+    // dev broker. It is now stricter still: `runtime.ts` is Electron-agnostic and never applies the
+    // launcher's build default itself (that is `electron/main.ts`'s job — see bootstrap-trust.ts),
+    // so with NOTHING declaring an environment at all, a data directory does not produce a guess of
+    // ANY kind — not `dev`, not `production` — it produces `unresolved`, and a new sign-in refuses.
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-prod");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+    vi.stubEnv("STRIDETERM_DATA_DIR", "/some/isolated/place");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    const state = fixture.runtime.getAccountState();
+    expect(state.signInAvailable).toBe(false);
+    expect(state.authEnvironment).toBeUndefined();
+    expect(state.signInUnavailableReason).toBe("environment-unresolved");
+  });
+
+  test("a DECLARED environment wins over the project id, for all four of them", async () => {
+    for (const [declared, projectId] of [
+      ["dev", "strideterm-mobile-prod"],
+      ["qa", "strideterm-mobile-prod"],
+      ["prod", "strideterm-mobile-prod"],
+      // local + a real-looking project id is ITS OWN contradiction (plan §3.1), so local needs a
+      // demo- project here — unlike dev/qa/prod, which never look at the project id's spelling.
+      ["local", "demo-strideterm-runtime"],
+    ] as const) {
+      vi.unstubAllEnvs();
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", projectId);
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+      vi.stubEnv("STRIDETERM_DATA_DIR", "/some/isolated/place");
+      vi.stubEnv("STRIDETERM_ENV", declared);
+      // A local build still has to name its own broker; dev/qa/prod all have fixed origins now.
+      if (declared === "local") vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://localhost:8788");
+      // And the WHOLE Emulator Suite (follow-up 2026-09-11, item 1): a local build with any emulator
+      // missing is not configured at all, rather than configured with a cloud fallback for that service.
+      if (declared === "local") {
+        vi.stubEnv("FIREBASE_AUTH_EMULATOR_HOST", "127.0.0.1:9099");
+        vi.stubEnv("FIREBASE_DATABASE_EMULATOR_HOST", "127.0.0.1:9000");
+        vi.stubEnv("FIREBASE_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001");
+      }
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      const state = fixture.runtime.getAccountState();
+      expect(state.authEnvironment, declared).toBe(declared);
+      expect(state.signInAvailable, declared).toBe(true);
+    }
+  });
+
+  test("a CONTRADICTORY declaration blocks a new sign-in and does not fall back to prod", async () => {
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-prod");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+    vi.stubEnv("STRIDETERM_ENV", "stage");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    const state = fixture.runtime.getAccountState();
+    expect(state.signInAvailable).toBe(false);
+    expect(state.signInUnavailableReason).toBe("environment-unresolved");
+    expect(state.authEnvironment).toBeUndefined();
+    await expect(fixture.runtime.accountBeginSignIn("owner@example.test", "reauth")).rejects.toMatchObject({
+      code: "auth-unavailable",
+    });
+  });
+
+  test("a local build with a missing origin names THAT as the reason, not the environment", async () => {
+    // Four operator problems, four codes. Before this the page had one sentence for all of them.
+    stubDemoFirebase();
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    expect(fixture.runtime.getAccountState().signInUnavailableReason).toBe("local-origin-missing");
+  });
+
+  test("a fresh desktop uses its fetched bootstrap immediately and keeps it for an offline restart", async () => {
+    const { generateKeyPairSync, sign } = await import("node:crypto");
+    const { bootstrapSigningInput, BOOTSTRAP_SCHEMA_VERSION } = await import("./mobile/control-plane-bootstrap.js");
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const publicRaw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+    const payload = {
+      schemaVersion: BOOTSTRAP_SCHEMA_VERSION,
+      environment: "dev" as const,
+      configEpoch: 1,
+      issuedAt: Date.now() - 1_000,
+      projectId: "strideterm-bootstrap-dev",
+      apiKey: "synthetic-bootstrap-key",
+      appId: "1:1:web:abc",
+      messagingSenderId: "1",
+      databaseUrl: "https://strideterm-bootstrap-dev-default-rtdb.europe-west1.firebasedatabase.app",
+      functionsBaseUrl: "https://europe-west1-strideterm-bootstrap-dev.cloudfunctions.net",
+    };
+    const envelope = {
+      v: 1 as const,
+      keyId: "dev-test",
+      payload,
+      signature: sign(null, Buffer.from(bootstrapSigningInput(payload)), privateKey).toString("base64"),
+    };
+    vi.stubEnv("STRIDETERM_ENV", "dev");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "");
+    vi.stubEnv("STRIDETERM_BOOTSTRAP_URL", "https://bootstrap.example.test/dev.json");
+    vi.stubEnv("STRIDETERM_BOOTSTRAP_TRUST_KEYS", `dev-test=${publicRaw.toString("base64")}`);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input) === "https://bootstrap.example.test/dev.json") return Response.json(envelope);
+      throw new Error("No live network in this test");
+    });
+    try {
+      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bootstrap-first-start-"));
+      tempPaths.push(dataDir);
+      const first = await createFixture({ dataDir });
+      fixtures.push(first);
+      expect(first.runtime.getAccountState().signInAvailable).toBe(true);
+      expect(first.runtime.getAccountState().authEnvironment).toBe("dev");
+      expect(JSON.parse(await fs.readFile(path.join(dataDir, "control-plane-bootstrap.json"), "utf8"))).toMatchObject({
+        envelope,
+        highestSeenEpoch: 1,
+      });
+      await first.runtime.stop();
+      fixtures.splice(fixtures.indexOf(first), 1);
+      fetchMock.mockRejectedValue(new Error("offline"));
+      const restarted = await createFixture({ dataDir });
+      fixtures.push(restarted);
+      expect(restarted.runtime.getAccountState().signInAvailable).toBe(true);
+      expect(restarted.runtime.getAccountState().authEnvironment).toBe("dev");
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("a signed bootstrap cannot choose the environment; it is checked against it", async () => {
+    // F11's precedence, at the level of assembly. The envelope is fetched from a URL that the trust
+    // set for ONE environment names, so letting the document declare which environment it is for
+    // would make that check circular: the environment decides which trust set and which URL, and the
+    // envelope then decides the project, the database and the callable base WITHIN it.
+    //
+    // The envelope is written straight into the state directory rather than served over a stubbed
+    // fetch, because that is the path the runtime actually takes at start-up (`currentVerified()`)
+    // and a fetch this fixture does not wire would have made the assertion vacuous. Its signature is
+    // valid and its key is in the build's trust set — so `prod` in a `dev` build is refused for its
+    // ENVIRONMENT and nothing else, which is the check under test.
+    const seed = Buffer.from("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", "hex");
+    const { createPrivateKey, createPublicKey, sign } = await import("node:crypto");
+    const privateKey = createPrivateKey({
+      key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]),
+      format: "der",
+      type: "pkcs8",
+    });
+    const publicRaw = createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32);
+    const { bootstrapSigningInput, BOOTSTRAP_SCHEMA_VERSION } = await import("./mobile/control-plane-bootstrap.js");
+    const payload = {
+      schemaVersion: BOOTSTRAP_SCHEMA_VERSION,
+      environment: "prod" as const,
+      configEpoch: 9,
+      issuedAt: Date.now() - 60_000,
+      projectId: "strideterm-mobile-prod",
+      apiKey: "AIza-somebody-elses",
+      appId: "1:1:android:abc",
+      messagingSenderId: "1",
+      databaseUrl: "https://strideterm-mobile-prod.europe-west1.firebasedatabase.app",
+      functionsBaseUrl: "https://europe-west1-strideterm-mobile-prod.cloudfunctions.net",
+    };
+    const envelope = {
+      v: 1 as const,
+      keyId: "k1",
+      payload,
+      signature: sign(null, Buffer.from(bootstrapSigningInput(payload)), privateKey).toString("base64"),
+    };
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bootstrap-env-"));
+    await fs.writeFile(
+      path.join(dataDir, "control-plane-bootstrap.json"),
+      JSON.stringify({ highestSeenEpoch: 9, envelope }),
+      "utf8",
+    );
+
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-dev");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+    vi.stubEnv("STRIDETERM_ENV", "dev");
+    // Only `local`/`dev` may be given a trust key from the environment, which is why this test
+    // declares dev — `qa`, hardened identically to `prod` (plan §3.2), ignores it entirely and the
+    // envelope below could not be accepted for any reason at all.
+    vi.stubEnv("STRIDETERM_BOOTSTRAP_TRUST_KEYS", `k1=${publicRaw.toString("base64")}`);
+    const fixture = await createFixture({ dataDir });
+    fixtures.push(fixture);
+
+    // The DECLARED environment stands, and the broker is dev's.
+    expect(fixture.runtime.getAccountState().authEnvironment).toBe("dev");
+    expect(fixture.runtime.getAccountState().signInAvailable).toBe(true);
+
+    // THE POSITIVE CONTROL, without which the assertion above proves only that nothing was read: the
+    // same envelope, declared `prod`, IS accepted by a prod build — so what refused it here was the
+    // environment check and not a broken signature or an unreadable file.
+    //
+    // A SEPARATE data directory, deliberately (plan §3.3): re-declaring a different environment over
+    // the SAME data directory is now its own refusal (see the "data directory is bound" describe
+    // block below), and reusing `dataDir` here would test that refusal instead of the environment
+    // check this positive control exists for.
+    const secondDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bootstrap-env-"));
+    await fs.writeFile(
+      path.join(secondDataDir, "control-plane-bootstrap.json"),
+      JSON.stringify({ highestSeenEpoch: 9, envelope }),
+      "utf8",
+    );
+    vi.stubEnv("STRIDETERM_ENV", "prod");
+    const accepting = await createFixture({ dataDir: secondDataDir });
+    fixtures.push(accepting);
+    expect(accepting.runtime.getAccountState().authEnvironment).toBe("prod");
+  });
+
+  // -------------------------------------------------------------------------
+  // Plan §3.3 — a data directory is bound to the environment it was FIRST used for
+  // -------------------------------------------------------------------------
+  //
+  // `bootstrap-client.ts` persists a rollback epoch floor under the data directory, and this file's
+  // own `MOBILE_FIREBASE_REFRESH_TOKEN_REF` keeps the mobile Auth refresh token in the SAME
+  // directory's credential store, both under fixed, environment-free keys. Before this, re-declaring
+  // `STRIDETERM_ENV` over an already-used directory silently inherited whichever environment had used
+  // it last — the exact thing plan §8 Phase D's "Změna prostředí nad existujícím datovým adresářem"
+  // row requires refused.
+  describe("a data directory is bound to the environment it was first used for", () => {
+    test("switching the declared environment over an existing data directory is refused, not adopted", async () => {
+      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-env-binding-"));
+      tempPaths.push(dataDir);
+
+      vi.stubEnv("STRIDETERM_ENV", "local");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "demo-strideterm-runtime");
+      vi.stubEnv("FIREBASE_AUTH_EMULATOR_HOST", "127.0.0.1:9099");
+      vi.stubEnv("FIREBASE_DATABASE_EMULATOR_HOST", "127.0.0.1:9000");
+      vi.stubEnv("FIREBASE_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001");
+      vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:8788");
+      const local = await createFixture({ dataDir });
+      await local.runtime.stop();
+      expect(local.runtime.getAccountState().signInAvailable).toBe(true);
+
+      // THE SAME DIRECTORY, declared `dev` this time — a personal test against real servers, nothing
+      // like the emulator-only build the directory was first used for.
+      vi.unstubAllEnvs();
+      vi.stubEnv("STRIDETERM_ENV", "dev");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-dev");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+      const dev = await createFixture({ dataDir });
+      fixtures.push(dev);
+
+      const state = dev.runtime.getAccountState();
+      expect(state.signInAvailable).toBe(false);
+      expect(state.signInUnavailableReason).toBe("environment-mismatch");
+      expect(state.authEnvironment).toBeUndefined();
+      // THE WHOLE FEATURE IS ABSENT, not merely sign-in: a config the mismatch refused never reaches
+      // the transport, so nothing here could have read the `local` epoch floor or written a `dev`
+      // refresh token into a slot `local` might read on its next restart.
+      expect(state.phase).toBe("unconfigured");
+      await expect(dev.runtime.accountBeginSignIn("owner@example.test", "reauth")).rejects.toMatchObject({
+        code: "auth-unavailable",
+      });
+
+      // THE BINDING DOES NOT MOVE. A mismatched launch must not itself become the new binding, or a
+      // second mismatched declaration would look like agreement with the first.
+      const binding = JSON.parse(await fs.readFile(path.join(dataDir, "mobile-environment.json"), "utf8"));
+      expect(binding).toEqual({ environment: "local" });
+    });
+
+    test("restarting under the SAME declared environment is unaffected", async () => {
+      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-env-binding-"));
+      tempPaths.push(dataDir);
+
+      vi.stubEnv("STRIDETERM_ENV", "qa");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-qa");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+      const first = await createFixture({ dataDir });
+      await first.runtime.stop();
+      expect(first.runtime.getAccountState().authEnvironment).toBe("qa");
+
+      const second = await createFixture({ dataDir });
+      fixtures.push(second);
+      expect(second.runtime.getAccountState().authEnvironment).toBe("qa");
+      expect(second.runtime.getAccountState().signInAvailable).toBe(true);
+    });
+
+    test("a fresh data directory is not a mismatch — it binds on first use", async () => {
+      vi.stubEnv("STRIDETERM_ENV", "prod");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-prod");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      expect(fixture.runtime.getAccountState().signInUnavailableReason).not.toBe("environment-mismatch");
+      const binding = JSON.parse(await fs.readFile(path.join(fixture.userDataPath, "mobile-environment.json"), "utf8"));
+      expect(binding).toEqual({ environment: "prod" });
+    });
+
+    test("an UNRESOLVED declaration neither binds nor is compared against an existing binding", async () => {
+      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-env-binding-"));
+      tempPaths.push(dataDir);
+
+      vi.stubEnv("STRIDETERM_ENV", "local");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "demo-strideterm-runtime");
+      vi.stubEnv("FIREBASE_AUTH_EMULATOR_HOST", "127.0.0.1:9099");
+      vi.stubEnv("FIREBASE_DATABASE_EMULATOR_HOST", "127.0.0.1:9000");
+      vi.stubEnv("FIREBASE_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001");
+      vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:8788");
+      const local = await createFixture({ dataDir });
+      await local.runtime.stop();
+
+      // No `STRIDETERM_ENV` at all this time — `bootstrapEnvironmentFor` answers `unresolved`, which
+      // already refuses a new sign-in on its own (see the F11 block above) and must not ALSO be
+      // treated as a foreign-environment mismatch against the `local` binding recorded above. The
+      // Firebase project id/key are kept set (matching "an isolated data directory alone no longer
+      // chooses the dev environment" above) so the refusal is `environment-unresolved` and not merely
+      // `not-configured`.
+      vi.unstubAllEnvs();
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-prod");
+      vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+      const unresolved = await createFixture({ dataDir });
+      fixtures.push(unresolved);
+      expect(unresolved.runtime.getAccountState().signInUnavailableReason).toBe("environment-unresolved");
+
+      // AND THE BINDING IS UNTOUCHED: a later, correctly declared `local` restart still matches.
+      const binding = JSON.parse(await fs.readFile(path.join(dataDir, "mobile-environment.json"), "utf8"));
+      expect(binding).toEqual({ environment: "local" });
+    });
+  });
+
+  test("qa plus emulator hosts blocks a NEW sign-in before any mail could be sent (R06)", async () => {
+    // The documented qa procedure, run in a console that still carries configuration A's emulator
+    // variables. The old resolver dropped the hosts and kept going; this one refuses the
+    // configuration whole, and the page says which of the operator problems it is.
+    vi.stubEnv("STRIDETERM_ENV", "qa");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-qa");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+    vi.stubEnv("FIREBASE_AUTH_EMULATOR_HOST", "127.0.0.1:9099");
+    vi.stubEnv("FIREBASE_DATABASE_EMULATOR_HOST", "127.0.0.1:9000");
+    vi.stubEnv("FIREBASE_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    const state = fixture.runtime.getAccountState();
+    expect(state.signInAvailable).toBe(false);
+    expect(state.signInUnavailableReason).toBe("environment-contradiction");
+    expect(state.authEnvironment).toBeUndefined();
+    await expect(fixture.runtime.accountBeginSignIn("owner@example.test", "reauth")).rejects.toMatchObject({
+      code: "auth-unavailable",
+    });
+  });
+
+  test("qa plus an explicit plain-HTTP database URL is the same refusal", async () => {
+    vi.stubEnv("STRIDETERM_ENV", "qa");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-qa");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_DATABASE_URL", "http://127.0.0.1:9000?ns=strideterm-mobile-qa-default-rtdb");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    expect(fixture.runtime.getAccountState().signInAvailable).toBe(false);
+    expect(fixture.runtime.getAccountState().signInUnavailableReason).toBe("environment-contradiction");
+  });
+
+  test("an EMULATOR-shaped origin is refused outside a local build", async () => {
+    // The local override is not consulted at all outside local, so a qa build cannot be pointed at a
+    // loopback broker — and the state says the environment it actually resolved to rather than
+    // pretending the variable had an effect.
+    vi.stubEnv("STRIDETERM_ENV", "qa");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "strideterm-mobile-qa");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "AIza-not-a-real-key");
+    vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:8788");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    expect(fixture.runtime.getAccountState().authEnvironment).toBe("qa");
+  });
+
+  test("the sign-in surface is on the runtime, and the password surface is gone from it", async () => {
+    // The IPC layer is thin by design, so a method that never reached the runtime is a channel that
+    // answers `undefined is not a function` at run time rather than at compile time.
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    const runtime = fixture.runtime as unknown as Record<string, unknown>;
+    for (const method of [
+      "accountBeginSignIn",
+      "accountConfirmSignIn",
+      "accountResendSignIn",
+      "accountCancelSignIn",
+      "accountSubmitSignInLink",
+      "accountChangeLoginEmail",
+      "accountClearPendingEmailChange",
+    ]) {
+      expect(typeof runtime[method], method).toBe("function");
+    }
+    for (const removed of [
+      "accountSignUp",
+      "accountSignIn",
+      "accountReauthenticate",
+      "accountResendVerification",
+      "accountRefreshVerification",
+      "accountSendPasswordReset",
+    ]) {
+      expect(runtime[removed], removed).toBeUndefined();
+    }
+  });
+
+  test("closing the window that STARTED the sign-in cancels it; closing another does not", async () => {
+    // Plan §8, Fáze 3. Every window renders the same attempt, but only the one that started it is the
+    // one whose closing means "never mind" — the link may be open on a phone at that very moment.
+    stubDemoFirebase();
+    vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:9");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    // The broker is unreachable, so the attempt falls back to manual-only and the send has an unknown
+    // result; what is being tested is the OWNERSHIP bookkeeping, recorded before either happens.
+    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth", undefined, "window-a");
+    await fixture.runtime.removeWindowSlot("window-b");
+    // The other window's close did not end the attempt.
+    expect(fixture.runtime.getAccountState().auth?.email).toBe("owner@example.test");
+    await fixture.runtime.removeWindowSlot("window-a");
+    expect(fixture.runtime.getAccountState().auth).toBeUndefined();
+  });
+
+  test("closing the owning PANEL keeps a link that is still waiting (F09)", async () => {
+    // THE FLOW ASKS THE PERSON TO LEAVE, AND LEAVING MUST NOT END IT. The link is in a mail client:
+    // reading it means closing the Settings dialog or switching to another of its tabs, and both
+    // unmount the account panel. Ending the attempt here therefore cancelled the sign-in as a direct
+    // consequence of the user doing the one thing the flow requires — and because a cancel is not an
+    // error, the desktop then showed an empty form and said nothing, while the link they went on to
+    // open was confirmed at a broker with nothing left on this side to claim it.
+    //
+    // What the panel's close still does is release the RETENTION and every in-flight operation. That
+    // was always the half of F09 that mattered, and it is safe to keep the attempt alongside it
+    // because an attempt cannot become a credential unaided: the payload lands in
+    // `awaiting-confirmation` and waits for a press on this desktop.
+    stubDemoFirebase();
+    vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:9");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth", undefined, "window-a");
+    // The panel in the OTHER window closes. Every window renders this attempt; only one owns it.
+    fixture.runtime.accountReleaseSignInFlow("window-b");
+    expect(fixture.runtime.getAccountState().auth?.email).toBe("owner@example.test");
+    // A release with no window at all — a remote or unidentifiable caller — is a no-op too.
+    fixture.runtime.accountReleaseSignInFlow(undefined);
+    expect(fixture.runtime.getAccountState().auth?.email).toBe("owner@example.test");
+    // AND THE OWNER'S OWN PANEL CLOSING LEAVES IT WAITING. This is the assertion that inverted.
+    fixture.runtime.accountReleaseSignInFlow("window-a");
+    expect(fixture.runtime.getAccountState().auth?.email).toBe("owner@example.test");
+
+    // A CANCEL IS STILL A CANCEL. The person pressing the button is a different act from the dialog
+    // going away, and only one of the two means "never mind".
+    fixture.runtime.accountCancelSignIn();
+    expect(fixture.runtime.getAccountState().auth).toBeUndefined();
+  });
+
+  test("the panel can be closed and reopened repeatedly without losing the attempt", async () => {
+    // The realistic shape of the journey: open Settings, ask for a link, close Settings, read mail,
+    // come back. Possibly twice, because the message took eight minutes to arrive and the person
+    // checked early. None of it may cost the attempt.
+    stubDemoFirebase();
+    vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:9");
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth", undefined, "window-a");
+    for (let visit = 0; visit < 3; visit++) {
+      fixture.runtime.accountReleaseSignInFlow("window-a");
+      expect(fixture.runtime.getAccountState().auth?.email).toBe("owner@example.test");
+    }
+    // The ownership is NOT consumed while the link is still waiting, which is what makes the third
+    // close behave like the first. Consuming it would leave later closes unable to release the
+    // retention the eventual confirmation creates.
+
+    // A NEW attempt supersedes the old one, exactly as before, and closing the panel keeps THAT one.
+    await fixture.runtime.accountBeginSignIn("someone@example.test", "reauth", undefined, "window-a");
+    expect(fixture.runtime.getAccountState().auth?.email).toBe("someone@example.test");
+    fixture.runtime.accountReleaseSignInFlow("window-a");
+    expect(fixture.runtime.getAccountState().auth?.email).toBe("someone@example.test");
+
+    // With nothing in flight, a release is harmless and the ownership is then consumed.
+    fixture.runtime.accountCancelSignIn();
+    fixture.runtime.accountReleaseSignInFlow("window-a");
+    expect(fixture.runtime.getAccountState().auth).toBeUndefined();
+  });
+
+  test("shutting down clears the pending flow and its timers", async () => {
+    stubDemoFirebase();
+    vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:9");
+    const fixture = await createFixture();
+    // Deliberately NOT pushed onto `fixtures`: this test stops it itself.
+    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth").catch(() => {});
+    await fixture.runtime.stop();
+    expect(fixture.runtime.getAccountState().auth).toBeUndefined();
+  });
+});

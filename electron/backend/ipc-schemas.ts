@@ -1297,6 +1297,135 @@ export const mobileSessionBootstrapSchema = z.object({
 export type MobileSessionBootstrap = z.infer<typeof mobileSessionBootstrapSchema>;
 
 // ----------------------------------------
+//
+// ACCOUNT (plan §8.2, and the passwordless revision's §8 Fáze 3). Every one of these is
+// DESKTOP-ONLY, including for the remote web renderer: `remote-server.ts` routes none of them and
+// `src/transport.test.ts` lists them in `KNOWN_DESKTOP_ONLY_METHODS`. Signing in, paying and revoking
+// are acts that belong at the machine whose consequences they land on.
+//
+// THERE IS NO PASSWORD FIELD ANY MORE, anywhere in this stack. What replaced it is an address and,
+// for the manual fallback, the text of a sign-in link — and the link is the one payload here that
+// carries a live credential, which is why it has its own schema, its own bound, and an explicit
+// redaction test in `logger-redaction.test.ts`.
+//
+// NOTHING LOGS AN IPC PAYLOAD. `withOperationPromise` carries an `opId` and no arguments, and
+// `validateIpc` names the CHANNEL rather than echoing what failed to parse — which matters most
+// exactly here, because a link that failed validation is still a link (plan §8, Fáze 3: "Auth IPC
+// nesmí logovat celý payload, ani když Zod validace selže").
+
+const accountEmail = z.string().min(3).max(320);
+
+export const accountEmailSchema = z.object({ email: accountEmail });
+export type AccountEmail = z.infer<typeof accountEmailSchema>;
+
+/**
+ * `account:sign-in:start` — one address, one pinned purpose, and the operand of the one purpose that
+ * has one.
+ *
+ * THE PURPOSE IS AN ENUM AND NOT FREE TEXT: it decides what happens once an identity is proved, and
+ * the renderer names which of a closed set it wants rather than describing an action.
+ */
+export const accountSignInStartSchema = z
+  .object({
+    email: accountEmail,
+    purpose: z.enum([
+      "enrol",
+      "enrol-with-trial",
+      // The TRIAL ALONE, on a machine that is already registered — the resume of a half-finished
+      // onboarding (follow-up F06). It is a purpose rather than a flag because it decides what
+      // happens after the identity is proved, exactly like the others.
+      "trial",
+      "recover-uid",
+      "reauth",
+      "checkout",
+      "portal",
+      "change-email",
+      "delete-account",
+      // A revocation whose local recent-auth window had already lapsed (plan §7/C2). Carries the
+      // packed revoke target the same way `checkout` carries an offer id — see `account-manager.ts`'s
+      // `decodeRevokeTarget` and `SettingsAccountTab.vue`'s `revokeOrReauth`.
+      "revoke-device",
+    ]),
+    offerId: z.string().min(1).max(128).optional(),
+    // STRICT, so a field this channel does not have is a refusal rather than a silently dropped one.
+    // Zod's default is to strip, which would let two builds of the renderer disagree about what a
+    // request said while both were accepted.
+  })
+  .strict();
+export type AccountSignInStart = z.infer<typeof accountSignInStartSchema>;
+
+/**
+ * `account:sign-in:link` — the whole link, pasted out of a mail client.
+ *
+ * The ONE payload in this file that carries a live credential. It is bounded before anything parses
+ * it, it reaches exactly one backend method, and it is never broadcast, stored or logged. The parser
+ * that reads it (`authlink-config.ts`) never fetches the URL it was given.
+ */
+export const accountSignInLinkSchema = z.object({ link: z.string().min(1).max(4096) }).strict();
+export type AccountSignInLink = z.infer<typeof accountSignInLinkSchema>;
+
+/**
+ * `account:enrol` — `recover-uid` is the same-key re-enrolment after a lost installation token.
+ *
+ * The value is spelled EXACTLY as the generated server contract spells it. It used to be `recover`
+ * all the way down this stack, and the server's `InstallationRegistrationRequestSchema` accepts only
+ * `register` or `recover-uid` — so the one path that exists for a desktop that lost its refresh token
+ * was refused as a malformed request against a correct backend.
+ */
+export const accountEnrolSchema = z.object({
+  mode: z.enum(["register", "recover-uid"]).default("register"),
+  /**
+   * Pair ids this desktop already knows about, as LOCATOR HINTS only.
+   *
+   * The server re-reads each pair's `publicMeta` and accepts one only when its recorded desktop uid
+   * is the challenge's own; a client-supplied id is never authority. Bounded, because an unbounded
+   * hint list is an unbounded read somebody else pays for.
+   */
+  pairHints: z.array(nonEmptyString).max(32).optional(),
+});
+export type AccountEnrol = z.infer<typeof accountEnrolSchema>;
+
+/** `account:checkout` — an opaque catalog offer id, never a provider price. */
+export const accountCheckoutSchema = z.object({ offerId: nonEmptyString });
+export type AccountCheckout = z.infer<typeof accountCheckoutSchema>;
+
+export const accountRevokeSchema = z.object({
+  kind: z.enum(["installation", "mobile-device", "pair", "account-wide"]),
+  targetId: nonEmptyString.optional(),
+});
+export type AccountRevoke = z.infer<typeof accountRevokeSchema>;
+
+export const accountNoticeAckSchema = z.object({ noticeId: nonEmptyString });
+export type AccountNoticeAck = z.infer<typeof accountNoticeAckSchema>;
+
+/**
+ * `account:sign-out` — `disconnect` is the deliberate second act.
+ *
+ * Sign-out is an online revocation: while this machine still has pairings or a live relay session
+ * the UI offers "cancel" or "disconnect this installation", and only the second one proceeds. A
+ * boolean the renderer must set explicitly is what stops a stray click disconnecting somebody's
+ * phones.
+ */
+export const accountSignOutSchema = z.object({ disconnect: z.boolean() });
+export type AccountSignOut = z.infer<typeof accountSignOutSchema>;
+
+/**
+ * `account:diagnostics:submit` / `account:diagnostics:export` — the note, and nothing else.
+ *
+ * The REPORT is not a payload: it is assembled in the main process from this installation's own
+ * bounded log. A renderer that could hand over the entries would be a renderer that could put
+ * anything in a document destined for the control plane, which is the opposite of what a redacted,
+ * closed-vocabulary log is for. The note is the one thing the user actually wrote, bounded to the
+ * same length the server keeps.
+ */
+export const accountDiagnosticsSchema = z.object({ note: z.string().max(500).optional() });
+export type AccountDiagnostics = z.infer<typeof accountDiagnosticsSchema>;
+
+/** `account:delete` — the phrase is compared server-side; nothing here is a confirmation on its own. */
+export const accountDeleteSchema = z.object({ confirmationPhrase: z.string().min(1).max(64) });
+export type AccountDelete = z.infer<typeof accountDeleteSchema>;
+
+// ----------------------------------------
 
 export function validateIpc<T extends z.ZodTypeAny>(schema: T, payload: unknown, channel: string): z.infer<T> {
   const result = schema.safeParse(payload);

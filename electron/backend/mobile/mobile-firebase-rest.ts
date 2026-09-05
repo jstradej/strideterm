@@ -170,6 +170,41 @@ export interface MobileFirebaseRestClientDeps {
   refreshTokenRef: string;
   fetchImpl?: FetchLike;
   now?: () => number;
+  /**
+   * Whether this installation is currently BOUND to an account.
+   *
+   * The guard on the anonymous fallback. A rejected refresh token used to be answered by deleting the
+   * credential and signing in anonymously again, which produces a NEW uid — and that uid is the thing
+   * every pair membership, the account's `installations` row, the relay connector identity and the
+   * server's `accountByUid` index are keyed by. For an unbound machine that is the right recovery and
+   * costs nothing. For a BOUND one it silently replaces the identity the account knows, and the
+   * honest answer is to refuse and let the user run the `recover-uid` enrolment, which is the path
+   * that exists precisely for a desktop that lost its refresh token.
+   *
+   * Absent means "not bound", which is today's behaviour for every caller that has no account.
+   */
+  isAccountBound?: () => boolean;
+}
+
+/**
+ * Thrown instead of minting a new anonymous identity for an ACCOUNT-BOUND installation.
+ *
+ * Carries no remote text. The desktop maps it to `installation-identity-lost`, which the Account page
+ * turns into "reconnect this machine" — the `recover-uid` enrolment, which keeps the account's cap
+ * slot and its pairings instead of starting a second installation.
+ */
+export class MobileFirebaseIdentityLostError extends Error {
+  // Declared and assigned, NOT a constructor parameter property. The cross-repo emulator scenario
+  // imports this module through Node's type-stripping loader, which cannot rewrite `constructor(readonly
+  // x)` — it removes types, it does not emit the field. A parameter property here made
+  // `npm run e2e` fail at import with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX, before a single test ran.
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`the stored Firebase refresh token was rejected for an account-bound installation (${reason})`);
+    this.name = "MobileFirebaseIdentityLostError";
+    this.reason = reason;
+  }
 }
 
 export interface RtdbStreamEvent {
@@ -192,6 +227,15 @@ export interface MobileFirebaseRestClient {
   signIn(): Promise<AuthSession>;
   /** Current session, refreshed if it is at/near expiry. */
   currentSession(): Promise<AuthSession>;
+  /**
+   * Mints a NEW id token now, whatever the cached one's expiry says.
+   *
+   * For the one thing an expiry cannot tell you: the CLAIMS changed. A custom claim is baked in when
+   * the token is minted, so an installation whose account was just granted, renewed or revoked keeps
+   * presenting the old one for the rest of its hour — and every entitlement-gated door refuses it
+   * meanwhile. `v2/tokenRefresh/{uid}` is the server saying "ask again now"; this is asking.
+   */
+  refreshSession(): Promise<AuthSession>;
   /** Forgets the cached id token (the persisted refresh token stays, so the next call re-signs in). */
   clearCachedToken(): void;
   /** Forgets the persisted refresh token too — the next sign-in creates a NEW anonymous uid. */
@@ -264,7 +308,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
   /** Every request in this module goes through here, so every response feeds the clock sample. */
   async function timedFetch(input: string, init?: RequestInit): Promise<Response> {
     const sentAt = now();
-    const response = await doFetch(input, init);
+    const response = await doFetch(input, config.emulators ? { ...init, redirect: "error" } : init);
     recordServerTime(response, sentAt);
     return response;
   }
@@ -364,10 +408,24 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
           });
           throw err;
         }
-        // A revoked token, or one belonging to a project this install no longer points at. A fresh
-        // anonymous account is the only way forward — but it produces a NEW uid, which means
-        // existing pair memberships (keyed by uid) no longer include this desktop, so it is logged
-        // loudly rather than silently papered over.
+        // A revoked token, or one belonging to a project this install no longer points at.
+        //
+        // FOR AN ACCOUNT-BOUND INSTALLATION THIS IS NOT A RECOVERY. A fresh anonymous sign-in
+        // produces a NEW uid, and that uid is what every pair membership, the account's
+        // `installations` row and the server's `accountByUid` index are keyed by — so "sign in again"
+        // quietly replaces the identity the account knows with one it has never seen, and the machine
+        // appears to have vanished from its own account. The credential is KEPT (there is nothing to
+        // gain by destroying it) and the user is told, so the `recover-uid` enrolment can put the new
+        // uid on the SAME installation row.
+        if (deps.isAccountBound?.() === true) {
+          log.warn("stored mobile Firebase refresh token was rejected for an account-bound installation", {
+            reason: err.reason,
+          });
+          throw new MobileFirebaseIdentityLostError(err.reason);
+        }
+        // An UNBOUND machine has nothing keyed by its uid yet, so a fresh anonymous identity is the
+        // right answer and costs nothing. Still logged loudly: it does invalidate any pre-account
+        // pairing this machine had.
         log.warn("stored mobile Firebase refresh token was rejected; signing in as a new anonymous user", {
           reason: err.reason,
         });
@@ -430,6 +488,12 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
 
   return {
     async signIn() {
+      return currentSession();
+    },
+    async refreshSession() {
+      // The cached token is dropped first, so `currentSession` cannot answer with the very token
+      // this call exists to replace.
+      session = null;
       return currentSession();
     },
 

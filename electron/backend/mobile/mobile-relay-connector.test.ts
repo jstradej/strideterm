@@ -13,7 +13,13 @@ import net from "node:net";
 import { createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 
-import { createRelayConnector, defaultReconnectDelay, type RelayConnector } from "./mobile-relay-connector.js";
+import {
+  createRelayConnector,
+  defaultDefinitiveRefusalRetryDelay,
+  defaultReconnectDelay,
+  type RelayConnector,
+} from "./mobile-relay-connector.js";
+import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 import type { RelayInstallationIdentity } from "./mobile-relay-identity.js";
 import {
   decodeRelayFrame,
@@ -993,5 +999,53 @@ describe("lifecycle and bounds", () => {
     connector!.revokeDevice("mobile-device-xyz");
     const revoke = await relay.waitFor((frame) => frame.header.t === "conn.revoke");
     expect(revoke.header.d).toBe("mobile-device-xyz");
+  });
+
+  test("the definitive-refusal retry delay is fixed near its constant, and jittered", () => {
+    for (let i = 0; i < 40; i++) {
+      const delay = defaultDefinitiveRefusalRetryDelay();
+      expect(delay).toBeGreaterThan(0);
+      // Never exponential, never far from the constant itself (see mobile-relay-protocol.ts).
+      expect(delay).toBeGreaterThanOrEqual(270_000);
+      expect(delay).toBeLessThanOrEqual(330_000);
+    }
+    const draws = new Set(Array.from({ length: 40 }, () => defaultDefinitiveRefusalRetryDelay()));
+    expect(draws.size).toBeGreaterThan(1);
+  });
+
+  test("a DEFINITIVE grant refusal retries on the long delay, not the ordinary backoff", async () => {
+    // The ordinary backoff is deliberately huge here: if the connector used it instead of the
+    // definitive-refusal delay, this test would time out waiting for the second handshake rather
+    // than pass for the wrong reason.
+    let calls = 0;
+    const created = startConnector({
+      reconnectDelayMs: () => 60_000,
+      definitiveRefusalRetryDelayMs: () => 20,
+      getGrant: async () => {
+        calls += 1;
+        if (calls === 1) throw new MobileRelayGrantDefinitiveRefusalError("permission-denied");
+        return "grant-token-placeholder";
+      },
+    });
+    await awaitConnectorReady(created);
+    // One failing call, then a successful attempt — which itself fetches twice (the WS upgrade and
+    // the `conn.authenticate` frame each ask for their own grant).
+    expect(calls).toBe(3);
+  });
+
+  test("a transient grant-fetch error still uses the ordinary bounded backoff", async () => {
+    // The definitive-refusal delay is deliberately huge here, for the same reason in reverse.
+    let calls = 0;
+    const created = startConnector({
+      reconnectDelayMs: () => 20,
+      definitiveRefusalRetryDelayMs: () => 60_000,
+      getGrant: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("fetch failed");
+        return "grant-token-placeholder";
+      },
+    });
+    await awaitConnectorReady(created);
+    expect(calls).toBe(3);
   });
 });

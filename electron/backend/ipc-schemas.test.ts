@@ -26,6 +26,7 @@ import {
   mobileRenameDeviceSchema,
   mobileUpdateDeviceAllowlistSchema,
   mobileAuditLogQuerySchema,
+  accountSignInStartSchema,
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
@@ -41,6 +42,27 @@ describe("ipc-schemas", () => {
 
     test("throws on null payload", () => {
       expect(() => validateIpc(gitPayloadSchema, null, "test")).toThrow();
+    });
+  });
+
+  describe("accountSignInStartSchema", () => {
+    // Regression: account-manager.ts's `revoke-device` purpose (plan §7/C2) is only reachable if the
+    // IPC boundary in front of it accepts the value at all — every other test for this purpose drives
+    // AccountManager or the Vue store directly and never exercises this Zod schema, which is exactly
+    // how it stayed missing from the enum after the purpose itself was added.
+    test("accepts the revoke-device purpose, with its packed target as offerId", () => {
+      const result = validateIpc(
+        accountSignInStartSchema,
+        { email: "owner@example.test", purpose: "revoke-device", offerId: '["mobile-device","abcd1234"]' },
+        "account:sign-in:start",
+      );
+      expect(result.purpose).toBe("revoke-device");
+    });
+
+    test("rejects an unknown purpose", () => {
+      expect(() =>
+        validateIpc(accountSignInStartSchema, { email: "owner@example.test", purpose: "not-a-purpose" }, "test"),
+      ).toThrow();
     });
   });
 

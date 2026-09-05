@@ -225,6 +225,21 @@ describe("registerIpc — provider review mutations carry the viewer's window", 
     return { runtime, calls };
   }
 
+  /**
+   * The mutation calls only.
+   *
+   * `registerIpc` also performs one-time wiring on the runtime — handing over the external-URL
+   * opener, for instance — and the Proxy above records EVERY property access as a call. Asserting
+   * the raw list would make this test about the registration's incidental shape rather than about
+   * which window a provider mutation is attributed to.
+   */
+  function mutationCalls(
+    calls: Array<{ method: string; args: unknown[] }>,
+  ): Array<{ method: string; args: unknown[] }> {
+    const names = new Set(MUTATIONS.map((mutation) => mutation.method));
+    return calls.filter((call) => names.has(call.method));
+  }
+
   const MUTATIONS = [
     {
       channel: "azure:pull-request:comment",
@@ -258,8 +273,8 @@ describe("registerIpc — provider review mutations carry the viewer's window", 
       await listener({ sender: { id: 7 } }, mutation.payload);
     }
 
-    expect(calls.map((call) => call.method)).toEqual(MUTATIONS.map((m) => m.method));
-    for (const call of calls) {
+    expect(mutationCalls(calls).map((call) => call.method)).toEqual(MUTATIONS.map((m) => m.method));
+    for (const call of mutationCalls(calls)) {
       // The validated payload first, the viewer's window slot id second —
       // exactly the shape `azure:pull-request:open` and the recovery route use.
       expect(call.args[1], call.method).toBe("win-B");
@@ -278,7 +293,7 @@ describe("registerIpc — provider review mutations carry the viewer's window", 
     ) => Promise<unknown>;
     await listener({ sender: { id: 99 } }, { prKey: "pr", content: "x" });
 
-    expect(calls[0].args[1]).toBe("");
+    expect(mutationCalls(calls)[0]!.args[1]).toBe("");
 
     dispose();
   });

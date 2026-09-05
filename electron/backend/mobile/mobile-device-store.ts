@@ -295,6 +295,17 @@ export function createMobileDeviceStore(deps: MobileDeviceStoreDeps) {
     listPendingApprovalDevices(): MobileDeviceRecord[] {
       return listPendingApprovalDevices(deps.getDevices());
     },
+    /**
+     * Drops every device record.
+     *
+     * ONE CALLER, and it is not a user action: the control-plane epoch transition (F14). A pair id, a
+     * phone uid and a device record are all rows in the OLD project's database, so an install that
+     * has followed a recovery into a new project is holding a list of devices it cannot reach — and
+     * would feed those dead pair ids to its next enrolment as adoption hints. Never exposed over IPC.
+     */
+    async clearAll(): Promise<void> {
+      await deps.mutateDevices(() => []);
+    },
     async markUserApproved(deviceId: string): Promise<void> {
       await deps.mutateDevices((devices) => markUserApproved(devices, deviceId));
     },

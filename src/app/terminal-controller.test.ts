@@ -220,13 +220,15 @@ describe("createTerminalController", () => {
   });
 });
 
-function buildTouchController(
-  hooks: {
-    onTextSelectionRequested?: (sessionId: string) => void;
-    onOverscrollRefresh?: () => void;
-    getOverlay?: () => unknown;
-  } = {},
-) {
+function buildTouchController({
+  isRemote = true,
+  ...hooks
+}: {
+  onTextSelectionRequested?: (sessionId: string) => void;
+  onOverscrollRefresh?: () => void;
+  getOverlay?: () => unknown;
+  isRemote?: boolean;
+} = {}) {
   const views = { value: new Map() };
   const writeTerminal = vi.fn();
   const controller = createTerminalController({
@@ -237,9 +239,11 @@ function buildTouchController(
     getActiveSessionId: () => null,
     getOverlay: () => null,
     getPayload: () => null,
-    // isRemote: true skips desktop-only link/open-path registration.
+    // isRemote defaults to true, which skips desktop-only link/open-path
+    // registration. The tap-to-focus cases pass false: only a desktop
+    // touchscreen focuses xterm on a tap — a remote client has MobileInputBar.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    api: { writeTerminal, isRemote: true } as any,
+    api: { writeTerminal, isRemote } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     appConfig: {} as any,
     openTerminalLink: vi.fn(),
@@ -343,7 +347,7 @@ describe("touch long press opens the select-text panel", () => {
     built.length = 0;
   });
 
-  function setup(hooks: { onOverscrollRefresh?: () => void; getOverlay?: () => unknown } = {}) {
+  function setup(hooks: { onOverscrollRefresh?: () => void; getOverlay?: () => unknown; isRemote?: boolean } = {}) {
     vi.useFakeTimers();
     const onTextSelectionRequested = vi.fn();
     const instance = buildTouchController({ onTextSelectionRequested, ...hooks });
@@ -408,8 +412,8 @@ describe("touch long press opens the select-text panel", () => {
     expect(onOverscrollRefresh).not.toHaveBeenCalled();
   });
 
-  test("a tap shorter than the long press still focuses the terminal", () => {
-    const { mount, term, onTextSelectionRequested } = setup();
+  test("a tap shorter than the long press still focuses a desktop touchscreen terminal", () => {
+    const { mount, term, onTextSelectionRequested } = setup({ isRemote: false });
 
     press(mount);
     vi.advanceTimersByTime(LONG_PRESS_MS - 100);
@@ -592,7 +596,7 @@ describe("touch long press opens the select-text panel", () => {
 
   test("no long press is armed when the renderer wires no handler", () => {
     vi.useFakeTimers();
-    const instance = buildTouchController();
+    const instance = buildTouchController({ isRemote: false });
     built.push(instance);
     const { controller, views } = instance;
     controller.ensureTerminal("no-handler:panel-1");

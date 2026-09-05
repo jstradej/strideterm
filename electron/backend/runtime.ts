@@ -62,7 +62,26 @@ import { createMobileNotificationOriginStore } from "./mobile/mobile-notificatio
 import { createMobileWebSessionTicketStore } from "./mobile/mobile-web-session-ticket-store.js";
 import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
 import { createMobileFirebaseRestClient } from "./mobile/mobile-firebase-rest.js";
-import { resolveMobileFirebaseConfig } from "./mobile/mobile-firebase-config.js";
+import { createInstallationTokenRefreshListener } from "./account/installation-token-refresh.js";
+import { loadRelayInstallationIdentity } from "./mobile/mobile-relay-identity.js";
+import { AccountManager } from "./account/account-manager.js";
+import {
+  newIdentityIsRefused,
+  parseInstallationBinding,
+  type InstallationBindingMarker,
+  type InstallationBindingState,
+} from "./account/account-binding.js";
+import { applyEpochTransition } from "./mobile/epoch-transition.js";
+import type { AccountUiState } from "./account/account-state.js";
+import { createAccountClient } from "./account/account-client.js";
+import { resolveAuthLinkConfig } from "./account/authlink-config.js";
+import { EmailSignInBroker, type SignInPurpose } from "./account/email-signin-broker.js";
+import { AccountCallableError, createAccountTransport } from "./account/account-transport.js";
+import { resolveMobileFirebaseConfig, type MobileFirebaseConfig } from "./mobile/mobile-firebase-config.js";
+import { resolveBootstrapFirebaseConfig, createControlPlaneBootstrapClient } from "./mobile/bootstrap-client.js";
+import { BOOTSTRAP_ENV_VARS, bootstrapEnvironmentFor, bootstrapTrustSet } from "./mobile/bootstrap-trust.js";
+import type { BootstrapEnvironment } from "./mobile/control-plane-bootstrap.js";
+import { bindDataDirToEnvironment } from "./mobile/data-dir-environment.js";
 import { FUNCTIONS_REGION } from "./mobile/mobile-rtdb-paths.js";
 import type { MobileFirebaseTransport } from "./mobile/mobile-firebase-transport.js";
 import {
@@ -425,6 +444,11 @@ export async function createRuntime({
     if (!registry) throw new Error("Remote client session not found");
     return registry;
   }
+
+  // Injected by the IPC layer (setExternalUrlOpener), because `shell.openExternal` is Electron's
+  // and the runtime is constructed before the IPC layer registers. Absent it, a checkout simply does
+  // not open — which is what a headless test wants, and is never a silent success.
+  let _externalUrlOpener: ((url: string) => Promise<void>) | null = null;
 
   // Injected by startRemoteServer (setMobileRemoteSessionRevoker) once the
   // remote HTTP server's session registry exists. remote-server.ts isn't
@@ -1205,19 +1229,215 @@ export async function createRuntime({
   // it goes into the same credential store as the device private key above, never onto disk in
   // the clear.
   const MOBILE_FIREBASE_REFRESH_TOKEN_REF = "mobile:firebase-refresh-token";
-  const mobileFirebase = resolveMobileFirebaseConfig(process.env, FUNCTIONS_REGION);
+  /**
+   * The DURABLE, LOCAL record that this installation is enrolled in an account.
+   *
+   * F12. `isAccountBound` used to read `accountManager.state().installationRegistered`, which starts
+   * false and is only ever learned from the server overview — read with the very refresh token whose
+   * validity is in question. On the one start-up that matters, the one where that token has been
+   * rejected, the guard therefore answered "not bound" and the REST client signed in anonymously,
+   * minting a NEW uid: the value the account's `installations` row, every pair membership and the
+   * server's `accountByUid` index are keyed by. An ordinary network outage produced the same false
+   * answer. Beside the credential it protects, in the same store, because that is the only place that
+   * survives a restart without asking anybody.
+   */
+  const MOBILE_ACCOUNT_BINDING_REF = "mobile:account-binding";
+  /**
+   * The marker as a STATE, not a boolean (G13 — see `account-binding.ts`). A store that cannot be
+   * read answers `unknown`, which the guard below treats exactly like `absent`: the identity is kept
+   * and the recovery path is offered. The old read answered `false` here and called that conservative;
+   * in the guard it consumes, `false` was the one answer that released the identity.
+   */
+  const readInstallationBinding = (): InstallationBindingState => {
+    try {
+      return parseInstallationBinding(credentialStore.getSecret(MOBILE_ACCOUNT_BINDING_REF));
+    } catch {
+      return "unknown";
+    }
+  };
+  /**
+   * Writes a marker. `none` is WRITTEN, never a deletion: an absent marker means "the server has never
+   * answered", and that is not the same fact as "the server said this machine is not bound".
+   */
+  const writeInstallationBinding = async (marker: InstallationBindingMarker): Promise<void> => {
+    await credentialStore.setSecret(MOBILE_ACCOUNT_BINDING_REF, marker);
+  };
+  const configuredFirebase = resolveMobileFirebaseConfig(process.env, FUNCTIONS_REGION);
+
+  // THE SIGNED BOOTSTRAP (plan §8.1). An already-installed build has to be able to follow a recovery
+  // into a different Firebase project without waiting for a new release, so a verified envelope wins
+  // over what this build was configured with.
+  //
+  // ORDER, AND WHY IT IS THIS WAY ROUND. The envelope is signed by a key this build contains and
+  // carries a monotonically increasing epoch, so it is the more authoritative of the two — an
+  // operator who has published one is saying "the endpoints have moved", and an install that
+  // preferred its own environment would be the one install that never got the message. A build with
+  // no bootstrap configured, or one that has never accepted an envelope, is unchanged: it uses the
+  // configuration it has, which is exactly today's behaviour.
+  //
+  // THE ENVIRONMENT IS DECLARED, NOT INFERRED FROM WHERE THE FILES ARE (F11). `bootstrapEnvironmentFor`
+  // reads `STRIDETERM_ENV` and nothing else; it no longer answers `dev` merely because
+  // `STRIDETERM_DATA_DIR` is set, which is a statement about this installation's own directory and not
+  // about which remote backend it talks to, and it no longer derives anything from a project id.
+  const declaredEnvironment = bootstrapEnvironmentFor(process.env);
+  if (configuredFirebase.refusal) {
+    // A COMPLETE AND CONTRADICTORY configuration (R06): nothing mobile is built on it, and a new
+    // owner sign-in is unavailable with this as its reason. The line names the variables, not values.
+    log.warn(`account: the mobile Firebase configuration is refused — ${configuredFirebase.refusal.detail}`);
+  }
+  if (declaredEnvironment === "unresolved") {
+    log.warn(
+      `account: ${BOOTSTRAP_ENV_VARS.environment} names an environment this build does not know; a new owner sign-in is unavailable and this desktop keeps whatever enrolment it already has`,
+    );
+  }
+  // THE DATA DIRECTORY IS BOUND TO ONE ENVIRONMENT (plan §3.3). Checked only for a RESOLVED
+  // declaration — `"unresolved"` is not a real environment, and binding a fresh directory to the
+  // fail-closed prod substitute below over a transient misconfiguration would lock it there
+  // permanently. See `data-dir-environment.ts` for why the binding is never healed automatically.
+  const dataDirBinding =
+    declaredEnvironment === "unresolved" ? null : bindDataDirToEnvironment(userDataPath, declaredEnvironment);
+  const environmentMismatch = dataDirBinding?.mismatch ?? null;
+  if (environmentMismatch) {
+    log.warn(
+      `account: this data directory is bound to '${environmentMismatch.boundTo}'; ${BOOTSTRAP_ENV_VARS.environment}='${declaredEnvironment}' is refused rather than reusing its bootstrap state or mobile credentials — use a separate --data-dir for a '${declaredEnvironment}' profile`,
+    );
+  }
+  // AN UNRESOLVED DECLARATION IS TREATED AS PROD FOR THE TRUST SET, which is the strictest of the
+  // four and the fail-closed direction: the prod trust set is the one that ignores the environment
+  // entirely, so a misconfigured install cannot inject its own bootstrap keys. The auth broker is
+  // refused outright (see `resolveAuthLinkConfig`), so nothing signs in either.
+  const bootstrapEnvironment: BootstrapEnvironment =
+    declaredEnvironment === "unresolved" ? "prod" : declaredEnvironment;
+  const bootstrapTrust = bootstrapTrustSet(bootstrapEnvironment, process.env);
+  // NO CLIENT AT ALL ON A MISMATCH. Constructing one would read `control-plane-bootstrap.json` —
+  // the OTHER environment's epoch floor — from this very directory; skipping it entirely is what
+  // makes "never inherits ... epoch floor" (plan §3.3) true by construction rather than by a check
+  // somebody has to remember to add at every read site.
+  const bootstrapClient = environmentMismatch
+    ? null
+    : createControlPlaneBootstrapClient({
+        stateDir: userDataPath,
+        environment: bootstrapEnvironment,
+        url: bootstrapTrust.url,
+        trust: bootstrapTrust,
+      });
+  // RE-VERIFIED, not merely read. `current()` used to hand back whatever was on disk, and the
+  // runtime believed it as configuration — so an envelope written by an older build, under a key
+  // since retired, for a different environment, or at an epoch the floor has moved past, was adopted
+  // without any of those being checked again. The signature is the cheap part; the epoch floor is the
+  // one that matters, because it is what makes a rollback impossible rather than merely unlikely.
+  if (bootstrapClient && bootstrapTrust.url && bootstrapTrust.keys.size > 0) {
+    const result = await bootstrapClient.refresh();
+    if (result.changed) {
+      log.info(`control-plane bootstrap: adopted epoch ${result.envelope?.payload.configEpoch}`);
+    } else if (result.refusal && result.refusal !== "epoch-not-newer" && result.refusal !== "not-configured") {
+      log.warn(`control-plane bootstrap: refused (${result.refusal}); keeping the current configuration`);
+    }
+  }
+  const bootstrapEnvelope = bootstrapClient?.currentVerified() ?? null;
+  const mobileFirebase = environmentMismatch
+    ? {
+        config: null,
+        missing: [] as string[],
+        refusal: {
+          reason: "environment-mismatch" as const,
+          detail:
+            `this data directory is bound to '${environmentMismatch.boundTo}', and ${BOOTSTRAP_ENV_VARS.environment} ` +
+            `declares '${declaredEnvironment}' — a data directory holds one environment's state (plan §3.3). ` +
+            `Use a separate data directory for a '${declaredEnvironment}' profile.`,
+        },
+      }
+    : resolveBootstrapFirebaseConfig(configuredFirebase, bootstrapEnvelope, FUNCTIONS_REGION);
+
+  // THE EPOCH TRANSITION, CARRIED OUT — here, before a single client is built (F14).
+  //
+  // Apply a verified project's transition before constructing clients with its configuration.
+  // Persisting the transition separately also makes an interrupted startup resumable.
+  //
+  // ONLY WHEN THE PROJECT CHANGES: an epoch that rotates a key or moves an endpoint is not a reason
+  // to sign anybody out. And the marker is written LAST, AND ONLY IF EVERY STEP SUCCEEDED (G06) — the
+  // old code logged a failed cleanup as "it stays pending" and then marked it applied on the very next
+  // line. `applyEpochTransition` owns that ordering; see `mobile/epoch-transition.ts`.
+  const pendingTransition = bootstrapClient?.pendingTransition(configuredFirebase.config?.projectId) ?? null;
+  if (pendingTransition && bootstrapClient && mobileFirebase.config) {
+    await applyEpochTransition(pendingTransition, {
+      credentialStore,
+      refreshTokenRef: MOBILE_FIREBASE_REFRESH_TOKEN_REF,
+      bindingRef: MOBILE_ACCOUNT_BINDING_REF,
+      deviceStore: mobileDeviceStore,
+      markApplied: (epoch, projectId) => bootstrapClient.markEpochApplied(epoch, projectId),
+      log,
+    });
+  }
+  // ONE REST client over the credential slot, and one only.
+  //
+  // There used to be two — this one and a second built for the account transport's installation leg —
+  // both reading and writing the SAME persisted refresh token from separate in-memory caches. A
+  // shared token is not a shared state machine: on a cold start with no stored token both would sign
+  // in anonymously and produce TWO uids, of which one becomes the installation identity and the other
+  // is an orphan the account never sees; and a rejection handled by one left the other holding a
+  // session for a credential that had just been deleted.
+  //
+  // Held in a `let` because the account manager is constructed after this and needs to answer
+  // "is this installation bound to an account" for the anonymous-fallback guard — a forward reference
+  // in the same style as `_externalUrlOpener` and `_mobileRemoteSessionRevoker` above.
+  let installationRestClient: ReturnType<typeof createMobileFirebaseRestClient> | null = null;
+  /**
+   * Forward reference to the account manager, which is constructed further down.
+   *
+   * Two things need it from up here: the anonymous-fallback guard (an account-bound installation must
+   * not answer a rejected refresh token by minting a new uid) and the token-refresh listener. Same
+   * shape as `_externalUrlOpener` and `_mobileRemoteSessionRevoker`.
+   */
+  let accountManagerRef: AccountManager | null = null;
+  /**
+   * The installation's own Firebase session, created once and shared.
+   *
+   * IT IS NOT A MOBILE FEATURE, AND TYING IT TO ONE WAS A BUG. This client used to be born only
+   * inside the pairing transport's lazy `createClient`, which the transport reaches on its first
+   * real use — that is, when somebody turns Mobile ON. But `beginInstallationRegistration` and
+   * `completeInstallationRegistration` authenticate as the INSTALLATION, never as the owner, so
+   * registering this computer needed a session that only existed if an unrelated checkbox happened
+   * to be ticked. With Mobile off, enrolment reached `installationIdToken()`, found `null`, and threw
+   * a bare `Error` — which nothing maps, so the account flow reported `unknown` and the UI said
+   * nothing at all.
+   *
+   * Memoised rather than eager: the account flow is what brings it up, on the first call that needs
+   * it, so a desktop that never signs in still opens no Firebase session. The pairing transport gets
+   * the SAME instance, because two anonymous sessions would be two uids for one machine — and that
+   * uid is what the account's `installations` row and every pair membership are keyed by.
+   */
+  const ensureInstallationRestClient = (config: MobileFirebaseConfig) => {
+    installationRestClient ??= createMobileFirebaseRestClient({
+      config,
+      credentialStore,
+      refreshTokenRef: MOBILE_FIREBASE_REFRESH_TOKEN_REF,
+      // The guard on the anonymous fallback: an account-bound installation must not answer a
+      // rejected refresh token by minting a new uid, because that uid is what the account's
+      // `installations` row and every pair membership are keyed by.
+      //
+      // THE DURABLE MARKER FIRST (F12), AND IT FAILS CLOSED (G13). The manager's state starts false
+      // and is learned from a server read that this very failure prevents, so on a cold start with a
+      // rejected token it could only ever answer "not bound". The marker is the one answer that does
+      // not depend on the credential being asked about — and only a marker that positively says
+      // `none` (the server answered "not bound", or the machine was signed out) releases the
+      // identity. An intent left by a crashed enrolment, a marker that could not be read, or one an
+      // older build never wrote all KEEP it. See `account-binding.ts`.
+      isAccountBound: () =>
+        newIdentityIsRefused(readInstallationBinding(), accountManagerRef?.state().installationRegistered === true),
+    });
+    return installationRestClient;
+  };
   const createMobileFirebaseTransportImpl =
     dependencies.createMobileFirebaseTransport ||
     (() =>
       createFirebaseMobileTransport({
         config: mobileFirebase.config,
         missingConfig: mobileFirebase.missing,
-        createClient: (config) =>
-          createMobileFirebaseRestClient({
-            config,
-            credentialStore,
-            refreshTokenRef: MOBILE_FIREBASE_REFRESH_TOKEN_REF,
-          }),
+        configRefusal: mobileFirebase.refusal,
+        // ONE CLIENT, WHICHEVER SIDE ASKS FIRST. The pairing transport and the account flow share a
+        // single anonymous session by construction: two would be two uids for one machine.
+        createClient: (config) => ensureInstallationRestClient(config),
       }));
   const mobileTransport: MobileFirebaseTransport = createMobileFirebaseTransportImpl();
 
@@ -1285,6 +1505,222 @@ export async function createRuntime({
       // loopback origin, and the relay's record of the device. Both end here.
       mobileRelayManager?.revokeDevice(deviceId);
     },
+  });
+
+  // THE ACCOUNT MANAGER (plan §8.1). Built once, like MobileManager, and for the same reason: one
+  // per installation whatever the window count, so every window renders the same derived state
+  // rather than each computing its own.
+  //
+  // `openExternal` is injected rather than imported: `shell.openExternal` is Electron's and lives in
+  // the main process, and the runtime is constructed before the IPC layer registers. The indirection
+  // is the same forward-reference trick `setMobileRemoteSessionRevoker` uses, and it means a test
+  // drives the checkout flow without an Electron shell.
+  // The SAME Ed25519 installation key the relay connector proves possession of. One key per data
+  // directory, one identity: a second key would make "which installation is this" a question with
+  // two answers, and the account cap counts keys.
+  const accountInstallationIdentity = await loadRelayInstallationIdentity({
+    installationId: mobileDeviceId,
+    credentialStore,
+  });
+  // The installation session's own id token, for the ONE account call that must be made as the
+  // installation rather than as the owner. It shares the persisted refresh token with the mobile
+  // transport by construction: the two ARE the same identity, and a second refresh token would be a
+  // second installation as far as the account cap is concerned.
+  // THE SAME client the mobile transport uses — see the comment where it is created. A second one
+  // over the same credential slot is a second state machine over one token, and on a cold start it is
+  // a second anonymous uid.
+  const installationIdToken = async (): Promise<string> => {
+    // A NAMED REFUSAL, NOT A BARE `Error`. `codeOf` in `account-manager.ts` maps exactly three error
+    // types and answers `unknown` for everything else — so a plain `Error` here surfaced as the one
+    // code the UI has no sentence for, on the one screen where the person is waiting to be told what
+    // to do. `not-configured` is a real code with real copy: this build has no hosted control plane.
+    const config = mobileFirebase.config;
+    if (!config) throw new AccountCallableError("not-configured", 0);
+    return (await ensureInstallationRestClient(config).currentSession()).idToken;
+  };
+
+  // ONE account client, shared by the manager and the sign-in broker. The broker asks Firebase to
+  // SEND the link; the manager redeems it. Two clients over one configuration would be two places to
+  // change when the configuration moves.
+  const accountClient = mobileFirebase.config ? createAccountClient({ config: mobileFirebase.config }) : null;
+
+  /**
+   * Where this build's sign-in links come back to.
+   *
+   * The environment is `bootstrapEnvironmentFor`'s answer — the same one the bootstrap trust set is
+   * chosen with, DECLARED by `STRIDETERM_ENV` and otherwise derived from the configured Firebase
+   * project — so the broker origin and the Firebase project cannot come from two different decisions.
+   * A build with no answer, or with a contradictory one, gets NO broker, which blocks a new owner
+   * sign-in and touches nothing else: an enrolled desktop keeps its installation credential, its
+   * pairings and its device list.
+   */
+  const authLink = resolveAuthLinkConfig({
+    firebase: mobileFirebase.config ?? null,
+    // THE DECLARED answer, not the fail-closed substitute above: an unresolved declaration must
+    // REFUSE a sign-in, and handing this `production` would have started one against the production
+    // broker — the exact fallback F11 forbids.
+    environment: declaredEnvironment,
+    env: process.env,
+    firebaseRefusal: mobileFirebase.refusal,
+  });
+  if (authLink.config === null && mobileFirebase.config) {
+    log.warn(
+      `account: passwordless sign-in is unavailable (${authLink.refusal}); this desktop keeps whatever enrolment it already has`,
+    );
+  }
+  /**
+   * The broker, holding an IMMUTABLE SNAPSHOT of the configuration it was built with.
+   *
+   * An attempt started against one Firebase project and one broker origin must not finish against
+   * another, so the snapshot is the unit: when the configuration changes, the runtime disposes the
+   * manager (which cancels the attempt) rather than mutating what the attempt is working against.
+   *
+   * NOT SHARED WITH THE RELAY TRANSPORT and not shared between instances: it is constructed here, per
+   * runtime, and a second data directory gets its own.
+   */
+  const emailSignInBroker =
+    authLink.config && accountClient
+      ? new EmailSignInBroker({ authlink: authLink.config, client: accountClient })
+      : null;
+
+  /**
+   * The window that OWNS the sign-in attempt in flight, if any.
+   *
+   * Plan §8, Fáze 3: "zavření vlastníka přihlašovacího dialogu zruší tok, zavření jiného okna jej
+   * neruší." Every window sees the same attempt — that is what one derived state buys — but only the
+   * one that STARTED it is the one whose closing means "never mind". Closing a second window while a
+   * sign-in is waiting must not throw away a link somebody is about to open.
+   */
+  let signInOwnerWindowId: string | null = null;
+
+  const accountManager: AccountManager = new AccountManager({
+    client: accountClient,
+    broker: emailSignInBroker,
+    authLinkRefusal: authLink.refusal,
+    transport: mobileFirebase.config
+      ? createAccountTransport({
+          config: mobileFirebase.config,
+          tokenFor: async (kind, signal): Promise<string> => {
+            // THE OPERATION'S SIGNAL GOES WITH THE ASK (S02): an owner refresh for an operation that has
+            // ended answers with a refusal, never with whichever session the manager holds by then.
+            if (kind === "owner") return accountManager.tokenFor("owner", signal);
+            // The challenge leg runs as the INSTALLATION session, so the server records that uid on
+            // the challenge and the owner leg cannot choose which installation it is registering.
+            // The installation session is one shared refresh for every caller, so the signal cannot
+            // be threaded into it; the transport re-checks the signal after this await instead.
+            return installationIdToken();
+          },
+        })
+      : null,
+    identity: {
+      installationId: accountInstallationIdentity.installationId,
+      publicKeyBase64Url: accountInstallationIdentity.publicKeyBase64Url,
+      signChallenge: (transcript: Buffer) => accountInstallationIdentity.signChallenge(transcript),
+    },
+    openExternal: async (url: string) => {
+      await _externalUrlOpener?.(url);
+    },
+    // THE SIGNED ALLOWLIST, read at the moment a URL is about to be opened rather than captured at
+    // construction: a recovery can replace the envelope while this process is running, and an
+    // allowlist captured once would be the old merchant's.
+    billingHosts: () => mobileFirebase.config?.billingCheckoutHosts ?? [],
+    // The pairs this machine already has, as adoption LOCATORS for an enrolment. The server proves
+    // ownership from each pair's own `publicMeta.desktopUid`; a hint is not evidence. Without them a
+    // desktop that paired before it had an account enrolled with its phones left behind.
+    knownPairIds: () => [
+      ...new Set(
+        mobileDeviceStore
+          .listDevices()
+          .filter((device) => !device.revoked)
+          .map((device) => device.pairId),
+      ),
+    ],
+    // Invariant 12: the credential goes only AFTER the server revocation has completed. The manager
+    // owns the ordering; this is the one thing it cannot do itself, because it must not own a
+    // credential store.
+    forgetInstallationCredential: async () => {
+      await installationRestClient?.forgetSession();
+    },
+    // The durable local binding marker — see `MOBILE_ACCOUNT_BINDING_REF`. A seam rather than a
+    // credential-store import for the same reason `forgetInstallationCredential` is one: the manager
+    // owns the ORDERING and must not own the store.
+    readInstallationBinding,
+    writeInstallationBinding,
+    installationLabel: os.hostname() || "strIDEterm Desktop",
+    // The mobile subsystem's own bounded rows, so a report about "my phone will not pair" carries
+    // the pairing attempts and not only the account calls. Read through a seam rather than imported,
+    // because the account module must not reach into a SQLite store.
+    //
+    // SUFFIXES, not ids: eight characters is enough for support to match a row against the device
+    // list the account page already shows by suffix, and it is not a copy of the identifier graph.
+    // `detail` is a fixed code from the mobile subsystem's own vocabulary, never payload text — the
+    // store has no column that could hold one.
+    collectExtraDiagnostics: () => {
+      try {
+        return mobileAuditLogStore.query({ limit: 200 }).entries.map((row) => ({
+          at: Date.parse(String(row.timestamp)) || 0,
+          event: `mobile.${String(row.action)}`,
+          status: String(row.status),
+          level: String(row.status) === "failure" ? "error" : "info",
+          fields: {
+            ...(row.detail ? { detail: String(row.detail) } : {}),
+            ...(row.deviceId ? { device: String(row.deviceId).slice(-8) } : {}),
+            ...(row.pairId ? { pair: String(row.pairId).slice(-8) } : {}),
+            actor: String(row.actor),
+          },
+        }));
+      } catch {
+        // A diagnostics report must not fail because the diagnostics store did.
+        return [];
+      }
+    },
+    appInfo: {
+      versionName: packageVersion,
+      platform: process.platform,
+      osVersion: os.release(),
+      // Which data directory this is, which is what actually separates dev from prod here — see
+      // `dev.ps1`. A report from the dev instance must not be read as one from the shipped app.
+      buildMode: process.env.STRIDETERM_DATA_DIR ? "development" : "release",
+    },
+  });
+  accountManagerRef = accountManager;
+  accountManager.on("state", (state: AccountUiState) => {
+    // One event, one payload, every window. The renderer subscribes to this and computes nothing.
+    events.emit("account:updated", state);
+  });
+
+  // WHAT THIS MACHINE ALREADY IS, restored from its PERSISTENT installation session.
+  //
+  // The owner session is transient (plan §2), so after a restart there is none — and before this
+  // call the account page showed "signed out" on a desktop that was enrolled, entitled and working,
+  // until somebody signed in again. The overview is a `bound-account-recovery` door: an installation
+  // uid resolves it, which is exactly the credential this machine is supposed to have.
+  void accountManager.restoreFromInstallation();
+
+  // THE SERVER-SIDE TOKEN-REFRESH LISTENER (plan §6.4). `v2/tokenRefresh/{uid}` is the issuer saying
+  // "your claims changed, ask again now", and until now nothing in the desktop was subscribed to it:
+  // an IPC method a renderer could call is not a listener, so the only thing that ever picked up a
+  // claim change was the next token expiry — up to an hour of a paid account being refused, and up to
+  // an hour of a revoked one still being served on its long-lived RTDB stream.
+  const installationTokenRefresh = installationRestClient
+    ? createInstallationTokenRefreshListener({
+        client: installationRestClient,
+        // A stream authenticates ONCE, at connect. Refreshing the token and leaving the stream up is
+        // the half-fix that looks like it worked, so the manager's streams are torn down and re-opened.
+        restartStreams: () => {
+          mobileManager.stop();
+          if (getState().settings.integrations.mobile.enabled) mobileManager.start();
+        },
+        refreshAccount: () => accountManager.onClaimsChanged(),
+        onError: (error) => {
+          log.warn("installation token-refresh listener failed", { error: String(error) });
+        },
+      })
+    : null;
+  void installationTokenRefresh?.start().catch((error: unknown) => {
+    // A listener that cannot subscribe is a staler client, not a broken one: the token still expires
+    // on its own hour, and every foreground action re-reads. Never a failed launch.
+    log.warn("could not subscribe to the installation token-refresh marker", { error: String(error) });
   });
 
   // The managed relay (relay plan §10). Built once, like MobileManager and for the same reason: one
@@ -6060,6 +6496,126 @@ export async function createRuntime({
       _mobileRemoteSessionRevoker = fn;
     },
 
+    /** Wired by the IPC layer, which owns Electron's `shell`. See `_externalUrlOpener`. */
+    setExternalUrlOpener(fn: (url: string) => Promise<void>): void {
+      _externalUrlOpener = fn;
+    },
+
+    // --- account (plan §8.1) ---------------------------------------------------------------------
+    //
+    // Thin: every decision is the AccountManager's, and every one of these returns either nothing or
+    // a small, already-safe value. Notably NOT among them: anything that returns a URL, a token or a
+    // password.
+    getAccountState() {
+      return accountManager.state();
+    },
+    /**
+     * Starts a passwordless sign-in and RETURNS QUICKLY.
+     *
+     * Deliberately not a long-running IPC call that resolves when the person opens the link (plan §8,
+     * Fáze 3): a call held open for fifteen minutes cannot be cancelled, cannot be resent, and dies
+     * with the window that made it. What continues the flow is the account-state event every window
+     * already subscribes to.
+     */
+    accountBeginSignIn(email: string, purpose: SignInPurpose, offerId?: string, windowId?: string) {
+      // The owner is recorded BEFORE the attempt starts, so a window that closes while the request is
+      // still in flight is still recognised as the one that owns it.
+      signInOwnerWindowId = windowId ?? null;
+      return accountManager.beginEmailSignIn(email, purpose, offerId);
+    },
+    accountConfirmSignIn() {
+      return accountManager.confirmEmailSignIn();
+    },
+    accountResendSignIn() {
+      return accountManager.resendEmailSignIn();
+    },
+    accountCancelSignIn() {
+      signInOwnerWindowId = null;
+      accountManager.cancelEmailSignIn();
+    },
+    /**
+     * The OWNING account panel has been closed — end its flow, and nobody else's (F09).
+     *
+     * Distinct from `accountCancelSignIn` because the two are different acts by different parties.
+     * A cancel is a person pressing a button and is about whatever is on screen; this is a dialog
+     * going away, and it must only end the flow that dialog STARTED. Every window renders the same
+     * attempt, so closing a second window — or a panel that never began a sign-in — leaves the link
+     * somebody may be about to open on their phone exactly where it was.
+     *
+     * The window id is the ownership key, the same one `removeWindowSlot` compares: only one account
+     * panel exists per window, so its closing and the window's closing name the same owner.
+     */
+    accountReleaseSignInFlow(windowId?: string) {
+      if (signInOwnerWindowId === null || windowId === undefined || signInOwnerWindowId !== windowId) return;
+      // THE OWNERSHIP IS NOT CONSUMED WHEN A LINK IS STILL WAITING. It used to be cleared here
+      // unconditionally, which was right while this call ended the flow: the flow was over, so there
+      // was nothing left to own. Now that a waiting attempt survives the panel, clearing it would
+      // mean the panel could be reopened and closed again without ever releasing the retention that
+      // the eventual confirmation creates — the one thing F09 is for.
+      if (accountManager.state().auth === undefined) signInOwnerWindowId = null;
+      // `releaseSignInPanel` releases the retention and every in-flight operation, and KEEPS an
+      // attempt that is still waiting for somebody to open its link. Reading the link means leaving
+      // this dialog, so cancelling here made the flow unfinishable by doing what it asks.
+      accountManager.releaseSignInPanel();
+    },
+    /**
+     * The manual fallback. The link text reaches this ONE method and goes no further: it is not
+     * broadcast, not persisted and not logged (see `logger.ts`'s redaction, which covers it in case
+     * something else ever passes it on).
+     */
+    accountSubmitSignInLink(link: string) {
+      accountManager.submitSignInLink(link);
+    },
+    accountChangeLoginEmail(email: string) {
+      return accountManager.requestLoginEmailChange(email);
+    },
+    accountClearPendingEmailChange() {
+      accountManager.clearPendingEmailChange();
+    },
+    accountEnrolInstallation(mode: "register" | "recover-uid", pairHints: string[]) {
+      return accountManager.enrolThisInstallation(mode, pairHints);
+    },
+    accountStartTrial() {
+      return accountManager.startTrial();
+    },
+    accountRefreshOverview() {
+      return accountManager.refreshOverview();
+    },
+    /** Answers only whether it opened or is pending — never the URL it opened. */
+    accountOpenCheckout(offerId: string) {
+      return accountManager.openCheckout(offerId);
+    },
+    accountOpenBillingPortal() {
+      return accountManager.openBillingPortal();
+    },
+    accountRevoke(kind: "installation" | "mobile-device" | "pair" | "account-wide", targetId?: string) {
+      return accountManager.revoke(kind, targetId);
+    },
+    accountAcknowledgeNotice(noticeId: string) {
+      return accountManager.acknowledgeNotice(noticeId);
+    },
+    accountSignOutInstallation(disconnect: boolean) {
+      return accountManager.signOutInstallation({ disconnect });
+    },
+    accountDelete(confirmationPhrase: string) {
+      return accountManager.deleteAccount(confirmationPhrase);
+    },
+    /** Opt-in. Answers with the reference to quote; the report itself never comes back. */
+    accountSubmitDiagnostics(note?: string) {
+      return accountManager.submitDiagnostics(note);
+    },
+    /**
+     * The same document, for when the upload is not available: no account bound yet, no network, or
+     * a refusal. The renderer saves it through the existing native save dialog.
+     */
+    accountExportDiagnostics(note?: string) {
+      return accountManager.exportDiagnostics(note);
+    },
+    /** Called when the server's token-refresh marker moves: new token, then re-read the page. */
+    accountClaimsChanged() {
+      return accountManager.onClaimsChanged();
+    },
+
     /**
      * Single-use WebView session ticket exchange (plan §9.2): called by
      * remote-server.ts's unauthenticated bootstrap route. Delegates to the
@@ -6712,6 +7268,12 @@ export async function createRuntime({
     },
 
     async removeWindowSlot(windowId: string) {
+      // The window that started the sign-in is closing, so the person who started it is gone. Any
+      // OTHER window closing leaves the attempt alone — the link may be open on a phone right now.
+      if (signInOwnerWindowId !== null && signInOwnerWindowId === windowId) {
+        signInOwnerWindowId = null;
+        accountManager.cancelEmailSignIn();
+      }
       await store.mutate((draft: AppState) => {
         if (!Array.isArray(draft.windowSlots)) return;
         const closing = draft.windowSlots.find((s) => s.id === windowId);
@@ -8284,6 +8846,13 @@ export async function createRuntime({
       github.stopPolling();
       telegramManager.stop();
       mobileManager.stop();
+      // The account's own timers: a poll waiting on a sign-in link, and the retention timer that
+      // would otherwise fire into a manager whose process is going away. Neither can hold the process
+      // open (both are unref'd), but a shutdown that leaves an attempt "in progress" is a shutdown
+      // that resumes into a stale one — plan §9: "Restart, shutdown a změna konfigurace uklidí pending
+      // flow, časovače i owner retenci."
+      accountManager.dispose();
+      emailSignInBroker?.dispose();
       // The relay's own listener and outbound socket are not the mobile manager's to close, and a
       // process that exits with either still open leaves a bound loopback port behind.
       await mobileRelayManager?.stop().catch(() => undefined);

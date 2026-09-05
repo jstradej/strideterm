@@ -421,3 +421,41 @@ describe("mobile pairing: the three checks a claim must pass (review 3 §P0.1)",
     expect(onClaim).not.toHaveBeenCalled();
   });
 });
+
+// The handshake's own trail (2026-09-13).
+describe("what the pairing handshake writes to the log", () => {
+  test("the module logs, and never the values that are credentials", async () => {
+    // SHIPPED WITH NO LOGGING AT ALL. When a real pairing did not complete, the desktop log could not
+    // say whether an invitation had ever been opened, whether a claim had arrived, or which guard had
+    // refused it — the absence of lines proved nothing, because there were never any lines. This
+    // pins both halves: that there is a trail, and that it carries nothing worth stealing.
+    const source = await fs.readFile(path.join(import.meta.dirname, "mobile-pairing.ts"), "utf8");
+    expect(source).toContain('getLogger("mobile-pairing")');
+    // The three moments a support conversation turns on.
+    expect(source).toMatch(/log\.info\("pairing: invitation open/);
+    expect(source).toMatch(/log\.info\("pairing: claim seen/);
+    expect(source).toMatch(/log\.warn\("pairing: claim refused/);
+    expect(source).toMatch(/log\.info\("pairing: claim adopted/);
+
+    // Opaque routing keys and this module's own fixed codes only. The invitation secret and the
+    // key-proof challenge are live credentials for the length of the handshake; the SAS is what the
+    // human compares; a public key and a label identify somebody's hardware.
+    const logged = [...source.matchAll(/log\.(?:info|warn|debug|error)\([^;]*?\);/gs)].map((m) => m[0]);
+    expect(logged.length).toBeGreaterThanOrEqual(4);
+    // The VALUES, not the words: a message may name the SAS, it may not carry one. So this looks for
+    // the expressions that would actually read a credential out of scope.
+    for (const line of logged) {
+      for (const forbidden of [
+        "secret",
+        "keyProofChallenge",
+        "publicKey",
+        "desktopFingerprint",
+        ".sas",
+        ".label",
+        "device.label",
+      ]) {
+        expect(line, `a log call reads ${forbidden}`).not.toContain(forbidden);
+      }
+    }
+  });
+});

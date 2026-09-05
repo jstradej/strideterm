@@ -15,6 +15,7 @@
  * command dispatch (§8) applies here too.
  */
 import { randomBytes } from "node:crypto";
+import { getLogger } from "../logger.js";
 import { computeDesktopFingerprint, computeGrantCommitment, decodeCanonicalPublicKey } from "./mobile-crypto.js";
 import type { MobileDeviceStore, NewDeviceInput } from "./mobile-device-store.js";
 import type { MobileAuditLogStore } from "./mobile-audit-log-store.js";
@@ -122,6 +123,23 @@ export interface PendingInvitationInfo {
   profileAllowlist: string[];
 }
 
+/**
+ * WHY THIS MODULE LOGS AT ALL, having shipped without a single line.
+ *
+ * Pairing is the most failure-prone flow in the product — two devices, a camera, a 120-second
+ * invitation, a claim written by the phone and a decision taken by a human — and it was completely
+ * silent. When a real pairing did not complete, the desktop log could not say whether an invitation
+ * had ever been created, whether a claim had arrived, or which of the six guards had refused it; the
+ * absence of lines proved nothing, because there were never any lines. That is not a gap you notice
+ * until somebody is standing in front of it.
+ *
+ * WHAT IS SAFE TO WRITE. Ids that are opaque routing keys (pairId, pairingId, deviceId) and this
+ * module's own fixed refusal codes. NEVER the invitation secret, the key-proof challenge, the SAS,
+ * a public key or a device label — the first three are live credentials for the length of the
+ * handshake and the last two identify a person's hardware.
+ */
+const log = getLogger("mobile-pairing");
+
 export function createMobilePairing(deps: MobilePairingDeps) {
   const now = deps.now || (() => Date.now());
   // Canonicalised once, here: every later use — the QR, the fingerprint transcript, the SAS, the
@@ -160,6 +178,9 @@ export function createMobilePairing(deps: MobilePairingDeps) {
    * `reason` is always one of `ClaimRejectionReason`'s fixed codes.
    */
   function rejectClaim(device: Device, reason: ClaimRejectionReason): void {
+    // THE REFUSAL CODE, which is the whole point: six different guards answer "this claim is not the
+    // one we are waiting on", and until now they were indistinguishable from no claim arriving.
+    log.warn("pairing: claim refused", { pairId, deviceId: device.deviceId, reason });
     deps.auditLogStore.logEntry({
       deviceId: device.deviceId,
       pairId,
@@ -353,6 +374,15 @@ export function createMobilePairing(deps: MobilePairingDeps) {
         status: "failure",
       });
     }
+    // ADOPTED AND WAITING ON A HUMAN. `keyProven` is one step short of usable: the SAS still has to be
+    // compared and approved on this desktop. That distinction is the one a support conversation turns
+    // on — "the phone says it paired and the desktop disagrees" is this state, not a failure.
+    log.info("pairing: claim adopted, awaiting SAS approval on this desktop", {
+      pairId,
+      pairingId: invitation.pairingId,
+      deviceId: result.device.deviceId,
+      state: result.device.state,
+    });
     notifyClaim({ ok: true, device: result.device, pairingId: invitation.pairingId });
   }
 
@@ -402,7 +432,22 @@ export function createMobilePairing(deps: MobilePairingDeps) {
       // watcher konkrétním claim watcherem"). The transport filters on `pairingId`, so a record claimed
       // under a different invitation — or one that predates this invitation entirely — never reaches
       // this callback at all, rather than being rejected inside it.
+      // WHEN THE WINDOW OPENED AND WHEN IT SHUTS. A claim that arrives after `expiresAt` is refused
+      // server-side and reaches nothing here, which used to look exactly like a phone that never
+      // scanned — so the deadline is on the record.
+      log.info("pairing: invitation open, watching for a claim", {
+        pairId,
+        pairingId: response.pairingId,
+        expiresAt: response.expiresAt,
+        ttlMs: Math.max(0, response.expiresAt - Date.now()),
+      });
       const unsubscribe = deps.transport.watchPairingClaim(pairId, response.pairingId, (device) => {
+        log.info("pairing: claim seen", {
+          pairId,
+          pairingId: response.pairingId,
+          deviceId: device.deviceId,
+          state: device.state,
+        });
         void processNewDevice(device);
       });
       pending = {

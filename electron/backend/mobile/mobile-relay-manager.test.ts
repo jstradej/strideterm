@@ -16,6 +16,7 @@ import { createMobileRelayManager, type RelayOriginServer } from "./mobile-relay
 import { RELAY_INSTALLATION_KEY_REF } from "./mobile-relay-identity.js";
 import type { RelayConnector } from "./mobile-relay-connector.js";
 import { RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
+import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 
 const INSTALLATION_ID = "installation-under-test";
 const RELAY_ORIGIN = "https://relay.test.invalid";
@@ -54,6 +55,7 @@ function makeHarness(
   options: {
     grant?: () => Promise<{ grant: string; relayOrigin: string; desktopInstallationId: string; expiresAt: number }>;
     retryDelayMs?: (attempt: number) => number;
+    definitiveRefusalRetryDelayMs?: () => number;
     /** What the persistent device store would report. Empty unless a test cares. */
     revocations?: () => Array<{ deviceId: string; revokedAt: number | null }>;
   } = {},
@@ -100,6 +102,7 @@ function makeHarness(
     isEnabled: () => enabled,
     listRevocations: () => options.revocations?.() ?? [],
     retryDelayMs: options.retryDelayMs,
+    definitiveRefusalRetryDelayMs: options.definitiveRefusalRetryDelayMs,
     createConnector: (connectorOptions) => {
       state.listRelayRevocations = connectorOptions.listRelayRevocations;
       const connector: RelayConnector = {
@@ -310,6 +313,33 @@ describe("a start that fails is retried, not abandoned", () => {
     await vi.waitFor(() => expect(harness.connectorsStarted).toBe(1), { timeout: 5_000 });
     expect(attempts).toBeGreaterThanOrEqual(3);
     expect(harness.originsStarted).toHaveLength(1);
+    expect(harness.manager.status().lastError).toBe("");
+  });
+
+  test("a DEFINITIVE refusal (the entitlement, not the network) retries on the long delay, not the ordinary one", async () => {
+    // The ordinary retry delay is deliberately huge: if the manager used it instead of the
+    // definitive-refusal delay, this test would time out waiting for the second attempt.
+    let attempts = 0;
+    const harness = makeHarness({
+      grant: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new MobileRelayGrantDefinitiveRefusalError("permission-denied");
+        return {
+          grant: "connector-grant",
+          relayOrigin: RELAY_ORIGIN,
+          desktopInstallationId: INSTALLATION_ID,
+          expiresAt: Date.now() + 900_000,
+        };
+      },
+      retryDelayMs: () => 60_000,
+      definitiveRefusalRetryDelayMs: () => 5,
+    });
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+    expect(harness.manager.status().lastError).toMatch(/permission-denied/);
+
+    await vi.waitFor(() => expect(harness.connectorsStarted).toBe(1), { timeout: 5_000 });
+    expect(attempts).toBe(2);
     expect(harness.manager.status().lastError).toBe("");
   });
 

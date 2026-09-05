@@ -328,6 +328,110 @@ Use cases:
 
 This is still a controlled-network feature, not a hardened internet-facing product.
 
+## The Free/Paid Boundary and the Account
+
+Everything above this section is free and always will be: the terminal, the workspaces, the agents,
+the git/docker/Azure/GitHub managers, LAN remote access and the Cloudflare Quick Tunnel. None of it
+consults an account, an entitlement or a subscription, and no code path in `remote-server.ts` or
+`tunnel-manager.ts` can — `electron/backend/mobile/local-transports-are-free.test.ts` is a
+source-shape test that fails if one appears.
+
+What is paid for is the **hosted control plane**: the pairing handshake, the Firebase event and
+command path, push delivery, and the managed relay with its signed grants. That boundary is the whole
+of the decision; the sibling repo's `docs/adr/0025-entitlement-boundary-and-merchant-of-record.md`
+records why it is drawn there.
+
+### The account manager
+
+`electron/backend/account/` is a self-contained module, mirroring the shape of the mobile one beside
+it:
+
+- `account-client.ts` — the identity, over Firebase's REST Auth API: ask for a one-time sign-in link,
+  redeem one, refresh a token, look an account up, and start a login-address change. Two identities
+  are kept apart on purpose — the OWNER (an email address, proved by opening a link) and the
+  INSTALLATION (an anonymous session bound to a key this machine holds) — because the enrolment
+  handshake is only meaningful if neither can name the other's.
+- `authlink-config.ts` — where a sign-in link is allowed to come back to. The environment comes from
+  the same call the bootstrap trust set uses (`bootstrapEnvironmentFor`, which reads the configured
+  Firebase project), and maps to two fixed hosts. A deployed build cannot be pointed elsewhere by
+  anything in its environment; a dev build must name a loopback origin explicitly or it gets no
+  broker at all. It also holds the pasted-link parser, which accepts one shape, unwraps exactly one
+  level of `continueUrl`, and never fetches what it was given.
+- `email-signin-broker.ts` — one attempt at a time: the attempt id, the claim secret (only its
+  SHA-256 leaves this process), the pinned address, the pinned PURPOSE, the deadline, the polling
+  schedule, the manual paste and the cancel/ack. Every await is followed by a generation check, so a
+  late answer from a cancelled or resent attempt is dropped rather than applied. A `429` from the
+  broker is waited out for as long as its `Retry-After` asks — but only ever LATER than the band, and
+  never past the attempt's own deadline, so a wait cannot become an extension.
+- `account-transport.ts` — the callables, and nothing else. It takes a `MobileFirebaseConfig` and a
+  `tokenFor(kind)` function, which is what lets a signed control-plane bootstrap move this desktop to
+  a different project without touching a line of it.
+- `account-state.ts` — the projection the renderer sees, including a closed set of error codes. A
+  refusal from the control plane is mapped to one of ours; a remote string shown to a user is a string
+  another system writes and can change without warning.
+- `account-manager.ts` — the orchestration, the idempotency keys, and a bounded diagnostics ring.
+  It is also where a redeemed link becomes an identity, in an order where each step proves something
+  the one before it does not: `signInWithEmailLink` proves an address, `accounts:lookup` must return
+  the SAME uid, and on an already-enrolled machine `confirmOwnerForInstallation` is the only thing
+  that can say the identity owns the account this MACHINE is in.
+- `account-diagnostics.ts` — the opt-in report, built and shown to the user before it is sent.
+
+The `account:*` IPC handlers all reach it, and all of them are **desktop-only**: `remote-server.ts`
+registers no counterpart and a source-shape parity test says so. The reasoning is the same one that
+keeps `autoApprovePermissions` desktop-only — the consequences of an account action land at the
+machine that performs it, and a remote caller cannot see them. The sign-in channels sharpen it: the
+flow holds a live sign-in code and a claim secret in the backend for minutes at a time, and the manual
+fallback carries a whole email link across one IPC hop.
+
+### Signing in has no password, and the last step happens here
+
+The strIDEterm ACCOUNT has no password — nobody creates, types or resets one, and nothing generates
+a hidden one as a way around that. (SSH credentials are a different thing entirely; see `docs/ssh.md`.)
+Settings → Account asks for an address and one
+explicitly chosen intention; Firebase emails a one-time link; whichever browser opens it confirms
+through a small Cloudflare Worker (`authlink/worker` in the cloud repository), and this desktop
+collects the code from that Worker with a secret only it holds.
+
+Three properties of that are worth knowing before reading the code:
+
+- **The purpose is pinned locally and travels nowhere.** Not in the link, not to the broker, not to
+  Firebase. A URL somebody constructs cannot change what this desktop was about to do, because the
+  only copy of that intention is in this process.
+- **The last step is on this machine.** The person confirms "sign this computer in as …" here, after
+  the link has been opened somewhere else. A link that completed itself would be a link a stranger
+  could complete.
+- **One authentication per intention.** Registering this machine and starting its trial are one link:
+  the nested steps never release the owner credential, and the outer operation drops it in a
+  `finally`. A partial success leaves the machine registered rather than rolled back.
+
+Waiting for a link is a SUBSTATE, not a phase, for a machine that is already enrolled — reauthenticating
+must not hide the device list and the entitlement this page exists to show. Nothing about an attempt
+except the address, the deadline and the resend time reaches the renderer: no code, no claim secret,
+no token.
+
+### Billing happens in the system browser
+
+`createCheckout` and `createPortalSession` return a URL, and the desktop opens it with the OS browser.
+There is no embedded checkout, no payment form in a `BrowserWindow` and no card field anywhere in this
+process. Two reasons, and both are load-bearing: Paddle is the Merchant of Record and its own hosted
+checkout is what makes that true, and an Electron window rendering a payment page is a phishing
+surface with our chrome around it.
+
+The returned URL's host is checked against an exact allowlist before it is opened — a merchant's
+answer is still an answer from outside.
+
+### Identity is per data directory
+
+The installation key, the account session and the bootstrap state all live under the data directory,
+so dev (`~/.strideterm-dev`) and prod (`~/.strideterm`) are two independent installations of the
+product: two Ed25519 keys, two enrolments, two entries against the account's device cap. That is the
+same rule the credential store and the single-instance lock already follow, and it is deliberate — a
+developer running both should be visible as two machines, because that is what they are.
+
+One consequence worth knowing before it surprises somebody: enrolling both costs two device slots.
+Re-enrolling either one after a crash costs none, because the key is the identity and the server
+recognises it.
+
 ## Performance Shape
 
 - Electron carries the desktop-shell baseline cost

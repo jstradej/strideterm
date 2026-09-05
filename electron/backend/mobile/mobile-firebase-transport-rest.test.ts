@@ -27,8 +27,11 @@ import { makeCloudDevice } from "./mobile-test-fixtures.js";
 
 const CONFIG = resolveMobileFirebaseConfig(
   {
+    STRIDETERM_ENV: "local",
     [MOBILE_FIREBASE_ENV_VARS.projectId]: "demo-strideterm",
+    [MOBILE_FIREBASE_ENV_VARS.authEmulator]: "127.0.0.1:9099",
     [MOBILE_FIREBASE_ENV_VARS.databaseEmulator]: "127.0.0.1:9000",
+    [MOBILE_FIREBASE_ENV_VARS.functionsEmulator]: "127.0.0.1:5001",
   },
   FUNCTIONS_REGION,
 ).config!;
@@ -64,6 +67,9 @@ function makeStubClient(options: StubOptions = {}) {
       return { idToken: "id-1", uid: "desktop-uid", expiresAt: NOW + 3_600_000 };
     },
     async currentSession() {
+      return { idToken: "id-1", uid: "desktop-uid", expiresAt: NOW + 3_600_000 };
+    },
+    async refreshSession() {
       return { idToken: "id-1", uid: "desktop-uid", expiresAt: NOW + 3_600_000 };
     },
     clearCachedToken: vi.fn(),

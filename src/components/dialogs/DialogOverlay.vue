@@ -79,9 +79,20 @@ function findEditableTarget(target: EventTarget | null): HTMLElement | null {
 }
 
 function handleOverlayPointerDown(event: MouseEvent) {
+  const editable = findEditableTarget(event.target);
+  // A NATIVE <select> POPUP IS NOT PART OF THIS DOCUMENT, and both halves of the routine below close
+  // it. The list is an OS-level window owned by the BrowserWindow, so `window:focus-current` --
+  // `show()` + `focus()` on the owner, arriving over async IPC once the popup is already up -- and the
+  // rAF re-focus of the element both dismiss it. It opens and disappears in the same frame, which
+  // reads as a dropdown that does not open at all. Chromium focuses the select itself on mousedown,
+  // so neither step is wanted here; releasing the terminal's keyboard capture is synchronous DOM and
+  // does not touch the popup.
+  if (editable instanceof HTMLSelectElement) {
+    releaseTerminalKeyboardCapture();
+    return;
+  }
   requestHostWindowFocus();
   releaseTerminalKeyboardCapture();
-  const editable = findEditableTarget(event.target);
   if (!editable || editable.hasAttribute("disabled")) return;
   requestAnimationFrame(() => {
     requestHostWindowFocus();

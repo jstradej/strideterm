@@ -29,7 +29,7 @@ Only the **latest tagged release** on the [Releases page](https://github.com/jst
 - Bypass of IPC payload validation (`electron/backend/ipc-schemas.ts`)
 - Credential exfiltration from `~/.strideterm/credentials.json` without prior local-machine access
 - Path-traversal in any user-supplied path (workspace `cwd`, file manager, Telegram Get-file flow, plugin script paths)
-- Token leakage in logs (`~/.strideterm/logs/`) or audit databases
+- Token leakage in logs (`~/.strideterm/logs/`) or audit databases — including the account sign-in link's `oobCode` and its claim secret, which the logger redacts by name, by query parameter and after one round of percent-encoding (the shape the code takes inside a `continueUrl`)
 - Auto-approval of a permission prompt that should have been refused — a tool on the never-list (`AskUserQuestion`, `ExitPlanMode`), a task-runner workspace, a session this instance isn't driving, or an approval reaching the agent without an audit row being written
 - RCE triggered by remote terminal output (e.g. malicious escape sequences delivered through SSH or a process the user attached to)
 - XSS / template injection in the Vue renderer
@@ -44,6 +44,11 @@ Only the **latest tagged release** on the [Releases page](https://github.com/jst
 - **Custom user CLI commands** (Worker / Judge agent commands, post-login SSH commands, panel commands) execute with the user's privileges. The user explicitly configures them.
 - **Local-machine attacks.** A local attacker who can read `~/.strideterm/` files or the user's keychain is already past the trust boundary. The OS keychain protection of `safeStorage` is the boundary, not file-permission obscurity.
 - **Third-party CLIs we integrate with** (Claude Code, Codex, Gemini, Copilot, OpenCode, `git`, Docker, `lazygit`, `ssh`). Report those upstream.
+- **Somebody who has the account's mailbox.** The strIDEterm account signs in with a one-time link, so
+  read access to that mailbox is read access to the account. This is the same dependency every
+  password-reset flow has ever had, stated rather than implied; the mitigation for a product that
+  needs more than this is passkeys, and strIDEterm does not claim to provide it. See ADR 0026 in the
+  cloud repository.
 - **Denial-of-service from a malicious user against their own instance** (e.g. typing a runaway command in your own terminal). The terminal is not a sandbox.
 - Issues only reachable when the user has explicitly bypassed a documented protection (e.g. accepting a TOFU host-key mismatch warning, choosing to save credentials when the OS keychain is unavailable, granting agent forwarding to an untrusted host).
 - **What an agent does once _Auto-approve permission prompts_ is on.** The setting (Settings → General, off by default) is a deliberate bypass — equivalent to running the agent without permission prompts — and the UI says so. `AskUserQuestion`, `ExitPlanMode`, task-runner workspaces, sessions outside an active turn and any request that cannot prove it came from a terminal this instance spawned are never auto-approved; the setting cannot be enabled from a remote client and is disarmed whenever the agent hook it depends on is turned off; and Claude Code's own deny rules still apply. Beyond that, `Bash` and `Write` get approved because that is what the user asked for.

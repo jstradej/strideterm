@@ -61,8 +61,9 @@ const TIMESTAMP_FORMAT = winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss
 // ---------------------------------------------------------------------------
 // strideterm carries a handful of high-value secrets through error paths
 // (Azure PAT, GitHub PAT, Telegram bot token, remote-access token, SSH
-// passphrases). When an outbound HTTP call fails the URL or Authorization
-// header can land in the log. We strip those patterns before winston ever
+// passphrases, and — since the passwordless sign-in — a one-time `oobCode`
+// and the claim secret that collects it). When an outbound HTTP call fails
+// the URL or Authorization header can land in the log. We strip those patterns before winston ever
 // sees the structured payload so a leaked log directory doesn't double as
 // a credential dump.
 //
@@ -85,9 +86,20 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   // request URL in several of its error messages, so without these two names a single failed fetch
   // put a live Firebase credential in the log — review 2 §"Logy a diagnostika".
   [/([?&](?:token|pat|access_token|api[_-]?key|auth|key)=)[^&\s"']+/gi, `$1${REDACTED}`],
+  // THE PASSWORDLESS SIGN-IN'S OWN THREE. `oobCode` is a bearer credential for somebody's account
+  // for as long as the identity service honours it; `claimSecret` is what authorises collecting one
+  // from the broker; and `continueUrl` is where the FIRST of those hides when the whole link is
+  // logged — Firebase's action-handler URL carries our URL inside it, percent-encoded, so a rule that
+  // only looked for a bare `oobCode=` would miss the nested copy entirely. The value is taken whole,
+  // which is why the nested case is covered by dropping the `continueUrl` value rather than by trying
+  // to decode it.
+  [/([?&](?:oobCode|claimSecret|claimSecretHash|continueUrl)=)[^&\s"']+/gi, `$1${REDACTED}`],
+  // The same three after ONE round of percent-encoding, which is the shape they take inside a
+  // `continueUrl` and inside anything that logged a URL it had already encoded.
+  [/((?:oobCode|claimSecret|claimSecretHash)%3D)[^&\s"'%]+/gi, `$1${REDACTED}`],
   // JSON-style: "token":"...",  "pat":"...",  "password":"...", "secret":"..."
   [
-    /("(?:token|pat|access[_-]?token|api[_-]?key|password|passphrase|secret|secretHash|botToken|idToken|refreshToken|refresh_token|id_token)"\s*:\s*")[^"]+/gi,
+    /("(?:token|pat|access[_-]?token|api[_-]?key|password|passphrase|secret|secretHash|botToken|idToken|refreshToken|refresh_token|id_token|oobCode|claimSecret|claimSecretHash|continueUrl|link)"\s*:\s*")[^"]+/gi,
     `$1${REDACTED}`,
   ],
   // Any JWT-shaped string, wherever it appears.

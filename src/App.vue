@@ -339,6 +339,7 @@ import SshHostKeyWarning from "./components/ssh/SshHostKeyWarning.vue";
 import { useNotificationCapture } from "./composables/useNotificationCapture.js";
 import { useReviewNotifications } from "./composables/useReviewNotifications.js";
 import { usePipelineNotifications } from "./composables/usePipelineNotifications.js";
+import { useSignInNotice } from "./composables/useSignInNotice.js";
 import { useNotificationStore } from "./stores/notifications.js";
 import { useSshStore } from "./stores/ssh.js";
 
@@ -349,6 +350,9 @@ const sshStore = useSshStore();
 const { latestToast } = useNotificationCapture(api as Transport | null);
 useReviewNotifications(latestToast);
 usePipelineNotifications();
+// The one flow that requires the person to leave the app, so the one that needs telling when it is
+// waiting on them again. Mounted here rather than in the Settings dialog for exactly that reason.
+useSignInNotice();
 
 sshStore.init(api as Transport);
 sshStore.bindEvents();

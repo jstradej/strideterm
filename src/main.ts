@@ -10,6 +10,7 @@ import { useGitUiStore } from "./stores/git-ui.js";
 import { useAzurePipelinesStore } from "./stores/azure-pipelines.js";
 import { rlog } from "./lib/renderer-log.js";
 import { apiKey } from "./types/keys.js";
+import { useAccountStore } from "./stores/account.js";
 import { bootstrapMobileSessionFromFragment } from "./mobile-session-bootstrap.js";
 
 // crypto.randomUUID is gated to secure contexts (HTTPS / localhost / file://).
@@ -183,6 +184,11 @@ if (popoutView === "diff-popout") {
     appStore.init(api);
     gitUiStore.init(api);
     azurePipelinesStore.init(api);
+    // The account store subscribes to ONE broadcast and holds the state the main process derived.
+    // On the remote web client the transport has none of these methods, so `attach` finds nothing to
+    // subscribe to, and the Mobile tab (which hosts the account section) is absent — see
+    // SettingsDialog's TABS.
+    useAccountStore().attach(api);
   });
 }
 

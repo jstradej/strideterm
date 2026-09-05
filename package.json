@@ -47,6 +47,7 @@
     "audit:security": "npm audit --audit-level=high",
     "audit:package-age": "tsx scripts/check-package-age.mts",
     "check:mobile-schema-drift": "tsx scripts/check-mobile-schema-drift.mts",
+    "verify:live-account-client": "tsx scripts/verify-live-account-client.mts",
     "check:licences": "tsx scripts/check-licences.mts",
     "prepare": "husky"
   },

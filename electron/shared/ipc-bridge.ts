@@ -88,6 +88,16 @@ import type {
   ApprovalAuditLogDelete,
   ApprovalAuditLogStats,
   WorkspacePushOptions,
+  AccountCheckout,
+  AccountDelete,
+  AccountDiagnostics,
+  AccountEmail,
+  AccountEnrol,
+  AccountNoticeAck,
+  AccountRevoke,
+  AccountSignInLink,
+  AccountSignInStart,
+  AccountSignOut,
   MobileCreatePairingInvitation,
   MobileRejectDevice,
   MobileRenameDevice,
@@ -318,6 +328,51 @@ export interface StridetermAPI {
   saveTelegramConnection: (connection: TelegramConnectionPayload) => Promise<unknown>;
   deleteTelegramConnection: (connectionId: string) => Promise<unknown>;
   refreshTelegram: () => Promise<unknown>;
+
+  // Account (plan §8.2) — DESKTOP-ONLY, including for the remote web renderer. Signing in, paying
+  // and revoking are acts whose consequences land at this machine, and `remote-server.ts` routes
+  // none of them. `getAccountState` is a read and is desktop-only for the same reason: the state it
+  // returns is this installation's.
+  getAccountState: () => Promise<unknown>;
+  /**
+   * Starts a passwordless sign-in for one pinned purpose. Returns as soon as the link is requested.
+   *
+   * NOT a promise that resolves when somebody opens the link: a call held open for fifteen minutes
+   * cannot be cancelled, cannot be resent, and dies with the window that made it. The continuation
+   * arrives on `account:updated`.
+   */
+  accountBeginSignIn: (payload: AccountSignInStart) => Promise<unknown>;
+  /** The final confirmation, ON THIS DESKTOP: redeem the code and do the thing it was started for. */
+  accountConfirmSignIn: () => Promise<unknown>;
+  accountResendSignIn: () => Promise<unknown>;
+  accountCancelSignIn: () => Promise<unknown>;
+  /**
+   * The OWNING account panel is closing: end the flow it started, and nobody else's (F09).
+   *
+   * Not a cancel. The window is resolved in the main process from the sender, so a renderer cannot
+   * name the owner — and a panel that never started a sign-in, or one in a second window, changes
+   * nothing at all.
+   */
+  accountReleaseSignInFlow: () => Promise<unknown>;
+  /** The manual fallback. The one payload in this interface that carries a live credential. */
+  accountSubmitSignInLink: (payload: AccountSignInLink) => Promise<unknown>;
+  /** Starts a LOGIN-address change. The old address keeps working until the new one is confirmed. */
+  accountChangeLoginEmail: (payload: AccountEmail) => Promise<unknown>;
+  accountClearPendingEmailChange: () => Promise<unknown>;
+  accountEnrolInstallation: (payload: AccountEnrol) => Promise<unknown>;
+  accountStartTrial: () => Promise<unknown>;
+  accountRefreshOverview: () => Promise<unknown>;
+  /** Answers `opened` or `pending`. NEVER the URL: a URL here is a URL in a state diff. */
+  accountOpenCheckout: (payload: AccountCheckout) => Promise<unknown>;
+  accountOpenBillingPortal: () => Promise<unknown>;
+  accountRevoke: (payload: AccountRevoke) => Promise<unknown>;
+  accountAcknowledgeNotice: (payload: AccountNoticeAck) => Promise<unknown>;
+  accountSignOut: (payload: AccountSignOut) => Promise<unknown>;
+  accountDelete: (payload: AccountDelete) => Promise<unknown>;
+  /** Opt-in. Answers with a report reference to quote — never the report. */
+  accountSubmitDiagnostics: (payload?: AccountDiagnostics) => Promise<unknown>;
+  /** The same document, for saving locally when the upload is not available. */
+  accountExportDiagnostics: (payload?: AccountDiagnostics) => Promise<unknown>;
 
   // Mobile integration (plan §10.5) — Electron/desktop-only; the remote-HTTP
   // transport does not implement these (see src/transport.ts).
