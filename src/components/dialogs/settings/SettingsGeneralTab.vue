@@ -298,6 +298,46 @@
 
       <div
         class="settings-check"
+        title="Let strIDEterm answer Claude Code permission prompts for you. Equivalent to running the agent without permission prompts — every approval is recorded in the notification panel's Approvals tab. Questions (AskUserQuestion), plan approval (ExitPlanMode) and sandboxed network requests are never auto-approved."
+      >
+        <label class="settings-check__row" :class="{ 'settings-check__row--disabled': autoApproveLocked }">
+          <input v-model="form.notifications.autoApprovePermissions" type="checkbox" :disabled="autoApproveLocked" />
+          <span>Auto-approve permission prompts (Claude Code)</span>
+        </label>
+        <small class="settings-check__help">
+          strIDEterm answers tool permission prompts on your behalf, except questions (AskUserQuestion), plan approval
+          (ExitPlanMode), and requests Claude's sandbox blocks for network access — that last kind reaches strIDEterm as
+          a notification with no way to answer it, so its prompt still appears. Equivalent to running without permission
+          prompts, but every approval is recorded in the <strong>Approvals</strong> tab of the notification panel. Your
+          own deny rules from <code>/permissions</code> still apply. Claude Code only — the other agents have no
+          equivalent hook.
+        </small>
+        <small v-if="isRemote" class="settings-check__help settings-check__help--warn">
+          Desktop only — arming an unattended approval bypass has to happen on the machine that runs the agent. The
+          trail itself is readable from here.
+        </small>
+        <small
+          v-else-if="autoApproveOn && !autoApproveAvailable"
+          class="settings-check__help settings-check__help--warn"
+        >
+          Armed, but its prerequisites are incomplete — untick it here to disarm.
+        </small>
+        <small v-else-if="!form.notifications.agentHook" class="settings-check__help settings-check__help--warn">
+          Needs <strong>Agent notification hook</strong> above.
+        </small>
+        <small v-else-if="claudeHookStatus !== 'configured'" class="settings-check__help settings-check__help--warn">
+          Needs the Claude Code hooks configured — use <strong>Configure Claude Code</strong> below (status:
+          {{ claudeHookStatusLabel }}).
+        </small>
+        <small class="settings-check__help">
+          The trail lives in the <strong>Approvals</strong> tab of the notification panel — searchable, one row per
+          decision, with the full command behind each row. It appears there whenever this is armed or the profile has
+          approvals on record, and rows are kept for 30 days.
+        </small>
+      </div>
+
+      <div
+        class="settings-check"
         title="Verbose logging of detection decisions for diagnosing false positives / missed alerts. Writes to ~/.strideterm/logs/strideterm.log — paste excerpts into bug reports."
       >
         <label class="settings-check__row">
@@ -395,6 +435,37 @@ const props = withDefaults(defineProps<Props>(), {
 const form = inject<Record<string, any>>("settingsForm")!;
 
 const logLevelOptions = computed(() => props.logLevels.map((level) => ({ value: level, label: level })));
+
+// Auto-approve rides entirely on the Claude Code PermissionRequest hook: with
+// the listener off or the hooks unregistered, ticking the box would change
+// nothing at all, so it stays disabled with a hint pointing at what's missing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const claudeHookProvider = computed<any>(() => props.hookSettings.providers.find((p: any) => p.id === "claude"));
+const claudeHookStatus = computed(() => claudeHookProvider.value?.status || "unknown");
+const claudeHookStatusLabel = computed(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  () => (props.hookSettings.statusLabels as any)?.[claudeHookStatus.value] || claudeHookStatus.value,
+);
+// A remote client may READ the approval log but may never arm the bypass —
+// `sanitizeSettingsFromRemote` drops the field from /api/settings/update. A
+// tickable checkbox whose Save silently does nothing is worse than no
+// checkbox, so the remote UI shows it disabled and says where to change it.
+const isRemote = computed(() => Boolean(props.api?.isRemote));
+const autoApproveAvailable = computed(
+  () => !isRemote.value && Boolean(form.notifications?.agentHook) && claudeHookStatus.value === "configured",
+);
+const autoApproveOn = computed(() => Boolean(form.notifications?.autoApprovePermissions));
+/**
+ * The box is locked only against ARMING it.
+ *
+ * A prerequisite going missing must never trap an armed bypass: with the hook
+ * status at `partial` the `PermissionRequest` entry may well still be
+ * registered and approving away, and a checkbox that refuses to be unticked
+ * leaves the user no way to stop it from the UI. Disarming is therefore always
+ * allowed locally — the one exception is a remote client, which the server
+ * would not let write this field anyway.
+ */
+const autoApproveLocked = computed(() => isRemote.value || (!autoApproveAvailable.value && !autoApproveOn.value));
 
 const pathOpenerModes = [
   {
@@ -564,6 +635,15 @@ async function browseClipboardImageDir() {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.settings-check__help--warn {
+  color: var(--warning, #ffb74d);
+}
+
+.settings-check__row--disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .hook-setup-section {

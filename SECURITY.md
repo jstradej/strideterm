@@ -30,6 +30,7 @@ Only the **latest tagged release** on the [Releases page](https://github.com/jst
 - Credential exfiltration from `~/.strideterm/credentials.json` without prior local-machine access
 - Path-traversal in any user-supplied path (workspace `cwd`, file manager, Telegram Get-file flow, plugin script paths)
 - Token leakage in logs (`~/.strideterm/logs/`) or audit databases
+- Auto-approval of a permission prompt that should have been refused — a tool on the never-list (`AskUserQuestion`, `ExitPlanMode`), a task-runner workspace, a session this instance isn't driving, or an approval reaching the agent without an audit row being written
 - RCE triggered by remote terminal output (e.g. malicious escape sequences delivered through SSH or a process the user attached to)
 - XSS / template injection in the Vue renderer
 - Renderer escape (bypass of `contextIsolation` / `nodeIntegration: false`)
@@ -45,6 +46,9 @@ Only the **latest tagged release** on the [Releases page](https://github.com/jst
 - **Third-party CLIs we integrate with** (Claude Code, Codex, Gemini, Copilot, OpenCode, `git`, Docker, `lazygit`, `ssh`). Report those upstream.
 - **Denial-of-service from a malicious user against their own instance** (e.g. typing a runaway command in your own terminal). The terminal is not a sandbox.
 - Issues only reachable when the user has explicitly bypassed a documented protection (e.g. accepting a TOFU host-key mismatch warning, choosing to save credentials when the OS keychain is unavailable, granting agent forwarding to an untrusted host).
+- **What an agent does once _Auto-approve permission prompts_ is on.** The setting (Settings → General, off by default) is a deliberate bypass — equivalent to running the agent without permission prompts — and the UI says so. `AskUserQuestion`, `ExitPlanMode`, task-runner workspaces, sessions outside an active turn and any request that cannot prove it came from a terminal this instance spawned are never auto-approved; the setting cannot be enabled from a remote client and is disarmed whenever the agent hook it depends on is turned off; and Claude Code's own deny rules still apply. Beyond that, `Bash` and `Write` get approved because that is what the user asked for.
+- **Whether Claude Code acted on a decision strIDEterm issued.** The audit row records that a decision was handed to the hook's stdout (`decision-issued`), which is all the process can observe. Nothing reports back, so a row is evidence that strIDEterm answered, not proof that the tool ran.
+- **A secret inside an auto-approval summary.** The one-line summary written to `approval-audit-log.db` is redacted with the same pattern set as the logs (`Bearer …`, `token=…`, JSON `password`/`secret` fields) and clipped to 200 characters, and the full `tool_input` is never stored. A password passed in a shell command in a shape those patterns don't recognise can still land in that database, which lives in the data directory with the same protection as the `credentials.json` fallback. Accepted residual risk.
 
 If you're unsure whether something is in scope, report it — borderline cases are easier to triage with the report in hand.
 

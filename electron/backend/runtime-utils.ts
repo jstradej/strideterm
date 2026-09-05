@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import os from "node:os";
+import { isInputBlockingKind } from "../shared/attention-kinds.js";
 
 /**
  * Pure utility functions and constants shared across runtime modules.
@@ -407,6 +408,55 @@ export function looksLikeShellPrompt(line: string): boolean {
   return SHELL_DROPOUT_PATTERNS.some((pattern) => pattern.test(line));
 }
 
+/**
+ * One in-flight Claude Code permission request, remembered on the session
+ * signal. `requestId` is our own UUID: the `PermissionRequest` hook input
+ * carries no `tool_use_id`, so there is nothing from Claude to correlate on.
+ */
+export interface PendingPermission {
+  toolName: string;
+  /** `Tool: argument` — what the alert says. */
+  summary: string;
+  /** The argument alone, without the `Tool: ` prefix. */
+  detail: string;
+  requestId: string;
+  /**
+   * Identity of the hook DELIVERY that parked this summary — the uuid
+   * `notify.mjs` mints once per hook process and sends with both phases.
+   *
+   * Emphatically NOT `session_id|prompt_id`: `prompt_id` names the user
+   * prompt being processed, so every tool of one turn shares it, and a key
+   * built from it merges requests that have nothing to do with each other.
+   */
+  requestKey: string;
+  /** Claude Code's own `session_id`, the field a later hook is matched on. */
+  claudeSessionId: string;
+  /**
+   * Claude's `prompt_id` — the USER PROMPT (turn) this request belongs to.
+   * Too coarse to identify a request, but it does separate the turns of one
+   * session when a later notification has to be matched to the right summary.
+   */
+  promptId: string;
+  /** Claude's `agent_id`, when the request came from a subagent. */
+  agentId: string;
+  at: number;
+}
+
+/**
+ * How many un-consumed permission summaries one session may hold.
+ *
+ * Concurrent permission requests are possible, and a single slot meant the
+ * newest one silently overwrote the previous — so the alert for request A
+ * could describe request B. A short queue keeps them distinct; the bound stops
+ * a session that never resolves its prompts from growing without limit.
+ */
+export const MAX_PENDING_PERMISSIONS = 8;
+
+/** How long a parked PermissionRequest summary stays usable. Claude's own
+ *  permission_prompt debounce is ~6 s; anything older than this is a stale
+ *  request the user (or another hook) already dealt with. */
+export const PENDING_PERMISSION_TTL_MS = 10 * 60_000;
+
 export function createSessionSignal(sessionId: string): {
   sessionId: string;
   busy: boolean;
@@ -436,6 +486,7 @@ export function createSessionSignal(sessionId: string): {
   lastCommandFinishedAt: number;
   activeSubagents: number;
   turnActive: boolean;
+  pendingPermissions: PendingPermission[];
 } {
   return {
     sessionId,
@@ -499,6 +550,13 @@ export function createSessionSignal(sessionId: string): {
     // Whether the agent is mid-turn (UserPromptSubmit seen, Stop not yet). Lets
     // a subagent finishing mid-turn avoid flashing a premature "done".
     turnActive: false,
+    // Summaries of Claude Code `PermissionRequest`s seen on this session,
+    // parked here so the `Notification:permission_prompt` that follows ~6 s
+    // later can say WHAT is being approved. Matched back by Claude's own
+    // `session_id`, so a concurrent request cannot lend its text to an
+    // unrelated question. Cleared on UserPromptSubmit / Stop and treated as
+    // expired after PENDING_PERMISSION_TTL_MS.
+    pendingPermissions: [],
   };
 }
 
@@ -562,7 +620,7 @@ export function summarizeAttentionForProfile(
     if (!profileWsIds.has(wsId)) continue;
     const alerts = bucket?.alerts || [];
     count += alerts.length;
-    waitingCount += alerts.filter((a) => a.kind === "waiting").length;
+    waitingCount += alerts.filter((a) => isInputBlockingKind(a.kind)).length;
   }
   return { count, waitingCount };
 }

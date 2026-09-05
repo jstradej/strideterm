@@ -62,6 +62,17 @@
             >
           </button>
           <button
+            v-if="showApprovals"
+            type="button"
+            class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'approvals' }"
+            title="Approvals — the permission prompts strIDEterm answered for you in this profile, newest first. Click a row for the full command."
+            @click="activeTab = 'approvals'"
+          >
+            <span class="notification-center__tab-icon" aria-hidden="true">🛡️</span>
+            <span class="notification-center__tab-label">Approvals</span>
+          </button>
+          <button
             v-if="supportsPerformance"
             type="button"
             class="notification-center__tab"
@@ -386,6 +397,20 @@
         </div>
       </div>
 
+      <!-- Auto-approval trail. Kept mounted only while its tab is open: the
+           list queries SQLite on mount, and a dock pinned open all day should
+           not do that for a tab nobody is looking at. -->
+      <div v-if="activeTab === 'approvals'" class="notification-center__body">
+        <ApprovalsPanel
+          :api="api"
+          :profile-id="activeProfileId"
+          :live-approval="lastApproval"
+          :live-signal="approvalSignal"
+          @jump="navigateToTarget"
+          @count="onApprovalCount"
+        />
+      </div>
+
       <!-- Performance diagnostics tab -->
       <div v-if="activeTab === 'performance'" class="notification-center__body notification-center__body--perf">
         <PerformancePanel />
@@ -395,7 +420,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
+import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationProfileScope } from "../../composables/useNotificationProfileScope.js";
@@ -408,6 +433,10 @@ import {
 } from "../../app/selectors.js";
 import type { WorkspaceState } from "../../../electron/shared/types/state.js";
 import PerformancePanel from "./PerformancePanel.vue";
+import ApprovalsPanel from "./ApprovalsPanel.vue";
+import { dayBandKey, dayBandLabel } from "../../app/helpers.js";
+import { apiKey } from "../../types/keys.js";
+import type { Transport } from "../../transport.js";
 
 interface NotificationSession {
   id: string;
@@ -423,7 +452,7 @@ interface NotificationSession {
   meta: Record<string, any> | null;
   firstAt: string;
   latestAt: string;
-  events: Array<{ title?: string; body?: string }>;
+  events: Array<{ title?: string; body?: string; kind?: string }>;
   snoozedUntil: number;
 }
 
@@ -443,11 +472,87 @@ function clearAllInProfile(): void {
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
-type TabId = "alerts" | "agents" | "telegram" | "performance";
+type TabId = "alerts" | "agents" | "telegram" | "approvals" | "performance";
 const activeTab = ref<TabId>("alerts");
 // The Performance tab needs Electron process metrics — only shown when the
 // transport advertises them (desktop), never on the remote/mobile client.
 const supportsPerformance = computed(() => appStore.supportsPerformanceMetrics);
+
+// The app's transport, injected — never `createTransport()`, which mints a
+// second WebSocket on the remote client. Only the Approvals list uses it: it
+// reads the audit log and deletes from it.
+const api = inject<Transport>(apiKey) ?? null;
+
+/**
+ * Show the Approvals tab when auto-approve is armed OR the profile has a trail.
+ *
+ * Not "when the setting is on": that would hide the record of what was
+ * approved while it WAS on, and the setting can go false on its own —
+ * `updateSettings()` disarms it whenever `notifications.agentHook` drops. The
+ * evidence has to outlive the switch that produced it. Retention (30 days)
+ * eventually empties the trail, and the tab then disappears with it.
+ */
+const approvalCount = ref(0);
+const autoApproveArmed = computed(() =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  Boolean((appStore.payload as any)?.appState?.settings?.notifications?.autoApprovePermissions),
+);
+/**
+ * ...and it also stays for as long as the user is standing on it. Clearing
+ * the trail from inside the tab would otherwise pull the tab out from under
+ * the click that cleared it; this way the empty state explains itself and the
+ * tab goes away when the user next moves off it.
+ */
+const showApprovals = computed(
+  () => activeTab.value === "approvals" || autoApproveArmed.value || approvalCount.value > 0,
+);
+function onApprovalCount(total: number): void {
+  approvalCount.value = total;
+}
+
+/**
+ * The live `approval:recorded` subscription, owned here rather than in the
+ * tab: this component's setup runs once for the life of the renderer (only
+ * its root element sits behind the open/pinned `v-if`), while the tab mounts
+ * and unmounts with every tab switch — and neither transport's
+ * `onApprovalRecorded` hands back an unsubscribe, so subscribing there would
+ * add a listener per switch and never drop one.
+ *
+ * It has to be here for a second reason too: an approval that arrives while
+ * the dock is on another tab is exactly what makes the Approvals tab APPEAR,
+ * and a tab that is not mounted cannot report a count.
+ */
+const lastApproval = ref<unknown>(null);
+const approvalSignal = ref(0);
+function onApprovalRecorded(payload: unknown): void {
+  lastApproval.value = payload;
+  approvalSignal.value += 1;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const profileId = String((payload as any)?.profileId || "");
+  if (!activeProfileId.value || profileId === activeProfileId.value) {
+    approvalCount.value = Math.max(1, approvalCount.value + 1);
+  }
+}
+
+/**
+ * Cheap probe for "does this profile have any approvals at all?" — one row,
+ * for the count that comes with it. Only ever runs while the dock is actually
+ * showing, and the tab's own list reports its total back through `@count`
+ * once it is open, so this is a bootstrap rather than a poll.
+ */
+async function probeApprovalCount(): Promise<void> {
+  const query = api?.queryApprovalAuditLog;
+  if (!query) return;
+  try {
+    const result = (await query({
+      limit: 1,
+      ...(activeProfileId.value ? { profileId: activeProfileId.value } : {}),
+    })) as { total?: number };
+    approvalCount.value = Number(result?.total) || 0;
+  } catch {
+    // A failed probe just means no tab this time round; the next open retries.
+  }
+}
 
 // Narrow-panel tab switcher. The tab bar and this dropdown are both rendered;
 // a container query decides which one is visible (see notifications.css). The
@@ -461,6 +566,7 @@ const menuTabs = computed<{ id: TabId; label: string }[]>(() => {
     { id: "agents", label: "Agents" },
     { id: "telegram", label: "Telegram" },
   ];
+  if (showApprovals.value) tabs.push({ id: "approvals", label: "Approvals" });
   if (supportsPerformance.value) tabs.push({ id: "performance", label: "Performance" });
   return tabs;
 });
@@ -590,6 +696,7 @@ function stopTick() {
 
 onMounted(() => {
   if (needsTick()) startTick();
+  api?.onApprovalRecorded?.(onApprovalRecorded);
 });
 
 onUnmounted(() => {
@@ -632,30 +739,6 @@ const visibleSessions = computed(() => {
     .slice(0, MAX_TIMELINE);
 });
 
-// Day-band label — "Today" / "Yesterday" / weekday name (this week) /
-// locale date (older). Used as the separator key + label.
-function dayBandKey(d: Date): string {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const diffDays = Math.round((today - target) / 86400000);
-  if (diffDays <= 0) return "today";
-  if (diffDays === 1) return "yesterday";
-  if (diffDays < 7) return `weekday-${d.getDay()}`;
-  return `date-${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-}
-
-function dayBandLabel(d: Date): string {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const diffDays = Math.round((today - target) / 86400000);
-  if (diffDays <= 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7) return d.toLocaleDateString(undefined, { weekday: "long" });
-  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-}
-
 type TimelineRow =
   | { kind: "separator"; key: string; label: string; session?: undefined }
   | { kind: "item"; key: string; session: NotificationSession };
@@ -694,6 +777,17 @@ watch(
   },
 );
 
+// The probe runs when the dock becomes visible and whenever the profile
+// changes — the two moments the answer can differ — and never while the dock
+// is closed.
+watch(
+  () => [notifStore.pinned || notifStore.panelOpen, activeProfileId.value] as const,
+  ([visible]) => {
+    if (visible) void probeApprovalCount();
+  },
+  { immediate: true },
+);
+
 function onPointerInteract() {
   // Any mouse activity within the panel clears the keyboard-selection outline,
   // so the panel doesn't look like the first row is "armed" when the user is
@@ -721,6 +815,13 @@ watch(
   () => {
     const requested = notifStore.requestedPanelTab as TabId;
     if (!requested) return;
+    // Asking for the approval log IS the reason to show its tab — the
+    // membership check below would refuse a tab bar that has not probed yet,
+    // and `showApprovals` covers whichever tab is active.
+    if (requested === "approvals") {
+      activeTab.value = requested;
+      return;
+    }
     if (menuTabs.value.some((t) => t.id === requested)) activeTab.value = requested;
   },
 );
@@ -843,6 +944,9 @@ function relativeTime(isoString: string): string {
 }
 
 function sessionIcon(s: NotificationSession): string {
+  // Checked before urgency so a permission prompt keeps the question glyph
+  // instead of the generic 🚨 shared with rate limits / dead pipelines.
+  if (s.events?.[0]?.kind === "question") return "❓";
   if (s.urgency === "urgent") return "🚨";
   if (s.category === "error") return "❌";
   // Rate-limit hits surface with the heavy-exclamation glyph so they read as

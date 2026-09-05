@@ -9,6 +9,10 @@
  *   tier 3 (heuristic)  → no ding, no system notification (too unreliable)
  *   urgency "urgent"    → two-tone ding, OS notification uses requireInteraction
  *   urgency "normal"    → single tone ding
+ *
+ * Kind awareness:
+ *   kind "question"     → three rising tones, sticky OS notification, never
+ *                         coalesced — the agent is blocked until it is answered
  */
 
 let audioCtx: AudioContext | null = null;
@@ -76,6 +80,41 @@ export function playUrgentDing() {
 }
 
 /**
+ * Question ding: three rising tones (660 -> 880 -> 1100 Hz, ~0.5 s total).
+ *
+ * Deliberately a different SHAPE from the other two, not just a different
+ * pitch — one tone is "something finished", two are "something urgent", three
+ * rising ones are "someone is asking you a question". Recognisable without
+ * looking at the screen, which is the whole point of the sound.
+ */
+export function playQuestionDing() {
+  try {
+    const ctx = getAudioContext();
+    if (ctx.state === "suspended") ctx.resume();
+    const now = ctx.currentTime;
+
+    function tone(startOffset: number, freq: number, dur: number) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, now + startOffset);
+      gain.gain.setValueAtTime(0.28, now + startOffset);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + startOffset + dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + startOffset);
+      osc.stop(now + startOffset + dur);
+    }
+
+    tone(0, 660, 0.16);
+    tone(0.17, 880, 0.16);
+    tone(0.34, 1100, 0.2);
+  } catch {
+    // Audio not available — silently ignore.
+  }
+}
+
+/**
  * Show an OS-level notification.
  * Electron → IPC to main process (Electron.Notification).
  * Browser  → Web Notification API (remote mode).
@@ -87,9 +126,12 @@ export function playUrgentDing() {
 export function showSystemNotification(
   title: string,
   body: string,
-  options: { urgency?: string; dedupeKey?: string } = {},
+  options: { urgency?: string; dedupeKey?: string; kind?: string } = {},
 ) {
+  // A question needs an answer before the agent moves, so its popup must not
+  // auto-dismiss even at "normal" urgency (MCP elicitation, agent_needs_input).
   const urgent = options?.urgency === "urgent";
+  const sticky = urgent || options?.kind === "question";
 
   // Electron mode
   if (window.strideterm?.showSystemNotification) {
@@ -97,7 +139,7 @@ export function showSystemNotification(
       title,
       body,
       urgency: urgent ? "urgent" : "normal",
-      requireInteraction: urgent,
+      requireInteraction: sticky,
       dedupeKey: options?.dedupeKey || "",
     });
     return;
@@ -106,7 +148,7 @@ export function showSystemNotification(
   // Remote / browser fallback
   if ("Notification" in window) {
     const browserOpts: NotificationOptions = { body };
-    if (urgent) browserOpts.requireInteraction = true;
+    if (sticky) browserOpts.requireInteraction = true;
     // `tag` makes the browser replace an identical pending notification
     // instead of stacking duplicates.
     if (options?.dedupeKey) browserOpts.tag = options.dedupeKey;
@@ -145,23 +187,33 @@ function recordDing(sessionKey: string): void {
 export function fireNotificationAlert(
   title: string,
   body: string,
-  meta: { tier?: number; urgency?: string; sessionKey?: string } = {},
+  meta: { tier?: number; urgency?: string; sessionKey?: string; dedupeKey?: string; kind?: string } = {},
 ) {
   const tier = meta?.tier || 1;
   const urgency = meta?.urgency === "urgent" ? "urgent" : "normal";
   const sessionKey = meta?.sessionKey || "";
+  // What the OS-level popup is deduped on. Deliberately NOT the session key:
+  // deduping by session merges two DIFFERENT questions in the same panel into
+  // one popup, while the thing that actually needs merging is one alert
+  // reaching several windows. Callers pass the alert's own id; the session key
+  // remains the fallback for callers that have no alert identity.
+  const dedupeKey = meta?.dedupeKey || sessionKey;
+  const isQuestion = meta?.kind === "question";
 
   // T3 = heuristic. Too noisy to play sounds / pop system notifications for.
   // The notification still appears in the Notification Center.
   if (tier === 3) return;
 
   // Coalesce per-session. Urgent overrides coalescing — a permission prompt
-  // fired right after an idle alert is important.
-  const coalesced = urgency !== "urgent" && shouldCoalesce(sessionKey);
+  // fired right after an idle alert is important. A question does too: it
+  // blocks the agent regardless of its urgency, so swallowing it because an
+  // idle alert happened 4 s earlier is exactly the wrong trade.
+  const coalesced = urgency !== "urgent" && !isQuestion && shouldCoalesce(sessionKey);
 
   if (document.hasFocus()) {
     if (!coalesced) {
-      if (urgency === "urgent") playUrgentDing();
+      if (isQuestion) playQuestionDing();
+      else if (urgency === "urgent") playUrgentDing();
       else playDing();
       recordDing(sessionKey);
     }
@@ -169,7 +221,7 @@ export function fireNotificationAlert(
     // System notifications don't auto-play the ding themselves on all OSes,
     // but they're less spammy — fire one regardless unless coalesced.
     if (!coalesced) {
-      showSystemNotification(title, body, { urgency, dedupeKey: sessionKey });
+      showSystemNotification(title, body, { urgency, dedupeKey, kind: meta?.kind });
       recordDing(sessionKey);
     }
   }

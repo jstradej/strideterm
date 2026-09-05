@@ -189,6 +189,17 @@ describe("WorkspaceDialog", () => {
       const wrapper = mountDialog();
       expect(wrapper.find("h2").text()).toBe("Add workspace");
     });
+
+    test("does not attach task metadata when submitting an ordinary workspace", async () => {
+      const onSubmit = vi.fn();
+      const wrapper = mountDialog({ onSubmit });
+
+      await wrapper.find("form").trigger("submit");
+      await flushPromises();
+
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("task");
+    });
   });
 
   describe("multi-repo detection", () => {

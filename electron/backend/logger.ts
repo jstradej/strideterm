@@ -86,7 +86,17 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   ],
 ];
 
-function redactSecrets(value: string): string {
+/**
+ * Strip known secret shapes (bearer tokens, `token=` query params, JSON
+ * password/secret fields, Telegram bot tokens) from a string.
+ *
+ * Every log line goes through this automatically via PRINT_FORMAT, so callers
+ * never need to pre-redact before logging. It is exported for the cases that
+ * PERSIST a string somewhere other than the log — today the permission-approval
+ * audit log, whose summaries are derived from a tool's own arguments and can
+ * therefore contain a token the user pasted into a shell command.
+ */
+export function redactSecrets(value: string): string {
   let result = value;
   for (const [pattern, replacement] of TOKEN_PATTERNS) {
     result = result.replace(pattern, replacement);
@@ -101,9 +111,8 @@ const PRINT_FORMAT = winston.format.printf(({ timestamp, level, label, message, 
   return `${timestamp} ${level.toUpperCase().padEnd(5)} ${tag} ${safeMessage}${extra}`;
 });
 
-// Exposed for the focused unit test in logger-redaction.test.ts. Not part
-// of the public Logger interface — callers should never need to redact
-// before logging; the format does it on every emission.
+// Historical alias used by logger-redaction.test.ts, kept so that test keeps
+// reading as "this is the internal of the log format" rather than a public API.
 export const __redactSecretsForTesting = redactSecrets;
 
 type LogMethod = (message: string, meta?: Record<string, unknown>) => void;

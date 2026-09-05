@@ -98,6 +98,13 @@ export interface TelegramAlertPayload {
   urgency?: string;
   title: string;
   detail?: string;
+  /**
+   * Human-readable context line rendered under the title. Carries what the
+   * agent is actually asking about for `question` alerts ("Bash: chmod +x
+   * deploy.sh") and what was approved for `auto_approved` ones. Clipped to
+   * ALERT_MESSAGE_MAX_CHARS before it reaches the chat.
+   */
+  message?: string;
   /** For PR-related alerts */
   prKey?: string;
   provider?: string;
@@ -354,6 +361,14 @@ const MAX_CONTEXT_ENTRIES = 500;
 const PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_FORWARDED_PR_KEYS = 1000;
 const TASK_COMMAND_COOLDOWN_MS = 10_000; // /task can fire at most every 10 s per chat
+/**
+ * Cap on the human context line of an alert (`TelegramAlertPayload.message`).
+ * The source is a summarised shell command / file path, but a pathological one
+ * (a 4 KB heredoc) must not turn a phone notification into a wall of text —
+ * and a shorter line is also less likely to carry a secret the redactor's
+ * patterns missed.
+ */
+const ALERT_MESSAGE_MAX_CHARS = 200;
 // Server long-poll timeout (seconds). HTTP abort lives at GETUPDATES_HTTP_TIMEOUT_MS,
 // which MUST be larger than this value × 1000 so the server's own timeout fires
 // first and returns an empty array.
@@ -363,6 +378,15 @@ const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
 
 // HTTP retry: 200 ms exponential, max 3 retries; skipped for auth/rate-limit/4xx errors.
 const telegramRetry = Schedule.max([Schedule.exponential("200 millis"), Schedule.recurs(3)]);
+
+/** Collapse whitespace and clip to ALERT_MESSAGE_MAX_CHARS. */
+function truncateAlertMessage(message: string): string {
+  const collapsed = String(message || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (collapsed.length <= ALERT_MESSAGE_MAX_CHARS) return collapsed;
+  return collapsed.slice(0, ALERT_MESSAGE_MAX_CHARS - 1) + "…";
+}
 
 /**
  * Detect a deliberate AbortController.abort() result — either a native
@@ -1262,6 +1286,7 @@ export class TelegramManager extends EventEmitter {
 
   private _buildAlertText(payload: TelegramAlertPayload): string {
     const icon = this._kindIcon(payload.kind);
+    const message = truncateAlertMessage(payload.message || "");
     const workspace = payload.workspaceName ? escapeMarkdown(payload.workspaceName) : "";
     const panel = payload.panelTitle ? escapeMarkdown(payload.panelTitle) : "";
     const profile = payload.workspaceProfileName ? escapeMarkdown(payload.workspaceProfileName) : "";
@@ -1274,6 +1299,10 @@ export class TelegramManager extends EventEmitter {
     // message useful as a standalone screenshot.
     const lines: string[] = [];
     lines.push(`${icon} *${title}*`);
+    // What the agent is asking about / what was approved. Sits directly under
+    // the title because it is the most useful line in the message — "Bash:
+    // chmod +x deploy.sh" answers the question the alert itself raises.
+    if (message) lines.push(escapeMarkdown(message));
     if (profile) lines.push(`🧭 ${profile}`);
     if (workspace || panel) {
       const loc = [workspace, panel].filter(Boolean).join(" › ");
@@ -1304,6 +1333,12 @@ export class TelegramManager extends EventEmitter {
     if (payload.kind === "completed" || payload.kind === "waiting") {
       lines.push("");
       lines.push(`_Reply with a task description to start a new task, or press a button below\\._`);
+    } else if (payload.kind === "question") {
+      lines.push("");
+      lines.push(`_The agent is blocked until you answer in its terminal\\._`);
+    } else if (payload.kind === "auto_approved") {
+      lines.push("");
+      lines.push(`_Approved automatically by strIDEterm — auto\\-approve is on\\._`);
     } else if (payload.kind === "subagent_done") {
       lines.push("");
       lines.push(`_Sub\\-agent finished within the current turn\\._`);
@@ -1334,6 +1369,13 @@ export class TelegramManager extends EventEmitter {
       ];
     }
 
+    if (kind === "question" || kind === "auto_approved") {
+      // "New Task" makes no sense for either: a question needs an answer in
+      // the terminal it came from, and an auto-approval is already water under
+      // the bridge. Dismiss is the only meaningful action.
+      return [[{ text: "✓ Dismiss", callback_data: "d" }]];
+    }
+
     if (kind === "subagent_done") {
       // Subagents finish frequently during a complex turn — a verbose
       // keyboard on every one of them would drown the chat. A single
@@ -1361,6 +1403,10 @@ export class TelegramManager extends EventEmitter {
         return "✅";
       case "waiting":
         return "⏳";
+      case "question":
+        return "❓";
+      case "auto_approved":
+        return "🔓";
       case "subagent_done":
         return "🤖";
       case "review":

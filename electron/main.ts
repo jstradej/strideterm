@@ -11,6 +11,7 @@ import { startRemoteServer } from "./backend/remote-server.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
 import { createDefaultState, normalizeState, MIGRATION_WINDOW_SLOT_ID } from "./backend/default-state.js";
 import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
+import { isInputBlockingKind } from "./shared/attention-kinds.js";
 import { inheritShellPath } from "./backend/fix-path.js";
 import { startFreezeWatchdog } from "./backend/freeze-watchdog.js";
 import { APP_CONFIG, getRendererDevUrl, resolveRemoteAccessPort } from "../config/app-config.js";
@@ -381,7 +382,7 @@ function summarizeAttention(payload: Record<string, unknown>): { count: number; 
   const byProject = (attention?.byProject || {}) as Record<string, { alerts?: Array<{ kind: string }> }>;
   const alerts = Object.values(byProject).flatMap((entry) => entry?.alerts || []);
   const count = alerts.length;
-  const waitingCount = alerts.filter((alert) => alert.kind === "waiting").length;
+  const waitingCount = alerts.filter((alert) => isInputBlockingKind(alert.kind)).length;
   return { count, waitingCount };
 }
 

@@ -50,6 +50,9 @@ contextBridge.exposeInMainWorld("strideterm", {
   refreshAzure: () => ipcRenderer.invoke("azure:refresh"),
   queryAzureAuditLog: (filters) => ipcRenderer.invoke("azure:audit-log:query", filters),
   getAzureAuditStats: (filters) => ipcRenderer.invoke("azure:audit-log:stats", filters),
+  queryApprovalAuditLog: (filters) => ipcRenderer.invoke("approvals:audit-log:query", filters),
+  getApprovalAuditStats: (filters) => ipcRenderer.invoke("approvals:audit-log:stats", filters),
+  deleteApprovalAuditEntries: (payload) => ipcRenderer.invoke("approvals:audit-log:delete", payload),
   markAzurePullRequestSeen: (prKey) => ipcRenderer.invoke("azure:pull-request:seen", prKey),
   openAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:open", payload),
   commentAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:comment", payload),
@@ -301,6 +304,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   onSshConnectionState: (handler) => ipcRenderer.on("ssh:connection-state", (_event, payload) => handler(payload)),
   onNotificationTargetRemoved: (handler) =>
     ipcRenderer.on("notification:target-removed", (_event, payload) => handler(payload)),
+  onApprovalRecorded: (handler) => ipcRenderer.on("approval:recorded", (_event, payload) => handler(payload)),
   // --- SSH actions ---
   sshHostsList: () => ipcRenderer.invoke("ssh:hosts:list"),
   sshHostsCreate: (payload) => ipcRenderer.invoke("ssh:hosts:create", payload),

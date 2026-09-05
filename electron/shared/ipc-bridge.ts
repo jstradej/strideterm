@@ -84,6 +84,9 @@ import type {
   FileCommitDiff,
   AzureAuditLogQuery,
   AzureAuditLogStats,
+  ApprovalAuditLogQuery,
+  ApprovalAuditLogDelete,
+  ApprovalAuditLogStats,
   WorkspacePushOptions,
 } from "../backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "./types/ssh.js";
@@ -200,6 +203,14 @@ export interface StridetermAPI {
   refreshAzure: () => Promise<unknown>;
   queryAzureAuditLog: (filters: AzureAuditLogQuery) => Promise<unknown>;
   getAzureAuditStats: (filters: AzureAuditLogStats) => Promise<unknown>;
+  queryApprovalAuditLog: (filters: ApprovalAuditLogQuery) => Promise<unknown>;
+  getApprovalAuditStats: (filters: ApprovalAuditLogStats) => Promise<unknown>;
+  /**
+   * Delete approval-trail rows. Desktop transport only — the remote transport
+   * leaves it undefined, which is what the Approvals tab checks before it
+   * offers a delete control at all.
+   */
+  deleteApprovalAuditEntries: (payload: ApprovalAuditLogDelete) => Promise<unknown>;
   markAzurePullRequestSeen: (prKey: string) => Promise<unknown>;
   openAzurePullRequest: (payload: OpenPr) => Promise<unknown>;
   commentAzurePullRequest: (payload: AzureComment) => Promise<unknown>;
@@ -668,6 +679,7 @@ export interface StridetermAPI {
    * payload is UNVALIDATED here; consumers parse it at the transport boundary.
    */
   onNotificationTargetRemoved: (handler: (payload: unknown) => void) => void;
+  onApprovalRecorded: (handler: (payload: unknown) => void) => void;
 }
 
 // Re-export payload types needed by AttentionSync consumers

@@ -755,6 +755,19 @@
   color: #ff7a7a;
 }
 
+/* A question is a blocker, but a different one from an error or a rate limit —
+   violet keeps it distinct from both the amber "waiting" and the red urgent
+   family. Declared AFTER --urgent so it wins on a permission prompt, which
+   carries both classes (kind question + urgency urgent). */
+.notification-toast--question {
+  border-left: 3px solid #b98cff;
+  box-shadow: 0 4px 18px rgba(185, 140, 255, 0.28);
+}
+
+.notification-toast--question .notification-toast__title {
+  color: #cbaaff;
+}
+
 .notification-toast--error {
   border-left: 3px solid #ff5a5a;
   background: rgba(255, 90, 90, 0.08);
@@ -1268,4 +1281,217 @@
 .tg-badge--warn {
   background: rgba(255, 180, 0, 0.15);
   color: #fa0;
+}
+
+/* --- Approvals tab: the permission auto-approval trail --------------------
+   Tabular in spirit, not a <table>. The dock is 360px by default and its
+   container queries go down to 240px, where five real columns truncate every
+   one of them; a grid can drop to two lines instead and keep the command —
+   the thing the row exists to show — readable. */
+.approvals {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.approvals__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid rgba(var(--tint), 0.08);
+}
+.approvals__search {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.approvals__clear {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  font-size: 11px;
+  border: 1px solid rgba(var(--tint), 0.12);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.approvals__clear:hover:not(:disabled) {
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+}
+.approvals__clear:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.approvals__empty,
+.approvals__error {
+  padding: 30px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.approvals__error {
+  color: #ff6b6b;
+}
+
+.approvals__end {
+  padding: 10px 14px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 10px;
+}
+.approvals__more {
+  margin: 8px 14px 16px;
+  padding: 5px 10px;
+  font-size: 11px;
+  border: 1px solid rgba(var(--tint), 0.12);
+  background: transparent;
+  color: var(--text);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.approvals__more:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.approval-row {
+  border-bottom: 1px solid rgba(var(--tint), 0.06);
+}
+.approval-row--open {
+  background: rgba(var(--tint), 0.03);
+}
+
+/* Wide dock: one line, four aligned columns. The two flexible tracks are
+   `minmax(0, …)` so a long command shrinks instead of forcing the row to
+   overflow the panel horizontally. */
+.approval-row__main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1.1fr) auto minmax(0, 2fr);
+  grid-template-areas: "time where tool summary";
+  align-items: baseline;
+  gap: 4px 10px;
+  width: 100%;
+  padding: 7px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.approval-row__main:hover {
+  background: rgba(var(--tint), 0.05);
+}
+.approval-row__time {
+  grid-area: time;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.approval-row__where {
+  grid-area: where;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-row__tool {
+  grid-area: tool;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(var(--tint), 0.08);
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.approval-row__summary {
+  grid-area: summary;
+  min-width: 0;
+  color: var(--muted);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Narrow dock: the command gets its own line rather than a few characters and
+   an ellipsis. Same four fields, same order, two rows. */
+@container notif-dock (max-width: 560px) {
+  .approval-row__main {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "time where tool"
+      "summary summary summary";
+  }
+}
+
+.approval-detail {
+  padding: 2px 14px 12px;
+}
+.approval-detail__command {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(var(--tint), 0.08);
+  border-radius: 3px;
+  background: rgba(var(--tint), 0.04);
+  color: var(--text);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.approval-detail__fields {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+.approval-detail__fields > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+}
+.approval-detail__fields dt {
+  color: var(--muted);
+}
+.approval-detail__fields dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.approval-detail__mono {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+}
+.approval-detail__caveat {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.approval-detail__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.quick-action--danger:hover:not(:disabled) {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
+.quick-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

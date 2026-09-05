@@ -122,7 +122,9 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
         // Enrich the toast entry so NotificationToast can render a provider-
         // specific accent. The session carries meta already; the returned
         // event entry doesn't, so attach it here for the toast consumer.
-        latestToastRef.value = { ...entry, meta };
+        // Goes through the store so an unanswered question keeps the slot and
+        // this review notice queues behind it instead of erasing it.
+        notifStore.pushToast({ ...entry, meta, category: "review" });
       }
 
       fireNotificationAlert(entry.title, entry.body, {

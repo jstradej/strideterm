@@ -2,8 +2,9 @@
 import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { watch, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
+import os from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { watch, existsSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { readFile, writeFile, mkdir, readdir, access, rm, rename } from "node:fs/promises";
 import { EventEmitter } from "node:events";
@@ -25,6 +26,7 @@ import {
   NOTIFICATION_TARGET_REMOVED_CHANNEL,
   type NotificationTargetRemoved,
 } from "../shared/notification-lifecycle.js";
+import { APPROVAL_RECORDED_CHANNEL, type ApprovalRecorded } from "../shared/approval-events.js";
 import { filterConnectionsByOpenProfiles } from "./shared/runtime-provider-guards.js";
 import { execFileText } from "./process-utils.js";
 import { DockerManager } from "./docker-manager.js";
@@ -44,7 +46,9 @@ import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { TelegramManager } from "./telegram-manager.js";
 import { createTelegramAuditLogStore } from "./telegram-audit-log-store.js";
+import { createApprovalAuditLogStore } from "./approval-audit-log-store.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
+import { createNotifyUrlRegistry } from "./notify-url-registry.js";
 import {
   ensureNotifyScript,
   configureClaudeHook,
@@ -64,6 +68,7 @@ import { AgentTaskRunner, COMPANION_ROLE_DISPLAY_NAMES } from "./agent-task-runn
 import type { RecoveryCandidate } from "../shared/types/state.js";
 import { getProvider } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
+import { decideAutoApprove, summarizePermissionRequestParts } from "./notifications/auto-approve.js";
 import type { RemoteClientRegistry } from "./remote-client-registry.js";
 import {
   classifyCommand,
@@ -107,6 +112,9 @@ import {
   matchesWaitingPattern,
   looksLikeShellPrompt,
   createSessionSignal,
+  PENDING_PERMISSION_TTL_MS,
+  MAX_PENDING_PERMISSIONS,
+  type PendingPermission,
   detectTerminalEnvironment as detectTerminalEnvironmentImpl,
   OSC133_COMMAND_FINISHED_RE,
   OSC133_COMMAND_START_RE,
@@ -464,80 +472,72 @@ export async function createRuntime({
   let _recoveryCandidates: RecoveryCandidate[] = [];
 
   // ---------------------------------------------------------------------------
-  // Notify URL file registration — Claude Code hooks don't inherit parent env
-  // vars, so we write URLs to a JSON file that the hook script reads.
+  // Notify URL registration.
   //
-  // Multiple strideterm instances (exe + dev, different profiles) may share
-  // this file.  Each URL embeds the notify server port, so entries from
-  // different instances don't conflict.  On startup we purge stale entries
-  // from OUR port (previous run on same port) but leave other ports alone.
+  // A command hook DOES inherit the environment of the shell it was started
+  // from, but that environment is frozen at spawn time: it cannot describe a
+  // notify server that later restarted on a different port, and an agent the
+  // user launched outside a strIDEterm PTY has none of it. The registry is the
+  // live map — notify.mjs prefers the env URL, which names one panel exactly,
+  // and falls back here when nothing could be delivered over it.
+  //
+  // Several installations (exe + dev) share the registry directory, so each
+  // one writes only its OWN file; see notify-url-registry.ts for why a single
+  // shared document could not be written safely.
   // ---------------------------------------------------------------------------
   const notifyUrlsPath = path.join(userDataPath, "hooks", "notify-urls.json");
-
-  function normalizeCwd(cwd: string): string {
-    return cwd.replace(/\\/g, "/").toLowerCase();
-  }
-
-  function getUrlPort(u: string): string {
-    try {
-      return new URL(u).port;
-    } catch {
-      return "";
-    }
-  }
-
-  function getUrlSid(u: string): string {
-    try {
-      return new URL(u).searchParams.get("sid") || "";
-    } catch {
-      return "";
-    }
-  }
-
-  /** Read the shared file, or return empty object on any error. */
-  function readNotifyUrls(): Record<string, string[]> {
-    try {
-      return JSON.parse(readFileSync(notifyUrlsPath, "utf8")) as Record<string, string[]>;
-    } catch {
-      return {};
-    }
-  }
-
-  /** Write the shared file atomically via tmp+rename to prevent torn writes. */
-  function writeNotifyUrls(data: Record<string, string[]>): void {
-    const dir = path.dirname(notifyUrlsPath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const tmpPath = `${notifyUrlsPath}.tmp-${process.pid}-${randomUUID()}`;
-    writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
-    renameSync(tmpPath, notifyUrlsPath);
-  }
+  // `STRIDETERM_HOOKS_DIR` relocates the shared registry. It exists so a test
+  // (and a sandboxed run) can point both sides of the hook at a scratch
+  // directory instead of the developer's real home; nothing in production
+  // sets it, and notify.mjs honours the same variable.
+  const sharedNotifyHooksDir = process.env.STRIDETERM_HOOKS_DIR || path.join(os.homedir(), ".strideterm-hooks");
+  // Stable identity of THIS installation, derived from its data dir. It names
+  // the registry file this instance owns, so an instance replaces its own
+  // entries on restart without ever touching another installation's — `sid`
+  // alone cannot tell two installations apart.
+  const instanceId = createHash("sha256").update(userDataPath).digest("hex").slice(0, 12);
+  const notifyUrlRegistry = createNotifyUrlRegistry({
+    sharedDir: sharedNotifyHooksDir,
+    localPath: notifyUrlsPath,
+    instanceId,
+  });
+  // Sweep shards left behind by installations that are gone — a crashed run, a
+  // deleted dev data dir, an uninstalled portable copy. Nobody but their owner
+  // ever writes them, so without this every hook keeps POSTing at their dead
+  // ports for the rest of the machine's life.
+  notifyUrlRegistry.pruneExpiredShards();
+  // …and keep our own lease current. Writes renew it, but an instance can run
+  // for weeks without opening or closing a panel, and a live installation must
+  // never look abandoned. Well under the lease TTL, unref'd so it cannot hold
+  // the process open.
+  const NOTIFY_LEASE_RENEWAL_MS = 6 * 60 * 60_000;
+  let notifyLeaseTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
+    notifyUrlRegistry.renewLease();
+  }, NOTIFY_LEASE_RENEWAL_MS);
+  notifyLeaseTimer.unref?.();
 
   // Hook events resolve PRIMARILY via the session id embedded in each notify
   // URL (sid=workspaceId:panelId → workspace → profile). The cwd key below is
-  // only the lookup FALLBACK for hook processes that don't inherit env vars
-  // (Claude Code): notify.mjs resolves URLs by project dir and POSTs to each,
-  // but every URL still carries its own session id, so two workspaces with
-  // the same cwd in different profiles each route to their own workspace —
-  // never to the other profile's.
+  // only the lookup FALLBACK for hook processes whose inherited env cannot be
+  // trusted to be current: notify.mjs resolves URLs by project dir and POSTs
+  // to each, but every URL still carries its own session id, so two workspaces
+  // with the same cwd in different profiles each route to their own workspace
+  // — never to the other profile's.
   function registerNotifyUrl(cwd: string, url: string): void {
-    const key = normalizeCwd(cwd);
-    const myPort = getUrlPort(url);
-    const mySid = getUrlSid(url);
+    notifyUrlRegistry.register(cwd, url);
+  }
 
-    // Read current file (may contain entries from other instances)
-    const data = readNotifyUrls();
-    if (!data[key]) data[key] = [];
-
-    // Remove stale entry for same sessionId, keep entries from other instances
-    data[key] = data[key].filter((u) => getUrlSid(u) !== mySid);
-    data[key].push(url);
-
-    try {
-      writeNotifyUrls(data);
-      log.debug("notify-urls.json updated", { cwd: key, urls: data[key].length, port: myPort });
-    } catch (err) {
-      log.warn("failed to write notify-urls.json", { err: (err as Error).message });
-    }
+  /**
+   * Drop this instance's registry entry for one session.
+   *
+   * Without this a closed panel's URL lives on until the whole app stops, and
+   * a hook arriving over it would create a fresh signal — and, with
+   * auto-approve armed, offer to answer — for a panel the user already
+   * removed. Called wherever a session ends: closed panel, deleted workspace,
+   * PTY exit.
+   */
+  function unregisterNotifyUrl(sessionId: string): void {
+    notifyUrlRegistry.unregister(sessionId);
   }
 
   /**
@@ -546,8 +546,9 @@ export async function createRuntime({
    * spawn (getSessionEnv), so a server (re)start — app restart with a new
    * port, or the agentHook setting toggled off/on — would leave hooks
    * POSTing to a dead port until each session happened to respawn. Claude
-   * Code's notify.mjs reads the file per event, so refreshing here heals
-   * those sessions immediately.
+   * Code's notify.mjs reads the registry per event and merges it with the
+   * (now stale) env URL, so refreshing here heals those sessions immediately,
+   * without restarting the terminal.
    */
   function refreshNotifyUrls(): void {
     const port = notifyServerHandle?.port;
@@ -569,23 +570,49 @@ export async function createRuntime({
 
   /** Remove all URLs belonging to our notify server port (called on shutdown). */
   function cleanupNotifyUrls(port: number): void {
-    try {
-      const data = readNotifyUrls();
-      const portStr = String(port);
-      let removed = 0;
-      for (const key of Object.keys(data)) {
-        const before = data[key].length;
-        data[key] = data[key].filter((u) => getUrlPort(u) !== portStr);
-        removed += before - data[key].length;
-        if (data[key].length === 0) delete data[key];
-      }
-      if (removed > 0) {
-        writeNotifyUrls(data);
-        log.debug("notify-urls.json cleanup", { port: portStr, removed });
-      }
-    } catch (err) {
-      log.debug("notify-urls.json cleanup failed", { err: (err as Error).message });
+    notifyUrlRegistry.cleanupPort(port);
+  }
+
+  /**
+   * Per-PTY ownership tokens.
+   *
+   * Hook routing is by project directory, which proves nothing: a `claude` the
+   * user started in a plain terminal inside the same repository, a second
+   * panel with the same `cwd`, and a dev instance running beside prod all
+   * reach the same responder. The token closes that gap — it is minted here,
+   * injected into the terminal strIDEterm spawns as `STRIDETERM_SESSION_TOKEN`,
+   * and a hook process that inherited that environment can echo it back. Only
+   * a request carrying the right token for the session it addresses is allowed
+   * to be auto-approved.
+   *
+   * Nothing else depends on it: alerts keep working over plain cwd routing,
+   * because getting a notification for the wrong panel is a cosmetic problem
+   * and answering a permission prompt for the wrong panel is not.
+   */
+  const sessionOwnershipTokens = new Map<string, string>();
+
+  function getSessionOwnershipToken(sessionId: string): string {
+    let token = sessionOwnershipTokens.get(sessionId);
+    if (!token) {
+      token = randomUUID();
+      sessionOwnershipTokens.set(sessionId, token);
     }
+    return token;
+  }
+
+  /**
+   * Everything that must happen when a session stops existing: its alert
+   * signal goes, its ownership token goes, and — the part that used to be
+   * missing — its notify URL leaves the registry. A stale URL would otherwise
+   * survive until the whole app stopped, letting a hook re-create a signal for
+   * a panel the user already closed.
+   */
+  function retireSession(sessionId: string): void {
+    deleteSessionSignal(sessionId);
+    sessionOwnershipTokens.delete(sessionId);
+    unregisterNotifyUrl(sessionId);
+    // An offer this panel made is void the moment the panel stops existing.
+    discardPermissionOffers((record) => record.sessionId === sessionId, "session-retired");
   }
 
   const sshManager = new SshManager({ store, credentialStore, logger: log });
@@ -621,9 +648,24 @@ export async function createRuntime({
         }
       }
 
-      // Agent notification hook URL — set in env (for non-Claude-Code agents)
-      // AND write to notify-urls.json (for Claude Code hooks, which don't inherit
-      // parent env vars — only CLAUDE_* vars are passed to hook processes).
+      // Ownership proof for the auto-approve path — see sessionOwnershipTokens.
+      //
+      // Minted whether or not the notify server happens to be running. A PTY
+      // spawned while the agent-hook setting was off would otherwise never
+      // carry a token, and turning the hook on afterwards cannot change the
+      // environment of a shell that already started: the registry would route
+      // its hooks correctly and `decideAutoApprove` would then refuse every
+      // one of them as `unproven-session` until the user restarted the
+      // terminal — a failure with no visible cause. The token proves identity;
+      // it grants nothing on its own.
+      if (sessionId) {
+        env.STRIDETERM_SESSION_TOKEN = getSessionOwnershipToken(sessionId);
+      }
+
+      // Agent notification hook URL — set in env (for agents that read it
+      // directly, e.g. the OpenCode plugin) AND written to the notify-URL
+      // registry, which is what notify.mjs merges with the env value. The env
+      // copy is a snapshot; the registry is the live map.
       if (notifyServerHandle?.port && sessionId) {
         const notifyUrl = buildNotifyUrl(notifyServerHandle.port, sessionId, notifySecret);
         env.STRIDETERM_NOTIFY_URL = notifyUrl;
@@ -632,6 +674,8 @@ export async function createRuntime({
           registerNotifyUrl(workspace.cwd, notifyUrl);
         }
       } else if (sessionId) {
+        // Not a dead end: refreshNotifyUrls() registers this session the
+        // moment the server starts, and the hook resolves it from there.
         log.debug("STRIDETERM_NOTIFY_URL not injected (notify server not running)", { sessionId });
       }
 
@@ -806,6 +850,10 @@ export async function createRuntime({
     log.info("recheckClaudeAvailability", { available: claudeAvailableCache });
     return claudeAvailableCache;
   }
+
+  // Permission auto-approval trail. Lives in the data dir like every other
+  // audit DB, so dev and prod keep separate logs.
+  const approvalAuditLogStore = createApprovalAuditLogStore(path.join(reviewBridgeRoot, "approval-audit-log.db"));
 
   // --- Telegram integration ---
   const telegramAuditLogDbPath = path.join(reviewBridgeRoot, "telegram-audit-log.db");
@@ -1034,7 +1082,16 @@ export async function createRuntime({
   ) {
     const sessionId = event?.sessionId || "";
     const hook = event?.hook || "Notification";
-    const subtype = event?.subtype || event?.notificationType || "";
+    // The back-compat `notificationType` field is `subtype || "idle_prompt"`
+    // (notify-server.ts), so falling back to it unconditionally made every
+    // Stop / SubagentStop / UserPromptSubmit event log a bogus
+    // `subtype: "idle_prompt"`. Only `Notification` carries a meaningful
+    // subtype, so only it may consult the legacy field.
+    const subtype = event?.subtype || (hook === "Notification" ? event?.notificationType || "" : "");
+    // Claude sends a human sentence with Notification hooks ("Claude needs
+    // your permission to use Bash"). It is the only thing that says WHAT the
+    // agent is asking about until a PermissionRequest summary is available.
+    const hookMessage = typeof event?.payload?.message === "string" ? event.payload.message : "";
 
     log.debug("agent hook event received", { sessionId, hook, subtype });
     metricsRecordHook(hook);
@@ -1115,7 +1172,10 @@ export async function createRuntime({
       log.debug("hook ignored: no user input yet", { sessionId, hook, subtype });
       return;
     }
-    if (signal.waitingRaised && classification.urgency !== "urgent") {
+    // A `question` always gets through: the latch exists to stop a generic
+    // `idle_prompt` from piling on top of an alert the user already has, not
+    // to swallow a blocking question that arrived after one.
+    if (signal.waitingRaised && classification.urgency !== "urgent" && classification.kind !== "question") {
       log.debug("hook ignored: waiting already raised (not urgent)", { sessionId, hook });
       return;
     }
@@ -1184,12 +1244,19 @@ export async function createRuntime({
     cancelPromptTimer(signal);
 
     // --- 6. Raise T1 alert ---
+    // A PermissionRequest summary (`Bash: chmod +x deploy.sh`) beats Claude's
+    // own sentence: it carries the exact tool name and its key argument, while
+    // the hook message may be the bare "Claude needs your permission".
+    const alertMessage = takePendingPermissionSummary(signal, hook, subtype, event?.payload) || hookMessage;
     log.info("agent hook raising alert", {
       sessionId,
       hook,
       subtype,
       urgency: classification.urgency,
       detail: classification.detail,
+      // Promoted to info (alongside the alert itself) so verifying the
+      // question pipeline by hand doesn't require switching to trace.
+      message: alertMessage,
     });
     raiseAlert({
       sessionId,
@@ -1200,7 +1267,583 @@ export async function createRuntime({
       tier: classification.tier ?? 1,
       urgency: classification.urgency,
       detail: classification.detail,
+      message: alertMessage,
     });
+  }
+
+  /**
+   * Consume the summary parked by the `PermissionRequest` hook, if one belongs
+   * to THIS event.
+   *
+   * Only `Notification:permission_prompt` may take one. Elicitations and
+   * `agent_needs_input` share the `question` kind but are a different
+   * question entirely, and lending them a `Bash: …` line from an unrelated
+   * request is how a notification comes to describe something that is not
+   * being asked.
+   *
+   * Matching uses every identity both events carry: Claude Code's own
+   * `session_id` first, then `prompt_id` and `agent_id` to separate the turns
+   * and the subagents inside it. The main agent and a subagent can have
+   * permission requests outstanding at the same moment in ONE session, so
+   * "newest wins" would routinely hand a notification the other one's tool.
+   * Unless exactly one candidate is PROVEN — none contradicting, none left
+   * over — nothing is claimed: the alert falls back to Claude's own sentence,
+   * which is vague but never wrong.
+   *
+   * Entries are dropped once consumed (one summary, one alert) and once older
+   * than PENDING_PERMISSION_TTL_MS.
+   */
+  function takePendingPermissionSummary(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    signal: any,
+    hook: string,
+    subtype: string,
+    payload?: Record<string, unknown>,
+  ): string {
+    const queue = (signal?.pendingPermissions || []) as PendingPermission[];
+    if (!queue.length) return "";
+    const now = Date.now();
+    const fresh = queue.filter((entry) => now - entry.at <= PENDING_PERMISSION_TTL_MS);
+    if (fresh.length !== queue.length) signal.pendingPermissions = fresh;
+    if (hook !== "Notification" || subtype !== "permission_prompt") return "";
+    if (!fresh.length) return "";
+
+    const claudeSessionId = typeof payload?.session_id === "string" ? payload.session_id : "";
+    const promptId = typeof payload?.prompt_id === "string" ? payload.prompt_id : "";
+    const agentId = typeof payload?.agent_id === "string" ? payload.agent_id : "";
+
+    // An entry that names a different Claude session provably belongs
+    // elsewhere; one that names none can only answer a notification that names
+    // none either.
+    let candidates = fresh.filter((entry) => (entry.claudeSessionId || "") === claudeSessionId);
+    // Narrow by the finer identities when the notification carries them, and
+    // fail closed: a candidate that does not prove the same turn (or the same
+    // subagent) is discarded rather than kept as a wider fallback.
+    candidates = narrowPendingPermissions(candidates, promptId, (entry) => entry.promptId);
+    candidates = narrowPendingPermissions(candidates, agentId, (entry) => entry.agentId);
+
+    // Exactly one, or nothing. Guessing between two indistinguishable requests
+    // — or reaching for one whose identity contradicts the notification's — is
+    // how a notification comes to describe a command that is not the one being
+    // asked about.
+    if (candidates.length !== 1) {
+      log.debug("permission summary not proven — using Claude's own message", {
+        candidates: candidates.length,
+        claudeSessionId,
+        promptId,
+        agentId,
+      });
+      return "";
+    }
+    const match = candidates[0];
+    signal.pendingPermissions = fresh.filter((entry) => entry !== match);
+    return String(match.summary || "");
+  }
+
+  /**
+   * Keep only the candidates whose `field` equals `value`.
+   *
+   * An empty `value` — the notification did not carry this identity at all —
+   * leaves the list untouched: a comparison that cannot be made must not
+   * decide anything.
+   *
+   * A non-empty `value` with no match empties the list, and that is the whole
+   * point. Falling back to the unnarrowed candidates conflated "this side does
+   * not say" with "the two sides say different things": one pending request
+   * `(session=S, prompt=P1)` against a notification `(session=S, prompt=P2)`
+   * survived the session filter, failed the prompt narrowing, was handed back
+   * as the sole candidate and described P2 with P1's command. Same for a main
+   * agent's request against a subagent notification whose own
+   * `PermissionRequest` never arrived. A dropped hook or a subagent running
+   * alongside makes that an ordinary state, so an unproven candidate is no
+   * candidate: the caller then falls back to Claude's own sentence, which is
+   * vague but never describes the wrong tool.
+   */
+  function narrowPendingPermissions(
+    candidates: PendingPermission[],
+    value: string,
+    field: (entry: PendingPermission) => string,
+  ): PendingPermission[] {
+    if (!value) return candidates;
+    return candidates.filter((entry) => field(entry) === value);
+  }
+
+  /** Drop a parked summary once its request has been answered for the user. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function dropPendingPermission(signal: any, requestId: string): void {
+    if (!signal?.pendingPermissions) return;
+    signal.pendingPermissions = (signal.pendingPermissions as PendingPermission[]).filter(
+      (entry) => entry.requestId !== requestId,
+    );
+  }
+
+  /**
+   * An offer this instance has made but not yet committed, plus the offers it
+   * already committed (so a retry answers identically instead of writing a
+   * second audit row and firing a second notification).
+   */
+  interface PermissionOfferRecord {
+    requestId: string;
+    /** The delivery id `notify.mjs` minted for this hook run. */
+    requestKey: string;
+    /**
+     * The delivery id as PRESENTED, empty when the script sent none. Kept
+     * apart from `requestKey` (which falls back to a fresh uuid so the dedup
+     * map always has a key) because the commit leg is checked against exactly
+     * what the offer leg presented: "" must match "", and never a real id.
+     */
+    deliveryId: string;
+    sessionId: string;
+    toolName: string;
+    /**
+     * Digest of the tool name and its arguments. Two requests that share a
+     * delivery id but not this are two different questions, and the second one
+     * must never inherit the first one's decision.
+     */
+    fingerprint: string;
+    /** The ownership token the offer was proven with; the commit must repeat it. */
+    ownershipToken: string;
+    summary: string;
+    detail: string;
+    claudeSessionId: string;
+    promptId: string;
+    agentId: string;
+    reason: string;
+    at: number;
+    committed: boolean;
+    /** The exact stdout document returned on commit, replayed for a retry. */
+    output: Record<string, unknown> | null;
+  }
+  const permissionOffers = new Map<string, PermissionOfferRecord>();
+  const permissionOffersByKey = new Map<string, string>();
+  const PERMISSION_OFFER_TTL_MS = 10 * 60_000;
+  const MAX_PERMISSION_OFFERS = 200;
+
+  /**
+   * Translate a `profileId` filter into the audit store's provider-column
+   * filter, and drop it from the top level so the store never sees a key it
+   * does not understand.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function withApprovalProfileFilter(filters: any = {}): Record<string, unknown> {
+    const { profileId, ...rest } = filters || {};
+    if (!profileId) return rest;
+    return {
+      ...rest,
+      providerFilters: { ...(rest.providerFilters || {}), profile_id: String(profileId) },
+    };
+  }
+
+  /**
+   * What makes two permission requests the same request: the tool and the
+   * exact arguments it was called with. Cheap, and the only thing the
+   * `PermissionRequest` input offers — it carries no `tool_use_id`.
+   */
+  function permissionRequestFingerprint(toolName: string, toolInput: unknown): string {
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(toolInput ?? null) ?? "null";
+    } catch {
+      serialized = String(toolInput);
+    }
+    // JSON.stringify of the pair, so no tool name can spell out the start of
+    // another one's arguments.
+    return createHash("sha256")
+      .update(JSON.stringify([toolName, serialized]))
+      .digest("hex")
+      .slice(0, 32);
+  }
+
+  /**
+   * Throw away offers that have not been committed yet.
+   *
+   * An offer says "I would answer this, ask me again in a moment". Everything
+   * that revokes the right to answer — the setting going off, the turn ending,
+   * the panel closing — has to revoke the outstanding offers too, or a commit
+   * arriving a second later would still be honoured against a world that no
+   * longer permits it. Committed records are left alone: they are the replay
+   * trail for a decision already issued, and `commitPermissionDecision()`
+   * re-runs every guard before replaying one, so a stale trail cannot answer.
+   */
+  function discardPermissionOffers(match: (record: PermissionOfferRecord) => boolean, reason: string): void {
+    for (const [requestId, record] of [...permissionOffers]) {
+      if (record.committed || !match(record)) continue;
+      permissionOffers.delete(requestId);
+      if (permissionOffersByKey.get(record.requestKey) === requestId) {
+        permissionOffersByKey.delete(record.requestKey);
+      }
+      log.debug("permission offer discarded", { requestId, sessionId: record.sessionId, reason });
+    }
+  }
+
+  function prunePermissionOffers(now = Date.now()): void {
+    for (const [requestId, record] of [...permissionOffers]) {
+      if (now - record.at <= PERMISSION_OFFER_TTL_MS) continue;
+      permissionOffers.delete(requestId);
+      if (permissionOffersByKey.get(record.requestKey) === requestId) {
+        permissionOffersByKey.delete(record.requestKey);
+      }
+    }
+    while (permissionOffers.size > MAX_PERMISSION_OFFERS) {
+      const oldest = permissionOffers.keys().next().value as string | undefined;
+      if (!oldest) break;
+      const record = permissionOffers.get(oldest);
+      permissionOffers.delete(oldest);
+      if (record && permissionOffersByKey.get(record.requestKey) === oldest) {
+        permissionOffersByKey.delete(record.requestKey);
+      }
+    }
+  }
+
+  /**
+   * PHASE 1 of Claude Code's `PermissionRequest` handshake — "would you answer
+   * this?".
+   *
+   * Runs synchronously inside the notify-server request so the answer can go
+   * back in the HTTP response. Returning null means "no opinion": the prompt
+   * is shown to the user exactly as it would be without the hook.
+   *
+   * Nothing irreversible happens here, and that is the whole point. The hook
+   * fans out to every strIDEterm registered for the project directory, and
+   * `notify.mjs` only knows how many offered once every one of them has
+   * replied. Writing the audit row, raising the Notification Center entry or
+   * sending the Telegram message at this stage would record an approval that
+   * arbitration may then throw away — which is exactly what "2 instances
+   * answered, so nobody's decision is used" looks like from the log's side.
+   *
+   * Deliberately does NOT raise an alert either. A permission request may be
+   * settled within milliseconds by a hook of the user's own, and alerting here
+   * would pop a question nobody ever had to answer. The alert comes from the
+   * `Notification:permission_prompt` Claude fires ~6 s later if the dialog is
+   * still up — by which time this summary is waiting on the signal for it.
+   */
+  function offerPermissionDecision(event: {
+    sessionId?: string;
+    payload?: Record<string, unknown>;
+  }): { requestId: string } | null {
+    const sessionId = event.sessionId || "";
+    const payload = event.payload || {};
+    const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
+    const parts = summarizePermissionRequestParts(toolName, payload.tool_input);
+    const claudeSessionId = typeof payload.session_id === "string" ? payload.session_id : "";
+    const promptId = typeof payload.prompt_id === "string" ? payload.prompt_id : "";
+    const agentId = typeof payload.agent_id === "string" ? payload.agent_id : "";
+    // Identity of one hook DELIVERY, minted by notify.mjs and repeated on the
+    // commit leg. A script too old to send one gets a fresh uuid here, which
+    // costs it nothing but the (unused) ability to replay: what it must never
+    // get is its `request_key`, which was `session_id|prompt_id` and therefore
+    // the same value for every tool of one turn.
+    const deliveryId = String(payload.strideterm_delivery_id || "");
+    const requestKey = deliveryId || randomUUID();
+    const fingerprint = permissionRequestFingerprint(toolName || "tool", payload.tool_input);
+
+    prunePermissionOffers();
+
+    const descriptor = sessionId ? parseSessionId(sessionId) : null;
+    const signal = descriptor ? sessionSignals.get(sessionId) || null : null;
+
+    // An earlier offer under this delivery id is only ever THIS request again:
+    // same panel, same tool, same arguments. Anything else that reaches the
+    // same key is a different question and starts with a clean identity — the
+    // alternative is a second tool inheriting the first one's `allow`.
+    const existingId = permissionOffersByKey.get(requestKey);
+    const previous = existingId ? permissionOffers.get(existingId) : undefined;
+    const isSameRequest = Boolean(
+      previous &&
+      previous.sessionId === sessionId &&
+      previous.toolName === (toolName || "tool") &&
+      previous.fingerprint === fingerprint,
+    );
+    const requestId: string = isSameRequest && previous ? previous.requestId : randomUUID();
+
+    // Park the summary regardless of the decision: if we don't approve, the
+    // permission_prompt that follows is exactly when the user needs to be told
+    // WHAT is being asked. Keyed by requestId so a redelivery updates its own
+    // entry instead of queueing a duplicate.
+    if (signal) {
+      const queue = (signal.pendingPermissions || []) as PendingPermission[];
+      const deduped = queue.filter((entry) => entry.requestId !== requestId);
+      deduped.push({
+        toolName: toolName || "tool",
+        summary: parts.summary,
+        detail: parts.detail,
+        requestId,
+        requestKey,
+        claudeSessionId,
+        promptId,
+        agentId,
+        at: Date.now(),
+      });
+      signal.pendingPermissions = deduped.slice(-MAX_PENDING_PERMISSIONS);
+    }
+
+    const state = getState();
+    const workspace = descriptor ? (findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null) : null;
+
+    // Ownership proof: the hook echoed back the token strIDEterm injected into
+    // the PTY it spawned. Cwd routing alone cannot establish which panel — or
+    // which installation — an agent belongs to.
+    const presentedToken = typeof payload.strideterm_session_token === "string" ? payload.strideterm_session_token : "";
+    const expectedToken = sessionId ? sessionOwnershipTokens.get(sessionId) || "" : "";
+    const ownershipProven = Boolean(expectedToken) && presentedToken === expectedToken;
+
+    const decision = decideAutoApprove({
+      enabled: getNotificationConfig(state).autoApprovePermissions === true,
+      toolName,
+      workspace: workspace ? { kind: workspace.kind, hasTask: Boolean(workspace.task) } : null,
+      signal,
+      ownershipProven,
+    });
+
+    if (!decision.approve) {
+      // The quiet, normal case: Claude shows its prompt and the user answers
+      // it. Debug-level, with the reason, so "why didn't it auto-approve?" has
+      // an answer in the log rather than requiring a guess.
+      log.debug("permission request not auto-approved", {
+        sessionId,
+        toolName,
+        requestId,
+        reason: decision.reason,
+      });
+      return null;
+    }
+
+    // Only NOW may a decision already taken be replayed. Every guard above —
+    // the setting, the never-list, the workspace, the ownership token, the
+    // active turn — has just been re-evaluated against the request in hand, so
+    // a replay can never carry an old `allow` past a rule that would refuse
+    // the new one.
+    if (isSameRequest && previous?.committed) {
+      log.debug("permission request already decided — replaying", { sessionId, requestId, requestKey });
+      return previous.output ? { requestId } : null;
+    }
+
+    permissionOffers.set(requestId, {
+      requestId,
+      requestKey,
+      deliveryId,
+      sessionId,
+      toolName: toolName || "tool",
+      fingerprint,
+      ownershipToken: expectedToken,
+      summary: parts.summary,
+      detail: parts.detail,
+      claudeSessionId,
+      promptId,
+      agentId,
+      reason: decision.reason,
+      at: Date.now(),
+      committed: false,
+      output: null,
+    });
+    permissionOffersByKey.set(requestKey, requestId);
+    log.debug("permission request offered", { sessionId, toolName, requestId, requestKey });
+    return { requestId };
+  }
+
+  /**
+   * PHASE 2 — `notify.mjs` counted the offers, this instance was the only one,
+   * and the decision may now be issued.
+   *
+   * The commit is first proven to describe the offered request — same
+   * session, same delivery id, same tool, same arguments — and only then are
+   * all the offer's guards re-checked, against the state as it is NOW. Both
+   * blocks run for a replayed commit too; see below.
+   *
+   * Only then is the audit row written, and it is a precondition rather than a
+   * side-effect. An approval nobody can look up afterwards is exactly what
+   * makes a bypass indefensible, so if the row cannot be written the prompt is
+   * shown instead — the user loses convenience, never the trail.
+   *
+   * The row records `outcome: "decision-issued"`, not "approved". strIDEterm
+   * knows it handed a decision to the hook's stdout; whether Claude Code acted
+   * on it is not something any part of this flow observes, and a log that
+   * claimed otherwise would be claiming knowledge it does not have.
+   */
+  function commitPermissionDecision(
+    event: { sessionId?: string; payload?: Record<string, unknown> },
+    requestId: string,
+  ): Record<string, unknown> | null {
+    prunePermissionOffers();
+    const record = permissionOffers.get(requestId);
+    if (!record) {
+      log.debug("permission commit for an unknown or expired offer", { requestId });
+      return null;
+    }
+
+    // The commit has to BE the request the offer was made for.
+    //
+    // A request id is a lookup key, not an identity: it says which offer to
+    // read, and nothing about which question the stdout we are about to return
+    // will answer. Without binding the two, a commit carrying an
+    // `AskUserQuestion` payload could be answered out of a record written for
+    // `Bash` — past the never-list, and audited as the Bash call it never was.
+    // The generated notify.mjs builds both legs from one payload and does not
+    // cross them, but "the only client is well behaved" is not a safety
+    // boundary; this is.
+    const commitPayload = event.payload || {};
+    const commitToolName = typeof commitPayload.tool_name === "string" ? commitPayload.tool_name : "";
+    const commitDeliveryId = String(commitPayload.strideterm_delivery_id || "");
+    const commitFingerprint = permissionRequestFingerprint(commitToolName || "tool", commitPayload.tool_input);
+    const mismatch =
+      (event.sessionId || "") !== record.sessionId
+        ? "session"
+        : commitDeliveryId !== record.deliveryId
+          ? "delivery"
+          : (commitToolName || "tool") !== record.toolName
+            ? "tool"
+            : commitFingerprint !== record.fingerprint
+              ? "input"
+              : "";
+    if (mismatch) {
+      log.warn("permission commit does not describe the offered request", {
+        requestId,
+        sessionId: event.sessionId || "",
+        toolName: commitToolName,
+        mismatch,
+      });
+      return null;
+    }
+
+    const sessionId = record.sessionId;
+    const descriptor = sessionId ? parseSessionId(sessionId) : null;
+    const state = getState();
+    const workspace = descriptor ? (findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null) : null;
+
+    // Re-validate before recording — and before replaying. The offer is a
+    // statement about the world at the moment it was made, and the commit is a
+    // separate round trip: the user may have unticked auto-approve, the turn
+    // may have ended, the panel may have been closed. An offer nobody revoked
+    // is not the same thing as an offer that is still valid, so every guard
+    // runs again here — over the CURRENT state, not the one the offer was
+    // written against. A committed record is no exception: re-issuing a stored
+    // `allow` for a request the rules would now refuse is the same bypass as
+    // issuing it fresh.
+    const presentedToken =
+      typeof commitPayload.strideterm_session_token === "string" ? commitPayload.strideterm_session_token : "";
+    const expectedToken = sessionId ? sessionOwnershipTokens.get(sessionId) || "" : "";
+    const ownershipProven =
+      Boolean(expectedToken) && presentedToken === expectedToken && expectedToken === record.ownershipToken;
+    const recheck = decideAutoApprove({
+      // Decided on the request in hand. It has just been proven identical to
+      // the record — same session, delivery, tool and arguments — so the two
+      // cannot disagree; reading it off the payload is what keeps that true
+      // if the proof above is ever loosened.
+      enabled: getNotificationConfig(state).autoApprovePermissions === true,
+      toolName: commitToolName,
+      workspace: workspace ? { kind: workspace.kind, hasTask: Boolean(workspace.task) } : null,
+      signal: sessionId ? sessionSignals.get(sessionId) || null : null,
+      ownershipProven,
+    });
+    if (!recheck.approve) {
+      log.info("permission decision withdrawn before commit", {
+        sessionId,
+        requestId,
+        toolName: record.toolName,
+        reason: recheck.reason,
+      });
+      discardPermissionOffers((candidate) => candidate.requestId === requestId, `commit-${recheck.reason}`);
+      return null;
+    }
+
+    // Idempotent replay, and only now: the guards above have just re-approved
+    // this exact request, so what comes back is the same decision rather than
+    // an old one waved through. No second audit row, no second Notification
+    // Center entry, no second Telegram message — this is the "server wrote the
+    // row and the socket died before the reply" case.
+    if (record.committed) {
+      log.debug("permission commit replayed", { requestId, requestKey: record.requestKey });
+      return record.output;
+    }
+
+    const panel = workspace?.panels.find((entry) => entry.id === descriptor?.panelId) || null;
+    const profileId = workspace?.profileId || "default";
+    const workspaceName = formatWorkspaceDisplayName(workspace) || descriptor?.workspaceId || "";
+    const panelTitle = panel?.title || descriptor?.panelId || "";
+
+    const at = new Date().toISOString();
+    const recorded = approvalAuditLogStore.logEntry({
+      timestamp: at,
+      workspaceId: descriptor?.workspaceId || "",
+      sessionId,
+      toolName: record.toolName,
+      // Claude Code's own session id, so an approval can be found in the
+      // agent transcript (~/.claude/projects/<project>/<session_id>.jsonl).
+      claudeSessionId: record.claudeSessionId,
+      decisionReason: record.reason,
+      profileId,
+      workspaceName,
+      panelTitle,
+      requestKey: record.requestKey,
+      outcome: "decision-issued",
+      operation: "auto-approve",
+      category: "write",
+      method: "HOOK",
+      resourceType: "permission-request",
+      resourceId: requestId,
+      summary: record.summary,
+      success: true,
+      userInitiated: false,
+    });
+    if (!recorded) {
+      log.warn("permission auto-approval blocked: audit write failed", {
+        sessionId,
+        toolName: record.toolName,
+        requestId,
+      });
+      return null;
+    }
+
+    const output = { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } };
+    record.committed = true;
+    record.output = output;
+
+    // No prompt will follow a decision we issued, so the parked summary would
+    // only sit there waiting to decorate an unrelated question later.
+    dropPendingPermission(sessionSignals.get(sessionId), requestId);
+
+    log.info("permission decision issued", {
+      sessionId,
+      workspaceId: descriptor?.workspaceId || "",
+      workspaceName,
+      toolName: record.toolName,
+      requestId,
+      summary: record.summary,
+    });
+
+    const approvalEvent: ApprovalRecorded = {
+      requestId,
+      workspaceId: descriptor?.workspaceId || "",
+      viewId: sessionId,
+      workspaceName,
+      panelTitle,
+      profileId,
+      toolName: record.toolName,
+      summary: record.summary,
+      detail: record.detail,
+      at,
+    };
+    events.emit(APPROVAL_RECORDED_CHANNEL, approvalEvent);
+
+    telegramManager
+      .forwardAlert({
+        alertId: requestId,
+        workspaceId: descriptor?.workspaceId || "",
+        panelId: descriptor?.panelId || "",
+        workspaceName,
+        panelTitle,
+        kind: "auto_approved",
+        urgency: "normal",
+        title: "Approval sent",
+        message: record.summary,
+        workspaceProfileId: profileId,
+        workspaceProfileName: resolveProfileDisplayName(profileId),
+      })
+      .catch((err) => {
+        log.warn("telegram auto_approved forward failed", { requestId, err: (err as Error).message });
+      });
+
+    return output;
   }
 
   /**
@@ -1234,10 +1877,23 @@ export async function createRuntime({
       // in "running" forever — the new turn re-counts its own subagents.
       signal.turnActive = true;
       signal.activeSubagents = 0;
+      // Any permission request from the previous turn is settled by now —
+      // the user typed, so they saw (and answered) whatever dialog there was.
+      signal.pendingPermissions = [];
       cancelPromptTimer(signal);
       setSessionActivity(signal, "running");
       log.trace("UserPromptSubmit: reset busy/waitingRaised", { sessionId: signal.sessionId });
     } else if (hook === "Stop") {
+      // The turn is over, so a permission request that never produced a
+      // permission_prompt is moot — drop it rather than let it decorate a
+      // later, unrelated question. An uncommitted offer goes with it: outside
+      // an active turn the request would be refused outright, and a commit
+      // arriving late must not be answered on the strength of a turn that has
+      // since ended.
+      signal.pendingPermissions = [];
+      if (signal.sessionId) {
+        discardPermissionOffers((record) => record.sessionId === signal.sessionId, "turn-ended");
+      }
       // Agent finished its turn. But a BACKGROUND subagent launched this turn
       // keeps working after Stop (Claude sits at its prompt "waiting for N
       // background agents") — keep the "running" chip/dot until the last
@@ -1308,6 +1964,31 @@ export async function createRuntime({
       notifyServerHandle = await startNotifyServer({
         secret: notifySecret,
         onNotification: handleAgentHookNotification,
+        onPermissionOffer: (event) => {
+          try {
+            return offerPermissionDecision(event);
+          } catch (err) {
+            // Never let a decision failure become a hung hook: silence means
+            // "show the prompt", which is always a safe answer.
+            log.warn("permission request handling failed", {
+              sessionId: event.sessionId,
+              err: (err as Error)?.message || String(err),
+            });
+            return null;
+          }
+        },
+        onPermissionCommit: (event, requestId) => {
+          try {
+            return commitPermissionDecision(event, requestId);
+          } catch (err) {
+            log.warn("permission commit failed", {
+              sessionId: event.sessionId,
+              requestId,
+              err: (err as Error)?.message || String(err),
+            });
+            return null;
+          }
+        },
       });
       log.info("notify server started", { port: notifyServerHandle.port });
       // Purge leftovers claiming our port (previous run that crashed without
@@ -1654,6 +2335,7 @@ export async function createRuntime({
           urgency: opts.urgency || "normal",
           title: opts.title || "",
           detail: opts.detail || "",
+          message: opts.message || "",
           workspaceProfileId: profileId,
           workspaceProfileName: resolveProfileDisplayName(profileId),
         })
@@ -3033,7 +3715,7 @@ export async function createRuntime({
       });
     }
     clearActivityFade(payload.sessionId);
-    deleteSessionSignal(payload.sessionId);
+    retireSession(payload.sessionId);
     // Keep replay after an UNEXPECTED exit so a client that connects afterwards
     // can still see why the process died. Only an intentional exit (a restart)
     // clears it — and clearTerminalReplay keeps the sequence counter so the new
@@ -5766,7 +6448,7 @@ export async function createRuntime({
         for (const sessionId of [...sessionSignals.keys()]) {
           if (sessionId.startsWith(`${workspaceId}:`)) {
             clearActivityFade(sessionId);
-            deleteSessionSignal(sessionId);
+            retireSession(sessionId);
           }
         }
         ensureVisibleSession();
@@ -5913,6 +6595,7 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async updateSettings(settings: any) {
       const previousConfig = getState().settings.remoteAccess;
+      let autoApproveDisarmed = false;
       await store.mutate((draft: AppState) => {
         if (settings.tabTemplates) {
           draft.tabTemplates = settings.tabTemplates;
@@ -5939,7 +6622,31 @@ export async function createRuntime({
         };
         // Keep tabTemplates out of the settings object
         delete (draft.settings as any).tabTemplates; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: immer draft index signature
+
+        // Auto-approve is armed by a deliberate act AT THE DESKTOP, and it is
+        // only meaningful while the agent hook is running. Turning the hook
+        // off must therefore disarm it rather than leave a `true` parked in
+        // the state file: a remote client is allowed to switch `agentHook`
+        // back on, and a parked `true` would make that switch silently
+        // re-enable the bypass — an approval the user never gave from this
+        // machine. Disarming here means re-arming always costs another
+        // desktop-side tick of the box.
+        const nextNotifications = draft.settings.notifications;
+        if (nextNotifications && nextNotifications.agentHook === false && nextNotifications.autoApprovePermissions) {
+          nextNotifications.autoApprovePermissions = false;
+          autoApproveDisarmed = true;
+        }
       });
+      if (autoApproveDisarmed) {
+        log.info("auto-approve disarmed: the agent hook it depends on was turned off");
+      }
+      // Unticking the box has to take effect on the requests already in
+      // flight, not just the next ones: an offer made a second ago would
+      // otherwise still be committed — and audited — after the user turned the
+      // bypass off.
+      if (getState().settings?.notifications?.autoApprovePermissions !== true) {
+        discardPermissionOffers(() => true, "auto-approve-off");
+      }
 
       const nextConfig = getState().settings.remoteAccess;
       tunnel.setBinaryPreference?.(nextConfig.cloudflaredPath || "");
@@ -6139,7 +6846,7 @@ export async function createRuntime({
     closeSession(sessionId: any) {
       clearAlertSession(sessionId);
       clearActivityFade(sessionId);
-      deleteSessionSignal(sessionId);
+      retireSession(String(sessionId || ""));
       // "Disconnect SSH" keeps the panel in state — only the process/connection
       // goes away — so CLEAR the replay (drop the dead generation's screen) but
       // KEEP the sequence counter. destroyTerminalReplay would reset seq to 0,
@@ -6240,8 +6947,51 @@ export async function createRuntime({
     _sessionInputLeasesForTest() {
       return sessionInputLeases;
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    notifyAgentHook(sessionId: any, notificationType = "idle_prompt", hook = "Notification") {
+    /**
+     * Test hook: the `PermissionRequest` decision path. In production this is
+     * reached only through the notify-server's `onDecision`, which needs a
+     * live HTTP round-trip; the decision logic itself is worth testing without
+     * one.
+     */
+    _handlePermissionRequestForTest(event: { sessionId?: string; payload?: Record<string, unknown> }) {
+      const offer = offerPermissionDecision(event);
+      if (!offer) return null;
+      return commitPermissionDecision(event, offer.requestId);
+    },
+    /** Test hook: phase 1 only — an offer must have no observable side effects. */
+    _offerPermissionDecisionForTest(event: { sessionId?: string; payload?: Record<string, unknown> }) {
+      return offerPermissionDecision(event);
+    },
+    /** Test hook: phase 2, the leg that records and answers. */
+    _commitPermissionDecisionForTest(
+      event: { sessionId?: string; payload?: Record<string, unknown> },
+      requestId: string,
+    ) {
+      return commitPermissionDecision(event, requestId);
+    },
+    /** Test hook: the per-PTY ownership token a hook has to echo back. */
+    _sessionOwnershipTokenForTest(sessionId: string) {
+      return getSessionOwnershipToken(sessionId);
+    },
+    /** Test hook: this instance's own notify-URL registry file. */
+    _notifyUrlRegistryForTest() {
+      return notifyUrlRegistry;
+    },
+    /** Test hook: the session signal map (pendingPermission, waitingRaised, …). */
+    _sessionSignalsForTest() {
+      return sessionSignals;
+    },
+    /** Test hook: the approval audit store, so a failing write can be simulated. */
+    _approvalAuditLogStoreForTest() {
+      return approvalAuditLogStore;
+    },
+    notifyAgentHook(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sessionId: any,
+      notificationType = "idle_prompt",
+      hook = "Notification",
+      payload: Record<string, unknown> = {},
+    ) {
       log.debug("notifyAgentHook called", { sessionId, hook, notificationType });
       // dispatchAgentHookEvent is async; this IPC handler is sync (fire-and-
       // forget), so an unguarded rejection here would be an unhandled
@@ -6251,12 +7001,57 @@ export async function createRuntime({
         hook,
         subtype: notificationType,
         notificationType,
-        payload: {},
+        payload,
       }).catch((err: unknown) => {
         log.warn("hook dispatch failed", { sessionId, hook, err: (err as Error)?.message || String(err) });
       });
     },
     runHookProbe,
+    /**
+     * Read the permission auto-approval trail. Pure read, which is why the
+     * remote transport is allowed to call it (GET /api/approvals/audit-log)
+     * even though it may never FLIP the setting that produces the entries.
+     *
+     * `filters.profileId` narrows the answer to one profile, and the remote
+     * server passes the profile its caller's session is bound to — the same
+     * scoping the live `approval:recorded` event already applies. Desktop IPC
+     * omits it: the Settings viewer is a local, whole-installation view.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    queryApprovalAuditLog(filters: any = {}) {
+      return approvalAuditLogStore.query(withApprovalProfileFilter(filters));
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getApprovalAuditStats(filters: any = {}) {
+      return approvalAuditLogStore.getStats(withApprovalProfileFilter(filters));
+    },
+    /**
+     * Delete rows from the approval trail — the user forgetting approvals they
+     * have read, from the dock's Approvals tab.
+     *
+     * Reachable from desktop IPC only; there is deliberately no remote route.
+     * The deletion itself is logged, because a trail that can be emptied
+     * without leaving any mark is not much of a trail: the rows are gone, but
+     * `strideterm.log` still says how many and when.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    deleteApprovalAuditEntries(payload: any = {}) {
+      const { ids, all, ...rest } = payload || {};
+      const scoped = withApprovalProfileFilter(rest);
+      const deleted = approvalAuditLogStore.deleteEntries({
+        ids,
+        all: Boolean(all),
+        providerFilters: scoped.providerFilters as Record<string, string> | undefined,
+      });
+      if (deleted > 0) {
+        log.info("approval audit rows deleted", {
+          deleted,
+          scope: all ? "all" : "selection",
+          profileId: rest?.profileId || "",
+        });
+      }
+      return { deleted };
+    },
     /**
      * Expose notification-pipeline metrics for the About dialog / diagnostics.
      * Pure read — returns a snapshot.
@@ -6861,6 +7656,10 @@ export async function createRuntime({
         clearInterval(reviewBridgePoll);
         reviewBridgePoll = null;
       }
+      if (notifyLeaseTimer) {
+        clearInterval(notifyLeaseTimer);
+        notifyLeaseTimer = null;
+      }
       azure.stopPolling();
       github.stopPolling();
       telegramManager.stop();
@@ -6872,6 +7671,7 @@ export async function createRuntime({
       githubAuditLogStore.close?.();
       gitAuditLogStore.close?.();
       telegramAuditLogStore.close?.();
+      approvalAuditLogStore.close?.();
       // State is already persisted on each mutate/replace operation.
       // Avoid rewriting the file on shutdown, which can overwrite newer
       // on-disk state if another instance touched it more recently.

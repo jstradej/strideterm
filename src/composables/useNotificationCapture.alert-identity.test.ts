@@ -118,6 +118,27 @@ describe("useNotificationCapture — one backend alert is exactly one event", ()
     return { appStore, notifStore };
   }
 
+  it("the OS popup is deduped by ALERT id, the ding by session", async () => {
+    // Two different questions in one panel, 4 s apart, are two events the user
+    // has to see. Keying the OS popup on the session collapsed them into one —
+    // while the backend's urgent cooldown is only 3 s, so the second alert is
+    // deliberately allowed through upstream.
+    const { appStore } = primedCapture();
+
+    appStore.payload = makePayload(bucket({ alertId: "alert-1", kind: "question" }));
+    await nextTick();
+    appStore.payload = makePayload(bucket({ alertId: "alert-2", kind: "question" }));
+    await nextTick();
+
+    const calls = vi.mocked(fireNotificationAlert).mock.calls;
+    expect(calls).toHaveLength(2);
+    const meta = calls.map((call) => call[2]!);
+    expect(meta[0]).toMatchObject({ dedupeKey: "alert-1", sessionKey: "ws-a:ws-a:shell" });
+    expect(meta[1]).toMatchObject({ dedupeKey: "alert-2", sessionKey: "ws-a:ws-a:shell" });
+    // Same panel, so the SOUND still coalesces on the shared session key.
+    expect(meta[0].sessionKey).toBe(meta[1].sessionKey);
+  });
+
   it("records the backend alert id and the backend event time, not the capture time", async () => {
     const { appStore, notifStore } = primedCapture();
 

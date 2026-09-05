@@ -5,7 +5,7 @@ import { apiKey } from "../../types/keys.js";
 
 type AnySettings = Record<string, unknown>;
 
-async function mountDialog(settings: AnySettings = {}) {
+async function mountDialog(settings: AnySettings = {}, apiOverrides: AnySettings = {}) {
   const wrapper = mount(SettingsDialog, {
     props: { settings },
     global: {
@@ -13,6 +13,7 @@ async function mountDialog(settings: AnySettings = {}) {
         [apiKey]: {
           getAgentNotifyHookStatus: async () => ({}),
           getAgentNotifyHookMetrics: async () => null,
+          ...apiOverrides,
         },
       },
       stubs: {
@@ -249,5 +250,91 @@ describe("SettingsDialog — terminalFontSize", () => {
     const saved = lastSavedPayload(wrapper);
     expect(saved).toHaveProperty("terminalFontSizeRemote", 22);
     expect(saved).not.toHaveProperty("terminalFontSizeLocal");
+  });
+});
+
+describe("SettingsDialog — notifications.autoApprovePermissions", () => {
+  // The checkbox only does anything when the notify listener is on AND the
+  // Claude Code hooks are actually registered, so an "available" mount has to
+  // report both.
+  const CLAUDE_CONFIGURED = { getClaudeHookStatus: async () => ({ status: "configured" }) };
+
+  function findAutoApproveRow(wrapper: VueWrapper) {
+    const labels = wrapper.findAll("label.settings-check__row");
+    const target = labels.find((label) => label.text().includes("Auto-approve permission prompts"));
+    if (!target) throw new Error("Auto-approve checkbox not found");
+    return target;
+  }
+
+  function findAutoApproveCheckbox(wrapper: VueWrapper) {
+    return findAutoApproveRow(wrapper).find('input[type="checkbox"]');
+  }
+
+  test("defaults to unchecked — the bypass is never armed by omission", async () => {
+    const wrapper = await mountDialog({ notifications: {} }, CLAUDE_CONFIGURED);
+    expect((findAutoApproveCheckbox(wrapper).element as HTMLInputElement).checked).toBe(false);
+  });
+
+  test("reflects an explicitly enabled value", async () => {
+    const wrapper = await mountDialog(
+      { notifications: { agentHook: true, autoApprovePermissions: true } },
+      CLAUDE_CONFIGURED,
+    );
+    expect((findAutoApproveCheckbox(wrapper).element as HTMLInputElement).checked).toBe(true);
+  });
+
+  test("Save emits autoApprovePermissions=false by default", async () => {
+    const wrapper = await mountDialog({ notifications: {} }, CLAUDE_CONFIGURED);
+    await clickSave(wrapper);
+    expect(lastSavedNotifications(wrapper).autoApprovePermissions).toBe(false);
+  });
+
+  test("toggling round-trips through Save", async () => {
+    const wrapper = await mountDialog({ notifications: { agentHook: true } }, CLAUDE_CONFIGURED);
+    await findAutoApproveCheckbox(wrapper).setValue(true);
+    await clickSave(wrapper);
+    expect(lastSavedNotifications(wrapper).autoApprovePermissions).toBe(true);
+  });
+
+  test("is disabled with a hint when the agent notification hook is off", async () => {
+    const wrapper = await mountDialog({ notifications: { agentHook: false } }, CLAUDE_CONFIGURED);
+    expect((findAutoApproveCheckbox(wrapper).element as HTMLInputElement).disabled).toBe(true);
+    expect(wrapper.text()).toContain("Needs Agent notification hook");
+  });
+
+  test("is disabled with a hint when the Claude Code hooks are not configured", async () => {
+    // Ticking it would change nothing: the decision travels over the
+    // PermissionRequest hook, which isn't registered yet.
+    const wrapper = await mountDialog(
+      { notifications: { agentHook: true } },
+      { getClaudeHookStatus: async () => ({ status: "partial" }) },
+    );
+    expect((findAutoApproveCheckbox(wrapper).element as HTMLInputElement).disabled).toBe(true);
+    expect(wrapper.text()).toContain("Needs the Claude Code hooks configured");
+  });
+
+  test("the label spells out that this is a bypass", async () => {
+    const wrapper = await mountDialog({ notifications: { agentHook: true } }, CLAUDE_CONFIGURED);
+    const text = wrapper.text();
+    expect(text).toContain("Equivalent to running without permission prompts");
+    expect(text).toContain("AskUserQuestion");
+    expect(text).toContain("ExitPlanMode");
+  });
+});
+
+describe("SettingsDialog — auto-approve is desktop-only in the UI too", () => {
+  test("a remote client sees the checkbox disabled with a reason, not a Save that does nothing", async () => {
+    // The field is dropped by sanitizeSettingsFromRemote, so a tickable box on
+    // remote would promise something the server refuses to do.
+    const wrapper = await mountDialog(
+      { notifications: { agentHook: true } },
+      { isRemote: true, getClaudeHookStatus: async () => ({ status: "configured" }) },
+    );
+    const label = wrapper
+      .findAll("label.settings-check__row")
+      .find((l) => l.text().includes("Auto-approve permission prompts"));
+    const checkbox = label!.find('input[type="checkbox"]');
+    expect((checkbox.element as HTMLInputElement).disabled).toBe(true);
+    expect(wrapper.text()).toContain("Desktop only");
   });
 });

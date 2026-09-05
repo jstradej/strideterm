@@ -243,7 +243,7 @@ describe("summarizeAttentionForProfile (native attention routing)", () => {
       byWorkspace: {
         "ws-a1": { alerts: [{ kind: "waiting" }, { kind: "completed" }] },
         "ws-a2": { alerts: [{ kind: "completed" }] },
-        "ws-b1": { alerts: [{ kind: "waiting" }] },
+        "ws-b1": { alerts: [{ kind: "question" }] },
         "ws-legacy": { alerts: [{ kind: "completed" }] },
       },
     },
@@ -251,6 +251,9 @@ describe("summarizeAttentionForProfile (native attention routing)", () => {
 
   test("counts only alerts in the requested profile's workspaces", () => {
     expect(summarizeAttentionForProfile(payload, "profile-a")).toEqual({ count: 3, waitingCount: 1 });
+    // profile-b's single alert is a `question` — the strongest input-blocking
+    // state there is, so it belongs in waitingCount and drives the same
+    // high-attention badge colour a `waiting` does.
     expect(summarizeAttentionForProfile(payload, "profile-b")).toEqual({ count: 1, waitingCount: 1 });
   });
 

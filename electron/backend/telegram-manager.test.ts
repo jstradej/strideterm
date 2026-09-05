@@ -892,6 +892,89 @@ describe("_buildAlertText detail formatting", () => {
 // forwardAlert skips connections without matching forwardKinds
 // ---------------------------------------------------------------------------
 
+describe("question and auto_approved alerts", () => {
+  test("question renders the ❓ icon and the message line under the title", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const text = (manager as any)._buildAlertText({
+      kind: "question",
+      urgency: "urgent",
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      title: "Permission needed: Bash",
+      detail: "hook:Notification:permission_prompt",
+      message: "Bash: chmod +x deploy.sh",
+    });
+    expect(text).toContain("❓");
+    // The message carries what is being approved — the whole point of the alert.
+    expect(text).toContain("chmod \\+x deploy\\.sh");
+    expect(text).toContain("blocked until you answer");
+    // "reply with a task description" belongs to completed/waiting only.
+    expect(text).not.toContain("Reply with a task description");
+  });
+
+  test("a message longer than 200 chars is clipped", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const text = (manager as any)._buildAlertText({
+      kind: "question",
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      title: "Permission needed: Bash",
+      message: "Bash: " + "x".repeat(500),
+    });
+    expect(text).toContain("…");
+    expect(text).not.toContain("x".repeat(300));
+  });
+
+  test("auto_approved renders the 🔓 icon and says the approval was automatic", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const text = (manager as any)._buildAlertText({
+      kind: "auto_approved",
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      title: "Auto-approved",
+      message: "Bash: git status",
+    });
+    expect(text).toContain("🔓");
+    expect(text).toContain("Approved automatically");
+  });
+
+  test.each(["question", "auto_approved"])("%s keyboard offers only Dismiss", (kind) => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const keyboard = (manager as any)._buildKeyboard({
+      kind,
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      title: "t",
+    });
+    expect(keyboard).toEqual([[{ text: "✓ Dismiss", callback_data: "d" }]]);
+  });
+
+  test("forwardKinds ['question'] lets a question through and drops a waiting alert", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "tok1" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ id: "tg-1", botTokenRef: "cred:tg-1", forwardKinds: ["question"] })]);
+
+    const calledWith: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendAlertToConnection = async (_conn: TelegramConnectionConfig, payload: any) => {
+      calledWith.push(payload.kind);
+    };
+
+    await manager.forwardAlert({ workspaceId: "ws-1", panelId: "p-1", kind: "question", title: "Q" });
+    await manager.forwardAlert({ workspaceId: "ws-1", panelId: "p-1", kind: "waiting", title: "W" });
+
+    expect(calledWith).toEqual(["question"]);
+  });
+});
+
 describe("forwardAlert", () => {
   test("skips connections whose forwardKinds does not include the alert kind", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "tok1", "cred:tg-2": "tok2" });

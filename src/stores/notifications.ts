@@ -29,7 +29,8 @@ const MAX_EVENTS_PER_SESSION = 20;
 
 type NotificationState = "waiting" | "finished" | "resolved" | "snoozed";
 type NotificationUrgency = "normal" | "urgent";
-type NotificationKind = "waiting" | "completed" | "subagent_done" | "info" | "review" | "error" | "warning" | string;
+type NotificationKind =
+  "waiting" | "question" | "completed" | "subagent_done" | "info" | "review" | "error" | "warning" | string;
 
 /**
  * A toast that does not auto-dismiss. Used for errors the user must act on
@@ -68,6 +69,14 @@ interface NotificationEvent {
    * retroactively deduplicated, since their identity cannot be recovered.
    */
   sourceAlertId?: string;
+  /**
+   * Stable rank the SOURCE assigned this event, used only to break a tie when
+   * two events share `at` — for a back-filled approval it is the audit row id.
+   * A burst of auto-approvals inside one turn shares a millisecond, so the
+   * timestamp alone cannot order them; the durable log's own order can.
+   * Absent on live events, which arrive in order and need no tiebreak.
+   */
+  historyRank?: number;
 }
 
 interface NotificationSession {
@@ -105,6 +114,19 @@ interface AddEventPayload {
   occurredAt?: string;
   /** Backend alert identity — see NotificationEvent.sourceAlertId. */
   sourceAlertId?: string;
+  /**
+   * This event is being replayed from a durable record, not arriving live, so
+   * it may well be OLDER than what history already holds — see `addEvent`.
+   *
+   * The default insert is a prepend, which is right for a live event and wrong
+   * for a back-fill that closes a gap in more than one batch: the batches walk
+   * DOWNWARDS, so the second one carries older rows than the first, and
+   * prepending them reversed the thread, dragged `latestAt` backwards and — at
+   * the 20-event and 200-session caps — evicted the genuinely newest entries.
+   */
+  historical?: boolean;
+  /** Source order for tie-breaking — see NotificationEvent.historyRank. */
+  historyRank?: number;
 }
 
 /** Payload for the alert-capture entry point, where both fields are required. */
@@ -114,6 +136,16 @@ interface AddAlertEventPayload extends AddEventPayload {
 }
 
 type SessionFilter = (_s: NotificationSession) => boolean;
+
+/**
+ * The sort key history is ordered by, newest first — see `isNewerEntry`.
+ * Both an event and a session reduce to it, so one comparison orders the
+ * thread's events and the list of threads alike.
+ */
+interface HistoryOrder {
+  at: string;
+  historyRank?: number;
+}
 
 /**
  * Cross-window sync messages. Ack/read state only — arrival is intentionally
@@ -177,6 +209,9 @@ function kindToState(kind: NotificationKind): NotificationState {
   // SubagentStop is treated the same: a sub-agent finishing within a turn
   // never expects user input, so it shouldn't sit in "Waiting" tying up
   // attention.
+  //
+  // `question` falls through to "waiting" (the default): the agent is blocked
+  // on the user, which is exactly what the Waiting section is for.
   return kind === "completed" || kind === "info" || kind === "review" || kind === "subagent_done"
     ? "finished"
     : "waiting";
@@ -278,7 +313,91 @@ export const useNotificationStore = defineStore("notifications", () => {
   // Transient toast payload. Lives in the store (not in a composable) so any
   // part of the app can trigger a toast via showError/showToast without
   // threading a ref through prop drilling or custom event buses.
-  const latestToast = ref<(NotificationEvent & { category: string }) | null>(null);
+  // `viewId` rides along so a sticky toast (kind "question") can watch its own
+  // thread and disappear when the backend alert clears.
+  type ToastPayload = NotificationEvent & {
+    category: string;
+    viewId?: string;
+    /**
+     * The backend `alertId` this toast was built from, when it had one.
+     *
+     * A sticky question toast needs to know when ITS OWN question is over, and
+     * the thread's state cannot tell it: the backend keeps one alert per panel,
+     * so a second question replaces the first while the thread stays
+     * `waiting` — leaving the old text on screen and the new one queued behind
+     * a toast that would never resolve.
+     */
+    sourceAlertId?: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meta?: Record<string, any> | null;
+  };
+  const latestToast = ref<ToastPayload | null>(null);
+  /**
+   * Toasts held back while a `question` occupies the slot.
+   *
+   * `latestToast` is one shared ref, so before this queue any later arrival —
+   * a completion, an error, another question — overwrote the toast in place.
+   * For a `question` that is a real loss: its toast is deliberately sticky
+   * because the agent is blocked until the user answers, and it would vanish
+   * without ever having been clicked, closed or resolved.
+   *
+   * Bounded, because the point is not to replay an evening's worth of alerts
+   * once a question is finally answered — the Notification Center already
+   * holds all of them.
+   */
+  const toastQueue = ref<ToastPayload[]>([]);
+  const MAX_QUEUED_TOASTS = 5;
+
+  /**
+   * Show a toast, or queue it behind an unanswered question.
+   *
+   * Every toast source goes through here — alert capture, `showError`, the
+   * update-available notice, review notifications — so the protected slot
+   * cannot be bypassed by writing `latestToast` directly.
+   */
+  function pushToast(entry: ToastPayload): void {
+    const current = latestToast.value;
+    if (current && current.kind === "question" && current.id !== entry.id) {
+      // …except when the newcomer is that panel's NEXT question. The backend
+      // holds one alert per panel, so question B arriving means question A is
+      // no longer being asked; queueing B would keep a dead question on screen
+      // and hide the live one behind it.
+      const replacesCurrentQuestion =
+        entry.kind === "question" && Boolean(entry.viewId) && entry.viewId === current.viewId;
+      if (!replacesCurrentQuestion) {
+        if (!toastQueue.value.some((queued) => queued.id === entry.id)) {
+          toastQueue.value = [...toastQueue.value, entry].slice(-MAX_QUEUED_TOASTS);
+        }
+        return;
+      }
+    }
+    latestToast.value = entry;
+  }
+
+  /**
+   * Clear the visible toast and promote the next queued one, if any. Called
+   * when the toast is dismissed — by the user, by its own timer, or by the
+   * backend alert clearing under a sticky question.
+   */
+  function dismissToast(): void {
+    const [next, ...rest] = toastQueue.value;
+    toastQueue.value = rest;
+    latestToast.value = next || null;
+  }
+  /**
+   * Backend `alertId`s present in the latest attention payload.
+   *
+   * Written by the capture composable on every payload, read by the sticky
+   * question toast to decide whether the question it is showing is still being
+   * asked. Identity, not thread state: the same panel can raise a second
+   * question while the first one's toast is up.
+   */
+  const liveAlertIds = ref<string[]>([]);
+
+  function setLiveAlertIds(ids: string[]): void {
+    liveAlertIds.value = ids;
+  }
+
   // Stickier counterpart of latestToast: each entry stays until the user
   // closes it. Rendered as a stack in App.vue so multiple background
   // failures don't clobber each other.
@@ -337,7 +456,44 @@ export const useNotificationStore = defineStore("notifications", () => {
     return sessions.value.find((s) => s.id === id);
   }
 
-  function addEvent({
+  /**
+   * Is `left` strictly newer than `right` in the history's own ordering?
+   *
+   * `at` decides; `historyRank` only breaks a tie, and only when both sides
+   * carry one. Equal and untied counts as NOT newer, so a chronological insert
+   * of equally-stamped events preserves the order they are handed over in.
+   */
+  function isNewerEntry(left: HistoryOrder, right: HistoryOrder): boolean {
+    if (left.at !== right.at) return left.at > right.at;
+    if (typeof left.historyRank === "number" && typeof right.historyRank === "number") {
+      return left.historyRank > right.historyRank;
+    }
+    return false;
+  }
+
+  /** Where `entry` belongs in a newest-first list. */
+  function chronologicalIndex<T>(list: T[], orderOf: (_item: T) => HistoryOrder, entry: HistoryOrder): number {
+    let index = 0;
+    while (index < list.length && isNewerEntry(orderOf(list[index]), entry)) index += 1;
+    return index;
+  }
+
+  /** A session sorts by its newest event — which is `events[0]` by construction. */
+  function sessionOrder(session: NotificationSession): HistoryOrder {
+    return { at: session.latestAt, historyRank: session.events[0]?.historyRank };
+  }
+
+  /**
+   * The insert every entry point funnels through.
+   *
+   * `retained` says whether the event actually ENTERED the visible history.
+   * Both retention caps can drop a REPLAYED event outright — it is placed by
+   * its own chronology, so a row older than everything the cap keeps lands
+   * past the end — and a dropped event has to be a no-op for everything the
+   * user can see. A live event is always the newest thing in its thread, so
+   * it is always retained.
+   */
+  function insertEvent({
     title,
     body = "",
     kind = "info",
@@ -351,7 +507,9 @@ export const useNotificationStore = defineStore("notifications", () => {
     meta = null,
     occurredAt = "",
     sourceAlertId = "",
-  }: AddEventPayload): NotificationEvent {
+    historical = false,
+    historyRank,
+  }: AddEventPayload): { event: NotificationEvent; retained: boolean } {
     const id = threadId(workspaceId, viewId);
     const eventEntry: NotificationEvent = {
       id: crypto.randomUUID(),
@@ -362,28 +520,75 @@ export const useNotificationStore = defineStore("notifications", () => {
       urgency,
       at: occurredAt || new Date().toISOString(),
       ...(sourceAlertId ? { sourceAlertId } : {}),
+      ...(typeof historyRank === "number" ? { historyRank } : {}),
     };
 
     const existing = findSession(workspaceId, viewId);
+    // Does this event speak for the session as a whole? Every live event
+    // does; a replayed one only when it landed at the head of the thread.
+    let projectsSession = true;
     if (existing) {
-      existing.events = [eventEntry, ...existing.events].slice(0, MAX_EVENTS_PER_SESSION);
-      existing.latestAt = eventEntry.at;
-      existing.workspaceName = workspaceName || existing.workspaceName;
-      existing.tabName = tabName || existing.tabName;
-      if (category) existing.category = category;
-      if (meta) existing.meta = { ...(existing.meta || {}), ...meta };
-      // Urgent always takes precedence; waiting > finished when comparing kinds.
-      const nextState = kindToState(kind);
-      if (existing.state === "resolved" && (nextState === "waiting" || urgency === "urgent")) {
-        existing.state = nextState;
-      } else if (existing.state !== "waiting") {
-        existing.state = nextState;
+      if (historical) {
+        // A replayed row is placed where it BELONGS, not at the head. Both
+        // caps then cut the genuinely oldest tail: a second back-fill batch
+        // carries older rows than the first, and prepending them used to
+        // evict the newest events of the very thread it was completing.
+        const events = [...existing.events];
+        const index = chronologicalIndex(events, (event) => event, eventEntry);
+        // The thread started earlier than history knew — the row proves it.
+        // This is deliberately the ONE thing a row outside the cap still
+        // says: a lifetime fact about the thread, not a claim about its
+        // current state.
+        const movedFirstAt = eventEntry.at < existing.firstAt;
+        if (movedFirstAt) existing.firstAt = eventEntry.at;
+        if (index >= MAX_EVENTS_PER_SESSION) {
+          // Older than all MAX_EVENTS_PER_SESSION events the cap keeps, so it
+          // is not in the visible history at all. It must therefore touch
+          // NOTHING the user can see — no state, no labels, no category, no
+          // meta, no tier/urgency, no reordering. Otherwise a replayed row
+          // nobody can point at reopens a thread the user already resolved.
+          if (movedFirstAt) saveToStorage(sessions.value);
+          return { event: eventEntry, retained: false };
+        }
+        events.splice(index, 0, eventEntry);
+        existing.events = events.slice(0, MAX_EVENTS_PER_SESSION);
+        // A retained replayed row that is NOT the newest one is history, not
+        // news: the session-level projection (state, labels, category, meta)
+        // describes `events[0]`, so only an event that became `events[0]`
+        // may rewrite it. Everything below is skipped for the rest.
+        projectsSession = index === 0;
+      } else {
+        existing.events = [eventEntry, ...existing.events].slice(0, MAX_EVENTS_PER_SESSION);
       }
+      // `events[0]` is the newest by construction on both paths, so this is
+      // the live path's `eventEntry.at` unchanged — and, on the historical
+      // one, refuses to drag `latestAt` back to an older replayed row.
+      existing.latestAt = existing.events[0]?.at || existing.latestAt;
+      if (projectsSession) {
+        existing.workspaceName = workspaceName || existing.workspaceName;
+        existing.tabName = tabName || existing.tabName;
+        if (category) existing.category = category;
+        if (meta) existing.meta = { ...(existing.meta || {}), ...meta };
+        // Urgent always takes precedence; waiting > finished when comparing kinds.
+        const nextState = kindToState(kind);
+        if (existing.state === "resolved" && (nextState === "waiting" || urgency === "urgent")) {
+          existing.state = nextState;
+        } else if (existing.state !== "waiting") {
+          existing.state = nextState;
+        }
+      }
+      // Tier and urgency are aggregates over the whole thread, not a picture
+      // of its newest event, so a retained older row still counts in them.
       existing.tier = Math.min(existing.tier ?? 3, tier);
       if (urgency === "urgent") existing.urgency = "urgent";
       // Bubble the session to the top of the list so newest-thread-first
-      // ordering stays intuitive even without an explicit sort.
-      sessions.value = [existing, ...sessions.value.filter((s) => s !== existing)];
+      // ordering stays intuitive even without an explicit sort. A historical
+      // event bubbles only as far as its own `latestAt` earns — an older
+      // replayed row must not jump its thread over threads that are newer.
+      const others = sessions.value.filter((s) => s !== existing);
+      if (historical) others.splice(chronologicalIndex(others, sessionOrder, sessionOrder(existing)), 0, existing);
+      else others.unshift(existing);
+      sessions.value = others;
     } else {
       const session: NotificationSession = {
         id,
@@ -401,11 +606,25 @@ export const useNotificationStore = defineStore("notifications", () => {
         events: [eventEntry],
         snoozedUntil: 0,
       };
-      sessions.value = [session, ...sessions.value].slice(0, MAX_SESSIONS);
+      // Same rule one level up: past MAX_SESSIONS the list drops its oldest
+      // thread, so a back-filled session older than 200 already-known ones has
+      // to land below them — prepending it evicted a newer thread instead.
+      const next = [...sessions.value];
+      const index = historical ? chronologicalIndex(next, sessionOrder, sessionOrder(session)) : 0;
+      // ...and one older than ALL of them lands past the end, where the slice
+      // below throws it away. The store never held it, so say so.
+      if (index >= MAX_SESSIONS) return { event: eventEntry, retained: false };
+      next.splice(index, 0, session);
+      sessions.value = next.slice(0, MAX_SESSIONS);
     }
 
     saveToStorage(sessions.value);
-    return eventEntry;
+    return { event: eventEntry, retained: true };
+  }
+
+  /** The event itself, for the many call sites that cannot be dropped. */
+  function addEvent(payload: AddEventPayload): NotificationEvent {
+    return insertEvent(payload).event;
   }
 
   // Back-compat alias for existing call sites.
@@ -440,11 +659,17 @@ export const useNotificationStore = defineStore("notifications", () => {
    * A genuinely new alert on the same panel carries a NEW `alertId`, so it
    * inserts a second event and keeps the intended reopen semantics for an
    * already-resolved thread.
+   *
+   * `inserted` means the event is IN the history, not merely that it was new:
+   * a replayed row older than everything the 20-event or 200-session cap
+   * keeps is dropped by the cap, and reports `inserted: false` for the same
+   * reason a duplicate does — nothing was added for the user to see.
    */
   function addAlertEvent(payload: AddAlertEventPayload): { event: NotificationEvent; inserted: boolean } {
     const duplicate = findEventBySourceAlertId(payload.sourceAlertId);
     if (duplicate) return { event: duplicate, inserted: false };
-    return { event: addEvent(payload), inserted: true };
+    const { event, retained } = insertEvent(payload);
+    return { event, inserted: retained };
   }
 
   function setState(sessionRef: string | NotificationSession, newState: NotificationState): void {
@@ -750,7 +975,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       meta: profileId ? { profileId } : null,
     });
     if (!pinned.value) {
-      latestToast.value = { ...entry, category: "error" };
+      pushToast({ ...entry, category: "error" });
     }
     return entry;
   }
@@ -857,6 +1082,11 @@ export const useNotificationStore = defineStore("notifications", () => {
     requestedPanelTab,
     panelTabRequestSignal,
     latestToast,
+    toastQueue,
+    pushToast,
+    dismissToast,
+    liveAlertIds,
+    setLiveAlertIds,
     persistentToasts,
     // Computed
     unreadCount,

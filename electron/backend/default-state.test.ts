@@ -5,6 +5,7 @@ import {
   normalizeWorkspace,
   normalizeState,
   normalizeWorkspaceGrid,
+  TELEGRAM_QUESTION_FORWARD_MIGRATION,
 } from "./default-state.js";
 
 describe("default state", () => {
@@ -488,6 +489,99 @@ describe("default state", () => {
     });
   });
 
+  test("normalizeState backfills notifications.autoApprovePermissions to false", () => {
+    // Persisted state predating the feature must NOT come back with the
+    // permission bypass armed.
+    expect(normalizeState({}).settings.notifications.autoApprovePermissions).toBe(false);
+    expect(normalizeState({ settings: { notifications: {} } }).settings.notifications.autoApprovePermissions).toBe(
+      false,
+    );
+    // A non-boolean stored value falls back to the default rather than being coerced.
+    expect(
+      normalizeState({ settings: { notifications: { autoApprovePermissions: "yes" } } }).settings.notifications
+        .autoApprovePermissions,
+    ).toBe(false);
+  });
+
+  test("normalizeState preserves an explicitly enabled autoApprovePermissions", () => {
+    expect(
+      normalizeState({ settings: { notifications: { autoApprovePermissions: true } } }).settings.notifications
+        .autoApprovePermissions,
+    ).toBe(true);
+  });
+
+  test("normalizeState migrates an explicit waiting filter to also include question", () => {
+    // Before the waiting/question split, a filter listing "waiting" delivered
+    // permission prompts. Without this migration the user would silently stop
+    // receiving the single most important alert they had asked for.
+    const state = normalizeState({
+      settings: {
+        integrations: {
+          telegram: {
+            connections: [{ id: "tg-1", forwardKinds: ["waiting"] }],
+          },
+        },
+      },
+    });
+
+    expect(state.settings.integrations.telegram.connections[0].forwardKinds).toEqual(["waiting", "question"]);
+    // The marker is what makes it a migration rather than a standing rule.
+    expect(state.settings.appliedMigrations).toContain(TELEGRAM_QUESTION_FORWARD_MIGRATION);
+  });
+
+  test("normalizeState forwardKinds migration leaves other filters alone", () => {
+    const run = (forwardKinds: string[]) =>
+      normalizeState({
+        settings: { integrations: { telegram: { connections: [{ id: "tg-1", forwardKinds }] } } },
+      }).settings.integrations.telegram.connections[0].forwardKinds;
+
+    // Already migrated — no duplicate.
+    expect(run(["waiting", "question"])).toEqual(["waiting", "question"]);
+    // Empty means "everything", so it already includes questions.
+    expect(run([])).toEqual([]);
+    // A filter that never asked for waiting must not start receiving questions.
+    expect(run(["completed"])).toEqual(["completed"]);
+  });
+
+  test("the forwardKinds migration runs ONCE — a later waiting-only choice survives", () => {
+    // normalizeState runs after every mutation, so "add question when waiting
+    // is present" is not a migration, it is a rule the user can never undo.
+    // Once the marker is recorded, an explicit waiting-only filter stays.
+    const migrated = normalizeState({
+      settings: { integrations: { telegram: { connections: [{ id: "tg-1", forwardKinds: ["waiting"] }] } } },
+    });
+    expect(migrated.settings.integrations.telegram.connections[0].forwardKinds).toEqual(["waiting", "question"]);
+
+    // The user unticks "question" in Settings and saves.
+    const optedOut = normalizeState({
+      ...migrated,
+      settings: {
+        ...migrated.settings,
+        integrations: {
+          ...migrated.settings.integrations,
+          telegram: {
+            ...migrated.settings.integrations.telegram,
+            connections: [{ id: "tg-1", forwardKinds: ["waiting"] }],
+          },
+        },
+      },
+    });
+    expect(optedOut.settings.integrations.telegram.connections[0].forwardKinds).toEqual(["waiting"]);
+
+    // And it stays that way across further normalizations.
+    const again = normalizeState(optedOut);
+    expect(again.settings.integrations.telegram.connections[0].forwardKinds).toEqual(["waiting"]);
+  });
+
+  test("appliedMigrations defaults to an empty list and keeps unknown ids", () => {
+    expect(normalizeState({}).settings.appliedMigrations).toEqual([TELEGRAM_QUESTION_FORWARD_MIGRATION]);
+    const withOther = normalizeState({ settings: { appliedMigrations: ["some-future-migration"] } });
+    expect(withOther.settings.appliedMigrations).toEqual([
+      "some-future-migration",
+      TELEGRAM_QUESTION_FORWARD_MIGRATION,
+    ]);
+  });
+
   test("normalizeState defaults Telegram connection fields when omitted", () => {
     const state = normalizeState({
       settings: {
@@ -728,6 +822,48 @@ describe("default state", () => {
     expect(workspace.task!.promptSent).toBe(false);
     expect(workspace.task!.pausedFromState).toBe("");
     expect(workspace.task!.showerResumePrompt).toBe("");
+  });
+
+  test("normalizeWorkspace removes an inert task marker from an ordinary workspace", () => {
+    const workspace = normalizeWorkspace({
+      id: "terminal-ws",
+      kind: "terminal",
+      panels: [{ id: "claude", title: "Claude Code", command: "claude" }],
+      task: {
+        taskId: "",
+        description: "",
+        parentWorkspaceId: "",
+        worktreeBase: "",
+        worktreeBranch: "",
+        workerPanelId: "",
+        judgePanelId: "",
+        state: "idle",
+        currentRound: 0,
+        rounds: [],
+        mode: "standard",
+      },
+    });
+
+    expect(workspace.kind).toBe("terminal");
+    expect(workspace.task).toBeNull();
+  });
+
+  test("normalizeWorkspace preserves real task evidence when the kind marker was lost", () => {
+    const workspace = normalizeWorkspace({
+      id: "damaged-task-ws",
+      kind: "terminal",
+      panels: [{ id: "worker", title: "Worker", command: "claude" }],
+      task: {
+        taskId: "task-1",
+        description: "Do work",
+        workerPanelId: "worker",
+        judgePanelId: "judge",
+        state: "paused",
+      },
+    });
+
+    expect(workspace.kind).toBe("terminal");
+    expect(workspace.task).toMatchObject({ taskId: "task-1", workerPanelId: "worker", state: "paused" });
   });
 
   test("workspace with gitRoots round-trips through normalize", () => {

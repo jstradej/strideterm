@@ -66,6 +66,7 @@ import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { remoteViewerId } from "./viewer-id.js";
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
+import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import {
   buildRemoteCore,
   buildResourceDetail,
@@ -537,6 +538,22 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
  *     later writes to belongs in the remote blocklist"), this entry is
  *     mandatory.
  */
+/**
+ * Per-field drops inside the `notifications` subtree. Per-field rather than
+ * wholesale, because everything else under `notifications` (quiet timings,
+ * agentsOnly, subagent pings) is a legitimate thing to tune from a phone.
+ *
+ *   - `autoApprovePermissions`: arms strIDEterm to answer Claude Code's
+ *     permission prompts with `allow` on the DESKTOP, unattended. Same threat
+ *     shape as `autoTunnel` — a quiet, persistent flip whose consequences land
+ *     somewhere the remote caller cannot see — except worse in kind: what it
+ *     buys an attacker is every future `Bash` and `Write` the agent proposes,
+ *     approved with nobody watching. Turning this on must always be a
+ *     deliberate act at the machine that will execute the result. Reading the
+ *     resulting trail (GET /api/approvals/audit-log) stays allowed.
+ */
+export const REMOTE_BLOCKED_NOTIFICATION_FIELDS: ReadonlyArray<string> = ["autoApprovePermissions"];
+
 export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = [
   "externalPathOpener",
   "externalEditor",
@@ -572,6 +589,17 @@ export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): s
     for (const key of REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS) {
       if (key in remoteAccess) {
         delete remoteAccess[key];
+        removed.push(key);
+      }
+    }
+  }
+  // Per-field drop inside `notifications` — its siblings are ordinary
+  // remote-tunable preferences and must survive.
+  const notifications = settings.notifications as Record<string, unknown> | undefined;
+  if (notifications && typeof notifications === "object") {
+    for (const key of REMOTE_BLOCKED_NOTIFICATION_FIELDS) {
+      if (key in notifications) {
+        delete notifications[key];
         removed.push(key);
       }
     }
@@ -1128,6 +1156,34 @@ async function serveStatic(staticRoot: string, requestUrl: string, response: Ser
   }
 }
 
+/**
+ * Read the approval-log filters off the query string. Only the fields the
+ * store understands are forwarded, and the numeric ones are clamped by the
+ * store itself (limit is capped at 500 there).
+ */
+function approvalAuditLogFilters(url: URL, profileId: string): Record<string, unknown> {
+  const limit = Number(url.searchParams.get("limit"));
+  const offset = Number(url.searchParams.get("offset"));
+  const afterId = Number(url.searchParams.get("afterId"));
+  const beforeId = Number(url.searchParams.get("beforeId"));
+  return {
+    from: url.searchParams.get("from") || undefined,
+    to: url.searchParams.get("to") || undefined,
+    // The keyset cursors a remote Notification Center pages its back-fill
+    // with. Not a scope: `profileId` below is still the only thing deciding
+    // WHOSE rows come back, and the store ignores a non-positive cursor.
+    afterId: Number.isFinite(afterId) && afterId > 0 ? Math.floor(afterId) : undefined,
+    beforeId: Number.isFinite(beforeId) && beforeId > 0 ? Math.floor(beforeId) : undefined,
+    search: url.searchParams.get("search") || undefined,
+    limit: Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined,
+    offset: Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : undefined,
+    // Scope, not decoration. `profileId` comes from the SERVER's view of the
+    // caller's bound session — never from a query parameter — so a client
+    // cannot ask for another profile's trail by editing the URL.
+    profileId: profileId || undefined,
+  };
+}
+
 type ApiRouteHandler = (runtime: Runtime, body: Record<string, unknown>) => unknown;
 
 /**
@@ -1446,12 +1502,43 @@ async function handleApiRequest(
   request: IncomingMessage,
   response: ServerResponse,
   broadcast: (message: unknown) => void = () => {},
+  /**
+   * Profile the calling session is bound to, or "" for a caller that
+   * authenticated with the master token alone and never bound a session.
+   */
+  callerProfileId = "",
 ): Promise<void> {
   const url = new URL(request.url!, "http://localhost");
 
   try {
     if (request.method === "GET" && url.pathname === "/api/state") {
       json(response, 200, await runtime.getInitialState());
+      return;
+    }
+
+    // Permission auto-approval trail. Read-only, hence remote-reachable: a
+    // remote client may never FLIP `notifications.autoApprovePermissions`
+    // (see REMOTE_BLOCKED_NOTIFICATION_FIELDS) but it should absolutely be
+    // able to see what the desktop approved while nobody was looking.
+    //
+    // Scoped to the caller's profile, exactly like the live `approval:recorded`
+    // event: a browser bound to profile B has never seen profile A's
+    // workspaces and must not read their tools, summaries or session ids out
+    // of the log either. A caller that presents the MASTER TOKEN and binds no
+    // session gets the whole installation's trail — that token already grants
+    // every mutation on every profile, so there is nothing left for scoping to
+    // protect, and a machine-to-machine reader needs the complete view.
+    if (request.method === "GET" && url.pathname === "/api/approvals/audit-log") {
+      json(response, 200, runtime.queryApprovalAuditLog(approvalAuditLogFilters(url, callerProfileId)));
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/approvals/audit-log/stats") {
+      json(response, 200, {
+        ...runtime.getApprovalAuditStats({
+          from: url.searchParams.get("from") || undefined,
+          profileId: callerProfileId || undefined,
+        }),
+      });
       return;
     }
 
@@ -2221,7 +2308,13 @@ export async function startRemoteServer({
           return;
         }
 
-        await handleApiRequest(runtime, request, response, broadcast);
+        await handleApiRequest(
+          runtime,
+          request,
+          response,
+          broadcast,
+          (apiSessionId && registry.get(apiSessionId)?.profileId) || "",
+        );
         return;
       }
 
@@ -2848,6 +2941,20 @@ export async function startRemoteServer({
       const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
       if (!eventProfileId) return;
       const serialized = JSON.stringify({ type: NOTIFICATION_TARGET_REMOVED_CHANNEL, payload });
+      for (const socket of sockets) {
+        const clientSessionId = socketSession.get(socket);
+        if (!clientSessionId) continue;
+        if (registry.get(clientSessionId)?.profileId !== eventProfileId) continue;
+        checkedSend(socket, serialized);
+      }
+    }),
+    // Profile-scoped for the same reason: a client bound to another profile
+    // never saw the workspace whose agent was approved, so the entry would be
+    // noise in its history.
+    runtime.on(APPROVAL_RECORDED_CHANNEL, (payload: unknown) => {
+      const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
+      if (!eventProfileId) return;
+      const serialized = JSON.stringify({ type: APPROVAL_RECORDED_CHANNEL, payload });
       for (const socket of sockets) {
         const clientSessionId = socketSession.get(socket);
         if (!clientSessionId) continue;

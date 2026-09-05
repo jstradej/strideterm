@@ -423,6 +423,34 @@ async function deleteConnection(id: string) {
 <script lang="ts">
 import { defineComponent, h } from "vue";
 
+/**
+ * Alert kinds a connection can be filtered to.
+ *
+ * The list is the editor for `forwardKinds`, which the form has always
+ * round-tripped but never let anyone change — so the split of `waiting` into
+ * `waiting` + `question`, and the new `auto_approved`, were backend-only
+ * capabilities with no way to reach them. Order and wording follow the
+ * message icons in telegram-manager.
+ */
+export const TELEGRAM_FORWARD_KINDS: ReadonlyArray<{ value: string; label: string; hint: string }> = [
+  { value: "waiting", label: "⏳ Waiting", hint: "The agent is idle at its prompt, waiting to be told what to do." },
+  {
+    value: "question",
+    label: "❓ Question",
+    hint: "The agent is blocked on a permission prompt, an elicitation, or a direct question.",
+  },
+  { value: "completed", label: "✅ Completed", hint: "A command or an agent turn finished." },
+  {
+    value: "auto_approved",
+    label: "🔓 Approval sent",
+    hint: "strIDEterm answered a permission prompt on your behalf (auto-approve).",
+  },
+  { value: "subagent_done", label: "🤖 Subagent done", hint: "A sub-agent finished inside a turn." },
+  { value: "review", label: "🔍 Review", hint: "Pull-request review activity." },
+  { value: "pipeline", label: "🔧 Pipeline", hint: "CI / pipeline state changes." },
+  { value: "error", label: "❌ Error", hint: "Something failed." },
+];
+
 export const ConnectionForm = defineComponent({
   name: "ConnectionForm",
   props: {
@@ -600,6 +628,46 @@ export const ConnectionForm = defineComponent({
                   ),
                 )
               : null,
+          ],
+        ),
+        h(
+          "div",
+          {
+            class: "form-label",
+            title:
+              "Which alert kinds this bot delivers. With nothing ticked the bot forwards EVERY kind — that is the default and what most setups want. Tick specific kinds to narrow it.",
+          },
+          [
+            h("span", "Forward filter"),
+            h(
+              "div",
+              { class: "forward-kinds" },
+              TELEGRAM_FORWARD_KINDS.map((kind) =>
+                h("label", { class: "forward-kinds__item", title: kind.hint, key: kind.value }, [
+                  h("input", {
+                    type: "checkbox",
+                    checked: Array.isArray(d.forwardKinds) && (d.forwardKinds as string[]).includes(kind.value),
+                    onChange: (e: Event) => {
+                      const on = (e.target as HTMLInputElement).checked;
+                      const current = Array.isArray(d.forwardKinds) ? [...(d.forwardKinds as string[])] : [];
+                      d.forwardKinds = on
+                        ? current.includes(kind.value)
+                          ? current
+                          : [...current, kind.value]
+                        : current.filter((entry) => entry !== kind.value);
+                    },
+                  }),
+                  h("span", kind.label),
+                ]),
+              ),
+            ),
+            h(
+              "small",
+              { class: "help-text" },
+              Array.isArray(d.forwardKinds) && (d.forwardKinds as string[]).length > 0
+                ? "Only the ticked kinds are delivered. Untick everything to receive all of them."
+                : "Nothing ticked = every kind is delivered.",
+            ),
           ],
         ),
         h(
@@ -862,6 +930,28 @@ export const ConnectionForm = defineComponent({
   align-items: center;
   gap: 8px;
   cursor: pointer;
+}
+
+.forward-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.forward-kinds__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.forward-kinds__item input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--accent);
 }
 
 .form-label--inline input[type="checkbox"] {

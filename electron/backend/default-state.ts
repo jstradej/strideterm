@@ -183,6 +183,16 @@ const KNOWN_VIEW_PREFIXES = [
 ];
 const VALID_SPLIT_LAYOUTS = new Set(["cols", "rows", "top-split", "left-split", "grid"]);
 
+/**
+ * Id of the one-shot migration that widened a Telegram connection's
+ * `forwardKinds` from `waiting` to `waiting` + `question`.
+ *
+ * Recorded in `settings.appliedMigrations` the first time `normalizeState`
+ * runs against a state file. Everything after that leaves `forwardKinds`
+ * alone, so a user who then wants `waiting` on its own can have it.
+ */
+export const TELEGRAM_QUESTION_FORWARD_MIGRATION = "telegram-forward-kinds-question-v1";
+
 function isKnownPrefixViewId(viewId: unknown): boolean {
   return typeof viewId === "string" && KNOWN_VIEW_PREFIXES.some((prefix) => viewId.startsWith(prefix));
 }
@@ -264,11 +274,39 @@ function normalizeWorkspaceUIState(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+function hasTaskWorkspaceEvidence(task: any): boolean {
+  if (!task || typeof task !== "object") return false;
+  return Boolean(
+    task.taskId ||
+    task.description ||
+    task.parentWorkspaceId ||
+    task.worktreeBase ||
+    task.worktreeBranch ||
+    task.workerPanelId ||
+    task.judgePanelId ||
+    task.workerWorkspaceId ||
+    task.companionRole ||
+    task.mode === "attached" ||
+    (task.state && task.state !== "idle") ||
+    Number(task.currentRound) > 0 ||
+    (Array.isArray(task.rounds) && task.rounds.length > 0) ||
+    task.startedAt ||
+    task.finishedAt,
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
   const isDockerWorkspace = (workspace.id || "") === "docker" || workspace.kind === "docker";
   const isAzureWorkspace = workspace.kind === "azure";
   const isGitHubWorkspace = workspace.kind === "github";
   const isTaskWorkspace = workspace.kind === "task";
+  // WorkspaceDialog historically attached an all-empty task draft to every
+  // ordinary workspace. Keep real task evidence as a fail-safe when a damaged
+  // state lost `kind`, but remove that inert marker so it cannot disable
+  // ordinary-terminal auto-approve forever.
+  const preserveTask = isTaskWorkspace || hasTaskWorkspaceEvidence(workspace.task);
+  const shouldNormalizeTask = Boolean(workspace.task && preserveTask);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rawPanels: any[] = isDockerWorkspace
     ? (workspace.panels || []).filter(
@@ -387,7 +425,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
         }
       : null,
     starred: Boolean(workspace.starred),
-    task: workspace.task
+    task: shouldNormalizeTask
       ? {
           // Spread first: preserves runtime-only properties (promptSent,
           // pausedFromState, showerResumePrompt, etc.) that the task runner
@@ -464,6 +502,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         debug: APP_CONFIG.notifications.debug,
         agentsOnly: APP_CONFIG.notifications.agentsOnly,
         subagentCompletion: APP_CONFIG.notifications.subagentCompletion,
+        autoApprovePermissions: APP_CONFIG.notifications.autoApprovePermissions,
       },
       remoteAccess: {
         enabled: APP_CONFIG.remoteAccess.enabled,
@@ -511,6 +550,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       terminalFontSizeRemote: 13,
       clipboardImagePasteEnabled: true,
       clipboardImagePasteDir: "",
+      appliedMigrations: [] as string[],
     },
     // Tab templates surface in Settings → Tab Templates and in the "+" tab
     // quick-add dropdown. The `command` field has two runtime modes,
@@ -1076,6 +1116,43 @@ export function normalizeState(
   const rawNotifications = rawSettings.notifications || {};
   const rawExternalEditor = rawSettings.externalEditor;
 
+  // One-shot state migrations. A migration id lands here once its work is
+  // done, and every subsequent normalizeState pass sees it and stands down.
+  const rawAppliedMigrations = Array.isArray(rawSettings.appliedMigrations)
+    ? rawSettings.appliedMigrations.filter((id: unknown) => typeof id === "string")
+    : [];
+  const forwardKindsMigrationPending = !rawAppliedMigrations.includes(TELEGRAM_QUESTION_FORWARD_MIGRATION);
+  const appliedMigrations = forwardKindsMigrationPending
+    ? [...rawAppliedMigrations, TELEGRAM_QUESTION_FORWARD_MIGRATION]
+    : rawAppliedMigrations;
+
+  /**
+   * Telegram `forwardKinds` migration for the split of `waiting` into
+   * `waiting` (idle_prompt) and `question` (permission prompt / elicitation /
+   * agent needs input).
+   *
+   * A user who explicitly listed `waiting` used to receive permission prompts
+   * through it; after the split those arrive as `question` and their filter
+   * would silently stop delivering the most important alert they had. So any
+   * non-empty filter mentioning `waiting` gains `question` as well. An empty
+   * filter already means "everything" and is left alone, as is a filter that
+   * never asked for `waiting`.
+   *
+   * Runs EXACTLY ONCE, gated on the `appliedMigrations` marker. `normalizeState`
+   * is re-run after every mutation, so an ungated version would re-add
+   * `question` the instant the user removed it — leaving them permanently
+   * unable to choose `waiting` on its own. Being idempotent is not the same
+   * property as being one-shot, and only the second one is a migration.
+   */
+  function migrateForwardKinds(raw: unknown): string[] {
+    if (!Array.isArray(raw)) return [];
+    const kinds = [...raw];
+    if (forwardKindsMigrationPending && kinds.length > 0 && kinds.includes("waiting") && !kinds.includes("question")) {
+      kinds.push("question");
+    }
+    return kinds;
+  }
+
   // Shared by the three provider connection lists below — each raw connection
   // list normalizes identically (map with a per-provider field-mapper, default
   // to []), only the mapper itself differs per provider.
@@ -1131,6 +1208,10 @@ export function normalizeState(
         typeof rawNotifications.subagentCompletion === "boolean"
           ? rawNotifications.subagentCompletion
           : defaults.settings.notifications.subagentCompletion,
+      autoApprovePermissions:
+        typeof rawNotifications.autoApprovePermissions === "boolean"
+          ? rawNotifications.autoApprovePermissions
+          : defaults.settings.notifications.autoApprovePermissions,
     },
     remoteAccess: {
       ...defaults.settings.remoteAccess,
@@ -1188,7 +1269,7 @@ export function normalizeState(
           enabled: connection.enabled !== false,
           pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.telegram.defaultPollSeconds,
           profileId: typeof connection.profileId === "string" ? connection.profileId : "",
-          forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
+          forwardKinds: migrateForwardKinds(connection.forwardKinds),
         })),
       },
     },
@@ -1238,6 +1319,7 @@ export function normalizeState(
       const raw = rawSettings.clipboardImagePasteDir;
       return typeof raw === "string" ? raw : "";
     })(),
+    appliedMigrations,
   };
   // Reassign workspaces whose profileId points at a deleted profile to a
   // surviving one (active profile, then "default", then first available).

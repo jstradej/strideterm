@@ -640,6 +640,60 @@ export const azureAuditLogStatsSchema = z.object({
 });
 export type AzureAuditLogStats = z.infer<typeof azureAuditLogStatsSchema>;
 
+/**
+ * Filters for the permission auto-approval log. Same shape as the provider
+ * audit-log queries — the underlying store is the same factory.
+ */
+export const approvalAuditLogQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  /**
+   * Exclusive keyset cursors on the row id — the column the store orders by.
+   * The Notification Center back-fill pages with these because a timestamp
+   * window cannot page an `id DESC` ordering losslessly (see `AuditLogFilters`).
+   */
+  afterId: z.number().int().positive().optional(),
+  beforeId: z.number().int().positive().optional(),
+  search: z.string().optional(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().min(0).optional(),
+  /**
+   * Scope the trail to one profile. Desktop IPC only — a remote caller's scope
+   * comes from the SERVER's view of its bound session (see
+   * `approvalAuditLogFilters` in remote-server.ts), never from the request, so
+   * accepting the field here cannot widen anyone's reach.
+   */
+  profileId: z.string().optional(),
+});
+export type ApprovalAuditLogQuery = z.infer<typeof approvalAuditLogQuerySchema>;
+
+/**
+ * Rows the user asked to forget, from the Approvals tab in the notification
+ * dock. Either an explicit `ids` list or `all: true` — see `deleteEntries`
+ * in base-audit-log-store.ts for why there is no "delete what matches".
+ *
+ * Desktop IPC only. The remote server exposes no delete route: reading the
+ * trail from a phone is fine, erasing the record of a bypass that ran on the
+ * desktop is not — same reasoning as `autoApprovePermissions` itself, which
+ * a remote caller may not arm.
+ */
+export const approvalAuditLogDeleteSchema = z
+  .object({
+    ids: z.array(z.number().int().positive()).max(500).optional(),
+    all: z.boolean().optional(),
+    /** Scope the clear to one profile. Omitted means the whole installation. */
+    profileId: z.string().optional(),
+  })
+  .refine((value) => (value.ids?.length ?? 0) > 0 || value.all === true, {
+    message: "approvals:audit-log:delete requires a non-empty ids list or all: true",
+  });
+export type ApprovalAuditLogDelete = z.infer<typeof approvalAuditLogDeleteSchema>;
+
+export const approvalAuditLogStatsSchema = z.object({
+  from: z.string().optional(),
+});
+export type ApprovalAuditLogStats = z.infer<typeof approvalAuditLogStatsSchema>;
+
 export const githubConnectionSchema = z
   .object({
     hostUrl: z.string().optional(),

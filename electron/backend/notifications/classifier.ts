@@ -15,7 +15,13 @@ export interface Classification {
   userFacing: boolean;
   tier?: 1 | 2 | 3;
   urgency?: "normal" | "urgent";
-  kind?: "waiting" | "completed" | "info" | "subagent_done";
+  /**
+   * `question` = the agent is blocked on the user and will not move without an
+   * answer (permission prompt, MCP elicitation, a background session asking for
+   * input). `waiting` stays reserved for `idle_prompt` — the agent finished
+   * talking and nobody typed for ~60 s, which is not a question.
+   */
+  kind?: "waiting" | "question" | "completed" | "info" | "subagent_done";
   detail?: string;
 }
 
@@ -43,11 +49,14 @@ export function classifyHookEvent(hook: unknown, subtype?: unknown, options?: Cl
   if (hookName === "Notification") {
     switch (sub) {
       case "permission_prompt":
+        // Claude is blocked on an approval dialog (tool use, or a question
+        // asked through AskUserQuestion, which Claude renders as a permission
+        // dialog too). Nothing moves until the user answers → `question`.
         return {
           userFacing: true,
           tier: 1,
           urgency: "urgent",
-          kind: "waiting",
+          kind: "question",
           detail: "hook:Notification:permission_prompt",
         };
       case "idle_prompt":
@@ -59,12 +68,24 @@ export function classifyHookEvent(hook: unknown, subtype?: unknown, options?: Cl
           detail: "hook:Notification:idle_prompt",
         };
       case "elicitation_dialog":
+      case "elicitation_url_dialog":
+        // MCP elicitation: a server is asking the user for a value / to visit
+        // a URL. Blocking, but not as loud as a permission prompt.
         return {
           userFacing: true,
           tier: 1,
           urgency: "normal",
-          kind: "waiting",
-          detail: "hook:Notification:elicitation_dialog",
+          kind: "question",
+          detail: `hook:Notification:${sub}`,
+        };
+      case "agent_needs_input":
+        // Claude Code >= 2.1.198. A (possibly background) session needs input.
+        return {
+          userFacing: true,
+          tier: 1,
+          urgency: "normal",
+          kind: "question",
+          detail: "hook:Notification:agent_needs_input",
         };
       case "auth_success":
         // Informational only — log is enough, no user alert.

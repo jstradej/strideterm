@@ -140,6 +140,7 @@ interface SettingsObj {
     debug?: boolean;
     agentsOnly?: boolean;
     subagentCompletion?: boolean;
+    autoApprovePermissions?: boolean;
   };
   git?: { ui?: { showAllActions?: boolean } };
   externalPathOpener?: { mode?: string; command?: string };
@@ -219,6 +220,7 @@ const form = reactive({
     debug: props.settings.notifications?.debug ?? false,
     agentsOnly: props.settings.notifications?.agentsOnly ?? true,
     subagentCompletion: props.settings.notifications?.subagentCompletion ?? false,
+    autoApprovePermissions: props.settings.notifications?.autoApprovePermissions ?? false,
   },
   git: {
     ui: {
@@ -305,6 +307,7 @@ function handleSave() {
       debug: form.notifications.debug,
       agentsOnly: form.notifications.agentsOnly,
       subagentCompletion: form.notifications.subagentCompletion,
+      autoApprovePermissions: form.notifications.autoApprovePermissions,
     },
     tabTemplates: templates.filter((t) => t.title || t.command).map((t) => ({ ...toRaw(t) })),
     git: { ui: { showAllActions: form.git.ui.showAllActions } },

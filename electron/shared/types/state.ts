@@ -29,6 +29,17 @@ export interface NotificationSettings {
    * end-of-turn Stop.
    */
   subagentCompletion: boolean;
+  /**
+   * When true, strIDEterm answers Claude Code's `PermissionRequest` hook with
+   * `allow` — the permission prompt never appears and the agent keeps going.
+   * Off by default; it is a deliberate bypass, and every approval it makes is
+   * recorded in the approval audit log.
+   *
+   * Writable from desktop IPC only: `sanitizeSettingsFromRemote()` drops it
+   * from `/api/settings/update`, so a remote client (or a leaked token) can
+   * never quietly arm what the desktop will then execute unattended.
+   */
+  autoApprovePermissions: boolean;
 }
 
 export interface RemoteAccessSettings {
@@ -164,6 +175,17 @@ export interface Settings {
    * trigger writes there on the next desktop paste.
    */
   clipboardImagePasteDir: string;
+  /**
+   * Ids of one-shot state migrations that have already run against this state
+   * file (see `STATE_MIGRATIONS` in `default-state.ts`).
+   *
+   * `normalizeState` runs on load AND after every mutation, so a migration
+   * expressed as "add X when Y" is not a migration at all — it is a rule that
+   * keeps re-asserting itself, and the user can never undo what it did. A
+   * migration that records having run can be undone the moment after it runs,
+   * which is what "one-shot" has to mean.
+   */
+  appliedMigrations: string[];
 }
 
 // ------- Tab templates -------
@@ -513,6 +535,15 @@ export interface AttentionAlert {
   tier: number;
   urgency: string;
   detail: string;
+  /**
+   * Human-readable context for the alert, when the source provided any.
+   * For `kind: "question"` this is what the agent is actually asking about —
+   * either the summary strIDEterm derived from a `PermissionRequest` hook
+   * (`"Bash: chmod +x deploy.sh"`) or, failing that, Claude's own hook
+   * `message` (`"Claude needs your permission to use Bash"`). `detail` stays
+   * the technical code; nothing human goes in there.
+   */
+  message?: string;
   /** Backend event time. The renderer uses it as the event's `occurredAt`. */
   at: string;
 }

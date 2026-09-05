@@ -59,7 +59,12 @@ const servers: any[] = [];
 async function createServer(options: any = {}) {
   const secret = options.secret || generateNotifySecret();
   const onNotification = options.onNotification || vi.fn();
-  const handle = await startNotifyServer({ secret, onNotification });
+  const handle = await startNotifyServer({
+    secret,
+    onNotification,
+    onPermissionOffer: options.onPermissionOffer,
+    onPermissionCommit: options.onPermissionCommit,
+  });
   servers.push(handle);
   return { handle, secret, onNotification };
 }
@@ -437,17 +442,39 @@ describe("error handling", () => {
 // --- Payload size limit ---
 
 describe("payload size", () => {
-  test("rejects payloads larger than 64KB", async () => {
+  test("rejects payloads larger than the 256KB ceiling", async () => {
     const { handle, secret } = await createServer();
     const url = buildNotifyUrl(handle.port, "ws1:p1", secret);
 
-    const largePayload = { notification_type: "idle_prompt", message: "x".repeat(70 * 1024) };
+    const largePayload = { notification_type: "idle_prompt", message: "x".repeat(300 * 1024) };
     const res = await postJson(url, largePayload);
 
     expect(res.status).toBe(413);
   });
 
-  test("accepts payloads under 64KB", async () => {
+  test("a big Write permission request is decided, not rejected", async () => {
+    // The 64 KB ceiling this replaced turned a large `Write` into a 413: no
+    // decision, no summary, and the prompt the setting promised to answer.
+    // notify.mjs trims the payload before sending, but an untrimmed one from
+    // an older installed script still has to get an answer.
+    const { handle, secret } = await createServer({
+      onPermissionOffer: () => ({ requestId: "req-big" }),
+      onPermissionCommit: () => ({ hookSpecificOutput: { hookEventName: "PermissionRequest" } }),
+    });
+    const url = buildNotifyUrl(handle.port, "ws1:p1", secret);
+
+    const offer = await postJson(url, {
+      hook: "PermissionRequest",
+      phase: "offer",
+      tool_name: "Write",
+      tool_input: { file_path: "big.ts", content: "x".repeat(90 * 1024) },
+    });
+
+    expect(offer.status).toBe(200);
+    expect(JSON.parse(offer.body)).toEqual({ offer: { requestId: "req-big" } });
+  });
+
+  test("accepts ordinary small payloads", async () => {
     const { handle, secret, onNotification } = await createServer();
     const url = buildNotifyUrl(handle.port, "ws1:p1", secret);
 
@@ -480,5 +507,170 @@ describe("concurrent requests", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sessionIds = onNotification.mock.calls.map((c: any) => c[0].sessionId).sort();
     expect(sessionIds).toEqual(Array.from({ length: 10 }, (_, i) => `ws${i}:p${i}`).sort());
+  });
+});
+
+describe("PermissionRequest decisions", () => {
+  const HOOK_OUTPUT = { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } };
+  const OFFER = { requestId: "req-1" };
+
+  function offerBody(extra: Record<string, unknown> = {}) {
+    return { hook: "PermissionRequest", phase: "offer", ...extra };
+  }
+
+  test("phase 1 answers with an opaque requestId, not a decision", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const seen: any[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onPermissionOffer = (n: any) => {
+      seen.push(n);
+      return OFFER;
+    };
+    const { handle, secret } = await createServer({ onPermissionOffer });
+    const url = buildNotifyUrl(handle.port, "ws:panel", secret);
+
+    const res = await postJson(url, offerBody({ tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } }));
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ offer: OFFER });
+    // The offerer still sees the whole payload, tool name and input included.
+    expect(seen[0]).toMatchObject({
+      hook: "PermissionRequest",
+      sessionId: "ws:panel",
+      payload: { tool_name: "Bash" },
+    });
+  });
+
+  test("phase 2 returns the COMPLETE stdout document, hookSpecificOutput wrapper included", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const committed: any[] = [];
+    const { handle, secret } = await createServer({
+      onPermissionOffer: () => OFFER,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onPermissionCommit: (n: any, requestId: string) => {
+        committed.push({ n, requestId });
+        return HOOK_OUTPUT;
+      },
+    });
+    const url = buildNotifyUrl(handle.port, "ws:panel", secret);
+
+    const res = await postJson(url, {
+      hook: "PermissionRequest",
+      phase: "commit",
+      request_id: "req-1",
+    });
+
+    expect(JSON.parse(res.body)).toEqual({ hookOutput: HOOK_OUTPUT });
+    expect(committed[0].requestId).toBe("req-1");
+  });
+
+  test("a commit does NOT re-run the notification pipeline", async () => {
+    // The dispatcher already saw this request during phase 1; running it again
+    // would double every signal side effect the offer leg had.
+    const onNotification = vi.fn();
+    const { handle, secret } = await createServer({
+      onNotification,
+      onPermissionOffer: () => OFFER,
+      onPermissionCommit: () => HOOK_OUTPUT,
+    });
+    const url = buildNotifyUrl(handle.port, "ws:panel", secret);
+
+    await postJson(url, offerBody());
+    await postJson(url, { hook: "PermissionRequest", phase: "commit", request_id: "req-1" });
+
+    expect(onNotification).toHaveBeenCalledTimes(1);
+  });
+
+  test("a commit without a request_id is refused", async () => {
+    const onPermissionCommit = vi.fn(() => HOOK_OUTPUT);
+    const { handle, secret } = await createServer({ onPermissionOffer: () => OFFER, onPermissionCommit });
+    const res = await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), {
+      hook: "PermissionRequest",
+      phase: "commit",
+    });
+    expect(res.body).toBe("{}");
+    expect(onPermissionCommit).not.toHaveBeenCalled();
+  });
+
+  test("a null offer answers {} so the agent shows its prompt", async () => {
+    const { handle, secret } = await createServer({ onPermissionOffer: () => null });
+    const res = await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), offerBody());
+    expect(res.body).toBe("{}");
+  });
+
+  test("a null commit answers {} — an offer that could not be recorded issues nothing", async () => {
+    const { handle, secret } = await createServer({
+      onPermissionOffer: () => OFFER,
+      onPermissionCommit: () => null,
+    });
+    const res = await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), {
+      hook: "PermissionRequest",
+      phase: "commit",
+      request_id: "req-1",
+    });
+    expect(res.body).toBe("{}");
+  });
+
+  test("with no offerer wired the response is {} (auto-approve-off behaviour)", async () => {
+    const { handle, secret } = await createServer();
+    const res = await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), offerBody());
+    expect(res.body).toBe("{}");
+  });
+
+  test("a throwing offerer fails silent rather than hanging the hook", async () => {
+    const { handle, secret } = await createServer({
+      onPermissionOffer: () => {
+        throw new Error("boom");
+      },
+    });
+    const res = await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), offerBody());
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("{}");
+  });
+
+  test("a throwing committer fails silent too", async () => {
+    const { handle, secret } = await createServer({
+      onPermissionOffer: () => OFFER,
+      onPermissionCommit: () => {
+        throw new Error("boom");
+      },
+    });
+    const res = await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), {
+      hook: "PermissionRequest",
+      phase: "commit",
+      request_id: "req-1",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("{}");
+  });
+
+  test("other hooks never consult the offerer and always answer {}", async () => {
+    const onPermissionOffer = vi.fn(() => OFFER);
+    const { handle, secret } = await createServer({ onPermissionOffer });
+    const url = buildNotifyUrl(handle.port, "ws:panel", secret);
+
+    for (const hook of ["Notification", "Stop", "SubagentStop", "UserPromptSubmit", "PreToolUse"]) {
+      const res = await postJson(url, { hook });
+      expect(res.body).toBe("{}");
+    }
+    expect(onPermissionOffer).not.toHaveBeenCalled();
+  });
+
+  test("onNotification still runs for PermissionRequest (signal + metrics)", async () => {
+    const onNotification = vi.fn();
+    const { handle, secret } = await createServer({ onNotification, onPermissionOffer: () => OFFER });
+    await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), offerBody());
+    expect(onNotification).toHaveBeenCalledTimes(1);
+  });
+
+  test("a throwing onNotification does not block the offer", async () => {
+    const { handle, secret } = await createServer({
+      onNotification: () => {
+        throw new Error("dispatcher blew up");
+      },
+      onPermissionOffer: () => OFFER,
+    });
+    const res = await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), offerBody());
+    expect(JSON.parse(res.body)).toEqual({ offer: OFFER });
   });
 });

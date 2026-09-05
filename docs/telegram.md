@@ -39,10 +39,12 @@ When no connection is configured the panel shows a short pitch and a primary **S
 
 ### Forwarding rules
 
-`forwardKinds` controls what arrives in your chat. Leave it empty to forward everything; otherwise list the kinds you care about, e.g. `["completed", "waiting", "review"]`. Common kinds:
+`forwardKinds` controls what arrives in your chat. Edit it in **Settings → Telegram**: expand a connection and tick the kinds you want under **Forward filter**. Nothing ticked means everything is forwarded, which is the default. Common kinds:
 
 - `completed` — agent or shell command finished
-- `waiting` — agent paused waiting for input
+- `waiting` — the agent stopped talking and nobody typed for about a minute (Claude Code `idle_prompt`). It is not asking anything; it is just idle
+- `question` — the agent is **blocked on you**: a permission prompt, a question asked through `AskUserQuestion`, an MCP elicitation dialog, or a background session that needs input. The message carries what is being approved (`Bash: chmod +x deploy.sh`) and offers only a Dismiss button, since the answer has to be typed in the terminal the question came from. A filter that explicitly listed `waiting` before this kind existed was migrated to `["waiting", "question"]` — **once**, recorded in `settings.appliedMigrations`, so nothing is lost and you can still choose `waiting` on its own afterwards
+- `auto_approved` — strIDEterm answered a Claude Code permission prompt on your behalf ("Approval sent"). Only ever appears with **Settings → General → Auto-approve permission prompts** enabled; carries the tool and the summary that was recorded in the approval log
 - `subagent_done` — a sub-agent (Task tool) finished within the current turn. Opt-in: these alerts exist only when **Settings → General → Notify on sub-agent completion** is enabled (off by default — only the end-of-turn `completed` notifies). When enabled, one ping per subagent with only a Dismiss button to keep the chat tidy during complex turns
 - `review` — Azure DevOps or GitHub PR alert (new comment, your review requested, …)
 - `pipeline` — CI pipeline check completed
@@ -221,7 +223,7 @@ Every payload goes through the same Zod-schema validation layer the rest of the 
 | Setting                               | Default  | Purpose                                                                                                                 |
 | ------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `pollSeconds` (per connection)        | `5`      | Interval between `getUpdates` calls.                                                                                    |
-| `forwardKinds` (per connection)       | `[]`     | Empty = forward all; otherwise list of alert kinds.                                                                     |
+| `forwardKinds` (per connection)       | `[]`     | Empty = forward all; otherwise list of alert kinds (`completed`, `waiting`, `question`, `auto_approved`, `review`, …).  |
 | `TASK_COMMAND_COOLDOWN_MS` (constant) | `10_000` | Minimum gap between two `/task` invocations from a chat.                                                                |
 | `PENDING_TIMEOUT_MS` (constant)       | `10 min` | Multi-step flow expiry (workspace pick, branch input, …).                                                               |
 | `GETUPDATES_LONG_POLL_SEC` (constant) | `25`     | Telegram long-poll timeout. Paired with a `35 s` HTTP read timeout so the request can outlive the server's poll window. |

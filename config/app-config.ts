@@ -74,6 +74,10 @@ export const APP_CONFIG = {
     // Opt-in pings when a sub-agent finishes mid-turn (Claude Code
     // SubagentStop). Off by default — only the end-of-turn Stop notifies.
     subagentCompletion: envBoolean("STRIDETERM_NOTIFY_SUBAGENT_COMPLETION", false),
+    // Answer Claude Code permission prompts automatically. OFF by default —
+    // this is equivalent to running the agent without permission prompts, and
+    // arming it must always be an explicit act by the local user.
+    autoApprovePermissions: envBoolean("STRIDETERM_NOTIFY_AUTO_APPROVE", false),
   },
   logging: {
     level: envString("STRIDETERM_LOG_LEVEL", "warn"),

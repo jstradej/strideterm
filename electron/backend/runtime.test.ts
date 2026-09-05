@@ -7,6 +7,7 @@ import { createRuntime, detectTerminalEnvironment, hasMeaningfulUserInput } from
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
+import { normalizeCwd } from "./notify-url-registry.js";
 
 // Lets a single test capture log calls made through getLogger(label), for any
 // label, without altering real logging behavior for the other ~230 tests in
@@ -785,6 +786,78 @@ afterEach(async () => {
   );
   await Promise.all(tempPaths.splice(0).map((targetPath) => fs.rm(targetPath, RM_OPTS)));
 });
+
+// Two-workspace fixture used by the hook-alert tests: the "frontend" panel is
+// the visible one, so "backend:shell" is off-screen and therefore alertable.
+//
+// `agent: true` makes the off-screen panel run `claude`, which is what marks
+// its signal agent-like — a precondition of auto-approval (an approval is only
+// ever answered for a session THIS instance is driving). The alert tests leave
+// it off so they exercise the plain path.
+function questionFixtureState({ agent = false }: { agent?: boolean } = {}) {
+  const backendPanel = agent
+    ? { id: "shell", title: "Claude Code", command: "claude", shell: true, startup: "default" }
+    : { id: "shell", title: "Shell", command: "", shell: true, startup: "default" };
+  return {
+    activeProjectId: "frontend",
+    projects: [
+      {
+        id: "frontend",
+        name: "Frontend",
+        kind: "terminal",
+        cwd: "/tmp/frontend",
+        activePanelId: "claude",
+        panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+      },
+      {
+        id: "backend",
+        name: "Backend",
+        kind: "terminal",
+        cwd: "/tmp/backend",
+        activePanelId: "shell",
+        panels: [backendPanel],
+      },
+    ],
+  };
+}
+
+// The parked PermissionRequest summary for the fixture's off-screen panel.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function pendingPermissionOf(fixture: any) {
+  const queue = fixture.runtime._sessionSignalsForTest().get("backend:shell")?.pendingPermissions ?? [];
+  return queue.length ? queue[queue.length - 1] : null;
+}
+
+/**
+ * The payload a hook that genuinely came from this instance's PTY would send:
+ * the ownership token strIDEterm injected into that terminal, echoed back.
+ * Without it every request is refused as `unproven-session`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ownedPayload(fixture: any, payload: Record<string, unknown>, sessionId = "backend:shell") {
+  return { ...payload, strideterm_session_token: fixture.runtime._sessionOwnershipTokenForTest(sessionId) };
+}
+
+/**
+ * Put the session inside an active turn. A permission request only ever
+ * happens between UserPromptSubmit and Stop, and that is what auto-approve
+ * gates on.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function startTurn(fixture: any, sessionId = "backend:shell") {
+  fixture.runtime.notifyAgentHook(sessionId, "", "UserPromptSubmit");
+  await vi.advanceTimersByTimeAsync(1);
+}
+
+// Bring "backend:shell" into the state every hook alert needs: not visible,
+// past the initial warm-up cooldown, and with user input recorded.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function armQuestionSession(fixture: any) {
+  await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+  fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+  await vi.advanceTimersByTimeAsync(16_000);
+  fixture.runtime.writeToSession("backend:shell", "claude\r");
+}
 
 describe("detectTerminalEnvironment", () => {
   test("reports conpty for supported Windows builds", () => {
@@ -2122,6 +2195,1258 @@ describe("runtime integration", () => {
     }
   });
 
+  test("permission_prompt is a question alert and carries the hook message", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission to use Bash",
+      });
+
+      expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0]).toMatchObject({
+        kind: "question",
+        urgency: "urgent",
+        detail: "hook:Notification:permission_prompt",
+        message: "Claude needs your permission to use Bash",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a question latches waitingRaised so a later idle_prompt cannot overwrite it", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission to use Bash",
+      });
+      const first = fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0];
+
+      // A minute later Claude re-fires the generic idle notification. It must
+      // not replace the specific question with "waiting for input".
+      await vi.advanceTimersByTimeAsync(60_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+
+      const after = fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0];
+      expect(after.alertId).toBe(first.alertId);
+      expect(after.kind).toBe("question");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a second permission_prompt on the same panel raises a NEW alert instance", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission to use Bash",
+      });
+      const first = fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0];
+
+      // Past the 3 s urgent cooldown: a second approval request in the same
+      // thread is a genuinely new event and deserves its own alertId.
+      await vi.advanceTimersByTimeAsync(4_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission to use Edit",
+      });
+
+      const second = fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0];
+      expect(second.alertId).not.toBe(first.alertId);
+      expect(second.message).toBe("Claude needs your permission to use Edit");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("elicitation_dialog and agent_needs_input are questions, idle_prompt stays waiting", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const [subtype, expectedKind] of [
+        ["elicitation_dialog", "question"],
+        ["agent_needs_input", "question"],
+        ["idle_prompt", "waiting"],
+      ] as const) {
+        const fixture = await createFixture({ initialState: questionFixtureState() });
+        fixtures.push(fixture);
+        await armQuestionSession(fixture);
+
+        fixture.runtime.notifyAgentHook("backend:shell", subtype);
+
+        expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0].kind).toBe(expectedKind);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("PermissionRequest parks a summary that the following permission_prompt uses as its text", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      // Auto-approve is off (the default), so the decision is "no opinion" —
+      // Claude shows its prompt — but the summary is recorded either way.
+      const decision = fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } },
+      });
+      expect(decision).toBeNull();
+      expect(pendingPermissionOf(fixture)).toMatchObject({
+        toolName: "Bash",
+        summary: "Bash: chmod +x deploy.sh",
+        detail: "chmod +x deploy.sh",
+      });
+
+      // ~6 s later Claude fires the notification whose bare message says
+      // nothing useful. The parked summary wins.
+      await vi.advanceTimersByTimeAsync(6_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission",
+      });
+
+      expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0]).toMatchObject({
+        kind: "question",
+        message: "Bash: chmod +x deploy.sh",
+      });
+      // Consumed on use — a later idle alert must not reuse it.
+      expect(pendingPermissionOf(fixture)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a parked summary is dropped by UserPromptSubmit and by Stop", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const hook of ["UserPromptSubmit", "Stop"]) {
+        const fixture = await createFixture({ initialState: questionFixtureState() });
+        fixtures.push(fixture);
+        await armQuestionSession(fixture);
+
+        fixture.runtime._handlePermissionRequestForTest({
+          sessionId: "backend:shell",
+          payload: { tool_name: "Bash", tool_input: { command: "rm -rf build" } },
+        });
+        expect(pendingPermissionOf(fixture)).not.toBeNull();
+
+        fixture.runtime.notifyAgentHook("backend:shell", "", hook);
+        expect(pendingPermissionOf(fixture)).toBeNull();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a stale parked summary (older than 10 min) is not used", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } },
+      });
+
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission to use Edit",
+      });
+
+      // The hook's own message is used instead of a summary from ten minutes ago.
+      expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0].message).toBe(
+        "Claude needs your permission to use Edit",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("an idle_prompt never borrows a parked permission summary", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } },
+      });
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+
+      const alert = fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0];
+      expect(alert.kind).toBe("waiting");
+      expect(alert.message).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("with auto-approve on, a permission request is allowed, audited, broadcast and forwarded", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      const broadcasts: unknown[] = [];
+      fixture.runtime.on("approval:recorded", (payload: unknown) => broadcasts.push(payload));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const forwarded: any[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      fixture.runtime._telegramManagerForTest().forwardAlert = async (payload: any) => {
+        forwarded.push(payload);
+      };
+
+      await startTurn(fixture);
+      const decision = fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, {
+          tool_name: "Bash",
+          tool_input: { command: "chmod +x deploy.sh" },
+          session_id: "claude-session-1",
+          strideterm_delivery_id: "delivery-1",
+        }),
+      });
+
+      // The COMPLETE stdout document — the `hookSpecificOutput` wrapper is
+      // what Claude Code reads, and without it nothing is ever approved.
+      expect(decision).toEqual({
+        hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } },
+      });
+
+      // Audit row — the precondition of the approval, not a footnote.
+      const audit = fixture.runtime.queryApprovalAuditLog({});
+      expect(audit.total).toBe(1);
+      expect(audit.entries[0]).toMatchObject({
+        operation: "auto-approve",
+        category: "write",
+        method: "HOOK",
+        resourceType: "permission-request",
+        toolName: "Bash",
+        summary: "Bash: chmod +x deploy.sh",
+        workspaceId: "backend",
+        sessionId: "backend:shell",
+        // Lets an approval be found again in the Claude transcript.
+        claudeSessionId: "claude-session-1",
+        decisionReason: "global",
+        success: true,
+        userInitiated: false,
+        // Scoping and readability, added by the review's P2-14 / P3-15.
+        profileId: "default",
+        workspaceName: "Backend",
+        panelTitle: "Claude Code",
+        requestKey: "delivery-1",
+        // Honest wording: strIDEterm issued a decision. Nothing here observes
+        // whether Claude Code acted on it.
+        outcome: "decision-issued",
+      });
+      expect(audit.entries[0].resourceId).toBeTruthy();
+
+      // Notification Center gets a silent entry via the broadcast.
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0]).toMatchObject({
+        workspaceId: "backend",
+        viewId: "backend:shell",
+        toolName: "Bash",
+        summary: "Bash: chmod +x deploy.sh",
+        // Carried separately so the renderer, which prints the tool name
+        // itself, does not produce "Bash in Alpha: Bash: chmod +x deploy.sh".
+        detail: "chmod +x deploy.sh",
+        profileId: "default",
+        requestId: audit.entries[0].resourceId,
+      });
+
+      // Telegram gets its own kind so a chat can filter approvals separately.
+      expect(forwarded).toHaveLength(1);
+      expect(forwarded[0]).toMatchObject({
+        kind: "auto_approved",
+        title: "Approval sent",
+        message: "Bash: chmod +x deploy.sh",
+        workspaceId: "backend",
+        panelId: "shell",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a failed audit write blocks the approval", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      // An approval nobody can look up afterwards is exactly what makes a
+      // bypass indefensible, so the trail wins over the convenience.
+      await startTurn(fixture);
+      const store = fixture.runtime._approvalAuditLogStoreForTest();
+      const original = store.logEntry;
+      store.logEntry = () => false;
+      try {
+        const decision = fixture.runtime._handlePermissionRequestForTest({
+          sessionId: "backend:shell",
+          payload: ownedPayload(fixture, { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } }),
+        });
+        expect(decision).toBeNull();
+      } finally {
+        store.logEntry = original;
+      }
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("with auto-approve off nothing is approved and nothing is audited", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      const decision = fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } },
+      });
+
+      expect(decision).toBeNull();
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each(["AskUserQuestion", "ExitPlanMode"])(
+    "%s is never auto-approved even with the setting on",
+    async (toolName) => {
+      vi.useFakeTimers();
+      try {
+        const fixture = await createFixture({
+          initialState: {
+            ...questionFixtureState({ agent: true }),
+            settings: { notifications: { autoApprovePermissions: true } },
+          },
+        });
+        fixtures.push(fixture);
+        await armQuestionSession(fixture);
+
+        await startTurn(fixture);
+        const decision = fixture.runtime._handlePermissionRequestForTest({
+          sessionId: "backend:shell",
+          payload: ownedPayload(fixture, { tool_name: toolName, tool_input: {} }),
+        });
+
+        expect(decision).toBeNull();
+        expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test("a session this instance is not driving is never auto-approved", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      // No armQuestionSession(), no turn: the panel runs an agent, but nothing
+      // is happening in it in THIS instance. That is the second-instance case
+      // — prod strIDEterm open on the same repo while the user works in dev.
+      const decision = fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } }),
+      });
+
+      expect(decision).toBeNull();
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a hook that cannot prove which PTY it came from is never auto-approved", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      // A `claude` the user started in a plain terminal inside the same
+      // repository reaches this responder through cwd routing exactly like the
+      // real one does. It has no ownership token, and that is the difference.
+      for (const token of [undefined, "", "not-the-right-token"]) {
+        const decision = fixture.runtime._handlePermissionRequestForTest({
+          sessionId: "backend:shell",
+          payload: {
+            tool_name: "Bash",
+            tool_input: { command: "chmod +x deploy.sh" },
+            ...(token === undefined ? {} : { strideterm_session_token: token }),
+          },
+        });
+        expect(decision).toBeNull();
+      }
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("an offer on its own records nothing — arbitration comes first", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      const broadcasts: unknown[] = [];
+      fixture.runtime.on("approval:recorded", (payload: unknown) => broadcasts.push(payload));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const forwarded: any[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      fixture.runtime._telegramManagerForTest().forwardAlert = async (payload: any) => {
+        forwarded.push(payload);
+      };
+
+      // Phase 1 only. notify.mjs has not yet counted the offers, and a second
+      // instance may still be about to offer too — so nothing irreversible may
+      // have happened by this point.
+      const offer = fixture.runtime._offerPermissionDecisionForTest({
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } }),
+      });
+
+      expect(offer?.requestId).toBeTruthy();
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(0);
+      expect(broadcasts).toHaveLength(0);
+      expect(forwarded).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a redelivered request is audited, broadcast and forwarded exactly once", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      const broadcasts: unknown[] = [];
+      fixture.runtime.on("approval:recorded", (payload: unknown) => broadcasts.push(payload));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const forwarded: any[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      fixture.runtime._telegramManagerForTest().forwardAlert = async (payload: any) => {
+        forwarded.push(payload);
+      };
+
+      // The same hook DELIVERY reaching the instance twice: the server already
+      // processed the request and the answer never made it back. Same delivery
+      // id, same panel, same tool, same arguments — the one case where
+      // replaying the stored decision is the same decision.
+      const payload = ownedPayload(fixture, {
+        tool_name: "Bash",
+        tool_input: { command: "chmod +x deploy.sh" },
+        session_id: "claude-session-1",
+        strideterm_delivery_id: "delivery-9",
+      });
+      const first = fixture.runtime._handlePermissionRequestForTest({ sessionId: "backend:shell", payload });
+      const second = fixture.runtime._handlePermissionRequestForTest({ sessionId: "backend:shell", payload });
+
+      expect(second).toEqual(first);
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(1);
+      expect(broadcasts).toHaveLength(1);
+      expect(forwarded).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("every tool of one turn is decided on its own, never on the first one's decision", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      // One Claude session, ONE user prompt: `prompt_id` is the same for all
+      // four, which is exactly why it cannot be the identity of a request.
+      // Each hook run brings its own delivery id.
+      const request = (toolName: string, deliveryId: string, input: Record<string, unknown>) =>
+        fixture.runtime._handlePermissionRequestForTest({
+          sessionId: "backend:shell",
+          payload: ownedPayload(fixture, {
+            tool_name: toolName,
+            tool_input: input,
+            session_id: "claude-session-1",
+            prompt_id: "prompt-1",
+            strideterm_delivery_id: deliveryId,
+          }),
+        });
+
+      const bash = request("Bash", "d-1", { command: "chmod +x deploy.sh" });
+      const write = request("Write", "d-2", { file_path: "src/a.ts", content: "x" });
+      const ask = request("AskUserQuestion", "d-3", { questions: [] });
+      const plan = request("ExitPlanMode", "d-4", { plan: "do the thing" });
+
+      expect(bash).toEqual({
+        hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } },
+      });
+      expect(write).toEqual(bash);
+      // The never-list holds for the tools that share the turn. Under the old
+      // (session_id, prompt_id) key these two replayed the Bash "allow".
+      expect(ask).toBeNull();
+      expect(plan).toBeNull();
+      // Refused at phase 1: no offer at all, so notify.mjs has nothing to
+      // commit and prints nothing.
+      for (const toolName of ["AskUserQuestion", "ExitPlanMode"]) {
+        expect(
+          fixture.runtime._offerPermissionDecisionForTest({
+            sessionId: "backend:shell",
+            payload: ownedPayload(fixture, {
+              tool_name: toolName,
+              tool_input: {},
+              session_id: "claude-session-1",
+              prompt_id: "prompt-1",
+              strideterm_delivery_id: `d-offer-${toolName}`,
+            }),
+          }),
+        ).toBeNull();
+      }
+
+      // Two tools approved, two audit rows — one decision is one record, and
+      // the second legitimate tool is not swallowed by the first one's row.
+      const audit = fixture.runtime.queryApprovalAuditLog({});
+      expect(audit.total).toBe(2);
+      expect(audit.entries.map((entry) => String((entry as unknown as { toolName: unknown }).toolName)).sort()).toEqual(
+        ["Bash", "Write"],
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the same holds on a Claude that sends no prompt_id at all", async () => {
+    // Claude Code 2.0.45..2.1.195 — `prompt_id` is documented only from
+    // 2.1.196, and the README declares the older floor. A key built from it
+    // was constant across the whole session there, which is worse still.
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      const request = (toolName: string, deliveryId: string) =>
+        fixture.runtime._handlePermissionRequestForTest({
+          sessionId: "backend:shell",
+          payload: ownedPayload(fixture, {
+            tool_name: toolName,
+            tool_input: { command: "run " + toolName },
+            session_id: "claude-session-1",
+            strideterm_delivery_id: deliveryId,
+          }),
+        });
+
+      expect(request("Bash", "d-1")).not.toBeNull();
+      expect(request("Bash", "d-2")).not.toBeNull();
+      expect(request("AskUserQuestion", "d-3")).toBeNull();
+      expect(request("ExitPlanMode", "d-4")).toBeNull();
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a delivery id that comes back for a DIFFERENT request is not a replay", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      const approved = fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, {
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+          strideterm_delivery_id: "same-id",
+        }),
+      });
+      expect(approved).not.toBeNull();
+
+      // A broken or hostile script repeating an id it already used. The stored
+      // decision belongs to a different question and must not be handed over.
+      const askAgain = fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, {
+          tool_name: "AskUserQuestion",
+          tool_input: { questions: [] },
+          strideterm_delivery_id: "same-id",
+        }),
+      });
+      expect(askAgain).toBeNull();
+
+      // Same tool, different arguments — also a different question.
+      const otherCommand = fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, {
+          tool_name: "Bash",
+          tool_input: { command: "rm -rf build" },
+          strideterm_delivery_id: "same-id",
+        }),
+      });
+      expect(otherCommand).not.toBeNull();
+      // Two different commands, two rows: neither inherited the other's.
+      const audit = fixture.runtime.queryApprovalAuditLog({});
+      expect(audit.total).toBe(2);
+      expect(audit.entries.map((entry) => String(entry.summary)).sort()).toEqual(["Bash: ls", "Bash: rm -rf build"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("an offer is not committed once the state it was made on is gone", async () => {
+    // P2-4: offer and commit are two round trips, and everything the offer
+    // relied on can change in between. Each case must end with an empty stdout
+    // and no audit row — the prompt the user then answers themselves.
+    const cases: Array<{
+      name: string;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      revoke: (fixture: any) => Promise<void> | void;
+    }> = [
+      {
+        name: "auto-approve turned off",
+        revoke: (fixture) => fixture.runtime.updateSettings({ notifications: { autoApprovePermissions: false } }),
+      },
+      {
+        name: "the turn ended",
+        revoke: (fixture) => fixture.runtime.notifyAgentHook("backend:shell", "", "Stop"),
+      },
+      {
+        name: "the panel closed",
+        revoke: (fixture) => fixture.runtime.closeSession("backend:shell"),
+      },
+      {
+        name: "the workspace deleted",
+        revoke: (fixture) => fixture.runtime.deleteWorkspace("backend"),
+      },
+    ];
+
+    for (const testCase of cases) {
+      vi.useFakeTimers();
+      try {
+        const fixture = await createFixture({
+          initialState: {
+            ...questionFixtureState({ agent: true }),
+            settings: { notifications: { agentHook: true, autoApprovePermissions: true } },
+          },
+        });
+        fixtures.push(fixture);
+        await armQuestionSession(fixture);
+        await startTurn(fixture);
+
+        const event = {
+          sessionId: "backend:shell",
+          payload: ownedPayload(fixture, {
+            tool_name: "Bash",
+            tool_input: { command: "chmod +x deploy.sh" },
+            strideterm_delivery_id: "d-" + testCase.name,
+          }),
+        };
+        const offer = fixture.runtime._offerPermissionDecisionForTest(event);
+        expect(offer, testCase.name).not.toBeNull();
+
+        await testCase.revoke(fixture);
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(fixture.runtime._commitPermissionDecisionForTest(event, offer!.requestId), testCase.name).toBeNull();
+        expect(fixture.runtime.queryApprovalAuditLog({}).total, testCase.name).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  test("a commit presenting another panel's token is refused", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      const event = {
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, {
+          tool_name: "Bash",
+          tool_input: { command: "chmod +x deploy.sh" },
+          strideterm_delivery_id: "d-token",
+        }),
+      };
+      const offer = fixture.runtime._offerPermissionDecisionForTest(event);
+      expect(offer).not.toBeNull();
+
+      // The commit has to prove ownership all over again — an offer is not a
+      // bearer token for whoever reaches the commit endpoint first.
+      const forged = {
+        sessionId: "backend:shell",
+        payload: { ...event.payload, strideterm_session_token: "not-the-right-token" },
+      };
+      expect(fixture.runtime._commitPermissionDecisionForTest(forged, offer!.requestId)).toBeNull();
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a commit is refused unless it describes the request that was offered", async () => {
+    // P1-1: the request id is a lookup key, not an identity. Nothing about it
+    // ties the stdout we return to the question the commit payload actually
+    // carries, so a crossed commit was answered `allow` out of the record it
+    // named — an `AskUserQuestion` payload decided on a stored `Bash`, past
+    // the never-list and audited as the Bash call it never was. The generated
+    // notify.mjs builds both legs from one payload and does not cross them;
+    // that is a well-behaved client, not a safety boundary.
+    const offered = {
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+      strideterm_delivery_id: "delivery-A",
+    };
+    const cases: Array<{ name: string; commit: Record<string, unknown>; sessionId?: string }> = [
+      {
+        name: "a never-list tool in place of the offered one",
+        commit: { ...offered, tool_name: "AskUserQuestion", tool_input: { questions: [] } },
+      },
+      { name: "different arguments", commit: { ...offered, tool_input: { command: "rm -rf build" } } },
+      { name: "a different delivery id", commit: { ...offered, strideterm_delivery_id: "delivery-B" } },
+      { name: "no delivery id at all", commit: { ...offered, strideterm_delivery_id: "" } },
+      { name: "another panel's session", commit: { ...offered }, sessionId: "frontend:claude" },
+    ];
+
+    for (const testCase of cases) {
+      vi.useFakeTimers();
+      try {
+        const fixture = await createFixture({
+          initialState: {
+            ...questionFixtureState({ agent: true }),
+            settings: { notifications: { agentHook: true, autoApprovePermissions: true } },
+          },
+        });
+        fixtures.push(fixture);
+        await armQuestionSession(fixture);
+        await startTurn(fixture);
+
+        const offer = fixture.runtime._offerPermissionDecisionForTest({
+          sessionId: "backend:shell",
+          payload: ownedPayload(fixture, offered),
+        });
+        expect(offer, testCase.name).not.toBeNull();
+
+        const commit = {
+          sessionId: testCase.sessionId || "backend:shell",
+          payload: ownedPayload(fixture, testCase.commit),
+        };
+        expect(fixture.runtime._commitPermissionDecisionForTest(commit, offer!.requestId), testCase.name).toBeNull();
+        expect(fixture.runtime.queryApprovalAuditLog({}).total, testCase.name).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  test("a committed decision is not replayed once the guards no longer hold", async () => {
+    // P1-1: the stored output used to be returned before session, token,
+    // setting and turn state were even looked at, so a second commit answered
+    // `allow` after the user had unticked the box, after the turn's Stop, or
+    // from a caller that could not prove the panel at all.
+    const cases: Array<{
+      name: string;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      revoke?: (fixture: any) => Promise<void> | void;
+      forgeToken?: boolean;
+      crossSession?: boolean;
+    }> = [
+      {
+        name: "auto-approve turned off",
+        revoke: (fixture) => fixture.runtime.updateSettings({ notifications: { autoApprovePermissions: false } }),
+      },
+      {
+        name: "the turn ended",
+        revoke: (fixture) => fixture.runtime.notifyAgentHook("backend:shell", "", "Stop"),
+      },
+      {
+        name: "the panel closed",
+        revoke: (fixture) => fixture.runtime.closeSession("backend:shell"),
+      },
+      { name: "a forged ownership token", forgeToken: true },
+      { name: "another panel's session", crossSession: true },
+    ];
+
+    for (const testCase of cases) {
+      vi.useFakeTimers();
+      try {
+        const fixture = await createFixture({
+          initialState: {
+            ...questionFixtureState({ agent: true }),
+            settings: { notifications: { agentHook: true, autoApprovePermissions: true } },
+          },
+        });
+        fixtures.push(fixture);
+        await armQuestionSession(fixture);
+        await startTurn(fixture);
+
+        const event = {
+          sessionId: "backend:shell",
+          payload: ownedPayload(fixture, {
+            tool_name: "Bash",
+            tool_input: { command: "chmod +x deploy.sh" },
+            strideterm_delivery_id: "d-replay",
+          }),
+        };
+        const offer = fixture.runtime._offerPermissionDecisionForTest(event);
+        expect(offer, testCase.name).not.toBeNull();
+        // The legitimate commit: one decision, one audit row.
+        expect(fixture.runtime._commitPermissionDecisionForTest(event, offer!.requestId), testCase.name).not.toBeNull();
+        expect(fixture.runtime.queryApprovalAuditLog({}).total, testCase.name).toBe(1);
+
+        await testCase.revoke?.(fixture);
+        await vi.advanceTimersByTimeAsync(1);
+        let replay = event;
+        if (testCase.forgeToken) {
+          replay = { sessionId: "backend:shell", payload: { ...event.payload, strideterm_session_token: "forged" } };
+        } else if (testCase.crossSession) {
+          replay = { sessionId: "frontend:claude", payload: event.payload };
+        }
+
+        expect(fixture.runtime._commitPermissionDecisionForTest(replay, offer!.requestId), testCase.name).toBeNull();
+        // Still exactly the one row: a refused replay records nothing either.
+        expect(fixture.runtime.queryApprovalAuditLog({}).total, testCase.name).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  test("an unchanged commit still replays the same decision exactly once", async () => {
+    // The flip side of the guards above: the case they exist for — the row was
+    // written and the reply never made it back — must still answer, and must
+    // not write a second row.
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { agentHook: true, autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      const event = {
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, {
+          tool_name: "Bash",
+          tool_input: { command: "chmod +x deploy.sh" },
+          strideterm_delivery_id: "d-ok",
+        }),
+      };
+      const offer = fixture.runtime._offerPermissionDecisionForTest(event);
+      const first = fixture.runtime._commitPermissionDecisionForTest(event, offer!.requestId);
+      const second = fixture.runtime._commitPermissionDecisionForTest(event, offer!.requestId);
+
+      expect(first).toEqual({
+        hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } },
+      });
+      expect(second).toEqual(first);
+      expect(fixture.runtime.queryApprovalAuditLog({}).total).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a committed approval drops its parked summary", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } }),
+      });
+
+      // No prompt follows a decision we issued, so leaving the summary parked
+      // would only let it decorate some unrelated later question.
+      expect(pendingPermissionOf(fixture)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a parked summary is matched to its own Claude session, not the newest request", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      // Two concurrent requests from two different Claude sessions on the same
+      // panel. A single slot meant the second overwrote the first and the
+      // alert for the first described the second.
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: { tool_name: "Bash", tool_input: { command: "first" }, session_id: "claude-a" },
+      });
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: { tool_name: "Bash", tool_input: { command: "second" }, session_id: "claude-b" },
+      });
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission",
+        session_id: "claude-a",
+      });
+
+      expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0].message).toBe("Bash: first");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("two requests of one Claude session are matched by prompt id, in whatever order they resolve", async () => {
+    // P2-7: the main agent and a subagent can both be waiting on a permission
+    // prompt inside ONE Claude session. Picking the newest candidate gave the
+    // second notification the first tool's line; the finer identities both
+    // events carry are what tell them apart.
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: {
+          tool_name: "Bash",
+          tool_input: { command: "first" },
+          session_id: "claude-a",
+          prompt_id: "prompt-1",
+        },
+      });
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: {
+          tool_name: "Bash",
+          tool_input: { command: "second" },
+          session_id: "claude-a",
+          prompt_id: "prompt-2",
+        },
+      });
+
+      // The notifications arrive in the REVERSE order of the requests.
+      await vi.advanceTimersByTimeAsync(6_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission",
+        session_id: "claude-a",
+        prompt_id: "prompt-2",
+      });
+      expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0].message).toBe("Bash: second");
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission",
+        session_id: "claude-a",
+        prompt_id: "prompt-1",
+      });
+      expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0].message).toBe("Bash: first");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("two indistinguishable candidates fall back to Claude's own message", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      // Same session, nothing else to tell them apart. Naming one of them
+      // would be a coin flip printed as a fact.
+      for (const command of ["first", "second"]) {
+        fixture.runtime._handlePermissionRequestForTest({
+          sessionId: "backend:shell",
+          payload: { tool_name: "Bash", tool_input: { command }, session_id: "claude-a" },
+        });
+      }
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission to use Bash",
+        session_id: "claude-a",
+      });
+
+      expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0].message).toBe(
+        "Claude needs your permission to use Bash",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a subagent's request is matched by agent id", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: {
+          tool_name: "Bash",
+          tool_input: { command: "main-agent" },
+          session_id: "claude-a",
+          prompt_id: "prompt-1",
+        },
+      });
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: {
+          tool_name: "Bash",
+          tool_input: { command: "sub-agent" },
+          session_id: "claude-a",
+          prompt_id: "prompt-1",
+          agent_id: "agent-7",
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+        message: "Claude needs your permission",
+        session_id: "claude-a",
+        prompt_id: "prompt-1",
+        agent_id: "agent-7",
+      });
+
+      expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0].message).toBe("Bash: sub-agent");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a candidate whose identity contradicts the notification is never used", async () => {
+    // P2-2: an unmatched narrowing used to hand back the WIDER set, which made
+    // "this side does not say" and "the two sides say different things" the
+    // same answer. The sole surviving candidate was then printed as fact — one
+    // turn's command describing another turn's prompt. A dropped
+    // UserPromptSubmit or a subagent running alongside makes that an ordinary
+    // state, not an exotic one.
+    const message = "Claude needs your permission to use Bash";
+    const cases: Array<{ name: string; pending: Record<string, unknown>; notification: Record<string, unknown> }> = [
+      {
+        name: "another turn of the same session",
+        pending: { session_id: "claude-a", prompt_id: "prompt-1" },
+        notification: { session_id: "claude-a", prompt_id: "prompt-2" },
+      },
+      {
+        name: "another subagent",
+        pending: { session_id: "claude-a", prompt_id: "prompt-1", agent_id: "agent-1" },
+        notification: { session_id: "claude-a", prompt_id: "prompt-1", agent_id: "agent-2" },
+      },
+      {
+        name: "the main agent against a subagent's prompt",
+        pending: { session_id: "claude-a", prompt_id: "prompt-1" },
+        notification: { session_id: "claude-a", prompt_id: "prompt-1", agent_id: "agent-7" },
+      },
+    ];
+
+    for (const testCase of cases) {
+      vi.useFakeTimers();
+      try {
+        const fixture = await createFixture({ initialState: questionFixtureState() });
+        fixtures.push(fixture);
+        await armQuestionSession(fixture);
+
+        // The ONLY pending request — so "one candidate survived" is not the
+        // proof it looks like.
+        fixture.runtime._handlePermissionRequestForTest({
+          sessionId: "backend:shell",
+          payload: { tool_name: "Bash", tool_input: { command: "not-this-one" }, ...testCase.pending },
+        });
+
+        await vi.advanceTimersByTimeAsync(6_000);
+        fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt", "Notification", {
+          message,
+          ...testCase.notification,
+        });
+
+        expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0].message, testCase.name).toBe(
+          message,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  test("an elicitation question never borrows a parked permission summary", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({ initialState: questionFixtureState() });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } },
+      });
+
+      // `elicitation_dialog` classifies as `question` too, but it is a
+      // different question — it must not inherit the Bash line.
+      await vi.advanceTimersByTimeAsync(6_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "elicitation_dialog", "Notification", {
+        message: "An MCP server is asking for input",
+      });
+
+      const alert = fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0];
+      expect(alert.kind).toBe("question");
+      expect(alert.message).toBe("An MCP server is asking for input");
+      // Still parked for the permission_prompt it belongs to.
+      expect(pendingPermissionOf(fixture)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("turning the agent hook off disarms auto-approve", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        ...questionFixtureState({ agent: true }),
+        settings: { notifications: { agentHook: true, autoApprovePermissions: true } },
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.updateSettings({ notifications: { agentHook: false } });
+    expect(fixture.runtime.getPayload().appState.settings.notifications.autoApprovePermissions).toBe(false);
+
+    // A remote client may flip `agentHook` back on — it may NOT re-arm the
+    // bypass by doing so. Re-arming costs another deliberate desktop tick.
+    await fixture.runtime.updateSettings({ notifications: { agentHook: true } });
+    expect(fixture.runtime.getPayload().appState.settings.notifications.autoApprovePermissions).toBe(false);
+  });
+
+  test("the approval log can be scoped to one profile", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          ...questionFixtureState({ agent: true }),
+          settings: { notifications: { autoApprovePermissions: true } },
+        },
+      });
+      fixtures.push(fixture);
+      await armQuestionSession(fixture);
+      await startTurn(fixture);
+
+      fixture.runtime._handlePermissionRequestForTest({
+        sessionId: "backend:shell",
+        payload: ownedPayload(fixture, { tool_name: "Bash", tool_input: { command: "chmod +x deploy.sh" } }),
+      });
+
+      expect(fixture.runtime.queryApprovalAuditLog({ profileId: "default" }).total).toBe(1);
+      // A remote client bound to another profile has never seen this
+      // workspace and must not read its tools and commands out of the log.
+      expect(fixture.runtime.queryApprovalAuditLog({ profileId: "other" }).total).toBe(0);
+      expect(fixture.runtime.getApprovalAuditStats({ profileId: "other" }).total).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("notifyAgentHook does not alert without user input", async () => {
     vi.useFakeTimers();
     try {
@@ -2433,6 +3758,92 @@ describe("runtime integration", () => {
       sessionId: "proj:shell",
     });
     expect(env.STRIDETERM_NOTIFY_URL).toBeUndefined();
+  });
+
+  test("the ownership token is injected even while the notify server is off", async () => {
+    // P1-2: the environment of a shell cannot be changed after it starts. A
+    // PTY spawned with the agent hook off would otherwise never carry a token,
+    // and turning the hook on afterwards left every request from that panel
+    // refused as `unproven-session` until the terminal was restarted — with
+    // nothing on screen to say why.
+    const fixture = await createFixture({
+      initialState: {
+        settings: { notifications: { agentHook: false } },
+        activeProjectId: "proj",
+        projects: [
+          {
+            id: "proj",
+            name: "Proj",
+            kind: "terminal",
+            cwd: "/tmp/proj",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const env = fixture.sessionManager.getSessionEnv({
+      workspace: { id: "proj", cwd: "/tmp/proj" },
+      sessionId: "proj:shell",
+    });
+    expect(env.STRIDETERM_NOTIFY_URL).toBeUndefined();
+    expect(env.STRIDETERM_SESSION_TOKEN).toBe(fixture.runtime._sessionOwnershipTokenForTest("proj:shell"));
+
+    // …and turning the hook on afterwards routes that same shell, without a
+    // restart: the registry is written for every live session when the server
+    // starts, and the token the shell already holds is the one it needs.
+    await fixture.runtime.activateSession("proj:shell");
+    await fixture.runtime.updateSettings({ notifications: { agentHook: true } });
+
+    const port = fixture.runtime.getNotifyServerInfo().port;
+    expect(port).toBeGreaterThan(0);
+    const entries = fixture.runtime._notifyUrlRegistryForTest().readOwn()[normalizeCwd("/tmp/proj")] || [];
+    expect(entries.map((entry: { url: string }) => entry.url)).toEqual([
+      expect.stringContaining(`http://127.0.0.1:${port}/notify?sid=proj%3Ashell`),
+    ]);
+    expect(fixture.runtime._sessionOwnershipTokenForTest("proj:shell")).toBe(env.STRIDETERM_SESSION_TOKEN);
+  });
+
+  test("toggling the agent hook re-points a live session at the new notify port", async () => {
+    // P1-2: the URL in a running shell's environment is frozen at spawn time,
+    // so after the listener stops and starts again it names a port nothing is
+    // listening on. The registry is what notify.mjs falls back to, and it has
+    // to describe the CURRENT server for a session that never respawned.
+    const fixture = await createFixture({
+      initialState: {
+        settings: { notifications: { agentHook: true } },
+        activeProjectId: "proj",
+        projects: [
+          {
+            id: "proj",
+            name: "Proj",
+            kind: "terminal",
+            cwd: "/tmp/proj",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await fixture.runtime.activateSession("proj:shell");
+    const tokenBefore = fixture.runtime._sessionOwnershipTokenForTest("proj:shell");
+
+    await fixture.runtime.updateSettings({ notifications: { agentHook: false } });
+    await fixture.runtime.updateSettings({ notifications: { agentHook: true } });
+
+    const port = fixture.runtime.getNotifyServerInfo().port;
+    expect(port).toBeGreaterThan(0);
+    const registry = fixture.runtime._notifyUrlRegistryForTest().readOwn();
+    const entries = registry[normalizeCwd("/tmp/proj")] || [];
+    expect(entries.map((entry: { url: string }) => entry.url)).toEqual([
+      expect.stringContaining(`http://127.0.0.1:${port}/notify?sid=proj%3Ashell`),
+    ]);
+    // The token identifies the panel, not the server — restarting the listener
+    // must not invalidate the proof a running shell already holds.
+    expect(fixture.runtime._sessionOwnershipTokenForTest("proj:shell")).toBe(tokenBefore);
   });
 
   test("restarts cloudflare tunnel and emits remote config changes when settings change", async () => {
@@ -6394,9 +7805,33 @@ describe("runtime integration", () => {
 
     const urlsPath = path.join(fixture.userDataPath, "hooks", "notify-urls.json");
     const data = JSON.parse(await fs.readFile(urlsPath, "utf8"));
-    const urls: string[] = data["/tmp/backend"] || [];
-    expect(urls.length).toBeGreaterThan(0);
-    expect(urls.some((u) => u.includes("sid=backend%3Ashell"))).toBe(true);
+    const entries: Array<{ url: string; instanceId: string; sid: string }> = data["/tmp/backend"] || [];
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.some((entry) => entry.url.includes("sid=backend%3Ashell"))).toBe(true);
+    // Instance identity, so two installations that restored the same
+    // workspace/panel ids cannot evict each other's entry.
+    expect(entries.every((entry) => Boolean(entry.instanceId))).toBe(true);
+  });
+
+  test("closing a session removes its notify URL from the registry", async () => {
+    const fixture = await createTwoWorkspaceFixture();
+    fixtures.push(fixture);
+
+    fixture.sessionManager.sessions.set("backend:shell", { status: "running" });
+    await fixture.runtime.updateSettings({ notifications: { agentHook: false } });
+    await fixture.runtime.updateSettings({ notifications: { agentHook: true } });
+
+    const urlsPath = path.join(fixture.userDataPath, "hooks", "notify-urls.json");
+    const readEntries = async () => {
+      const data = JSON.parse(await fs.readFile(urlsPath, "utf8"));
+      return (data["/tmp/backend"] || []) as Array<{ url: string; sid: string }>;
+    };
+    expect((await readEntries()).some((entry) => entry.sid === "backend:shell")).toBe(true);
+
+    // A stale URL for a panel the user closed would let a hook re-create its
+    // signal — and, with auto-approve armed, offer to answer for it.
+    fixture.runtime.closeSession("backend:shell");
+    expect((await readEntries()).some((entry) => entry.sid === "backend:shell")).toBe(false);
   });
 
   test("repeat idle_prompt with no new activity does NOT re-alert (real-world repeat bug)", async () => {

@@ -349,7 +349,7 @@ interface WorkspaceDraft {
   notes: string;
   activePanelId: string;
   panels: PanelEntry[];
-  // task-specific (always initialized before use)
+  // task-specific
   useWorktree?: boolean;
   worktreeBranch?: string;
   repositoryForWorktree?: string;
@@ -402,8 +402,11 @@ const cwdPlaceholder = APP_CONFIG.ui.defaultProjectCwdPlaceholder;
 // Build a mutable reactive draft
 const rawDraft = (props.workspace ? cloneWorkspace(props.workspace) : createEmptyWorkspace()) as WorkspaceDraft;
 rawDraft.color = safeColor(rawDraft.color);
-// Ensure provider/task fields are always present (required by WorkspaceDraft)
-if (!rawDraft.task) rawDraft.task = { description: "", maxRounds: 10 };
+// A task marker is a backend safety boundary, so an ordinary workspace must
+// never acquire one merely because it passed through this shared dialog.
+if ((rawDraft.kind === "task" || props.creating) && !rawDraft.task) {
+  rawDraft.task = { description: "", maxRounds: 10 };
+}
 if (!rawDraft.workerProvider) rawDraft.workerProvider = { providerId: "claude", model: "sonnet" };
 if (!rawDraft.judgeProvider) rawDraft.judgeProvider = { providerId: "claude", model: "opus" };
 // Backward compat with old workspaces: ensure skipPermissions default

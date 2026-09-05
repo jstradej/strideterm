@@ -1,6 +1,7 @@
 import { APP_CONFIG } from "../../config/app-config.js";
 import { isCompanionPrimaryViewId } from "../../electron/shared/companion-primary.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
+import { isInputBlockingKind } from "../../electron/shared/attention-kinds.js";
 
 interface AttentionAlert {
   title?: string;
@@ -235,7 +236,10 @@ export function attentionTitle(attention: AttentionLike | null | undefined): str
 
   const latest = attention.alerts?.[0] || null;
   const latestTitle = latest?.title ? `Latest: ${latest.title}` : "Terminal attention";
-  if (latest?.kind === "waiting") {
+  // A `question` is the strongest input-blocking state there is, so it must
+  // never fall through to the "finished task" branch below — a permission
+  // prompt described as "1 finished terminal task" is worse than no tooltip.
+  if (isInputBlockingKind(latest?.kind)) {
     return `${attention.count} terminal ${attention.count === 1 ? "needs" : "need"} input. ${latestTitle}`;
   }
   const exitCode = Number.isInteger(latest?.exitCode) ? ` (exit ${latest?.exitCode})` : "";
@@ -256,7 +260,11 @@ export function tabAttentionTitle(alert: AttentionAlert | null | undefined): str
     return "";
   }
 
-  if (alert.kind === "waiting") {
+  if (alert.kind === "question") {
+    return `${alert.title || "Terminal"} is asking a question.`;
+  }
+
+  if (isInputBlockingKind(alert.kind)) {
     return `${alert.title || "Terminal"} is waiting for input.`;
   }
 
@@ -366,4 +374,38 @@ export function writeNotificationDockWidth(value: number): void {
   } catch {
     // Ignore localStorage failures in restricted browser contexts.
   }
+}
+
+/**
+ * How many whole days ago `d` was, counted in local calendar days rather than
+ * elapsed hours — 23:59 and 00:01 are a day apart even though the clock says
+ * two minutes.
+ */
+function calendarDaysAgo(d: Date): number {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  return Math.round((today - target) / 86400000);
+}
+
+/**
+ * Grouping key for a history list's day separators. Two entries share a band
+ * exactly when they belong under the same heading, so a list can emit one
+ * separator per change of key.
+ */
+export function dayBandKey(d: Date): string {
+  const diffDays = calendarDaysAgo(d);
+  if (diffDays <= 0) return "today";
+  if (diffDays === 1) return "yesterday";
+  if (diffDays < 7) return `weekday-${d.getDay()}`;
+  return `date-${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+/** The heading itself: Today · Yesterday · a weekday name · an explicit date. */
+export function dayBandLabel(d: Date): string {
+  const diffDays = calendarDaysAgo(d);
+  if (diffDays <= 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return d.toLocaleDateString(undefined, { weekday: "long" });
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }

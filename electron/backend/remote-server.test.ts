@@ -9,6 +9,7 @@ import {
   drainTelemetryTransition,
   makeStateCoalescer,
   sanitizeSettingsFromRemote,
+  REMOTE_BLOCKED_NOTIFICATION_FIELDS,
   socketStallDecision,
   startRemoteServer,
   stripSecretsForRemote,
@@ -58,6 +59,40 @@ describe("sanitizeSettingsFromRemote", () => {
     // future refactor accidentally removes the entry, this test fires
     // before the multi-transport gap reopens.
     expect(REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS).toContain("autoTunnel");
+  });
+
+  test("drops notifications.autoApprovePermissions but keeps its siblings", () => {
+    // Arming the desktop to answer permission prompts unattended must be a
+    // deliberate act at the machine that executes the result. Everything else
+    // under `notifications` is an ordinary preference a phone may tune.
+    const settings = {
+      notifications: {
+        autoApprovePermissions: true,
+        agentsOnly: false,
+        subagentCompletion: true,
+        alertCooldownMs: 5_000,
+      },
+    };
+    const removed = sanitizeSettingsFromRemote(settings as Record<string, unknown>);
+    expect(removed).toContain("autoApprovePermissions");
+    expect(settings.notifications).toEqual({
+      agentsOnly: false,
+      subagentCompletion: true,
+      alertCooldownMs: 5_000,
+    });
+  });
+
+  test("REMOTE_BLOCKED_NOTIFICATION_FIELDS includes autoApprovePermissions", () => {
+    // Same defensive intent as the autoTunnel test above: if a refactor drops
+    // the entry, this fires before a remote caller can arm an unattended
+    // permission bypass on someone's desktop.
+    expect(REMOTE_BLOCKED_NOTIFICATION_FIELDS).toContain("autoApprovePermissions");
+  });
+
+  test("is a no-op when notifications is not an object", () => {
+    const settings = { notifications: "not-a-record" };
+    const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);
+    expect(removed).toEqual([]);
   });
 
   test("is a no-op when remoteAccess is missing", () => {
@@ -2987,5 +3022,241 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         c.ws.close();
       });
     });
+  });
+});
+
+describe("GET /api/approvals/audit-log", () => {
+  /** Minimal runtime exposing just the approval-log reads plus the fields the
+   *  server needs to bind and compose responses. */
+  function makeApprovalRuntime(port: number, token: string) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [] }],
+        workspaces: [],
+        windowSlots: [{ id: "win-1", profileId: "default", activeWorkspaceId: "" }],
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const queryCalls: any[] = [];
+    return {
+      queryCalls,
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        on: () => () => undefined,
+        writeToSession: () => undefined,
+        resizeSession: () => undefined,
+        setRemoteClientRegistry: () => undefined,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        queryApprovalAuditLog: (filters: any) => {
+          queryCalls.push(filters);
+          return {
+            total: 1,
+            entries: [
+              {
+                id: 1,
+                timestamp: "2026-09-03T10:00:00.000Z",
+                operation: "auto-approve",
+                toolName: "Bash",
+                summary: "Bash: chmod +x deploy.sh",
+                workspaceId: "backend",
+              },
+            ],
+          };
+        },
+        getApprovalAuditStats: () => ({ total: 1, writeCount: 1 }),
+      },
+    };
+  }
+
+  test("returns entries to an authorized caller and forwards its query filters", async () => {
+    const port = await getFreePort();
+    const token = "test-token";
+    const { runtime, queryCalls } = makeApprovalRuntime(port, token);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log?limit=50&search=chmod`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { total?: number; entries?: unknown[] };
+      expect(body.total).toBe(1);
+      expect(body.entries).toHaveLength(1);
+      expect(queryCalls[0]).toMatchObject({ limit: 50, search: "chmod" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("forwards the keyset cursors a remote back-fill pages with, and ignores junk ones", async () => {
+    // The Notification Center on a phone pages its history with these; the
+    // route is the only way they reach the store. Anything non-positive is no
+    // cursor at all rather than a bound the store would have to defend
+    // against — and neither one is a scope, so they cannot widen a read.
+    const port = await getFreePort();
+    const token = "test-token";
+    const { runtime, queryCalls } = makeApprovalRuntime(port, token);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const good = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log?afterId=7&beforeId=42`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(good.status).toBe(200);
+      expect(queryCalls.at(-1)).toMatchObject({ afterId: 7, beforeId: 42 });
+
+      const junk = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log?afterId=nope&beforeId=-3`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(junk.status).toBe(200);
+      expect(queryCalls.at(-1)?.afterId).toBeUndefined();
+      expect(queryCalls.at(-1)?.beforeId).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a master-token caller with no bound session reads the whole installation's trail", async () => {
+    // Deliberate and documented: that token already grants every mutation on
+    // every profile, so there is nothing left for scoping to protect, and a
+    // machine-to-machine reader needs the complete view.
+    const port = await getFreePort();
+    const token = "test-token";
+    const { runtime, queryCalls } = makeApprovalRuntime(port, token);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      expect(queryCalls[0].profileId).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a browser session's read is scoped to the profile it is bound to", async () => {
+    // The leak this closes: a client open in profile B could read the
+    // workspace, session, tool and command of every approval in profile A.
+    // The live `approval:recorded` event was already scoped; the GET was not.
+    const port = await getFreePort();
+    const token = "test-token";
+    const { runtime, queryCalls } = makeApprovalRuntime(port, token);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      // Bootstrap a real session the way a browser does, then read the cookie
+      // back out and use it — that binding is what carries the profile.
+      const bootstrap = await fetch(`http://127.0.0.1:${port}/?token=${token}`, { redirect: "manual" });
+      const cookie = (bootstrap.headers.get("set-cookie") || "").split(";")[0];
+      expect(cookie).toBeTruthy();
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log`, { headers: { cookie } });
+      expect(response.status).toBe(200);
+      // The server decides the scope from its own registry — never from a
+      // query parameter, which a client could simply edit.
+      expect(queryCalls.at(-1)?.profileId).toBe("default");
+
+      const forged = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log?profileId=other`, {
+        headers: { cookie },
+      });
+      expect(forged.status).toBe(200);
+      expect(queryCalls.at(-1)?.profileId).toBe("default");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("the stats endpoint answers an authorized caller", async () => {
+    const port = await getFreePort();
+    const token = "test-token";
+    const { runtime } = makeApprovalRuntime(port, token);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log/stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ total: 1 });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("there is no remote route that deletes from the trail", async () => {
+    // Reading the record of an unattended bypass from a phone is fine.
+    // ERASING it is not: the bypass runs on the desktop, its consequences land
+    // there, and `autoApprovePermissions` itself is already blocked from
+    // /api/settings/update for that reason. A source check rather than a
+    // request, so a route added later fails here even before it is reachable.
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(path.resolve(process.cwd(), "electron/backend/remote-server.ts"), "utf8");
+    expect(src).not.toContain("approvals/audit-log/delete");
+    expect(src).not.toContain("deleteApprovalAuditEntries");
+
+    // ...and the desktop DOES have one, so the assertion above is about where
+    // the capability lives, not about it being missing everywhere.
+    const ipc = fs.readFileSync(path.resolve(process.cwd(), "electron/backend/ipc.ts"), "utf8");
+    expect(ipc).toContain("approvals:audit-log:delete");
+  });
+
+  test("a POST to the read endpoint's path is not a delete in disguise", async () => {
+    const port = await getFreePort();
+    const token = "test-token";
+    const { runtime } = makeApprovalRuntime(port, token);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+      expect(response.status).toBe(404);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("requires a token — reading the approval trail is not public", async () => {
+    const port = await getFreePort();
+    const token = "test-token";
+    const { runtime, queryCalls } = makeApprovalRuntime(port, token);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const noAuth = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log`);
+      expect(noAuth.status).toBe(401);
+
+      const wrongAuth = await fetch(`http://127.0.0.1:${port}/api/approvals/audit-log`, {
+        headers: { Authorization: "Bearer wrong" },
+      });
+      expect(wrongAuth.status).toBe(401);
+
+      expect(queryCalls).toHaveLength(0);
+    } finally {
+      await server.close();
+    }
   });
 });

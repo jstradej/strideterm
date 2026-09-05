@@ -23,6 +23,8 @@ interface ProjectAlertEntry {
   tier: number;
   urgency: string;
   detail: string;
+  /** Human-readable context (see AttentionAlert.message). Empty when none. */
+  message: string;
   at: string;
 }
 
@@ -61,6 +63,7 @@ interface RaiseAlertOptions {
   tier?: number;
   urgency?: string;
   detail?: string;
+  message?: string;
   exitCode?: number | null;
 }
 
@@ -72,6 +75,7 @@ interface AddProjectAlertOptions {
   exitCode?: number | null;
   kind?: string;
   detail?: string;
+  message?: string;
   tier?: number;
   urgency?: string;
 }
@@ -212,6 +216,7 @@ export function createRuntimeAttentionManager({
     exitCode = null,
     kind = "completed",
     detail = "",
+    message = "",
     tier = 1,
     urgency = "normal",
   }: AddProjectAlertOptions): void {
@@ -232,6 +237,7 @@ export function createRuntimeAttentionManager({
         tier,
         urgency,
         detail,
+        message,
         at: new Date().toISOString(),
       },
       ...current.alerts.filter((alert) => alert.panelId !== panelId),
@@ -328,6 +334,7 @@ export function createRuntimeAttentionManager({
     tier = 1,
     urgency = "normal",
     detail = "",
+    message = "",
     exitCode = null,
   }: RaiseAlertOptions): boolean {
     const signal = sessionSignals.get(sessionId);
@@ -339,13 +346,13 @@ export function createRuntimeAttentionManager({
 
     // Belt-and-suspenders: even if some upstream path forgets to ask the
     // task runner first (or a race lets a stale silence timer fire after
-    // task state changed), suppress "waiting for input" alerts for the
-    // worker/judge panels of task workspaces while the runner owns the
-    // turn. The runner explicitly drives prompts, evaluations, re-prompts
-    // and verdicts — a "waiting for input" toast there is always wrong.
-    // Urgent (e.g. permission_prompt) bypasses since those genuinely need
-    // user attention.
-    if (kind === "waiting" && urgency !== "urgent") {
+    // task state changed), suppress "waiting for input" and "agent asks a
+    // question" alerts for the worker/judge panels of task workspaces while
+    // the runner owns the turn. The runner explicitly drives prompts,
+    // evaluations, re-prompts and verdicts — such a toast there is always
+    // wrong. Urgent (e.g. permission_prompt) bypasses since those genuinely
+    // need user attention.
+    if ((kind === "waiting" || kind === "question") && urgency !== "urgent") {
       const state = getState();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ws = state.workspaces.find((w: any) => w.id === projectId);
@@ -369,7 +376,7 @@ export function createRuntimeAttentionManager({
       }
     }
 
-    log.info("ALERT raised", { sessionId, projectId, panelId, title, kind, tier, urgency, detail, exitCode });
+    log.info("ALERT raised", { sessionId, projectId, panelId, title, kind, tier, urgency, detail, message, exitCode });
     if (getNotificationConfig().debug) {
       log.info("[notif-debug] alert-raised", {
         sessionId,
@@ -394,10 +401,14 @@ export function createRuntimeAttentionManager({
       tier,
       urgency,
       detail,
+      message,
       exitCode,
     });
     if (signal) {
-      if (kind === "waiting") {
+      // `question` arms the same dedupe latch as `waiting`: once the agent has
+      // asked something, an `idle_prompt` a minute later must not overwrite the
+      // specific question with the generic "waiting for input" text.
+      if (kind === "waiting" || kind === "question") {
         signal.waitingRaised = true;
       }
       signal.busy = false;

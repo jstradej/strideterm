@@ -11,6 +11,11 @@ import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/sta
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "../electron/shared/types/ssh.js";
 import {
+  APPROVAL_RECORDED_CHANNEL,
+  approvalRecordedSchema,
+  type ApprovalRecorded,
+} from "../electron/shared/approval-events.js";
+import {
   NOTIFICATION_TARGET_REMOVED_CHANNEL,
   notificationTargetRemovedSchema,
   type NotificationTargetRemoved,
@@ -80,6 +85,7 @@ interface EventHub {
   terminalInputBlocked: Set<Handler<{ sessionId: string; ownerLabel: string }>>;
   resourceInvalidate: Set<Handler<ResourceInvalidate>>;
   notificationTargetRemoved: Set<Handler<NotificationTargetRemoved>>;
+  approvalRecorded: Set<Handler<ApprovalRecorded>>;
 }
 
 /** Extended transport interface covering both Electron and remote modes.
@@ -145,6 +151,9 @@ export interface Transport extends Partial<Omit<StridetermAPI, "onConnectionStat
    *  its notification history can be dropped. Validated at this boundary, so a
    *  handler only ever sees a well-formed payload. */
   onNotificationTargetRemoved: (handler: Handler<NotificationTargetRemoved>) => void;
+  /** strIDEterm approved a permission prompt on the user's behalf. Validated at
+   *  this boundary too, so a handler only ever sees a well-formed payload. */
+  onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +179,7 @@ function createEventHub(): EventHub {
     terminalInputBlocked: new Set(),
     resourceInvalidate: new Set(),
     notificationTargetRemoved: new Set(),
+    approvalRecorded: new Set(),
   };
 }
 
@@ -253,6 +263,16 @@ function bindElectronTransport(): Transport {
         const parsed = notificationTargetRemovedSchema.safeParse(payload);
         if (!parsed.success) {
           rlog("warn", "notification:target-removed ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
+    onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => {
+      window.strideterm.onApprovalRecorded?.((payload: unknown) => {
+        const parsed = approvalRecordedSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "approval:recorded ignored: malformed payload");
           return;
         }
         handler(parsed.data);
@@ -520,6 +540,14 @@ export function createRemoteTransport(): Transport {
         rlog("warn", "notification:target-removed ignored: malformed payload");
       }
     }
+    if (message.type === APPROVAL_RECORDED_CHANNEL) {
+      const parsed = approvalRecordedSchema.safeParse(message.payload);
+      if (parsed.success) {
+        safeDispatch(listeners.approvalRecorded, parsed.data, "approvalRecorded");
+      } else {
+        rlog("warn", "approval:recorded ignored: malformed payload");
+      }
+    }
     if (message.type === "ssh:auth-prompt") {
       safeDispatch(listeners.sshAuthPrompt, message.payload as SshAuthRequest, "sshAuthPrompt");
     }
@@ -737,6 +765,17 @@ export function createRemoteTransport(): Transport {
     window.addEventListener("focus", probeAfterResume);
   }
 
+  /** Append defined filter values as query params, so a read stays a GET. */
+  function withQuery(pathname: string, filters?: Record<string, unknown>): string {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters || {})) {
+      if (value === undefined || value === null || value === "") continue;
+      params.set(key, String(value));
+    }
+    const query = params.toString();
+    return query ? `${pathname}?${query}` : pathname;
+  }
+
   async function fetchJson(pathname: string, payload?: unknown): Promise<unknown> {
     // Without a token we fall through to the cookie-based path: the
     // bootstrap redirect set `strideterm_session=…; HttpOnly` and the
@@ -932,6 +971,11 @@ export function createRemoteTransport(): Transport {
     refreshAzure: () => fetchJson("/api/azure/refresh", {}),
     queryAzureAuditLog: (filters) => fetchJson("/api/azure/audit-log/query", filters),
     getAzureAuditStats: (filters) => fetchJson("/api/azure/audit-log/stats", filters),
+    // Read-only, hence remote-reachable — unlike the setting that produces the
+    // entries, which `sanitizeSettingsFromRemote` refuses to let a remote
+    // client write. Query filters ride as URL params so this stays a GET.
+    queryApprovalAuditLog: (filters) => fetchJson(withQuery("/api/approvals/audit-log", filters)),
+    getApprovalAuditStats: (filters) => fetchJson(withQuery("/api/approvals/audit-log/stats", filters)),
     markAzurePullRequestSeen: (prKey) => fetchJson("/api/azure/pull-request/seen", { prKey }),
     openAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/open", payload),
     commentAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/comment", payload),
@@ -1230,6 +1274,9 @@ export function createRemoteTransport(): Transport {
     onSshConnectionState: (handler: Handler<SshConnectionState>) => listeners.sshConnectionState.add(handler),
     onNotificationTargetRemoved: (handler: Handler<NotificationTargetRemoved>) => {
       listeners.notificationTargetRemoved.add(handler);
+    },
+    onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => {
+      listeners.approvalRecorded.add(handler);
     },
     getRemoteToken: () => token,
     setRemoteToken: (nextToken: string) => {

@@ -530,6 +530,14 @@ describe("remote transport API parity — no method silently missing its remote 
     // hides the edit/delete affordance when the transport is remote.
     "saveAgentPrompt",
     "deleteAgentPrompt",
+    // The approval trail is the accountability record for a bypass that runs
+    // on the DESKTOP. Reading it remotely is allowed and useful (GET
+    // /api/approvals/audit-log, scoped to the caller's profile); erasing it
+    // from a phone is not, for the same reason a remote client may not arm
+    // `autoApprovePermissions` in the first place. remote-server.ts registers
+    // no delete route, and the Approvals tab hides the delete controls when
+    // the transport does not provide this method.
+    "deleteApprovalAuditEntries",
     // Performance diagnostics rely on Electron process metrics
     // (app.getAppMetrics) and the webContents CPU profiler, which have no
     // remote-browser equivalent. The Performance panel is gated on the

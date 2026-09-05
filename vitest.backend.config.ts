@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -24,5 +25,12 @@ export default defineConfig({
     // 30s eliminates the Windows-only flake without hiding genuinely
     // hung tests.
     testTimeout: 30_000,
+    // The shared notify-URL registry lives in the user's HOME by design (it
+    // has to be reachable from every data dir). A test run must never write
+    // there, so point both sides of the hook — runtime.ts and notify.mjs — at
+    // a scratch directory instead.
+    env: {
+      STRIDETERM_HOOKS_DIR: fileURLToPath(new URL("./node_modules/.tmp/strideterm-hooks-test", import.meta.url)),
+    },
   },
 });

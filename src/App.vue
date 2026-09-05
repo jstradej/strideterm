@@ -273,7 +273,7 @@
 
   <!-- Notification toast — suppressed when the dock is pinned (the dock
        itself plays that role). Sound alert still fires via useNotificationCapture. -->
-  <NotificationToast v-if="!notifStore.pinned" :toast="latestToast" @dismissed="latestToast = null" />
+  <NotificationToast v-if="!notifStore.pinned" :toast="latestToast" @dismissed="notifStore.dismissToast()" />
 
   <!-- Sticky toasts (background-deletion errors, etc.). These never auto-hide
        so the user can take action even if the original flow has moved on. -->
@@ -346,7 +346,7 @@ const api = inject(apiKey);
 const store = useAppStore();
 const notifStore = useNotificationStore();
 const sshStore = useSshStore();
-const { latestToast } = useNotificationCapture();
+const { latestToast } = useNotificationCapture(api as Transport | null);
 useReviewNotifications(latestToast);
 usePipelineNotifications();
 
@@ -394,7 +394,7 @@ watch(versionCheck, (check) => {
   const versionsBehindCount = check.versionsBehind ?? 0;
   if (versionsBehindCount > 0) {
     const label = versionsBehindCount === 1 ? "1 version" : `${versionsBehindCount} versions`;
-    latestToast.value = {
+    notifStore.pushToast({
       id: crypto.randomUUID(),
       title: "Update available",
       body: `You are ${label} behind (latest: v${check.latestVersion}).`,
@@ -403,7 +403,7 @@ watch(versionCheck, (check) => {
       tier: 1,
       urgency: "normal",
       category: "info",
-    };
+    });
   }
 });
 

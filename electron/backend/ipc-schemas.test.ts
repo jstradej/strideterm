@@ -21,6 +21,7 @@ import {
   worktreeSchema,
   removeWorktreeSchema,
   dockerSessionSchema,
+  approvalAuditLogQuerySchema,
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
@@ -539,6 +540,27 @@ describe("ipc-schemas", () => {
     test("rejects wrong types", () => {
       expect(() => validateIpc(workspaceDeleteOptionsSchema, { deleteFromDisk: "yes" }, "test")).toThrow();
       expect(() => validateIpc(workspaceDeleteOptionsSchema, { diskPath: 123 }, "test")).toThrow();
+    });
+  });
+
+  describe("approvalAuditLogQuerySchema", () => {
+    test("carries the keyset cursors the Notification Center back-fill pages with", () => {
+      // A zod object DROPS what it does not declare, so an undeclared cursor
+      // would reach the store as no cursor at all — the desktop back-fill
+      // would silently re-read page one for ever.
+      const result = validateIpc(
+        approvalAuditLogQuerySchema,
+        { limit: 50, profileId: "profile-a", afterId: 12, beforeId: 99 },
+        "test",
+      );
+      expect(result).toMatchObject({ afterId: 12, beforeId: 99 });
+    });
+
+    test("rejects a cursor that is not a positive integer", () => {
+      expect(() => validateIpc(approvalAuditLogQuerySchema, { afterId: 0 }, "test")).toThrow();
+      expect(() => validateIpc(approvalAuditLogQuerySchema, { beforeId: -1 }, "test")).toThrow();
+      expect(() => validateIpc(approvalAuditLogQuerySchema, { afterId: 1.5 }, "test")).toThrow();
+      expect(() => validateIpc(approvalAuditLogQuerySchema, { beforeId: "42" }, "test")).toThrow();
     });
   });
 });

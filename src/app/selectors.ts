@@ -13,6 +13,7 @@ import {
   type CompanionPrimaryWorkspaceLike,
 } from "../../electron/shared/companion-primary.js";
 import { TASK_ACTIVE_STATES, sessionIdFor } from "../../electron/shared/task-states.js";
+import { isInputBlockingKind } from "../../electron/shared/attention-kinds.js";
 import { ancestorIdentities, buildWorkspaceTree, type WorkspaceAncestorIdentity } from "./workspace-tree.js";
 
 // ---------------------------------------------------------------------------
@@ -147,7 +148,7 @@ export function summarizeAttention(
     .sort((left, right) => new Date(right.at ?? "").getTime() - new Date(left.at ?? "").getTime());
   return {
     count: alerts.length,
-    waitingCount: alerts.filter((alert) => alert.kind === "waiting").length,
+    waitingCount: alerts.filter((alert) => isInputBlockingKind(alert.kind)).length,
   };
 }
 

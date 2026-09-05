@@ -101,6 +101,9 @@ import {
   quickFixCreateSchema,
   azureAuditLogQuerySchema,
   azureAuditLogStatsSchema,
+  approvalAuditLogQuerySchema,
+  approvalAuditLogDeleteSchema,
+  approvalAuditLogStatsSchema,
   githubConnectionSchema,
   githubCommentSchema,
   githubReviewSchema,
@@ -128,6 +131,7 @@ import {
 } from "./ipc-schemas.js";
 import { shouldShowSystemNotification } from "./notifications/system-notification-dedupe.js";
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
+import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 
@@ -168,6 +172,9 @@ export function registerIpc(
     runtime.on(NOTIFICATION_TARGET_REMOVED_CHANNEL, (payload: unknown) =>
       emitToRenderer(NOTIFICATION_TARGET_REMOVED_CHANNEL, payload),
     ),
+    // Same reasoning: each window keeps its own notification history, and an
+    // auto-approval has to show up in all of them.
+    runtime.on(APPROVAL_RECORDED_CHANNEL, (payload: unknown) => emitToRenderer(APPROVAL_RECORDED_CHANNEL, payload)),
   ];
 
   // Every ipcMain.handle/on call above goes through these two thin wrappers so
@@ -788,6 +795,25 @@ export function registerIpc(
   });
   handle("github:refresh", async () =>
     withOperationPromise({ opId: "github:refresh" }, () => runtime.refreshGitHubState()),
+  );
+  handle("approvals:audit-log:query", async (_event, payload) =>
+    withOperationPromise({ opId: "approvals:audit-log:query" }, () =>
+      runtime.queryApprovalAuditLog(validateIpc(approvalAuditLogQuerySchema, payload, "approvals:audit-log:query")),
+    ),
+  );
+  // Desktop only, on purpose: remote-server.ts registers no counterpart. A
+  // remote client may read this trail but never erase it.
+  handle("approvals:audit-log:delete", async (_event, payload) =>
+    withOperationPromise({ opId: "approvals:audit-log:delete" }, () =>
+      runtime.deleteApprovalAuditEntries(
+        validateIpc(approvalAuditLogDeleteSchema, payload, "approvals:audit-log:delete"),
+      ),
+    ),
+  );
+  handle("approvals:audit-log:stats", async (_event, payload) =>
+    withOperationPromise({ opId: "approvals:audit-log:stats" }, () =>
+      runtime.getApprovalAuditStats(validateIpc(approvalAuditLogStatsSchema, payload, "approvals:audit-log:stats")),
+    ),
   );
   handle("github:audit-log:query", async (_event, payload) =>
     withOperationPromise({ opId: "github:audit-log:query" }, () =>

@@ -594,3 +594,283 @@ describe("resolveByEngagement — typing acknowledges a session", () => {
     expect(store.sessions[0].state).toBe("finished");
   });
 });
+
+describe("notification store — historical (replayed) events", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications");
+    window.localStorage.removeItem("strideterm-notifications-v2");
+  });
+
+  /** One replayed audit row: a `historical` add with its source order. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function replay(store: any, at: string, rank: number, overrides = {}) {
+    return store.add({
+      title: "Approval sent",
+      kind: "info",
+      tier: 3,
+      workspaceId: "ws1",
+      viewId: "ws1:panel1",
+      occurredAt: at,
+      historical: true,
+      historyRank: rank,
+      ...overrides,
+    });
+  }
+
+  it("places a replayed event by its own time, not at the head", () => {
+    const store = useNotificationStore();
+    replay(store, "2026-09-03T10:00:02.000Z", 2);
+    replay(store, "2026-09-03T10:00:03.000Z", 3);
+    // Arrives last but belongs in the middle — a back-fill batch that walks
+    // downwards hands the older rows over after the newer ones.
+    replay(store, "2026-09-03T10:00:01.000Z", 1);
+
+    expect(store.sessions[0].events.map((event: { at: string }) => event.at)).toEqual([
+      "2026-09-03T10:00:03.000Z",
+      "2026-09-03T10:00:02.000Z",
+      "2026-09-03T10:00:01.000Z",
+    ]);
+    // `latestAt` follows the newest event, never the last write.
+    expect(store.sessions[0].latestAt).toBe("2026-09-03T10:00:03.000Z");
+    // `firstAt` follows the oldest, which the replay just moved back.
+    expect(store.sessions[0].firstAt).toBe("2026-09-03T10:00:01.000Z");
+  });
+
+  it("breaks a same-millisecond tie on the source order", () => {
+    const store = useNotificationStore();
+    // A burst of auto-approvals inside one turn shares a millisecond, so the
+    // timestamp alone cannot order them — the audit row id can.
+    replay(store, "2026-09-03T10:00:00.000Z", 7, { body: "seventh" });
+    replay(store, "2026-09-03T10:00:00.000Z", 9, { body: "ninth" });
+    replay(store, "2026-09-03T10:00:00.000Z", 8, { body: "eighth" });
+
+    expect(store.sessions[0].events.map((event: { body: string }) => event.body)).toEqual([
+      "ninth",
+      "eighth",
+      "seventh",
+    ]);
+  });
+
+  it("drops the oldest replayed event at the per-session cap, never the newest", () => {
+    const store = useNotificationStore();
+    // Twenty newer events fill the thread...
+    for (let index = 20; index < 40; index += 1) {
+      replay(store, `2026-09-03T10:00:00.${String(index).padStart(3, "0")}Z`, index);
+    }
+    // ...then an older batch arrives, as a continuation always does.
+    for (let index = 0; index < 5; index += 1) {
+      replay(store, `2026-09-03T10:00:00.${String(index).padStart(3, "0")}Z`, index);
+    }
+
+    const events = store.sessions[0].events;
+    expect(events).toHaveLength(20);
+    expect(events[0].at).toBe("2026-09-03T10:00:00.039Z");
+    expect(events[19].at).toBe("2026-09-03T10:00:00.020Z");
+    expect(store.sessions[0].latestAt).toBe("2026-09-03T10:00:00.039Z");
+  });
+
+  it("drops the oldest replayed session at the session cap, never a newer one", () => {
+    const store = useNotificationStore();
+    for (let index = 200; index < 400; index += 1) {
+      replay(store, `2026-09-03T10:00:00.${String(index).padStart(3, "0")}Z`, index, {
+        viewId: `ws1:panel-${index}`,
+      });
+    }
+    expect(store.sessions).toHaveLength(200);
+
+    // An older continuation batch: every one of these is older than all 200,
+    // so the cap has to drop THEM rather than the newest threads it holds.
+    for (let index = 0; index < 5; index += 1) {
+      replay(store, `2026-09-03T10:00:00.${String(index).padStart(3, "0")}Z`, index, {
+        viewId: `ws1:panel-${index}`,
+      });
+    }
+
+    expect(store.sessions).toHaveLength(200);
+    expect(store.sessions[0].viewId).toBe("ws1:panel-399");
+    expect(store.sessions[199].viewId).toBe("ws1:panel-200");
+  });
+
+  it("leaves the live path prepending, however old the event claims to be", () => {
+    const store = useNotificationStore();
+    store.add({
+      title: "A",
+      kind: "waiting",
+      workspaceId: "ws1",
+      viewId: "v1",
+      occurredAt: "2026-09-03T10:00:02.000Z",
+    });
+    // No `historical`: a live arrival is the newest thing in the thread by
+    // definition, and its own clock is not evidence to the contrary.
+    store.add({
+      title: "B",
+      kind: "waiting",
+      workspaceId: "ws1",
+      viewId: "v1",
+      occurredAt: "2026-09-03T10:00:01.000Z",
+    });
+
+    expect(store.sessions[0].events.map((event: { title: string }) => event.title)).toEqual(["B", "A"]);
+    expect(store.sessions[0].latestAt).toBe("2026-09-03T10:00:01.000Z");
+  });
+
+  it("makes an event the per-session cap drops a no-op for everything visible", () => {
+    const store = useNotificationStore();
+    // Twenty kept events, all newer, carrying the labels, category and meta
+    // the session must still be showing when this test ends.
+    for (let index = 20; index < 40; index += 1) {
+      replay(store, `2026-09-03T10:00:00.${String(index).padStart(3, "0")}Z`, index, {
+        viewId: "ws1:panel-a",
+        workspaceName: "Alpha",
+        tabName: "shell",
+        category: "approval",
+        meta: { profileId: "default", requestId: `req-${index}` },
+      });
+    }
+    // A second, newer thread: the dropped row must not bubble its own thread
+    // over this one either.
+    replay(store, "2026-09-03T10:00:00.050Z", 50, { viewId: "ws1:panel-b" });
+    store.markAllRead();
+    expect(store.unreadCount).toBe(0);
+
+    // The continuation batch brings a row older than all twenty kept events.
+    replay(store, "2026-09-03T10:00:00.001Z", 1, {
+      viewId: "ws1:panel-a",
+      workspaceName: "Renamed",
+      tabName: "renamed",
+      category: "terminal",
+      meta: { profileId: "default", requestId: "req-1" },
+    });
+
+    const session = store.sessions.find((s: { viewId: string }) => s.viewId === "ws1:panel-a");
+    // It is not in the visible history...
+    expect(session?.events).toHaveLength(20);
+    expect(session?.events.some((event: { at: string }) => event.at === "2026-09-03T10:00:00.001Z")).toBe(false);
+    // ...so it changes nothing the user can see: not the state (this is the
+    // regression — a row nobody can point at reopened a resolved thread),
+    // not the unread count, not the labels, category or meta, and not the
+    // thread's place in the list.
+    expect(session?.state).toBe("resolved");
+    expect(store.unreadCount).toBe(0);
+    expect(session?.workspaceName).toBe("Alpha");
+    expect(session?.tabName).toBe("shell");
+    expect(session?.category).toBe("approval");
+    expect(session?.meta?.requestId).toBe("req-39");
+    expect(session?.latestAt).toBe("2026-09-03T10:00:00.039Z");
+    expect(store.sessions[0].viewId).toBe("ws1:panel-b");
+    // `firstAt` is the deliberate exception: the row proves the thread began
+    // earlier than history knew, which is a lifetime fact about the thread
+    // and not a claim about its current state.
+    expect(session?.firstAt).toBe("2026-09-03T10:00:00.001Z");
+  });
+
+  it("reports a per-session-cap drop as inserted: false", () => {
+    const store = useNotificationStore();
+    /** The alert-capture entry point, replaying one audit row. */
+    function replayAlert(at: string, rank: number) {
+      return store.addAlertEvent({
+        title: "Approval sent",
+        kind: "info",
+        tier: 3,
+        workspaceId: "ws1",
+        viewId: "ws1:panel1",
+        category: "approval",
+        meta: { requestId: `req-${rank}` },
+        sourceAlertId: `approval:req-${rank}`,
+        occurredAt: at,
+        historical: true,
+        historyRank: rank,
+      });
+    }
+    for (let index = 20; index < 40; index += 1) {
+      replayAlert(`2026-09-03T10:00:00.${String(index).padStart(3, "0")}Z`, index);
+    }
+
+    // Control: a replay the cap keeps is a real insert.
+    expect(replayAlert("2026-09-03T10:00:00.045Z", 45).inserted).toBe(true);
+    // The finding: not a duplicate, but not in the history either — the cap
+    // dropped it, so `inserted` has to say so.
+    expect(replayAlert("2026-09-03T10:00:00.001Z", 1).inserted).toBe(false);
+    expect(store.sessions[0].events).toHaveLength(20);
+    expect(store.sessions[0].events[19].at).toBe("2026-09-03T10:00:00.021Z");
+  });
+
+  it("reports a session-cap drop as inserted: false and leaves the list alone", () => {
+    const store = useNotificationStore();
+    for (let index = 200; index < 400; index += 1) {
+      replay(store, `2026-09-03T10:00:00.${String(index).padStart(3, "0")}Z`, index, {
+        viewId: `ws1:panel-${index}`,
+      });
+    }
+    const before = store.sessions.map((s: { viewId: string }) => s.viewId);
+
+    // A brand-new thread, older than all 200 the cap keeps: the slice throws
+    // it away, so the store never held it.
+    const result = store.addAlertEvent({
+      title: "Approval sent",
+      kind: "info",
+      tier: 3,
+      workspaceId: "ws1",
+      viewId: "ws1:panel-old",
+      category: "approval",
+      sourceAlertId: "approval:req-old",
+      occurredAt: "2026-09-03T10:00:00.001Z",
+      historical: true,
+      historyRank: 1,
+    });
+
+    expect(result.inserted).toBe(false);
+    expect(store.sessions.map((s: { viewId: string }) => s.viewId)).toEqual(before);
+  });
+
+  it("keeps a retained mid-thread replay out of the session's newest-event projection", () => {
+    const store = useNotificationStore();
+    replay(store, "2026-09-03T10:00:03.000Z", 3, {
+      workspaceName: "Alpha",
+      tabName: "shell",
+      category: "approval",
+      meta: { requestId: "req-3" },
+    });
+    store.markAllRead();
+
+    // Older than the head but well inside the cap: real, visible history.
+    replay(store, "2026-09-03T10:00:01.000Z", 1, {
+      workspaceName: "Renamed",
+      tabName: "renamed",
+      category: "terminal",
+      meta: { requestId: "req-1" },
+    });
+
+    const session = store.sessions[0];
+    expect(session.events.map((event: { at: string }) => event.at)).toEqual([
+      "2026-09-03T10:00:03.000Z",
+      "2026-09-03T10:00:01.000Z",
+    ]);
+    // The session-level projection describes `events[0]`, so an event that
+    // did not become the newest one does not rewrite it.
+    expect(session.state).toBe("resolved");
+    expect(session.workspaceName).toBe("Alpha");
+    expect(session.tabName).toBe("shell");
+    expect(session.category).toBe("approval");
+    expect(session.meta?.requestId).toBe("req-3");
+    expect(session.latestAt).toBe("2026-09-03T10:00:03.000Z");
+    expect(session.firstAt).toBe("2026-09-03T10:00:01.000Z");
+  });
+
+  it("lets a replay that IS the newest event speak for the session", () => {
+    const store = useNotificationStore();
+    replay(store, "2026-09-03T10:00:01.000Z", 1, { workspaceName: "Alpha", meta: { requestId: "req-1" } });
+    store.markAllRead();
+    expect(store.sessions[0].state).toBe("resolved");
+
+    // Newer than anything history held — this one is news, and the reopen
+    // semantics the back-fill relies on are unchanged.
+    replay(store, "2026-09-03T10:00:05.000Z", 5, { workspaceName: "Beta", meta: { requestId: "req-5" } });
+
+    expect(store.sessions[0].state).toBe("finished");
+    expect(store.unreadCount).toBe(1);
+    expect(store.sessions[0].workspaceName).toBe("Beta");
+    expect(store.sessions[0].meta?.requestId).toBe("req-5");
+  });
+});
