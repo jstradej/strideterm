@@ -3,6 +3,13 @@ import { ref, onMounted, onBeforeUnmount, type Ref } from "vue";
 const NARROW_QUERY = "(max-width: 768px)";
 const MOBILE_QUERY = "(max-width: 768px), (max-height: 500px)";
 const PORTRAIT_QUERY = "(orientation: portrait)";
+/**
+ * `any-pointer`, not `pointer`: a Windows tablet or a touchscreen laptop with
+ * a mouse plugged in reports a FINE primary pointer while still being a device
+ * whose user drags a finger across the terminal. Gating touch affordances on
+ * viewport width or on the remote transport would miss exactly those.
+ */
+const COARSE_POINTER_QUERY = "(any-pointer: coarse)";
 
 // Module-level shared refs. Initialized synchronously from matchMedia.matches
 // so the correct value is available before any component onMounted fires.
@@ -24,6 +31,12 @@ const sharedIsPortrait = ref(
     : true,
 );
 
+const sharedHasCoarsePointer = ref(
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(COARSE_POINTER_QUERY).matches
+    : false,
+);
+
 /**
  * Module-level reactive flag shared across every consumer. Safe to read from
  * outside a component (e.g. inside a Pinia store) — the value is updated by
@@ -36,11 +49,13 @@ export function useIsNarrow() {
   let narrowMql: MediaQueryList | null = null;
   let mobileMql: MediaQueryList | null = null;
   let portraitMql: MediaQueryList | null = null;
+  let coarseMql: MediaQueryList | null = null;
 
   function update() {
     if (narrowMql) sharedIsNarrow.value = narrowMql.matches;
     if (mobileMql) sharedIsMobile.value = mobileMql.matches;
     if (portraitMql) sharedIsPortrait.value = portraitMql.matches;
+    if (coarseMql) sharedHasCoarsePointer.value = coarseMql.matches;
   }
 
   onMounted(() => {
@@ -48,20 +63,29 @@ export function useIsNarrow() {
     narrowMql = window.matchMedia(NARROW_QUERY);
     mobileMql = window.matchMedia(MOBILE_QUERY);
     portraitMql = window.matchMedia(PORTRAIT_QUERY);
+    coarseMql = window.matchMedia(COARSE_POINTER_QUERY);
     update();
     narrowMql.addEventListener("change", update);
     mobileMql.addEventListener("change", update);
     portraitMql.addEventListener("change", update);
+    coarseMql.addEventListener("change", update);
   });
 
   onBeforeUnmount(() => {
     narrowMql?.removeEventListener("change", update);
     mobileMql?.removeEventListener("change", update);
     portraitMql?.removeEventListener("change", update);
+    coarseMql?.removeEventListener("change", update);
     narrowMql = null;
     mobileMql = null;
     portraitMql = null;
+    coarseMql = null;
   });
 
-  return { isNarrow: sharedIsNarrow, isMobile: sharedIsMobile, isPortrait: sharedIsPortrait };
+  return {
+    isNarrow: sharedIsNarrow,
+    isMobile: sharedIsMobile,
+    isPortrait: sharedIsPortrait,
+    hasCoarsePointer: sharedHasCoarsePointer,
+  };
 }

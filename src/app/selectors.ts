@@ -109,6 +109,54 @@ export function tabSessionId(tab: { id: string; sessionId?: string } | null | un
   return tab ? tab.sessionId || tab.id : "";
 }
 
+export interface TerminalTextSelectionTarget {
+  /** The exact session the snapshot must be taken from. */
+  sessionId: string;
+  /** Workspace that owns the session — the panel closes when it moves out of
+   *  the viewer's profile or disappears entirely. */
+  workspaceId: string;
+  panelId: string;
+  /** Header label for the panel: "<workspace> — <tab>". */
+  title: string;
+}
+
+/**
+ * Validate a "Select text" request against the state the viewer can actually
+ * see, and produce the panel's header label.
+ *
+ * The caller hands in the EXACT session id of the source pane (a borrowed
+ * Companion Primary writes to another workspace's session, so deriving one
+ * from the active tab would open the wrong terminal). What this adds is the
+ * profile check: a snapshot is terminal output, and output belonging to a
+ * workspace outside the viewer's profile must not be rendered into a panel
+ * just because the session id was still reachable. A workspace that isn't in
+ * the payload at all fails the same way — membership has to be provable, not
+ * assumed. Returns null when the request can't be honoured.
+ */
+export function resolveTerminalTextSelectionTarget(
+  workspaces: readonly WorkspaceState[] | null | undefined,
+  activeProfileId: string | null | undefined,
+  sessionId: string,
+): TerminalTextSelectionTarget | null {
+  const separator = String(sessionId || "").indexOf(":");
+  if (separator <= 0) return null;
+  const workspaceId = sessionId.slice(0, separator);
+  const panelId = sessionId.slice(separator + 1);
+  if (!panelId) return null;
+  const workspace = (workspaces || []).find((ws) => ws?.id === workspaceId);
+  if (!workspace) return null;
+  if ((workspace.profileId || "default") !== (activeProfileId || "default")) return null;
+  const panel = (workspace.panels || []).find((p: PanelState) => p?.id === panelId);
+  if (!panel) return null;
+  const tabTitle = panel.title || panel.command || "Terminal";
+  return {
+    sessionId,
+    workspaceId,
+    panelId,
+    title: workspace.name ? `${workspace.name} — ${tabTitle}` : tabTitle,
+  };
+}
+
 // ---------------------------------------------------------------------------
 
 export function summarizeAttention(

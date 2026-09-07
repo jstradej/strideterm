@@ -206,8 +206,15 @@ describe("createTerminalController", () => {
   });
 });
 
-function buildTouchController() {
+function buildTouchController(
+  hooks: {
+    onTextSelectionRequested?: (sessionId: string) => void;
+    onOverscrollRefresh?: () => void;
+    getOverlay?: () => unknown;
+  } = {},
+) {
   const views = { value: new Map() };
+  const writeTerminal = vi.fn();
   const controller = createTerminalController({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     views: views as any,
@@ -218,7 +225,7 @@ function buildTouchController() {
     getPayload: () => null,
     // isRemote: true skips WebGL, link provider, and openTerminalPath registration.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    api: { writeTerminal: vi.fn(), isRemote: true } as any,
+    api: { writeTerminal, isRemote: true } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     appConfig: {} as any,
     openTerminalLink: vi.fn(),
@@ -226,8 +233,9 @@ function buildTouchController() {
     shortcutTabDirection: () => 0,
     downloadTextFile: vi.fn(),
     safeFilenamePart: (value: unknown) => String(value),
+    ...hooks,
   });
-  return { controller, views };
+  return { controller, views, writeTerminal };
 }
 
 function touchPoint(target: EventTarget, clientX: number, clientY: number): Touch {
@@ -300,6 +308,384 @@ describe("touch tap-to-focus", () => {
     );
 
     expect(term.focus).not.toHaveBeenCalled();
+  });
+});
+
+describe("touch long press opens the select-text panel", () => {
+  const SESSION_ID = "long-press:panel-1";
+  /** Matches LONG_PRESS_MS in terminal-controller.ts. */
+  const LONG_PRESS_MS = 500;
+  /** Matches LONG_PRESS_SYNTHETIC_MS. */
+  const SYNTHETIC_MS = 700;
+
+  // Every controller built here is torn down after the test. The synthetic-
+  // event suppressor is a WINDOW listener that normally clears itself when its
+  // timer fires; fake timers are thrown away between tests, so without an
+  // explicit release a leftover suppressor from one test swallows the next
+  // test's click.
+  const built: Array<ReturnType<typeof buildTouchController>> = [];
+  afterEach(() => {
+    for (const instance of built) instance.controller.pruneTerminalViews(new Set<string>());
+    built.length = 0;
+  });
+
+  function setup(hooks: { onOverscrollRefresh?: () => void; getOverlay?: () => unknown } = {}) {
+    vi.useFakeTimers();
+    const onTextSelectionRequested = vi.fn();
+    const instance = buildTouchController({ onTextSelectionRequested, ...hooks });
+    built.push(instance);
+    instance.controller.ensureTerminal(SESSION_ID);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (instance.views.value as any).get(SESSION_ID)!;
+    document.body.append(view.mount);
+    return { ...instance, onTextSelectionRequested, mount: view.mount as HTMLElement, term: view.term };
+  }
+
+  function press(mount: HTMLElement, x = 100, y = 200, fingers = 1): void {
+    const touches = Array.from({ length: fingers }, (_, i) => touchPoint(mount, x + i * 60, y));
+    mount.dispatchEvent(
+      new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches, changedTouches: touches }),
+    );
+  }
+
+  function drag(mount: HTMLElement, x: number, y: number): void {
+    const touches = [touchPoint(mount, x, y)];
+    mount.dispatchEvent(
+      new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches, changedTouches: touches }),
+    );
+  }
+
+  function lift(mount: HTMLElement, x = 100, y = 200): void {
+    mount.dispatchEvent(
+      new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [touchPoint(mount, x, y)] }),
+    );
+  }
+
+  test("a still finger held for the full duration opens the panel exactly once", () => {
+    const { mount, onTextSelectionRequested } = setup();
+
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+
+    expect(onTextSelectionRequested).toHaveBeenCalledTimes(1);
+    expect(onTextSelectionRequested).toHaveBeenCalledWith(SESSION_ID);
+
+    // Keeping the finger down does not re-open it.
+    vi.advanceTimersByTime(5000);
+    lift(mount);
+    expect(onTextSelectionRequested).toHaveBeenCalledTimes(1);
+  });
+
+  test("the consumed gesture writes nothing to the PTY, never scrolls, and never focuses", () => {
+    const onOverscrollRefresh = vi.fn();
+    const { mount, term, writeTerminal, onTextSelectionRequested } = setup({ onOverscrollRefresh });
+
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    // The finger drifts while the panel is coming up — that must not scroll
+    // the terminal underneath it or send arrow keys to an alt-buffer TUI.
+    drag(mount, 100, 20);
+    lift(mount, 100, 20);
+
+    expect(onTextSelectionRequested).toHaveBeenCalledTimes(1);
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(term.scrollLines).not.toHaveBeenCalled();
+    expect(term.focus).not.toHaveBeenCalled();
+    expect(onOverscrollRefresh).not.toHaveBeenCalled();
+  });
+
+  test("a tap shorter than the long press still focuses the terminal", () => {
+    const { mount, term, onTextSelectionRequested } = setup();
+
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS - 100);
+    lift(mount, 102, 201);
+
+    expect(onTextSelectionRequested).not.toHaveBeenCalled();
+    expect(term.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test("movement past the threshold in either axis cancels the press", () => {
+    const vertical = setup();
+    press(vertical.mount);
+    drag(vertical.mount, 100, 180);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(vertical.onTextSelectionRequested).not.toHaveBeenCalled();
+
+    const horizontal = setup();
+    press(horizontal.mount);
+    drag(horizontal.mount, 130, 200);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(horizontal.onTextSelectionRequested).not.toHaveBeenCalled();
+  });
+
+  test("a finger that wanders away and comes back is a drag, not a press", () => {
+    const { mount, onTextSelectionRequested } = setup();
+
+    press(mount, 100, 200);
+    drag(mount, 100, 260);
+    // Back within 3 px of the origin: the FINAL distance looks like a press,
+    // the peak does not.
+    drag(mount, 100, 203);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+
+    expect(onTextSelectionRequested).not.toHaveBeenCalled();
+  });
+
+  test("a second finger cancels the press and does not re-arm it until a new gesture", () => {
+    const { mount, onTextSelectionRequested } = setup();
+
+    press(mount, 100, 200, 1);
+    vi.advanceTimersByTime(200);
+    press(mount, 100, 200, 2);
+    vi.advanceTimersByTime(5000);
+    expect(onTextSelectionRequested).not.toHaveBeenCalled();
+
+    // A fresh gesture (fingers back to one) arms it again.
+    lift(mount);
+    press(mount, 100, 200, 1);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(onTextSelectionRequested).toHaveBeenCalledTimes(1);
+  });
+
+  test("touchcancel cancels the pending press", () => {
+    const { mount, onTextSelectionRequested } = setup();
+
+    press(mount);
+    mount.dispatchEvent(new TouchEvent("touchcancel", { bubbles: true, touches: [], changedTouches: [] }));
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+
+    expect(onTextSelectionRequested).not.toHaveBeenCalled();
+  });
+
+  test("detaching the pane releases the pending timer", () => {
+    const { controller, mount, onTextSelectionRequested } = setup();
+
+    press(mount);
+    controller.detachTerminalPane(SESSION_ID);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+
+    expect(onTextSelectionRequested).not.toHaveBeenCalled();
+  });
+
+  test("removing the session releases the pending timer", () => {
+    const { controller, mount, onTextSelectionRequested } = setup();
+
+    press(mount);
+    controller.pruneTerminalViews(new Set<string>());
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+
+    expect(onTextSelectionRequested).not.toHaveBeenCalled();
+  });
+
+  test("the synthetic click that follows the gesture cannot press a button under the finger", () => {
+    const { mount } = setup();
+    const button = document.createElement("button");
+    const clicked = vi.fn();
+    button.addEventListener("click", clicked);
+    document.body.append(button);
+
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    lift(mount);
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(clicked).not.toHaveBeenCalled();
+  });
+
+  test("the synthetic contextmenu from the same gesture cannot trigger a paste", () => {
+    const { mount, term } = setup();
+    const previousClipboard = navigator.clipboard;
+    const readText = vi.fn(async () => "pasted");
+    Object.defineProperty(navigator, "clipboard", { value: { readText }, configurable: true });
+    try {
+      press(mount);
+      vi.advanceTimersByTime(LONG_PRESS_MS);
+      mount.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+
+      expect(readText).not.toHaveBeenCalled();
+      expect(term.paste).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { value: previousClipboard, configurable: true });
+    }
+  });
+
+  test("the system selection callout outside the terminal is never swallowed", () => {
+    const { mount } = setup();
+    // Stand-in for the panel's own text area: a long press THERE is the whole
+    // point of the feature, and it can land inside the suppression window.
+    const panelText = document.createElement("pre");
+    const calloutAllowed = vi.fn();
+    panelText.addEventListener("contextmenu", calloutAllowed);
+    document.body.append(panelText);
+
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    lift(mount);
+    panelText.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+
+    expect(calloutAllowed).toHaveBeenCalledTimes(1);
+  });
+
+  test("a click after the suppression window is left alone", () => {
+    const { mount } = setup();
+    const button = document.createElement("button");
+    const clicked = vi.fn();
+    button.addEventListener("click", clicked);
+    document.body.append(button);
+
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    lift(mount);
+    vi.advanceTimersByTime(SYNTHETIC_MS + 50);
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(clicked).toHaveBeenCalledTimes(1);
+  });
+
+  test("detaching releases the window-level click suppressor too", () => {
+    const { controller, mount } = setup();
+    const button = document.createElement("button");
+    const clicked = vi.fn();
+    button.addEventListener("click", clicked);
+    document.body.append(button);
+
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    controller.detachTerminalPane(SESSION_ID);
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(clicked).toHaveBeenCalledTimes(1);
+  });
+
+  test("a dialog that is already open swallows the press instead of stacking a second one", () => {
+    let overlay: unknown = null;
+    const { mount, onTextSelectionRequested } = setup({ getOverlay: () => overlay });
+
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(onTextSelectionRequested).toHaveBeenCalledTimes(1);
+
+    // The panel is up now. A press that somehow reaches the terminal behind it
+    // must not replace whatever dialog the user is looking at.
+    overlay = "TerminalTextSelectionDialog";
+    lift(mount);
+    press(mount);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+
+    expect(onTextSelectionRequested).toHaveBeenCalledTimes(1);
+  });
+
+  test("no long press is armed when the renderer wires no handler", () => {
+    vi.useFakeTimers();
+    const instance = buildTouchController();
+    built.push(instance);
+    const { controller, views } = instance;
+    controller.ensureTerminal("no-handler:panel-1");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get("no-handler:panel-1")!;
+    document.body.append(view.mount);
+
+    press(view.mount);
+    vi.advanceTimersByTime(5000);
+    lift(view.mount);
+
+    // Unchanged behaviour: the gesture is still an ordinary tap.
+    expect(view.term.focus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the existing touch gestures survive the long-press arbitration", () => {
+  const SESSION_ID = "gestures:panel-1";
+
+  const built: Array<ReturnType<typeof buildTouchController>> = [];
+  afterEach(() => {
+    for (const instance of built) instance.controller.pruneTerminalViews(new Set<string>());
+    built.length = 0;
+  });
+
+  function setup(hooks: { onOverscrollRefresh?: () => void } = {}) {
+    vi.useFakeTimers();
+    const instance = buildTouchController({ onTextSelectionRequested: vi.fn(), ...hooks });
+    built.push(instance);
+    instance.controller.ensureTerminal(SESSION_ID);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (instance.views.value as any).get(SESSION_ID)!;
+    document.body.append(view.mount);
+    return { ...instance, mount: view.mount as HTMLElement, term: view.term };
+  }
+
+  function touchEvent(type: string, mount: HTMLElement, points: Array<[number, number]>): TouchEvent {
+    const touches = points.map(([x, y]) => touchPoint(mount, x, y));
+    return new TouchEvent(type, { bubbles: true, cancelable: true, touches, changedTouches: touches });
+  }
+
+  test("a one-finger swipe still scrolls the normal buffer", () => {
+    const { mount, term } = setup();
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+
+    expect(term.scrollLines).toHaveBeenCalled();
+    expect(term.scrollLines.mock.calls[0][0]).toBeLessThan(0);
+  });
+
+  test("a swipe in the alternate buffer still sends arrow keys to the PTY", () => {
+    const { mount, term, writeTerminal } = setup();
+    term.buffer.active.type = "alternate";
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+
+    expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b[A");
+  });
+
+  test("two fingers still pinch-zoom", () => {
+    const { mount, term } = setup();
+
+    mount.dispatchEvent(
+      touchEvent("touchstart", mount, [
+        [100, 100],
+        [160, 100],
+      ]),
+    );
+    mount.dispatchEvent(
+      touchEvent("touchmove", mount, [
+        [100, 100],
+        [220, 100],
+      ]),
+    );
+
+    expect(term.options.fontSize).toBe(26);
+  });
+
+  test("the pull-to-refresh overscroll still fires", () => {
+    const onOverscrollRefresh = vi.fn();
+    const { mount } = setup({ onOverscrollRefresh });
+
+    // Swipe toward newer content while the mock buffer refuses to advance —
+    // exactly the "already at the bottom" case the gesture is for.
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 300]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 140]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+
+    expect(onOverscrollRefresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("getTerminalTextSnapshot", () => {
+  test("returns null for a session with no live view", () => {
+    const { controller } = buildTouchController();
+    expect(controller.getTerminalTextSnapshot("nope:panel-1")).toBeNull();
+  });
+
+  test("returns a snapshot for a live view", () => {
+    const { controller } = buildTouchController();
+    controller.ensureTerminal("snap:panel-1");
+    const snapshot = controller.getTerminalTextSnapshot("snap:panel-1");
+    expect(snapshot).not.toBeNull();
+    expect(typeof snapshot!.text).toBe("string");
   });
 });
 

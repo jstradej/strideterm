@@ -8,6 +8,8 @@ import type { Ref } from "vue";
 import type { APP_CONFIG } from "../../config/app-config.js";
 import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
 import { detectPaths } from "./path-detector.js";
+import { buildTerminalTextSnapshot } from "./terminal-text-snapshot.js";
+import type { TerminalTextSnapshot, TerminalTextSnapshotOptions } from "./terminal-text-snapshot.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +48,14 @@ export interface TerminalView {
   webglIdleDisposeTimer: number | null;
   /** Disposer for the (always-registered, gated) diagnostics onRender hook. */
   diagRenderDisposer: { dispose(): void } | null;
+  /**
+   * Releases the touch-gesture resources that outlive a single event: the
+   * long-press timer and the window-level listeners that swallow the
+   * synthetic click / contextmenu a consumed long press leaves behind.
+   * Called on detach as well as on dispose — a parked pane must not keep a
+   * pending timer or a global capture listener alive.
+   */
+  releaseTouchGesture: () => void;
 }
 
 /**
@@ -328,6 +338,7 @@ export function createTerminalController({
   downloadTextFile,
   safeFilenamePart,
   onOverscrollRefresh,
+  onTextSelectionRequested,
   onUserInput,
 }: {
   views: Ref<Map<string, TerminalView>>;
@@ -347,6 +358,12 @@ export function createTerminalController({
    * but there's nothing more. Acts as a manual pull-up-to-refresh gesture
    * on mobile remote clients. Optional — desktop and tests don't wire it. */
   onOverscrollRefresh?: () => void;
+  /** Called when the user long-presses a terminal with one finger — the
+   * renderer is expected to open the "Select text" panel for that session.
+   * The gesture is consumed: it does not scroll, focus, refresh, or reach the
+   * PTY. Optional — when it isn't wired the long-press timer is never armed,
+   * so desktop and tests keep exactly the touch behaviour they had. */
+  onTextSelectionRequested?: (sessionId: string) => void;
   /** Called with every write that originates from the user typing into this
    * terminal (xterm's onData). Deliberately NOT called for the synthetic
    * writes this controller makes on the user's behalf (scroll-to-arrow-key
@@ -606,6 +623,7 @@ export function createTerminalController({
       view.resizeObserver?.disconnect();
       cancelWebglRetry(view);
       cancelWebglIdleDispose(view);
+      view.releaseTouchGesture?.();
       view.diagRenderDisposer?.dispose();
       view.diagRenderDisposer = null;
       // Dispose the WebGL addon explicitly, before term.dispose(), so the GL
@@ -1092,6 +1110,13 @@ export function createTerminalController({
     // Right-click: copy selection, paste image if present, else paste text (PuTTY-style)
     mount.addEventListener("contextmenu", (event) => {
       event.preventDefault();
+      // A long press that opened the "Select text" panel must not also be
+      // read as a right-click — that would paste the clipboard into the
+      // shell. The window-level capture listener below normally swallows the
+      // event before it ever reaches here; this is the belt to its braces,
+      // because at the target phase listener order, not the capture flag,
+      // decides who runs first.
+      if (isLongPressConsumingSyntheticEvents()) return;
       if (term.hasSelection()) {
         navigator.clipboard.writeText(term.getSelection());
         term.clearSelection();
@@ -1210,11 +1235,125 @@ export function createTerminalController({
       // crosses OVERSCROLL_REFRESH_PX before touchend, we treat the
       // gesture as "refresh now" and call onOverscrollRefresh.
       overscrollAccum: 0,
+      // --- Long press → "Select text" panel ---------------------------------
+      // Deliberately part of THIS arbitration rather than a second recognizer
+      // bolted on top: a competing recognizer would race the scroll handler
+      // above and fire mid-swipe.
+      longPressTimer: null as number | null,
+      /** PEAK movement since touchstart, per axis. The final distance is not
+       *  enough — a finger that wanders 40 px away and comes back is a drag,
+       *  not a press. */
+      maxMoveX: 0,
+      maxMoveY: 0,
+      /** A long press already opened the panel for this gesture: no scroll, no
+       *  tap-to-focus, no overscroll refresh until every finger lifts. */
+      consumed: false,
+      /** A second finger joined. No long press until a NEW gesture starts. */
+      blocked: false,
     };
     // Distance threshold for the refresh gesture. ~100 px is large enough
     // that an accidental tail of a normal scroll won't trigger it but small
     // enough to be a comfortable single swipe on a phone.
     const OVERSCROLL_REFRESH_PX = 100;
+    /** How long one still finger has to rest before the panel opens. */
+    const LONG_PRESS_MS = 500;
+    /** Movement budget, in CSS px, before the press counts as a drag. */
+    const LONG_PRESS_MOVE_PX = 10;
+    /**
+     * Window after a consumed long press in which the synthetic `click` /
+     * `contextmenu` the browser may still emit for that same gesture is
+     * swallowed. Without it the finger that opened the panel lands on
+     * whatever button the panel just drew under it.
+     */
+    const LONG_PRESS_SYNTHETIC_MS = 700;
+
+    let syntheticSuppressTimer: number | null = null;
+    let suppressSynthetic = false;
+
+    function swallowSyntheticFromLongPress(event: Event): void {
+      if (!suppressSynthetic) return;
+      // `contextmenu` is scoped to the terminal itself. Everywhere else it is
+      // the system selection callout — which is the entire point of the panel
+      // the press just opened, and the panel can be under the finger within
+      // this window. Only `click` is swallowed globally, because that is the
+      // one that presses a button the panel has just drawn there.
+      if (event.type === "contextmenu" && !mount.contains(event.target as Node | null)) return;
+      clearSyntheticSuppression();
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }
+
+    function clearSyntheticSuppression(): void {
+      if (suppressSynthetic) {
+        window.removeEventListener("click", swallowSyntheticFromLongPress, { capture: true });
+        window.removeEventListener("contextmenu", swallowSyntheticFromLongPress, { capture: true });
+      }
+      suppressSynthetic = false;
+      if (syntheticSuppressTimer !== null) {
+        window.clearTimeout(syntheticSuppressTimer);
+        syntheticSuppressTimer = null;
+      }
+    }
+
+    /** Read-only probe for handlers that want to bail out of a synthetic
+     *  event without consuming the suppression window (the click may still
+     *  be on its way). */
+    function isLongPressConsumingSyntheticEvents(): boolean {
+      return suppressSynthetic;
+    }
+
+    /**
+     * Listen on `window` in the capture phase, and only for as long as the
+     * window lasts: the panel is teleported to <body>, so the stray click
+     * lands on the dialog rather than inside this mount, and a listener that
+     * outlived the gesture would be one more global handler per pane.
+     */
+    function armSyntheticSuppression(): void {
+      if (!suppressSynthetic) {
+        window.addEventListener("click", swallowSyntheticFromLongPress, { capture: true });
+        window.addEventListener("contextmenu", swallowSyntheticFromLongPress, { capture: true });
+      }
+      suppressSynthetic = true;
+      if (syntheticSuppressTimer !== null) window.clearTimeout(syntheticSuppressTimer);
+      syntheticSuppressTimer = window.setTimeout(clearSyntheticSuppression, LONG_PRESS_SYNTHETIC_MS);
+    }
+
+    function cancelLongPress(): void {
+      if (touch.longPressTimer === null) return;
+      window.clearTimeout(touch.longPressTimer);
+      touch.longPressTimer = null;
+    }
+
+    function armLongPress(): void {
+      cancelLongPress();
+      if (!onTextSelectionRequested) return;
+      touch.longPressTimer = window.setTimeout(() => {
+        touch.longPressTimer = null;
+        if (touch.blocked || touch.consumed) return;
+        // A dialog is already up — including, after a first long press, this
+        // one. Opening a second panel over it (or replacing whichever dialog
+        // the user is in the middle of) is never what the gesture meant.
+        if (getOverlay()) return;
+        touch.consumed = true;
+        // The gesture belongs to the panel now: stop scrolling with it and
+        // drop any overscroll travel so lifting the finger can't also fire
+        // the pull-to-refresh.
+        touch.mode = "none";
+        touch.overscrollAccum = 0;
+        armSyntheticSuppression();
+        onTextSelectionRequested(sessionId);
+      }, LONG_PRESS_MS);
+    }
+
+    function releaseTouchGesture(): void {
+      cancelLongPress();
+      clearSyntheticSuppression();
+      touch.mode = "none";
+      touch.consumed = false;
+      touch.blocked = false;
+      touch.overscrollAccum = 0;
+    }
 
     function getTouchDist(e: TouchEvent): number {
       const t0 = e.touches[0];
@@ -1227,13 +1366,22 @@ export function createTerminalController({
       (e) => {
         e.preventDefault();
         if (e.touches.length === 1) {
+          // A fresh gesture (finger count went 0 → 1) — this is the only
+          // place a long press can be re-armed after a second finger.
+          touch.consumed = false;
+          touch.blocked = false;
+          touch.maxMoveX = 0;
+          touch.maxMoveY = 0;
           touch.mode = "scroll";
           touch.lastY = e.touches[0].clientY;
           touch.startY = e.touches[0].clientY;
           touch.startX = e.touches[0].clientX;
           touch.scrollAccum = 0;
           touch.overscrollAccum = 0;
+          armLongPress();
         } else if (e.touches.length === 2) {
+          touch.blocked = true;
+          cancelLongPress();
           const dist = getTouchDist(e);
           if (dist < 40) {
             touch.mode = "scroll";
@@ -1248,6 +1396,8 @@ export function createTerminalController({
             touch.startFont = (term.options.fontSize ?? 13) as number;
           }
         } else {
+          touch.blocked = true;
+          cancelLongPress();
           touch.mode = "none";
         }
       },
@@ -1258,6 +1408,12 @@ export function createTerminalController({
       "touchmove",
       (e) => {
         e.preventDefault();
+        if (touch.longPressTimer !== null && e.touches.length >= 1) {
+          touch.maxMoveX = Math.max(touch.maxMoveX, Math.abs(e.touches[0].clientX - touch.startX));
+          touch.maxMoveY = Math.max(touch.maxMoveY, Math.abs(e.touches[0].clientY - touch.startY));
+          if (touch.maxMoveX > LONG_PRESS_MOVE_PX || touch.maxMoveY > LONG_PRESS_MOVE_PX) cancelLongPress();
+        }
+        if (touch.consumed) return;
         if (touch.mode === "scroll" && e.touches.length >= 1) {
           const currentY = e.touches[0].clientY;
           const dy = touch.lastY - currentY;
@@ -1302,6 +1458,17 @@ export function createTerminalController({
     mount.addEventListener(
       "touchend",
       (e) => {
+        cancelLongPress();
+        // The panel already owns this gesture: the lift must not focus the
+        // terminal, must not refresh, and must not reach whatever button the
+        // panel drew under the finger. `consumed` stays set until the next
+        // touchstart so a second finger lifting can't undo any of that.
+        if (touch.consumed) {
+          touch.mode = "none";
+          touch.overscrollAccum = 0;
+          armSyntheticSuppression();
+          return;
+        }
         // Pull-up-to-refresh: if the user travelled past the bottom of the
         // scroll buffer by more than the threshold during this gesture,
         // fire the refresh callback instead of (and before) any other
@@ -1327,6 +1494,7 @@ export function createTerminalController({
     mount.addEventListener(
       "touchcancel",
       () => {
+        cancelLongPress();
         touch.mode = "none";
       },
       { passive: true },
@@ -1361,6 +1529,7 @@ export function createTerminalController({
       webglRetryTimer: null,
       webglIdleDisposeTimer: null,
       diagRenderDisposer,
+      releaseTouchGesture,
     });
 
     return views.value.get(sessionId)!;
@@ -1573,6 +1742,10 @@ export function createTerminalController({
     window.cancelAnimationFrame(view.resizeFrame || 0);
     view.resizeFrame = null;
     cancelWebglRetry(view);
+    // A parked pane keeps no pending long-press timer and no window-level
+    // capture listener. The mount's own touch listeners come back with it on
+    // re-attach; these two are re-armed by the next gesture.
+    view.releaseTouchGesture?.();
     view.resizeObserver?.disconnect();
     view.resizeObserver = null;
     view.mount.remove();
@@ -1630,6 +1803,24 @@ export function createTerminalController({
       lines.push(line ? line.translateToString(true) : "");
     }
     return lines.join("\n").replace(/\s+$/, "");
+  }
+
+  /**
+   * Immutable text snapshot of one terminal, for the "Select text" panel.
+   *
+   * Taken synchronously off the buffer as it stands right now: writes xterm
+   * has queued but not yet parsed are simply not in it, which is the point —
+   * the alternative is pausing the stream or round-tripping the backend for a
+   * flush, and the user asked to select what they can see. Returns null when
+   * the session has no live view (no view, no buffer, nothing to select).
+   */
+  function getTerminalTextSnapshot(
+    sessionId: string,
+    options?: TerminalTextSnapshotOptions,
+  ): TerminalTextSnapshot | null {
+    const term = views.value.get(sessionId)?.term;
+    if (!term?.buffer?.active) return null;
+    return buildTerminalTextSnapshot(term, options);
   }
 
   function exportTerminalTranscript(sessionId: string, { title = "Terminal", lineCount = 500 } = {}): boolean {
@@ -1754,6 +1945,7 @@ export function createTerminalController({
     focusActiveTerminal,
     getSearchAddon,
     getVisibleTerminalText,
+    getTerminalTextSnapshot,
     handleTerminalData,
     handleTerminalReplay,
     handleTerminalExit,

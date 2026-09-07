@@ -41,6 +41,7 @@ const DIALOGS = {
   ConfirmDialog: defineAsyncComponent(() => import("./ConfirmDialog.vue")),
   PromptDialog: defineAsyncComponent(() => import("./PromptDialog.vue")),
   CreatePullRequestDialog: defineAsyncComponent(() => import("./CreatePullRequestDialog.vue")),
+  TerminalTextSelectionDialog: defineAsyncComponent(() => import("./TerminalTextSelectionDialog.vue")),
   SshHostsDialog: defineAsyncComponent(() => import("../ssh/SshHostsDialog.vue")),
   SshHostEditor: defineAsyncComponent(() => import("../ssh/SshHostEditor.vue")),
   SshKeyManager: defineAsyncComponent(() => import("../ssh/SshKeyManager.vue")),

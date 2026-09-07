@@ -13,7 +13,8 @@ import {
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { useAppStore } from "./app.js";
-import { resolveInputOriginWorkspaceId } from "../app/selectors.js";
+import { resolveInputOriginWorkspaceId, resolveTerminalTextSelectionTarget } from "../app/selectors.js";
+import type { TerminalTextSnapshot, TerminalTextSnapshotOptions } from "../app/terminal-text-snapshot.js";
 import type { CompanionPrimaryTaskRunner } from "../../electron/shared/companion-primary.js";
 import { useNotificationStore } from "./notifications.js";
 
@@ -109,6 +110,13 @@ export const useTerminalStore = defineStore("terminal", () => {
             void api.refresh!();
           }
         : undefined,
+      // Long press inside a terminal opens the "Select text" panel. Wired on
+      // every transport, not just remote: a touchscreen laptop or a Windows
+      // tablet running the desktop build has exactly the same problem with
+      // dragging out an xterm selection by finger.
+      onTextSelectionRequested: (sessionId: string) => {
+        requestTextSelection(sessionId);
+      },
     });
 
     api.onTerminalData!(({ sessionId, data, seq }) => {
@@ -220,6 +228,49 @@ export const useTerminalStore = defineStore("terminal", () => {
     return controller?.getVisibleTerminalText(sessionId) ?? "";
   }
 
+  /**
+   * Immutable text snapshot of one terminal's screen. Renderer-local: it reads
+   * the xterm buffer this client already has, so it costs no IPC, no HTTP and
+   * no PTY replay on either transport.
+   */
+  function getTerminalTextSnapshot(
+    sessionId: string,
+    options?: TerminalTextSnapshotOptions,
+  ): TerminalTextSnapshot | null {
+    return controller?.getTerminalTextSnapshot(sessionId, options) ?? null;
+  }
+
+  /**
+   * Open the "Select text" panel for a session. The single entry point for
+   * every trigger — the terminal long press, the TerminalPane control and the
+   * MobileInputBar menu all land here, so the profile check and the header
+   * label are written once.
+   *
+   * The snapshot itself is passed as a plain string prop and deliberately not
+   * stored in the Pinia state: it must not enter deep reactivity, and it must
+   * never ride along in a state broadcast.
+   */
+  function requestTextSelection(sessionId: string, options?: TerminalTextSnapshotOptions): boolean {
+    if (!sessionId) return false;
+    const app = useAppStore();
+    const target = resolveTerminalTextSelectionTarget(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (app.payload?.appState?.workspaces as any) || [],
+      app.myActiveProfileId,
+      sessionId,
+    );
+    if (!target) return false;
+    if (!getTerminalTextSnapshot(sessionId, options)) return false;
+    app.openDialog("TerminalTextSelectionDialog", {
+      sessionId: target.sessionId,
+      workspaceId: target.workspaceId,
+      panelId: target.panelId,
+      title: target.title,
+      onClose: () => app.closeDialog(),
+    });
+    return true;
+  }
+
   // Renderer-local performance diagnostics. Enabled only while the Performance
   // panel is open + visible; the panel polls getTerminalDiagnostics() which
   // returns interval deltas and resets. Never enters server state.
@@ -256,6 +307,8 @@ export const useTerminalStore = defineStore("terminal", () => {
     syncFontSize,
     getSearchAddon,
     getVisibleTerminalText,
+    getTerminalTextSnapshot,
+    requestTextSelection,
     setTerminalDiagnosticsEnabled,
     getTerminalDiagnostics,
     requestSearch,

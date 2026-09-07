@@ -36,6 +36,7 @@
 - **Light/Dark Theme** - full theme support including terminal colors and title bar
 - **Drag & Drop** - reorder workspaces and tabs by dragging
 - **Mobile-Responsive Remote UI** - the web client served by the remote-access server adapts to phone-width viewports: the workspace sidebar, Git pane chrome, Azure DevOps / GitHub PR inbox and review panes, and per-tab actions all collapse into popovers and full-width controls so you can drive a workspace from a phone over LAN or a Cloudflare tunnel
+- **Select Text by Touch** - a long press in the terminal (or the ⿴ control on any touch device, or **Select text** in the mobile input bar's ⋯ menu) opens a snapshot of the visible screen as plain text. Select words and ranges with the phone's own handles and copy with **Copy selection**, **Copy all**, or the system Copy menu — the snapshot holds still while the PTY keeps writing and a TUI keeps repainting. **Include earlier output** re-takes it with up to 500 lines of scrollback
 
 ## Screenshots
 

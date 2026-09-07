@@ -10,6 +10,8 @@ import { nextTick } from "vue";
 import MobileInputBar from "./MobileInputBar.vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
+import { useTerminalStore } from "../../stores/terminal.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -315,6 +317,47 @@ describe("MobileInputBar", () => {
         expect(writeTerminal).not.toHaveBeenCalled();
       },
     );
+
+    it("Select text opens the panel for the session this bar writes to", async () => {
+      const termStore = useTerminalStore();
+      const request = vi.spyOn(termStore, "requestTextSelection").mockReturnValue(true);
+      const { wrapper, writeTerminal } = mountBar();
+
+      await wrapper.find("button.mobile-input-bar__key--more").trigger("click");
+      await wrapper.find("[data-role='mobile-input-bar-select-text']").trigger("click");
+
+      expect(request).toHaveBeenCalledWith(SESSION_ID);
+      // Selecting text is not input: nothing may reach the shell.
+      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(wrapper.find("button.mobile-input-bar__menu-item").exists()).toBe(false);
+    });
+
+    it("Select text follows a tab switch to the new target session", async () => {
+      const termStore = useTerminalStore();
+      const request = vi.spyOn(termStore, "requestTextSelection").mockReturnValue(true);
+      const store = useAppStore();
+      const { wrapper } = mountBar();
+      store.activeViewId = "ws-a:panel-other";
+      store.activeSessionId = "ws-a:panel-other";
+      await nextTick();
+
+      await wrapper.find("button.mobile-input-bar__key--more").trigger("click");
+      await wrapper.find("[data-role='mobile-input-bar-select-text']").trigger("click");
+
+      expect(request).toHaveBeenCalledWith("ws-a:panel-other");
+    });
+
+    it("says so instead of failing silently when the terminal can't be snapshotted", async () => {
+      const termStore = useTerminalStore();
+      vi.spyOn(termStore, "requestTextSelection").mockReturnValue(false);
+      const toast = vi.spyOn(useNotificationStore(), "pushEphemeralToast").mockReturnValue("toast-1");
+      const { wrapper } = mountBar();
+
+      await wrapper.find("button.mobile-input-bar__key--more").trigger("click");
+      await wrapper.find("[data-role='mobile-input-bar-select-text']").trigger("click");
+
+      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Can't select text", kind: "error" }));
+    });
 
     it("closes the menu after choosing an item", async () => {
       const { wrapper } = mountBar();

@@ -7,6 +7,7 @@ import {
   getWorkspacePanelByViewId,
   getWorkspaceTabs,
   resolveInputOriginWorkspaceId,
+  resolveTerminalTextSelectionTarget,
   runningAgentElapsedMs,
   summarizeAttention,
   tabSessionId,
@@ -996,5 +997,69 @@ describe("collectSupervisedAgents — RUNNING membership", () => {
 
     expect(rows[0].inGrid).toBe(true);
     expect(rows[0].gridSlotIndex).toBe(2);
+  });
+});
+
+describe("resolveTerminalTextSelectionTarget", () => {
+  const workspaces = [
+    {
+      id: "ws-a",
+      name: "acme",
+      profileId: "p1",
+      panels: [
+        { id: "panel-shell", title: "Shell", command: "bash" },
+        { id: "panel-agent", title: "", command: "claude" },
+      ],
+    },
+    { id: "ws-b", name: "other", profileId: "p2", panels: [{ id: "panel-x", title: "X", command: "sh" }] },
+  ] as unknown as WorkspaceState[];
+
+  test("labels the panel with its workspace and tab name", () => {
+    const target = resolveTerminalTextSelectionTarget(workspaces, "p1", "ws-a:panel-shell");
+
+    expect(target).toEqual({
+      sessionId: "ws-a:panel-shell",
+      workspaceId: "ws-a",
+      panelId: "panel-shell",
+      title: "acme — Shell",
+    });
+  });
+
+  test("falls back to the command when the tab has no title", () => {
+    expect(resolveTerminalTextSelectionTarget(workspaces, "p1", "ws-a:panel-agent")?.title).toBe("acme — claude");
+  });
+
+  test("refuses a session whose workspace lives in another profile", () => {
+    expect(resolveTerminalTextSelectionTarget(workspaces, "p1", "ws-b:panel-x")).toBeNull();
+    // …and allows it once that IS the viewer's profile.
+    expect(resolveTerminalTextSelectionTarget(workspaces, "p2", "ws-b:panel-x")?.workspaceId).toBe("ws-b");
+  });
+
+  test("treats a missing profileId on either side as the default profile", () => {
+    const unprofiled = [
+      { id: "ws-c", name: "plain", panels: [{ id: "p", title: "T", command: "sh" }] },
+    ] as unknown as WorkspaceState[];
+
+    expect(resolveTerminalTextSelectionTarget(unprofiled, null, "ws-c:p")?.title).toBe("plain — T");
+    expect(resolveTerminalTextSelectionTarget(unprofiled, "default", "ws-c:p")?.title).toBe("plain — T");
+    expect(resolveTerminalTextSelectionTarget(unprofiled, "p1", "ws-c:p")).toBeNull();
+  });
+
+  test("refuses a workspace the viewer cannot see at all", () => {
+    // A remote client is only handed its own profile's workspaces, so an
+    // unknown id is unprovable membership, not a lookup miss to shrug at.
+    expect(resolveTerminalTextSelectionTarget(workspaces, "p1", "ws-gone:panel-shell")).toBeNull();
+    expect(resolveTerminalTextSelectionTarget([], "p1", "ws-a:panel-shell")).toBeNull();
+    expect(resolveTerminalTextSelectionTarget(null, "p1", "ws-a:panel-shell")).toBeNull();
+  });
+
+  test("refuses a panel that no longer exists in its workspace", () => {
+    expect(resolveTerminalTextSelectionTarget(workspaces, "p1", "ws-a:panel-closed")).toBeNull();
+  });
+
+  test("refuses anything that is not a <workspace>:<panel> session id", () => {
+    for (const id of ["", "ws-a", ":panel-shell", "ws-a:"]) {
+      expect(resolveTerminalTextSelectionTarget(workspaces, "p1", id)).toBeNull();
+    }
   });
 });

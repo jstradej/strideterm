@@ -63,7 +63,7 @@
             type="button"
             class="mobile-input-bar__key mobile-input-bar__key--more"
             :class="{ 'mobile-input-bar__key--active': menuOpen }"
-            title="More keys and actions — arrows, Home/End, Ctrl+Home/Ctrl+End, Ctrl+C, Ctrl+R, Ctrl+L, slash commands, and copy the visible screen."
+            title="More keys and actions — arrows, Home/End, Ctrl+Home/Ctrl+End, Ctrl+C, Ctrl+R, Ctrl+L, slash commands, copy the visible screen, and select text by hand."
             aria-haspopup="true"
             :aria-expanded="menuOpen"
             @mousedown.prevent
@@ -100,6 +100,15 @@
                 @click="copyScreen"
               >
                 📄&nbsp;&nbsp;Copy screen
+              </button>
+              <button
+                type="button"
+                class="mobile-input-bar__menu-item"
+                data-role="mobile-input-bar-select-text"
+                title="Open a snapshot of the visible screen you can select by hand — long-press a word, drag the handles, then copy just that part. The terminal keeps running behind it."
+                @click="selectText"
+              >
+                ✂️&nbsp;&nbsp;Select text
               </button>
               <button
                 v-for="key in menuKeys"
@@ -488,6 +497,19 @@ async function copyScreen(): Promise<void> {
     toast("Copied", "The visible terminal screen is on the clipboard.");
   } catch {
     toast("Copy failed", "The browser blocked clipboard access.", "error");
+  }
+}
+
+// Open the "Select text" panel for the terminal this bar writes to. Uses the
+// SAME target derivation as every other action here (a borrowed Companion
+// Primary writes to another workspace's session, and the snapshot has to come
+// from that one), and lets the store do the profile check.
+function selectText(): void {
+  menuOpen.value = false;
+  const sessionId = targetSessionId.value;
+  if (!sessionId) return;
+  if (!termStore.requestTextSelection(sessionId)) {
+    toast("Can't select text", "That terminal isn't available right now.", "error");
   }
 }
 
