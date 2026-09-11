@@ -124,18 +124,26 @@
             {{ gitUi.busyAction === "fetch" ? "Fetching…" : "Fetch" }}
           </button>
 
-          <!-- Pull: hidden when no upstream (UC-1, UC-9) unless showAllActions -->
-          <button
+          <!-- Pull: hidden when no upstream (UC-1, UC-9) unless showAllActions.
+               A split button, not a plain one: when the branch has DIVERGED,
+               `git pull --ff-only` cannot succeed, so the main action becomes
+               the persisted rebase/merge strategy against the upstream and the
+               label says which. The caret is only for overriding that. -->
+          <GitStrategySplitButton
             v-if="showPull"
-            type="button"
-            data-testid="pull-button"
-            :class="['button', pullIsPrimary ? '' : 'button--ghost', gitUi.busyAction === 'pull' && 'button--busy']"
+            :strategy="updateStrategy"
+            :main-label="pullLabel"
+            :main-title="pullTooltip"
             :disabled="pullDisabled"
-            :title="pullTooltip"
-            @click="gitUiStore.gitPull(workspaceId, { stashDirty: pullStashMode })"
-          >
-            {{ pullLabel }}
-          </button>
+            :busy="gitUi.busyAction === 'pull'"
+            :primary="pullIsPrimary"
+            main-testid="pull-button"
+            caret-testid="pull-strategy-caret"
+            caret-title="Choose what Pull does when the branch has diverged (rebase or merge)"
+            :options="pullStrategyOptions"
+            @run="onPullClick"
+            @update:strategy="onPullStrategyChange"
+          />
 
           <!-- Push: hidden when detached/review/no-remotes (structural impossibility) -->
           <button
@@ -384,6 +392,8 @@ import GitConflictsTab from "./git/GitConflictsTab.vue";
 import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitOperationCard from "./git/GitOperationCard.vue";
+import GitStrategySplitButton from "./git/GitStrategySplitButton.vue";
+import type { StrategyOption, UpdateStrategy } from "./git/update-strategy.js";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import ConfirmDialog from "../dialogs/ConfirmDialog.vue";
 import CustomSelect from "../common/CustomSelect.vue";
@@ -556,10 +566,16 @@ const primaryAction = computed(() => {
   }
   if (operation.value.inProgress) return null;
   if (gitUi.value.pendingAction) return null;
-  if (isDiverged.value) return null;
   if (isDetachedHead.value) return null;
   const s = snapshot.value;
   if (!s) return null;
+  // Diverged used to yield no primary action at all, because the only thing
+  // Pull could do was `--ff-only`, which a diverged branch can never satisfy —
+  // leaving a row of equally-grey buttons and a Pull that was still clickable
+  // and still doomed. Pull now integrates via the chosen strategy in that
+  // state, so there IS a right action to point at. No upstream check:
+  // `isDiverged` already requires one.
+  if (isDiverged.value) return "pull";
   if (s.behindCount > 0) return "pull";
   if (s.aheadCount > 0 && s.upstream) return "push";
   return null;
@@ -603,8 +619,41 @@ const pullStashMode = computed(() => {
   if ((s.behindCount || 0) === 0 && !isDiverged.value) return false;
   return true;
 });
+/**
+ * The persisted rebase/merge default, shared with the "Update Current Branch"
+ * card's split button. Only consulted for the DIVERGED row below — a plain
+ * fast-forward has no strategy to choose.
+ */
+const updateStrategy = computed<UpdateStrategy>(
+  () => (appStore.payload?.appState?.settings?.git?.ui?.updateStrategy as UpdateStrategy) || "rebase",
+);
+const pullStrategyOptions = computed<StrategyOption[]>(() => {
+  const target = snapshot.value?.upstream || "upstream";
+  return [
+    {
+      value: "rebase",
+      label: `Pull (rebase onto ${target})`,
+      title: `Fetch, then replay your commits on top of ${target} — linear history, rewrites your commit hashes.`,
+      testid: "pull-strategy-rebase",
+    },
+    {
+      value: "merge",
+      label: `Pull (merge ${target} in)`,
+      title: `Fetch, then merge ${target} into your branch — keeps history, adds a merge commit.`,
+      testid: "pull-strategy-merge",
+    },
+  ];
+});
+
+/**
+ * The label is the whole point of this button: it names what the click will
+ * do, so the user never has to work it out from the repo state. A diverged
+ * branch cannot fast-forward, so there it names the strategy instead of
+ * promising a "Pull" that would fail.
+ */
 const pullLabel = computed(() => {
   if (gitUi.value.busyAction === "pull") return "Pulling…";
+  if (isDiverged.value) return updateStrategy.value === "merge" ? "Pull (merge)" : "Pull (rebase)";
   return pullStashMode.value ? "Pull (stash & restore)" : "Pull";
 });
 const pullTooltip = computed(() => {
@@ -614,6 +663,10 @@ const pullTooltip = computed(() => {
   if (isDetachedHead.value) return "Disabled — HEAD is detached from any branch. Check out a branch first, then pull.";
   if ((s.behindCount || 0) === 0 && !isDiverged.value)
     return "Disabled — local branch is already up to date with upstream; nothing to pull.";
+  if (isDiverged.value)
+    return updateStrategy.value === "merge"
+      ? `Diverged (${s.aheadCount} ahead, ${s.behindCount} behind) — a fast-forward is impossible. Fetch, then merge ${s.upstream} into your branch, adding a merge commit. Use the caret to rebase instead.`
+      : `Diverged (${s.aheadCount} ahead, ${s.behindCount} behind) — a fast-forward is impossible. Fetch, then replay your ${s.aheadCount} commit${s.aheadCount !== 1 ? "s" : ""} on top of ${s.upstream}, which rewrites their hashes. Use the caret to merge instead.`;
   if (pullStashMode.value)
     return `Stash your uncommitted changes, fast-forward ${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""} from ${s.upstream}, then restore the changes. If the restore conflicts you'll get standard conflict markers to resolve.`;
   return `Run git pull (fast-forward) to bring in ${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""} from ${s.upstream} and update the working tree.`;
@@ -823,6 +876,34 @@ function onHeaderAction(action: { action: string; viewId?: string }) {
 
 function onCreateWorktree() {
   appStore.createWorktreeWithDialog(props.workspaceId, { preselectedRootPath: activeRootPath.value || "" });
+}
+
+/**
+ * One button, two destinations, decided by the repo state rather than by the
+ * user: a branch that is merely behind fast-forwards (unchanged behaviour), a
+ * diverged one integrates via the chosen strategy. Both routes go through the
+ * existing store actions — `gitRebaseBase` / `gitMergeBase` already fetch
+ * first and already raise the confirm dialog, so a history-rewriting pull is
+ * still confirmed before it runs.
+ */
+function onPullClick() {
+  const s = snapshot.value;
+  // `isDiverged` already implies a present snapshot with a non-empty upstream,
+  // so there is no ref to fall back to — the `s` test is only the narrowing
+  // TypeScript needs to read `s.upstream`.
+  if (s && isDiverged.value) {
+    if (updateStrategy.value === "merge") {
+      gitUiStore.gitMergeBase(props.workspaceId, s.upstream, { fetchFirst: true });
+    } else {
+      gitUiStore.gitRebaseBase(props.workspaceId, s.upstream, { fetchFirst: true });
+    }
+    return;
+  }
+  gitUiStore.gitPull(props.workspaceId, { stashDirty: pullStashMode.value });
+}
+
+function onPullStrategyChange(strategy: UpdateStrategy) {
+  void appStore.updateSettings({ git: { ui: { updateStrategy: strategy } } }).catch(() => {});
 }
 
 function onBulkFetchAll() {

@@ -1632,3 +1632,42 @@ describe("duplicate cwd/name across profiles (multi-profile fixtures)", () => {
     expect(conn?.profileId).toBe("");
   });
 });
+
+describe("settings.git.ui.updateStrategy", () => {
+  test("defaults to rebase on a fresh state", () => {
+    expect(createDefaultState().settings.git.ui.updateStrategy).toBe("rebase");
+  });
+
+  test("is backfilled to rebase for state that predates the setting", () => {
+    // "rebase" is what the split button already defaulted to when the value
+    // lived in component state, so an existing install must see no change in
+    // what the button offers.
+    const state = normalizeState({ settings: { git: { ui: { showAllActions: true } } } });
+    expect(state.settings.git.ui.updateStrategy).toBe("rebase");
+    // Backfilling the new key must not disturb its sibling.
+    expect(state.settings.git.ui.showAllActions).toBe(true);
+  });
+
+  test("keeps an explicit merge choice across normalization", () => {
+    // normalizeState runs on load AND after every mutation, so a rule that
+    // re-asserted a default here would make the choice impossible to change.
+    const state = normalizeState({ settings: { git: { ui: { updateStrategy: "merge" } } } });
+    expect(state.settings.git.ui.updateStrategy).toBe("merge");
+  });
+
+  test("survives repeated normalization (the setting is not a migration)", () => {
+    let state = normalizeState({ settings: { git: { ui: { updateStrategy: "merge" } } } });
+    for (let i = 0; i < 3; i += 1) state = normalizeState(state);
+    expect(state.settings.git.ui.updateStrategy).toBe("merge");
+  });
+
+  test("falls back to rebase for a value outside the union", () => {
+    // Hand-edited state file or an older/newer writer — anything that is not
+    // one of the two strategies must not reach the renderer, which would then
+    // label a button with a command it cannot run.
+    for (const bogus of ["squash", "", null, 7, {}]) {
+      const state = normalizeState({ settings: { git: { ui: { updateStrategy: bogus } } } });
+      expect(state.settings.git.ui.updateStrategy).toBe("rebase");
+    }
+  });
+});

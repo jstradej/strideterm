@@ -89,6 +89,25 @@ describe("sanitizeSettingsFromRemote", () => {
     expect(REMOTE_BLOCKED_NOTIFICATION_FIELDS).toContain("autoApprovePermissions");
   });
 
+  test("keeps settings.git — a remote client may choose the update strategy", () => {
+    // The parity tests here all pin what a remote caller must NOT write, so a
+    // key that is deliberately remote-writable needs its own assertion or the
+    // next person to add a blocklist entry has nothing telling them this one
+    // is intentional.
+    //
+    // `git.ui.updateStrategy` is not in the blocklist on purpose: it is not
+    // transport-specific like `terminalFontSizeLocal`, and it is not a bypass
+    // like `autoApprovePermissions` — it only chooses which integration the
+    // Pull/Update buttons OFFER. The rebase and merge actions themselves are
+    // already fully invokable from a phone, so blocking the preference while
+    // allowing the operation would be incoherent.
+    const settings = { git: { ui: { updateStrategy: "merge", showAllActions: true } } };
+    const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);
+    expect(removed).toEqual([]);
+    expect(settings.git.ui.updateStrategy).toBe("merge");
+    expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).not.toContain("git");
+  });
+
   test("is a no-op when notifications is not an object", () => {
     const settings = { notifications: "not-a-record" };
     const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);

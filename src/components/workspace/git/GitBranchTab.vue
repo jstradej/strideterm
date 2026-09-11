@@ -137,57 +137,19 @@
         </p>
 
         <div v-if="!isReviewWorkspace" class="git-operation-actions git-update-actions">
-          <div ref="splitButtonRef" class="git-split-button" @keydown.esc="strategyMenuOpen = false">
-            <button
-              type="button"
-              data-testid="update-from-base"
-              class="button git-split-button__main"
-              :class="isUpdating && 'button--busy'"
-              :disabled="updateDisabled"
-              :title="updateTitle"
-              @click="onUpdateFromBase"
-            >
-              {{ isUpdating ? "Updating…" : updateActionLabel }}
-            </button>
-            <button
-              type="button"
-              data-testid="update-strategy-caret"
-              class="button git-split-button__caret"
-              :disabled="updateDisabled"
-              aria-haspopup="menu"
-              :aria-expanded="strategyMenuOpen ? 'true' : 'false'"
-              title="Choose update strategy (rebase or merge)"
-              @click="strategyMenuOpen = !strategyMenuOpen"
-            >
-              ▾
-            </button>
-            <div v-if="strategyMenuOpen" class="git-split-button__menu" role="menu">
-              <button
-                type="button"
-                data-testid="strategy-rebase"
-                class="git-split-button__option"
-                role="menuitemradio"
-                :aria-checked="updateStrategy === 'rebase'"
-                title="Replay your commits on top of the base (linear history, rewrites your commit hashes)."
-                @click="selectStrategy('rebase')"
-              >
-                <span class="git-split-button__check">{{ updateStrategy === "rebase" ? "✓" : "" }}</span>
-                Rebase onto {{ opRef }}
-              </button>
-              <button
-                type="button"
-                data-testid="strategy-merge"
-                class="git-split-button__option"
-                role="menuitemradio"
-                :aria-checked="updateStrategy === 'merge'"
-                title="Merge the base into your branch (keeps history, adds a merge commit)."
-                @click="selectStrategy('merge')"
-              >
-                <span class="git-split-button__check">{{ updateStrategy === "merge" ? "✓" : "" }}</span>
-                Merge {{ opRef }} in
-              </button>
-            </div>
-          </div>
+          <GitStrategySplitButton
+            :strategy="updateStrategy"
+            :main-label="isUpdating ? 'Updating…' : updateActionLabel"
+            :main-title="updateTitle"
+            :disabled="updateDisabled"
+            :busy="isUpdating"
+            primary
+            main-testid="update-from-base"
+            caret-testid="update-strategy-caret"
+            :options="strategyOptions"
+            @run="onUpdateFromBase"
+            @update:strategy="selectStrategy"
+          />
         </div>
 
         <label v-if="hasLocalAndRemote && !isReviewWorkspace" class="git-card__hint git-base-local-toggle">
@@ -341,7 +303,8 @@ import { useGitUiStore } from "../../../stores/git-ui.js";
 import { rlog } from "../../../lib/renderer-log.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
-import { useDismissable } from "../../../composables/useDismissable.js";
+import GitStrategySplitButton from "./GitStrategySplitButton.vue";
+import type { StrategyOption } from "./update-strategy.js";
 import GitOperationCard from "./GitOperationCard.vue";
 import GitMergeBackCard from "./GitMergeBackCard.vue";
 import GitBaseBranchPicker from "./GitBaseBranchPicker.vue";
@@ -411,10 +374,17 @@ const enablingEditing = ref(false);
 // origin/develop); for pulling the base in we prefer the remote-tracking ref so
 // the user isn't rebasing onto a stale local branch. preferLocalBase is the
 // escape hatch for local-only/offline/deliberate-local cases.
-const updateStrategy = ref<"rebase" | "merge">("rebase");
+//
+// The strategy is persisted (settings.git.ui.updateStrategy), not component
+// state: the main button's label names it before the click, and a local ref
+// reset to "rebase" on every remount — so what the button did changed silently
+// between two visits to this tab. preferLocalBase stays ephemeral on purpose:
+// it is the advanced/offline escape hatch, and a persisted one would keep
+// rebasing onto a stale local branch without the user noticing.
+const updateStrategy = computed<"rebase" | "merge">(
+  () => (appStore.payload?.appState?.settings?.git?.ui?.updateStrategy as "rebase" | "merge") || "rebase",
+);
 const preferLocalBase = ref(false);
-const strategyMenuOpen = ref(false);
-const splitButtonRef = ref<HTMLElement | null>(null);
 
 const resolvedBase = computed(() =>
   resolveBaseRef(
@@ -560,6 +530,20 @@ const updateDisabled = computed(
 const updateActionLabel = computed(() =>
   updateStrategy.value === "merge" ? `Merge ${opRef.value} in` : `Rebase onto ${opRef.value}`,
 );
+const strategyOptions = computed<StrategyOption[]>(() => [
+  {
+    value: "rebase",
+    label: `Rebase onto ${opRef.value}`,
+    title: "Replay your commits on top of the base (linear history, rewrites your commit hashes).",
+    testid: "strategy-rebase",
+  },
+  {
+    value: "merge",
+    label: `Merge ${opRef.value} in`,
+    title: "Merge the base into your branch (keeps history, adds a merge commit).",
+    testid: "strategy-merge",
+  },
+]);
 const updateTitle = computed(() => {
   if (nothingToPull.value) {
     return `Already up to date with ${opRef.value} — nothing to integrate.${
@@ -619,19 +603,11 @@ watch(
 
 // Split-button dropdown picks the default strategy (updates the main button
 // label); the user then clicks the main button to run it — one deliberate
-// step for a history-rewriting op.
+// step for a history-rewriting op. The pick is persisted, so the Pull button
+// in the toolbar offers the same one.
 function selectStrategy(strategy: "rebase" | "merge") {
-  updateStrategy.value = strategy;
-  strategyMenuOpen.value = false;
+  void appStore.updateSettings({ git: { ui: { updateStrategy: strategy } } }).catch(() => {});
 }
-
-useDismissable(strategyMenuOpen, splitButtonRef, {
-  onDismiss: () => {
-    strategyMenuOpen.value = false;
-  },
-  eventName: "mousedown",
-  capture: true,
-});
 
 watch(
   () => [opRef.value, props.snapshot?.branch, props.snapshot?.lastFetchAt],

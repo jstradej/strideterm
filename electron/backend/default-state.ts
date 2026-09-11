@@ -539,6 +539,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       git: {
         ui: {
           showAllActions: false,
+          updateStrategy: "rebase" as const,
         },
       },
       externalEditor: "",
@@ -1291,6 +1292,13 @@ export function normalizeState(
           typeof rawGit.ui?.showAllActions === "boolean"
             ? rawGit.ui.showAllActions
             : defaults.settings.git.ui.showAllActions,
+        // Backfilled to "rebase" for state that predates the setting — the
+        // value the split button already defaulted to, so an existing install
+        // sees no change in what the button offers.
+        updateStrategy:
+          rawGit.ui?.updateStrategy === "merge" || rawGit.ui?.updateStrategy === "rebase"
+            ? rawGit.ui.updateStrategy
+            : defaults.settings.git.ui.updateStrategy,
       },
     },
     externalPathOpener: {

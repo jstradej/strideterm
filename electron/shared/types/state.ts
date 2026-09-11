@@ -103,6 +103,18 @@ export interface IntegrationSettings {
 
 export interface GitUiSettings {
   showAllActions: boolean;
+  /**
+   * Which strategy the Update / Pull split buttons OFFER by default when the
+   * current branch cannot simply fast-forward.
+   *
+   * It is a default, not a policy: the caret still overrides it per click, and
+   * nothing here picks a git command on its own. It is persisted rather than
+   * held in component state because the main button's LABEL has to name the
+   * strategy before the click ("Pull (rebase)"), and it has to name the same
+   * one next time — a component-local ref resets on every remount, so what the
+   * button did silently changed between two visits to the tab.
+   */
+  updateStrategy: "rebase" | "merge";
 }
 
 export interface GitSettings {
