@@ -13,7 +13,7 @@
     <button
       type="button"
       :data-testid="caretTestid"
-      class="button git-split-button__caret"
+      :class="['button', primary ? '' : 'button--ghost', 'git-split-button__caret']"
       :disabled="disabled"
       aria-haspopup="menu"
       :aria-expanded="menuOpen ? 'true' : 'false'"

@@ -117,4 +117,31 @@ describe("GitStrategySplitButton", () => {
   test("busy adds the busy class", () => {
     expect(mountButton({ busy: true }).get('[data-testid="update-from-base"]').classes()).toContain("button--busy");
   });
+
+  test("the caret follows the main half's variant, so the two look like one control", () => {
+    // Regression: the caret was hardcoded to the plain `.button` class, which
+    // is the orange accent gradient. In the card that passed unnoticed because
+    // its main half is always primary, but in the Git toolbar a non-primary or
+    // disabled Pull rendered a grey main half glued to a bright orange caret —
+    // and `.button:disabled` only lowers opacity, so disabling it did not hide
+    // the mismatch, it just faded it.
+    const ghost = mountButton({ primary: false });
+    expect(ghost.get('[data-testid="update-strategy-caret"]').classes()).toContain("button--ghost");
+    expect(ghost.get('[data-testid="update-from-base"]').classes()).toContain("button--ghost");
+
+    const accent = mountButton({ primary: true });
+    expect(accent.get('[data-testid="update-strategy-caret"]').classes()).not.toContain("button--ghost");
+    expect(accent.get('[data-testid="update-from-base"]').classes()).not.toContain("button--ghost");
+  });
+
+  test("both halves always carry the same variant, disabled or not", () => {
+    for (const primary of [true, false]) {
+      for (const disabled of [true, false]) {
+        const wrapper = mountButton({ primary, disabled });
+        const main = wrapper.get('[data-testid="update-from-base"]').classes().includes("button--ghost");
+        const caret = wrapper.get('[data-testid="update-strategy-caret"]').classes().includes("button--ghost");
+        expect(caret).toBe(main);
+      }
+    }
+  });
 });

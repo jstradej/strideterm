@@ -235,6 +235,12 @@
   border-left: 1px solid rgba(0, 0, 0, 0.28);
   font-size: 10px;
 }
+/* The dark divider above is tuned for the accent gradient. On a ghost half it
+   reads as a smudge, so use the same light tint the ghost background is built
+   from — the two halves have to look like one control in both variants. */
+.git-split-button__caret.button--ghost {
+  border-left-color: rgba(var(--tint), 0.18);
+}
 .git-split-button__menu {
   position: absolute;
   top: calc(100% + 4px);
