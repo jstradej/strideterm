@@ -49,18 +49,51 @@ interface ReviewWorkspaceRef {
       sourceRefName?: string;
       targetRefName?: string;
     };
+    /** "author" when the user owns the PR (a promoted quickfix workspace). */
+    role?: string;
+    /** User opted in to git write operations on a reviewer-role checkout. */
+    writable?: boolean;
   };
 }
 
+/**
+ * Is this review checkout a read-only MIRROR of the PR's source branch?
+ *
+ * For a reviewer who has not enabled editing, the answer is yes, and it is
+ * what makes a hard reset safe: the UI disables Rebase, Merge, Push and Force
+ * push on such a checkout, so the reviewer cannot have produced a local commit
+ * on it. Commits "ahead" of the remote there are not the reviewer's work — they
+ * are the AUTHOR's own commits, orphaned when the author rebased or
+ * force-pushed the PR branch, i.e. stale copies of what the remote now carries
+ * under different hashes.
+ *
+ * The two exceptions own real work that must never be discarded: `role ===
+ * "author"` (the user's own PR, typically a promoted quickfix workspace) and
+ * `writable === true` ("Enable editing", whose entire purpose is to let the
+ * reviewer commit and push to the PR source branch).
+ *
+ * Same rule as the renderer's `isReviewWorkspace` in GitPane.vue — keep the two
+ * in step; that one decides whether to DISABLE the write buttons, this one
+ * relies on their being disabled.
+ */
+export function isLockedReviewMirror(workspace: ReviewWorkspaceRef): boolean {
+  const review = workspace.review;
+  if (!review) return false;
+  if (review.role === "author") return false;
+  return review.writable !== true;
+}
+
 /** Outcome of `syncReviewWorkspace` — see its docstring for the semantics of each. */
-export type ReviewWorkspaceSyncStatus = "updated" | "already-current" | "dirty" | "ahead" | "diverged";
+export type ReviewWorkspaceSyncStatus = "updated" | "reset" | "already-current" | "dirty" | "ahead" | "diverged";
 
 export interface ReviewWorkspaceSyncResult {
   status: ReviewWorkspaceSyncStatus;
   /** Human-readable outcome/reason, safe to show directly in the UI. */
   message: string;
-  /** Number of commits fast-forwarded; 0 unless status is "updated". */
+  /** Commits brought in; 0 unless status is "updated" or "reset". */
   commitCount: number;
+  /** Local commits thrown away; non-zero only for status "reset". */
+  discardedCount?: number;
   headSha: string;
   previousHeadSha: string;
 }
@@ -834,9 +867,10 @@ export class BaseProviderManager extends EventEmitter {
    * relies on runGit's defaultGitLogin). Both providers now use the same
    * worktree-reuse strategy: prune stale worktree metadata up front, and when
    * (re)creating a worktree for a branch that already exists locally, reuse
-   * it and only hard-reset when it has no unpushed commits — this used to be
-   * Azure-only; GitHub's prior force-recreate (`-B`) had no such guard and
-   * could silently discard unpushed work from a previous session.
+   * it and hard-reset it onto the remote unless that would discard real local
+   * work — see `allowResetToRemote`. GitHub's prior force-recreate (`-B`) had
+   * no such guard at all and could silently discard unpushed work from a
+   * previous session.
    */
   async ensureManagedWorktree({
     cacheRepoPath,
@@ -844,6 +878,7 @@ export class BaseProviderManager extends EventEmitter {
     localBranch,
     sourceBranch,
     fetchRefspecs,
+    allowResetToRemote,
     login,
     token,
   }: {
@@ -852,6 +887,19 @@ export class BaseProviderManager extends EventEmitter {
     localBranch: string;
     sourceBranch: string;
     fetchRefspecs: string[];
+    /**
+     * May a reused local branch be reset onto the remote even when it is
+     * "ahead"? True for a reviewer's mirror, where an ahead commit is an
+     * orphan the author left behind by rebasing or force-pushing — not local
+     * work. False when the user owns the branch (`role === "author"`), where
+     * an ahead commit is theirs and unpushed.
+     *
+     * Without this, the branch a deleted workspace left in the cache repo
+     * pinned the checkout to a pre-force-push tip on every reopen, and no
+     * amount of deleting the worktree directory could shake it loose — the
+     * branch is not in that directory.
+     */
+    allowResetToRemote: boolean;
     login?: string;
     token: string;
   }): Promise<void> {
@@ -878,7 +926,15 @@ export class BaseProviderManager extends EventEmitter {
           "--count",
           `refs/remotes/origin/${sourceBranch}..HEAD`,
         ]).catch(() => ({ stdout: "0" }));
-        if (Number(ahead.stdout.trim()) === 0) {
+        const aheadCount = Number(ahead.stdout.trim()) || 0;
+        if (allowResetToRemote || aheadCount === 0) {
+          if (aheadCount > 0) {
+            this.log.info("reused review branch was ahead of a rewritten remote; resetting", {
+              localBranch,
+              sourceBranch,
+              discarded: aheadCount,
+            });
+          }
           await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
         }
       } else {
@@ -897,15 +953,26 @@ export class BaseProviderManager extends EventEmitter {
         await this.runGit(worktreePath, ["checkout", "-B", localBranch, `refs/remotes/origin/${sourceBranch}`]);
       });
       const status = await this.runGit(worktreePath, ["status", "--porcelain"]);
+      // An uncommitted tree blocks the reset in every case — edits in progress
+      // are never something to throw away, whoever owns the branch.
       if (!status.stdout.trim()) {
-        // Only reset if local branch has no commits ahead of remote,
-        // to avoid discarding unpushed work from a previous session.
         const ahead = await this.runGit(worktreePath, [
           "rev-list",
           "--count",
           `refs/remotes/origin/${sourceBranch}..HEAD`,
         ]).catch(() => ({ stdout: "0" }));
-        if (Number(ahead.stdout.trim()) === 0) {
+        const aheadCount = Number(ahead.stdout.trim()) || 0;
+        // Ahead commits are only worth keeping when the user could have made
+        // them; on a reviewer's mirror they are the author's force-push
+        // orphans. See `allowResetToRemote`.
+        if (allowResetToRemote || aheadCount === 0) {
+          if (aheadCount > 0) {
+            this.log.info("existing review worktree was ahead of a rewritten remote; resetting", {
+              localBranch,
+              sourceBranch,
+              discarded: aheadCount,
+            });
+          }
           await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
         }
       }
@@ -1004,12 +1071,31 @@ export class BaseProviderManager extends EventEmitter {
   /**
    * Bring a review checkout's working tree up to the PR's latest source
    * commit — the "Refresh" button's git-mutating half. Unlike
-   * `fetchReviewWorkspace` (remote-tracking refs only) this may move `HEAD`,
-   * but only via a fast-forward: it never resets, rebases, or merges. The
-   * target is always `workspace.review.pullRequest.sourceRefName` — never the
-   * local branch's own name/upstream, since a managed checkout is named
+   * `fetchReviewWorkspace` (remote-tracking refs only) this may move `HEAD`.
+   * The target is always `workspace.review.pullRequest.sourceRefName` — never
+   * the local branch's own name/upstream, since a managed checkout is named
    * `pr-<id>-...` and reusing a stale/reused worktree may carry a wrong or
    * missing upstream.
+   *
+   * How `HEAD` moves depends on who owns the branch:
+   *
+   * - A LOCKED REVIEW MIRROR (see `isLockedReviewMirror`) is reset hard onto
+   *   the remote ref. Authors rebase and force-push their PR branches as a
+   *   matter of course, and that is precisely when a fast-forward becomes
+   *   impossible — so ff-only meant the single most common reason a reviewer
+   *   clicks Refresh was the one case it refused. The reviewer then sat on a
+   *   pre-force-push snapshot with no way out (Rebase/Merge/Push are disabled
+   *   on the checkout, and deleting the workspace does not help because the
+   *   local branch lives in the shared cache repo), reviewing code that was no
+   *   longer in the PR — including, in the report that found this, being unable
+   *   to see the commit that answered their own review comment. Nothing local
+   *   is at stake: the discarded commits are the author's own orphans.
+   * - Anything the user may have committed to — `role === "author"` or
+   *   "Enable editing" — keeps the conservative fast-forward, and still
+   *   reports `ahead`/`diverged` rather than touching real work.
+   *
+   * In both cases an uncommitted working tree blocks first
+   * (`describeWorkingTreeBlock`), so a reset never destroys edits in progress.
    *
    * Shared body of AzureDevOpsManager.syncReviewWorkspace / GitHubManager.syncReviewWorkspace.
    */
@@ -1068,10 +1154,35 @@ export class BaseProviderManager extends EventEmitter {
     const aheadCount = Number(aheadResult.stdout.trim() || "0");
     const behindCount = Number(behindResult.stdout.trim() || "0");
 
+    // A locked mirror has no local work to protect, so "ahead" here means the
+    // author rewrote the branch and left orphans behind. Reset onto the remote
+    // rather than refusing — see this method's docstring.
+    if (aheadCount > 0 && isLockedReviewMirror(workspace)) {
+      await this.runAuditedGitOperation({ type: "sync-reset", connection, workspaceId: workspace.id }, () =>
+        this.runGit(cwd, ["reset", "--hard", remoteRef]),
+      );
+      const resetHeadSha = (await this.runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim();
+      this.log.info("review mirror reset onto rewritten PR branch", {
+        workspaceId: workspace.id,
+        sourceBranch,
+        discarded: aheadCount,
+        gained: behindCount,
+        previousHeadSha,
+        headSha: resetHeadSha,
+      });
+      return {
+        status: "reset",
+        message: `The PR branch was rewritten (rebase or force-push). Reset onto origin/${sourceBranch}, discarding ${aheadCount} superseded commit${aheadCount !== 1 ? "s" : ""}.`,
+        commitCount: behindCount,
+        discardedCount: aheadCount,
+        headSha: resetHeadSha,
+        previousHeadSha,
+      };
+    }
     if (aheadCount > 0 && behindCount > 0) {
       return {
         status: "diverged",
-        message: `Local branch has diverged from origin/${sourceBranch} (${aheadCount} local, ${behindCount} remote). Commit/stash and choose an integration strategy (e.g. Enable editing) to reconcile.`,
+        message: `Local branch has diverged from origin/${sourceBranch} (${aheadCount} local, ${behindCount} remote). Commit/stash and choose an integration strategy to reconcile — your local commits are kept.`,
         commitCount: 0,
         headSha: previousHeadSha,
         previousHeadSha,
@@ -1080,7 +1191,7 @@ export class BaseProviderManager extends EventEmitter {
     if (aheadCount > 0) {
       return {
         status: "ahead",
-        message: `Local branch is ${aheadCount} commit${aheadCount !== 1 ? "s" : ""} ahead of origin/${sourceBranch}. Nothing to fast-forward.`,
+        message: `Local branch is ${aheadCount} commit${aheadCount !== 1 ? "s" : ""} ahead of origin/${sourceBranch}. Nothing to fast-forward — push to publish them.`,
         commitCount: 0,
         headSha: previousHeadSha,
         previousHeadSha,

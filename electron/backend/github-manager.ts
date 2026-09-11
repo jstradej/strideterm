@@ -848,6 +848,10 @@ export class GitHubManager extends BaseProviderManager {
           `+refs/heads/${sourceBranch}:refs/remotes/origin/${sourceBranch}`,
           `+refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
         ],
+        // Same reasoning as the Azure caller: this runs only when no review
+        // workspace exists yet, so the only branch whose ahead commits can be
+        // the user's own is their own PR.
+        allowResetToRemote: summary.role !== "author",
         token,
       });
 

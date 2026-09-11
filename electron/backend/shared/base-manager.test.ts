@@ -3,7 +3,7 @@ import os from "node:os";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { describe, expect, test, vi, afterEach } from "vitest";
-import { BaseProviderManager } from "./base-manager.js";
+import { BaseProviderManager, isLockedReviewMirror } from "./base-manager.js";
 
 const reviewRoot = path.join(os.tmpdir(), "strideterm-base-manager-tests");
 
@@ -21,7 +21,6 @@ function createReviewStore() {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: vi.fn() mock type doesn't structurally match execFileText's signature
 function createManager({
   execFileTextImpl,
   secrets = {},
@@ -170,6 +169,7 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
       localBranch: "pr-1-feature",
       sourceBranch: "feature",
       fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      allowResetToRemote: true,
       login: "me@example.com",
       token: "tok-123",
     });
@@ -200,6 +200,7 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
       localBranch: "pr-1-feature",
       sourceBranch: "feature",
       fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      allowResetToRemote: true,
       token: "tok-123",
     });
 
@@ -228,6 +229,7 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
       localBranch: "pr-1-feature",
       sourceBranch: "feature",
       fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      allowResetToRemote: true,
       token: "tok-123",
     });
 
@@ -238,7 +240,9 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
     expect(resetCall).toBeDefined();
   });
 
-  test("does NOT reset an existing local branch that has unpushed commits ahead of origin", async () => {
+  test("does NOT reset a branch with unpushed commits when resetting is not allowed", async () => {
+    // allowResetToRemote: false is the user's own PR (role "author") — those
+    // ahead commits are theirs and unpushed.
     const execFileTextImpl = makeGitFake({ branchExists: true, aheadCount: 3 });
     const manager = createManager({ execFileTextImpl });
     const worktreePath = await makeWorktreePath();
@@ -249,11 +253,36 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
       localBranch: "pr-1-feature",
       sourceBranch: "feature",
       fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      allowResetToRemote: false,
       token: "tok-123",
     });
 
     const resetCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("reset"));
     expect(resetCall).toBeUndefined();
+  });
+
+  test("DOES reset an ahead branch when resetting is allowed (reviewer mirror)", async () => {
+    // The reopen half of the force-push bug: a deleted review workspace leaves
+    // its branch in the shared cache repo, so every reopen found it "ahead" of
+    // the rewritten remote and refused to move — pinning the checkout to a
+    // pre-force-push tip that deleting the worktree directory could not clear,
+    // because the branch does not live in that directory.
+    const execFileTextImpl = makeGitFake({ branchExists: true, aheadCount: 2 });
+    const manager = createManager({ execFileTextImpl });
+    const worktreePath = await makeWorktreePath();
+
+    await manager.ensureManagedWorktree({
+      cacheRepoPath: "/cache/repo",
+      worktreePath,
+      localBranch: "pr-1-feature",
+      sourceBranch: "feature",
+      fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      allowResetToRemote: true,
+      token: "tok-123",
+    });
+
+    const resetCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("reset"));
+    expect(resetCall![1]).toEqual(expect.arrayContaining(["reset", "--hard", "refs/remotes/origin/feature"]));
   });
 
   test("when the worktree already exists, checks out the branch and falls back to -B on failure", async () => {
@@ -268,6 +297,7 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
       localBranch: "pr-1-feature",
       sourceBranch: "feature",
       fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature"],
+      allowResetToRemote: true,
       token: "tok-123",
     });
 
@@ -498,7 +528,16 @@ describe("BaseProviderManager.syncReviewWorkspace", () => {
     expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("merge"))).toBe(false);
   });
 
-  test("local commits ahead of source: no-op, does not merge", async () => {
+  /** A checkout the user may legitimately have committed to — "Enable
+   *  editing" — where an ahead commit is real, unpushed work. */
+  function writableWorkspace(overrides: Record<string, unknown> = {}) {
+    return reviewWorkspace({
+      review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" }, writable: true },
+      ...overrides,
+    });
+  }
+
+  test("local commits ahead of source on a WRITABLE checkout: no-op, does not merge", async () => {
     const execFileTextImpl = makeSyncGitFake({
       previousHead: "sha-old",
       remoteHead: "sha-new",
@@ -508,13 +547,14 @@ describe("BaseProviderManager.syncReviewWorkspace", () => {
     const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
     manager.snapshot.connections = [connectionSnapshot()];
 
-    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+    const result = await manager.syncReviewWorkspace({ workspace: writableWorkspace() });
 
     expect(result.status).toBe("ahead");
     expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("merge"))).toBe(false);
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("reset"))).toBe(false);
   });
 
-  test("diverged history: no-op, does not merge", async () => {
+  test("diverged history on a WRITABLE checkout: no-op, does not merge or reset", async () => {
     const execFileTextImpl = makeSyncGitFake({
       previousHead: "sha-old",
       remoteHead: "sha-new",
@@ -524,10 +564,112 @@ describe("BaseProviderManager.syncReviewWorkspace", () => {
     const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
     manager.snapshot.connections = [connectionSnapshot()];
 
-    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+    const result = await manager.syncReviewWorkspace({ workspace: writableWorkspace() });
 
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("reset"))).toBe(false);
     expect(result.status).toBe("diverged");
     expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("merge"))).toBe(false);
+  });
+
+  test("diverged on a reviewer MIRROR: resets onto the remote instead of refusing", async () => {
+    // The bug this fixes. An author rebasing or force-pushing their PR branch
+    // is routine, and it is exactly what makes a fast-forward impossible — so
+    // ff-only refused the most common reason a reviewer clicks Refresh, and
+    // left them reviewing a pre-force-push snapshot with no way out.
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      remoteHead: "sha-new",
+      finalHead: "sha-new",
+      aheadCount: 2,
+      behindCount: 4,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result.status).toBe("reset");
+    const resetCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("reset"));
+    expect(resetCall![1]).toEqual(expect.arrayContaining(["reset", "--hard", "refs/remotes/origin/feature"]));
+    expect(result.headSha).toBe("sha-new");
+    expect(result.previousHeadSha).toBe("sha-old");
+    // Truthful accounting: what arrived, and what was thrown away.
+    expect(result.commitCount).toBe(4);
+    expect(result.discardedCount).toBe(2);
+    expect(result.message).toContain("rewritten");
+    expect(result.message).toContain("2 superseded commits");
+    // A reset supersedes the fast-forward — never both.
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("merge"))).toBe(false);
+  });
+
+  test("ahead-only on a reviewer MIRROR also resets (remote rewound below us)", async () => {
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      remoteHead: "sha-new",
+      finalHead: "sha-new",
+      aheadCount: 1,
+      behindCount: 0,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result.status).toBe("reset");
+    expect(result.discardedCount).toBe(1);
+    expect(result.message).toContain("1 superseded commit");
+    expect(result.message).not.toContain("1 superseded commits");
+  });
+
+  test("a MIRROR with an author role is not a mirror — the PR is the user's own", async () => {
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      remoteHead: "sha-new",
+      aheadCount: 2,
+      behindCount: 4,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({
+      workspace: reviewWorkspace({
+        review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" }, role: "author" },
+      }),
+    });
+
+    expect(result.status).toBe("diverged");
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("reset"))).toBe(false);
+  });
+
+  test("a dirty MIRROR is still blocked — a reset never destroys edits in progress", async () => {
+    // The dirty check runs before the ahead/behind logic, so widening the
+    // reset must not have reached past it.
+    const execFileTextImpl = makeSyncGitFake({
+      previousHead: "sha-old",
+      remoteHead: "sha-new",
+      statusOutput: " M src/app.ts\n M README.md",
+      aheadCount: 2,
+      behindCount: 4,
+    });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result.status).toBe("dirty");
+    expect(result.headSha).toBe("sha-old");
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("reset"))).toBe(false);
+  });
+
+  test("a MIRROR already current does not reset", async () => {
+    const execFileTextImpl = makeSyncGitFake({ previousHead: "sha-1", remoteHead: "sha-1", aheadCount: 2 });
+    const manager = createManager({ execFileTextImpl, secrets: { "tok-ref-1": "tok-123" } });
+    manager.snapshot.connections = [connectionSnapshot()];
+
+    const result = await manager.syncReviewWorkspace({ workspace: reviewWorkspace() });
+
+    expect(result.status).toBe("already-current");
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("reset"))).toBe(false);
   });
 
   test("throws the provider-specific connection-not-found message when the PR's connection is missing", async () => {
@@ -679,6 +821,144 @@ describe("BaseProviderManager.syncReviewWorkspace — real git fixture round-tri
         },
       });
       expect(again.status).toBe("already-current");
+    },
+  );
+
+  test.skipIf(!GIT_AVAILABLE)(
+    "recovers a real reviewer mirror after the author REBASED and force-pushed the PR branch",
+    async () => {
+      // Faithful reproduction of the report: the reviewer's checkout sat at the
+      // author's pre-rebase commits, which the force-push orphaned. Those look
+      // exactly like "2 local commits ahead" to git, so ff-only refused and the
+      // reviewer could not reach the commit that answered their own comment.
+      const bareDir = await initBareRemote();
+      const authorDir = await cloneWorkingCopy(bareDir);
+
+      // Base branch, then the author's PR branch on top of it.
+      await fs.writeFile(path.join(authorDir, "base.txt"), "base\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "base"]);
+      rg(authorDir, ["push", "-q", "-u", "origin", "HEAD:refs/heads/develop"]);
+      const baseSha = rg(authorDir, ["rev-parse", "HEAD"]).trim();
+
+      rg(authorDir, ["checkout", "-q", "-b", "feature"]);
+      await fs.writeFile(path.join(authorDir, "f.txt"), "one\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "feature work"]);
+      rg(authorDir, ["push", "-q", "-u", "origin", "feature"]);
+
+      // Reviewer checks the PR out at that tip.
+      const reviewDir = await cloneWorkingCopy(bareDir);
+      rg(reviewDir, ["checkout", "-q", "feature"]);
+      const staleHead = rg(reviewDir, ["rev-parse", "HEAD"]).trim();
+
+      // The author rewrites history: rebase onto a moved develop, then add a
+      // commit answering the review, then force-push.
+      rg(authorDir, ["checkout", "-q", "develop"]);
+      await fs.writeFile(path.join(authorDir, "base.txt"), "base\nmore\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "develop moves on"]);
+      rg(authorDir, ["push", "-q", "origin", "develop"]);
+      rg(authorDir, ["checkout", "-q", "feature"]);
+      rg(authorDir, ["rebase", "-q", "develop"]);
+      await fs.writeFile(path.join(authorDir, "f.txt"), "one\ntwo\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "address review feedback"]);
+      rg(authorDir, ["push", "-q", "--force", "origin", "feature"]);
+      const rewrittenHead = rg(authorDir, ["rev-parse", "HEAD"]).trim();
+      expect(rewrittenHead).not.toBe(staleHead);
+      expect(baseSha).not.toBe(rewrittenHead);
+
+      const manager = new BaseProviderManager({
+        credentialStore: createCredentialStore({ "tok-ref-1": "tok-123" }) as unknown as ConstructorParameters<
+          typeof BaseProviderManager
+        >[0]["credentialStore"],
+        reviewStore: createReviewStore() as unknown as ConstructorParameters<
+          typeof BaseProviderManager
+        >[0]["reviewStore"],
+        createApi: () => ({}),
+      });
+      manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com" }];
+      const mirror = {
+        id: "ws-1",
+        cwd: reviewDir,
+        review: { connectionId: "conn-1", pullRequest: { sourceRefName: "refs/heads/feature" } },
+      };
+
+      // Before the fix this returned "diverged" and HEAD never moved.
+      const result = await manager.syncReviewWorkspace({ workspace: mirror });
+
+      expect(result.status).toBe("reset");
+      expect(result.previousHeadSha).toBe(staleHead);
+      expect(result.headSha).toBe(rewrittenHead);
+      expect(rg(reviewDir, ["rev-parse", "HEAD"]).trim()).toBe(rewrittenHead);
+      // The reviewer can now actually see the commit answering their comment.
+      expect(rg(reviewDir, ["log", "--format=%s", "-1"]).trim()).toBe("address review feedback");
+      expect(await fs.readFile(path.join(reviewDir, "f.txt"), "utf8")).toBe("one\ntwo\n");
+      // ...and the rebased base content came along with it.
+      expect(await fs.readFile(path.join(reviewDir, "base.txt"), "utf8")).toBe("base\nmore\n");
+
+      // Idempotent: a second Refresh has nothing left to do.
+      const again = await manager.syncReviewWorkspace({ workspace: mirror });
+      expect(again.status).toBe("already-current");
+    },
+  );
+
+  test.skipIf(!GIT_AVAILABLE)(
+    "leaves a WRITABLE checkout's own commits alone after the author force-pushed",
+    async () => {
+      // The other half of the rule: with "Enable editing" the reviewer's local
+      // commits are real work destined for the PR branch, so the same shape
+      // must report diverged and touch nothing.
+      const bareDir = await initBareRemote();
+      const authorDir = await cloneWorkingCopy(bareDir);
+
+      rg(authorDir, ["checkout", "-q", "-b", "feature"]);
+      await fs.writeFile(path.join(authorDir, "f.txt"), "one\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "-m", "feature work"]);
+      rg(authorDir, ["push", "-q", "-u", "origin", "feature"]);
+
+      const reviewDir = await cloneWorkingCopy(bareDir);
+      rg(reviewDir, ["checkout", "-q", "feature"]);
+      // The reviewer's OWN commit, made with editing enabled.
+      await fs.writeFile(path.join(reviewDir, "fix.txt"), "reviewer fix\n");
+      rg(reviewDir, ["add", "-A"]);
+      rg(reviewDir, ["commit", "-q", "-m", "reviewer fix"]);
+      const reviewerHead = rg(reviewDir, ["rev-parse", "HEAD"]).trim();
+
+      // Author force-pushes something unrelated over the branch.
+      await fs.writeFile(path.join(authorDir, "f.txt"), "rewritten\n");
+      rg(authorDir, ["add", "-A"]);
+      rg(authorDir, ["commit", "-q", "--amend", "-m", "feature work (amended)"]);
+      rg(authorDir, ["push", "-q", "--force", "origin", "feature"]);
+
+      const manager = new BaseProviderManager({
+        credentialStore: createCredentialStore({ "tok-ref-1": "tok-123" }) as unknown as ConstructorParameters<
+          typeof BaseProviderManager
+        >[0]["credentialStore"],
+        reviewStore: createReviewStore() as unknown as ConstructorParameters<
+          typeof BaseProviderManager
+        >[0]["reviewStore"],
+        createApi: () => ({}),
+      });
+      manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com" }];
+
+      const result = await manager.syncReviewWorkspace({
+        workspace: {
+          id: "ws-1",
+          cwd: reviewDir,
+          review: {
+            connectionId: "conn-1",
+            pullRequest: { sourceRefName: "refs/heads/feature" },
+            writable: true,
+          },
+        },
+      });
+
+      expect(result.status).toBe("diverged");
+      expect(rg(reviewDir, ["rev-parse", "HEAD"]).trim()).toBe(reviewerHead);
+      expect(rg(reviewDir, ["log", "--format=%s", "-1"]).trim()).toBe("reviewer fix");
     },
   );
 
@@ -965,5 +1245,33 @@ describe("BaseProviderManager.syncCore", () => {
     const snapshot = await manager.syncCore({ connections: [{ id: "conn-1", tokenRef: "tok-1" }] }, baseHooks());
 
     expect(snapshot.pullRequests["kept-pr"]).toEqual({ prKey: "kept-pr" });
+  });
+});
+
+describe("isLockedReviewMirror", () => {
+  const pr = { pullRequest: { sourceRefName: "refs/heads/feature" } };
+
+  test("a plain reviewer checkout is a mirror", () => {
+    // The UI disables Rebase/Merge/Push/Force push on it, so the reviewer
+    // cannot have produced a local commit — which is what makes resetting it
+    // onto the remote safe.
+    expect(isLockedReviewMirror({ id: "ws", review: { ...pr } })).toBe(true);
+    expect(isLockedReviewMirror({ id: "ws", review: { ...pr, role: "reviewer" } })).toBe(true);
+    expect(isLockedReviewMirror({ id: "ws", review: { ...pr, writable: false } })).toBe(true);
+  });
+
+  test('"Enable editing" takes it out of mirror mode', () => {
+    expect(isLockedReviewMirror({ id: "ws", review: { ...pr, writable: true } })).toBe(false);
+  });
+
+  test("the user's own PR is never a mirror", () => {
+    expect(isLockedReviewMirror({ id: "ws", review: { ...pr, role: "author" } })).toBe(false);
+    // Author wins even without the writable opt-in.
+    expect(isLockedReviewMirror({ id: "ws", review: { ...pr, role: "author", writable: false } })).toBe(false);
+  });
+
+  test("a workspace with no review at all is not a mirror", () => {
+    // An ordinary workspace must never be reset by review plumbing.
+    expect(isLockedReviewMirror({ id: "ws" })).toBe(false);
   });
 });

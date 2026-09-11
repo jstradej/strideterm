@@ -121,7 +121,7 @@
         </div>
       </div>
 
-      <!-- Refresh (fast-forward sync) outcome -->
+      <!-- Refresh outcome (fast-forward, or a reset onto a rewritten PR branch) -->
       <div
         v-if="refreshSyncResult"
         :style="{
@@ -721,13 +721,18 @@ watch(
 // Busy state for async toolbar actions
 const busyAction = ref<string>("");
 
-// Result of the last manual Refresh's git-mutating half (fast-forward sync
-// onto the PR's latest source commit). Distinct from the toolbar
-// success/error banners below, which report Push & publish outcomes.
+// Result of the last manual Refresh's git-mutating half (sync onto the PR's
+// latest source commit). Distinct from the toolbar success/error banners
+// below, which report Push & publish outcomes.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const refreshSyncResult = ref<any>(null);
+// "reset" belongs with the successes: the checkout IS now the PR's latest
+// commit, which is what the user asked for. It only reads differently because
+// the author rewrote the branch, and the message says so. Colouring it as a
+// failure would tell the reviewer something went wrong when it went right.
+const SYNC_OK_STATUSES = ["updated", "reset", "already-current"];
 const refreshSyncBlocked = computed(
-  () => !!refreshSyncResult.value && !["updated", "already-current"].includes(refreshSyncResult.value.status),
+  () => !!refreshSyncResult.value && !SYNC_OK_STATUSES.includes(refreshSyncResult.value.status),
 );
 
 async function handleRefresh() {
@@ -737,9 +742,9 @@ async function handleRefresh() {
     await notifications.runWithToast("Refresh failed", async () => {
       // The manual Refresh button — unlike the metadata-only auto-refresh
       // watcher above — is the one place allowed to move the checkout's
-      // HEAD (a safe fast-forward onto the PR's source commit). It also
-      // refreshes the git snapshot and provider PR detail server-side, so
-      // no separate refreshAzure()/refreshGitHub() call is needed here.
+      // HEAD onto the PR's source commit. It also refreshes the git snapshot
+      // and provider PR detail server-side, so no separate
+      // refreshAzure()/refreshGitHub() call is needed here.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const syncResult: any = isGitHub.value
         ? await appStore.githubSyncReviewWorkspace(props.workspaceId)
@@ -750,9 +755,12 @@ async function handleRefresh() {
         else await appStore.markAzurePrSeen(prKey.value);
       }
       // A blocked/no-op result (dirty, ahead, diverged, already-current)
-      // must leave any open diff exactly as it was — only "updated" moved
-      // HEAD, so only that case needs the Files tab to catch up.
-      if (syncResult?.status === "updated") {
+      // must leave any open diff exactly as it was. "updated" and "reset" are
+      // the two that moved HEAD, so they are the two that need the Files tab
+      // to catch up — a reset changes the content MORE than a fast-forward
+      // (the commits the open diff was showing no longer exist), so leaving it
+      // out here was the worse of the two to miss.
+      if (syncResult?.status === "updated" || syncResult?.status === "reset") {
         const selected = reviewUi.value?.reviewSelectedFile;
         if (selected) onSelectFile(String(selected));
       }

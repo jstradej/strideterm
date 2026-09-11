@@ -1753,6 +1753,10 @@ export class AzureDevOpsManager extends BaseProviderManager {
           `+${summary.pullRequest!.sourceRefName}:refs/remotes/origin/${sourceBranch}`,
           `+${summary.pullRequest!.targetRefName}:refs/remotes/origin/${targetBranch}`,
         ],
+        // Only reached when no review workspace exists yet, so there is no
+        // "Enable editing" opt-in to honour — the one branch whose ahead
+        // commits could be the user's own is their own PR.
+        allowResetToRemote: summary.role !== "author",
         login: connection.login,
         token,
       });

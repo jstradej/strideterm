@@ -528,8 +528,10 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     },
     /**
      * The Refresh button's git-mutating half: bring the review checkout up to
-     * the PR's latest source commit via a safe fast-forward (never a reset,
-     * rebase, or merge). Distinct from fetchAzureReviewWorkspace (remote-
+     * the PR's latest source commit — by fast-forward, or by resetting onto
+     * the remote when the checkout is a read-only reviewer mirror whose branch
+     * the author rewrote (never a rebase or merge; see syncReviewWorkspace for
+     * which case is which). Distinct from fetchAzureReviewWorkspace (remote-
      * tracking refs only, HEAD never moves) and from an automatic/background
      * metadata refresh (refreshAzureState) — those must keep calling only the
      * latter. Concurrent calls for the same workspace share one in-flight run.
