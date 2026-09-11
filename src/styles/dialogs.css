@@ -511,6 +511,17 @@
   grid-template-rows: minmax(0, 1fr);
 }
 
+/* Every non-terminal pane component (git, review, inbox, docker, files,
+   dashboards) renders its own PaneShell *inside* its root, so in a split the
+   pane grid holds a single child. Left in the `auto` row that child is sized
+   to its content: the `1fr` row below it stays empty, and a body that sizes
+   its view with `height: 100%` then overflows by exactly the header's height
+   and offers a scrollbar for nothing. Collapse to one row whenever no
+   PaneShell sits directly in the grid. */
+.workspace-pane:not(:has(> .workspace-pane__header)) {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .workspace-pane--active {
   border-color: rgba(255, 164, 36, 0.45);
 }
@@ -646,8 +657,23 @@
   overflow: hidden;
 }
 
+/* Header (only in a split) stacked above the view, which takes the rest.
+   `.git-view` / `.azure-inbox` are `height: 100%`; as flex items with a zero
+   basis that measures against the space left after the header instead of
+   against the whole body. Docker and Files bodies already do this in their
+   own scoped styles. */
 .workspace-pane__body--git {
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-pane__body--git > .workspace-pane__header {
+  flex: 0 0 auto;
+}
+
+.workspace-pane__body--git > :not(.workspace-pane__header) {
+  flex: 1;
+  min-height: 0;
 }
 
 .workspace-pane__body--browser {

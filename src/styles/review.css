@@ -580,9 +580,15 @@
   grid-column: 1;
 }
 
+/* Card around a list (comments, agent prompts). It hugs its content — a
+   single comment must not leave a card the height of the pane under it — and
+   only shrinks once the list is taller than the panel, at which point the
+   list scrolls inside it. `flex: 1` would stretch the short case; a plain
+   `auto` height would push the tall case into a second, outer scrollbar on
+   `.review-panel`. */
 .review-card--stack {
   min-height: 0;
-  flex: 1;
+  flex: 0 1 auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -597,7 +603,7 @@
 
 .review-card__list--dense {
   max-height: none;
-  flex: 1;
+  flex: 0 1 auto;
   align-content: start;
 }
 
