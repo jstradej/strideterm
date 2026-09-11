@@ -683,6 +683,25 @@ export function extractErrorMessage(error: unknown): string {
   return e?.stderr || e?.stdout || e?.error?.message || "Git command failed.";
 }
 
+// Windows reserves these basenames for devices (any extension, any case). A file
+// literally named `nul` — typically a stray `> nul` redirect from a bash/pwsh
+// script — can be created by some tools but Git cannot remove it, so
+// `git stash push --include-untracked` fails with "Permission denied".
+const WINDOWS_RESERVED_BASENAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+export function findWindowsReservedPaths(paths: string[]): string[] {
+  return paths.filter((p) => {
+    const basename =
+      String(p || "")
+        .split(/[/\\]/)
+        .pop() || "";
+    // The reservation applies to the stem: `nul.txt` is as unremovable as `nul`.
+    const dot = basename.indexOf(".");
+    const stem = dot === -1 ? basename : basename.slice(0, dot);
+    return WINDOWS_RESERVED_BASENAME.test(stem);
+  });
+}
+
 export function createOperationWarnings(
   snapshot: GitSnapshot,
   { type, baseBranch, stashDirty }: { type?: string; baseBranch?: string; stashDirty?: boolean },

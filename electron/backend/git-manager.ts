@@ -37,6 +37,7 @@ import {
   buildOperationState,
   extractErrorMessage,
   createOperationWarnings,
+  findWindowsReservedPaths,
   createStructuredResult,
   resolveContinueArgs,
   resolveAbortArgs,
@@ -63,6 +64,9 @@ import type {
 } from "./git-parsers.js";
 
 const log = getLogger("git");
+
+const STASH_NOT_OURS_WARNING =
+  "Stashed local changes were not restored automatically: stash@{0} is not the entry this action created. Check `git stash list`.";
 
 const WORKTREE_DIRTY_CACHE_TTL_MS = 1500;
 const SNAPSHOT_CACHE_TTL_MS = 8000;
@@ -2318,9 +2322,33 @@ export class GitManager extends EventEmitter {
     let stashOutput = "";
 
     const effectiveCwd = rootPath || String(workspace.cwd || "");
-    try {
-      if (stashDirty && snapshot.dirty) {
-        stashLabel = `strideterm-${type}-${this.now().toISOString()}`;
+
+    // Stashing is a separate step from the action itself: when it fails the
+    // action never ran, and the result must say so instead of "<label> failed."
+    if (stashDirty && snapshot.dirty) {
+      if (process.platform === "win32") {
+        const untrackedPaths = ((snapshot.untracked as Array<{ path?: string }>) || []).map((e) =>
+          String(e.path || ""),
+        );
+        const reserved = findWindowsReservedPaths(untrackedPaths);
+        if (reserved.length) {
+          const example = path.win32.join(effectiveCwd, reserved[0]);
+          return createStructuredResult({
+            ok: false,
+            summary: `${label} did not start: ${reserved.length} untracked file(s) use a name Windows reserves for devices, and Git cannot remove them when stashing.`,
+            warnings,
+            rawOutput: [
+              ...reserved,
+              "",
+              "Delete them with the extended path syntax, e.g. in PowerShell:",
+              `Remove-Item -LiteralPath '\\\\?\\${example}'`,
+            ].join("\n"),
+          });
+        }
+      }
+
+      stashLabel = `strideterm-${type}-${this.now().toISOString()}`;
+      try {
         const stashResult = await this.execGit(effectiveCwd, [
           "stash",
           "push",
@@ -2329,14 +2357,33 @@ export class GitManager extends EventEmitter {
           stashLabel,
         ]);
         stashOutput = stashResult.stdout || stashResult.stderr || "";
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string };
+        log.warn("git stash before action failed", { type, label, err: extractErrorMessage(error) });
+        // Git may have created the stash entry and still exited non-zero (e.g.
+        // it could not remove an untracked file). Restore only what we created.
+        const restore = await this.restoreStash(effectiveCwd, stashLabel);
+        if (restore.restored) {
+          (warnings as string[]).push("Local changes were restored from the stash Git had already created.");
+        }
+        return createStructuredResult({
+          ok: false,
+          summary: `${label} did not start: local changes could not be stashed.`,
+          warnings,
+          rawOutput: joinRawOutput(err.stdout, err.stderr, restore.output),
+        });
       }
+    }
 
+    try {
       log.debug("git action starting", { type, label, cwd: effectiveCwd, baseBranch: resolvedBaseBranch });
       const startTime = Date.now();
       const actionResult = await run(effectiveCwd, resolvedBaseBranch);
       let restoreOutput = "";
       if (stashLabel) {
-        restoreOutput = await this.restoreStash(effectiveCwd);
+        const restore = await this.restoreStash(effectiveCwd, stashLabel);
+        restoreOutput = restore.output;
+        if (!restore.restored) (warnings as string[]).push(STASH_NOT_OURS_WARNING);
       }
       const durationMs = Date.now() - startTime;
       log.info("git action completed", { type, label, durationMs });
@@ -2379,7 +2426,9 @@ export class GitManager extends EventEmitter {
       const opState = operationSnapshot.operationState as { kind: string; inProgress: boolean; conflicts: string[] };
       let restoreOutput = "";
       if (stashLabel && !opState.inProgress) {
-        restoreOutput = await this.restoreStash(effectiveCwd);
+        const restore = await this.restoreStash(effectiveCwd, stashLabel);
+        restoreOutput = restore.output;
+        if (!restore.restored) (warnings as string[]).push(STASH_NOT_OURS_WARNING);
       } else if (stashLabel) {
         (warnings as string[]).push(
           "Stashed local changes were kept because the Git operation needs manual resolution.",
@@ -2474,13 +2523,29 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async restoreStash(cwd: string): Promise<string> {
+  /**
+   * Pop the stash `runWriteAction` created — and ONLY that one. `stash@{0}` is
+   * not necessarily ours: `stash push` can fail before creating an entry, and
+   * the action itself (a hook, `rebase.autoStash`) can push its own. Popping
+   * blindly in either case hands the user someone else's stash.
+   */
+  async restoreStash(cwd: string, stashLabel: string): Promise<{ output: string; restored: boolean }> {
+    try {
+      const head = await this.execGit(cwd, ["stash", "list", "-1", "--format=%gs"]);
+      if (!String(head.stdout || "").includes(stashLabel)) {
+        return { output: "", restored: false };
+      }
+    } catch {
+      return { output: "", restored: false };
+    }
     try {
       const result = await this.execGit(cwd, ["stash", "pop"]);
-      return joinRawOutput(result.stdout, result.stderr);
+      return { output: joinRawOutput(result.stdout, result.stderr), restored: true };
     } catch (error) {
       const err = error as { stdout?: string; stderr?: string };
-      return joinRawOutput(err.stdout, err.stderr);
+      // Pop applied (possibly with conflicts) but git exited non-zero — the
+      // entry may or may not be gone; report the output and let the user look.
+      return { output: joinRawOutput(err.stdout, err.stderr), restored: true };
     }
   }
 

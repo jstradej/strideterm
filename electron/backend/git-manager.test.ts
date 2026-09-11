@@ -462,6 +462,7 @@ describe("GitManager", () => {
       .fn()
       .mockResolvedValueOnce({ stdout: "Saved working directory and index state\n", stderr: "" })
       .mockResolvedValueOnce({ stdout: "Successfully rebased\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "On feature-x: strideterm-rebase-2026-03-17T12:00:00.000Z\n", stderr: "" })
       .mockResolvedValueOnce({ stdout: "Dropped refs/stash@{0}\n", stderr: "" });
     const manager = new GitManager({ execGitImpl, now: () => new Date("2026-03-17T12:00:00.000Z") });
     manager.inspectWorkspace = vi.fn().mockResolvedValueOnce({
@@ -484,8 +485,135 @@ describe("GitManager", () => {
       expect.arrayContaining(["stash", "push", "--include-untracked"]),
     );
     expect(execGitImpl).toHaveBeenNthCalledWith(2, root, ["rebase", "main"]);
-    expect(execGitImpl).toHaveBeenNthCalledWith(3, root, ["stash", "pop"]);
+    expect(execGitImpl).toHaveBeenNthCalledWith(3, root, ["stash", "list", "-1", "--format=%gs"]);
+    expect(execGitImpl).toHaveBeenNthCalledWith(4, root, ["stash", "pop"]);
     expect(result.rawOutput).toContain("Successfully rebased");
+    expect(result.warnings).not.toEqual(expect.arrayContaining([expect.stringContaining("not restored")]));
+  });
+
+  describe("runWriteAction stash guard", () => {
+    const dirtySnapshot = (extra: Record<string, unknown> = {}) => ({
+      available: true,
+      branch: "develop",
+      baseBranch: "origin/develop",
+      upstream: "origin/develop",
+      aheadCount: 0,
+      behindCount: 235,
+      dirty: true,
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+      ...extra,
+    });
+
+    test("a failed stash push reports 'did not start' and never runs the action", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi
+        .fn()
+        // stash push exits non-zero, no entry created
+        .mockRejectedValueOnce({ stdout: "", stderr: "error: unable to stash\n" })
+        // stash list: the user's own stash sits at stash@{0}
+        .mockResolvedValueOnce({ stdout: "On develop: smazat\n", stderr: "" });
+      const manager = new GitManager({ execGitImpl, now: () => new Date("2026-09-11T14:22:17.000Z") });
+      manager.inspectWorkspace = vi.fn().mockResolvedValue(dirtySnapshot());
+
+      const result = await manager.pull({ id: "ws", cwd: root }, { stashDirty: true });
+
+      expect(result.ok).toBe(false);
+      expect(result.summary).toBe("Pull did not start: local changes could not be stashed.");
+      expect(result.rawOutput).toContain("unable to stash");
+      // No pull, no pop — the user's own stash@{0} must stay untouched.
+      const calls = execGitImpl.mock.calls.map((c) => c[1]);
+      expect(calls).not.toContainEqual(["pull", "--ff-only"]);
+      expect(calls).not.toContainEqual(["stash", "pop"]);
+    });
+
+    test("a stash push that created the entry but still failed restores it before returning", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi
+        .fn()
+        .mockRejectedValueOnce({
+          stdout: "Saved working directory and index state On develop: strideterm-pull-2026-09-11T14:22:17.000Z\n",
+          stderr: "warning: failed to remove vum-listener/nul: Permission denied\n",
+        })
+        .mockResolvedValueOnce({ stdout: "On develop: strideterm-pull-2026-09-11T14:22:17.000Z\n", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "Dropped refs/stash@{0}\n", stderr: "" });
+      const manager = new GitManager({ execGitImpl, now: () => new Date("2026-09-11T14:22:17.000Z") });
+      manager.inspectWorkspace = vi.fn().mockResolvedValue(dirtySnapshot());
+
+      const result = await manager.pull({ id: "ws", cwd: root }, { stashDirty: true });
+
+      expect(result.ok).toBe(false);
+      expect(result.summary).toContain("did not start");
+      expect(result.rawOutput).toContain("Permission denied");
+      expect(result.rawOutput).toContain("Dropped refs/stash@{0}");
+      expect(result.warnings).toContain("Local changes were restored from the stash Git had already created.");
+      expect(execGitImpl).toHaveBeenNthCalledWith(3, root, ["stash", "pop"]);
+    });
+
+    test("a failed action does not pop a stash@{0} the action did not create", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi
+        .fn()
+        .mockResolvedValueOnce({ stdout: "Saved working directory and index state\n", stderr: "" })
+        .mockRejectedValueOnce({ stdout: "", stderr: "fatal: Not possible to fast-forward, aborting.\n" })
+        // something (a hook, autoStash) pushed its own entry on top of ours
+        .mockResolvedValueOnce({ stdout: "On develop: somebody else's stash\n", stderr: "" });
+      const manager = new GitManager({ execGitImpl, now: () => new Date("2026-09-11T14:22:17.000Z") });
+      manager.inspectWorkspace = vi.fn().mockResolvedValue(dirtySnapshot());
+
+      const result = await manager.pull({ id: "ws", cwd: root }, { stashDirty: true });
+
+      expect(result.ok).toBe(false);
+      expect(result.summary).toBe("Pull failed.");
+      expect(result.rawOutput).toContain("Not possible to fast-forward");
+      expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining("not restored automatically")]));
+      expect(execGitImpl.mock.calls.map((c) => c[1])).not.toContainEqual(["stash", "pop"]);
+    });
+
+    test("on win32 an untracked file with a reserved device name blocks the stash with guidance", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi.fn();
+      const manager = new GitManager({ execGitImpl });
+      manager.inspectWorkspace = vi
+        .fn()
+        .mockResolvedValue(dirtySnapshot({ untracked: [{ path: "docs/plan.md" }, { path: "vum-listener/nul" }] }));
+      const original = process.platform;
+      Object.defineProperty(process, "platform", { value: "win32" });
+      try {
+        const result = await manager.pull({ id: "ws", cwd: root }, { stashDirty: true });
+        expect(result.ok).toBe(false);
+        expect(result.summary).toContain("Pull did not start");
+        expect(result.summary).toContain("1 untracked file(s)");
+        expect(result.rawOutput).toContain("vum-listener/nul");
+        expect(result.rawOutput).not.toContain("docs/plan.md");
+        expect(result.rawOutput).toContain("Remove-Item -LiteralPath '\\\\?\\");
+        expect(execGitImpl).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(process, "platform", { value: original });
+      }
+    });
+
+    test("off win32 the same file name is not special", async () => {
+      const { root } = await createGitFixture();
+      const execGitImpl = vi
+        .fn()
+        .mockResolvedValueOnce({ stdout: "Saved working directory and index state\n", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "Already up to date.\n", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "On develop: strideterm-pull-2026-09-11T14:22:17.000Z\n", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "Dropped refs/stash@{0}\n", stderr: "" });
+      const manager = new GitManager({ execGitImpl, now: () => new Date("2026-09-11T14:22:17.000Z") });
+      manager.inspectWorkspace = vi
+        .fn()
+        .mockResolvedValue(dirtySnapshot({ untracked: [{ path: "vum-listener/nul" }] }));
+      const original = process.platform;
+      Object.defineProperty(process, "platform", { value: "linux" });
+      try {
+        const result = await manager.pull({ id: "ws", cwd: root }, { stashDirty: true });
+        expect(result.ok).toBe(true);
+        expect(execGitImpl).toHaveBeenNthCalledWith(2, root, ["pull", "--ff-only"]);
+      } finally {
+        Object.defineProperty(process, "platform", { value: original });
+      }
+    });
   });
 
   describe("execAuthGitEffect retry policy", () => {

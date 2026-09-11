@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  findWindowsReservedPaths,
   parseLsFilesUntracked,
   buildOperationState,
   resolveContinueArgs,
@@ -142,5 +143,23 @@ describe("resolveContinueArgs and resolveAbortArgs still work", () => {
   test("abort args unchanged", () => {
     expect(resolveAbortArgs("merge")).toEqual(["merge", "--abort"]);
     expect(resolveAbortArgs("rebase")).toEqual(["rebase", "--abort"]);
+  });
+});
+
+describe("findWindowsReservedPaths", () => {
+  test("matches reserved device basenames regardless of case, extension, or directory", () => {
+    expect(
+      findWindowsReservedPaths([
+        "vum-listener/nul",
+        "commons/src/main/resources/NUL",
+        "out\\con.txt",
+        "COM1",
+        "lpt9.log",
+        "docs/plan.md",
+        "nullable.ts",
+        "console/aux-data.json",
+        "",
+      ]),
+    ).toEqual(["vum-listener/nul", "commons/src/main/resources/NUL", "out\\con.txt", "COM1", "lpt9.log"]);
   });
 });
