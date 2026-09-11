@@ -437,6 +437,19 @@ export async function createReviewBridgeStore(rootPath: string) {
       SET status = ?, updated_at = ?
       WHERE comment_key = ?
     `),
+    // Rewrite only what a local draft comment derives from its body. Going
+    // through upsertComment would re-state status, priority and the sync
+    // hashes, so an edit of a queued draft would quietly unqueue it.
+    updateLocalCommentText: db.prepare(`
+      UPDATE review_comments
+      SET title = ?, summary = ?, payload_json = ?, updated_at = ?
+      WHERE comment_key = ?
+    `),
+    updateDraftBody: db.prepare(`
+      UPDATE draft_responses
+      SET body = ?, updated_at = ?
+      WHERE draft_id = ?
+    `),
     deleteDraftById: db.prepare(`
       DELETE FROM draft_responses WHERE draft_id = ?
     `),
@@ -578,12 +591,20 @@ export async function createReviewBridgeStore(rootPath: string) {
       });
     }
 
-    const comments = (statements.selectCommentsForPr.all(prKey) as SqlRow[]).map((row, index) => ({
+    // #N comes from the stored display_index, never from the row's position.
+    // The column is assigned once (MAX + 1) and preserved across syncs exactly
+    // so a number stays with its comment; numbering by position handed that
+    // number to whoever moved up when a draft comment was deleted, and every
+    // #N the agent or the user had already written down pointed at a different
+    // comment. Gaps after a delete are the point, not a defect. The v4
+    // migration backfills the column, so the 0 fallback is unreachable in
+    // practice — and a visibly invalid 0 beats a plausible wrong number.
+    const comments = (statements.selectCommentsForPr.all(prKey) as SqlRow[]).map((row) => ({
       commentKey: row.comment_key,
       prKey: row.pr_key,
       remoteThreadId: Number.isInteger(row.remote_thread_id) ? (row.remote_thread_id as number) : null,
       commentKind: (row.comment_kind as string) || "answer-question",
-      displayIndex: index + 1,
+      displayIndex: Number.isInteger(row.display_index) ? (row.display_index as number) : 0,
       title: (row.title as string) || "",
       summary: (row.summary as string) || "",
       status: (row.status as string) || "ready-for-agent",
@@ -1108,6 +1129,65 @@ export async function createReviewBridgeStore(rootPath: string) {
             );
             statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
             statements.updateCommentState.run("ready-to-sync", now, commentKey);
+          }
+        });
+
+        return finishAndExport(prKey);
+      });
+    },
+    // Edit a local draft comment in place. Its body lives in two rows — the
+    // draft that gets published and the comment row's title/summary/
+    // questionBody that every list and card is rendered from — so rewriting
+    // only the draft (what saveDraftResponse does) leaves the comment
+    // advertising its original text. Thread-backed comments are somebody
+    // else's words: only the draft reply under them is ours to change, and
+    // saveDraftResponse already does that.
+    async updateDraftComment({
+      prKey,
+      commentKey = "",
+      body = "",
+      title = "",
+    }: { prKey?: string; commentKey?: string; body?: string; title?: string } = {}) {
+      ensureOpen();
+      if (!prKey) {
+        throw new Error("Pull request key is required.");
+      }
+      const normalizedBody = String(body || "").trim();
+      if (!normalizedBody) {
+        throw new Error("Comment body is required.");
+      }
+      return enqueue(async () => {
+        const commentRow = resolveCommentRow({ prKey, commentKey });
+        if (!commentRow) {
+          throw new Error("Review comment was not found for this pull request.");
+        }
+        if (Number.isInteger(commentRow.remote_thread_id)) {
+          throw new Error(
+            "Only a local draft comment can be edited. Use saveDraftResponse to change the draft reply on a remote thread.",
+          );
+        }
+        const now = new Date().toISOString();
+        const resolvedCommentKey = commentRow.comment_key as string;
+        const payload = fromJson<Record<string, unknown>>(commentRow.payload_json, {});
+        const filePath = String(payload.filePath || "");
+        const lineNumber = Number(payload.lineNumber) || null;
+        const locationPrefix = filePath ? `${filePath}${lineNumber ? `:${lineNumber}` : ""}` : "";
+        const derivedTitle = buildLocalCommentTitle(normalizedBody);
+        const nextTitle =
+          String(title || "").trim() || (locationPrefix ? `${locationPrefix} — ${derivedTitle}` : derivedTitle);
+        const existingDraft =
+          (statements.selectLatestDraftByComment.get(resolvedCommentKey) as SqlRow | undefined) || null;
+
+        withTransaction(() => {
+          statements.updateLocalCommentText.run(
+            nextTitle,
+            buildLocalCommentSummary(normalizedBody),
+            toJson({ ...payload, questionBody: normalizedBody }),
+            now,
+            resolvedCommentKey,
+          );
+          if (existingDraft) {
+            statements.updateDraftBody.run(normalizedBody, now, existingDraft.draft_id);
           }
         });
 

@@ -199,7 +199,7 @@ function buildReviewPrompt(context: ReviewContext | undefined): string {
     `You are working inside a strIDEterm review workspace for ${label} in ${repository}.`,
     "Use the embedded review MCP tools first.",
     "Start with list_review_comments.",
-    "Use get_review_comment for details, save_review_draft for replies, create_review_comment for new findings, and queue_review_draft only when a draft is ready.",
+    "Use get_review_comment for details, save_review_draft for replies, create_review_comment for new findings, update_review_comment and delete_review_comment to fix or drop a draft comment of your own, and queue_review_draft only when a draft is ready.",
     "Do not publish to Azure DevOps directly.",
   ].join(" ");
 }

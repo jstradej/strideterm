@@ -186,6 +186,8 @@ The review bridge exposes these tools to agents:
 | `list_review_comments`    | List all threads with status, priority, and draft previews                           |
 | `get_review_comment`      | Full thread detail by `#N` index (replies, file context, code snippet)               |
 | `create_review_comment`   | Create a new draft comment, auto-queued for publishing                               |
+| `update_review_comment`   | Rewrite a draft comment in place — keeps its `#N` and its queue entry                |
+| `delete_review_comment`   | Delete a draft comment (on a remote thread: only the draft reply under it)           |
 | `save_review_draft`       | Save a draft reply and auto-queue it for publishing                                  |
 | `queue_review_draft`      | Explicitly queue a draft (rarely needed — drafts auto-queue)                         |
 | `reply_with_code_changes` | Reply to a comment after making code changes — marks the thread and queues the reply |

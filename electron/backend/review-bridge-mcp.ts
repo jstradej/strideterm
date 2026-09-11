@@ -301,6 +301,64 @@ export function createReviewBridgeMcpHandlers({
         },
       );
     },
+    async updateDraftComment({
+      index = null,
+      commentKey = "",
+      body,
+      title = "",
+    }: {
+      index?: number | null;
+      commentKey?: string;
+      body: string;
+      title?: string;
+    }) {
+      const baseContext = readContextOrThrow(store, keySpec);
+      const selection = resolveComment(baseContext, { index, commentKey });
+      const context = await store.updateDraftComment({
+        prKey: baseContext.prKey,
+        commentKey: selection.comment.commentKey,
+        body,
+        title,
+      });
+      const updated = context?.comments.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
+      const latestDraft = context?.drafts.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
+      return toolResult(`Updated draft comment #${selection.comment.displayIndex}.`, {
+        prKey: baseContext.prKey,
+        comment: updated ? serializeComment(updated) : serializeComment(selection.comment),
+        draft: latestDraft ? serializeDraft(latestDraft) : null,
+      });
+    },
+    async deleteDraftComment({ index = null, commentKey = "" }: { index?: number | null; commentKey?: string } = {}) {
+      const baseContext = readContextOrThrow(store, keySpec);
+      const selection = resolveComment(baseContext, { index, commentKey });
+      const target = selection.comment;
+      const displayIndex = target.displayIndex;
+
+      // A thread-backed comment is the reviewer's, not ours: the most we may
+      // drop is the draft reply queued under it.
+      if (target.remoteThreadId != null) {
+        const draft = (baseContext.drafts || []).find((entry) => entry.commentKey === target.commentKey) || null;
+        if (!draft) {
+          throw new Error(`Comment #${displayIndex} is a remote review thread and has no draft reply to delete.`);
+        }
+        await store.deleteDraft({ prKey: baseContext.prKey, draftId: draft.draftId });
+        return toolResult(
+          `Deleted the draft reply on comment #${displayIndex}. The remote thread itself is untouched.`,
+          {
+            prKey: baseContext.prKey,
+            deleted: "draft",
+            comment: serializeComment(target),
+          },
+        );
+      }
+
+      await store.deleteComment({ prKey: baseContext.prKey, commentKey: target.commentKey });
+      return toolResult(`Deleted draft comment #${displayIndex}. The other comments keep their #N.`, {
+        prKey: baseContext.prKey,
+        deleted: "comment",
+        comment: serializeComment(target),
+      });
+    },
     async saveReviewDraft({
       index = null,
       commentKey = "",
@@ -516,6 +574,39 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
       },
     },
     async (input) => handlers.createDraftComment(input),
+  );
+
+  server.registerTool(
+    "update_review_comment",
+    {
+      title: "Edit Draft Comment",
+      description:
+        "Rewrite a draft comment you created with create_review_comment — use it instead of deleting and recreating when the wording, severity or explanation needs work. Keeps the comment's #N index and its place in the publish queue. Only works on local draft comments; to change a draft reply on an existing review thread, use save_review_draft.",
+      inputSchema: {
+        index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
+        commentKey: z.string().optional().describe("Exact comment key when you already know it."),
+        body: z.string().min(1).describe("New body of the draft comment. Replaces the previous text."),
+        title: z
+          .string()
+          .optional()
+          .describe("Optional short title. Derived from the body and the anchored file when omitted."),
+      },
+    },
+    async (input) => handlers.updateDraftComment(input),
+  );
+
+  server.registerTool(
+    "delete_review_comment",
+    {
+      title: "Delete Draft Comment",
+      description:
+        "Delete a draft comment you created with create_review_comment, together with its queued publish entry — use it when a finding turns out to be wrong or duplicated, rather than leaving it for the user to remove by hand. On a remote review thread it deletes only your draft reply; the reviewer's thread is never touched. The remaining comments keep their #N index, so earlier numbers stay valid.",
+      inputSchema: {
+        index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
+        commentKey: z.string().optional().describe("Exact comment key when you already know it."),
+      },
+    },
+    async (input) => handlers.deleteDraftComment(input),
   );
 
   server.registerTool(

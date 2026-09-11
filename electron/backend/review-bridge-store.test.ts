@@ -281,6 +281,139 @@ describe("review bridge store", () => {
     await store.close();
   });
 
+  test("deleting a draft comment leaves every other #N where it was", async () => {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-index-"));
+    tempPaths.push(rootPath);
+    const store = await createReviewBridgeStore(rootPath);
+
+    const prKey = "ado-main:repo-1:400";
+    await store.syncPullRequest({
+      provider: "azure-devops",
+      prKey,
+      connectionId: "ado-main",
+      repository: { id: "repo-1", name: "web-app" },
+      pullRequest: { id: 400, title: "Stable numbering", status: "active" },
+      role: "reviewer",
+      threads: [
+        {
+          id: 70,
+          status: "active",
+          filePath: "/src/a.js",
+          lineStart: 1,
+          publishedDate: "2026-03-22T10:00:00.000Z",
+          comments: [
+            {
+              id: 700,
+              parentCommentId: 0,
+              content: "First reviewer thread.",
+              publishedDate: "2026-03-22T10:00:00.000Z",
+              author: { displayName: "Reviewer" },
+            },
+          ],
+        },
+      ],
+    });
+
+    await store.createDraftComment({ prKey, body: "First finding.", authorAgent: "claude" });
+    const before = await store.createDraftComment({ prKey, body: "Second finding.", authorAgent: "claude" });
+
+    const doomed = before?.comments.find((comment) => comment.summary.includes("First finding"));
+    const keeper = before?.comments.find((comment) => comment.summary.includes("Second finding"));
+    const thread = before?.comments.find((comment) => comment.remoteThreadId === 70);
+    expect(thread?.displayIndex).toBe(1);
+    expect(doomed?.displayIndex).toBe(2);
+    expect(keeper?.displayIndex).toBe(3);
+
+    const after = await store.deleteComment({ prKey, commentKey: doomed!.commentKey as string });
+
+    // The survivors keep their numbers — #3 must not slide into the hole at
+    // #2, or every #N written down before the delete points somewhere else.
+    expect(after?.comments.find((comment) => comment.remoteThreadId === 70)?.displayIndex).toBe(1);
+    expect(after?.comments.find((comment) => comment.commentKey === keeper!.commentKey)?.displayIndex).toBe(3);
+    expect(after?.comments.some((comment) => comment.commentKey === doomed!.commentKey)).toBe(false);
+
+    // And the next comment does not reuse the freed number either.
+    const later = await store.createDraftComment({ prKey, body: "Third finding.", authorAgent: "claude" });
+    expect(later?.comments.find((comment) => comment.summary.includes("Third finding"))?.displayIndex).toBe(4);
+
+    await store.close();
+  });
+
+  test("updateDraftComment rewrites the comment as well as the draft and keeps it queued", async () => {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-update-"));
+    tempPaths.push(rootPath);
+    const store = await createReviewBridgeStore(rootPath);
+
+    const prKey = "ado-main:repo-1:401";
+    await store.syncPullRequest({
+      provider: "azure-devops",
+      prKey,
+      connectionId: "ado-main",
+      repository: { id: "repo-1", name: "web-app" },
+      pullRequest: { id: 401, title: "Editable drafts", status: "active" },
+      role: "reviewer",
+      threads: [
+        {
+          id: 80,
+          status: "active",
+          filePath: "/src/b.js",
+          lineStart: 3,
+          publishedDate: "2026-03-23T10:00:00.000Z",
+          comments: [
+            {
+              id: 800,
+              parentCommentId: 0,
+              content: "Reviewer thread.",
+              publishedDate: "2026-03-23T10:00:00.000Z",
+              author: { displayName: "Reviewer" },
+            },
+          ],
+        },
+      ],
+    });
+
+    const created = await store.createDraftComment({
+      prKey,
+      body: "Typo: this leeks a handle.",
+      filePath: "src/b.js",
+      lineNumber: 12,
+      authorAgent: "claude",
+      autoQueue: true,
+    });
+    const comment = created?.comments.find((entry) => entry.commentKind === "draft");
+    expect(comment).toBeTruthy();
+    const commentKey = comment!.commentKey as string;
+    const queuedBefore = created?.syncQueue.filter((entry) => entry.status === "pending") || [];
+    expect(queuedBefore).toHaveLength(1);
+
+    const updated = await store.updateDraftComment({
+      prKey,
+      commentKey,
+      body: "This leaks a file handle when the parse throws.",
+    });
+
+    const editedComment = updated?.comments.find((entry) => entry.commentKey === commentKey);
+    const editedDraft = updated?.drafts.find((entry) => entry.commentKey === commentKey);
+    expect(editedDraft?.body).toBe("This leaks a file handle when the parse throws.");
+    // The card and every MCP listing render the comment row, not the draft —
+    // a rewrite that only touched the draft would keep advertising the typo.
+    expect(editedComment?.summary).toContain("leaks a file handle");
+    expect(editedComment?.summary).not.toContain("leeks");
+    expect(editedComment?.title).not.toContain("leeks");
+    expect((editedComment?.payload as Record<string, unknown>)?.questionBody).toBe(
+      "This leaks a file handle when the parse throws.",
+    );
+    expect(editedComment?.displayIndex).toBe(comment!.displayIndex);
+    expect(updated?.syncQueue.filter((entry) => entry.status === "pending")).toHaveLength(1);
+
+    // The reviewer's own thread is not ours to rewrite.
+    await expect(store.updateDraftComment({ prKey, commentKey: `${prKey}:thread:80`, body: "nope" })).rejects.toThrow(
+      /local draft comment/u,
+    );
+
+    await store.close();
+  });
+
   test("syncPullRequest rolls back the entire transaction when a mid-transaction statement fails", async () => {
     const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-rollback-"));
     tempPaths.push(rootPath);

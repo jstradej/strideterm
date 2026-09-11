@@ -161,6 +161,108 @@ describe("review bridge mcp handlers", () => {
       commentKey: "ado-main:repo-1:123:thread:10",
     });
   });
+
+  test("edits a draft comment in place through the store", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store: any = {
+      getPullRequestContext: vi.fn(() => createContext()),
+      updateDraftComment: vi.fn().mockResolvedValue(createContext()),
+    };
+    const handlers = createReviewBridgeMcpHandlers({
+      store,
+      prKey: "ado-main:repo-1:123",
+    });
+
+    const result = await handlers.updateDraftComment({ index: 2, body: "Check the migration rollback too." });
+
+    expect(store.updateDraftComment).toHaveBeenCalledWith({
+      prKey: "ado-main:repo-1:123",
+      commentKey: "ado-main:repo-1:123:local:1",
+      body: "Check the migration rollback too.",
+      title: "",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((result as any).content[0] as any).text).toContain("Updated draft comment #2");
+  });
+
+  test("deletes a local draft comment outright", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store: any = {
+      getPullRequestContext: vi.fn(() => createContext()),
+      deleteComment: vi.fn().mockResolvedValue(createContext()),
+      deleteDraft: vi.fn(),
+    };
+    const handlers = createReviewBridgeMcpHandlers({
+      store,
+      prKey: "ado-main:repo-1:123",
+    });
+
+    const result = await handlers.deleteDraftComment({ index: 2 });
+
+    expect(store.deleteComment).toHaveBeenCalledWith({
+      prKey: "ado-main:repo-1:123",
+      commentKey: "ado-main:repo-1:123:local:1",
+    });
+    expect(store.deleteDraft).not.toHaveBeenCalled();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result as any).structuredContent.deleted).toBe("comment");
+  });
+
+  test("deletes only the draft reply when the target is a remote review thread", async () => {
+    const context = {
+      ...createContext(),
+      drafts: [
+        {
+          draftId: "draft-1",
+          commentKey: "ado-main:repo-1:123:thread:10",
+          status: "draft",
+          body: "Will fix.",
+          authorAgent: "codex",
+          needsHumanApproval: true,
+          confidence: null,
+          updatedAt: "2026-03-18T12:00:00.000Z",
+        },
+      ],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store: any = {
+      getPullRequestContext: vi.fn(() => context),
+      deleteComment: vi.fn(),
+      deleteDraft: vi.fn().mockResolvedValue(context),
+    };
+    const handlers = createReviewBridgeMcpHandlers({
+      store,
+      prKey: "ado-main:repo-1:123",
+    });
+
+    const result = await handlers.deleteDraftComment({ index: 1 });
+
+    expect(store.deleteDraft).toHaveBeenCalledWith({
+      prKey: "ado-main:repo-1:123",
+      draftId: "draft-1",
+    });
+    // The reviewer's thread is not ours to delete.
+    expect(store.deleteComment).not.toHaveBeenCalled();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result as any).structuredContent.deleted).toBe("draft");
+  });
+
+  test("refuses to delete a remote review thread that carries no draft", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store: any = {
+      getPullRequestContext: vi.fn(() => createContext()),
+      deleteComment: vi.fn(),
+      deleteDraft: vi.fn(),
+    };
+    const handlers = createReviewBridgeMcpHandlers({
+      store,
+      prKey: "ado-main:repo-1:123",
+    });
+
+    await expect(handlers.deleteDraftComment({ index: 1 })).rejects.toThrow(/remote review thread/u);
+    expect(store.deleteComment).not.toHaveBeenCalled();
+    expect(store.deleteDraft).not.toHaveBeenCalled();
+  });
 });
 
 describe("parseReviewBridgeMcpArgs", () => {
