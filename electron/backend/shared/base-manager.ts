@@ -212,6 +212,10 @@ interface OpenReviewWorkspaceOptions {
   /** Profile of the window that initiated the action — used as defensive
    *  fallback when the connection has no profileId (legacy/pre-migration). */
   callerProfileId?: string;
+  /** Skip the author's branch-matching workspace and build a managed review
+   *  checkout instead. Set by the row's separate "Review" button — see the
+   *  fallback in openReviewWorkspaceCore for why it needs saying explicitly. */
+  forceReview?: boolean;
 }
 
 interface OpenReviewWorkspaceHooks {
@@ -1221,7 +1225,7 @@ export class BaseProviderManager extends EventEmitter {
    * their own copy.
    */
   async openReviewWorkspaceCore(
-    { state, prKey, workspaceId = "", callerProfileId = "" }: OpenReviewWorkspaceOptions,
+    { state, prKey, workspaceId = "", callerProfileId = "", forceReview = false }: OpenReviewWorkspaceOptions,
     hooks: OpenReviewWorkspaceHooks,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<{ workspace: any; created: boolean; attached: boolean }> {
@@ -1246,11 +1250,16 @@ export class BaseProviderManager extends EventEmitter {
     }
     const activeProfile = connectionProfileId || callerProfileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
+    // An author whose checkout already sits on the PR's source branch is
+    // offered that workspace as the attach target — but only when the caller
+    // did not explicitly ask for a review checkout. Without the forceReview
+    // gate the row's "Review" button would silently attach instead, since
+    // "no workspaceId" is exactly what the Attach button sends too.
     const existingWorkspace =
       (workspaceId
         ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
         : hooks.findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
-          (summary.role === "author" && summary.existingWorkspaceId
+          (!forceReview && summary.role === "author" && summary.existingWorkspaceId
             ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
             : null)) || null;
 

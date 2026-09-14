@@ -99,15 +99,25 @@
         type="button"
         :class="['button', opening && 'button--busy']"
         :disabled="opening"
-        :title="isGitHub ? undefined : actionTitle"
+        :title="actionTitle"
         @click="handleOpen"
       >
         {{ opening ? "Opening…" : actionLabel }}
       </button>
       <button
+        v-if="attachWorkspaceId"
         type="button"
         class="button button--ghost"
-        :title="isGitHub ? undefined : 'Open this pull request in your default browser.'"
+        :disabled="opening"
+        :title="attachTitle"
+        @click="handleAttach"
+      >
+        Work here
+      </button>
+      <button
+        type="button"
+        class="button button--ghost"
+        title="Open this pull request in your default browser."
         @click="handleBrowser"
       >
         Browser
@@ -147,7 +157,7 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  (e: "open", payload: { prKey: string; workspaceId: string }): void;
+  (e: "open", payload: { prKey: string; workspaceId: string; forceReview?: boolean }): void;
   (e: "browser", url: string): void;
   (e: "seen", prKey: string): void;
 }>();
@@ -177,28 +187,30 @@ const authorName = computed(() => {
   return (author?.displayName as string) || (author?.login as string) || "Unknown author";
 });
 
-const openWorkspaceId = computed(() =>
+// The author's own checkout sitting on this PR's source branch. Offered as a
+// second, explicitly-labelled action — never as the primary one: the primary
+// button means the same thing on every row, and linking a long-lived working
+// checkout to a PR is a deliberate choice, not the default reading of a click.
+const attachWorkspaceId = computed(() =>
   props.item.role === "author" && props.item.existingWorkspaceId && !props.item.reviewWorkspaceId
     ? (props.item.existingWorkspaceId as string)
     : "",
 );
 
-const actionLabel = computed(() => {
-  if (props.item.role === "author" && props.item.existingWorkspaceId && !props.item.reviewWorkspaceId) return "Attach";
-  if (props.item.reviewWorkspaceId) return "Open";
-  return "Review";
-});
+const actionLabel = computed(() => (props.item.reviewWorkspaceId ? "Open" : "Review"));
 
-// Azure-only tooltip for the primary action button — GitHub's button has none.
-const actionTitle = computed(() => {
-  if (actionLabel.value === "Attach") {
-    return "Attach this PR to your existing workspace at the same source branch — no review workspace will be created.";
-  }
-  if (actionLabel.value === "Open") {
-    return "Switch to the review workspace already prepared for this PR.";
-  }
-  return "Create a fresh review workspace: clone the PR branch into the review root and open it for inspection.";
-});
+// Shown for both providers — the two rows offer the same actions, so leaving
+// GitHub's buttons unexplained only made them harder to read.
+const actionTitle = computed(() =>
+  actionLabel.value === "Open"
+    ? "Switch to the review workspace already prepared for this PR."
+    : "Create a separate review workspace: clones the PR branch into your review root and opens it with the review pane. Your own checkouts are left alone.",
+);
+
+const attachTitle = computed(
+  () =>
+    "Use the checkout you already have on this branch as the PR's workspace: the review pane and the PR's comments land where you work, so you can act on them and push from there. Nothing is cloned.",
+);
 
 const roleIcon = computed(() => {
   const role = String(props.item.role || "reviewer");
@@ -323,7 +335,17 @@ const latestCommentPreview = computed(() => {
 });
 
 function handleOpen() {
-  emit("open", { prKey: props.item.prKey as string, workspaceId: openWorkspaceId.value });
+  // An author whose checkout matches the PR's branch is attached by the
+  // backend's fallback unless the managed checkout is asked for explicitly.
+  emit("open", {
+    prKey: props.item.prKey as string,
+    workspaceId: "",
+    forceReview: Boolean(attachWorkspaceId.value),
+  });
+}
+
+function handleAttach() {
+  emit("open", { prKey: props.item.prKey as string, workspaceId: attachWorkspaceId.value });
 }
 
 function handleBrowser() {

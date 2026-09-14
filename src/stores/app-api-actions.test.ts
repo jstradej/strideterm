@@ -132,7 +132,7 @@ describe("makeProviderApiActions", () => {
       const otherMarkPrSeenMethod = provider === "azure" ? api.markGitHubPullRequestSeen : api.markAzurePullRequestSeen;
 
       expect(markPrSeenMethod).toHaveBeenCalledWith("pr-1");
-      expect(openPrMethod).toHaveBeenCalledWith({ prKey: "pr-1", workspaceId: "ws-1" });
+      expect(openPrMethod).toHaveBeenCalledWith({ prKey: "pr-1", workspaceId: "ws-1", forceReview: false });
       expect(syncMethod).toHaveBeenCalledWith("ws-1");
       expect(rebaseMethod).toHaveBeenCalledWith("ws-1");
       expect(pushMethod).toHaveBeenCalledWith("ws-1", { force: true });

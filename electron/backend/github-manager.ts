@@ -122,6 +122,9 @@ interface OpenReviewWorkspaceOptions {
   /** Profile of the window that initiated the action — used as defensive
    * fallback when the connection has no profileId (legacy/pre-migration). */
   callerProfileId?: string;
+  /** Build a managed review checkout even when the author's own workspace
+   * sits on the PR's source branch. */
+  forceReview?: boolean;
 }
 
 interface OpenQuickFixWorkspaceOptions {
@@ -901,6 +904,7 @@ export class GitHubManager extends BaseProviderManager {
     prKey,
     workspaceId = "",
     callerProfileId = "",
+    forceReview = false,
   }: OpenReviewWorkspaceOptions): Promise<{
     workspace: Record<string, unknown>;
     created: boolean;
@@ -908,7 +912,7 @@ export class GitHubManager extends BaseProviderManager {
   }> {
     return this.openReviewWorkspaceCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { state: state as any, prKey, workspaceId, callerProfileId },
+      { state: state as any, prKey, workspaceId, callerProfileId, forceReview },
       {
         ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
         prepareManagedReviewCheckout: (opts) =>

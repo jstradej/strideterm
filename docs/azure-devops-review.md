@@ -45,7 +45,9 @@ Clicking **Review** on a PR creates a local workspace:
 3. Checks out the PR source branch
 4. Opens the workspace with terminal tabs (Claude Code, Codex, GitHub Copilot, Shell) and review pane
 
-For PRs you authored, strIDEterm can attach to your existing workspace instead of creating a duplicate — the action button reads **Attach** in that case. This only happens when that workspace's checkout is on the PR's source branch.
+**Review** means the same thing on every row, whoever opened the PR: a separate workspace, your own checkouts untouched.
+
+For a PR **you authored**, the row offers a second button — **Work here** — when you already have a checkout sitting on that PR's source branch. It links the PR to that workspace instead of cloning: the review pane opens there, and agent tabs launched in it get the PR's comments wired in over the review MCP bridge. That is what you want for your own PR — read the feedback, act on it (by hand or by asking an agent) in the code you actually work in, and commit and push from the same place. Working in a separate worktree and pushing from it would leave your own checkout on that branch silently behind.
 
 ### Detach from a Review
 
@@ -53,7 +55,7 @@ An attached (or managed) workspace stays linked to its PR until you unlink it. T
 
 Detaching removes the Review tab, stops agent tabs from being launched with the review MCP bridge, and restores normal git operations. The PR on the server is not touched.
 
-**Attached workspaces unlink themselves** once the PR reaches a terminal state (completed / abandoned; closed on GitHub). The attach is made while your checkout sits on the PR's source branch — after the merge that branch is usually gone and the link is dead weight, so the next poll clears it. Managed review worktrees are left linked: they exist only for the review, so there is nothing to restore.
+**Workspaces linked by "Work here" unlink themselves** once the PR reaches a terminal state (completed / abandoned; closed on GitHub). The attach is made while your checkout sits on the PR's source branch — after the merge that branch is usually gone and the link is dead weight, so the next poll clears it. Managed review worktrees are left linked: they exist only for the review, so there is nothing to restore.
 
 ---
 

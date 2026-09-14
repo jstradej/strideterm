@@ -70,7 +70,10 @@ interface ProviderApiMethods {
   displayName: string;
   refresh: (api: AnyApi) => Promise<AnyApi>;
   markPrSeen: (api: AnyApi, prKey: string) => Promise<AnyApi>;
-  openPullRequest: (api: AnyApi, args: { prKey: string; workspaceId: string }) => Promise<AnyApi>;
+  openPullRequest: (
+    api: AnyApi,
+    args: { prKey: string; workspaceId: string; forceReview?: boolean },
+  ) => Promise<AnyApi>;
   /** The Refresh button's git-mutating half: fast-forward the review checkout
    *  onto the PR's latest source commit. Returns {payload, result} — result is
    *  the structured sync outcome (status/message/commitCount/headSha). */
@@ -123,10 +126,18 @@ export function makeProviderApiActions(
     setPayload((await m.markPrSeen(ctx.getApi() as AnyApi, prKey)) as StatePayload);
   }
 
-  async function openPullRequest(prKey: string, workspaceId: string): Promise<void> {
+  async function openPullRequest(
+    prKey: string,
+    workspaceId: string,
+    { forceReview = false }: { forceReview?: boolean } = {},
+  ): Promise<void> {
     if (!prKey) return;
     setPayload(
-      (await m.openPullRequest(ctx.getApi() as AnyApi, { prKey, workspaceId: workspaceId || "" })) as StatePayload,
+      (await m.openPullRequest(ctx.getApi() as AnyApi, {
+        prKey,
+        workspaceId: workspaceId || "",
+        forceReview,
+      })) as StatePayload,
     );
   }
 

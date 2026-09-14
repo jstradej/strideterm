@@ -782,13 +782,21 @@ function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh-azure" || action.action === "refresh-github") handleRefresh();
 }
 
-async function onOpenPr({ prKey, workspaceId }: { prKey: string; workspaceId: string }) {
+async function onOpenPr({
+  prKey,
+  workspaceId,
+  forceReview = false,
+}: {
+  prKey: string;
+  workspaceId: string;
+  forceReview?: boolean;
+}) {
   if (openingPrKey.value) return; // already opening one — ignore extra clicks
   openError.value = "";
   openingPrKey.value = prKey;
   try {
-    if (isGitHub.value) await appStore.openGitHubPullRequest(prKey, workspaceId);
-    else await appStore.openAzurePullRequest(prKey, workspaceId);
+    if (isGitHub.value) await appStore.openGitHubPullRequest(prKey, workspaceId, { forceReview });
+    else await appStore.openAzurePullRequest(prKey, workspaceId, { forceReview });
   } catch (err) {
     openError.value = (err as Error)?.message || "Failed to open review workspace.";
   } finally {

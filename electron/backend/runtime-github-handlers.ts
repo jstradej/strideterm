@@ -258,6 +258,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           prKey: payload.prKey,
           workspaceId: payload.workspaceId || "",
           callerProfileId,
+          forceReview: payload.forceReview === true,
         });
       } catch (err) {
         const message =

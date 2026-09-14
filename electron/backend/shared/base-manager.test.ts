@@ -1275,3 +1275,73 @@ describe("isLockedReviewMirror", () => {
     expect(isLockedReviewMirror({ id: "ws" })).toBe(false);
   });
 });
+
+describe("BaseProviderManager.openReviewWorkspaceCore — forceReview", () => {
+  const summary = {
+    connectionId: "conn-1",
+    role: "author",
+    existingWorkspaceId: "workspace-main",
+    repository: { name: "web-app" },
+    pullRequest: { id: 123, sourceRefName: "refs/heads/feature/login-fix" },
+    lastRemoteActivityAt: "2026-03-17T09:00:00.000Z",
+  };
+
+  const state = {
+    tabTemplates: [],
+    workspaces: [
+      // The author's own checkout, sitting on the PR's source branch — this is
+      // what the row offers as the "Attach" target.
+      { id: "workspace-main", profileId: "default", cwd: "/repo", panels: [] },
+      { id: "provider-root", kind: "provider", profileId: "default", cwd: reviewRoot, panels: [] },
+    ],
+  };
+
+  function openWith(forceReview: boolean) {
+    const manager = createManager({
+      execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
+      secrets: { "cred:conn-1": "pat-123" },
+    });
+    manager.parentWorkspaceKind = "provider";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test seeds the snapshot the real sync would fill
+    manager.snapshot.connections = [{ id: "conn-1", tokenRef: "cred:conn-1", profileId: "default" }] as any;
+    const prepareManagedReviewCheckout = vi.fn().mockResolvedValue({
+      mode: "managed-worktree",
+      rootPath: path.join(reviewRoot, "reviews", "pr-123"),
+      cacheRepoPath: path.join(reviewRoot, "cache", "web-app"),
+    });
+    return {
+      prepareManagedReviewCheckout,
+      result: manager.openReviewWorkspaceCore(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: trimmed state fixture
+        { state: state as any, prKey: "conn-1:repo-1:123", forceReview },
+        {
+          ensurePullRequestDetail: async () => summary,
+          prepareManagedReviewCheckout,
+          buildReviewMetadata: (_summary, checkout, extra) => ({ checkout, ...extra }),
+          formatPrLabel: () => "web-app PR #123",
+          // No workspace is tracking this PR yet — Attach is the only thing on
+          // offer, which is exactly the state the Review button exists for.
+          findWorkspaceForPullRequest: () => null,
+        },
+      ),
+    };
+  }
+
+  test("without the flag an author PR still attaches to the matching workspace", async () => {
+    const { result, prepareManagedReviewCheckout } = openWith(false);
+    const opened = await result;
+    expect(opened.created).toBe(false);
+    expect(opened.workspace.id).toBe("workspace-main");
+    expect(prepareManagedReviewCheckout).not.toHaveBeenCalled();
+  });
+
+  test("forceReview builds a managed checkout instead, leaving the author's workspace alone", async () => {
+    const { result, prepareManagedReviewCheckout } = openWith(true);
+    const opened = await result;
+    expect(opened.created).toBe(true);
+    expect(opened.attached).toBe(false);
+    expect(opened.workspace.id).not.toBe("workspace-main");
+    expect(opened.workspace.cwd).toBe(path.join(reviewRoot, "reviews", "pr-123"));
+    expect(prepareManagedReviewCheckout).toHaveBeenCalledTimes(1);
+  });
+});

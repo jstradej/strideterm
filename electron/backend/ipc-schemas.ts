@@ -131,6 +131,9 @@ export type AzureThreadStatus = z.infer<typeof azureThreadStatusSchema>;
 export const openPrSchema = z.object({
   prKey: nonEmptyString,
   workspaceId: z.string().optional(),
+  /** Ask for a managed review checkout instead of attaching the PR to the
+   *  author's workspace that happens to sit on its source branch. */
+  forceReview: z.boolean().optional(),
 });
 export type OpenPr = z.infer<typeof openPrSchema>;
 

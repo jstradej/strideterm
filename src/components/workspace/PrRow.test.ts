@@ -177,11 +177,11 @@ describe("PrRow — provider=github", () => {
     expect(wrapper.find(".azure-pr-row__meta").text()).toContain("bob");
   });
 
-  test("primary and browser buttons carry no title tooltip", () => {
+  test("every action button explains itself, same as on an Azure row", () => {
     const wrapper = mountRow(githubItem, { provider: "github" });
-    const [primaryBtn, browserBtn] = wrapper.findAll(".azure-pr-row__actions button");
-    expect(primaryBtn.attributes("title")).toBeUndefined();
-    expect(browserBtn.attributes("title")).toBeUndefined();
+    for (const button of wrapper.findAll(".azure-pr-row__actions button")) {
+      expect(button.attributes("title")).toBeTruthy();
+    }
   });
 
   test("draft flag also honors the legacy isDraft field", () => {
@@ -253,15 +253,49 @@ describe("PrRow — shared behavior across providers", () => {
     expect(primaryBtn.text()).toBe("Opening…");
   });
 
-  test("clicking the primary action emits open with the prKey and resolved workspace id", async () => {
+  test("the primary action is Review even when the author's checkout could be attached", async () => {
     const wrapper = mountRow({
       ...baseItem,
       role: "author",
       existingWorkspaceId: "ws-42",
       reviewWorkspaceId: "",
     });
-    await wrapper.findAll(".azure-pr-row__actions button")[0].trigger("click");
+    const buttons = wrapper.findAll(".azure-pr-row__actions button");
+    expect(buttons.map((b) => b.text())).toEqual(["Review", "Work here", "Browser", "Seen"]);
+    // forceReview is what stops the backend fallback attaching to ws-42.
+    await buttons[0].trigger("click");
+    expect(wrapper.emitted("open")?.[0]).toEqual([{ prKey: "pr:1", workspaceId: "", forceReview: true }]);
+  });
+
+  test("'Work here' attaches the PR to the author's existing checkout", async () => {
+    const wrapper = mountRow({
+      ...baseItem,
+      role: "author",
+      existingWorkspaceId: "ws-42",
+      reviewWorkspaceId: "",
+    });
+    const attachBtn = wrapper.findAll(".azure-pr-row__actions button").find((b) => b.text() === "Work here")!;
+    expect(attachBtn.attributes("title")).toContain("already have on this branch");
+    await attachBtn.trigger("click");
     expect(wrapper.emitted("open")?.[0]).toEqual([{ prKey: "pr:1", workspaceId: "ws-42" }]);
+  });
+
+  test("'Work here' is offered only to an author with no review workspace yet", () => {
+    const reviewer = mountRow({ ...baseItem, role: "reviewer", existingWorkspaceId: "", reviewWorkspaceId: "" });
+    expect(reviewer.findAll(".azure-pr-row__actions button").map((b) => b.text())).toEqual([
+      "Review",
+      "Browser",
+      "Seen",
+    ]);
+
+    const open = mountRow({ ...baseItem, role: "author", existingWorkspaceId: "ws-42", reviewWorkspaceId: "ws-9" });
+    expect(open.findAll(".azure-pr-row__actions button").map((b) => b.text())).toEqual(["Open", "Browser", "Seen"]);
+  });
+
+  test("a plain reviewer's Review click does not ask for forceReview", async () => {
+    const wrapper = mountRow({ ...baseItem, role: "reviewer", existingWorkspaceId: "", reviewWorkspaceId: "" });
+    await wrapper.findAll(".azure-pr-row__actions button")[0].trigger("click");
+    expect(wrapper.emitted("open")?.[0]).toEqual([{ prKey: "pr:1", workspaceId: "", forceReview: false }]);
   });
 
   test("expand toggle reveals and hides the details block", async () => {
