@@ -350,6 +350,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       label: "Anything you want to remember about this tab",
       value: existing,
       placeholder: "e.g. waiting on review, TODO: wire up the retry path…",
+      nowrap: true,
       allowEmpty: true,
       onCancel: closeDialog,
       onSubmit: async (value: string) => {

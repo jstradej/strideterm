@@ -1,5 +1,5 @@
 <template>
-  <div class="dialog" style="width: min(560px, 100%)">
+  <div class="dialog dialog--textarea">
     <div class="dialog__header">
       <div>
         <p class="eyebrow">{{ eyebrow }}</p>
@@ -9,7 +9,14 @@
     <form class="form" @submit.prevent="handleSubmit">
       <label>
         <span>{{ label }}</span>
-        <textarea ref="textareaRef" v-model="textValue" name="value" rows="8" :placeholder="placeholder" />
+        <textarea
+          ref="textareaRef"
+          v-model="textValue"
+          name="value"
+          rows="8"
+          :class="{ 'textarea--nowrap': nowrap }"
+          :placeholder="placeholder"
+        />
       </label>
       <footer class="dialog__footer">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
@@ -34,6 +41,13 @@ interface Props {
   submitLabel?: string;
   secondarySubmitLabel?: string;
   /**
+   * Scroll long lines sideways instead of wrapping them. Off by default —
+   * prose (commit messages, PR comments) reads better wrapped. Notes are
+   * pasted logs and command lines as often as prose, where a wrap in the
+   * middle of a path is worse than a scrollbar.
+   */
+  nowrap?: boolean;
+  /**
    * Let an empty value through. Off by default because most callers post the
    * text somewhere (PR comments, commit messages) where blank is meaningless;
    * tab notes need it so clearing the box deletes the note.
@@ -47,6 +61,7 @@ const props = withDefaults(defineProps<Props>(), {
   placeholder: "",
   submitLabel: "Save",
   secondarySubmitLabel: "",
+  nowrap: false,
   allowEmpty: false,
 });
 
@@ -73,3 +88,36 @@ function handleSecondarySubmit() {
   emit("secondary-submit", val);
 }
 </script>
+
+<style scoped>
+/* The textarea carries the browser's native resize handle, but the dialog was
+   a fixed 560px with `overflow: auto` — so dragging it wider only pushed the
+   extra width (and the Save button) behind the dialog's own scroll area, where
+   nobody could see it. Let the dialog track the textarea instead: floored at
+   the default width, capped at the overlay so a drag never runs off-screen.
+   The default scales with the window because 560px is a postage stamp on a
+   2.5K screen; the clamp keeps it at the old size in a small window. */
+.dialog--textarea {
+  --textarea-dialog-width: clamp(560px, 55vw, 1100px);
+  width: fit-content;
+  min-width: min(var(--textarea-dialog-width), 100%);
+  max-width: 100%;
+}
+
+/* Only the textarea gets to widen the dialog past its default. Without this a
+   long tab title in the header would stretch it on its own. */
+.dialog--textarea .dialog__header {
+  max-width: var(--textarea-dialog-width);
+}
+
+/* `height`, not `min-height`: the resize handle writes an inline height, which
+   overrides this but loses to a min-height — the box has to stay shrinkable. */
+.dialog--textarea textarea {
+  height: min(45vh, 500px);
+}
+
+.textarea--nowrap {
+  white-space: pre;
+  overflow-x: auto;
+}
+</style>
