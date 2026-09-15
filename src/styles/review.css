@@ -507,6 +507,9 @@
 .azure-review-root,
 .azure-review__description {
   white-space: pre-wrap;
+  /* PR descriptions routinely carry a bare wiki/Jira URL with no spaces in
+     it; `anywhere` (not `break-word`) so it also shrinks min-content. */
+  overflow-wrap: anywhere;
 }
 
 .review-shell {

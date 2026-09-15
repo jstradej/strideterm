@@ -181,6 +181,12 @@
   padding: 12px;
   background: rgba(var(--tint), 0.03);
   display: grid;
+  /* One column, clamped to the card. The implicit `auto` column is sized to
+     the widest child's min-content, so a single unbreakable string (a wiki
+     URL in a PR description) widened the column past the card and every
+     other row with it — the action rows then had room and stopped wrapping,
+     painting buttons over the sidebar beside them. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
