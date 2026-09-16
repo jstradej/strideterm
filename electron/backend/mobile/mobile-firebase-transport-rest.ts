@@ -331,6 +331,10 @@ export function createFirebaseMobileTransport(deps: FirebaseMobileTransportDeps)
      * MobileQuotaExceededError, which `mobile-manager.ts` treats as "suppress this push and roll it into
      * the daily summary" rather than as a send failure.
      */
+    async updateDeviceAccess(pairId, deviceId, capabilities, profileAllowlist) {
+      await requireClient().callFunction("updateDeviceAccess", { pairId, deviceId, capabilities, profileAllowlist });
+    },
+
     async sendEvent(pairId: string, event: NotificationEvent): Promise<void> {
       try {
         await requireClient().callFunction("enqueueEvent", { pairId, event });

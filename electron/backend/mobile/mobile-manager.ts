@@ -76,6 +76,7 @@ import { MobileQuotaExceededError } from "./mobile-firebase-transport.js";
 import type { MobileConnectionState, MobileFirebaseTransport } from "./mobile-firebase-transport.js";
 import type { ExternalNotificationEvent } from "../../shared/types/notifications.js";
 import { mobileErrorCode } from "./mobile-error-codes.js";
+import { MobileFirebaseCallableError } from "./mobile-firebase-rest.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("mobile-manager");
@@ -175,6 +176,7 @@ export interface MobileQuotaSnapshot {
 }
 
 export interface MobileManagerDeps {
+  getProfileIds?: () => string[];
   transport: MobileFirebaseTransport;
   pairing: MobilePairing;
   deviceStore: MobileDeviceStore;
@@ -223,6 +225,8 @@ function meetsNotificationFilter(device: MobileDeviceRecord, event: ExternalNoti
 export class MobileManager extends EventEmitter {
   /** How often a connected desktop refreshes its presence node. See beginPresence. */
   private static readonly PRESENCE_REFRESH_MS = 60_000;
+  /** Leave enough room for the rest of Electron's ten-second shutdown cleanup. */
+  private static readonly PRESENCE_SHUTDOWN_TIMEOUT_MS = 2_000;
 
   private transport: MobileFirebaseTransport;
   private pairing: MobilePairing;
@@ -244,6 +248,7 @@ export class MobileManager extends EventEmitter {
    * as unreachable — the exact report this fixes.
    */
   private presenceTimer: ReturnType<typeof setInterval> | null = null;
+  private stopPromise: Promise<void> | null = null;
   private ownPrivateKey: KeyObject;
   private ticketStore: { revokeForDevice(deviceId: string): void } | undefined;
   private revokeRemoteSessions: ((deviceId: string) => void) | undefined;
@@ -258,12 +263,21 @@ export class MobileManager extends EventEmitter {
   private connectionState: MobileConnectionState = "disconnected";
   private pairAuthorization: MobileConnectionHealth["pairAuthorization"] = "unknown";
   private lastConnectionError: string | null = null;
+  /** Guards `flushPendingCloudRevocations` against its two callers firing for the same reconnect. */
+  private flushingCloudRevocations = false;
   private unsubscribeConnectionState: (() => void) | null = null;
   private lifecycleGeneration = 0;
+
+  private getProfileIds?: () => string[];
+  private profileSync: Promise<void> | null = null;
+  private profileSyncRequested = false;
+  private profileSyncRetryAt = 0;
+  private syncedAccess = new Map<string, string>();
 
   constructor(deps: MobileManagerDeps) {
     super();
     this.transport = deps.transport;
+    this.getProfileIds = deps.getProfileIds;
     this.pairing = deps.pairing;
     this.deviceStore = deps.deviceStore;
     this.auditLogStore = deps.auditLogStore;
@@ -276,6 +290,12 @@ export class MobileManager extends EventEmitter {
     this.notificationOrigins = deps.notificationOrigins;
     this.now = deps.now || (() => Date.now());
 
+    // "Somebody scanned it and I am working on it." The renderer covers the QR with a spinner from
+    // here until the SAS arrives (or the claim is rejected), so the gap between the scan and the code
+    // appearing stops looking like nothing happened.
+    this.pairing.onClaimSeen((info) => {
+      this.emit("mobile:pairing-progress", { status: "claimed", pairingId: info.pairingId });
+    });
     this.pairing.onClaim((outcome) => {
       if (outcome.ok) {
         // The claim was adopted, which now means three things were checked before the record was
@@ -382,11 +402,24 @@ export class MobileManager extends EventEmitter {
     const generation = ++this.lifecycleGeneration;
     this.unsubscribeConnectionState = this.transport.onConnectionStateChange((state) => {
       this.connectionState = state;
-      if (state === "connected") this.lastConnectionError = null;
+      if (state === "connected") {
+        this.lastConnectionError = null;
+        this.syncedAccess.clear();
+        this.profileSyncRetryAt = 0;
+      }
       // Presence follows the transport, not start(): it is a claim about being reachable, and the
       // only moment that claim is both true and writable is while the link is up.
       if (state === "connected") this.beginPresence();
       else this.clearPresenceTimer();
+      // THE RETRY THAT MAKES A REVOKE SURVIVE BEING OFFLINE. Here rather than on a timer because the
+      // only thing that ever changes the outcome is the link coming back, and this is the event that
+      // says it did. Fire-and-forget: a flush that fails leaves the entries exactly where they were
+      // and the next reconnect tries again.
+      if (state === "connected") {
+        void this.flushPendingCloudRevocations().catch((err: unknown) => {
+          log.warn("flushPendingCloudRevocations failed", { code: mobileErrorCode(err) });
+        });
+      }
       // Structured, redacted reconnect signal (review §8): a state name and nothing else — no
       // token, no uid, no pair content. Reconnects are the one lifecycle event an operator
       // debugging "my phone stopped getting alerts" actually needs a timeline of.
@@ -414,8 +447,13 @@ export class MobileManager extends EventEmitter {
         this.connectionState = "connected";
         this.lastConnectionError = null;
         // Same reason the subscription retry below exists: a transport that was already connected
-        // before start() never fires a state TRANSITION, so this path is what covers it.
+        // before start() never fires a state TRANSITION, so this path is what covers it — including
+        // for the owed revocations, which is the case of "the desktop was killed while offline and
+        // the user restarted it once the network was back".
         this.beginPresence();
+        void this.flushPendingCloudRevocations().catch((err: unknown) => {
+          log.warn("flushPendingCloudRevocations failed", { code: mobileErrorCode(err) });
+        });
         try {
           // Some transports cannot create streams until authentication performed by connect() has
           // completed. The eager attempt below preserves immediate delivery for already-connected
@@ -511,19 +549,16 @@ export class MobileManager extends EventEmitter {
     this.emit("mobile:device-revoked", { deviceId: remote.deviceId });
   }
 
-  stop(): void {
-    if (!this.running) return;
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    if (!this.running) return Promise.resolve();
     this.running = false;
     this.lifecycleGeneration += 1;
-    // Best effort and deliberately not awaited (stop() is sync, matching every other manager): if
-    // this write does not land, the phone falls back on the timestamp going stale, which is why the
-    // node carries `lastSeenAt` at all. Ordered BEFORE disconnect() so the transport is still up.
     this.clearPresenceTimer();
     // Cleared BEFORE the goodbye write, not after: that write's outcome is the freshest evidence
     // there is about whether this desktop is still the pair's owner, so it is allowed to set the
     // flag again on its way out.
     this.pairAuthorization = "unknown";
-    void this.publishPresence("offline");
     this.unsubscribeCommands?.();
     this.unsubscribeCommands = null;
     this.unsubscribeDeviceUpdates?.();
@@ -535,8 +570,30 @@ export class MobileManager extends EventEmitter {
     this.unsubscribeConnectionState?.();
     this.unsubscribeConnectionState = null;
     this.connectionState = "disconnected";
-    this.transport.disconnect().catch(() => {});
     this.emit("mobile:status", { running: false });
+    this.stopPromise = (async () => {
+      let published = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      try {
+        await Promise.race([
+          this.publishPresence("offline").then(() => {
+            published = true;
+          }),
+          new Promise<void>((resolve) => {
+            timeout = setTimeout(resolve, MobileManager.PRESENCE_SHUTDOWN_TIMEOUT_MS);
+            timeout.unref?.();
+          }),
+        ]);
+        if (!published) log.warn("presence offline update timed out during shutdown");
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        await this.transport.disconnect().catch((err: unknown) => {
+          log.warn("mobile transport disconnect failed", { code: mobileErrorCode(err) });
+        });
+        this.stopPromise = null;
+      }
+    })();
+    return this.stopPromise;
   }
 
   /**
@@ -548,9 +605,15 @@ export class MobileManager extends EventEmitter {
    * to ignore — one tiny write a minute, only while connected.
    */
   private beginPresence(): void {
+    void this.syncProfileAccess().catch((err: unknown) =>
+      log.warn("profile access sync failed", { code: mobileErrorCode(err) }),
+    );
     void this.publishPresence("online");
     if (this.presenceTimer) return;
     this.presenceTimer = setInterval(() => {
+      void this.syncProfileAccess().catch((err: unknown) =>
+        log.warn("profile access sync failed", { code: mobileErrorCode(err) }),
+      );
       void this.publishPresence("online");
     }, MobileManager.PRESENCE_REFRESH_MS);
     // A heartbeat must never be the reason the process cannot exit.
@@ -608,22 +671,131 @@ export class MobileManager extends EventEmitter {
     // Local first, cloud second, and the local half is the shared sequence — so "revoked here" means
     // the same five things whichever path discovered it.
     await this.applyLocalRevocation(deviceId);
+    // DURABLE BEFORE THE CALL. This used to be one attempt whose failure went into a `log.warn` and
+    // nowhere else, so a desktop that was offline when the user revoked a phone left the cloud
+    // record `active` for ever: the phone never learned it had been unpaired, kept its membership
+    // and its push token, and nothing would ever reconcile the two sides. See `pendingCloudRevoke`.
+    await this.deviceStore.markCloudRevokePending(deviceId, { kind: "revoke" });
+    await this.flushCloudRevoke(deviceId);
+    this.emit("mobile:device-revoked", { deviceId });
+  }
+
+  /**
+   * Sends the cloud half this desktop owes for one device, and records honestly what happened.
+   *
+   * TWO AUDIT LINES, NOT ONE. The old single `device.revoked` / `status: "success"` was written after
+   * the try/catch unconditionally, so it claimed success even when the transport had just failed —
+   * in the exact place somebody debugging "why is my phone still paired" would look first. The local
+   * revocation and its cloud half are separate facts and now say so separately.
+   */
+  private async flushCloudRevoke(deviceId: string): Promise<boolean> {
+    const device = this.deviceStore.getDevice(deviceId);
+    const pending = device?.pendingCloudRevoke;
+    if (!device || !pending) return true;
     try {
-      await this.transport.revokeDevice(this.ownDeviceId, deviceId);
-    } catch (err) {
-      log.warn("transport.revokeDevice failed (local revoke still applied)", {
+      if (pending.kind === "reject") {
+        await this.transport.rejectPairing(this.ownDeviceId, deviceId, device.pairingId, pending.reason ?? "unknown");
+      } else {
+        await this.transport.revokeDevice(this.ownDeviceId, deviceId);
+      }
+      await this.deviceStore.clearCloudRevokePending(deviceId);
+      this.auditLogStore.logEntry({
         deviceId,
-        code: mobileErrorCode(err),
+        pairId: this.ownDeviceId,
+        actor: "desktop",
+        action: pending.kind === "reject" ? "device.rejected" : "device.revoked",
+        status: "success",
+        detail: pending.attempts > 0 ? `synced after ${pending.attempts} failed attempt(s)` : undefined,
       });
+      return true;
+    } catch (err) {
+      const code = mobileErrorCode(err);
+      if (err instanceof MobileFirebaseCallableError && ["NOT_FOUND", "not-found"].includes(err.status)) {
+        await this.deviceStore.clearCloudRevokePending(deviceId);
+        this.auditLogStore.logEntry({
+          deviceId,
+          pairId: this.ownDeviceId,
+          actor: "desktop",
+          action: pending.kind === "reject" ? "device.rejected" : "device.revoked",
+          status: "success",
+          detail: "cloud device already absent",
+        });
+        return true;
+      }
+      await this.deviceStore.recordCloudRevokeAttempt(deviceId, code);
+      const attempts = this.deviceStore.getDevice(deviceId)?.pendingCloudRevoke?.attempts ?? 0;
+      // WARN, not error: the device is already unusable here, and the retry is guaranteed. What an
+      // operator needs from this line is that the cloud has NOT been told yet, and how long for.
+      log.warn("cloud revocation still owed (local revoke applied, will retry on reconnect)", {
+        deviceId,
+        kind: pending.kind,
+        code,
+        attempts,
+      });
+      this.auditLogStore.logEntry({
+        deviceId,
+        pairId: this.ownDeviceId,
+        actor: "desktop",
+        action: pending.kind === "reject" ? "device.rejected" : "device.revoked",
+        status: "failure",
+        detail: `local revoke applied; cloud pending (${code}, attempt ${attempts})`,
+      });
+      return false;
     }
+  }
+
+  /**
+   * Retries every cloud revocation this desktop still owes. Called whenever the transport comes up.
+   *
+   * This is the half of the user's "one side revokes, the other finishes when it reconnects" that
+   * lives here: the server is the authority both sides read, so a revocation that never reached it
+   * is a revocation that never happened, however thoroughly this desktop applied it locally.
+   */
+  async flushPendingCloudRevocations(): Promise<{ sent: number; owed: number }> {
+    // NOT RE-ENTRANT, and it has two callers that can both fire for one link coming up: a transport
+    // which transitions to `connected` AND resolves `connect()` runs both paths. Two concurrent
+    // flushes would send each call twice and, on failure, count one attempt as two.
+    if (this.flushingCloudRevocations) return { sent: 0, owed: 0 };
+    this.flushingCloudRevocations = true;
+    try {
+      const pending = this.deviceStore.listPendingCloudRevocations();
+      if (pending.length === 0) return { sent: 0, owed: 0 };
+      log.info("flushing owed cloud revocations", { count: pending.length });
+      let sent = 0;
+      for (const device of pending) {
+        if (await this.flushCloudRevoke(device.deviceId)) sent += 1;
+      }
+      return { sent, owed: pending.length - sent };
+    } finally {
+      this.flushingCloudRevocations = false;
+    }
+  }
+
+  /**
+   * Forgets a revoked device, so the user can clear a list that otherwise only ever grows.
+   *
+   * HOUSEKEEPING, NOT A SECURITY ACTION, and the distinction is the whole reason this is separate
+   * from `revokeDevice`. It changes nothing about what that phone may do — it was already revoked,
+   * and `isDeviceUsable` turns away a missing record exactly as it turns away a revoked one. What it
+   * removes is a row in a list. `mobile-device-store.ts#removeRevokedDevice` holds the two refusals
+   * that make that true, and the audit log keeps the history regardless.
+   *
+   * Reports the refusal rather than throwing: the caller is a dialog, and "this one still owes the
+   * cloud a revocation" is something to show, not an exception.
+   */
+  async removeRevokedDevice(deviceId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const result = await this.deviceStore.removeRevokedDevice(deviceId);
     this.auditLogStore.logEntry({
       deviceId,
       pairId: this.ownDeviceId,
       actor: "desktop",
-      action: "device.revoked",
-      status: "success",
+      action: "device.forgotten",
+      status: result.ok ? "success" : "failure",
+      detail: result.ok ? "removed from the local device list" : result.reason,
     });
-    this.emit("mobile:device-revoked", { deviceId });
+    if (!result.ok) return { ok: false, reason: result.reason };
+    this.emit("mobile:device-forgotten", { deviceId });
+    return { ok: true };
   }
 
   /** All devices (active and revoked) — desktop Settings → Mobile device list (plan §10.5). */
@@ -646,9 +818,39 @@ export class MobileManager extends EventEmitter {
   /** Updates a device's capability and/or profile allowlist (plan §10.5). Re-validated on every command anyway (mobile-command-dispatch.ts) — this only changes what's ALLOWED going forward. */
   async updateDeviceAllowlist(
     deviceId: string,
-    update: { capabilities?: Capability[]; profileAllowlist?: string[] },
+    update: { capabilities?: Capability[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
   ): Promise<void> {
-    await this.deviceStore.updateAllowlist(deviceId, update);
+    const profileIds = this.getProfileIds?.();
+    const exclusions =
+      update.excludedProfileIds ??
+      (update.profileAllowlist && profileIds
+        ? profileIds.filter((id) => !update.profileAllowlist!.includes(id))
+        : undefined);
+    await this.deviceStore.updateAllowlist(deviceId, {
+      ...update,
+      ...(exclusions
+        ? {
+            excludedProfileIds: exclusions,
+            profileAllowlist: profileIds?.filter((id) => !exclusions.includes(id)) ?? update.profileAllowlist,
+          }
+        : {}),
+    });
+    this.ticketStore?.revokeForDevice(deviceId);
+    this.revokeRemoteSessions?.(deviceId);
+    this.syncedAccess.delete(deviceId);
+    this.profileSyncRetryAt = 0;
+    if (profileIds) await this.syncProfileAccess();
+    else {
+      const device = this.deviceStore.getDevice(deviceId);
+      if (device?.state === "active" && !device.revoked) {
+        await this.transport.updateDeviceAccess(
+          this.ownDeviceId,
+          deviceId,
+          device.capabilities,
+          device.profileAllowlist,
+        );
+      }
+    }
     this.auditLogStore.logEntry({
       deviceId,
       pairId: this.ownDeviceId,
@@ -656,6 +858,52 @@ export class MobileManager extends EventEmitter {
       action: "device.allowlist-updated",
       status: "success",
     });
+  }
+
+  syncProfileAccess(): Promise<void> {
+    if (!this.getProfileIds || !this.running || this.now() < this.profileSyncRetryAt) return Promise.resolve();
+    this.profileSyncRequested = true;
+    if (this.profileSync) return this.profileSync;
+    this.profileSync = (async () => {
+      while (this.profileSyncRequested) {
+        this.profileSyncRequested = false;
+        const ids = this.getProfileIds!();
+        for (const original of this.deviceStore.listUsableDevices()) {
+          const excluded = original.excludedProfileIds ?? [];
+          const allowed = ids.filter((id) => !excluded.includes(id));
+          const changed = JSON.stringify(allowed) !== JSON.stringify(original.profileAllowlist);
+          if (changed || original.excludedProfileIds === undefined) {
+            await this.deviceStore.updateAllowlist(original.deviceId, {
+              excludedProfileIds: excluded,
+              profileAllowlist: allowed,
+            });
+            if (original.profileAllowlist.some((id) => !allowed.includes(id))) {
+              this.ticketStore?.revokeForDevice(original.deviceId);
+              this.revokeRemoteSessions?.(original.deviceId);
+            }
+          }
+          const device = this.deviceStore.getDevice(original.deviceId);
+          if (!device || device.revoked || device.state !== "active") continue;
+          const signature = JSON.stringify([device.capabilities, device.profileAllowlist]);
+          if (this.syncedAccess.get(device.deviceId) === signature) continue;
+          await this.transport.updateDeviceAccess(
+            this.ownDeviceId,
+            device.deviceId,
+            device.capabilities,
+            device.profileAllowlist,
+          );
+          this.syncedAccess.set(device.deviceId, signature);
+        }
+      }
+    })()
+      .catch((error: unknown) => {
+        this.profileSyncRetryAt = this.now() + 30_000;
+        throw error;
+      })
+      .finally(() => {
+        this.profileSync = null;
+      });
+    return this.profileSync;
   }
 
   /** Status snapshot for desktop Settings → Mobile (plan §10.5 "refresh connection health") — never a secret/key. */
@@ -842,6 +1090,11 @@ export class MobileManager extends EventEmitter {
     }
 
     try {
+      // Adoption may have persisted locally while its cloud attestation failed.
+      const remote = await this.transport.getDevice(this.ownDeviceId, deviceId);
+      if (remote?.state === "claimed") {
+        await this.transport.attestPairingKeyProof(this.ownDeviceId, deviceId, device.pairingId);
+      }
       await this.transport.approvePairing(this.ownDeviceId, deviceId, device.pairingId, transcriptHash);
     } catch (err) {
       // The cloud refused or could not be reached. The local record stays `userApproved`, which is NOT
@@ -884,16 +1137,12 @@ export class MobileManager extends EventEmitter {
     const device = this.deviceStore.getDevice(deviceId);
     if (!device) return;
     await this.applyLocalRevocation(deviceId);
-    try {
-      await this.transport.rejectPairing(this.ownDeviceId, deviceId, device.pairingId, reason);
-    } catch (err) {
-      // The local record is already revoked, so this desktop will not use the device whatever happens
-      // next; the cloud's pending-approval TTL sweep is the backstop for the cloud record.
-      log.warn("transport.rejectPairing failed (local rejection still applied)", {
-        deviceId,
-        code: mobileErrorCode(err),
-      });
-    }
+    // THROUGH THE SAME OUTBOX AS A REVOKE. The cloud's pending-approval TTL sweep was the only
+    // backstop here, which meant a rejection made offline was indistinguishable — to the phone and
+    // to the cloud — from a desktop that simply never answered. It is not the same thing: the human
+    // said no, and the record should say they did rather than time out as if nobody was there.
+    await this.deviceStore.markCloudRevokePending(deviceId, { kind: "reject", reason });
+    await this.flushCloudRevoke(deviceId);
     this.auditLogStore.logEntry({
       deviceId,
       pairId: this.ownDeviceId,

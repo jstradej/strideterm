@@ -530,6 +530,20 @@
     padding: 2px 2px 0;
   }
 
+  .native-keyboard-viewport .mobile-input-bar {
+    position: relative;
+    top: calc(-1 * var(--strideterm-keyboard-bottom, 0px));
+    z-index: 20;
+  }
+
+  .native-keyboard-viewport .workspace-pane__body--terminal {
+    clip-path: inset(0 0 min(var(--strideterm-keyboard-bottom, 0px), max(0px, calc(100% - 32px))) 0);
+  }
+
+  .native-keyboard-viewport .terminal-host {
+    transform: translateY(calc(-1 * min(var(--strideterm-keyboard-pan, 0px), max(0px, calc(100% - 32px)))));
+  }
+
   /* ── Dialog mobile ── */
   .overlay {
     align-items: start;
@@ -559,4 +573,223 @@
   .sidebar-footer {
     display: none;
   }
+}
+
+/* A side composer preserves terminal rows on a landscape phone. Native viewport
+   geometry stays at full height even when the optional system IME opens. */
+.workspace-main:has(> .mobile-input-bar--landscape) {
+  --composer-width: min(42vw, 340px);
+  grid-template-columns: minmax(0, 1fr) var(--composer-width);
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.workspace-main:has(> .mobile-input-bar--landscape) > :not(.mobile-input-bar) {
+  grid-column: 1;
+}
+.workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed) {
+  --composer-width: 48px;
+}
+.mobile-input-bar.mobile-input-bar--landscape {
+  grid-column: 2;
+  grid-row: 1 / 4;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  height: calc(100% - var(--strideterm-keyboard-bottom, 0px));
+  overflow: auto;
+  padding: 6px;
+  border-top: none;
+  border-left: 1px solid var(--border);
+  top: 0;
+  box-sizing: border-box;
+}
+.mobile-input-bar--landscape > * {
+  flex-shrink: 0;
+}
+.mobile-input-bar--landscape .mobile-input-bar__row {
+  order: 1;
+}
+.mobile-input-bar--landscape .mobile-input-bar__keys {
+  order: 2;
+  flex-wrap: nowrap;
+  gap: 3px;
+}
+.mobile-input-bar--landscape .mobile-input-bar__key {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font-size: 12px;
+  height: 36px;
+}
+.mobile-input-bar--landscape .mobile-input-bar__menu {
+  position: fixed;
+  top: 8px;
+  bottom: auto;
+  left: auto;
+  right: 8px;
+  max-height: calc(100% - var(--strideterm-keyboard-bottom, 0px) - 16px);
+  overflow: auto;
+}
+.mobile-input-bar--landscape .mobile-input-bar__input {
+  width: 0;
+  min-height: 40px;
+}
+.mobile-input-bar--landscape .mobile-input-bar__expand {
+  padding: 0;
+  min-height: 48px;
+  font-size: 22px;
+}
+.mobile-input-bar__keyboard-mode {
+  align-self: flex-end;
+  order: 0;
+  min-height: 32px;
+  padding: 4px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+}
+.compact-terminal-keyboard {
+  order: 3;
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+.compact-terminal-keyboard__row {
+  display: flex;
+  gap: 3px;
+}
+.compact-terminal-keyboard button {
+  flex: 1;
+  min-width: 0;
+  height: clamp(26px, calc((100dvh - 154px) / 4), 38px);
+  padding: 0;
+  background: var(--panel-raised, var(--panel));
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 16px;
+  touch-action: manipulation;
+}
+.compact-terminal-keyboard button:active,
+.compact-terminal-keyboard button[aria-pressed="true"] {
+  background: rgba(var(--tint), 0.2);
+}
+.compact-terminal-keyboard .compact-terminal-keyboard__space {
+  flex: 3;
+}
+
+.workspace-main:has(> .mobile-input-bar--landscape) > [data-role="workspace-hero"]:not(:has(.workspace-remote-alert)) {
+  display: none;
+}
+.workspace-main:has(> .mobile-input-bar--landscape) > [data-role="workspace-hero"] {
+  grid-row: 1;
+}
+.workspace-main:has(> .mobile-input-bar--landscape) > .terminal-toolbar {
+  grid-row: 2;
+}
+.workspace-main:has(> .mobile-input-bar--landscape)
+  > :not(.mobile-input-bar):not([data-role="workspace-hero"]):not(.terminal-toolbar) {
+  grid-row: 3;
+}
+[data-controls-side="left"] .workspace-main:has(> .mobile-input-bar--landscape) {
+  grid-template-columns: var(--composer-width) minmax(0, 1fr);
+}
+[data-controls-side="left"] .workspace-main:has(> .mobile-input-bar--landscape) > :not(.mobile-input-bar) {
+  grid-column: 2;
+}
+[data-controls-side="left"] .mobile-input-bar.mobile-input-bar--landscape {
+  grid-column: 1;
+  border-left: none;
+  border-right: 1px solid var(--border);
+}
+[data-controls-side="left"] .mobile-input-bar--landscape .mobile-input-bar__menu {
+  left: 8px;
+  right: auto;
+}
+
+.mobile-input-bar--landscape .mobile-input-bar__more {
+  flex: 1;
+  min-width: 0;
+}
+.mobile-input-bar--landscape .mobile-input-bar__more > .mobile-input-bar__key {
+  width: 100%;
+}
+.workspace-main:has(> .mobile-input-bar--landscape) .mobile-keyboard-btn {
+  display: none;
+}
+
+/* The phone IME owns the lower screen; keep its editor in one row above it. */
+.workspace-main:has(> .mobile-input-bar--system) {
+  position: relative;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  padding-bottom: 48px;
+}
+[data-controls-side] .workspace-main:has(> .mobile-input-bar--system) {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-controls-side] .workspace-main:has(> .mobile-input-bar--system) > :not(.mobile-input-bar) {
+  grid-column: 1;
+}
+.workspace-main:has(> .mobile-input-bar--system) > .terminal-toolbar {
+  display: none;
+}
+.mobile-input-bar.mobile-input-bar--system {
+  position: absolute;
+  inset: auto 0 var(--strideterm-keyboard-bottom, 0px);
+  --system-composer-height: clamp(32px, calc((100dvh - var(--strideterm-keyboard-bottom, 0px)) * 0.4), 48px);
+  height: var(--system-composer-height);
+  width: 100%;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  overflow: visible;
+  border: 0;
+  border-top: 1px solid var(--border);
+  z-index: 20;
+}
+.mobile-input-bar--system .mobile-input-bar__row {
+  flex: 1;
+  min-width: 0;
+}
+.mobile-input-bar--system .mobile-input-bar__keys {
+  flex: 0 0 auto;
+}
+.mobile-input-bar--system .mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--collapse) {
+  display: none;
+}
+.mobile-input-bar--system .mobile-input-bar__more,
+.mobile-input-bar--system .mobile-input-bar__key--collapse {
+  flex: 0 0 36px;
+}
+.mobile-input-bar--system .mobile-input-bar__keyboard-mode {
+  order: 3;
+  align-self: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  font-size: 20px;
+}
+.mobile-input-bar--system .mobile-input-bar__input {
+  min-height: 40px;
+}
+.mobile-input-bar--system .mobile-input-bar__menu {
+  max-height: calc(100% - var(--strideterm-keyboard-bottom, 0px) - 8px);
+  top: 4px;
+}
+
+[data-controls-side] .mobile-input-bar.mobile-input-bar--system,
+.mobile-input-bar.mobile-input-bar--system {
+  grid-area: auto;
+  border-left: 0;
+  border-right: 0;
+}
+
+.mobile-input-bar--system .mobile-input-bar__input,
+.mobile-input-bar--system .mobile-input-bar__send,
+.mobile-input-bar--system .mobile-input-bar__key,
+.mobile-input-bar--system .mobile-input-bar__keyboard-mode {
+  min-height: 0;
+  height: calc(var(--system-composer-height) - 8px);
 }

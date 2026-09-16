@@ -183,6 +183,9 @@ afterEach(() => {
   webglMockState.failLoad = false;
   webglMockState.instances.length = 0;
   document.body.innerHTML = "";
+  document.documentElement.classList.remove("native-keyboard-viewport");
+  document.documentElement.style.removeProperty("--strideterm-keyboard-bottom");
+  document.documentElement.style.removeProperty("--strideterm-keyboard-pan");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (document as any).fonts;
 });
@@ -647,6 +650,36 @@ describe("the existing touch gestures survive the long-press arbitration", () =>
 
     expect(term.scrollLines).toHaveBeenCalled();
     expect(term.scrollLines.mock.calls[0][0]).toBeLessThan(0);
+  });
+
+  test("native keyboard panning keeps both TUI input and terminal dimensions untouched", () => {
+    const { mount, term, writeTerminal } = setup();
+    term.buffer.active.type = "alternate";
+    Object.defineProperty(mount, "clientHeight", { value: 500, configurable: true });
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "280px");
+    root.style.setProperty("--strideterm-keyboard-pan", "280px");
+    const before = { cols: term.cols, rows: term.rows };
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+    expect(root.style.getPropertyValue("--strideterm-keyboard-pan")).toBe("220px");
+
+    // A second drag starts from the user's current position, not the bottom.
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 140]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+    expect(root.style.getPropertyValue("--strideterm-keyboard-pan")).toBe("180px");
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(term.scrollLines).not.toHaveBeenCalled();
+    expect({ cols: term.cols, rows: term.rows }).toEqual(before);
+
+    root.style.setProperty("--strideterm-keyboard-bottom", "0px");
+    root.style.setProperty("--strideterm-keyboard-pan", "0px");
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+    expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b[A");
   });
 
   test("a swipe in the alternate buffer still sends arrow keys to the PTY", () => {

@@ -1,5 +1,9 @@
-import { describe, expect, test } from "vitest";
+import type { RemoteClientRegistry } from "./remote-client-registry.js";
+import { describe, expect, test, vi } from "vitest";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { WebSocket } from "ws";
 import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
@@ -28,11 +32,83 @@ async function getFreePort(): Promise<number> {
   });
 }
 
+describe("static asset HTTP caching", () => {
+  test("revalidates content assets, changes validators with content, and never caches HTML", async () => {
+    const staticRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-static-cache-"));
+    const assetPath = path.join(staticRoot, "app.js");
+    await fs.writeFile(assetPath, "console.log('v1')");
+    await fs.writeFile(path.join(staticRoot, "index.html"), "<!doctype html><title>remote</title>");
+    const port = await getFreePort();
+    const server = await startRemoteServer({
+      runtime: {
+        getPayload: () => ({
+          appState: {
+            settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "test-token" } },
+          },
+        }),
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        on: () => () => undefined,
+        off: () => undefined,
+      } as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot,
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const first = await fetch(`${baseUrl}/app.js`);
+      const firstEtag = first.headers.get("etag");
+      expect(first.status).toBe(200);
+      expect(await first.text()).toBe("console.log('v1')");
+      expect(first.headers.get("cache-control")).toBe("private, no-cache");
+      expect(firstEtag).toMatch(/^".+"$/);
+
+      const unchanged = await fetch(`${baseUrl}/app.js`, { headers: { "If-None-Match": `W/${firstEtag}` } });
+      expect(unchanged.status).toBe(304);
+      expect(await unchanged.text()).toBe("");
+      expect(unchanged.headers.get("etag")).toBe(firstEtag);
+
+      await fs.writeFile(assetPath, "console.log('v2')");
+      const changed = await fetch(`${baseUrl}/app.js`, { headers: { "If-None-Match": firstEtag! } });
+      expect(changed.status).toBe(200);
+      expect(await changed.text()).toBe("console.log('v2')");
+      expect(changed.headers.get("etag")).not.toBe(firstEtag);
+
+      const html = await fetch(`${baseUrl}/`);
+      expect(html.status).toBe(200);
+      expect(html.headers.get("cache-control")).toBe("no-store");
+      expect(html.headers.get("etag")).toBeNull();
+    } finally {
+      await server.close();
+      await fs.rm(staticRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a paused desktop does not bind the browser remote server", async () => {
+  let info: unknown;
+  const server = await startRemoteServer({
+    runtime: {
+      getPayload: () => ({
+        appState: {
+          settings: { remoteAccess: { enabled: true, paused: true, host: "127.0.0.1", port: 0, token: "test" } },
+        },
+      }),
+      setRemoteInfo: (value: unknown) => {
+        info = value;
+      },
+    } as Parameters<typeof startRemoteServer>[0]["runtime"],
+    staticRoot: ".",
+  });
+  expect(info).toMatchObject({ enabled: false, urls: [] });
+  await server.close();
+});
+
 describe("sanitizeSettingsFromRemote", () => {
   test("drops every blocked remoteAccess field", () => {
     const settings = {
       remoteAccess: {
         autoTunnel: true,
+        paused: false,
         cloudflaredPath: "/tmp/evil.sh",
         enabled: false,
         host: "0.0.0.0",
@@ -3468,6 +3544,7 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
       },
     };
     let activateProfileForRemoteClientCalls = 0;
+    let registry: RemoteClientRegistry;
     return {
       getPayload: () => payload,
       getInitialState: async () => payload,
@@ -3477,12 +3554,15 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
       on: () => () => undefined,
       writeToSession: () => undefined,
       resizeSession: () => undefined,
-      setRemoteClientRegistry: () => undefined,
+      setRemoteClientRegistry: (value: RemoteClientRegistry) => {
+        registry = value;
+      },
       consumeMobileWebSessionTicket,
       // Would succeed unconditionally if reached — used to prove the profile-switch block below
       // stops the request BEFORE this ever runs, not just because the stub happens to be absent.
-      activateProfileForRemoteClient: async () => {
+      activateProfileForRemoteClient: async (clientId: string, profileId: string) => {
         activateProfileForRemoteClientCalls++;
+        registry.activateProfile(clientId, profileId, payload.appState);
       },
       getActivateProfileForRemoteClientCalls: () => activateProfileForRemoteClientCalls,
     };
@@ -3527,6 +3607,7 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
       const cookieValue = setCookie.split(";")[0];
       const stateRes = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } });
       expect(stateRes.status).toBe(200);
+      expect(stateRes.headers.get("cache-control")).toBe("no-store");
     } finally {
       await server.close();
     }
@@ -3667,6 +3748,59 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
       });
       expect(activateRes.status).toBe(403);
       expect(runtime.getActivateProfileForRemoteClientCalls()).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("an authorized profile switch keeps the mobile cookie and follows target revocation", async () => {
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, (ticketId, secret) => {
+      if (ticketId === "ticket-1" && secret === "secret-1") {
+        return {
+          deviceId: "dev-1",
+          pairId: "pair-1",
+          profileId: "default",
+          allowedOrigin: "https://example.trycloudflare.com",
+          transport: "legacy" as const,
+          requiredCapability: "remote.webSession" as const,
+          expiresAt: Date.now() + 60_000,
+        };
+      }
+      return null;
+    });
+    let allowOther = true;
+    const isMobileSessionStillAuthorized = vi.fn(
+      (_deviceId: string, profileId: string) => profileId === "default" || (profileId === "other" && allowOther),
+    );
+    const server = await startRemoteServer({
+      runtime: { ...runtime, isMobileSessionStillAuthorized } as unknown as Parameters<
+        typeof startRemoteServer
+      >[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const bootstrapRes = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "ticket-1", secret: "secret-1" }),
+        redirect: "manual",
+      });
+      const cookieValue = (bootstrapRes.headers.get("set-cookie") || "").split(";")[0];
+
+      const activateRes = await fetch(`${baseUrl}/api/remote-client/profile/activate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookieValue },
+        body: JSON.stringify({ profileId: "other" }),
+      });
+      expect(activateRes.status).toBe(200);
+      expect(activateRes.headers.get("set-cookie")).toBeNull();
+      expect(runtime.getActivateProfileForRemoteClientCalls()).toBe(1);
+      expect(isMobileSessionStillAuthorized).toHaveBeenCalledWith("dev-1", "other");
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } })).status).toBe(200);
+      allowOther = false;
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } })).status).toBe(401);
     } finally {
       await server.close();
     }
@@ -4720,6 +4854,7 @@ describe("the master token in payload.remoteAccess.urls, per transport", () => {
       for (const query of ["", "?sp=2"]) {
         const res = await fetch(`${baseUrl}/api/state${query}`, { headers: { ...relayHeaders, Cookie: cookie } });
         expect(res.status).toBe(200);
+        expect(res.headers.get("cache-control")).toBe("no-store");
         const body = await res.text();
         expect(body).not.toContain(MASTER);
         // And specifically that the URL list is empty rather than merely token-free — a rewritten

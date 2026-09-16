@@ -5,17 +5,70 @@ import { pauseHeartbeat, resumeHeartbeat } from "../app/status-heartbeat.js";
 
 export function useGlobalEvents() {
   const termStore = useTerminalStore();
+  let nativeViewport = false;
+  let nativeGeometry: { width: number; height: number; bottom: number; controlsSide?: "left" | "right" } | null = null;
+  let nativeSize = "";
+  let nativeBottom = 0;
+  const originalHeight = document.documentElement.style.height;
+
+  function applyNativeViewport(payload: {
+    width: number;
+    height: number;
+    bottom: number;
+    controlsSide?: "left" | "right";
+  }): void {
+    if (
+      !payload ||
+      ![payload.width, payload.height, payload.bottom].every(Number.isFinite) ||
+      payload.width <= 0 ||
+      payload.height <= 0 ||
+      payload.bottom < 0 ||
+      payload.bottom > payload.height
+    )
+      return;
+    nativeGeometry = payload;
+    document.documentElement.dataset.controlsSide = payload.controlsSide === "left" ? "left" : "right";
+    const scale = window.innerWidth / payload.width;
+    const bottom = payload.bottom * scale;
+    const size = `${window.innerWidth}:${payload.height * scale}`;
+    document.documentElement.style.height = `${payload.height * scale}px`;
+    document.documentElement.style.setProperty("--strideterm-keyboard-bottom", `${bottom}px`);
+    if (bottom !== nativeBottom || size !== nativeSize) {
+      document.documentElement.style.setProperty("--strideterm-keyboard-pan", `${bottom}px`);
+    }
+    if (size !== nativeSize && termStore.views.size > 0) termStore.scheduleAllVisibleResize();
+    nativeBottom = bottom;
+    nativeSize = size;
+  }
+
+  function installNativeViewportChannel(): void {
+    const channel = window.StridetermViewport;
+    if (!channel?.postMessage) return;
+    nativeViewport = true;
+    document.documentElement.classList.add("native-keyboard-viewport");
+    document.documentElement.style.height = `${window.innerHeight}px`;
+    window.__stridetermViewport = { update: applyNativeViewport };
+    channel.postMessage("ready");
+  }
 
   let viewportTimer = 0;
   const deferredFitTimers: number[] = [];
 
   function handleResize() {
+    // Native Flutter WebViews report keyboard overlap through the channel. A
+    // soft keyboard may still emit resize/visualViewport events; those events
+    // must not reflow xterm or resize the shared PTY.
+    if (nativeViewport) {
+      if (nativeGeometry) applyNativeViewport(nativeGeometry);
+      return;
+    }
     if (termStore.views.size > 0) {
       termStore.scheduleAllVisibleResize();
     }
   }
 
   function handleVisualViewportResize() {
+    if (nativeViewport) return;
     cancelAnimationFrame(viewportTimer);
     viewportTimer = requestAnimationFrame(() => {
       document.documentElement.style.height = `${window.visualViewport!.height}px`;
@@ -112,6 +165,7 @@ export function useGlobalEvents() {
   let stopMobileWatch: (() => void) | null = null;
 
   onMounted(() => {
+    installNativeViewportChannel();
     window.addEventListener("resize", handleResize);
     window.addEventListener("focus", reclaimTerminalSize);
     window.addEventListener("orientationchange", handleOrientationChange);
@@ -131,6 +185,7 @@ export function useGlobalEvents() {
   });
 
   onUnmounted(() => {
+    cancelAnimationFrame(viewportTimer);
     window.removeEventListener("resize", handleResize);
     window.removeEventListener("focus", reclaimTerminalSize);
     window.removeEventListener("orientationchange", handleOrientationChange);
@@ -146,6 +201,14 @@ export function useGlobalEvents() {
     stopMobileWatch = null;
     while (deferredFitTimers.length > 0) {
       window.clearTimeout(deferredFitTimers.pop()!);
+    }
+    if (nativeViewport) {
+      document.documentElement.style.height = originalHeight;
+      document.documentElement.classList.remove("native-keyboard-viewport");
+      document.documentElement.style.removeProperty("--strideterm-keyboard-bottom");
+      document.documentElement.style.removeProperty("--strideterm-keyboard-pan");
+      delete window.__stridetermViewport;
+      delete document.documentElement.dataset.controlsSide;
     }
   });
 }

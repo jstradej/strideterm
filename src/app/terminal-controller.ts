@@ -1227,7 +1227,8 @@ export function createTerminalController({
     // remote/mobile clients use MobileInputBar and must not focus xterm's
     // hidden textarea (which would raise the software keyboard unexpectedly).
     const touch = {
-      mode: "none" as "none" | "scroll" | "pinch",
+      mode: "none" as "none" | "scroll" | "pinch" | "keyboard-pan",
+      startPan: 0,
       lastY: 0,
       startY: 0,
       startX: 0,
@@ -1271,6 +1272,18 @@ export function createTerminalController({
      * whatever button the panel just drew under it.
      */
     const LONG_PRESS_SYNTHETIC_MS = 700;
+
+    function keyboardOverlap(): number {
+      if (!document.documentElement.classList.contains("native-keyboard-viewport")) return 0;
+      const bottom =
+        Number.parseFloat(document.documentElement.style.getPropertyValue("--strideterm-keyboard-bottom")) || 0;
+      return Math.min(bottom, Math.max(0, mount.clientHeight - 32));
+    }
+
+    function keyboardPan(): number {
+      const pan = Number.parseFloat(document.documentElement.style.getPropertyValue("--strideterm-keyboard-pan")) || 0;
+      return Math.min(pan, keyboardOverlap());
+    }
 
     let syntheticSuppressTimer: number | null = null;
     let suppressSynthetic = false;
@@ -1377,7 +1390,8 @@ export function createTerminalController({
           touch.blocked = false;
           touch.maxMoveX = 0;
           touch.maxMoveY = 0;
-          touch.mode = "scroll";
+          touch.mode = keyboardOverlap() > 0 ? "keyboard-pan" : "scroll";
+          touch.startPan = keyboardPan();
           touch.lastY = e.touches[0].clientY;
           touch.startY = e.touches[0].clientY;
           touch.startX = e.touches[0].clientX;
@@ -1419,7 +1433,13 @@ export function createTerminalController({
           if (touch.maxMoveX > LONG_PRESS_MOVE_PX || touch.maxMoveY > LONG_PRESS_MOVE_PX) cancelLongPress();
         }
         if (touch.consumed) return;
-        if (touch.mode === "scroll" && e.touches.length >= 1) {
+        if (touch.mode === "keyboard-pan" && e.touches.length >= 1) {
+          const pan = touch.startPan - (e.touches[0].clientY - touch.startY);
+          document.documentElement.style.setProperty(
+            "--strideterm-keyboard-pan",
+            `${Math.max(0, Math.min(keyboardOverlap(), pan))}px`,
+          );
+        } else if (touch.mode === "scroll" && e.touches.length >= 1) {
           const currentY = e.touches[0].clientY;
           const dy = touch.lastY - currentY;
           touch.lastY = currentY;

@@ -16,6 +16,9 @@ describe("CloudflareTunnelManager helpers", () => {
 });
 
 describe("canReconnectTunnel (Telegram + mobile shared safety gate)", () => {
+  test("pause prevents reconnection without clearing the configured tunnel", () => {
+    expect(canReconnectTunnel({ enabled: true, autoTunnel: true, paused: true })).toBe(false);
+  });
   test("allows reconnect only when remote access is enabled AND a tunnel was already auto-started", () => {
     expect(canReconnectTunnel({ enabled: true, autoTunnel: true })).toBe(true);
   });

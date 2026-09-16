@@ -7972,6 +7972,25 @@ describe("runtime integration", () => {
       return { ...fixture, getTransport: () => capturedTransport! };
     }
 
+    test("global remote pause stops mobile and preserves the enabled configuration for resume", async () => {
+      const fixture = await createMobileFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.setMobileEnabled(true);
+      await fixture.runtime.setMobileRelayEnabled(true);
+      const before = fixture.store.getState().settings.integrations.mobile;
+      const manager = fixture.runtime._mobileManagerForTest();
+      expect(manager.isRunning()).toBe(true);
+      await fixture.runtime.updateSettings({ remoteAccess: { paused: true } });
+      expect(manager.isRunning()).toBe(false);
+      expect(fixture.store.getState().settings.integrations.mobile).toEqual(before);
+      await fixture.runtime.setMobileEnabled(true);
+      expect(manager.isRunning()).toBe(false);
+      await expect(fixture.runtime.createCloudflareTunnel()).rejects.toThrow("paused");
+      await fixture.runtime.updateSettings({ remoteAccess: { paused: false } });
+      expect(manager.isRunning()).toBe(true);
+      expect(fixture.store.getState().settings.integrations.mobile).toEqual(before);
+    });
+
     test("setMobileEnabled(true) starts the manager; setMobileEnabled(false) stops it the same way an explicit stop() would", async () => {
       const fixture = await createMobileFixture();
       fixtures.push(fixture);
@@ -7985,6 +8004,30 @@ describe("runtime integration", () => {
       await fixture.runtime.setMobileEnabled(false);
       expect(manager.isRunning()).toBe(false);
       expect(fixture.store.getState().settings.integrations.mobile.enabled).toBe(false);
+    });
+
+    test("runtime shutdown waits for the mobile offline write before disconnecting", async () => {
+      const fixture = await createMobileFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.setMobileEnabled(true);
+      const transport = fixture.getTransport();
+      await vi.waitFor(() => expect(transport.getPresenceUpdates().length).toBeGreaterThan(0));
+
+      let finishOffline!: () => void;
+      const offlinePending = new Promise<void>((resolve) => {
+        finishOffline = resolve;
+      });
+      vi.spyOn(transport, "updatePresence").mockImplementation((_pairId, _deviceId, status) =>
+        status === "offline" ? offlinePending : Promise.resolve(),
+      );
+      const disconnect = vi.spyOn(transport, "disconnect");
+
+      const stopping = fixture.runtime.stop();
+      await Promise.resolve();
+      expect(disconnect).not.toHaveBeenCalled();
+      finishOffline();
+      await stopping;
+      expect(disconnect).toHaveBeenCalledTimes(1);
     });
 
     // Dev-environment finding 6: the relay flag had no way in. The runtime action is that way in, and

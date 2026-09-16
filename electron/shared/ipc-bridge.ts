@@ -381,6 +381,8 @@ export interface StridetermAPI {
   listMobileDevices: () => Promise<unknown>;
   renameMobileDevice: (payload: MobileRenameDevice) => Promise<unknown>;
   revokeMobileDevice: (deviceId: string) => Promise<unknown>;
+  /** Removes an already-revoked device from the local list. Refuses an active one. */
+  forgetMobileDevice: (deviceId: string) => Promise<unknown>;
   /** Review 3 §P0.1: the human said the codes match. The only path to a usable device. */
   approveMobileDevice: (deviceId: string) => Promise<unknown>;
   /** Review 3 §P0.1: the human said they do not match, or dismissed the dialog. Revokes. */
@@ -691,6 +693,8 @@ export interface StridetermAPI {
   filePreview: (p: FileRead) => Promise<unknown>;
   fileRead: (p: FileRead) => Promise<unknown>;
   fileWrite: (p: FileWrite) => Promise<unknown>;
+  attachmentList: (p: { workspaceId: string }) => Promise<unknown>;
+  attachmentDelete: (p: { workspaceId: string; transferId: string; name: string }) => Promise<unknown>;
   fileCreateFile: (p: FileCreate) => Promise<unknown>;
   fileCreateDir: (p: FileCreate) => Promise<unknown>;
   fileRename: (p: FileRename) => Promise<unknown>;

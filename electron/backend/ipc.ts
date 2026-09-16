@@ -7,6 +7,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import type { createRuntime } from "./runtime.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
+import * as attachments from "./attachments.js";
 import { parseCommandTemplate, substituteCommandArg } from "./command-template.js";
 import { resolveTerminalOpenAction } from "./terminal-open-action.js";
 import type { TerminalOpenAction } from "./terminal-open-action.js";
@@ -34,6 +35,8 @@ import {
   agentPromptSaveSchema,
   agentPromptDeleteSchema,
   fileListSchema,
+  attachmentWorkspaceSchema,
+  attachmentWorkspaceDeleteSchema,
   fileReadSchema,
   fileWriteSchema,
   fileCreateSchema,
@@ -1110,6 +1113,12 @@ export function registerIpc(
   handle("mobile:device:revoke", async (_event, deviceId) =>
     withOperationPromise({ opId: "mobile:device:revoke" }, () => runtime.revokeMobileDevice(String(deviceId || ""))),
   );
+  // Removes a revoked device from the list. A SEPARATE channel from revoke on purpose: the two read
+  // almost the same in a UI and do entirely different things, and the backend refuses this one for a
+  // device that is not already revoked rather than relying on the caller to have checked.
+  handle("mobile:device:forget", async (_event, deviceId) =>
+    withOperationPromise({ opId: "mobile:device:forget" }, () => runtime.forgetMobileDevice(String(deviceId || ""))),
+  );
   // Review 3 §P0.1: the two halves of the human decision the SAS screen used to only pretend to ask
   // for. "Approve" is the only path to a usable device; "reject" runs the full revocation.
   handle("mobile:device:approve", async (_event, deviceId) =>
@@ -1125,13 +1134,13 @@ export function registerIpc(
     ),
   );
   handle("mobile:device:update-allowlist", async (_event, payload) => {
-    const { deviceId, capabilities, profileAllowlist } = validateIpc(
+    const { deviceId, capabilities, profileAllowlist, excludedProfileIds } = validateIpc(
       mobileUpdateDeviceAllowlistSchema,
       payload,
       "mobile:device:update-allowlist",
     );
     return withOperationPromise({ opId: "mobile:device:update-allowlist" }, () =>
-      runtime.updateMobileDeviceAllowlist(deviceId, { capabilities, profileAllowlist }),
+      runtime.updateMobileDeviceAllowlist(deviceId, { capabilities, profileAllowlist, excludedProfileIds }),
     );
   });
   handle("mobile:set-enabled", async (_event, enabled) =>
@@ -1973,6 +1982,47 @@ export function registerIpc(
   handle("app:check-command", async (_event, command) =>
     withOperationPromise({ opId: "app:check-command" }, () => runtime.checkCommand(command)),
   );
+
+  function attachmentRoot(workspaceId: string, windowId: string): string {
+    const workspaces =
+      (runtime.getPayload() as unknown as { appState?: { workspaces?: Array<Record<string, unknown>> } }).appState
+        ?.workspaces ?? [];
+    const slots =
+      (runtime.getPayload() as unknown as { appState?: { windowSlots?: Array<{ id?: string; profileId?: string }> } })
+        .appState?.windowSlots ?? [];
+    const profileId = slots.find((slot) => slot.id === windowId)?.profileId || "default";
+    const workspace = workspaces.find(
+      (item) => String(item.id ?? "") === workspaceId && String(item.profileId ?? "default") === profileId,
+    );
+    const cwd = workspace?.cwd;
+    if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw new Error("Workspace has no local filesystem root");
+    const panels = Array.isArray(workspace?.panels) ? workspace.panels : [];
+    if (
+      ["docker", "container", "ssh"].includes(String(workspace?.kind ?? "").toLowerCase()) ||
+      panels.some((panel) => {
+        const launch = panel && typeof panel === "object" ? (panel as Record<string, unknown>).launch : null;
+        return (
+          launch &&
+          typeof launch === "object" &&
+          ["docker", "container", "ssh"].includes(String((launch as Record<string, unknown>).kind ?? "").toLowerCase())
+        );
+      })
+    )
+      throw new Error("Attachments are unavailable for SSH or container workspaces");
+    return cwd;
+  }
+  handle("attachment:list", async (_event, payload) => {
+    const p = validateIpc(attachmentWorkspaceSchema, payload, "attachment:list");
+    return attachments.list(attachmentRoot(p.workspaceId, getWindowIdByWebContentsId?.(_event.sender.id) ?? ""));
+  });
+  handle("attachment:delete", async (_event, payload) => {
+    const p = validateIpc(attachmentWorkspaceDeleteSchema, payload, "attachment:delete");
+    return attachments.remove(
+      attachmentRoot(p.workspaceId, getWindowIdByWebContentsId?.(_event.sender.id) ?? ""),
+      p.transferId,
+      p.name,
+    );
+  });
 
   // --- File manager ---
   handle("file:list", async (_event, payload) =>

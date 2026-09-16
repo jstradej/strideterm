@@ -9,6 +9,8 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import RemoteAccessDialog from "./RemoteAccessDialog.vue";
 import { apiKey } from "../../types/keys.js";
+import { useAppStore } from "../../stores/app.js";
+import MobileConnectionPanel from "./settings/MobileConnectionPanel.vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 
 beforeEach(() => {
@@ -22,6 +24,10 @@ describe("RemoteAccessDialog — browseCloudflared", () => {
       global: { provide: { [apiKey]: { browseFile } } },
     });
 
+    await wrapper
+      .findAll(".remote-mode-tab")
+      .find((b) => b.text() === "Cloudflare")!
+      .trigger("click");
     const browseBtn = wrapper.findAll("button").find((b) => b.text() === "Browse")!;
     await browseBtn.trigger("click");
     await flushPromises();
@@ -31,4 +37,47 @@ describe("RemoteAccessDialog — browseCloudflared", () => {
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Failed to open picker");
   });
+});
+
+test("Mobile is the first and default tab, reusing the settings panel", async () => {
+  const wrapper = mount(RemoteAccessDialog);
+  expect(wrapper.findAll(".remote-mode-tab")[0].text()).toBe("Mobile");
+  expect(wrapper.find(".remote-mode-tab--active").text()).toBe("Mobile");
+  expect(wrapper.findComponent(MobileConnectionPanel).exists()).toBe(true);
+  expect(wrapper.find(".remote-access__hero").exists()).toBe(false);
+  expect(wrapper.find(".remote-access__footer").exists()).toBe(false);
+  await wrapper
+    .findAll(".remote-mode-tab")
+    .find((b) => b.text() === "LAN")!
+    .trigger("click");
+  expect(wrapper.find(".remote-access__hero").exists()).toBe(true);
+  expect(wrapper.findComponent(MobileConnectionPanel).exists()).toBe(true);
+  wrapper.unmount();
+});
+
+test("remote clients are not offered desktop mobile pairing", () => {
+  const wrapper = mount(RemoteAccessDialog, { global: { provide: { [apiKey]: { isRemote: true } } } });
+  expect(wrapper.findComponent(MobileConnectionPanel).exists()).toBe(false);
+  expect(wrapper.findAll(".remote-mode-tab").map((b) => b.text())).not.toContain("Mobile");
+  wrapper.unmount();
+});
+
+test("pause writes only the pause flag and surfaces errors without changing configuration", async () => {
+  const store = useAppStore();
+  const update = vi.spyOn(store, "updateSettings").mockRejectedValue(new Error("Pause failed"));
+  store.payload = {
+    appState: {
+      settings: { remoteAccess: { enabled: true }, integrations: { mobile: { enabled: true, devices: [] } } },
+    },
+  } as unknown as NonNullable<typeof store.payload>;
+  const wrapper = mount(RemoteAccessDialog, { global: { stubs: { MobileConnectionPanel: true } } });
+  await wrapper
+    .findAll("button")
+    .find((b) => b.text() === "Pause all connections")!
+    .trigger("click");
+  await flushPromises();
+  expect(update).toHaveBeenCalledWith({ remoteAccess: { paused: true } });
+  expect(wrapper.text()).toContain("Pause failed");
+  expect(store.payload?.appState.settings.remoteAccess.enabled).toBe(true);
+  wrapper.unmount();
 });

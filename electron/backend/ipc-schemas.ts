@@ -93,7 +93,9 @@ export const workspaceUIStateSchema = z.object({
 });
 export type WorkspaceUIState = z.infer<typeof workspaceUIStateSchema>;
 
-export const settingsSchema = z.object({}).passthrough();
+export const settingsSchema = z
+  .object({ remoteAccess: z.object({ paused: z.boolean().optional() }).passthrough().optional() })
+  .passthrough();
 export type SettingsPayload = z.infer<typeof settingsSchema>;
 
 export const azureConnectionSchema = z
@@ -1213,6 +1215,11 @@ export const workspaceGridSwapCellsSchema = z.object({
   b: z.number().int().min(0).max(3),
 });
 export type WorkspaceGridSwapCells = z.infer<typeof workspaceGridSwapCellsSchema>;
+export const attachmentWorkspaceSchema = z.object({ workspaceId: workspaceIdSchema });
+export const attachmentWorkspaceDeleteSchema = attachmentWorkspaceSchema.extend({
+  transferId: z.string().uuid(),
+  name: z.string().min(1),
+});
 
 // ----------------------------------------
 
@@ -1266,6 +1273,7 @@ export const mobileUpdateDeviceAllowlistSchema = z.object({
   deviceId: nonEmptyString,
   capabilities: z.array(mobileCapabilitySchema).optional(),
   profileAllowlist: z.array(nonEmptyString).optional(),
+  excludedProfileIds: z.array(nonEmptyString).optional(),
 });
 export type MobileUpdateDeviceAllowlist = z.infer<typeof mobileUpdateDeviceAllowlistSchema>;
 
@@ -1294,6 +1302,107 @@ export const mobileSessionBootstrapSchema = z.object({
   ticketId: nonEmptyString,
   secret: nonEmptyString,
 });
+export const mobileAttachmentEnvelopeSchema = z.object({
+  version: z.literal(1),
+  requestId: z.string().uuid(),
+  pairId: z.string().min(1).max(256),
+  sourceDeviceId: z.string().min(1).max(256),
+  targetDeviceId: z.string().min(1).max(256),
+  sessionKeyVersion: z.number().int().positive(),
+  issuedAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().nonnegative(),
+  nonce: z.string().min(16).max(32),
+  ciphertext: z
+    .string()
+    .min(22)
+    .max(8 * 1024 * 1024),
+});
+const attachmentOperationTimes = {
+  issuedAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().nonnegative(),
+};
+const attachmentWorkspacePayload = { workspaceId: workspaceIdSchema };
+const attachmentTransferPayload = { ...attachmentWorkspacePayload, transferId: z.string().uuid() };
+const attachmentB64Url = z
+  .string()
+  .min(1)
+  .max(1024 * 1024 * 2)
+  .regex(/^[A-Za-z0-9_-]+={0,2}$/);
+export const mobileAttachmentOperationSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("attachment.begin"),
+      payload: z
+        .object({
+          ...attachmentWorkspacePayload,
+          name: z.string().min(1).max(180),
+          size: z
+            .number()
+            .int()
+            .min(0)
+            .max(25 * 1024 * 1024),
+          sha256: z.string().regex(/^[a-f0-9]{64}$/),
+          idempotencyKey: z.string().min(1).max(256).optional(),
+        })
+        .strict(),
+      ...attachmentOperationTimes,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("attachment.chunk"),
+      payload: z
+        .object({ ...attachmentTransferPayload, offset: z.number().int().nonnegative(), data: attachmentB64Url })
+        .strict(),
+      ...attachmentOperationTimes,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("attachment.status"),
+      payload: z.object(attachmentTransferPayload).strict(),
+      ...attachmentOperationTimes,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("attachment.finish"),
+      payload: z
+        .object({
+          ...attachmentTransferPayload,
+          sha256: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/)
+            .optional(),
+        })
+        .strict(),
+      ...attachmentOperationTimes,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("attachment.cancel"),
+      payload: z.object(attachmentTransferPayload).strict(),
+      ...attachmentOperationTimes,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("attachment.list"),
+      payload: z.object(attachmentWorkspacePayload).strict(),
+      ...attachmentOperationTimes,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("attachment.delete"),
+      payload: z
+        .object({ ...attachmentWorkspacePayload, transferId: z.string().uuid(), name: z.string().min(1) })
+        .strict(),
+      ...attachmentOperationTimes,
+    })
+    .strict(),
+]);
 export type MobileSessionBootstrap = z.infer<typeof mobileSessionBootstrapSchema>;
 
 // ----------------------------------------

@@ -38,6 +38,31 @@
           <button
             type="button"
             class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'attachments' }"
+            title="Attachments — files shared by every tab in the active workspace."
+            @click="activeTab = 'attachments'"
+          >
+            <span class="notification-center__tab-icon" aria-hidden="true">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                />
+              </svg>
+            </span>
+            <span class="notification-center__tab-label">Attachments</span>
+          </button>
+          <button
+            type="button"
+            class="notification-center__tab"
             :class="{ 'notification-center__tab--active': activeTab === 'telegram' }"
             title="Status of all configured Telegram bot connections (polling state, missing tokens). Configure them in Settings → Telegram."
             @click="activeTab = 'telegram'"
@@ -93,7 +118,7 @@
             :class="{ 'notification-center__tabmenu-toggle--open': tabMenuOpen }"
             :aria-expanded="tabMenuOpen ? 'true' : 'false'"
             aria-haspopup="menu"
-            title="Switch section (Alerts · Agents · Telegram · Performance)"
+            title="Switch section (Alerts · Attachments · Agents · Telegram · Performance)"
             @click="tabMenuOpen = !tabMenuOpen"
           >
             <span class="notification-center__tabmenu-hamburger" aria-hidden="true">☰</span>
@@ -273,6 +298,17 @@
         </div>
       </div>
 
+      <div v-if="activeTab === 'attachments'" class="notification-center__body notification-center__body--attachments">
+        <WorkspaceAttachments
+          v-if="activeWorkspaceId"
+          :workspace-id="activeWorkspaceId"
+          :workspace-root="activeWorkspaceRoot"
+          open-by-default
+          panel
+        />
+        <div v-else class="notification-center__empty">No active workspace.</div>
+      </div>
+
       <div v-if="activeTab === 'alerts'" ref="bodyRef" class="notification-center__body" @scroll="onBodyScroll">
         <!-- "No notifications" must reflect what the user sees, not the
              process-shared store: if profile A has items but the active
@@ -433,6 +469,7 @@ import {
 import type { WorkspaceState } from "../../../electron/shared/types/state.js";
 import PerformancePanel from "./PerformancePanel.vue";
 import ApprovalsPanel from "./ApprovalsPanel.vue";
+import WorkspaceAttachments from "../workspace/WorkspaceAttachments.vue";
 import { dayBandKey, dayBandLabel } from "../../app/helpers.js";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
@@ -471,8 +508,16 @@ function clearAllInProfile(): void {
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
-type TabId = "alerts" | "agents" | "telegram" | "approvals" | "performance";
+type TabId = "alerts" | "attachments" | "agents" | "telegram" | "approvals" | "performance";
 const activeTab = ref<TabId>("alerts");
+const activeWorkspaceId = computed(() => appStore.myActiveWorkspaceId);
+const activeWorkspaceRoot = computed(() => {
+  const profileId = activeProfileId.value || "default";
+  const workspace = (appStore.payload?.appState?.workspaces || []).find(
+    (candidate) => candidate.id === activeWorkspaceId.value && (candidate.profileId || "default") === profileId,
+  );
+  return typeof workspace?.cwd === "string" ? workspace.cwd : "";
+});
 // The Performance tab is offered on every transport, including the remote /
 // mobile client: the terminal-rendering counters it shows (WebGL vs DOM
 // renderer, repaint and data rates) are measured inside whichever client is
@@ -571,6 +616,7 @@ const tabMenuRef = ref<HTMLElement | null>(null);
 const menuTabs = computed<{ id: TabId; label: string }[]>(() => {
   const tabs: { id: TabId; label: string }[] = [
     { id: "alerts", label: "Alerts" },
+    { id: "attachments", label: "Attachments" },
     { id: "agents", label: "Agents" },
     { id: "telegram", label: "Telegram" },
   ];
@@ -1179,6 +1225,14 @@ function onClickSession(s: NotificationSession): void {
 }
 
 function onKeydown(ev: KeyboardEvent): void {
+  if (ev.key === "Escape") {
+    // When pinned, Esc is a no-op — user expects the dock to stay put.
+    if (notifStore.pinned) return;
+    ev.preventDefault();
+    notifStore.closePanel();
+    return;
+  }
+  if (activeTab.value !== "alerts") return;
   const list = allVisible.value;
   if (list.length === 0) return;
   const current = list[selectedIndex.value];
@@ -1215,12 +1269,6 @@ function onKeydown(ev: KeyboardEvent): void {
         // doesn't silence profile A's unread badge in other windows.
         ackFinishedInProfile();
       }
-      break;
-    case "Escape":
-      // When pinned, Esc is a no-op — user expects the dock to stay put.
-      if (notifStore.pinned) return;
-      ev.preventDefault();
-      notifStore.closePanel();
       break;
   }
 }

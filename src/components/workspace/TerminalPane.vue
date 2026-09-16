@@ -1,5 +1,5 @@
 <template>
-  <div ref="paneBodyRef" class="workspace-pane__body">
+  <div ref="paneBodyRef" class="workspace-pane__body workspace-pane__body--terminal">
     <TerminalSearchOverlay :session-id="sessionId" />
     <!-- Touch affordance for "Select text". The long press inside the terminal
          does the same thing, but a gesture nobody has been told about is not a

@@ -3,6 +3,8 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import App from "./App.vue";
 import SidebarPanel from "./components/layout/SidebarPanel.vue";
+import WorkspaceAttachments from "./components/workspace/WorkspaceAttachments.vue";
+import WorkspaceStage from "./components/workspace/WorkspaceStage.vue";
 import { useAppStore } from "./stores/app.js";
 import { apiKey } from "./types/keys.js";
 
@@ -73,5 +75,12 @@ describe("App — the sidebar activate chain closes the mobile drawer", () => {
     const sidebar = wrapper.findComponent(SidebarPanel);
     expect(sidebar.exists()).toBe(true);
     expect(typeof (sidebar.vm.$attrs as AnyApi).onActivate).toBe("function");
+  });
+
+  it("keeps the terminal stage in the workspace main layout", () => {
+    const wrapper = mountApp();
+
+    expect(wrapper.findComponent(WorkspaceStage).exists()).toBe(true);
+    expect(wrapper.findComponent(WorkspaceAttachments).exists()).toBe(false);
   });
 });

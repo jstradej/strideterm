@@ -44,12 +44,14 @@ describe("MobileInputBar", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     window.localStorage.removeItem(COLLAPSED_KEY);
+    window.localStorage.removeItem("strideterm.mobile.hideKeyboardAfterSend");
     // The bar persists its unsent draft per terminal session in sessionStorage, so a return from the
     // background restores what the user was typing (production hardening §5 "Session" 6). jsdom keeps
     // one storage for the whole file, so without this a draft from one case would be restored into the
     // next one's field — which is exactly what the store must NOT do across browsing contexts.
     window.sessionStorage.clear();
     (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+    delete (window as AnyApi).StridetermHost;
     const store = useAppStore();
     store.payload = {
       appState: {
@@ -67,6 +69,71 @@ describe("MobileInputBar", () => {
         ],
       },
     } as AnyApi;
+  });
+
+  it("landscape types into the draft without sending, supports selection, and restores the system keyboard in portrait", async () => {
+    let portrait = false;
+    const listeners: Array<() => void> = [];
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          get matches() {
+            return query === "(orientation: portrait)" ? portrait : true;
+          },
+          addEventListener: (_event: string, fn: () => void) => listeners.push(fn),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const { wrapper, writeTerminal } = mountBar();
+    try {
+      await nextTick();
+      expect(wrapper.find(".mobile-input-bar__input").exists()).toBe(false);
+      await wrapper.get(".mobile-input-bar__expand").trigger("click");
+      const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input");
+      expect(input.attributes("inputmode")).toBe("text");
+      expect(wrapper.get(".mobile-input-bar").classes()).toContain("mobile-input-bar--system");
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
+      await wrapper.get(".mobile-input-bar__keyboard-mode").trigger("click");
+      expect(input.attributes("inputmode")).toBe("none");
+      await input.setValue("ac");
+      input.element.setSelectionRange(1, 1);
+      await wrapper
+        .findAll(".compact-terminal-keyboard button")
+        .find((b) => b.text() === "b")!
+        .trigger("click");
+      await nextTick();
+      expect(input.element.value).toBe("abc");
+      await wrapper.get('[aria-label="Backspace"]').trigger("click");
+      await nextTick();
+      expect(input.element.value).toBe("ac");
+      expect(writeTerminal).not.toHaveBeenCalled();
+      await wrapper.get(".mobile-input-bar__keyboard-mode").trigger("click");
+      expect(input.attributes("inputmode")).toBe("text");
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
+      portrait = true;
+      listeners.forEach((fn) => fn());
+      await nextTick();
+      expect(wrapper.classes()).not.toContain("mobile-input-bar--landscape");
+      expect(input.element.value).toBe("ac");
+      expect(writeTerminal).not.toHaveBeenCalled();
+    } finally {
+      wrapper.unmount();
+      media.mockRestore();
+    }
+  });
+
+  it("optionally hides after sending and remembers the choice", async () => {
+    const { wrapper, writeTerminal } = mountBar();
+    await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+    const option = wrapper.get('[role="menuitemcheckbox"]');
+    expect(option.attributes("aria-checked")).toBe("false");
+    await option.trigger("click");
+    expect(localStorage.getItem("strideterm.mobile.hideKeyboardAfterSend")).toBe("true");
+    await wrapper.get(".mobile-input-bar__input").setValue("draft");
+    await wrapper.get("form").trigger("submit");
+    expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "draft", ORIGIN_WS);
+    expect(wrapper.find(".mobile-input-bar__input").exists()).toBe(false);
+    wrapper.unmount();
   });
 
   describe("visibility gating", () => {
@@ -163,6 +230,179 @@ describe("MobileInputBar", () => {
     });
     afterEach(() => {
       vi.useRealTimers();
+    });
+
+    it("captures the caret and inserts a validated attachment path without sending", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
+      await input.setValue("echo done");
+      input.element.setSelectionRange(5, 5);
+      await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
+      const request = JSON.parse(postMessage.mock.calls[0][0]);
+      expect(request).toMatchObject({
+        type: "attachment-compose",
+        draft: "echo done",
+        selectionStart: 5,
+        selectionEnd: 5,
+        sessionId: SESSION_ID,
+        workspaceId: ORIGIN_WS,
+      });
+      window.dispatchEvent(
+        new CustomEvent("strideterm:attachment-compose-result", {
+          detail: {
+            requestId: request.requestId,
+            profileId: request.profileId,
+            workspaceId: request.workspaceId,
+            sessionId: request.sessionId,
+            path: ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/report.txt",
+            prompt: request.draft,
+            action: "insert",
+          },
+        }),
+      );
+      await nextTick();
+      expect(input.element.value).toBe(
+        'echo ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/report.txt" done',
+      );
+      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toMatchObject({
+        type: "attachment-compose-ack",
+        requestId: request.requestId,
+        ok: true,
+      });
+      wrapper.unmount();
+    });
+
+    it("opens attachment compose when the native menu requests it", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const { wrapper } = mountBar();
+      await wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']").setValue("prompt");
+      await nextTick();
+      window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-open"));
+      const opened = JSON.parse(postMessage.mock.calls.at(-1)![0]);
+      expect(opened).toMatchObject({
+        type: "attachment-compose",
+        draft: "prompt",
+        sessionId: SESSION_ID,
+      });
+      window.dispatchEvent(
+        new CustomEvent("strideterm:attachment-compose-cancel", {
+          detail: { requestId: opened.requestId },
+        }),
+      );
+      window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-open"));
+      expect(postMessage.mock.calls.length).toBeGreaterThan(1);
+      wrapper.unmount();
+    });
+
+    it("expands a collapsed bar after a native insert without sending", async () => {
+      window.localStorage.setItem(COLLAPSED_KEY, "true");
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const { wrapper, writeTerminal } = mountBar();
+      window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-open"));
+      const request = JSON.parse(postMessage.mock.calls.at(-1)![0]);
+      window.dispatchEvent(
+        new CustomEvent("strideterm:attachment-compose-result", {
+          detail: {
+            ...request,
+            path: ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/file.txt",
+            prompt: request.draft,
+            action: "insert",
+          },
+        }),
+      );
+      await nextTick();
+      expect(wrapper.find("[data-role='mobile-input-bar-input']").exists()).toBe(true);
+      expect(writeTerminal).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("sends an attachment result through the normal composer routine", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
+      await input.setValue("cat");
+      await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
+      const request = JSON.parse(postMessage.mock.calls[0][0]);
+      window.dispatchEvent(
+        new CustomEvent("strideterm:attachment-compose-result", {
+          detail: {
+            ...request,
+            path: ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/a.txt",
+            prompt: "cat",
+            action: "send",
+          },
+        }),
+      );
+      expect(writeTerminal).toHaveBeenCalledWith(
+        SESSION_ID,
+        'cat ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/a.txt"',
+        ORIGIN_WS,
+      );
+      expect(writeTerminal).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(200);
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r", ORIGIN_WS);
+      wrapper.unmount();
+    });
+
+    it("rejects a stale draft and acknowledges duplicate results without sending twice", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
+      await input.setValue("old");
+      await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
+      const request = JSON.parse(postMessage.mock.calls[0][0]);
+      await input.setValue("changed");
+      const detail = {
+        ...request,
+        path: ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/a.txt",
+        prompt: "old",
+        action: "send",
+      };
+      window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-result", { detail }));
+      expect(input.element.value).toBe("changed");
+      expect(writeTerminal).not.toHaveBeenCalled();
+      const count = postMessage.mock.calls.length;
+      window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-result", { detail }));
+      expect(postMessage).toHaveBeenCalledTimes(count + 1);
+      expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toMatchObject({
+        type: "attachment-compose-ack",
+        requestId: request.requestId,
+        ok: false,
+      });
+      wrapper.unmount();
+    });
+
+    it("does not treat a reused request id with changed result data as a retry", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const { wrapper, writeTerminal } = mountBar();
+      await wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']").setValue("cat");
+      await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
+      const request = JSON.parse(postMessage.mock.calls[0][0]);
+      const result = {
+        ...request,
+        path: ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/a.txt",
+        prompt: "cat",
+        action: "send",
+      };
+      window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-result", { detail: result }));
+      const before = writeTerminal.mock.calls.length;
+      window.dispatchEvent(
+        new CustomEvent("strideterm:attachment-compose-result", { detail: { ...result, action: "insert" } }),
+      );
+      expect(writeTerminal.mock.calls.length).toBe(before);
+      expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toMatchObject({
+        type: "attachment-compose-ack",
+        ok: false,
+      });
+      wrapper.unmount();
     });
 
     it("sends the composed line, then Enter as a separate delayed write", async () => {
@@ -527,12 +767,14 @@ describe("MobileInputBar", () => {
     // back on the next page load — text the user never typed, one ⏎ from the
     // PTY. The field opts out declaratively and drops foreign values as a
     // backstop for managers that ignore the attributes.
-    it("opts out of autofill on both the form and the field", () => {
+    it("keeps keyboard predictions enabled while opting out of password managers", () => {
       const { wrapper } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
 
       expect(wrapper.find("form").attributes("autocomplete")).toBe("off");
-      expect(input.attributes("autocomplete")).toBe("off");
+      expect(input.attributes("autocomplete")).toBe("on");
+      expect(input.attributes("autocorrect")).toBe("on");
+      expect(input.attributes("spellcheck")).toBe("true");
       // Vendor opt-outs: 1Password, LastPass, Bitwarden, Dashlane.
       expect(input.attributes()).toHaveProperty("data-1p-ignore");
       expect(input.attributes("data-lpignore")).toBe("true");

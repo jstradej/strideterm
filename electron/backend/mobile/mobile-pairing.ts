@@ -167,6 +167,19 @@ export function createMobilePairing(deps: MobilePairingDeps) {
   }
   let pending: PendingInvitation | null = null;
   const claimListeners = new Set<(outcome: ClaimOutcome) => void>();
+  /**
+   * Listeners for "a phone has scanned the code and I am now working on it".
+   *
+   * SEPARATE FROM [onClaim], which fires only when the adoption has FINISHED. Between the scan and
+   * that outcome this desktop verifies the key proof, checks the grants against what the human
+   * ticked and writes the record — and the screen showed the unchanged QR for all of it, so a user
+   * who had just scanned had no way to tell "it is working on it" from "the scan did nothing".
+   */
+  const claimSeenListeners = new Set<(info: { pairingId: string; deviceId: string }) => void>();
+
+  function notifyClaimSeen(info: { pairingId: string; deviceId: string }): void {
+    for (const listener of claimSeenListeners) listener(info);
+  }
 
   function notifyClaim(outcome: ClaimOutcome): void {
     for (const listener of claimListeners) listener(outcome);
@@ -448,6 +461,9 @@ export function createMobilePairing(deps: MobilePairingDeps) {
           deviceId: device.deviceId,
           state: device.state,
         });
+        // BEFORE the work, not after: this is the event the QR overlays a spinner on, and announcing
+        // it once the work is done would cover exactly the window that needs no covering.
+        notifyClaimSeen({ pairingId: response.pairingId, deviceId: device.deviceId });
         void processNewDevice(device);
       });
       pending = {
@@ -485,6 +501,12 @@ export function createMobilePairing(deps: MobilePairingDeps) {
     onClaim(listener: (outcome: ClaimOutcome) => void): () => void {
       claimListeners.add(listener);
       return () => claimListeners.delete(listener);
+    },
+
+    /** Subscribes to "a phone scanned the code"; fires before the adoption work, not after it. */
+    onClaimSeen(listener: (info: { pairingId: string; deviceId: string }) => void): () => void {
+      claimSeenListeners.add(listener);
+      return () => claimSeenListeners.delete(listener);
     },
 
     getPendingInvitation(): PendingInvitationInfo | null {

@@ -1663,9 +1663,17 @@ export const useAppStore = defineStore("app", () => {
     // status/pairing UI"). Absent entirely on the remote transport (Electron-
     // only), hence the optional chaining.
     api.onMobilePairingProgress?.((progress) => {
-      // Either outcome consumes the invitation — clear local QR/countdown state.
-      mobilePairingInvitation.value = null;
       const claim = progress as AnyApi;
+      // `claimed` IS NOT AN OUTCOME — it is "a phone scanned it and the desktop is working on it",
+      // and it arrives BEFORE the key proof is verified and the record written. The QR must stay up
+      // for it: the renderer covers it with a spinner, and clearing the invitation here would leave
+      // an empty box to cover. Every other status does consume the invitation.
+      if (claim?.status === "claimed") {
+        mobilePairingClaimInFlight.value = true;
+        return;
+      }
+      mobilePairingInvitation.value = null;
+      mobilePairingClaimInFlight.value = false;
       if (claim?.status === "awaiting-approval") {
         // The short authentication string the backend never saw. MobileManager derives it from
         // both public keys, both device ids, the pair and the invitation; the phone derives the
@@ -1926,6 +1934,15 @@ export const useAppStore = defineStore("app", () => {
    * land while the tab is being re-mounted. `{ deviceId, label, sas }` or null.
    */
   const mobilePairingSas = ref<AnyApi | null>(null);
+  /**
+   * A phone has scanned the code and this desktop is verifying it.
+   *
+   * The window between the scan and the SAS appearing is real work — the key proof is recomputed,
+   * the grants are checked against what the human ticked, the record is written — and the screen
+   * showed an unchanged QR for all of it. A user who had just scanned could not tell that from a
+   * scan that had done nothing, so they scanned again.
+   */
+  const mobilePairingClaimInFlight = ref(false);
   const mobileConnectionHealth = ref<AnyApi | null>(null);
   const mobileQuota = ref<AnyApi | null>(null);
   const mobileAuditLog = ref<{ entries: AnyApi[]; total: number }>({ entries: [], total: 0 });
@@ -1948,12 +1965,14 @@ export const useAppStore = defineStore("app", () => {
     // A new pairing invalidates the previous claim's code — leaving it up would put two codes on
     // screen with nothing saying which pairing each belongs to.
     mobilePairingSas.value = null;
+    mobilePairingClaimInFlight.value = false;
     mobilePairingInvitation.value = await api.createMobilePairingInvitation(options);
   }
 
   async function cancelMobilePairingInvitation(): Promise<void> {
     const api = getApi() as AnyApi;
     mobilePairingInvitation.value = null;
+    mobilePairingClaimInFlight.value = false;
     await api?.cancelMobilePairingInvitation?.();
   }
 
@@ -1978,6 +1997,20 @@ export const useAppStore = defineStore("app", () => {
     }
     await api.revokeMobileDevice(deviceId);
     await refreshMobileDevices();
+  }
+
+  /**
+   * Removes an already-revoked device from the list. Returns the refusal rather than throwing it,
+   * because the two reasons the backend says no are both things to show next to the row.
+   */
+  async function forgetMobileDevice(deviceId: string): Promise<{ ok: boolean; reason?: string }> {
+    const api = getApi() as AnyApi;
+    if (typeof api?.forgetMobileDevice !== "function") {
+      throw new Error("Managing mobile devices is only available in the desktop app.");
+    }
+    const result = (await api.forgetMobileDevice(deviceId)) as { ok?: boolean; reason?: string } | null;
+    await refreshMobileDevices();
+    return { ok: result?.ok === true, ...(result?.reason ? { reason: result.reason } : {}) };
   }
 
   /**
@@ -2037,7 +2070,7 @@ export const useAppStore = defineStore("app", () => {
 
   async function updateMobileDeviceAllowlist(
     deviceId: string,
-    update: { capabilities?: string[]; profileAllowlist?: string[] },
+    update: { capabilities?: string[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
   ): Promise<void> {
     const api = getApi() as AnyApi;
     if (typeof api?.updateMobileDeviceAllowlist !== "function") {
@@ -2171,6 +2204,7 @@ export const useAppStore = defineStore("app", () => {
     mobileEnabled,
     mobileDevices,
     mobilePairingInvitation,
+    mobilePairingClaimInFlight,
     mobilePairingSas,
     mobileConnectionHealth,
     mobileQuota,
@@ -2181,6 +2215,7 @@ export const useAppStore = defineStore("app", () => {
     dismissMobilePairingSas,
     renameMobileDevice,
     revokeMobileDevice,
+    forgetMobileDevice,
     approveMobileDevice,
     rejectMobileDevice,
     refreshMobileDevicesAwaitingApproval,

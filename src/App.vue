@@ -437,6 +437,10 @@ function closeSidebar(): void {
 // always brings up the IME because the focus call happens inside a real
 // `click` event handler, which counts as a user gesture.
 function showMobileKeyboard(): void {
+  if (api?.isRemote) {
+    window.dispatchEvent(new Event("strideterm:focus-composer"));
+    return;
+  }
   // Only act when the active pane actually has a terminal in it. Falling
   // back to the first xterm anywhere on the page is wrong — the user
   // would land typing into a hidden background tab's terminal, which is

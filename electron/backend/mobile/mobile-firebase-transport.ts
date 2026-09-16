@@ -169,6 +169,13 @@ export interface MobileFirebaseTransport {
   /** Calls the rejectPairing Cloud Function: any pending state -> `revoked`, with the full revocation sequence. */
   rejectPairing(pairId: string, deviceId: string, pairingId: string, reason: string): Promise<void>;
 
+  updateDeviceAccess(
+    pairId: string,
+    deviceId: string,
+    capabilities: Device["capabilities"],
+    profileAllowlist: string[],
+  ): Promise<void>;
+
   /** Calls the revokeDevice Cloud Function. */
   revokeDevice(pairId: string, deviceId: string): Promise<void>;
 
@@ -362,6 +369,10 @@ export function createInMemoryMobileFirebaseTransport(
     async attestPairingKeyProof(pairId, deviceId, pairingId) {
       pairingCalls.push({ call: "attestPairingKeyProof", pairId, deviceId, pairingId });
       applyRemoteState(pairId, deviceId, { state: "keyProven", keyProvenAt: now() });
+    },
+
+    async updateDeviceAccess(pairId, deviceId, capabilities, profileAllowlist) {
+      applyRemoteState(pairId, deviceId, { capabilities, profileAllowlist });
     },
 
     async approvePairing(pairId, deviceId, pairingId, transcriptHash) {

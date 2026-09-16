@@ -8,6 +8,11 @@ import {
   isDeviceUsable,
   listActiveDevices,
   applyRemoteRevocation,
+  clearCloudRevokePending,
+  listPendingCloudRevocations,
+  markCloudRevokePending,
+  recordCloudRevokeAttempt,
+  removeRevokedDevice,
   listPendingApprovalDevices,
   listUsableDevices,
   markActive,
@@ -242,5 +247,114 @@ describe("createMobileDeviceStore (stateful factory)", () => {
     await store.revokeDevice("dev-1", 4242);
     expect(store.listActiveDevices()).toHaveLength(0);
     expect(store.getDevice("dev-1")?.revokedAt).toBe(4242);
+  });
+});
+
+describe("the cloud half of a revocation, owed and retried", () => {
+  // `MobileManager.revokeDevice` used to call the transport once and swallow the failure, so a
+  // desktop revoking a phone while offline left the cloud record `active` for ever. These are the
+  // pure transitions the outbox that replaced it is built from.
+  function devicesWithOne() {
+    const result = addDevice([], newDeviceInput("dev-1"));
+    if (!result.ok) throw new Error("fixture");
+    return result.devices;
+  }
+
+  test("marking keeps the first request's timestamp when it is marked again", () => {
+    // A second click on Revoke must not make the history read as if the first never happened, nor
+    // restart the record of how long the cloud has been owed this.
+    const once = markCloudRevokePending(devicesWithOne(), "dev-1", { kind: "revoke", now: 1000 });
+    const twice = markCloudRevokePending(once, "dev-1", { kind: "revoke", now: 9000 });
+    expect(twice[0]?.pendingCloudRevoke?.requestedAt).toBe(1000);
+  });
+
+  test("a rejection remembers its reason, because rejectPairing needs it on the retry", () => {
+    const marked = markCloudRevokePending(devicesWithOne(), "dev-1", {
+      kind: "reject",
+      reason: "sas-mismatch",
+      now: 1000,
+    });
+    expect(marked[0]?.pendingCloudRevoke).toMatchObject({ kind: "reject", reason: "sas-mismatch" });
+  });
+
+  test("attempts accumulate and the entry is never dropped", () => {
+    // NO CEILING, deliberately: an attempt limit that discards the entry is exactly how the cloud
+    // record ends up `active` for ever, which is the state this exists to prevent.
+    let devices = markCloudRevokePending(devicesWithOne(), "dev-1", { kind: "revoke", now: 1000 });
+    for (let i = 0; i < 50; i += 1) devices = recordCloudRevokeAttempt(devices, "dev-1", 2000 + i, "offline");
+    expect(devices[0]?.pendingCloudRevoke?.attempts).toBe(50);
+    expect(devices[0]?.pendingCloudRevoke?.lastErrorCode).toBe("offline");
+  });
+
+  test("an attempt against a device with nothing owed changes nothing", () => {
+    const devices = recordCloudRevokeAttempt(devicesWithOne(), "dev-1", 2000, "offline");
+    expect(devices[0]?.pendingCloudRevoke).toBeUndefined();
+  });
+
+  test("clearing removes the field rather than leaving an empty one behind", () => {
+    const marked = markCloudRevokePending(devicesWithOne(), "dev-1", { kind: "revoke", now: 1000 });
+    const cleared = clearCloudRevokePending(marked, "dev-1");
+    expect(cleared[0]).not.toHaveProperty("pendingCloudRevoke");
+  });
+
+  test("the pending list is oldest first, so a flush retries in the order the user asked", () => {
+    const added = addDevice(devicesWithOne(), newDeviceInput("dev-2"));
+    if (!added.ok) throw new Error("fixture");
+    let devices = added.devices;
+    devices = markCloudRevokePending(devices, "dev-2", { kind: "revoke", now: 5000 });
+    devices = markCloudRevokePending(devices, "dev-1", { kind: "revoke", now: 1000 });
+    expect(listPendingCloudRevocations(devices).map((d) => d.deviceId)).toEqual(["dev-1", "dev-2"]);
+  });
+
+  test("a device with nothing owed is not in the list", () => {
+    expect(listPendingCloudRevocations(devicesWithOne())).toHaveLength(0);
+  });
+});
+
+describe("forgetting a revoked device", () => {
+  // Housekeeping: the list only ever grew, and there was no function anywhere — not in the store,
+  // not over IPC, not in the UI — that removed a row from it.
+  function revokedOne() {
+    const added = addDevice([], newDeviceInput("dev-1"));
+    if (!added.ok) throw new Error("fixture");
+    return revokeDevice(added.devices, "dev-1", 1000);
+  }
+
+  test("a revoked device can be forgotten", () => {
+    const result = removeRevokedDevice(revokedOne(), "dev-1");
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.devices).toHaveLength(0);
+  });
+
+  test("an ACTIVE device cannot — that would be a forget-locally back door", () => {
+    // Removing the record while the cloud still has the device active would leave this desktop with
+    // nothing to revoke it WITH, which is the exact trap the phone side names as a separate action.
+    const added = addDevice([], newDeviceInput("dev-1"));
+    const result = removeRevokedDevice(added.ok ? added.devices : [], "dev-1");
+    expect(result).toEqual({ ok: false, reason: "not-revoked" });
+  });
+
+  test("one whose cloud revocation is still owed cannot — the record IS the outbox entry", () => {
+    const pending = markCloudRevokePending(revokedOne(), "dev-1", { kind: "revoke", now: 1000 });
+    expect(removeRevokedDevice(pending, "dev-1")).toEqual({ ok: false, reason: "cloud-revoke-pending" });
+  });
+
+  test("it is forgettable again once that revocation has been sent", () => {
+    const pending = markCloudRevokePending(revokedOne(), "dev-1", { kind: "revoke", now: 1000 });
+    const sent = clearCloudRevokePending(pending, "dev-1");
+    expect(removeRevokedDevice(sent, "dev-1").ok).toBe(true);
+  });
+
+  test("a device that is not there at all is reported, not silently accepted", () => {
+    expect(removeRevokedDevice([], "dev-1")).toEqual({ ok: false, reason: "not-found" });
+  });
+
+  test("it removes only the named device", () => {
+    let devices = revokedOne();
+    const added = addDevice(devices, newDeviceInput("dev-2"));
+    if (!added.ok) throw new Error("fixture");
+    devices = added.devices;
+    const result = removeRevokedDevice(devices, "dev-1");
+    expect(result.ok && result.devices.map((d) => d.deviceId)).toEqual(["dev-2"]);
   });
 });

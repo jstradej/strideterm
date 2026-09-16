@@ -679,7 +679,7 @@ export const CapExhaustedErrorDetailsSchema = z.object({
 export type CapExhaustedErrorDetails = z.infer<typeof CapExhaustedErrorDetailsSchema>;
 
 export const ControlPlaneErrorDetailsSchema = z.object({
-  reason: z.enum(["account-mismatch", "billing-unconfigured", "no-subscription"]),
+  reason: z.enum(["account-mismatch", "already-paired", "billing-unconfigured", "no-subscription"]),
 });
 export type ControlPlaneErrorDetails = z.infer<typeof ControlPlaneErrorDetailsSchema>;
 
@@ -1194,6 +1194,7 @@ export const MobileDeviceRecordSchema = z.object({
   sessionKeyVersion: z.number().int().min(1).default(1),
   capabilities: z.array(CapabilitySchema),
   profileAllowlist: z.array(z.string().min(1)),
+  excludedProfileIds: z.array(z.string().min(1)).optional(),
   createdAt: z.number().int().min(0),
   lastSeenAt: z.number().int().min(0),
   revoked: z.boolean(),
@@ -1223,6 +1224,34 @@ export const MobileDeviceRecordSchema = z.object({
   verifiedAt: z.number().int().min(0).nullable(),
   /** When the human pressed "Codes match" AND the cloud confirmed. Null means no human has approved. */
   activatedAt: z.number().int().min(0).nullable().default(null),
+  /**
+   * THE CLOUD HALF OF A REVOCATION THIS DESKTOP HAS ALREADY APPLIED LOCALLY, still owed.
+   *
+   * Set the moment `applyLocalRevocation` lands and cleared only when the Cloud Function confirms.
+   * Before it existed, `MobileManager.revokeDevice` called the transport once and swallowed the
+   * failure into a `log.warn`: a desktop that was offline when the user revoked a phone left the
+   * cloud record `active` FOR EVER, so the phone never learned it had been unpaired and went on
+   * holding its pair membership, its push token and its mailbox. The two sides then disagreed
+   * permanently, with nothing anywhere that would ever reconcile them.
+   *
+   * It lives on the device record rather than in a branch of its own because the record IS the
+   * outbox entry — it is already persisted in the same atomically-written state blob, it already
+   * carries the `pairId` and `pairingId` the retry needs, and it goes away exactly when the record
+   * does. Optional so a record written before this loads unchanged.
+   */
+  pendingCloudRevoke: z
+    .object({
+      /** Which Cloud Function is owed: a revoke of an adopted device, or a rejection of a claim. */
+      kind: z.enum(["revoke", "reject"]),
+      /** `rejectPairing`'s reason. Absent for `kind: "revoke"`, which takes none. */
+      reason: z.string().optional(),
+      requestedAt: z.number().int().min(0),
+      attempts: z.number().int().min(0).default(0),
+      lastAttemptAt: z.number().int().min(0).optional(),
+      /** A stable `mobileErrorCode`, never a transport message — this crosses into the renderer. */
+      lastErrorCode: z.string().optional(),
+    })
+    .optional(),
 });
 export type MobileDeviceRecord = z.infer<typeof MobileDeviceRecordSchema>;
 

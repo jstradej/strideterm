@@ -13,6 +13,7 @@ import { buildActivityForest } from "../../app/workspace-activity-tree.js";
 import { projectPresentedForest } from "../../app/sidebar-presented-rows.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
+import { apiKey } from "../../types/keys.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -661,5 +662,85 @@ describe("NotificationCenter — Performance tab availability", () => {
     expect(wrapper.findAll(".notification-center__tabmenu-item").some((b) => b.text().includes("Performance"))).toBe(
       true,
     );
+  });
+});
+
+describe("NotificationCenter — Attachments tab", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  it("loads and deletes attachments for the active workspace", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+
+    const attachmentList = vi.fn().mockResolvedValue([
+      {
+        transferId: "transfer-1",
+        path: ".strideterm/attachments/transfer-1/report.txt",
+        size: 12,
+        sha256: "a".repeat(64),
+        name: "report.txt",
+      },
+    ]);
+    const attachmentDelete = vi.fn().mockResolvedValue({ ok: true });
+    const wrapper = mount(NotificationCenter, {
+      global: {
+        provide: {
+          [apiKey as symbol]: { attachmentList, attachmentDelete },
+        },
+      },
+    });
+
+    const tab = wrapper.findAll(".notification-center__tab").find((button) => button.text().includes("Attachments"));
+    expect(tab).toBeDefined();
+    await tab!.trigger("click");
+    await flushPromises();
+
+    expect(attachmentList).toHaveBeenCalledWith({ workspaceId: "ws-a" });
+    expect(wrapper.get("[data-role='workspace-attachments']").text()).toContain("report.txt");
+    expect(wrapper.find(".workspace-attachments__body").exists()).toBe(true);
+    await wrapper.get(".notification-center__tabmenu-toggle").trigger("click");
+    expect(
+      wrapper.findAll(".notification-center__tabmenu-item").some((item) => item.text().includes("Attachments")),
+    ).toBe(true);
+
+    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+    await wrapper.get("[data-role='attachment-menu-trigger']").trigger("click");
+    await wrapper.get(".workspace-attachments__menu-delete").trigger("click");
+    await flushPromises();
+    expect(attachmentDelete).toHaveBeenCalledWith({
+      workspaceId: "ws-a",
+      transferId: "transfer-1",
+      name: "report.txt",
+    });
+  });
+
+  it("does not apply alert keyboard commands while the attachments tab is active", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+    notifStore.add({
+      title: "Needs input",
+      kind: "waiting",
+      workspaceId: "ws-a",
+      viewId: "ws-a:sh",
+      meta: { profileId: "p1" },
+    });
+
+    const wrapper = mount(NotificationCenter);
+    await wrapper
+      .findAll(".notification-center__tab")
+      .find((button) => button.text().includes("Attachments"))!
+      .trigger("click");
+
+    const event = new KeyboardEvent("keydown", { key: "Enter", cancelable: true });
+    wrapper.get(".notification-center").element.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
   });
 });

@@ -36,7 +36,7 @@ export interface TokenRefreshSource {
 export interface InstallationTokenRefreshDeps {
   readonly client: TokenRefreshSource;
   /** Tears down and re-opens whatever this installation has streaming. See rule 2. */
-  readonly restartStreams: () => void;
+  readonly restartStreams: () => unknown;
   /** Re-reads the account overview, so the page agrees with the new claims. */
   readonly refreshAccount: () => Promise<void>;
   readonly now?: () => number;
@@ -73,7 +73,7 @@ export function createInstallationTokenRefreshListener(
       try {
         await deps.client.refreshSession();
         // AFTER the token, because a stream opened with the old one keeps what it was granted.
-        deps.restartStreams();
+        await deps.restartStreams();
         await deps.refreshAccount();
         lastAppliedAt = now();
       } catch (error) {

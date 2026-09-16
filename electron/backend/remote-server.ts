@@ -9,6 +9,9 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
+import * as attachments from "./attachments.js";
+import { deriveSessionKey, openEnvelope, publicKeyFromRaw, sealEnvelope } from "./mobile/mobile-crypto.js";
+import { decodeCanonicalPublicKey } from "./mobile/mobile-crypto.js";
 import {
   dockerActionSchema,
   dockerComposeActionSchema,
@@ -44,6 +47,8 @@ import {
   gitStashListSchema,
   gitSquashSchema,
   mobileSessionBootstrapSchema,
+  mobileAttachmentEnvelopeSchema,
+  mobileAttachmentOperationSchema,
   taskUpdateDescriptionSchema,
   taskCompanionCreateSchema,
   taskCompanionAnswerSchema,
@@ -391,7 +396,7 @@ interface Runtime {
   getPayload(): {
     appState: {
       settings: {
-        remoteAccess: { enabled: boolean; host: string; port: number; token: string };
+        remoteAccess: { enabled: boolean; paused?: boolean; host: string; port: number; token: string };
       };
     };
   };
@@ -435,6 +440,19 @@ interface Runtime {
    * device store every other authorization reads.
    */
   isMobileSessionStillAuthorized?(deviceId: string, profileId: string): boolean;
+  getMobileAttachmentContext?(deviceId: string): {
+    desktopDeviceId: string;
+    privateKey: import("node:crypto").KeyObject;
+    device: {
+      publicKey: string;
+      pairId: string;
+      sessionKeyVersion: number;
+      capabilities: string[];
+      profileAllowlist: string[];
+      revoked?: boolean;
+      state?: string;
+    } | null;
+  };
   writeToSession(sessionId: string, data: string, viewerId?: string, originWorkspaceId?: string): unknown;
   resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
   // getTerminalReplaySnapshot / getTerminalReplay and all other methods are
@@ -591,6 +609,7 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
   // stopCloudflareTunnel in runtime.ts) flip it as a server-side side-effect,
   // never via /api/settings/update, so the blocklist costs no UX.
   "autoTunnel",
+  "paused",
   "cloudflaredPath",
   "enabled",
   "host",
@@ -881,6 +900,9 @@ interface RemoteAdaptContext {
   /** True on the managed relay's loopback-origin server, so the token-bearing
    *  share URLs are blanked as well — see StripSecretsOptions.stripShareUrls. */
   stripShareUrls?: boolean;
+  /** Mobile WebViews retain their HTTP cache across launches. State and API
+   *  responses must never enter that persistent cache. */
+  noStore?: boolean;
 }
 
 // Only compress JSON above this size — below it the framing/CPU overhead of
@@ -1155,7 +1177,7 @@ function json(response: ServerResponse, statusCode: number, body: unknown): void
     // alert. Nothing here depends on the digest being short.
     const etag = `"${createHash("sha256").update(raw).digest("base64")}"`;
     headers.ETag = etag;
-    headers["Cache-Control"] = "no-cache"; // must revalidate, but 304 is allowed
+    headers["Cache-Control"] = ctx.noStore ? "no-store" : "no-cache";
     if (ctx.ifNoneMatch && ctx.ifNoneMatch === etag) {
       writeHead(response, 304, headers);
       response.end();
@@ -1296,7 +1318,39 @@ function listRemoteUrls(host: string, port: number, token: string): string[] {
   return urls;
 }
 
-async function serveStatic(staticRoot: string, requestUrl: string, response: ServerResponse): Promise<void> {
+const REVALIDATED_STATIC_EXTENSIONS = new Set([
+  ".js",
+  ".mjs",
+  ".css",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".avif",
+  ".svg",
+  ".ico",
+]);
+
+function etagMatches(ifNoneMatch: string | string[] | undefined, etag: string): boolean {
+  const raw = Array.isArray(ifNoneMatch) ? ifNoneMatch.join(",") : ifNoneMatch;
+  if (!raw) return false;
+  return raw.split(",").some((candidate) => {
+    const normalized = candidate.trim().replace(/^W\//, "");
+    return normalized === "*" || normalized === etag;
+  });
+}
+
+async function serveStatic(
+  staticRoot: string,
+  requestUrl: string,
+  requestHeaders: IncomingMessage["headers"],
+  response: ServerResponse,
+): Promise<void> {
   const url = new URL(requestUrl, "http://localhost");
   const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
   const resolvedPath = path.normalize(path.join(staticRoot, pathname));
@@ -1334,8 +1388,20 @@ async function serveStatic(staticRoot: string, requestUrl: string, response: Ser
 
   try {
     const buffer = await fs.readFile(finalPath);
-    const contentType = CONTENT_TYPES[path.extname(finalPath)] || "application/octet-stream";
-    writeHead(response, 200, { "Content-Type": contentType });
+    const extension = path.extname(finalPath).toLowerCase();
+    const contentType = CONTENT_TYPES[extension] || "application/octet-stream";
+    const headers: Record<string, string> = { "Content-Type": contentType };
+    if (REVALIDATED_STATIC_EXTENSIONS.has(extension)) {
+      const etag = `"${createHash("sha256").update(buffer).digest("base64")}"`;
+      headers.ETag = etag;
+      headers["Cache-Control"] = "private, no-cache";
+      if (etagMatches(requestHeaders["if-none-match"], etag)) {
+        writeHead(response, 304, headers);
+        response.end();
+        return;
+      }
+    }
+    writeHead(response, 200, headers);
     response.end(buffer);
   } catch {
     writeHead(response, 503, { "Content-Type": "text/plain; charset=utf-8" });
@@ -1684,6 +1750,207 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   "/api/ssh/host-key/reject": (runtime, body) => runtime["ssh:host-key:reject"](body),
 };
 
+const ATTACHMENT_PROTOCOL_VERSION = 1;
+const ATTACHMENT_INFO = Buffer.from("strideterm/attachments/v1", "utf8");
+const ATTACHMENT_AAD = (
+  direction: "request" | "response",
+  pairId: string,
+  source: string,
+  target: string,
+  requestId: string,
+  sessionKeyVersion: number,
+) =>
+  Buffer.from(
+    `strideterm-attachment-v1|1|${sessionKeyVersion}|${direction}|${pairId}|${source}|${target}|${requestId}`,
+    "utf8",
+  );
+
+function resolveAttachmentRoot(runtime: Runtime, workspaceId: string, profileId: string): string {
+  const state = (runtime.getPayload() as { appState?: { workspaces?: Array<Record<string, unknown>> } }).appState;
+  const workspace = state?.workspaces?.find(
+    (candidate) =>
+      String(candidate.id ?? "") === workspaceId &&
+      String(candidate.profileId ?? "default") === (profileId || "default"),
+  );
+  if (!workspace) throw new Error("Workspace is not available in this profile");
+  const kind = String(workspace.kind ?? "").toLowerCase();
+  const panels = Array.isArray(workspace.panels) ? workspace.panels : [];
+  const hasUnsupportedPanel = panels.some((panel) => {
+    const launch = panel && typeof panel === "object" ? (panel as Record<string, unknown>).launch : null;
+    return (
+      launch &&
+      typeof launch === "object" &&
+      ["ssh", "container", "docker"].includes(String((launch as Record<string, unknown>).kind ?? "").toLowerCase())
+    );
+  });
+  if (kind === "ssh" || kind === "container" || kind === "docker" || hasUnsupportedPanel) {
+    throw new Error("Attachments are unavailable for SSH or container workspaces");
+  }
+  const cwd = typeof workspace.cwd === "string" ? workspace.cwd : "";
+  if (!cwd || !path.isAbsolute(cwd)) throw new Error("Workspace has no local filesystem root");
+  return cwd;
+}
+
+async function handleMobileAttachmentRequest(
+  runtime: Runtime,
+  session: MobileSessionRecord,
+  profileId: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (!session.deviceId || !runtime.getMobileAttachmentContext) throw new Error("Attachment session is unavailable");
+  const requestId = typeof body.requestId === "string" ? body.requestId : "";
+  const pairId = typeof body.pairId === "string" ? body.pairId : "";
+  const source = typeof body.sourceDeviceId === "string" ? body.sourceDeviceId : "";
+  const target = typeof body.targetDeviceId === "string" ? body.targetDeviceId : "";
+  const version = Number(body.version);
+  const sessionKeyVersion = Number(body.sessionKeyVersion);
+  const outerIssuedAt = Number(body.issuedAt);
+  const outerExpiresAt = Number(body.expiresAt);
+  const nonce = typeof body.nonce === "string" ? Buffer.from(body.nonce, "base64url") : Buffer.alloc(0);
+  const ciphertext = typeof body.ciphertext === "string" ? Buffer.from(body.ciphertext, "base64url") : Buffer.alloc(0);
+  if (
+    !requestId ||
+    version !== ATTACHMENT_PROTOCOL_VERSION ||
+    !pairId ||
+    !source ||
+    !target ||
+    !Number.isInteger(sessionKeyVersion) ||
+    nonce.length !== 12 ||
+    ciphertext.length < 16
+  )
+    throw new Error("Invalid attachment envelope");
+  if (
+    pairId !== session.pairId ||
+    source !== session.deviceId ||
+    target !== runtime.getMobileAttachmentContext(session.deviceId).desktopDeviceId
+  )
+    throw new Error("Attachment identity mismatch");
+  const context = runtime.getMobileAttachmentContext(session.deviceId);
+  const device = context.device;
+  if (
+    !device ||
+    device.revoked ||
+    device.state !== "active" ||
+    sessionKeyVersion !== device.sessionKeyVersion ||
+    !runtime.isMobileSessionStillAuthorized?.(session.deviceId, profileId)
+  )
+    throw new Error("Attachment device is not authorized");
+  if (pairId !== device.pairId) throw new Error("Attachment pairing mismatch");
+  const key = deriveSessionKey(
+    context.privateKey,
+    publicKeyFromRaw(decodeCanonicalPublicKey(device.publicKey)),
+    Buffer.from(pairId, "utf8"),
+    ATTACHMENT_INFO,
+  );
+  const opened = openEnvelope(
+    ciphertext,
+    nonce,
+    key,
+    ATTACHMENT_AAD("request", pairId, source, target, requestId, sessionKeyVersion),
+  );
+  const request = validateIpc(
+    mobileAttachmentOperationSchema,
+    JSON.parse(opened.toString("utf8")),
+    "mobile attachment operation",
+  ) as {
+    operation?: string;
+    payload?: Record<string, unknown>;
+    issuedAt?: number;
+    expiresAt?: number;
+  };
+  const now = Date.now();
+  const issuedAt = request.issuedAt;
+  const expiresAt = request.expiresAt;
+  if (
+    !request.operation ||
+    !request.payload ||
+    !Number.isSafeInteger(issuedAt) ||
+    !Number.isSafeInteger(expiresAt) ||
+    outerIssuedAt !== issuedAt ||
+    outerExpiresAt !== expiresAt
+  )
+    throw new Error("Attachment request expired");
+  const issuedAtNumber = issuedAt as number;
+  const expiresAtNumber = expiresAt as number;
+  if (
+    expiresAtNumber < now ||
+    issuedAtNumber > now + 30_000 ||
+    expiresAtNumber <= issuedAtNumber ||
+    expiresAtNumber - issuedAtNumber > 60_000
+  )
+    throw new Error("Attachment request expired");
+  const payload = request.payload;
+  const workspaceId = typeof payload.workspaceId === "string" ? payload.workspaceId : "";
+  const owner = `${pairId}:${session.deviceId}:${profileId}:${workspaceId}`;
+  let result: unknown;
+  try {
+    const root = workspaceId ? resolveAttachmentRoot(runtime, workspaceId, profileId) : "";
+    switch (request.operation) {
+      case "attachment.begin":
+        result = await attachments.begin(
+          root,
+          String(payload.name ?? ""),
+          Number(payload.size),
+          String(payload.sha256 ?? ""),
+          owner,
+          String(payload.idempotencyKey ?? ""),
+        );
+        break;
+      case "attachment.chunk":
+        result = await attachments.chunk(
+          root,
+          String(payload.transferId ?? ""),
+          Number(payload.offset),
+          String(payload.data ?? ""),
+          owner,
+        );
+        break;
+      case "attachment.status": {
+        const status = (await attachments.status(root, String(payload.transferId ?? ""), owner)) as Record<
+          string,
+          unknown
+        >;
+        result =
+          "path" in status ? { state: "complete", ...status, offset: status.size } : { state: "receiving", ...status };
+        break;
+      }
+      case "attachment.finish":
+        result = await attachments.finish(root, String(payload.transferId ?? ""), owner);
+        break;
+      case "attachment.cancel":
+        result = await attachments.cancel(root, String(payload.transferId ?? ""), owner);
+        break;
+      case "attachment.list":
+        result = { attachments: await attachments.list(root) };
+        break;
+      case "attachment.delete":
+        result = await attachments.remove(root, String(payload.transferId ?? ""), String(payload.name ?? ""));
+        break;
+      default:
+        throw new Error("Unknown attachment operation");
+    }
+  } catch (error) {
+    result = {
+      error: { code: "attachment-failed", message: (error as Error).message || "Attachment operation failed" },
+    };
+  }
+  const response = sealEnvelope(
+    Buffer.from(JSON.stringify(result), "utf8"),
+    key,
+    ATTACHMENT_AAD("response", pairId, source, target, requestId, sessionKeyVersion),
+  );
+  return {
+    version,
+    requestId,
+    pairId,
+    sourceDeviceId: source,
+    targetDeviceId: target,
+    sessionKeyVersion,
+    nonce: response.nonce.toString("base64url"),
+    ciphertext: response.ciphertext.toString("base64url"),
+  };
+}
+
 async function handleApiRequest(
   runtime: Runtime,
   request: IncomingMessage,
@@ -1992,7 +2259,7 @@ export async function startRemoteServer({
   // A loopback-origin server has no usable master token: this value is never logged, never listed
   // and never handed to anyone, so the `?token=`/`Authorization: Bearer` path simply has no key.
   const token = isLoopbackOrigin ? randomBytes(32).toString("base64url") : configured.token;
-  if (!isLoopbackOrigin && !configured.enabled) {
+  if (!isLoopbackOrigin && (!configured.enabled || configured.paused)) {
     runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
     return { close: async () => {} };
   }
@@ -2108,7 +2375,8 @@ export async function startRemoteServer({
     // The device's CURRENT authorization, not the one that produced the ticket. A capability or
     // profile change is not a revoke, so nothing pushes it; asking here is what makes it take effect.
     if (record.deviceId && runtime.isMobileSessionStillAuthorized) {
-      if (!runtime.isMobileSessionStillAuthorized(record.deviceId, record.profileId)) return "unauthorized";
+      const profileId = registry.get(record.sessionId)?.profileId ?? record.profileId;
+      if (!runtime.isMobileSessionStillAuthorized(record.deviceId, profileId)) return "unauthorized";
     }
     return "live";
   }
@@ -2646,7 +2914,67 @@ export async function startRemoteServer({
             ? request.headers["if-none-match"][0]
             : request.headers["if-none-match"],
           stripShareUrls: isLoopbackOrigin,
+          noStore: isLoopbackOrigin || Boolean(apiSessionId && activeSessions.get(apiSessionId)?.deviceId),
         };
+
+        if (request.method === "POST" && url.pathname === "/api/mobile/attachments") {
+          const session = apiSessionId ? activeSessions.get(apiSessionId) : undefined;
+          if (!session?.deviceId || !session.pairId) {
+            json(response, 401, { error: "No active mobile session" });
+            return;
+          }
+          let body: Record<string, unknown>;
+          try {
+            body = validateIpc(
+              mobileAttachmentEnvelopeSchema,
+              await readRequestBody(request),
+              "POST /api/mobile/attachments",
+            );
+            json(
+              response,
+              200,
+              await handleMobileAttachmentRequest(
+                runtime,
+                session,
+                session.profileId || registry.get(apiSessionId)?.profileId || "",
+                body,
+              ),
+            );
+          } catch (error) {
+            json(response, 403, { error: (error as Error).message || "Attachment request refused" });
+          }
+          return;
+        }
+
+        if (
+          request.method === "POST" &&
+          (url.pathname === "/api/attachment/list" || url.pathname === "/api/attachment/delete")
+        ) {
+          const session = apiSessionId ? activeSessions.get(apiSessionId) : undefined;
+          const profileId = apiSessionId ? session?.profileId || registry.get(apiSessionId)?.profileId || "" : "";
+          if (
+            !apiSessionId ||
+            (session?.deviceId && !runtime.isMobileSessionStillAuthorized?.(session.deviceId, profileId))
+          ) {
+            json(response, 401, { error: "No authorized mobile session" });
+            return;
+          }
+          try {
+            const body = await readRequestBody(request);
+            const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId : "";
+            const root = resolveAttachmentRoot(runtime, workspaceId, profileId);
+            if (url.pathname === "/api/attachment/list") {
+              json(response, 200, { attachments: await attachments.list(root) });
+            } else {
+              const transferId = typeof body.transferId === "string" ? body.transferId : "";
+              const name = typeof body.name === "string" ? body.name : "";
+              json(response, 200, await attachments.remove(root, transferId, name));
+            }
+          } catch (error) {
+            json(response, 400, { error: (error as Error).message || "Attachment request refused" });
+          }
+          return;
+        }
 
         const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
         if (detailRoute) {
@@ -2681,26 +3009,6 @@ export async function startRemoteServer({
             json(response, 401, { error: "No active session" });
             return;
           }
-          // A mobile-ticket-issued session is bound to exactly one profile for its entire
-          // lifetime — the profileId the issuing ticket named, itself gated by the device's
-          // profileAllowlist at issuance time (mobile-command-dispatch.ts's remote.webSession.issue
-          // handling). activateProfile (remote-client-registry.ts) has no allowlist check of its
-          // own — it only verifies the TARGET profile exists in appState, never that the caller is
-          // authorized to switch to it — so without this, a mobile session could bootstrap for its
-          // one allowed profile and then call profile/activate to pivot to ANY profile, entirely
-          // bypassing the device's profileAllowlist (plan §9.1/§8). Found via an adversarial
-          // security review. A mobile session that needs a different profile must bootstrap a
-          // fresh ticket instead, which re-runs the full allowlist check from scratch; blocking
-          // profile/activate here also transitively keeps workspace/activate and session/activate
-          // correctly scoped, since both already reject a workspace whose profileId doesn't match
-          // client.profileId, which can now never change for a mobile session.
-          if (
-            url.pathname === "/api/remote-client/profile/activate" &&
-            activeSessions.get(apiSessionId)?.deviceId != null
-          ) {
-            json(response, 403, { error: "Mobile sessions cannot switch profiles" });
-            return;
-          }
           let body: Record<string, unknown>;
           try {
             body = await readRequestBody(request);
@@ -2725,7 +3033,17 @@ export async function startRemoteServer({
             // PTYs for the newly viewed workspace and broadcast state — every
             // socket gets a per-client composed payload with its own view.
             if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
-              await runtime.activateProfileForRemoteClient(apiSessionId, String(body.profileId ?? ""));
+              const profileId = String(body.profileId ?? "");
+              const mobileSession = activeSessions.get(apiSessionId);
+              if (
+                mobileSession?.deviceId &&
+                !runtime.isMobileSessionStillAuthorized?.(mobileSession.deviceId, profileId)
+              ) {
+                json(response, 403, { error: "This phone cannot access that profile" });
+                return;
+              }
+              await runtime.activateProfileForRemoteClient(apiSessionId, profileId);
+              if (mobileSession?.deviceId) mobileSession.profileId = profileId;
             } else if (request.method === "POST" && url.pathname === "/api/remote-client/workspace/activate") {
               await runtime.activateWorkspaceForRemoteClient(apiSessionId, String(body.workspaceId ?? ""));
             } else if (request.method === "POST" && url.pathname === "/api/remote-client/session/activate") {
@@ -2821,7 +3139,7 @@ export async function startRemoteServer({
       // bundles served to any LAN peer who guesses the URL), but the
       // renderer's API + WS calls do. Keeping static open avoids a
       // brittle dependency on every asset path also having auth headers.
-      await serveStatic(staticRoot, requestUrl, response);
+      await serveStatic(staticRoot, requestUrl, request.headers, response);
     } catch (err) {
       log.error("unhandled HTTP request error", { err: (err as Error)?.message || String(err) });
       if (!response.headersSent) {

@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { MobileManager } from "./mobile-manager.js";
 import { createMobilePairing } from "./mobile-pairing.js";
 import { createMobileDeviceStore } from "./mobile-device-store.js";
@@ -597,6 +597,32 @@ describe("what an unapproved device may do", () => {
 });
 
 describe("mismatch, dismissal, timeout and restart", () => {
+  test("approval retries a cloud key proof attestation that failed during adoption", async () => {
+    const fixture = await createFixture();
+    const attest = vi.spyOn(fixture.transport, "attestPairingKeyProof");
+    attest.mockRejectedValueOnce(new Error("offline"));
+    await claimDevice(fixture);
+    expect((await fixture.transport.getDevice(OWN_DEVICE_ID, MOBILE_DEVICE_ID))?.state).toBe("claimed");
+    expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)?.state).toBe("keyProven");
+
+    expect(await fixture.manager.approveDevice(MOBILE_DEVICE_ID)).toEqual({ ok: true });
+    expect(attest).toHaveBeenCalledTimes(2);
+    expect((await fixture.transport.getDevice(OWN_DEVICE_ID, MOBILE_DEVICE_ID))?.state).toBe("active");
+    fixture.manager.stop();
+  });
+
+  test("a failed attestation retry cannot activate the device", async () => {
+    const fixture = await createFixture();
+    vi.spyOn(fixture.transport, "attestPairingKeyProof").mockRejectedValue(new Error("offline"));
+    const approve = vi.spyOn(fixture.transport, "approvePairing");
+    await claimDevice(fixture);
+
+    expect((await fixture.manager.approveDevice(MOBILE_DEVICE_ID)).ok).toBe(false);
+    expect(approve).not.toHaveBeenCalled();
+    expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)?.state).toBe("userApproved");
+    fixture.manager.stop();
+  });
+
   test("a SAS mismatch revokes the device rather than warning about it", async () => {
     const fixture = await createFixture();
     await claimDevice(fixture);

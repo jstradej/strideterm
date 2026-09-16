@@ -351,3 +351,130 @@ describe("useGlobalEvents — shared heartbeat pause/resume", () => {
     wrapper.unmount();
   });
 });
+
+describe("useGlobalEvents — native viewport channel", () => {
+  let update:
+    ((payload: { width: number; height: number; bottom: number; controlsSide?: "left" | "right" }) => void) | undefined;
+  let postMessage: ReturnType<typeof vi.fn>;
+  let originalHeight: string;
+  let originalWidth: number;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    setActivePinia(createPinia());
+    isMobileViewport.value = false;
+    const store = useTerminalStore();
+    (store.views as unknown as Map<string, unknown>).set("sid", {});
+    store.scheduleAllVisibleResize = vi.fn() as unknown as typeof store.scheduleAllVisibleResize;
+    originalHeight = document.documentElement.style.height;
+    originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { value: 400, configurable: true });
+    postMessage = vi.fn();
+    (window as unknown as { StridetermViewport?: unknown }).StridetermViewport = { postMessage };
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { StridetermViewport?: unknown }).StridetermViewport;
+    delete (window as unknown as { __stridetermViewport?: unknown }).__stridetermViewport;
+    document.documentElement.style.height = originalHeight;
+    Object.defineProperty(window, "innerWidth", { value: originalWidth, configurable: true });
+    document.documentElement.classList.remove("native-keyboard-viewport");
+    vi.useRealTimers();
+  });
+
+  function mountNative() {
+    const wrapper = mount(Host);
+    expect(postMessage).toHaveBeenCalledWith("ready");
+    update = (
+      window as unknown as {
+        __stridetermViewport?: {
+          update: (payload: { width: number; height: number; bottom: number; controlsSide?: "left" | "right" }) => void;
+        };
+      }
+    ).__stridetermViewport?.update;
+    expect(update).toBeDefined();
+    return wrapper;
+  }
+
+  test("handshakes and applies the first native geometry with one fit", () => {
+    const wrapper = mountNative();
+    update!({ width: 400, height: 800, bottom: 240 });
+
+    expect(useTerminalStore().scheduleAllVisibleResize as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    expect(document.documentElement.style.getPropertyValue("--strideterm-keyboard-bottom")).not.toBe("");
+    wrapper.unmount();
+  });
+
+  test("changes control side without requiring a viewport resize", () => {
+    const wrapper = mountNative();
+    update!({ width: 800, height: 400, bottom: 0, controlsSide: "left" });
+    expect(document.documentElement.dataset.controlsSide).toBe("left");
+    update!({ width: 800, height: 400, bottom: 0, controlsSide: "right" });
+    expect(document.documentElement.dataset.controlsSide).toBe("right");
+    wrapper.unmount();
+    expect(document.documentElement.dataset.controlsSide).toBeUndefined();
+  });
+
+  test("repeated keyboard-only updates do not fit or resize the document through visualViewport", () => {
+    const wrapper = mountNative();
+    const store = useTerminalStore();
+    const spy = store.scheduleAllVisibleResize as unknown as ReturnType<typeof vi.fn>;
+    const visualViewport = new EventTarget();
+    Object.defineProperty(window, "visualViewport", { value: visualViewport, configurable: true });
+    update!({ width: 400, height: 800, bottom: 200 });
+    spy.mockClear();
+    const before = document.documentElement.style.height;
+    update!({ width: 400, height: 800, bottom: 320 });
+    window.dispatchEvent(new Event("resize"));
+    visualViewport.dispatchEvent(new Event("resize"));
+    vi.runAllTimers();
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(document.documentElement.style.height).toBe(before);
+    wrapper.unmount();
+    delete (window as unknown as { visualViewport?: unknown }).visualViewport;
+  });
+
+  test("without the native channel, visualViewport resize still fits visible panes", () => {
+    delete (window as unknown as { StridetermViewport?: unknown }).StridetermViewport;
+    const visualViewport = new EventTarget();
+    Object.defineProperty(window, "visualViewport", { value: visualViewport, configurable: true });
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      cb(0);
+      return 0;
+    });
+    const wrapper = mount(Host);
+    visualViewport.dispatchEvent(new Event("resize"));
+
+    expect(useTerminalStore().scheduleAllVisibleResize as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+    wrapper.unmount();
+    rafSpy.mockRestore();
+    delete (window as unknown as { visualViewport?: unknown }).visualViewport;
+  });
+
+  test("native rotation geometry schedules a fit, while invalid payloads are ignored", () => {
+    const wrapper = mountNative();
+    const store = useTerminalStore();
+    const spy = store.scheduleAllVisibleResize as unknown as ReturnType<typeof vi.fn>;
+    update!(
+      Number.NaN as unknown as { width: number; height: number; bottom: number; controlsSide?: "left" | "right" },
+    );
+    update!({ width: 400, height: 800, bottom: Number.POSITIVE_INFINITY });
+    expect(spy).not.toHaveBeenCalled();
+
+    update!({ width: 800, height: 400, bottom: 0 });
+    expect(spy).toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  test("cleanup restores document geometry and removes native state", () => {
+    document.documentElement.style.height = "77px";
+    const wrapper = mountNative();
+    update!({ width: 400, height: 800, bottom: 200 });
+    wrapper.unmount();
+
+    expect(document.documentElement.style.height).toBe("77px");
+    expect(document.documentElement.style.getPropertyValue("--strideterm-keyboard-bottom")).toBe("");
+    expect(document.documentElement.classList.contains("native-keyboard-viewport")).toBe(false);
+  });
+});

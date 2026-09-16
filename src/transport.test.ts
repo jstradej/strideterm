@@ -111,11 +111,83 @@ describe("remote transport endpoint routing", () => {
     expect(capturedBodies.some((b) => (b as { profileId?: string }).profileId === "p1")).toBe(true);
   });
 
+  it("native profile selection reuses the socket and reports the confirmed selection", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const payload = { remoteClient: { profileId: "other", activeWorkspaceId: "workspace-other" } };
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
+    const transport = createRemoteTransport();
+    const updated = vi.fn();
+    transport.onStateUpdated(updated);
+    const socketCount = MockWebSocket.instances.length;
+    const bridge = (
+      window as unknown as {
+        __stridetermRemote: { selectTarget(profile: string, workspace: string | null, request: number): Promise<void> };
+      }
+    ).__stridetermRemote;
+    await bridge.selectTarget("other", null, 7);
+    expect(updated).toHaveBeenCalledWith(payload);
+    expect(MockWebSocket.instances).toHaveLength(socketCount);
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "selection-changed",
+      profileId: "other",
+      workspaceId: "workspace-other",
+    });
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "selection-result",
+      requestId: 7,
+      ok: true,
+    });
+  });
+
   it("activateWorkspace calls /api/remote-client/workspace/activate with workspaceId", async () => {
     const transport = createRemoteTransport();
     await transport.activateWorkspace!("ws1").catch(() => {});
     expect(capturedUrls.some((u) => u.includes("/api/remote-client/workspace/activate"))).toBe(true);
     expect(capturedBodies.some((b) => (b as { workspaceId?: string }).workspaceId === "ws1")).toBe(true);
+  });
+
+  it("lists and deletes workspace attachments through dedicated routes", async () => {
+    const record = {
+      transferId: "transfer-1",
+      path: ".strideterm/attachments/transfer-1/file.txt",
+      size: 12,
+      sha256: "a".repeat(64),
+      name: "file.txt",
+    };
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ attachments: [record] }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) } as Response);
+    const transport = createRemoteTransport();
+
+    await expect(transport.attachmentList?.({ workspaceId: "ws1" })).resolves.toEqual([record]);
+    await expect(
+      transport.attachmentDelete?.({ workspaceId: "ws1", transferId: record.transferId, name: record.name }),
+    ).resolves.toEqual({ ok: true });
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      1,
+      "/api/attachment/list",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ workspaceId: "ws1" }) }),
+    );
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "/api/attachment/delete",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ workspaceId: "ws1", transferId: record.transferId, name: record.name }),
+      }),
+    );
+  });
+
+  it("rejects a malformed attachment list from the remote server", async () => {
+    globalThis.fetch = vi.fn(
+      async () => ({ ok: true, json: async () => ({ attachments: [{ bad: true }] }) }) as Response,
+    );
+    const transport = createRemoteTransport();
+    await expect(transport.attachmentList?.({ workspaceId: "ws1" })).rejects.toThrow(
+      "Invalid attachment list response",
+    );
   });
 
   it("activateSession calls /api/remote-client/session/activate, derives workspaceId from sessionId", async () => {
@@ -813,6 +885,9 @@ describe("remote transport API parity — no method silently missing its remote 
     "listMobileDevices",
     "renameMobileDevice",
     "revokeMobileDevice",
+    // Clearing a revoked row from the list. Desktop-only for the same reason as the rest: the list
+    // it edits is this installation's own state blob, not anything a remote client holds.
+    "forgetMobileDevice",
     // Review 3 §P0.1: the human decision that activates a pairing, and its refusal. Desktop-only for
     // the same reason the rest of this group is — the pairing code being compared is derived from this
     // installation's own key material, and a remote client is not the party doing the comparing.

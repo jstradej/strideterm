@@ -813,7 +813,8 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 
 .remote-mode-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -2562,4 +2563,52 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
     flex-wrap: wrap;
     justify-content: center;
   }
+}
+
+.dialog.remote-access-dialog {
+  width: min(100%, clamp(720px, 70vw, 1280px));
+  height: min(900px, calc(100dvh - 40px));
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.remote-access-dialog .dialog__header {
+  flex-wrap: wrap;
+}
+
+.remote-access-dialog > .dialog__header,
+.remote-access-dialog > .remote-mode-tabs,
+.remote-access-dialog > .remote-access__paused {
+  flex-shrink: 0;
+}
+
+.remote-access__legacy,
+.remote-access__mobile {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+}
+
+.remote-access__legacy {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.remote-access__mobile {
+  padding-top: 4px;
+}
+.remote-access__paused {
+  color: var(--accent);
+  margin: 0;
+}
+.remote-access__header-actions {
+  flex-wrap: wrap;
 }

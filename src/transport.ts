@@ -26,6 +26,13 @@ import {
   revealResultSchema,
 } from "../electron/shared/performance.js";
 import { rlog } from "./lib/renderer-log.js";
+import {
+  normalizeAttachmentList,
+  type AttachmentDeleteRequest,
+  type AttachmentDeleteResult,
+  type AttachmentWorkspaceRequest,
+  type AttachmentRecord,
+} from "./attachments.js";
 
 /**
  * The state shape a client actually receives: the full desktop `StatePayload`
@@ -95,7 +102,9 @@ interface EventHub {
  *  Electron-only methods (browseDirectory, showSystemNotification, etc.) are
  *  not present in the remote transport and are therefore excluded.
  */
-export interface Transport extends Partial<Omit<StridetermAPI, "onConnectionState" | "getState" | "onStateUpdated">> {
+export interface Transport extends Partial<
+  Omit<StridetermAPI, "onConnectionState" | "getState" | "onStateUpdated" | "attachmentList" | "attachmentDelete">
+> {
   isRemote: boolean;
   /** Manual state refresh — refetches /api/state and broadcasts the result.
    * Provided by the remote transport (no-op or absent for the Electron one,
@@ -156,6 +165,8 @@ export interface Transport extends Partial<Omit<StridetermAPI, "onConnectionStat
   /** strIDEterm approved a permission prompt on the user's behalf. Validated at
    *  this boundary too, so a handler only ever sees a well-formed payload. */
   onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => void;
+  attachmentList?: (payload: AttachmentWorkspaceRequest) => Promise<AttachmentRecord[]>;
+  attachmentDelete?: (payload: AttachmentDeleteRequest) => Promise<AttachmentDeleteResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +244,10 @@ function detailEndpointFor(resource: string): string | null {
 }
 
 function bindElectronTransport(): Transport {
+  const electronAttachments = window.strideterm as unknown as {
+    attachmentList: (payload: AttachmentWorkspaceRequest) => Promise<unknown>;
+    attachmentDelete: (payload: AttachmentDeleteRequest) => Promise<unknown>;
+  };
   return {
     ...window.strideterm,
     isRemote: false,
@@ -243,6 +258,14 @@ function bindElectronTransport(): Transport {
     deleteProfile: (profileId: string, options?: { taskAction?: "pause" | "stop" }) =>
       window.strideterm.deleteProfile(profileId, options),
     activateProfile: (profileId: string) => window.strideterm.activateProfile(profileId),
+    attachmentList: async (payload) => normalizeAttachmentList(await electronAttachments.attachmentList(payload)),
+    attachmentDelete: async (payload) => {
+      const result = await electronAttachments.attachmentDelete(payload);
+      if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) {
+        throw new Error("Invalid attachment delete response");
+      }
+      return { ok: true };
+    },
     onConnectionState: () => {},
     // Performance diagnostics: validate the main-process response at the IPC
     // boundary so a malformed snapshot surfaces as a controlled error instead
@@ -475,7 +498,24 @@ export function createRemoteTransport(): Transport {
     firstSocketNeedsSync = false;
     current.send(JSON.stringify({ type: "state:sync", rev: lastCoreRevision }));
   }
+  function postHost(message: Record<string, unknown>): void {
+    const host = (window as unknown as Record<string, unknown>).StridetermHost as
+      { postMessage?: (message: string) => void } | undefined;
+    try {
+      host?.postMessage?.(JSON.stringify(message));
+    } catch {
+      /* The native viewer may have closed. */
+    }
+  }
+
   function noteCoreRevision(state: unknown): void {
+    const selection = (state as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } })?.remoteClient;
+    if (selection?.profileId)
+      postHost({
+        type: "selection-changed",
+        profileId: selection.profileId,
+        workspaceId: selection.activeWorkspaceId || null,
+      });
     const rev = (state as { coreRevision?: unknown })?.coreRevision;
     if (typeof rev === "number" && rev > lastCoreRevision) lastCoreRevision = rev;
     // A freshly-recorded revision may be the one the first socket was waiting to
@@ -888,6 +928,17 @@ export function createRemoteTransport(): Transport {
 
   if (typeof window !== "undefined") {
     (window as unknown as Record<string, unknown>).__stridetermRemote = {
+      selectTarget: async (profileId: string, workspaceId: string | null, requestId: number) => {
+        try {
+          let payload = await fetchJson("/api/remote-client/profile/activate", { profileId });
+          if (workspaceId) payload = await fetchJson("/api/remote-client/workspace/activate", { workspaceId });
+          noteCoreRevision(payload);
+          safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
+          postHost({ type: "selection-result", requestId, ok: true });
+        } catch {
+          postHost({ type: "selection-result", requestId, ok: false });
+        }
+      },
       suspend: suspendTransport,
       resume: resumeTransport,
       /** Whether the transport is currently asleep. Read by the host to decide resume vs. re-bootstrap. */
@@ -1145,6 +1196,14 @@ export function createRemoteTransport(): Transport {
       const state = (await fetchJson("/api/state")) as CoreState;
       noteCoreRevision(state);
       return state;
+    },
+    attachmentList: async (payload) => normalizeAttachmentList(await fetchJson("/api/attachment/list", payload)),
+    attachmentDelete: async (payload) => {
+      const result = await fetchJson("/api/attachment/delete", payload);
+      if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) {
+        throw new Error("Invalid attachment delete response");
+      }
+      return { ok: true };
     },
     activateProject: (projectId) => fetchJson("/api/project/activate", { projectId }),
     activateSession: (sessionId) => {

@@ -1486,6 +1486,7 @@ export async function createRuntime({
 
   const MobileManagerImpl = dependencies.MobileManager || MobileManager;
   const mobileManager = new MobileManagerImpl({
+    getProfileIds: () => (getState().profiles || []).map((profile) => profile.id),
     transport: mobileTransport,
     pairing: mobilePairing,
     deviceStore: mobileDeviceStore,
@@ -1707,9 +1708,10 @@ export async function createRuntime({
         client: installationRestClient,
         // A stream authenticates ONCE, at connect. Refreshing the token and leaving the stream up is
         // the half-fix that looks like it worked, so the manager's streams are torn down and re-opened.
-        restartStreams: () => {
-          mobileManager.stop();
-          if (getState().settings.integrations.mobile.enabled) mobileManager.start();
+        restartStreams: async () => {
+          await mobileManager.stop();
+          if (getState().settings.integrations.mobile.enabled && !getState().settings.remoteAccess.paused)
+            mobileManager.start();
         },
         refreshAccount: () => accountManager.onClaimsChanged(),
         onError: (error) => {
@@ -1735,7 +1737,9 @@ export async function createRuntime({
         // Both flags: a relay without the mobile integration has no control plane to ask for a
         // grant, and a relay the user did not switch on must not exist at all.
         isEnabled: () =>
-          getState().settings.integrations.mobile.enabled && getState().settings.integrations.mobile.relay.enabled,
+          getState().settings.integrations.mobile.enabled &&
+          getState().settings.integrations.mobile.relay.enabled &&
+          !getState().settings.remoteAccess.paused,
         // The relay's revocation sync reads the PERSISTENT device list, not anything the relay
         // accumulated while it happened to be running (plan §3.3). This closure is that wiring: the
         // same atomically-written state file the rest of the mobile integration reads, so a revoke
@@ -1750,15 +1754,15 @@ export async function createRuntime({
     : null;
 
   /** Mirrors reconfigureTelegram()'s stop-then-conditionally-start shape. */
-  function reconfigureMobile(state = getState()) {
-    mobileManager.stop();
-    if (state.settings.integrations.mobile.enabled) mobileManager.start();
+  async function reconfigureMobile(state = getState()) {
+    await mobileManager.stop();
+    if (state.settings.integrations.mobile.enabled && !state.settings.remoteAccess.paused) mobileManager.start();
     // AFTER the manager, not before: the relay's first act is to ask the control plane for a
     // connector grant, and the transport carrying that call is the one `start()` connects. The
     // manager retries on its own if the sign-in has not landed yet, but starting it into a
     // guaranteed failure would burn the first attempt every time. It reads the flags itself rather
     // than being told, so it and this function cannot disagree about whether a relay is wanted.
-    void mobileRelayManager?.reconfigure().catch(() => undefined);
+    return mobileRelayManager?.reconfigure().catch(() => undefined);
   }
 
   // Forward MobileManager's status/pairing events onto the runtime event bus
@@ -3526,6 +3530,9 @@ export async function createRuntime({
       try {
         const payload = getPayload();
         events.emit("state:updated", payload);
+        void mobileManager.syncProfileAccess().catch((err: unknown) => {
+          log.warn("profile access sync failed", { code: (err as Error)?.name });
+        });
         checkAndForwardPrNotificationsToTelegram();
         checkAndForwardPipelineNotificationsToTelegram();
       } catch (err) {
@@ -5430,7 +5437,7 @@ export async function createRuntime({
   ensureGitPolling();
   syncTreeDirWatchers();
   reconfigureTelegram();
-  reconfigureMobile();
+  void reconfigureMobile();
   if (deferInitialRefresh) {
     scheduleAzurePolling();
     scheduleGitHubPolling();
@@ -6399,7 +6406,7 @@ export async function createRuntime({
       autoTunnelBootstrapped = true;
 
       const remoteConfig = getState().settings.remoteAccess;
-      if (!remoteConfig.enabled || !remoteConfig.autoTunnel) {
+      if (!remoteConfig.enabled || !remoteConfig.autoTunnel || remoteConfig.paused) {
         log.debug("autoTunnel: skipped — disabled or not requested", {
           remoteEnabled: !!remoteConfig.enabled,
           autoTunnel: !!remoteConfig.autoTunnel,
@@ -6490,6 +6497,14 @@ export async function createRuntime({
       if (!isMobileDeviceUsable(device)) return false;
       if (!mobileDeviceHasCapability(device, "remote.webSession")) return false;
       return mobileDeviceAllowsProfile(device, profileId);
+    },
+
+    getMobileAttachmentContext(deviceId: string) {
+      return {
+        desktopDeviceId: mobileDeviceId,
+        privateKey: mobileOwnKeyPair.privateKey,
+        device: mobileDeviceStore.getDevice(deviceId),
+      };
     },
 
     setMobileRemoteSessionRevoker(fn: (deviceId: string) => void): void {
@@ -6683,6 +6698,19 @@ export async function createRuntime({
     },
 
     /**
+     * Removes a REVOKED device from the local list. Housekeeping, not a security action.
+     *
+     * Returns the outcome alongside the payload, like `approveMobileDevice` does and unlike
+     * `revokeMobileDevice`: this one can legitimately refuse (an active device, or one whose cloud
+     * revocation is still owed), and the dialog has to be able to say which.
+     */
+    async forgetMobileDevice(deviceId: string) {
+      const outcome = await mobileManager.removeRevokedDevice(deviceId);
+      broadcastState();
+      return { ...outcome, payload: getPayload() };
+    },
+
+    /**
      * The human compared the pairing codes and they match (review 3 §P0.1).
      *
      * Returns the outcome AND the fresh payload, because both matter to the caller: the dialog has to
@@ -6722,7 +6750,7 @@ export async function createRuntime({
 
     async updateMobileDeviceAllowlist(
       deviceId: string,
-      update: { capabilities?: string[]; profileAllowlist?: string[] },
+      update: { capabilities?: string[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
     ) {
       await mobileManager.updateDeviceAllowlist(deviceId, update);
       broadcastState();
@@ -6734,7 +6762,7 @@ export async function createRuntime({
       await store.mutate("mobile:enabled", (draft: AppState) => {
         draft.settings.integrations.mobile.enabled = enabled;
       });
-      reconfigureMobile(getState());
+      await reconfigureMobile(getState());
       broadcastState();
       return getPayload();
     },
@@ -6756,7 +6784,7 @@ export async function createRuntime({
       await store.mutate("mobile:relay:enabled", (draft: AppState) => {
         draft.settings.integrations.mobile.relay.enabled = enabled;
       });
-      reconfigureMobile(getState());
+      await reconfigureMobile(getState());
       broadcastState();
       return getPayload();
     },
@@ -7832,10 +7860,11 @@ export async function createRuntime({
       tunnel.setBinaryPreference?.(nextConfig.cloudflaredPath || "");
       const remoteAccessChanged = JSON.stringify(previousConfig) !== JSON.stringify(nextConfig);
       const tunnelTargetChanged = previousConfig.port !== nextConfig.port || previousConfig.host !== nextConfig.host;
+      if (previousConfig.paused && !nextConfig.paused) autoTunnelBootstrapped = false;
       if (remoteAccessChanged) {
         events.emit("remote:config-changed", clone(nextConfig));
       }
-      if (!nextConfig.enabled) {
+      if (!nextConfig.enabled || nextConfig.paused) {
         await tunnel.stop({ preserveAvailability: true, quiet: true });
       } else if (tunnel.getSnapshot().status === "connected" && tunnelTargetChanged) {
         await tunnel.startQuickTunnel(await ensureRemoteOriginReady(nextConfig));
@@ -7863,7 +7892,7 @@ export async function createRuntime({
 
       // Reconfigure Telegram if integrations changed
       reconfigureTelegram(getState());
-      reconfigureMobile(getState());
+      await reconfigureMobile(getState());
 
       // Invalidate docker backend-detection cache on any settings change so that
       // future docker-related settings (or any proxy/env change affecting docker)
@@ -8475,6 +8504,7 @@ export async function createRuntime({
     },
     async createCloudflareTunnel() {
       const remoteConfig = getState().settings.remoteAccess;
+      if (remoteConfig.paused) throw new Error("Remote access is paused. Resume it from Remote Access first.");
       const originUrl = createTunnelOriginUrl(remoteConfig);
       log.info("createCloudflareTunnel: requested", {
         enabled: !!remoteConfig.enabled,
@@ -8845,7 +8875,7 @@ export async function createRuntime({
       azure.stopPolling();
       github.stopPolling();
       telegramManager.stop();
-      mobileManager.stop();
+      await mobileManager.stop();
       // The account's own timers: a poll waiting on a sign-in link, and the retention timer that
       // would otherwise fire into a manager whose process is going away. Neither can hold the process
       // open (both are unref'd), but a shutdown that leaves an attempt "in progress" is a shutdown

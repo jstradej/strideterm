@@ -1024,9 +1024,9 @@
   }
 }
 
-/* Hamburger: below 240px even the icon tabs crowd the action buttons, so
+/* Hamburger: below 340px even the icon tabs crowd the action buttons, so
    collapse the whole tab bar into the dropdown switcher. */
-@container notif-dock (max-width: 240px) {
+@container notif-dock (max-width: 340px) {
   .notification-center__tabs {
     display: none;
   }

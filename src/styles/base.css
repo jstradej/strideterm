@@ -252,3 +252,12 @@ html.app-hidden *::after {
     animation: none;
   }
 }
+html.native-keyboard-viewport body,
+html.native-keyboard-viewport #app {
+  height: 100%;
+}
+
+:root {
+  --strideterm-keyboard-bottom: 0px;
+  --strideterm-keyboard-pan: 0px;
+}

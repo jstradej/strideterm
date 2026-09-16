@@ -509,6 +509,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       },
       remoteAccess: {
         enabled: APP_CONFIG.remoteAccess.enabled,
+        paused: false,
         host: APP_CONFIG.remoteAccess.host,
         port: APP_CONFIG.remoteAccess.port,
         token: createAccessToken(),
@@ -1328,6 +1329,7 @@ export function normalizeState(
     remoteAccess: {
       ...defaults.settings.remoteAccess,
       ...rawRemoteAccess,
+      paused: rawRemoteAccess.paused === true,
       host:
         rawRemoteAccess.host === "127.0.0.1" ? "0.0.0.0" : rawRemoteAccess.host || defaults.settings.remoteAccess.host,
       token: rawRemoteAccess.token || defaults.settings.remoteAccess.token,

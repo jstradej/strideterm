@@ -147,7 +147,7 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).toContain("Pixel 8");
     expect(wrapper.text()).toContain("android");
     expect(wrapper.text()).toContain("Control tasks");
-    expect(wrapper.text()).toContain("Default");
+    expect(wrapper.text()).toContain("profiles: all, except none");
     // Review 2 §P0.7: the list must name concrete INSTALLATIONS. A label is whatever the phone
     // typed and two phones may share one; the fingerprint is the digest of the key the pairing
     // actually pinned, and is what a user compares against their phone before revoking a row.
@@ -208,6 +208,126 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).toContain("revoked");
   });
 
+  // The list only ever grew: nothing anywhere removed a row from it. The cross is housekeeping and
+  // says so — it changes no permission, because a missing record is refused by the same predicate
+  // that refuses a revoked one.
+  test("only a revoked device offers the cross that clears its row", async () => {
+    const forgetMobileDevice = vi.fn(async () => ({ ok: true }));
+    const { wrapper } = await mountTab({
+      forgetMobileDevice,
+      listMobileDevices: vi.fn(async () => [
+        SAMPLE_DEVICE,
+        { ...SAMPLE_DEVICE, deviceId: "mobile-2", state: "revoked", revoked: true, revokedAt: 4000 },
+      ]),
+    });
+
+    const crosses = wrapper.findAll(".device-item__forget");
+    expect(crosses).toHaveLength(1);
+
+    await crosses[0]!.trigger("click");
+    await flushPromises();
+    expect(forgetMobileDevice).toHaveBeenCalledWith("mobile-2");
+  });
+
+  // The gap between the scan and the SAS is real work, and the screen used to show an unchanged QR
+  // for all of it — indistinguishable from a scan that did nothing, which is what made people scan
+  // again.
+  test("a claim in flight covers the QR with a spinner, and the code stays underneath", async () => {
+    const { wrapper, appStore } = await mountTab();
+    appStore.mobilePairingInvitation = { pairingId: "p-1", expiresAt: Date.now() + 120_000 };
+    await flushPromises();
+    expect(wrapper.find(".pairing-qr__working").exists()).toBe(false);
+
+    appStore.mobilePairingClaimInFlight = true;
+    await flushPromises();
+
+    expect(wrapper.find(".pairing-qr__working").exists()).toBe(true);
+    expect(wrapper.text()).toContain("Verifying its key");
+    // The code is still rendered: the claim can be REJECTED, and the next thing to do then is scan
+    // the same code again.
+    expect(wrapper.find(".pairing-qr__img").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("Expires in");
+  });
+
+  test("a refusal is shown beside the row rather than swallowed", async () => {
+    const { wrapper } = await mountTab({
+      forgetMobileDevice: vi.fn(async () => ({ ok: false, reason: "cloud-revoke-pending" })),
+      listMobileDevices: vi.fn(async () => [
+        { ...SAMPLE_DEVICE, deviceId: "mobile-2", state: "revoked", revoked: true, revokedAt: 4000 },
+      ]),
+    });
+
+    await wrapper.find(".device-item__forget").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Still telling the service about this revoke");
+  });
+
+  // Twelve ticked checkboxes in two unlabeled rows — profiles and capabilities in identical boxes —
+  // were a question the screen had already answered for itself. Pairing hands out everything; the
+  // boxes are behind a disclosure for whoever actually came to restrict something.
+  test("pairing grants everything by default, with the pickers behind a disclosure", async () => {
+    const { wrapper, transport } = await mountTab({}, { enabled: true, devices: [] });
+
+    // Stated in a sentence, not in a row of boxes.
+    expect(wrapper.find(".pairing-section").text()).toContain("all profiles and everything a paired phone can do");
+    const limits = wrapper.find("details.pairing-limits");
+    expect(limits.exists()).toBe(true);
+    expect(limits.attributes("open")).toBeUndefined();
+    // The two questions are named, rather than being one flat list.
+    expect(limits.text()).toContain("All current and future profiles are included");
+    expect(limits.text()).toContain("What it may do");
+    // Every picker lives inside it — nothing is asked before the button.
+    expect(wrapper.findAll(".pairing-picker").length).toBe(limits.findAll(".pairing-picker").length);
+
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Pair device"))!
+      .trigger("click");
+    await flushPromises();
+
+    const grant = transport.createMobilePairingInvitation.mock.calls[0][0];
+    expect(grant.profileAllowlist).toEqual(["default"]);
+    expect(grant.capabilities).toEqual([
+      "notifications",
+      "status.read",
+      "task.control",
+      "task.destructive",
+      "remote.request",
+      "remote.webSession",
+    ]);
+  });
+
+  // The sentence is derived, not hardcoded: somebody who opens the disclosure and unticks must not
+  // be told they are handing out everything.
+  test("Edit access stores exclusions instead of a fixed list of allowed profiles", async () => {
+    const { wrapper, transport } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === "Edit access")!
+      .trigger("click");
+    const form = wrapper.find(".device-item__allowlist-form");
+    const profile = form.findAll(".pairing-picker")[0].find("input");
+    expect((profile.element as HTMLInputElement).checked).toBe(false);
+    await profile.setValue(true);
+    await form.find("button").trigger("click");
+    await flushPromises();
+    expect(transport.updateMobileDeviceAllowlist).toHaveBeenCalledWith({
+      deviceId: "mobile-1",
+      capabilities: ["task.control"],
+      excludedProfileIds: ["default"],
+    });
+  });
+
+  test("narrowing the grant is reflected in the sentence above the button", async () => {
+    const { wrapper } = await mountTab({}, { enabled: true, devices: [] });
+
+    const capabilityBoxes = wrapper.find("details.pairing-limits").findAll(".pairing-picker")[0].findAll("input");
+    await capabilityBoxes[0].setValue(false);
+
+    expect(wrapper.find(".pairing-section").text()).toContain("5 of 6 capabilities");
+    expect(wrapper.find(".pairing-section").text()).not.toContain("everything a paired phone can do");
+  });
+
   test("shows a QR/countdown section after starting pairing, and returns to the pair button on cancel", async () => {
     const { wrapper } = await mountTab();
 
@@ -252,6 +372,66 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).toContain("Pixel 8");
     expect(wrapper.findAll("button").some((b) => b.text().includes("Codes match"))).toBe(true);
     expect(wrapper.findAll("button").some((b) => b.text().includes("Mismatch"))).toBe(true);
+  });
+
+  // The code arrives while the user is looking at the QR they have just held a phone up to. It used
+  // to appear above a still-rendered QR and a second "+ Pair device" button, on a tab long enough
+  // that the one step actually theirs was off-screen — so they scrolled looking for it.
+  test("a pending code takes the QR's place and is brought on screen", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const { wrapper, transport } = await mountTab();
+
+    // Start a pairing, so the QR block is what is on screen when the code lands.
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Pair device"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".pairing-qr").exists()).toBe(true);
+
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sas: "1234 5678",
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    expect(wrapper.find(".pairing-sas").exists()).toBe(true);
+    expect(wrapper.find(".pairing-section").exists()).toBe(false);
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  // "Enable Mobile" and "Managed relay" are answered by the fact that somebody opened this tab to
+  // pair a phone. They are how you change your mind later, so they sit at the end, collapsed —
+  // not in front of the thing the page is for.
+  test("the two on/off switches live in Advanced, at the end", async () => {
+    const { wrapper } = await mountTab({}, { enabled: true, devices: [], relay: { enabled: false } });
+
+    const advanced = wrapper.find("details.mobile-tab__advanced");
+    expect(advanced.exists()).toBe(true);
+    expect(advanced.text()).toContain("Enable Mobile");
+    expect(advanced.text()).toContain("Managed relay");
+    // Nothing above it asks either question.
+    expect(wrapper.find(".pairing-section").exists()).toBe(true);
+    expect(advanced.find(".pairing-section").exists()).toBe(false);
+  });
+
+  // With Mobile off but a phone still paired, Advanced is the ONLY place that can turn it back on —
+  // so it must not be gated on the switch it contains.
+  test("Advanced still offers the switch when Mobile is off and a device is paired", async () => {
+    const { wrapper } = await mountTab(
+      { listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) },
+      { enabled: false, devices: [] },
+    );
+
+    const advanced = wrapper.find("details.mobile-tab__advanced");
+    expect(advanced.exists()).toBe(true);
+    expect(advanced.text()).toContain("Enable Mobile");
+    // The relay switch belongs to a running integration; with Mobile off there is nothing to relay.
+    expect(advanced.text()).not.toContain("Managed relay");
   });
 
   test("Codes match activates the device through the desktop-only IPC call", async () => {

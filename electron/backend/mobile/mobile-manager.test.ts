@@ -96,7 +96,9 @@ function makeFakeRuntime(): MobileCommandRuntime & { calls: string[] } {
   };
 }
 
-async function createFixture(overrides: { now?: () => number; ownDeviceId?: string } = {}) {
+async function createFixture(
+  overrides: { now?: () => number; ownDeviceId?: string; getProfileIds?: () => string[] } = {},
+) {
   // The desktop installation this manager IS. Defaults to the one every existing test uses; a
   // test that needs a second computer passes its own, because the installation (data dir) is the
   // security principal — not the process and not a window (review 2 §Multiwindow).
@@ -183,6 +185,7 @@ async function createFixture(overrides: { now?: () => number; ownDeviceId?: stri
     notificationOrigins,
     revokeRemoteSessions,
     now: overrides.now,
+    getProfileIds: overrides.getProfileIds,
   });
 
   return {
@@ -1261,6 +1264,204 @@ describe("MobileManager.revokeDevice", () => {
   });
 });
 
+describe("a revoke made offline still reaches the cloud (the other side finishes it on reconnect)", () => {
+  test.each(["NOT_FOUND", "not-found"])("an absent cloud device completes revocation (%s)", async (status) => {
+    const { manager, transport, deviceStore } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    transport.revokeDevice = async () => {
+      throw new MobileFirebaseCallableError("revokeDevice", status);
+    };
+    await manager.revokeDevice(deviceId);
+    expect(deviceStore.getDevice(deviceId)?.pendingCloudRevoke).toBeUndefined();
+    expect(await manager.removeRevokedDevice(deviceId)).toEqual({ ok: true });
+  });
+
+  // WHAT THIS IS THE REGRESSION FOR. `revokeDevice` used to call the transport ONCE and swallow the
+  // failure into a `log.warn`. A desktop that was offline when the user revoked a phone therefore
+  // left the cloud record `active` for ever: the phone never learned it had been unpaired, kept its
+  // pair membership, its push token and its mailbox, and nothing anywhere would ever reconcile the
+  // two sides. The phone half of exactly this was fixed in review 3 §P0.3 — this is its mirror.
+
+  /** Makes the transport refuse the cloud half, the way being offline does. */
+  function breakCloudRevoke(transport: ReturnType<typeof createInMemoryMobileFirebaseTransport>): () => void {
+    const realRevoke = transport.revokeDevice.bind(transport);
+    const realReject = transport.rejectPairing.bind(transport);
+    transport.revokeDevice = async () => {
+      throw new Error("offline");
+    };
+    transport.rejectPairing = async () => {
+      throw new Error("offline");
+    };
+    return () => {
+      transport.revokeDevice = realRevoke;
+      transport.rejectPairing = realReject;
+    };
+  }
+
+  test("the local revoke still lands, and the cloud half is kept rather than lost", async () => {
+    const { manager, transport, deviceStore } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const restore = breakCloudRevoke(transport);
+
+    await manager.revokeDevice(deviceId);
+
+    // Local: unusable here, immediately and whatever the network did. That half never depended on it.
+    expect(deviceStore.getDevice(deviceId)?.revoked).toBe(true);
+    // Cloud: owed, durably, with the attempt counted and labelled for whoever reads the state later.
+    const pending = deviceStore.getDevice(deviceId)?.pendingCloudRevoke;
+    expect(pending).toBeDefined();
+    expect(pending?.kind).toBe("revoke");
+    expect(pending?.attempts).toBe(1);
+    expect(pending?.lastErrorCode).toBeTruthy();
+
+    restore();
+  });
+
+  test("reconnecting sends everything that was owed, and clears it", async () => {
+    const { manager, transport, deviceStore, ownDeviceId } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const restore = breakCloudRevoke(transport);
+    await manager.revokeDevice(deviceId);
+    expect(transport.getPairingCalls().filter((c) => c.call === "revokeDevice")).toHaveLength(0);
+
+    restore();
+    const flushed = await manager.flushPendingCloudRevocations();
+
+    expect(flushed).toEqual({ sent: 1, owed: 0 });
+    expect(deviceStore.getDevice(deviceId)?.pendingCloudRevoke).toBeUndefined();
+    const calls = transport.getPairingCalls();
+    expect(calls.some((c) => c.call === "revokeDevice" && c.deviceId === deviceId && c.pairId === ownDeviceId)).toBe(
+      true,
+    );
+  });
+
+  test("a rejection made offline is kept too — the human said no, and it must not read as a timeout", async () => {
+    const { manager, transport, deviceStore } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const restore = breakCloudRevoke(transport);
+
+    await manager.rejectDevice(deviceId, "sas-mismatch");
+    expect(deviceStore.getDevice(deviceId)?.pendingCloudRevoke?.kind).toBe("reject");
+
+    restore();
+    await manager.flushPendingCloudRevocations();
+    expect(deviceStore.getDevice(deviceId)?.pendingCloudRevoke).toBeUndefined();
+    expect(transport.getPairingCalls().some((c) => c.call === "rejectPairing")).toBe(true);
+  });
+
+  test("nothing gives up: repeated failures keep counting, and never drop the entry", async () => {
+    const { manager, deviceStore, transport } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const restore = breakCloudRevoke(transport);
+
+    await manager.revokeDevice(deviceId);
+    for (let i = 0; i < 5; i += 1) await manager.flushPendingCloudRevocations();
+
+    expect(deviceStore.getDevice(deviceId)?.pendingCloudRevoke?.attempts).toBe(6);
+    restore();
+  });
+
+  test("a second revoke of the same device does not reset the record of how long it has been owed", async () => {
+    const { manager, deviceStore, transport } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const restore = breakCloudRevoke(transport);
+
+    await manager.revokeDevice(deviceId);
+    const first = deviceStore.getDevice(deviceId)?.pendingCloudRevoke?.requestedAt;
+    await manager.revokeDevice(deviceId);
+
+    expect(deviceStore.getDevice(deviceId)?.pendingCloudRevoke?.requestedAt).toBe(first);
+    expect(deviceStore.getDevice(deviceId)?.pendingCloudRevoke?.attempts).toBe(2);
+    restore();
+  });
+
+  test("the audit log says FAILURE while the cloud has not been told, and success once it has", async () => {
+    // The old line was written after the try/catch unconditionally: `status: "success"` even when the
+    // transport had just thrown, in the one place somebody debugging "why is my phone still paired"
+    // looks first.
+    const { manager, deviceStore, transport, auditLogStore } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const restore = breakCloudRevoke(transport);
+
+    await manager.revokeDevice(deviceId);
+    const failed = auditLogStore.query({ action: "device.revoked" }).entries;
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.status).toBe("failure");
+    expect(String(failed[0]?.detail)).toContain("cloud pending");
+
+    restore();
+    await manager.flushPendingCloudRevocations();
+    const synced = auditLogStore.query({ action: "device.revoked" }).entries;
+    expect(synced.some((e) => e.status === "success")).toBe(true);
+  });
+});
+
+describe("MobileManager.removeRevokedDevice (clearing the list)", () => {
+  test("a revoked device is forgotten, and the audit log records that it was", async () => {
+    const { manager, deviceStore, auditLogStore } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    await manager.revokeDevice(deviceId);
+
+    expect(await manager.removeRevokedDevice(deviceId)).toEqual({ ok: true });
+
+    expect(deviceStore.getDevice(deviceId)).toBeNull();
+    const forgotten = auditLogStore.query({ action: "device.forgotten" }).entries;
+    expect(forgotten).toHaveLength(1);
+    expect(forgotten[0]?.status).toBe("success");
+  });
+
+  test("an active device is refused — this is housekeeping, not a way to drop a live pairing", async () => {
+    const { manager, deviceStore } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+
+    expect(await manager.removeRevokedDevice(deviceId)).toEqual({ ok: false, reason: "not-revoked" });
+    expect(deviceStore.getDevice(deviceId)).not.toBeNull();
+  });
+
+  test("a device whose cloud revocation is still owed is refused, then allowed once it is sent", async () => {
+    // Deleting the record would take the outbox entry with it, and the cloud would never be told.
+    const { manager, deviceStore, transport } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const realRevoke = transport.revokeDevice.bind(transport);
+    transport.revokeDevice = async () => {
+      throw new Error("offline");
+    };
+    await manager.revokeDevice(deviceId);
+
+    expect(await manager.removeRevokedDevice(deviceId)).toEqual({ ok: false, reason: "cloud-revoke-pending" });
+
+    transport.revokeDevice = realRevoke;
+    await manager.flushPendingCloudRevocations();
+    expect(await manager.removeRevokedDevice(deviceId)).toEqual({ ok: true });
+    expect(deviceStore.getDevice(deviceId)).toBeNull();
+  });
+
+  test("a forgotten device is refused exactly as a revoked one was", async () => {
+    // The point of the whole change: `isDeviceUsable(null)` and `isDeviceUsable(revoked)` are the
+    // same answer, so removing the row gives nothing back to the phone.
+    const { manager, transport, deviceStore, desktopKeyPair, runtime } = await createFixture();
+    const { deviceId, keyPair } = await addMobileDevice(deviceStore);
+    const sessionKey = sessionKeyFor(keyPair.privateKey, desktopKeyPair.publicKey);
+    manager.start();
+    await manager.revokeDevice(deviceId);
+    await manager.removeRevokedDevice(deviceId);
+
+    transport.pushCommandEnvelope(
+      OWN_DEVICE_ID,
+      buildCommandEnvelope({
+        messageId: "msg-forgotten",
+        senderDeviceId: deviceId,
+        sessionKey,
+        command: makePauseCommand(),
+      }),
+    );
+    await flush();
+    expect(runtime.calls).not.toContain("pauseTask:ws-1");
+
+    manager.stop();
+  });
+});
+
 describe("mobile:* runtime events never carry secrets", () => {
   test("mobile:pairing-progress on a successful claim carries status/deviceId/label and the SAS, nothing else", async () => {
     const { manager, transport } = await createFixture();
@@ -1952,7 +2153,7 @@ describe("MobileManager presence: the desktop says it is reachable", () => {
     manager.start();
     await vi.waitFor(() => expect(transport.getPresenceUpdates().length).toBeGreaterThan(0));
 
-    manager.stop();
+    await manager.stop();
 
     const updates = transport.getPresenceUpdates();
     expect(updates[updates.length - 1]).toEqual({
@@ -1960,6 +2161,52 @@ describe("MobileManager presence: the desktop says it is reachable", () => {
       deviceId: OWN_DEVICE_ID,
       status: "offline",
     });
+  });
+
+  test("shutdown waits for the offline write before disconnecting the transport", async () => {
+    const { manager, transport } = await createFixture();
+    manager.start();
+    await vi.waitFor(() => expect(transport.getPresenceUpdates().length).toBeGreaterThan(0));
+
+    let finishOffline!: () => void;
+    const offlinePending = new Promise<void>((resolve) => {
+      finishOffline = resolve;
+    });
+    vi.spyOn(transport, "updatePresence").mockImplementation((_pairId, _deviceId, status) =>
+      status === "offline" ? offlinePending : Promise.resolve(),
+    );
+    const disconnect = vi.spyOn(transport, "disconnect");
+
+    const stopping = manager.stop();
+    await Promise.resolve();
+    expect(disconnect).not.toHaveBeenCalled();
+
+    finishOffline();
+    await stopping;
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test("shutdown disconnects after the bounded wait when the offline write hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, transport } = await createFixture();
+      manager.start();
+      await vi.waitFor(() => expect(transport.getPresenceUpdates().length).toBeGreaterThan(0));
+
+      vi.spyOn(transport, "updatePresence").mockImplementation((_pairId, _deviceId, status) =>
+        status === "offline" ? new Promise<void>(() => {}) : Promise.resolve(),
+      );
+      const disconnect = vi.spyOn(transport, "disconnect");
+      const stopping = manager.stop();
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(disconnect).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await stopping;
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The heartbeat is also the health probe. A desktop whose uid is no longer in the pair's
@@ -2007,5 +2254,75 @@ describe("MobileManager presence: the desktop says it is reachable", () => {
     expect(() => manager.start()).not.toThrow();
     await vi.waitFor(() => expect(manager.getConnectionHealth().connectionState).toBe("connected"));
     expect(() => manager.stop()).not.toThrow();
+  });
+});
+
+describe("default profile access and live synchronization", () => {
+  test("migrates an existing pairing and includes profiles created later without reconnecting", async () => {
+    let profiles = ["default", "other"];
+    const { manager, deviceStore, transport } = await createFixture({ getProfileIds: () => profiles });
+    const { deviceId } = await addMobileDevice(deviceStore, { profileAllowlist: ["default"] });
+    const publish = vi.spyOn(transport, "updateDeviceAccess");
+    await manager.start();
+    try {
+      await manager.syncProfileAccess();
+      expect(deviceStore.getDevice(deviceId)).toMatchObject({ excludedProfileIds: [], profileAllowlist: profiles });
+      expect(publish).toHaveBeenLastCalledWith(OWN_DEVICE_ID, deviceId, expect.any(Array), profiles);
+      profiles = [...profiles, "new"];
+      await manager.syncProfileAccess();
+      expect(publish).toHaveBeenLastCalledWith(OWN_DEVICE_ID, deviceId, expect.any(Array), profiles);
+      const calls = publish.mock.calls.length;
+      await manager.syncProfileAccess();
+      expect(publish).toHaveBeenCalledTimes(calls);
+    } finally {
+      manager.stop();
+    }
+  });
+
+  test("persists exclusions, revokes old sessions, and keeps including future profiles", async () => {
+    let profiles = ["default", "private"];
+    const { manager, deviceStore, transport, revokeRemoteSessions } = await createFixture({
+      getProfileIds: () => profiles,
+    });
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const publish = vi.spyOn(transport, "updateDeviceAccess");
+    await manager.start();
+    try {
+      await manager.syncProfileAccess();
+      await manager.updateDeviceAllowlist(deviceId, { excludedProfileIds: ["private"] });
+      expect(revokeRemoteSessions).toHaveBeenCalledWith(deviceId);
+      profiles = [...profiles, "new"];
+      await manager.syncProfileAccess();
+      expect(deviceStore.getDevice(deviceId)).toMatchObject({
+        excludedProfileIds: ["private"],
+        profileAllowlist: ["default", "new"],
+      });
+      expect(publish).toHaveBeenLastCalledWith(OWN_DEVICE_ID, deviceId, expect.any(Array), ["default", "new"]);
+    } finally {
+      manager.stop();
+    }
+  });
+
+  test("retries failed publication with backoff instead of retrying on every state update", async () => {
+    let now = 1000;
+    const { manager, deviceStore, transport } = await createFixture({
+      now: () => now,
+      getProfileIds: () => ["default", "new"],
+    });
+    await addMobileDevice(deviceStore);
+    const publish = vi.spyOn(transport, "updateDeviceAccess").mockRejectedValue(new Error("offline"));
+    await manager.start();
+    try {
+      await manager.syncProfileAccess().catch(() => {});
+      const calls = publish.mock.calls.length;
+      await manager.syncProfileAccess();
+      expect(publish).toHaveBeenCalledTimes(calls);
+      now += 30001;
+      publish.mockResolvedValue(undefined);
+      await manager.syncProfileAccess();
+      expect(publish).toHaveBeenCalledTimes(calls + 1);
+    } finally {
+      manager.stop();
+    }
   });
 });

@@ -112,8 +112,12 @@ export function extractQuickTunnelUrl(rawText: unknown): string {
  * the desktop never configured. Never bypass this by calling
  * createCloudflareTunnel() directly from a remote-triggered path.
  */
-export function canReconnectTunnel(remoteAccess: { enabled?: boolean; autoTunnel?: boolean }): boolean {
-  return !!remoteAccess.enabled && !!remoteAccess.autoTunnel;
+export function canReconnectTunnel(remoteAccess: {
+  enabled?: boolean;
+  autoTunnel?: boolean;
+  paused?: boolean;
+}): boolean {
+  return !!remoteAccess.enabled && !!remoteAccess.autoTunnel && !remoteAccess.paused;
 }
 
 export class CloudflareTunnelManager extends EventEmitter {

@@ -44,6 +44,7 @@ export interface NotificationSettings {
 
 export interface RemoteAccessSettings {
   enabled: boolean;
+  paused?: boolean;
   host: string;
   port: number;
   token: string;

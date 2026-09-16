@@ -153,6 +153,126 @@ export function touchLastSeen(devices: MobileDeviceRecord[], deviceId: string, n
   return devices.map((d) => (d.deviceId === deviceId ? { ...d, lastSeenAt: now } : d));
 }
 
+// ---------------------------------------------------------------------------
+// The cloud half of a revocation, owed and retried — see `pendingCloudRevoke`.
+// ---------------------------------------------------------------------------
+
+/** What a pending cloud revocation remembers. The rest the retry needs is already on the record. */
+export type PendingCloudRevoke = NonNullable<MobileDeviceRecord["pendingCloudRevoke"]>;
+
+/**
+ * Records that this desktop owes the cloud a revocation of [deviceId].
+ *
+ * Written BEFORE the call is attempted, for the same reason the phone's `RevocationOutbox` does it:
+ * the moment a user revokes a phone is exactly the moment the desktop is least likely to be online,
+ * and a process death between the click and the response must not lose the decision.
+ *
+ * THE FIRST ENTRY WINS, including over a different `kind`. Re-marking keeps the original
+ * `requestedAt` and attempt count, so a second click neither restarts the record of how long this
+ * has been owed nor makes the history read as if the first click never happened. Keeping the first
+ * kind is safe because both kinds end at the same cloud state — a device that is revoked — and the
+ * pair they could disagree about does not arise: a device is either awaiting approval, which is what
+ * `reject` is for, or adopted, which is what `revoke` is for.
+ */
+export function markCloudRevokePending(
+  devices: MobileDeviceRecord[],
+  deviceId: string,
+  entry: { kind: PendingCloudRevoke["kind"]; reason?: string; now: number },
+): MobileDeviceRecord[] {
+  return devices.map((d) =>
+    d.deviceId === deviceId
+      ? {
+          ...d,
+          pendingCloudRevoke: d.pendingCloudRevoke ?? {
+            kind: entry.kind,
+            ...(entry.reason === undefined ? {} : { reason: entry.reason }),
+            requestedAt: entry.now,
+            attempts: 0,
+          },
+        }
+      : d,
+  );
+}
+
+/**
+ * One failed attempt, counted and labelled.
+ *
+ * NOTHING HERE GIVES UP. There is no attempt ceiling that drops the entry, because dropping one is
+ * precisely how the cloud record would be left `active` for ever — the state this exists to prevent.
+ * The count and the code are for the audit trail and for anyone reading the state blob afterwards.
+ */
+export function recordCloudRevokeAttempt(
+  devices: MobileDeviceRecord[],
+  deviceId: string,
+  now: number,
+  errorCode: string,
+): MobileDeviceRecord[] {
+  return devices.map((d) =>
+    d.deviceId === deviceId && d.pendingCloudRevoke
+      ? {
+          ...d,
+          pendingCloudRevoke: {
+            ...d.pendingCloudRevoke,
+            attempts: d.pendingCloudRevoke.attempts + 1,
+            lastAttemptAt: now,
+            lastErrorCode: errorCode,
+          },
+        }
+      : d,
+  );
+}
+
+/** The cloud confirmed. The only transition that clears an entry. */
+export function clearCloudRevokePending(devices: MobileDeviceRecord[], deviceId: string): MobileDeviceRecord[] {
+  return devices.map((d) => {
+    if (d.deviceId !== deviceId || !d.pendingCloudRevoke) return d;
+    const { pendingCloudRevoke: _cleared, ...rest } = d;
+    return rest;
+  });
+}
+
+/**
+ * Drops one REVOKED record from the list, so the user can clear their own history.
+ *
+ * WHY IT IS SAFE TO FORGET A REVOKED DEVICE, which is not obvious given how carefully everything
+ * else here refuses to. A revoked record is not what refuses that phone — `isDeviceUsable(null)` is
+ * false exactly as `isDeviceUsable(revoked)` is, so a device whose record is gone is turned away by
+ * the same predicate and at the same place. It cannot come back either: `applyRemoteRevocation`
+ * ignores a device it has no local record for, so a cloud row that still says `active` does not
+ * resurrect one. And a phone that pairs again arrives as a NEW deviceId regardless. The tombstone
+ * that genuinely refuses a returning device is the CLOUD's `pairs/{pairId}/devices/{deviceId}`,
+ * which lives in a different database and is not this.
+ *
+ * TWO THINGS IT REFUSES, and both would be silent data loss:
+ *
+ *   * an ACTIVE device — forgetting one locally would leave it usable in the cloud while this
+ *     desktop had no record to revoke it with, which is the "forget locally" trap the phone side
+ *     already has a separate, explicitly-named action for;
+ *   * one whose `pendingCloudRevoke` is still owed — that entry IS the outbox, and deleting the
+ *     record would throw away a revocation this desktop has not yet managed to send.
+ *
+ * The audit log is a separate SQLite store, so the history of the pairing survives this either way.
+ */
+export function removeRevokedDevice(
+  devices: MobileDeviceRecord[],
+  deviceId: string,
+):
+  | { ok: true; devices: MobileDeviceRecord[] }
+  | { ok: false; reason: "not-found" | "not-revoked" | "cloud-revoke-pending" } {
+  const device = findDevice(devices, deviceId);
+  if (!device) return { ok: false, reason: "not-found" };
+  if (!device.revoked) return { ok: false, reason: "not-revoked" };
+  if (device.pendingCloudRevoke) return { ok: false, reason: "cloud-revoke-pending" };
+  return { ok: true, devices: devices.filter((d) => d.deviceId !== deviceId) };
+}
+
+/** Everything still owed, oldest first, so a flush retries in the order the user asked. */
+export function listPendingCloudRevocations(devices: MobileDeviceRecord[]): MobileDeviceRecord[] {
+  return devices
+    .filter((d) => d.pendingCloudRevoke !== undefined)
+    .sort((a, b) => a.pendingCloudRevoke!.requestedAt - b.pendingCloudRevoke!.requestedAt);
+}
+
 /**
  * Records that the human pressed "Codes match — activate" but the cloud has not confirmed yet.
  *
@@ -210,12 +330,13 @@ export function renameDevice(devices: MobileDeviceRecord[], deviceId: string, la
 export function updateAllowlist(
   devices: MobileDeviceRecord[],
   deviceId: string,
-  update: { capabilities?: Capability[]; profileAllowlist?: string[] },
+  update: { capabilities?: Capability[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
 ): MobileDeviceRecord[] {
   return devices.map((d) =>
     d.deviceId === deviceId
       ? {
           ...d,
+          ...(update.excludedProfileIds ? { excludedProfileIds: [...update.excludedProfileIds] } : {}),
           capabilities: update.capabilities ? [...update.capabilities] : d.capabilities,
           profileAllowlist: update.profileAllowlist ? [...update.profileAllowlist] : d.profileAllowlist,
         }
@@ -274,6 +395,29 @@ export function createMobileDeviceStore(deps: MobileDeviceStoreDeps) {
     async revokeDevice(deviceId: string, now = Date.now()): Promise<void> {
       await deps.mutateDevices((devices) => revokeDevice(devices, deviceId, now));
     },
+    async markCloudRevokePending(
+      deviceId: string,
+      entry: { kind: PendingCloudRevoke["kind"]; reason?: string; now?: number },
+    ): Promise<void> {
+      await deps.mutateDevices((devices) =>
+        markCloudRevokePending(devices, deviceId, { ...entry, now: entry.now ?? Date.now() }),
+      );
+    },
+    async recordCloudRevokeAttempt(deviceId: string, errorCode: string, now = Date.now()): Promise<void> {
+      await deps.mutateDevices((devices) => recordCloudRevokeAttempt(devices, deviceId, now, errorCode));
+    },
+    async clearCloudRevokePending(deviceId: string): Promise<void> {
+      await deps.mutateDevices((devices) => clearCloudRevokePending(devices, deviceId));
+    },
+    listPendingCloudRevocations(): MobileDeviceRecord[] {
+      return listPendingCloudRevocations(deps.getDevices());
+    },
+    async removeRevokedDevice(deviceId: string): Promise<ReturnType<typeof removeRevokedDevice>> {
+      const result = removeRevokedDevice(deps.getDevices(), deviceId);
+      if (!result.ok) return result;
+      await deps.mutateDevices(() => result.devices);
+      return result;
+    },
     async touchLastSeen(deviceId: string, now = Date.now()): Promise<void> {
       await deps.mutateDevices((devices) => touchLastSeen(devices, deviceId, now));
     },
@@ -282,7 +426,7 @@ export function createMobileDeviceStore(deps: MobileDeviceStoreDeps) {
     },
     async updateAllowlist(
       deviceId: string,
-      update: { capabilities?: Capability[]; profileAllowlist?: string[] },
+      update: { capabilities?: Capability[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
     ): Promise<void> {
       await deps.mutateDevices((devices) => updateAllowlist(devices, deviceId, update));
     },

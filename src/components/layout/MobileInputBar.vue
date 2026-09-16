@@ -15,19 +15,34 @@
   <div
     v-if="api?.isRemote && targetSessionId"
     class="mobile-input-bar"
-    :class="{ 'mobile-input-bar--collapsed': collapsed }"
+    :class="{
+      'mobile-input-bar--collapsed': panelCollapsed,
+      'mobile-input-bar--landscape': landscape,
+      'mobile-input-bar--system': landscape && systemKeyboard && !panelCollapsed,
+    }"
     data-role="mobile-input-bar"
   >
     <button
-      v-if="collapsed"
+      v-if="panelCollapsed"
       type="button"
       class="mobile-input-bar__expand"
       title="Expand the terminal input bar — a plain text field where mobile autocorrect works correctly, plus Esc / Tab / arrow / Ctrl+C keys. Lines you type are sent to the active terminal on ⏎."
       @click="expand"
     >
-      ⌨ Input bar ▴
+      {{ landscape ? "⌨" : "⌨ Input bar ▴" }}
     </button>
     <template v-else>
+      <button
+        v-if="landscape"
+        type="button"
+        class="mobile-input-bar__keyboard-mode"
+        :title="systemKeyboard ? 'Use compact keyboard' : 'Use system keyboard'"
+        :aria-label="systemKeyboard ? 'Use compact keyboard' : 'Use system keyboard'"
+        @click="toggleKeyboardMode"
+      >
+        {{ systemKeyboard ? "⌨" : "System keyboard" }}
+      </button>
+      <CompactTerminalKeyboard v-if="compactKeyboard" @insert="insertCompact" @backspace="insertCompact('', true)" />
       <div class="mobile-input-bar__keys">
         <button
           v-for="key in accessoryKeys"
@@ -35,10 +50,11 @@
           type="button"
           class="mobile-input-bar__key"
           :title="key.title"
+          :aria-label="key.label"
           @mousedown.prevent
           @click="sendKey(key)"
         >
-          {{ key.label }}
+          {{ landscape && key.label === "⇧Tab" ? "⇤" : key.label }}
         </button>
         <button
           type="button"
@@ -58,6 +74,18 @@
         >
           📋
         </button>
+        <button
+          v-if="hostAvailable"
+          type="button"
+          class="mobile-input-bar__key mobile-input-bar__key--attachment"
+          title="Attach a file and insert its path into this draft"
+          aria-label="Attach a file"
+          :disabled="composing || !!attachmentPending"
+          @mousedown.prevent
+          @click="requestAttachmentCompose"
+        >
+          📎
+        </button>
         <div class="mobile-input-bar__more">
           <button
             type="button"
@@ -74,6 +102,15 @@
           <template v-if="menuOpen">
             <div class="mobile-input-bar__menu-backdrop" @mousedown.prevent @click="menuOpen = false"></div>
             <div class="mobile-input-bar__menu" @mousedown.prevent>
+              <button
+                type="button"
+                class="mobile-input-bar__menu-item"
+                role="menuitemcheckbox"
+                :aria-checked="hideAfterSend"
+                @click="toggleHideAfterSend"
+              >
+                {{ hideAfterSend ? "✓ " : "" }}Hide keyboard after sending
+              </button>
               <button
                 type="button"
                 class="mobile-input-bar__menu-item"
@@ -111,7 +148,7 @@
                 ✂️&nbsp;&nbsp;Select text
               </button>
               <button
-                v-for="key in menuKeys"
+                v-for="key in landscape && systemKeyboard ? [...accessoryKeys, ...menuKeys] : menuKeys"
                 :key="key.label"
                 type="button"
                 class="mobile-input-bar__menu-item"
@@ -130,28 +167,24 @@
           @mousedown.prevent
           @click="collapse"
         >
-          ▾
+          {{ landscape ? "×" : "▾" }}
         </button>
       </div>
-      <!-- This is not a credential form, but a single text field plus a submit
-           button is exactly what mobile password managers (Google Password
-           Manager, iCloud Keychain, Samsung Pass, 1Password, Bitwarden…)
-           heuristically classify as a login: they offer to "save the password"
-           on ⏎ and then autofill the remembered value back into the field on
-           the next page load — the bar would open pre-filled with a word the
-           user never typed, one ⏎ away from the shell. The autocomplete and
-           vendor opt-out attributes below tell every manager we know of to stay
-           out; dropAutofilledValue() is the backstop for the ones that ignore
-           them (Chrome's autofill routinely ignores autocomplete="off"). -->
+      <!-- Chromium maps autocomplete="off" on the input to Android NO_SUGGESTIONS.
+           Keep prediction enabled, with form/vendor password-manager opt-outs and
+           dropAutofilledValue() guarding unsolicited values. -->
       <form class="mobile-input-bar__row" autocomplete="off" @submit.prevent="sendComposed">
         <input
           ref="inputRef"
           v-model="draft"
           type="text"
+          :inputmode="compactKeyboard ? 'none' : 'text'"
           class="mobile-input-bar__input"
           placeholder="Type a command — ⏎ sends it"
           name="strideterm-terminal-line"
-          autocomplete="off"
+          autocomplete="on"
+          autocorrect="on"
+          spellcheck="true"
           data-1p-ignore
           data-lpignore="true"
           data-bwignore="true"
@@ -178,7 +211,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, ref, watch } from "vue";
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import CompactTerminalKeyboard from "./CompactTerminalKeyboard.vue";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import { useAppStore } from "../../stores/app.js";
@@ -226,6 +261,66 @@ const targetSessionId = computed<string | null>(() => {
 const draft = ref("");
 const collapsed = ref(readMobileInputBarCollapsed());
 const inputRef = ref<HTMLInputElement | null>(null);
+const { isMobile, isPortrait } = useIsNarrow();
+const landscape = computed(() => isMobile.value && !isPortrait.value);
+const landscapeExpanded = ref(false);
+const panelCollapsed = computed(() => (landscape.value ? !landscapeExpanded.value : collapsed.value));
+const systemKeyboard = ref(true);
+const hideAfterSend = ref(readHideAfterSend());
+function readHideAfterSend(): boolean {
+  try {
+    return localStorage.getItem("strideterm.mobile.hideKeyboardAfterSend") === "true";
+  } catch {
+    return false;
+  }
+}
+function toggleHideAfterSend() {
+  menuOpen.value = false;
+  hideAfterSend.value = !hideAfterSend.value;
+  try {
+    localStorage.setItem("strideterm.mobile.hideKeyboardAfterSend", String(hideAfterSend.value));
+  } catch {
+    /* Storage can be unavailable in private browsing. */
+  }
+}
+function finishSending() {
+  if (hideAfterSend.value) collapse();
+}
+const compactKeyboard = computed(() => landscape.value && !systemKeyboard.value);
+watch(landscape, () => {
+  landscapeExpanded.value = false;
+  systemKeyboard.value = true;
+  inputRef.value?.blur();
+});
+async function toggleKeyboardMode() {
+  inputRef.value?.blur();
+  systemKeyboard.value = !systemKeyboard.value;
+  await nextTick();
+  inputRef.value?.focus({ preventScroll: true });
+}
+function insertCompact(text: string, backspace = false) {
+  const input = inputRef.value;
+  const value = composing.value ? (input?.value ?? draft.value) : draft.value;
+  ignoreCompositionEnd.value = composing.value;
+  composing.value = false;
+  submitAfterComposition.value = false;
+  let start = input?.selectionStart ?? value.length;
+  const end = input?.selectionEnd ?? start;
+  if (backspace && start === end) {
+    const previous = Array.from(value.slice(0, start)).at(-1);
+    start -= previous?.length ?? 0;
+  }
+  draft.value = value.slice(0, start) + text + value.slice(end);
+  valueAfterIgnoredComposition = draft.value;
+  if (input) input.value = draft.value;
+  touched.value = true;
+  const caret = start + text.length;
+  void nextTick(() => {
+    input?.focus({ preventScroll: true });
+    input?.setSelectionRange(caret, caret);
+  });
+}
+
 const composing = ref(false);
 const submitAfterComposition = ref(false);
 const ignoreCompositionEnd = ref(false);
@@ -281,7 +376,23 @@ function restoreDraft(sessionId: string | null): void {
 
 // The input is created by Vue, so a manager can only reach it after mount —
 // one check once the fill window has passed is enough.
+async function focusComposer() {
+  if (!targetSessionId.value) return;
+  expand();
+  await nextTick();
+  inputRef.value?.focus({ preventScroll: true });
+}
+onUnmounted(() => {
+  window.removeEventListener("strideterm:focus-composer", focusComposer);
+  window.removeEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
+  window.removeEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
+  window.removeEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
+});
 onMounted(() => {
+  window.addEventListener("strideterm:focus-composer", focusComposer);
+  window.addEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
+  window.addEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
+  window.addEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
   // Before the autofill sweep, so a restored draft is already "touched" when it runs. This is the
   // path a background teardown and re-bootstrap comes back through: the page is new, the draft is
   // not.
@@ -448,8 +559,197 @@ const menuKeys: AccessoryKey[] = [
 ];
 
 const menuOpen = ref(false);
+
+type AttachmentComposeRequest = {
+  requestId: string;
+  profileId: string;
+  workspaceId: string;
+  sessionId: string;
+  draft: string;
+  selectionStart: number;
+  selectionEnd: number;
+  sessionLabel?: string;
+  workspaceLabel?: string;
+};
+type AttachmentComposeResult = AttachmentComposeRequest & {
+  path: string;
+  prompt: string;
+  action: "insert" | "send";
+};
+type HostBridge = { postMessage?: (message: string) => void };
+const hostAvailable = computed(() => typeof getHost()?.postMessage === "function");
+const attachmentPending = ref<AttachmentComposeRequest | null>(null);
+const completedAttachmentRequests = new Map<string, { ok: boolean; fingerprint: string }>();
+function rememberAttachmentResult(requestId: string, result: { ok: boolean; fingerprint: string }): void {
+  completedAttachmentRequests.set(requestId, result);
+  if (completedAttachmentRequests.size > 100)
+    completedAttachmentRequests.delete(completedAttachmentRequests.keys().next().value!);
+}
+function attachmentFingerprint(result: Partial<AttachmentComposeResult>): string {
+  return JSON.stringify([
+    result.profileId,
+    result.workspaceId,
+    result.sessionId,
+    result.path,
+    result.prompt,
+    result.action,
+  ]);
+}
+function getHost(): HostBridge | undefined {
+  return (window as unknown as Record<string, unknown>).StridetermHost as HostBridge | undefined;
+}
+function postAttachmentAck(requestId: string, ok: boolean, error?: string): void {
+  try {
+    getHost()?.postMessage?.(
+      JSON.stringify({ type: "attachment-compose-ack", requestId, ok, ...(error ? { error } : {}) }),
+    );
+  } catch {
+    // The native host may disappear while its picker is open.
+  }
+}
+function requestId(): string {
+  if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto?.getRandomValues?.(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  return [...bytes]
+    .map(
+      (byte, index) =>
+        `${index === 4 || index === 6 || index === 8 || index === 10 ? "-" : ""}${byte.toString(16).padStart(2, "0")}`,
+    )
+    .join("");
+}
+function currentProfileId(): string {
+  return store.myActiveProfileId || "default";
+}
+function requestAttachmentCompose(): void {
+  if (composing.value || attachmentPending.value) return;
+  const sessionId = targetSessionId.value;
+  const host = getHost();
+  if (!sessionId || typeof host?.postMessage !== "function") return;
+  const workspaceId = originWorkspaceIdFor(sessionId);
+  const sessionWorkspaceId = sessionId.slice(0, sessionId.indexOf(":"));
+  if (workspaceId !== sessionWorkspaceId) {
+    toast("Attachment unavailable", "Attachments are unavailable for a borrowed terminal tab.", "error");
+    return;
+  }
+  const workspace = (
+    store.payload?.appState?.workspaces as Array<{ id: string; name?: string; profileId?: string }> | undefined
+  )?.find((entry) => entry.id === workspaceId && (entry.profileId || "default") === currentProfileId());
+  const input = inputRef.value;
+  const value = draft.value;
+  const start = Math.max(0, Math.min(input?.selectionStart ?? value.length, value.length));
+  const end = Math.max(start, Math.min(input?.selectionEnd ?? start, value.length));
+  const request: AttachmentComposeRequest = {
+    requestId: requestId(),
+    profileId: currentProfileId(),
+    workspaceId,
+    sessionId,
+    draft: value,
+    selectionStart: start,
+    selectionEnd: end,
+    sessionLabel: (store.workspaceTabs as Array<{ id: string; title?: string }>).find((tab) => tab.id === sessionId)
+      ?.title,
+    workspaceLabel: workspace?.name,
+  };
+  attachmentPending.value = request;
+  try {
+    host.postMessage(JSON.stringify({ type: "attachment-compose", ...request }));
+  } catch {
+    attachmentPending.value = null;
+    toast("Attachment unavailable", "The native file picker could not be opened.", "error");
+  }
+}
+function validAttachmentPath(path: unknown): path is string {
+  if (typeof path !== "string") return false;
+  const match = path.match(
+    /^\.strideterm\/attachments\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/([^/\\\x00-\x1f\x7f]+)$/i,
+  );
+  return !!match && match[1] !== "." && match[1] !== "..";
+}
+function normalizeAttachmentPrompt(prompt: string): string | null {
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(prompt)) return null;
+  return prompt.replace(/[\r\n]+/g, " ");
+}
+function quotedAttachment(path: string): string {
+  return JSON.stringify(path);
+}
+function mergeAttachment(value: string, start: number, end: number, path: string): string {
+  const quoted = quotedAttachment(path);
+  const before = value.slice(0, start);
+  const after = value.slice(end);
+  return `${before}${before && !/\s$/.test(before) ? " " : ""}${quoted}${after && !/^\s/.test(after) ? " " : ""}${after}`;
+}
+function setDraftFromAttachment(value: string): void {
+  ignoreCompositionEnd.value = composing.value;
+  composing.value = false;
+  submitAfterComposition.value = false;
+  draft.value = value;
+  valueAfterIgnoredComposition = value;
+  if (inputRef.value) inputRef.value.value = value;
+  touched.value = true;
+}
+function handleAttachmentCompose(event: Event): void {
+  const detail = (event as CustomEvent<unknown>).detail;
+  if (!detail || typeof detail !== "object") return;
+  const result = detail as Partial<AttachmentComposeResult>;
+  const requestIdValue = result.requestId;
+  if (typeof requestIdValue !== "string") return;
+  const completed = completedAttachmentRequests.get(requestIdValue);
+  if (completed !== undefined) {
+    postAttachmentAck(requestIdValue, completed.fingerprint === attachmentFingerprint(result) && completed.ok);
+    return;
+  }
+  const pending = attachmentPending.value;
+  if (!pending || requestIdValue !== pending.requestId) return;
+  const current = draft.value;
+  const resultTargetMatches =
+    result.profileId === pending.profileId &&
+    result.workspaceId === pending.workspaceId &&
+    result.sessionId === pending.sessionId;
+  const targetStillCurrent =
+    resultTargetMatches &&
+    targetSessionId.value === pending.sessionId &&
+    current === pending.draft &&
+    currentProfileId() === pending.profileId &&
+    originWorkspaceIdFor(pending.sessionId) === pending.workspaceId;
+  const normalizedPrompt = typeof result.prompt === "string" ? normalizeAttachmentPrompt(result.prompt) : null;
+  const ok =
+    targetStillCurrent &&
+    validAttachmentPath(result.path) &&
+    normalizedPrompt !== null &&
+    (result.action === "insert" || result.action === "send");
+  if (!ok) {
+    rememberAttachmentResult(requestIdValue, { ok: false, fingerprint: attachmentFingerprint(result) });
+    attachmentPending.value = null;
+    postAttachmentAck(requestIdValue, false, "Attachment target or draft changed");
+    return;
+  }
+  const prompt = normalizedPrompt!;
+  const value =
+    prompt === pending.draft
+      ? mergeAttachment(prompt, pending.selectionStart, pending.selectionEnd, result.path!)
+      : `${prompt}${prompt && !/\s$/.test(prompt) ? " " : ""}${quotedAttachment(result.path!)}`;
+  attachmentPending.value = null;
+  setDraftFromAttachment(value);
+  try {
+    if (result.action === "send") sendComposed();
+    rememberAttachmentResult(requestIdValue, { ok: true, fingerprint: attachmentFingerprint(result) });
+    postAttachmentAck(requestIdValue, true);
+    if (result.action === "insert") void focusComposer();
+  } catch {
+    rememberAttachmentResult(requestIdValue, { ok: false, fingerprint: attachmentFingerprint(result) });
+    postAttachmentAck(requestIdValue, false, "Unable to apply attachment");
+  }
+}
+function handleAttachmentComposeCancel(event: Event): void {
+  const detail = (event as CustomEvent<{ requestId?: unknown }>).detail;
+  if (detail?.requestId === attachmentPending.value?.requestId) attachmentPending.value = null;
+}
 function toggleMenu(): void {
   menuOpen.value = !menuOpen.value;
+  if (menuOpen.value && landscape.value && systemKeyboard.value) inputRef.value?.blur();
 }
 
 /**
@@ -584,12 +884,14 @@ function sendComposed(): void {
   // Empty draft sends a bare Enter — confirming TUI prompts without typing.
   if (!draft.value) {
     writeTerminal(sessionId, "\r");
+    finishSending();
     return;
   }
   // No trimming: predictive-text picks leave a trailing space, which is
   // harmless, and intentional leading/trailing spaces must survive.
   writeTerminal(sessionId, draft.value);
   draft.value = "";
+  finishSending();
   // The session id is captured above so switching tabs mid-delay can't route
   // the pending Enter to a different terminal than the one that got the text.
   setTimeout(() => writeTerminal(sessionId, "\r"), SUBMIT_DELAY_MS);
@@ -641,11 +943,23 @@ function handleCompositionEnd(event: CompositionEvent): void {
 }
 
 function collapse(): void {
+  inputRef.value?.blur();
+  menuOpen.value = false;
+  if (landscape.value) {
+    landscapeExpanded.value = false;
+    return;
+  }
   collapsed.value = true;
   writeMobileInputBarCollapsed(true);
 }
 
-function expand(): void {
+async function expand(): Promise<void> {
+  if (landscape.value) {
+    landscapeExpanded.value = true;
+    await nextTick();
+    if (systemKeyboard.value) inputRef.value?.focus({ preventScroll: true });
+    return;
+  }
   collapsed.value = false;
   writeMobileInputBarCollapsed(false);
   // Expanding is a layout action, not an intent to type. Leaving focus alone

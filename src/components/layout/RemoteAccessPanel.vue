@@ -53,7 +53,7 @@
       <button
         type="button"
         class="button button--ghost remote-summary__configure"
-        title="Open the Remote Access dialog to switch modes (LAN / Cloudflare / VPS), copy share URLs, and rotate the access token."
+        title="Open Remote Access to connect strIDEterm Mobile, manage paired phones, or configure browser sharing."
         @click="store.openRemoteAccessDialog()"
       >
         Configure
@@ -76,7 +76,7 @@
     <button
       type="button"
       class="button button--ghost remote-summary__configure"
-      title="Open the Remote Access dialog to enable LAN sharing, set up a Cloudflare quick-tunnel, or pin a custom VPS URL."
+      title="Open Remote Access to connect strIDEterm Mobile or set up LAN, Cloudflare, or VPS browser sharing."
       @click="store.openRemoteAccessDialog()"
     >
       Configure
