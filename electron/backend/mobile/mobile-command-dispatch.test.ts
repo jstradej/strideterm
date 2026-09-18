@@ -311,8 +311,8 @@ describe("profile catalog", () => {
     expect(result).toMatchObject({ status: "succeeded", errorCode: null });
     expect(result.data).toEqual({
       profiles: [
-        { id: "default", name: "Default 2", workspaceCount: 1 },
-        { id: "other", name: "asdf", workspaceCount: 1 },
+        { id: "default", name: "Default 2", workspaceCount: 1, workspaceNames: ["Fix the parser #3"] },
+        { id: "other", name: "asdf", workspaceCount: 1, workspaceNames: [] },
       ],
     });
   });

@@ -1,4 +1,5 @@
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import type { ComponentPublicInstance } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WorkspaceAttachments from "./WorkspaceAttachments.vue";
 import { apiKey } from "../../types/keys.js";
@@ -12,6 +13,13 @@ const attachment: AttachmentRecord = {
   name: "photo.png",
 };
 
+type WorkspaceAttachmentsProps = {
+  workspaceId: string;
+  workspaceRoot?: string;
+  openByDefault?: boolean;
+  panel?: boolean;
+};
+
 function deferred<T>() {
   let resolve!: (_value: T) => void;
   const promise = new Promise<T>((res) => {
@@ -23,11 +31,11 @@ function deferred<T>() {
 function mountPanel(
   api: Record<string, unknown>,
   props: Partial<{ workspaceId: string; workspaceRoot: string; openByDefault: boolean; panel: boolean }> = {},
-) {
+): VueWrapper<ComponentPublicInstance<WorkspaceAttachmentsProps>> {
   return mount(WorkspaceAttachments, {
     props: { workspaceId: "workspace-a", ...props },
     global: { provide: { [apiKey as symbol]: api } },
-  });
+  }) as unknown as VueWrapper<ComponentPublicInstance<WorkspaceAttachmentsProps>>;
 }
 
 function mockClipboard() {
@@ -172,7 +180,7 @@ describe("WorkspaceAttachments", () => {
     const wrapper = mountPanel({ attachmentList });
 
     await wrapper.get("button").trigger("click");
-    await wrapper.setProps({ workspaceId: "workspace-b" } as never);
+    await wrapper.setProps({ workspaceId: "workspace-b" });
     first.resolve([attachment]);
     await flushPromises();
     expect(wrapper.text()).toContain("Loading attachments…");

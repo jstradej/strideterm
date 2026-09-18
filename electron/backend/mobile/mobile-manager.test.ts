@@ -3,7 +3,13 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { MobileManager } from "./mobile-manager.js";
+import { MobileManager, notificationKindFor } from "./mobile-manager.js";
+import { buildExternalNotificationEvent } from "../notifications/external-notification-event.js";
+
+test("questions use the native waiting-for-input notification channel", () => {
+  expect(notificationKindFor("question")).toBe("waiting");
+});
+import { buildNotificationBody, recentTerminalExcerpt } from "../notifications/notification-context.js";
 import { createMobilePairing } from "./mobile-pairing.js";
 import { createMobileDeviceStore } from "./mobile-device-store.js";
 import { createMobileAuditLogStore } from "./mobile-audit-log-store.js";
@@ -28,6 +34,8 @@ import {
   PROTOCOL_VERSION,
   RESERVED_HIGH_PRIORITY_DAILY_PUSH_SLOTS,
   SESSION_KEY_HKDF_INFO,
+  MAX_EVENT_ENVELOPE_BYTES,
+  NotificationPayloadSchema,
 } from "./mobile-schemas.js";
 import type { Capability, Command, EncryptedEnvelope, MobileDeviceRecord } from "./mobile-schemas.js";
 import type { ExternalNotificationEvent } from "../../shared/types/notifications.js";
@@ -866,7 +874,18 @@ describe("MobileManager outbox: ExternalNotificationEvent -> encrypted per-devic
     const { deviceId, keyPair } = await addMobileDevice(deviceStore);
 
     manager.start();
-    externalNotificationEvents.emit("event", makeExternalEvent({ title: "Secret alert title" }));
+    externalNotificationEvents.emit(
+      "event",
+      makeExternalEvent({
+        title: "Secret alert title",
+        detail: "Approve deployment?\n\nRecent terminal output:\npassed ✅",
+        workspaceName: "api-gateway",
+        panelId: "panel-codex",
+        tab: "Claude Code",
+        activity: "pnpm test",
+        exitCode: 0,
+      }),
+    );
     await flush();
     manager.stop();
 
@@ -877,7 +896,62 @@ describe("MobileManager outbox: ExternalNotificationEvent -> encrypted per-devic
     const aad = Buffer.from(sent.aad, "base64");
     const plaintext = JSON.parse(openCombinedBase64(sent.ciphertext, sessionKey, aad).toString("utf8"));
     expect(plaintext.title).toBe("Secret alert title");
+    expect(plaintext).toMatchObject({
+      body: "Approve deployment?\n\nRecent terminal output:\npassed ✅",
+      workspaceName: "api-gateway",
+      panelId: "panel-codex",
+      tab: "Claude Code",
+      activity: "pnpm test",
+      exitCode: 0,
+    });
+    for (const field of ["body", "workspaceName", "panelId", "tab", "activity", "exitCode"]) {
+      expect(sent).not.toHaveProperty(field);
+    }
+    expect(Buffer.byteLength(JSON.stringify(sent), "utf8")).toBeLessThanOrEqual(MAX_EVENT_ENVELOPE_BYTES);
     void deviceId;
+  });
+
+  test("rich multilingual content survives encryption within the event envelope limit", async () => {
+    const { manager, transport, deviceStore, desktopKeyPair, externalNotificationEvents } = await createFixture();
+    const { keyPair } = await addMobileDevice(deviceStore);
+    const event = buildExternalNotificationEvent({
+      eventId: "evt-context-budget",
+      profileId: "default",
+      workspaceId: "ws-1",
+      kind: "waiting",
+      title: "界".repeat(300),
+      detail: buildNotificationBody({
+        kind: "waiting",
+        message: "🧪".repeat(400),
+        recentOutput: recentTerminalExcerpt(`${"界".repeat(1200)}\nFINAL RESULT`),
+      }),
+      workspaceName: "界".repeat(200),
+      tab: "界".repeat(200),
+      activity: "界".repeat(300),
+      prompt: "界".repeat(500),
+      exitCode: 0,
+    });
+    manager.start();
+    externalNotificationEvents.emit("event", event);
+    await flush();
+    manager.stop();
+    const sentEvents = transport.getSentEvents(OWN_DEVICE_ID);
+    expect(sentEvents).toHaveLength(1);
+    const sent = sentEvents[0];
+    expect(Buffer.byteLength(JSON.stringify(sent), "utf8")).toBeLessThanOrEqual(MAX_EVENT_ENVELOPE_BYTES);
+    const plaintext = JSON.parse(
+      openCombinedBase64(
+        sent.ciphertext,
+        sessionKeyFor(keyPair.privateKey, desktopKeyPair.publicKey),
+        Buffer.from(sent.aad, "base64"),
+      ).toString("utf8"),
+    );
+    expect(NotificationPayloadSchema.safeParse(plaintext).success).toBe(true);
+    expect(plaintext.body).toMatch(/FINAL RESULT$/);
+    expect(plaintext.tab).toBe(event.tab);
+    expect(plaintext.workspaceName).toBe(event.workspaceName);
+    expect(plaintext.activity).toBe(event.activity);
+    expect(plaintext.prompt).toBe(event.prompt);
   });
 
   test("a device NOT in the event's profile allowlist does not receive it", async () => {

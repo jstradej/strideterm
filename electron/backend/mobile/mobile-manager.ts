@@ -108,6 +108,7 @@ export type PairingRejectionReason =
  */
 export function notificationKindFor(kind: string): NotificationKind {
   switch (kind) {
+    case "question":
     case "waiting":
     case "user-action-required":
       return "waiting";
@@ -1220,6 +1221,12 @@ export class MobileManager extends EventEmitter {
       body: event.detail,
       actions: event.actions,
       isTest,
+      ...(event.workspaceName ? { workspaceName: event.workspaceName } : {}),
+      ...(event.panelId ? { panelId: event.panelId } : {}),
+      ...(event.tab ? { tab: event.tab } : {}),
+      ...(event.activity ? { activity: event.activity } : {}),
+      ...(event.prompt ? { prompt: event.prompt } : {}),
+      ...(typeof event.exitCode === "number" ? { exitCode: event.exitCode } : {}),
     };
     const plaintext = Buffer.from(JSON.stringify(payload));
     const ciphertext = sealToCombinedBase64(plaintext, key, aad);

@@ -174,8 +174,11 @@ export const useAccountStore = defineStore("account", () => {
   const startTrial = () => run(() => api!.accountStartTrial!(), undefined);
   const refreshOverview = () => run(() => api!.accountRefreshOverview!(), undefined);
   /** Answers `opened` or `pending`. The URL is opened by the main process and never seen here. */
-  const openCheckout = (offerId: string) =>
-    run(() => api!.accountOpenCheckout!({ offerId }) as Promise<string>, "failed");
+  const openCheckout = async (offerId: string): Promise<string> => {
+    const outcome = await run(() => api!.accountOpenCheckout!({ offerId }) as Promise<string>, "failed");
+    if (outcome === "pending") actionError.value = "checkout-pending";
+    return outcome;
+  };
   const openBillingPortal = () => run(() => api!.accountOpenBillingPortal!(), undefined);
   const revoke = (kind: string, targetId?: string) => run(() => api!.accountRevoke!({ kind, targetId }), undefined);
   const acknowledgeNotice = (noticeId: string) => run(() => api!.accountAcknowledgeNotice!({ noticeId }), undefined);

@@ -631,6 +631,57 @@ describe("billing", () => {
     expect(opened).toEqual([]);
   });
 
+  test("a pending checkout retries ready under the same key", async () => {
+    let keyNumber = 0;
+    const { manager, transport, opened } = fakes({ newIdempotencyKey: () => `idem-${++keyNumber}` });
+    const create = transport.createCheckout as ReturnType<typeof vi.fn>;
+    create.mockResolvedValueOnce({ status: "checkout-pending", intentId: "int-1" });
+    create.mockResolvedValueOnce({
+      status: "ready",
+      checkoutUrl: "https://checkout.example/pay",
+      intentId: "int-1",
+    });
+    await signIn(manager);
+
+    await expect(manager.openCheckout("personal-monthly")).resolves.toBe("pending");
+    await expect(manager.openCheckout("personal-monthly")).resolves.toBe("opened");
+    expect(create).toHaveBeenCalledTimes(2);
+    expect((create.mock.calls[0]![0] as { idempotencyKey: string }).idempotencyKey).toBe(
+      (create.mock.calls[1]![0] as { idempotencyKey: string }).idempotencyKey,
+    );
+    expect(opened).toEqual(["https://checkout.example/pay"]);
+  });
+
+  test("a different offer while checkout is pending does not start that offer", async () => {
+    const { manager, transport } = fakes();
+    const create = transport.createCheckout as ReturnType<typeof vi.fn>;
+    create.mockResolvedValue({ status: "checkout-pending", intentId: "int-1" });
+    await signIn(manager);
+
+    await expect(manager.openCheckout("offer-a")).resolves.toBe("pending");
+    await expect(manager.openCheckout("offer-b")).rejects.toMatchObject({ code: "checkout-pending" });
+    expect(create.mock.calls.map((call) => (call[0] as { offerId: string }).offerId)).toEqual(["offer-a", "offer-a"]);
+  });
+
+  test("a definitive checkout failure releases the key for a new attempt", async () => {
+    let keyNumber = 0;
+    const { manager, transport } = fakes({ newIdempotencyKey: () => `idem-${++keyNumber}` });
+    const create = transport.createCheckout as ReturnType<typeof vi.fn>;
+    create.mockResolvedValueOnce({ status: "refused", errorReason: { reason: "billing-unconfigured" } });
+    create.mockResolvedValueOnce({
+      status: "ready",
+      checkoutUrl: "https://checkout.example/pay",
+      intentId: "int-2",
+    });
+    await signIn(manager);
+
+    await expect(manager.openCheckout("personal-monthly")).rejects.toMatchObject({ code: "billing-unconfigured" });
+    await expect(manager.openCheckout("personal-monthly")).resolves.toBe("opened");
+    expect((create.mock.calls[0]![0] as { idempotencyKey: string }).idempotencyKey).not.toBe(
+      (create.mock.calls[1]![0] as { idempotencyKey: string }).idempotencyKey,
+    );
+  });
+
   test("a portal session is fresh every time and is never cached in state", async () => {
     const { manager, transport, opened } = fakes();
     await signIn(manager);

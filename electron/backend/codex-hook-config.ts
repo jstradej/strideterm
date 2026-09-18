@@ -171,6 +171,32 @@ export async function isCodexHooksFeatureFlagEnabled(): Promise<boolean> {
   }
 }
 
+export async function ensureCodexTerminalNotifications() {
+  const configPath = getCodexConfigPath();
+  try {
+    const content = (await readFile(configPath, "utf8")).replace(/\r\n/g, "\n");
+    const header = /(^|\n)\[tui\][^\n]*(\n|$)/.exec(content);
+    let updated: string;
+    const settings = 'notification_method = "osc9"\nnotification_condition = "always"\n';
+    if (header) {
+      const start = header.index + header[0].length;
+      const rest = content.slice(start);
+      const next = /(^|\n)\[/.exec(rest);
+      const end = next ? next.index : rest.length;
+      let body = rest.slice(0, end);
+      body = body.replace(/^[ \t]*notification_(?:method|condition)\s*=[^\n]*(?:\n|$)/gm, "");
+      const enabled = /^[ \t]*notifications\s*=/m.test(body) ? "" : "notifications = true\n";
+      updated = `${content.slice(0, start).trimEnd()}\n${settings}${enabled}${body}${rest.slice(end)}`;
+    } else {
+      updated = `${content.trimEnd()}\n\n[tui]\nnotifications = true\n${settings}`;
+    }
+    if (updated !== content) await atomicWriteFile(configPath, updated);
+    return { ok: true, changed: updated !== content, path: configPath };
+  } catch (error) {
+    return { ok: false, error: (error as Error).message, path: configPath };
+  }
+}
+
 /**
  * Configure Codex CLI lifecycle hooks.
  *
@@ -207,6 +233,10 @@ export async function configureCodexHook(userDataPath: string): Promise<{
   }
 
   const hooksPath = getCodexHooksPath();
+  const terminalResult = await ensureCodexTerminalNotifications();
+  if (!terminalResult.ok) {
+    return { ok: false, error: terminalResult.error, detail: "config-write-failed" };
+  }
   const result = await configureHookEntries(hooksPath, CODEX_EVENT_MAP, scriptResult.path, {
     hookMarkers: HOOK_MARKERS,
     buildEntry: buildNestedCommandEntry,

@@ -2,7 +2,7 @@
   <section data-role="workspace-hero">
     <div v-if="isRemote && store.remoteConnectionIssue && !issueDismissed" class="workspace-remote-alert" role="alert">
       <div class="workspace-remote-alert__body">
-        <p class="workspace-remote-alert__message">{{ store.remoteConnectionIssue }}</p>
+        <p class="workspace-remote-alert__message">{{ remoteConnectionMessage }}</p>
         <p v-if="store.remoteConnectionHint" class="workspace-remote-alert__hint">
           {{ store.remoteConnectionHint }}
         </p>
@@ -155,6 +155,32 @@ function copyPath() {
 }
 
 const isRemote = computed(() => api?.isRemote || false);
+
+// The transport supplies an absolute deadline, so this renders a real countdown
+// rather than the stale "in 10s" snapshot emitted when the backoff began.
+const reconnectNow = ref(Date.now());
+const remoteConnectionMessage = computed(() => {
+  const deadline = store.remoteReconnectAt;
+  if (!deadline) return store.remoteConnectionIssue;
+  const seconds = Math.max(0, Math.ceil((deadline - reconnectNow.value) / 1000));
+  return store.remoteConnectionIssue.replace(
+    /Reconnecting in \d+s\.\.\./i,
+    seconds > 0 ? `Reconnecting in ${seconds}s...` : "Reconnecting...",
+  );
+});
+watch(
+  () => store.remoteReconnectAt,
+  (deadline, _, onCleanup) => {
+    reconnectNow.value = Date.now();
+    if (!deadline || deadline <= reconnectNow.value) return;
+    const clock = setInterval(() => {
+      reconnectNow.value = Date.now();
+      if (reconnectNow.value >= deadline) clearInterval(clock);
+    }, 250);
+    onCleanup(() => clearInterval(clock));
+  },
+  { immediate: true },
+);
 
 // Dismissed per message, not for good: a NEW issue clears the flag, so hiding one banner can never
 // hide the next one. Without this the only way to get rid of a banner about something the user has

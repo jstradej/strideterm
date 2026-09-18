@@ -16,6 +16,7 @@ import type {
   ExternalNotificationPriority,
   MobileCommandType,
 } from "../../shared/types/notifications.js";
+import { truncateUtf8Head } from "./notification-context.js";
 
 export interface BuildExternalNotificationEventInput {
   eventId: string;
@@ -28,7 +29,24 @@ export interface BuildExternalNotificationEventInput {
   urgency?: "normal" | "urgent";
   title: string;
   detail?: string;
+  workspaceName?: string;
+  tab?: string;
+  activity?: string;
+  prompt?: string;
+  exitCode?: number | null;
   createdAt?: number;
+}
+
+function displayText(value: string | undefined, maxLength: number): string | undefined {
+  const text = String(value || "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .trim();
+  let result = "";
+  for (const char of text) {
+    if (result.length + char.length > maxLength) break;
+    result += char;
+  }
+  return result || undefined;
 }
 
 /**
@@ -78,8 +96,13 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
     panelId,
     kind,
     priority,
-    title: input.title || "",
-    detail: input.detail || "",
+    title: truncateUtf8Head(displayText(input.title, 500) || "", 500),
+    detail: truncateUtf8Head(input.detail || "", 1500),
+    ...(displayText(input.workspaceName, 120) ? { workspaceName: displayText(input.workspaceName, 120) } : {}),
+    ...(displayText(input.tab, 120) ? { tab: displayText(input.tab, 120) } : {}),
+    ...(displayText(input.activity, 200) ? { activity: displayText(input.activity, 200) } : {}),
+    ...(input.prompt ? { prompt: truncateUtf8Head(input.prompt, 500) } : {}),
+    ...(Number.isInteger(input.exitCode) ? { exitCode: input.exitCode! } : {}),
     dedupeKey,
     // Only low-priority events collapse — waiting/error/normal events must
     // never silently disappear behind a later one (plan §7/§11.5).

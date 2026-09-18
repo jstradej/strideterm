@@ -2215,6 +2215,39 @@ describe("runtime integration", () => {
     }
   });
 
+  test("Codex OSC questions reach attention, Telegram and mobile even in a visible terminal", async () => {
+    const fixture = await createFixture({ initialState: questionFixtureState() });
+    fixtures.push(fixture);
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["backend:shell"] });
+    const telegram = vi.spyOn(fixture.runtime._telegramManagerForTest(), "forwardAlert").mockResolvedValue(undefined);
+    const mobile = vi.fn();
+    fixture.runtime._externalNotificationEventsForTest().on("event", mobile);
+    const data = "\u001b]9;Plan mode prompt: Which device?\u0007";
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: data.slice(0, 8) });
+    expect(telegram).not.toHaveBeenCalled();
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: data.slice(8) });
+    expect(fixture.runtime.getPayload().attention.byWorkspace.backend.alerts[0]).toMatchObject({
+      kind: "question",
+      message: "Plan mode prompt: Which device?",
+    });
+    expect(telegram).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "question", message: "Plan mode prompt: Which device?" }),
+    );
+    expect(mobile).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "question", priority: "high", workspaceId: "backend" }),
+    );
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data });
+    expect(telegram).toHaveBeenCalledTimes(1);
+    expect(mobile).toHaveBeenCalledTimes(1);
+    fixture.sessionManager.emit("terminal:spawned", { sessionId: "backend:shell" });
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data });
+    expect(telegram).toHaveBeenCalledTimes(2);
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "\u001b]9;Question" });
+    fixture.sessionManager.emit("terminal:removed", { sessionId: "backend:shell" });
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: " requested\u0007" });
+    expect(telegram).toHaveBeenCalledTimes(2);
+  });
+
   test("permission_prompt is a question alert and carries the hook message", async () => {
     vi.useFakeTimers();
     try {
@@ -7738,7 +7771,8 @@ describe("runtime integration", () => {
         // from the same local data — not a second, independently-derived copy.
         expect(mobileReceived).toHaveLength(1);
         expect(mobileReceived[0].workspaceId).toBe(forwardAlertCalls[0].workspaceId);
-        expect(mobileReceived[0].title).toBe(forwardAlertCalls[0].title);
+        expect(mobileReceived[0].title).toBe("Waiting for input");
+        expect(mobileReceived[0].tab).toBe(forwardAlertCalls[0].title);
         expect(mobileReceived[0].kind).toBe(forwardAlertCalls[0].kind);
 
         externalEvents.off("event", mobileListener);

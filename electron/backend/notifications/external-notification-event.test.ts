@@ -95,4 +95,37 @@ describe("buildExternalNotificationEvent", () => {
     expect(event.kind).toBe("info");
     expect(event.priority).toBe("low");
   });
+
+  test("preserves mobile display context and omits absent exit codes", () => {
+    const event = buildExternalNotificationEvent({
+      eventId: "evt-context",
+      profileId: "p1",
+      workspaceId: "ws-1",
+      sessionId: "ws-1:panel-1",
+      panelId: "panel-1",
+      kind: "completed",
+      title: "Shell",
+      detail: "Command finished\n\nRecent terminal output:\npassed",
+      workspaceName: "api",
+      tab: "Tests",
+      activity: "pnpm test",
+      exitCode: 0,
+    });
+
+    expect(event).toMatchObject({
+      workspaceName: "api",
+      tab: "Tests",
+      activity: "pnpm test",
+      exitCode: 0,
+    });
+    expect(
+      buildExternalNotificationEvent({
+        eventId: "evt-no-exit",
+        profileId: "p1",
+        workspaceId: "ws-1",
+        kind: "waiting",
+        title: "Shell",
+      }),
+    ).not.toHaveProperty("exitCode");
+  });
 });

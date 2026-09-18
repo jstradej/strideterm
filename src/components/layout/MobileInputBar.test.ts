@@ -516,6 +516,7 @@ describe("MobileInputBar", () => {
   describe("⋯ menu", () => {
     // ← → and ^C moved off the top row into this menu, alongside Home/End/Ctrl+R/Ctrl+L.
     const MENU_KEYS: Array<[glyph: string, seq: string]> = [
+      ["⌥↑", "\x1b[1;3A"],
       ["←", "\x1b[D"],
       ["→", "\x1b[C"],
       ["⇤", "\x1b[H"],

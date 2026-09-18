@@ -49,17 +49,17 @@ function makePayload(mobile: AnyApi): AnyApi {
 }
 
 function makeTransport(payload: AnyApi, overrides: AnyApi = {}) {
-  let stateHandler: ((p: AnyApi) => void) | null = null;
-  let pairingProgressHandler: ((p: AnyApi) => void) | null = null;
+  let stateHandler: ((_payload: AnyApi) => void) | null = null;
+  let pairingProgressHandler: ((_payload: AnyApi) => void) | null = null;
   return {
     isRemote: false,
     getState: vi.fn(() => Promise.resolve(payload)),
-    onStateUpdated: (fn: (p: AnyApi) => void) => {
+    onStateUpdated: (fn: (_payload: AnyApi) => void) => {
       stateHandler = fn;
     },
     onConnectionState: vi.fn(),
     onMobileStatus: vi.fn(),
-    onMobilePairingProgress: (fn: (p: AnyApi) => void) => {
+    onMobilePairingProgress: (fn: (_payload: AnyApi) => void) => {
       pairingProgressHandler = fn;
     },
     onMobileDeviceRevoked: vi.fn(),
@@ -130,16 +130,133 @@ describe("SettingsMobileTab", () => {
     setActivePinia(createPinia());
   });
 
-  async function mountTab(transportOverrides: AnyApi = {}, mobileSettings: AnyApi = { enabled: true, devices: [] }) {
+  async function mountTab(
+    transportOverrides: AnyApi = {},
+    mobileSettings: AnyApi = { enabled: true, devices: [] },
+    initialView: "overview" | "phones" | "account" = "phones",
+  ) {
     const payload = makePayload(mobileSettings);
     const transport = makeTransport(payload, transportOverrides);
     const appStore = useAppStore();
     appStore.init(transport as AnyApi);
     await flushPromises();
-    const wrapper = mount(SettingsMobileTab, { props: { profiles: [{ id: "default", name: "Default" }] } });
+    const wrapper = mount(SettingsMobileTab, {
+      props: { profiles: [{ id: "default", name: "Default" }], initialView },
+    });
     await flushPromises();
     return { wrapper, transport, appStore };
   }
+
+  test("uses accessible tabs with wrapping keyboard navigation", async () => {
+    const account = useAccountStore();
+    account.attach({ getAccountState: async () => ({ phase: "ready", installationRegistered: true }) } as AnyApi);
+    await account.refreshState();
+    const { wrapper } = await mountTab({}, { enabled: true, devices: [] }, "overview");
+    const tabs = wrapper.findAll('[role="tab"]');
+
+    expect(tabs.map((tab) => tab.attributes("aria-selected"))).toEqual(["true", "false", "false"]);
+    await tabs[0]!.trigger("keydown", { key: "ArrowLeft" });
+
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Account");
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').attributes("tabindex")).toBe("0");
+  });
+
+  test("opens Phones by default when the hosted account surface is unavailable", async () => {
+    const payload = makePayload({ enabled: true, devices: [] });
+    const transport = makeTransport(payload);
+    useAppStore().init(transport as AnyApi);
+    const wrapper = mount(SettingsMobileTab, { props: { profiles: [{ id: "default", name: "Default" }] } });
+    await flushPromises();
+
+    expect(wrapper.find('[role="tabpanel"]').attributes("id")).toContain("phones-panel");
+    expect(wrapper.text()).toContain("Connect your first phone");
+  });
+
+  test("shows an active account confirmation while the Phones panel is selected", async () => {
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "signing-in",
+        installationRegistered: true,
+        auth: {
+          phase: "awaiting-confirmation",
+          email: "owner@example.test",
+          purpose: "reauth",
+          expiresAt: Date.now() + 900_000,
+          canResendAt: Date.now() - 1,
+          manualOnly: false,
+          sendsUsed: 1,
+          sendOutcome: "sent",
+        },
+      }),
+    } as AnyApi);
+    await account.refreshState();
+
+    const { wrapper } = await mountTab();
+
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Phones");
+    expect(wrapper.text()).toContain("Sign this computer in as owner@example.test?");
+    expect(wrapper.find(".account-auth").isVisible()).toBe(true);
+  });
+
+  test("opens Phones immediately when a pairing confirmation already exists at mount", async () => {
+    const account = useAccountStore();
+    account.attach({ getAccountState: async () => ({ phase: "ready", installationRegistered: true }) } as AnyApi);
+    await account.refreshState();
+    const payload = makePayload({ enabled: true, devices: [] });
+    const transport = makeTransport(payload, {
+      listMobileDevicesAwaitingApproval: vi.fn(async () => [
+        { deviceId: "phone-1", label: "Pixel", sas: "1234 5678", state: "keyProven" },
+      ]),
+    });
+    const appStore = useAppStore();
+    appStore.init(transport as AnyApi);
+    appStore.mobilePairingSas = { deviceId: "phone-1", label: "Pixel", sas: "1234 5678" };
+
+    const wrapper = mount(SettingsMobileTab, {
+      props: { profiles: [{ id: "default", name: "Default" }], initialView: "overview" },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Phones");
+    expect(wrapper.text()).toContain("1234 5678");
+  });
+
+  test("keeps navigation and revoke available while paused but blocks pairing and device mutations", async () => {
+    const account = useAccountStore();
+    account.attach({ getAccountState: async () => ({ phase: "ready", installationRegistered: true }) } as AnyApi);
+    await account.refreshState();
+    const { wrapper, appStore } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: {
+        ...appStore.payload!.appState,
+        settings: { ...appStore.payload!.appState.settings, remoteAccess: { paused: true } },
+      },
+    } as AnyApi;
+    await flushPromises();
+
+    expect(wrapper.find('[role="tab"]').attributes("disabled")).toBeUndefined();
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text() === "Edit access")!
+        .attributes("disabled"),
+    ).toBeDefined();
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text() === "Send test push")!
+        .attributes("disabled"),
+    ).toBeDefined();
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text() === "Revoke")!
+        .attributes("disabled"),
+    ).toBeUndefined();
+    expect(wrapper.text()).toContain("Phone access is paused");
+  });
 
   test("renders the device list with platform, fingerprint, last seen, profiles, and capabilities", async () => {
     const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
@@ -152,6 +269,27 @@ describe("SettingsMobileTab", () => {
     // typed and two phones may share one; the fingerprint is the digest of the key the pairing
     // actually pinned, and is what a user compares against their phone before revoking a row.
     expect(wrapper.text()).toContain("AB:CD");
+  });
+
+  test("shows paired phones first and reveals the add-phone setup on request", async () => {
+    const { wrapper, transport } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+
+    expect(wrapper.text()).toContain("Pixel 8");
+    expect(wrapper.text()).not.toContain("The new phone gets");
+    expect(wrapper.findAll("button").some((button) => button.text() === "Pair a phone")).toBe(false);
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Add phone")!
+      .trigger("click");
+    expect(wrapper.text()).toContain("The new phone gets");
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Pair a phone")!
+      .trigger("click");
+    await flushPromises();
+    expect(transport.createMobilePairingInvitation).toHaveBeenCalledOnce();
   });
 
   test("the device row renders an iOS device as ios", async () => {
@@ -183,6 +321,31 @@ describe("SettingsMobileTab", () => {
       listMobileDevices: vi.fn(async () => [{ ...SAMPLE_DEVICE, state: "keyProven", activatedAt: null }]),
     });
     expect(awaiting.wrapper.text()).toContain("awaiting your confirmation");
+  });
+
+  test("Review pairing opens the code for the selected pending phone", async () => {
+    const pendingDevices = [
+      { ...SAMPLE_DEVICE, deviceId: "phone-1", label: "First phone", state: "keyProven", activatedAt: null },
+      { ...SAMPLE_DEVICE, deviceId: "phone-2", label: "Second phone", state: "keyProven", activatedAt: null },
+    ];
+    const listPending = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([
+        { deviceId: "phone-1", label: "First phone", sas: "1111 1111", state: "keyProven" },
+        { deviceId: "phone-2", label: "Second phone", sas: "2222 2222", state: "keyProven" },
+      ]);
+    const { wrapper } = await mountTab({
+      listMobileDevices: vi.fn(async () => pendingDevices),
+      listMobileDevicesAwaitingApproval: listPending,
+    });
+
+    const reviewButtons = wrapper.findAll("button").filter((button) => button.text() === "Review pairing");
+    await reviewButtons[1]!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("2222 2222");
+    expect(wrapper.text()).not.toContain("1111 1111");
   });
 
   test("an active device carries no pending badge, and a revoked one carries only ", async () => {
@@ -240,12 +403,13 @@ describe("SettingsMobileTab", () => {
 
     appStore.mobilePairingClaimInFlight = true;
     await flushPromises();
+    await flushPromises();
 
     expect(wrapper.find(".pairing-qr__working").exists()).toBe(true);
     expect(wrapper.text()).toContain("Verifying its key");
     // The code is still rendered: the claim can be REJECTED, and the next thing to do then is scan
     // the same code again.
-    expect(wrapper.find(".pairing-qr__img").exists()).toBe(true);
+    await vi.waitFor(() => expect(wrapper.find(".pairing-qr__img").exists()).toBe(true));
     expect(wrapper.text()).not.toContain("Expires in");
   });
 
@@ -281,7 +445,7 @@ describe("SettingsMobileTab", () => {
 
     await wrapper
       .findAll("button")
-      .find((b) => b.text().includes("Pair device"))!
+      .find((b) => b.text().includes("Pair a phone"))!
       .trigger("click");
     await flushPromises();
 
@@ -331,7 +495,7 @@ describe("SettingsMobileTab", () => {
   test("shows a QR/countdown section after starting pairing, and returns to the pair button on cancel", async () => {
     const { wrapper } = await mountTab();
 
-    const pairButton = wrapper.findAll("button").find((b) => b.text().includes("Pair device"));
+    const pairButton = wrapper.findAll("button").find((b) => b.text().includes("Pair a phone"));
     expect(pairButton).toBeTruthy();
 
     await pairButton!.trigger("click");
@@ -345,7 +509,7 @@ describe("SettingsMobileTab", () => {
     await flushPromises();
 
     expect(wrapper.text()).not.toContain("Expires in");
-    expect(wrapper.findAll("button").some((b) => b.text().includes("Pair device"))).toBe(true);
+    expect(wrapper.findAll("button").some((b) => b.text().includes("Pair a phone"))).toBe(true);
   });
 
   // Review 2 §P0.4: "pokud se kód potvrzuje na obou stranách, obě UI musí ukazovat hodnotu
@@ -385,7 +549,7 @@ describe("SettingsMobileTab", () => {
     // Start a pairing, so the QR block is what is on screen when the code lands.
     await wrapper
       .findAll("button")
-      .find((b) => b.text().includes("Pair device"))!
+      .find((b) => b.text().includes("Pair a phone"))!
       .trigger("click");
     await flushPromises();
     expect(wrapper.find(".pairing-qr").exists()).toBe(true);
@@ -701,8 +865,7 @@ describe("SettingsMobileTab", () => {
     const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
 
     expect(wrapper.text()).toContain("Phones on this account: 3 / 5");
-    // The section it names is on this page, and the pairing half never states a limit of its own.
-    expect(wrapper.text()).toContain("Account and subscription");
+    expect(wrapper.text()).toContain("View account limits");
     expect(wrapper.findComponent({ name: "SettingsAccountTab" }).exists()).toBe(true);
   });
 

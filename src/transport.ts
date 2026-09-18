@@ -58,7 +58,22 @@ interface ConnectionStatePayload {
   reconnecting?: boolean;
   reconnected?: boolean;
   attempt?: number;
+  /** Epoch ms when the scheduled reconnect attempt will begin. */
+  reconnectAt?: number;
 }
+
+export interface RemotePanelSelectionDetail {
+  profileId: string;
+  workspaceId: string;
+  panelId: string;
+  handled: boolean;
+  resolve: () => void;
+  reject: (reason?: unknown) => void;
+}
+
+const REMOTE_PANEL_SELECTION_EVENT = "strideterm:remote-select-panel";
+const REMOTE_PANEL_SELECTION_READY_EVENT = "strideterm:remote-panel-selection-ready";
+const REMOTE_PANEL_SELECTION_READY_TIMEOUT_MS = 5_000;
 
 /** A slim-core detail resource fetched on demand (git snapshot, docker state,
  *  provider inbox / PR detail, review-bridge context). */
@@ -510,11 +525,24 @@ export function createRemoteTransport(): Transport {
 
   function noteCoreRevision(state: unknown): void {
     const selection = (state as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } })?.remoteClient;
+    const appState = (state as { appState?: { workspaces?: unknown } })?.appState;
+    const workspaces = Array.isArray(appState?.workspaces) ? appState.workspaces : [];
+    const activeWorkspace = selection?.activeWorkspaceId
+      ? (workspaces.find((workspace) => {
+          const candidate = workspace as { id?: unknown };
+          return candidate?.id === selection.activeWorkspaceId;
+        }) as { name?: unknown } | undefined)
+      : undefined;
+    const workspaceName =
+      typeof activeWorkspace?.name === "string" && activeWorkspace.name.trim()
+        ? activeWorkspace.name.trim()
+        : undefined;
     if (selection?.profileId)
       postHost({
         type: "selection-changed",
         profileId: selection.profileId,
         workspaceId: selection.activeWorkspaceId || null,
+        ...(workspaceName ? { workspaceName } : {}),
       });
     const rev = (state as { coreRevision?: unknown })?.coreRevision;
     if (typeof rev === "number" && rev > lastCoreRevision) lastCoreRevision = rev;
@@ -572,12 +600,14 @@ export function createRemoteTransport(): Transport {
     }
     reconnectAttempt += 1;
     const delay = Math.min(reconnectMaxDelayMs, reconnectBaseDelayMs * 2 ** Math.min(reconnectAttempt - 1, 5));
+    const reconnectAt = Date.now() + delay;
     emitConnectionState({
       connected: false,
       reconnecting: true,
       message: `${error.message} Reconnecting in ${Math.round(delay / 1000)}s...`,
       code,
       attempt: reconnectAttempt,
+      reconnectAt,
     });
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = 0;
@@ -928,13 +958,59 @@ export function createRemoteTransport(): Transport {
 
   if (typeof window !== "undefined") {
     (window as unknown as Record<string, unknown>).__stridetermRemote = {
-      selectTarget: async (profileId: string, workspaceId: string | null, requestId: number) => {
+      selectTarget: async (profileId: string, workspaceId: string | null, requestId: number, panelId?: string) => {
         try {
           let payload = await fetchJson("/api/remote-client/profile/activate", { profileId });
           if (workspaceId) payload = await fetchJson("/api/remote-client/workspace/activate", { workspaceId });
           noteCoreRevision(payload);
-          safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
-          postHost({ type: "selection-result", requestId, ok: true });
+          if (panelId) {
+            if (!workspaceId) throw new Error("A panel selection requires a workspace");
+            await new Promise<void>((resolve, reject) => {
+              let settled = false;
+              const detail: RemotePanelSelectionDetail = {
+                profileId,
+                workspaceId,
+                panelId,
+                handled: false,
+                resolve: () => finish(resolve),
+                reject: (reason) => finish(() => reject(reason)),
+              };
+              let readyTimeout = 0;
+              const onReady = () => requestSelection();
+              const finish = (complete: () => void) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(readyTimeout);
+                window.removeEventListener(REMOTE_PANEL_SELECTION_READY_EVENT, onReady);
+                complete();
+              };
+              const failIfStillUnhandled = () => {
+                if (!detail.handled) finish(() => reject(new Error("Renderer panel selection is not ready")));
+              };
+              const requestSelection = () => {
+                if (settled) return;
+                safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
+                window.dispatchEvent(
+                  new CustomEvent<RemotePanelSelectionDetail>(REMOTE_PANEL_SELECTION_EVENT, { detail }),
+                );
+                if (detail.handled) {
+                  window.clearTimeout(readyTimeout);
+                  return;
+                }
+                window.addEventListener(REMOTE_PANEL_SELECTION_READY_EVENT, onReady, { once: true });
+              };
+              readyTimeout = window.setTimeout(failIfStillUnhandled, REMOTE_PANEL_SELECTION_READY_TIMEOUT_MS);
+              requestSelection();
+            });
+          } else {
+            safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
+          }
+          postHost({
+            type: "selection-result",
+            requestId,
+            ok: true,
+            ...(panelId ? { profileId, workspaceId, panelId } : {}),
+          });
         } catch {
           postHost({ type: "selection-result", requestId, ok: false });
         }

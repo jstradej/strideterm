@@ -529,6 +529,7 @@ export const NotificationPayloadSchema = z.object({
   // valid event.
   workspaceName: z.string().optional(),
   taskId: z.string().min(1).optional(),
+  panelId: z.string().optional(),
   tab: z.string().optional(),
   activity: z.string().optional(),
   prompt: z.string().optional(),

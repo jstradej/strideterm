@@ -4,9 +4,10 @@
 // assembled, no invoice, no checkout URL, and — in every lapsed state — the sentence that says the
 // local app is free. The rest of the page is a rendering of what the server sent, and a test that
 // re-derived the same value from the same input would only be checking that Vue works.
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { ComponentPublicInstance } from "vue";
 
 import SettingsAccountTab from "./SettingsAccountTab.vue";
 import { ACCOUNT_ERROR_CODES } from "../../../../electron/backend/account/account-state.js";
@@ -14,6 +15,7 @@ import { useAccountStore } from "../../../stores/account.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyState = any;
+type SettingsAccountTabProps = { view?: "overview" | "account" | "hidden"; phoneCount?: number; visible?: boolean };
 
 const NOW = Date.UTC(2026, 2, 10);
 
@@ -144,11 +146,22 @@ function makeApi(state: AnyState, overrides: AnyState = {}) {
   };
 }
 
-async function render(state: AnyState, apiOverrides: AnyState = {}) {
+async function render(
+  state: AnyState,
+  apiOverrides: AnyState = {},
+  props: SettingsAccountTabProps = {},
+): Promise<{
+  wrapper: VueWrapper<unknown, ComponentPublicInstance<SettingsAccountTabProps>>;
+  calls: { method: string; payload?: unknown }[];
+  store: ReturnType<typeof useAccountStore>;
+}> {
   const { api, calls } = makeApi(state, apiOverrides);
   const store = useAccountStore();
   store.attach(api);
-  const wrapper = mount(SettingsAccountTab);
+  const wrapper = mount(SettingsAccountTab, { props }) as VueWrapper<
+    unknown,
+    ComponentPublicInstance<SettingsAccountTabProps>
+  >;
   await flushPromises();
   return { wrapper, calls, store };
 }
@@ -291,7 +304,7 @@ describe("the account page", () => {
     const { wrapper } = await render(stateFor({ auth: authState(), needsRecentAuth: true }));
     expect(wrapper.text()).toContain("A sign-in link was sent");
     expect(wrapper.text()).toContain("Workstation");
-    expect(wrapper.text()).toContain("Desktops: 2 / 5");
+    expect(wrapper.find(".account-usage").text()).toContain("2 / 5");
   });
 
   test("an enrolling machine is offered enrolment, not a subscription", async () => {
@@ -305,14 +318,12 @@ describe("the account page", () => {
     expect(wrapper.text()).not.toContain("Subscribe monthly");
   });
 
-  test("ready shows the SERVER's formatted price and never assembles one", async () => {
+  test("a paid account is labelled subscribed and does not offer another subscription", async () => {
     const { wrapper } = await render(stateFor());
-    expect(wrapper.text()).toContain("€6 / month");
-    expect(wrapper.text()).toContain("€60 / year");
-    // No currency symbol appears except inside the strings the server sent. The whole amount is
-    // captured, not its first digit: `\d` alone matched "€60" as "€6" and the check passed by accident.
-    const priceLikeMatches = wrapper.text().match(/[€$£]\s?\d+/g) ?? [];
-    expect(priceLikeMatches).toEqual(["€6", "€60"]);
+    expect(wrapper.text()).toContain("Subscribed");
+    expect(wrapper.text()).toContain("Manage billing");
+    expect(wrapper.text()).not.toContain("Subscribe monthly");
+    expect(wrapper.text()).not.toContain("€6 / month");
   });
 
   test("dates are dates, and a renewal is labelled as one", async () => {
@@ -329,8 +340,7 @@ describe("the account page", () => {
     const text = wrapper.text();
     // No clock time anywhere on the page: the only timestamps here are days.
     expect(text).not.toMatch(/[0-9]{1,2}:[0-9]{2}/);
-    expect(text).toContain("Last seen is approximate");
-    expect(text).toContain("nothing is decided by it");
+    expect(wrapper.find('[title="Last seen is approximate"]').exists()).toBe(true);
   });
 
   test("the canonical desktop name is the one the phone shows", async () => {
@@ -361,24 +371,25 @@ describe("the account page", () => {
     for (const forbidden of ["Invoice #", "invoice #", "VAT", "Receipt"]) {
       expect(wrapper.text()).not.toContain(forbidden);
     }
-    // Invoices are the merchant's, and the page says where they live.
-    expect(wrapper.text()).toContain("Payment method, invoices and cancellation");
+    expect(wrapper.text()).toContain("€6 / month");
+    expect(wrapper.text()).toContain("€60 / year");
   });
 
   test("past_due and lapsed both say the local app keeps working", async () => {
     for (const state of ["past_due", "lapsed", "revoked"]) {
       const patched = overview({ entitlement: { state, source: "subscription" } });
       const { wrapper } = await render(stateFor({ overview: patched, entitlement: patched.entitlement }));
-      expect(wrapper.text().toLowerCase()).toContain("quick tunnel");
+      expect(wrapper.text().toLowerCase()).toContain("local");
       expect(wrapper.text().toLowerCase()).toMatch(/free|unaffected|keep working/);
     }
   });
 
   test("usage is shown as used-over-limit for all three caps", async () => {
     const { wrapper } = await render(stateFor());
-    expect(wrapper.text()).toContain("Desktops: 2 / 5");
-    expect(wrapper.text()).toContain("Phones: 1 / 5");
-    expect(wrapper.text()).toContain("Active relay sessions: 0 / 8");
+    const usage = wrapper.find(".account-usage").text();
+    expect(usage).toContain("2 / 5Desktops");
+    expect(usage).toContain("1 / 5Phones");
+    expect(usage).toContain("0 / 8Open relay sessions");
   });
 
   test("the device lists carry the canonical label, the last seen and a revoke", async () => {
@@ -386,9 +397,9 @@ describe("the account page", () => {
     expect(wrapper.text()).toContain("Workstation");
     expect(wrapper.text()).toContain("this one");
     expect(wrapper.text()).toContain("Pixel");
-    expect(wrapper.text()).toContain("Last seen is approximate");
+    expect(wrapper.find('[title="Last seen is approximate"]').exists()).toBe(true);
 
-    const removeButtons = wrapper.findAll("button").filter((button) => button.text() === "Remove");
+    const removeButtons = wrapper.findAll("button").filter((button) => button.text() === "Remove from account");
     expect(removeButtons.length).toBe(3);
     await removeButtons[0]!.trigger("click");
     await flushPromises();
@@ -397,28 +408,117 @@ describe("the account page", () => {
 
   test('"Connect phone" leads into the SAME pairing flow the Phone pairing section renders, not a QR of its own (plan §6, Fáze B)', async () => {
     const { wrapper } = await render(stateFor());
-    // The target this button scrolls to lives on `SettingsMobileTab.vue`, not on this component — in
-    // the real app both sections share one scrollable Mobile tab. Standing in for that here, rather
-    // than asserting on private internals, keeps the test honest about what actually happens on click.
-    const target = document.createElement("div");
-    target.id = "mobile-tab-phone-pairing";
-    document.body.appendChild(target);
-    const scrollIntoView = vi.fn();
-    target.scrollIntoView = scrollIntoView;
-
     const connect = wrapper.findAll("button").find((button) => button.text() === "Connect phone");
     expect(connect).toBeTruthy();
     await connect!.trigger("click");
-    expect(scrollIntoView).toHaveBeenCalledOnce();
+    expect(wrapper.emitted("navigate-phones")).toHaveLength(1);
 
     // No enrollment QR anywhere near it — that path was removed, not moved.
     expect(wrapper.text()).not.toContain("enrollment");
-    document.body.removeChild(target);
+  });
+
+  test("overview offers a distinct 14-day start and existing-account sign-in", async () => {
+    const { wrapper } = await render(
+      { phase: "signed-out", busy: false, needsRecentAuth: true, signInAvailable: true },
+      {},
+      { view: "overview" },
+    );
+    expect(wrapper.text()).toContain("Start with 14 days free");
+    expect(wrapper.text()).toContain("Sign in to an existing account");
+    expect(wrapper.text()).toContain("Open terminals, follow tasks, and receive notifications on your phone");
+    expect(wrapper.findAll("input[type='password']")).toHaveLength(0);
+  });
+
+  test("trial overview shows exact days and routes first-phone and plan actions", async () => {
+    const trial = overview({ entitlement: { state: "trial", source: "trial", notAfter: Date.now() + 3 * 86_400_000 } });
+    const { wrapper } = await render(
+      stateFor({ overview: trial, entitlement: trial.entitlement }),
+      {},
+      { view: "overview", phoneCount: 0 },
+    );
+    expect(wrapper.find(".trial-indicator").text()).toContain("3days left");
+    expect(wrapper.find(".trial-indicator").text()).toContain("Ends");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Connect first phone")!
+      .trigger("click");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "View plans")!
+      .trigger("click");
+    expect(wrapper.emitted("navigate-phones")).toHaveLength(1);
+    expect(wrapper.emitted("navigate-account")).toHaveLength(1);
+  });
+
+  test("trial lifecycle copy distinguishes the last day and an ended trial", async () => {
+    const lastDay = overview({ entitlement: { state: "trial", source: "trial", notAfter: Date.now() + 60_000 } });
+    const active = await render(
+      stateFor({ overview: lastDay, entitlement: lastDay.entitlement }),
+      {},
+      { view: "overview" },
+    );
+    expect(active.wrapper.find(".trial-indicator").text()).toContain("1day left");
+
+    const ended = overview({ entitlement: { state: "lapsed", source: "trial" } });
+    const lapsed = await render(
+      stateFor({ overview: ended, entitlement: ended.entitlement }),
+      {},
+      { view: "overview" },
+    );
+    expect(lapsed.wrapper.text()).toContain("Trial ended");
+    expect(lapsed.wrapper.text()).not.toContain("Subscription ended");
+  });
+
+  test("paid overview manages existing phones and never sells another plan", async () => {
+    const { wrapper } = await render(stateFor(), {}, { view: "overview", phoneCount: 2 });
+    expect(wrapper.text()).toContain("Subscribed");
+    expect(wrapper.text()).toContain("Manage phones");
+    expect(wrapper.text()).not.toContain("Subscribe monthly");
+  });
+
+  test("ready while entitlement is loading does not invent a subscription state or plan action", async () => {
+    const { wrapper } = await render(
+      {
+        phase: "ready",
+        ownerEmail: "owner@example.test",
+        busy: true,
+        needsRecentAuth: false,
+        signInAvailable: true,
+      },
+      {},
+      { view: "overview" },
+    );
+    expect(wrapper.text()).toContain("Loading account…");
+    expect(wrapper.text()).toContain("Fetching your account details.");
+    expect(wrapper.text()).not.toContain("Account details unavailable");
+    expect(wrapper.text()).not.toContain("Retry");
+    expect(wrapper.text()).not.toContain("No subscription");
+    expect(wrapper.text()).not.toContain("Review plan");
+    expect(wrapper.text()).not.toContain("Subscribe");
+  });
+
+  test("overview entitlement remains authoritative when the duplicate top-level field is absent", async () => {
+    const serverOverview = overview();
+    const { wrapper } = await render(
+      stateFor({ entitlement: undefined, overview: serverOverview }),
+      {},
+      { view: "overview", phoneCount: 1 },
+    );
+    expect(wrapper.text()).toContain("Subscribed");
+    expect(wrapper.text()).toContain("Manage phones");
+    expect(wrapper.text()).not.toContain("Account details unavailable");
+  });
+
+  test("hidden view exposes an active authentication challenge without the account wall", async () => {
+    const { wrapper } = await render(stateFor({ auth: authState(), needsRecentAuth: true }), {}, { view: "hidden" });
+    expect(wrapper.text()).toContain("Check your email");
+    expect(wrapper.text()).not.toContain("Account usage");
+    expect(wrapper.text()).not.toContain("Workstation");
   });
 
   test("with a lapsed recent-auth window, Remove asks for a fresh link with the revoke pinned (plan §7/C2)", async () => {
     const { wrapper, calls } = await render(stateFor({ needsRecentAuth: true }));
-    const removeButtons = wrapper.findAll("button").filter((button) => button.text() === "Remove");
+    const removeButtons = wrapper.findAll("button").filter((button) => button.text() === "Remove from account");
     await removeButtons[0]!.trigger("click");
     await flushPromises();
     expect(calls.some((call) => call.method === "accountRevoke")).toBe(false);
@@ -431,8 +531,40 @@ describe("the account page", () => {
     expect(JSON.parse((signIn?.payload as AnyState)?.offerId as string)).toEqual(["installation", "inst-1"]);
   });
 
+  test("removing with no remembered owner email opens an action-specific sign-in and keeps the target", async () => {
+    const { wrapper, calls } = await render(stateFor({ ownerEmail: undefined, needsRecentAuth: true }));
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Remove from account")!
+      .trigger("click");
+    expect(wrapper.text()).toContain("Confirm your email to remove this desktop");
+    await wrapper.find(".account-auth--requested input").setValue("owner@example.test");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Send confirmation link")!
+      .trigger("click");
+    await flushPromises();
+    const signIn = calls.find((call) => call.method === "accountBeginSignIn");
+    expect(signIn?.payload).toMatchObject({ email: "owner@example.test", purpose: "revoke-device" });
+    expect(JSON.parse((signIn?.payload as AnyState).offerId)).toEqual(["installation", "inst-1"]);
+  });
+
+  test("starting a trial with no remembered owner email asks for it instead of dead-ending", async () => {
+    const lapsed = overview({ entitlement: { state: "unbound", source: "trial" } });
+    const { wrapper, calls } = await render(
+      stateFor({ ownerEmail: undefined, needsRecentAuth: true, overview: lapsed, entitlement: lapsed.entitlement }),
+    );
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Start 14-day trial")!
+      .trigger("click");
+    expect(wrapper.text()).toContain("Confirm your email to start the trial");
+    expect(calls.some((call) => call.method === "accountStartTrial")).toBe(false);
+  });
+
   test("checkout asks the main process to open it and the URL never reaches the page", async () => {
-    const { wrapper, calls } = await render(stateFor());
+    const trial = overview({ entitlement: { state: "trial", source: "trial", notAfter: NOW + 3 * 86_400_000 } });
+    const { wrapper, calls } = await render(stateFor({ overview: trial, entitlement: trial.entitlement }));
     const subscribe = wrapper.findAll("button").find((button) => button.text().startsWith("Subscribe monthly"))!;
     await subscribe.trigger("click");
     await flushPromises();
@@ -442,11 +574,27 @@ describe("the account page", () => {
     expect(wrapper.html()).not.toContain("http");
   });
 
+  test("a pending checkout shows the existing pending message", async () => {
+    const trial = overview({ entitlement: { state: "trial", source: "trial", notAfter: NOW + 3 * 86_400_000 } });
+    const { wrapper } = await render(stateFor({ overview: trial, entitlement: trial.entitlement }), {
+      accountOpenCheckout: async () => "pending",
+    });
+    const subscribe = wrapper.findAll("button").find((button) => button.text().startsWith("Subscribe monthly"))!;
+
+    await subscribe.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".account-error").text()).toBe("A checkout is already being prepared. Try again in a moment.");
+  });
+
   test("with no owner session, Subscribe still opens checkout directly (I3: installation-authorized)", async () => {
     // Billing is authorized server-side against this desktop's OWN active installation record, not a
     // live owner session — the Subscribe/Portal buttons only render once the machine is enrolled
     // (`phase === 'ready'`), so there is no need to detour through a fresh owner sign-in first.
-    const { wrapper, calls } = await render(stateFor({ needsRecentAuth: true }));
+    const trial = overview({ entitlement: { state: "trial", source: "trial", notAfter: NOW + 3 * 86_400_000 } });
+    const { wrapper, calls } = await render(
+      stateFor({ needsRecentAuth: true, overview: trial, entitlement: trial.entitlement }),
+    );
     const subscribe = wrapper.findAll("button").find((button) => button.text().startsWith("Subscribe monthly"))!;
     await subscribe.trigger("click");
     await flushPromises();
@@ -458,7 +606,7 @@ describe("the account page", () => {
 
   test("with no owner session, the portal button still opens the portal directly (I3)", async () => {
     const { wrapper, calls } = await render(stateFor({ needsRecentAuth: true }));
-    const portal = wrapper.findAll("button").find((button) => button.text().includes("invoices and cancellation"))!;
+    const portal = wrapper.findAll("button").find((button) => button.text() === "Manage billing")!;
     await portal.trigger("click");
     await flushPromises();
     expect(calls.some((call) => call.method === "accountOpenBillingPortal")).toBe(true);
@@ -467,7 +615,7 @@ describe("the account page", () => {
 
   test("the billing portal is a fresh request every time", async () => {
     const { wrapper, calls } = await render(stateFor());
-    const portal = wrapper.findAll("button").find((button) => button.text().includes("invoices and cancellation"))!;
+    const portal = wrapper.findAll("button").find((button) => button.text() === "Manage billing")!;
     await portal.trigger("click");
     await portal.trigger("click");
     await flushPromises();
@@ -476,8 +624,8 @@ describe("the account page", () => {
 
   test("the login email and the billing email are visibly different things", async () => {
     const { wrapper } = await render(stateFor());
-    expect(wrapper.text()).toContain("Your billing email is");
-    expect(wrapper.text()).toContain("it is not the same as the login email");
+    expect(wrapper.text()).toContain("LOGIN email only");
+    expect(wrapper.text()).toContain("billing email is changed in the billing portal");
   });
 
   test("notices render from their KIND, are dismissible, and never link to a checkout", async () => {
@@ -629,6 +777,15 @@ describe("the account page", () => {
     expect(wrapper.text()).toContain("Subscriptions are not available in this build");
     expect(wrapper.text()).not.toContain("Subscribe monthly");
   });
+
+  test("a payment service refusal gets actionable copy", async () => {
+    const { wrapper, store } = await render(stateFor());
+    store.actionError = "provider-unavailable";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".account-error").text()).toBe(
+      "The payment service could not prepare the payment page. Try again later.",
+    );
+  });
 });
 
 describe("opt-in diagnostics", () => {
@@ -749,8 +906,8 @@ describe("the trial button asks for the authentication it needs (F06)", () => {
     const { wrapper, calls } = await render(
       stateFor({
         needsRecentAuth: true,
-        overview: overview({ entitlement: { state: "lapsed", source: "trial" } }),
-        entitlement: { state: "lapsed", source: "trial" },
+        overview: overview({ entitlement: { state: "unbound", source: "trial" } }),
+        entitlement: { state: "unbound", source: "trial" },
       }),
     );
     await wrapper
@@ -769,8 +926,8 @@ describe("the trial button asks for the authentication it needs (F06)", () => {
     const { wrapper, calls } = await render(
       stateFor({
         needsRecentAuth: false,
-        overview: overview({ entitlement: { state: "lapsed", source: "trial" } }),
-        entitlement: { state: "lapsed", source: "trial" },
+        overview: overview({ entitlement: { state: "unbound", source: "trial" } }),
+        entitlement: { state: "unbound", source: "trial" },
       }),
     );
     await wrapper
@@ -784,6 +941,24 @@ describe("the trial button asks for the authentication it needs (F06)", () => {
 });
 
 describe("who owns the flow, and which errors are visible (F09)", () => {
+  test("visibility hands sign-in notices back without releasing or unmounting the auth flow", async () => {
+    const { wrapper, calls, store } = await render(
+      stateFor({ auth: authState({ phase: "awaiting-confirmation" }) }),
+      {},
+      { visible: true },
+    );
+    expect(store.signInPanelMounted).toBe(true);
+
+    await wrapper.setProps({ visible: false });
+    expect(store.signInPanelMounted).toBe(false);
+    expect(calls.some((call) => call.method === "accountReleaseSignInFlow")).toBe(false);
+    expect(wrapper.text()).toContain("Sign this computer in as owner@example.test?");
+
+    await wrapper.setProps({ visible: true });
+    expect(store.signInPanelMounted).toBe(true);
+    expect(calls.some((call) => call.method === "accountReleaseSignInFlow")).toBe(false);
+  });
+
   test("closing the panel releases the flow it owns", async () => {
     // Unmounting used to clear a UI interval and nothing else, so closing the dialog left an attempt
     // waiting and — for a change of address or a deletion — a live credential held for a form that

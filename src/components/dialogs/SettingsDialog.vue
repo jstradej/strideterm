@@ -106,12 +106,6 @@ const BASE_TABS = [
       "Forward strIDEterm alerts to a Telegram bot and act on them (start a task, open a PR review) by replying or pressing inline buttons. No public URL needed — long-polling.",
   },
 ];
-// The hosted account is a SECTION of Mobile rather than a tab of its own. It exists for exactly one
-// reason — the hosted control plane behind the phone app — so a person who has not paired a phone has
-// nothing to do on it, and two tabs made the account look like a thing the desktop needs.
-// `SettingsMobileTab` therefore leads with it and states the caps in the same place the devices are
-// listed. The one cost is that "how do I cancel" now lives under Mobile; the section names billing
-// out loud for that reason.
 const MOBILE_TAB = {
   id: "mobile",
   label: "Mobile",

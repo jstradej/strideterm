@@ -6,12 +6,16 @@
  */
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
+import type { VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import type { ComponentPublicInstance } from "vue";
 import RemoteAccessDialog from "./RemoteAccessDialog.vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import MobileConnectionPanel from "./settings/MobileConnectionPanel.vue";
 import { useNotificationStore } from "../../stores/notifications.js";
+
+type MobileConnectionPanelProps = { visible?: boolean };
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -44,6 +48,11 @@ test("Mobile is the first and default tab, reusing the settings panel", async ()
   expect(wrapper.findAll(".remote-mode-tab")[0].text()).toBe("Mobile");
   expect(wrapper.find(".remote-mode-tab--active").text()).toBe("Mobile");
   expect(wrapper.findComponent(MobileConnectionPanel).exists()).toBe(true);
+  const mobilePanel = wrapper.findComponent(MobileConnectionPanel) as VueWrapper<
+    unknown,
+    ComponentPublicInstance<MobileConnectionPanelProps>
+  >;
+  expect(mobilePanel.props("visible")).toBe(true);
   expect(wrapper.find(".remote-access__hero").exists()).toBe(false);
   expect(wrapper.find(".remote-access__footer").exists()).toBe(false);
   await wrapper
@@ -52,6 +61,22 @@ test("Mobile is the first and default tab, reusing the settings panel", async ()
     .trigger("click");
   expect(wrapper.find(".remote-access__hero").exists()).toBe(true);
   expect(wrapper.findComponent(MobileConnectionPanel).exists()).toBe(true);
+  expect(mobilePanel.props("visible")).toBe(false);
+  wrapper.unmount();
+});
+
+test("a new pairing confirmation brings the preserved Mobile panel back into view", async () => {
+  const store = useAppStore();
+  const wrapper = mount(RemoteAccessDialog, { global: { stubs: { MobileConnectionPanel: true } } });
+  await wrapper
+    .findAll(".remote-mode-tab")
+    .find((button) => button.text() === "LAN")!
+    .trigger("click");
+
+  store.mobilePairingSas = { deviceId: "phone-1", label: "Phone", sas: "1234 5678" };
+  await flushPromises();
+
+  expect(wrapper.find(".remote-mode-tab--active").text()).toBe("Mobile");
   wrapper.unmount();
 });
 

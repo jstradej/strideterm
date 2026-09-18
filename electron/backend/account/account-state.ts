@@ -377,6 +377,7 @@ export const ACCOUNT_ERROR_CODES = [
   "already-subscribed",
   "trial-already-used",
   "checkout-pending",
+  "provider-unavailable",
   "entitlement-required",
   // R14. A billing URL the DESKTOP refused: it was not HTTPS, or its host is not on the exact-host
   // allowlist the signed bootstrap envelope carries. A refusal the user can see, deliberately — a

@@ -2022,12 +2022,12 @@ export class AccountManager extends EventEmitter {
   /**
    * Runs one logical mutation under a key that survives its retries (F06), as the SAME request (R03).
    *
-   * THE RELEASE RULE IS THE WHOLE THING. A DEFINITE outcome — the server answered, whatever it said —
-   * frees the key, because the next press is a new intention. An UNKNOWN outcome keeps it, because the
-   * next press is the same intention being asked again and the server has to be able to recognise it
-   * as such. A transport failure is unknown; so is an answer this desktop could not read (R04) — the
-   * server may have completed the mutation and said so in bytes that never arrived whole. Every other
-   * refusal is an answer that arrived.
+   * THE RELEASE RULE IS THE WHOLE THING. A TERMINAL outcome — the server answered and settled the
+   * mutation — frees the key, because the next press is a new intention. An UNKNOWN outcome keeps it,
+   * because the next press is the same intention being asked again and the server has to be able to
+   * recognise it as such. A transport failure is unknown; so is an answer this desktop could not read
+   * (R04). A checkout-pending response is also nonterminal: the server accepted the intent but has not
+   * settled it yet, so the same request and key must remain available for a later retry.
    *
    * AND THE KEY IS PRESENTED ONLY WITH THE REQUEST IT WAS MINTED FOR. The server digests the whole
    * request under the key and refuses a different one as `idempotency-key-reused`, so:
@@ -2064,14 +2064,18 @@ export class AccountManager extends EventEmitter {
       pending = null;
     }
     if (pending !== null && pending.identity !== identity) {
-      // RESOLVE THE OLD ONE FIRST, and open nothing from it. A definite answer — success or refusal —
-      // settles it and frees the name; an unknown one is rethrown, so the new request waits.
+      // RESOLVE THE OLD ONE FIRST, and open nothing from it. A terminal answer — success or refusal —
+      // settles it and frees the name; an unknown or nonterminal one is rethrown, so the new request waits.
+      let previous: unknown = null;
       try {
-        await this.sendUnderKey(name, pending, send as (request: unknown, key: string) => Promise<unknown>);
+        previous = await this.sendUnderKey(name, pending, send as (request: unknown, key: string) => Promise<unknown>);
       } catch (error) {
         if (isUnknownMutationOutcome(error)) throw error;
       }
       this.requireScope(scope);
+      if (isNonTerminalMutationResponse(name, previous)) {
+        throw new AccountManagerError("checkout-pending");
+      }
       pending = null;
     }
     const record: PendingMutation = pending ?? { key: this.newKey(), principal, request, identity, inFlight: null };
@@ -2079,7 +2083,7 @@ export class AccountManager extends EventEmitter {
   }
 
   /**
-   * One send of one pending record. Definite answers release it; unknown ones keep it.
+   * One send of one pending record. Terminal answers release it; unknown and nonterminal ones keep it.
    *
    * RELEASED BY IDENTITY, NOT BY NAME (S04). The map used to be cleared by `name` when the answer came
    * back, and the answer that came back was not always for the record in the map: request A still out,
@@ -2104,7 +2108,7 @@ export class AccountManager extends EventEmitter {
     const attempt = (async () => {
       try {
         const result = await send(record.request, record.key);
-        this.releasePending(name, record, "answered");
+        if (!isNonTerminalMutationResponse(name, result)) this.releasePending(name, record, "answered");
         return result;
       } catch (error) {
         if (isUnknownMutationOutcome(error)) {
@@ -2355,6 +2359,15 @@ function isUnknownMutationOutcome(error: unknown): boolean {
   if (error instanceof AccountManagerError) return UNKNOWN_OUTCOME_REASONS.has(error.code);
   // Anything else — a thrown TypeError from a broken fetch stub, an abort — is not an answer either.
   return true;
+}
+
+function isNonTerminalMutationResponse(name: MutationName, result: unknown): boolean {
+  return (
+    name === "checkout" &&
+    result !== null &&
+    typeof result === "object" &&
+    (result as { status?: unknown }).status === "checkout-pending"
+  );
 }
 
 const UNKNOWN_OUTCOME_REASONS: ReadonlySet<string> = new Set(["network", "malformed-response", "aborted"]);

@@ -241,6 +241,11 @@ describe("error codes", () => {
     // A cap the transport already resolved to its specific code, and one it could not.
     expect(toAccountErrorCode({ code: "pairing-device-limit" })).toBe("pairing-device-limit");
     expect(toAccountErrorCode({ code: "cap-exceeded" })).toBe("cap-exceeded");
+    expect(toAccountErrorCode({ code: "provider-unavailable" })).toBe("provider-unavailable");
+    expect(toAccountErrorCode({ details: { reason: "provider-unavailable" } })).toBe("provider-unavailable");
+    expect(toAccountErrorCode({ message: "createCheckout rejected: provider-unavailable" })).toBe(
+      "provider-unavailable",
+    );
     // The raw details block, for a caller that hands the error through without the transport.
     expect(toAccountErrorCode({ details: { reason: "cap-exceeded" } })).toBe("cap-exceeded");
     expect(toAccountErrorCode({ message: "createCheckout rejected: already-subscribed" })).toBe("already-subscribed");

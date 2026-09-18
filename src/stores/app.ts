@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, shallowRef, computed, watch } from "vue";
+import { ref, shallowRef, computed, watch, nextTick } from "vue";
 import {
   getWorkspaceTabs,
   getVisibleTabs,
@@ -47,11 +47,14 @@ import type {
   RecoveryResult,
 } from "../../electron/shared/types/state.js";
 import { RECOVERY_OUTCOMES, SETTLED_RECOVERY_OUTCOMES } from "../../electron/shared/types/state.js";
-import type { Transport } from "../transport.js";
+import type { RemotePanelSelectionDetail, Transport } from "../transport.js";
 import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "../../electron/shared/performance.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
+
+let remotePanelSelectionReceiver: ((event: Event) => void) | null = null;
+let remotePanelSelectionWindowListenerBound = false;
 
 interface SplitGroup {
   layout: string;
@@ -174,6 +177,8 @@ export const useAppStore = defineStore("app", () => {
   const remoteConnectionIssue = ref("");
   /** What to do about it, when the transport knows. See `createRemoteIssue`. */
   const remoteConnectionHint = ref("");
+  /** Epoch deadline for a scheduled remote reconnect; null outside that backoff. */
+  const remoteReconnectAt = ref<number | null>(null);
   const remoteAccessMode = ref("lan"); // "lan" | "cloudflare" | "vps"
   const selectedLanUrl = ref("");
   const contextMenu = ref<{ x: number; y: number; viewId: string } | null>(null); // { x, y, viewId } | null
@@ -1314,8 +1319,11 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  async function activateView(viewId: string, { focus: _focus = true } = {}): Promise<void> {
-    if (!viewId || viewId === activeViewId.value) return;
+  async function activateView(
+    viewId: string,
+    { focus: _focus = true, requireConfirmation = false } = {},
+  ): Promise<void> {
+    if (!viewId || (viewId === activeViewId.value && !requireConfirmation)) return;
 
     // Borrowed Primary: activate the VIEW here, point the session at the
     // source PTY, and stop. Routing this through activateSession would send
@@ -1386,21 +1394,24 @@ export const useAppStore = defineStore("app", () => {
         pendingViewActivationId.value = "";
       }
       payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
-    } catch {
+    } catch (error) {
       if (pendingViewActivationId.value === viewId) {
         pendingViewActivationId.value = "";
       }
+      if (requireConfirmation) throw error;
     }
   }
 
-  function setRemoteConnectionIssue(message: string, hint = ""): void {
+  function setRemoteConnectionIssue(message: string, hint = "", reconnectAt?: unknown): void {
     remoteConnectionIssue.value = String(message || "").trim();
     remoteConnectionHint.value = String(hint || "").trim();
+    remoteReconnectAt.value = typeof reconnectAt === "number" && Number.isFinite(reconnectAt) ? reconnectAt : null;
   }
 
   function clearRemoteConnectionIssue(): void {
     remoteConnectionIssue.value = "";
     remoteConnectionHint.value = "";
+    remoteReconnectAt.value = null;
   }
 
   // --- Selectors exposed for components ---
@@ -1627,6 +1638,39 @@ export const useAppStore = defineStore("app", () => {
     // accessors, so this single boundary cast is where the two shapes converge.
     api.onStateUpdated((nextPayload) => handleBroadcastPayload(nextPayload as StatePayload));
 
+    if (api.isRemote) {
+      remotePanelSelectionReceiver = (event: Event) => {
+        const detail = (event as CustomEvent<RemotePanelSelectionDetail>).detail;
+        if (!detail?.profileId || !detail.workspaceId || !detail.panelId) return;
+        detail.handled = true;
+
+        void (async () => {
+          await nextTick();
+          if (myActiveProfileId.value !== detail.profileId) {
+            throw new Error(`Target profile is not active: ${detail.profileId}`);
+          }
+          if (myActiveWorkspaceId.value !== detail.workspaceId) {
+            throw new Error(`Target workspace is not active: ${detail.workspaceId}`);
+          }
+          const viewId = `${detail.workspaceId}:${detail.panelId}`;
+          if (!(workspaceTabs.value as AnyApi[]).some((tab: AnyApi) => tab.id === viewId)) {
+            throw new Error(`Target panel is missing: ${detail.panelId}`);
+          }
+          await activateView(viewId, { requireConfirmation: true });
+          if (activeViewId.value !== viewId) {
+            throw new Error(`Target panel was not selected: ${detail.panelId}`);
+          }
+        })().then(detail.resolve, detail.reject);
+      };
+      if (!remotePanelSelectionWindowListenerBound) {
+        remotePanelSelectionWindowListenerBound = true;
+        window.addEventListener("strideterm:remote-select-panel", (event: Event) =>
+          remotePanelSelectionReceiver?.(event),
+        );
+      }
+      window.dispatchEvent(new Event("strideterm:remote-panel-selection-ready"));
+    }
+
     // Authoritative "a notification target disappeared" events. The transport's
     // listener API is renderer-lifetime and has no unsubscribe contract, so the
     // registration is guarded rather than torn down — a second init() must not
@@ -1656,7 +1700,11 @@ export const useAppStore = defineStore("app", () => {
       // wedge the client on stale state. A fresh connection starts a new baseline.
       lastAppliedCoreRevision = -1;
       if ((connection as AnyApi)?.message)
-        setRemoteConnectionIssue((connection as AnyApi).message, (connection as AnyApi).hint);
+        setRemoteConnectionIssue(
+          (connection as AnyApi).message,
+          (connection as AnyApi).hint,
+          (connection as AnyApi).reconnectAt,
+        );
     });
 
     // Mobile (plan §10.5/§10.3 "mobile:* runtime events pouze pro renderer
@@ -2053,7 +2101,7 @@ export const useAppStore = defineStore("app", () => {
    * user pressed something" shows the prompt again instead of leaving a device stuck in a state only a
    * TTL sweep can resolve (review 3 §P0.1's restart case).
    */
-  async function refreshMobileDevicesAwaitingApproval(): Promise<void> {
+  async function refreshMobileDevicesAwaitingApproval(deviceId?: string): Promise<void> {
     const api = getApi() as AnyApi;
     if (typeof api?.listMobileDevicesAwaitingApproval !== "function") return;
     const pending = (await api.listMobileDevicesAwaitingApproval()) as Array<{
@@ -2062,7 +2110,7 @@ export const useAppStore = defineStore("app", () => {
       sas: string | null;
       state: string;
     }> | null;
-    const first = (pending || []).find((entry) => entry.sas);
+    const first = (pending || []).find((entry) => entry.sas && (!deviceId || entry.deviceId === deviceId));
     mobilePairingSas.value = first
       ? { deviceId: first.deviceId, label: first.label, sas: first.sas, state: first.state }
       : null;
@@ -2152,6 +2200,7 @@ export const useAppStore = defineStore("app", () => {
     bootstrapError,
     remoteConnectionIssue,
     remoteConnectionHint,
+    remoteReconnectAt,
     remoteAccessMode,
     selectedLanUrl,
     contextMenu,

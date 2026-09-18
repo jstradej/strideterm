@@ -474,6 +474,11 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
               name: profile.name,
               workspaceCount: state.workspaces.filter((workspace) => (workspace.profileId || "default") === profile.id)
                 .length,
+              workspaceNames: state.workspaces
+                .filter((workspace) => (workspace.profileId || "default") === profile.id)
+                .map((workspace) => formatWorkspaceDisplayName(workspace))
+                .filter((name): name is string => typeof name === "string" && name.length > 0)
+                .slice(0, 5),
             })),
         });
       }

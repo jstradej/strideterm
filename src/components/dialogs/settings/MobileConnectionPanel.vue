@@ -4,66 +4,158 @@
     <p v-if="paused" class="mobile-tab__intro" role="status">
       Mobile access is paused along with other remote connections. Your phones remain paired.
     </p>
-    <fieldset class="mobile-tab__controls" :disabled="paused">
-      <!--
-      THE ACCOUNT COMES FIRST, because it is what everything below it is billed against: without a
-      subscription there is a pairing screen that cannot complete. It is a section here rather than a
-      tab of its own (see SettingsDialog's MOBILE_TAB comment) — the desktop itself needs no account,
-      and a second tab implied otherwise.
-    -->
-      <section v-if="accountAvailable" class="mobile-tab__section">
-        <h3 class="mobile-tab__section-title">Account and subscription</h3>
-        <SettingsAccountTab />
+    <div class="mobile-tab__controls">
+      <nav v-if="accountAvailable" class="mobile-tab__subtabs" role="tablist" aria-label="Mobile settings sections">
+        <button
+          v-for="tab in mobileTabs"
+          :id="tabId(tab.id)"
+          :key="tab.id"
+          type="button"
+          role="tab"
+          :aria-selected="activeView === tab.id"
+          :aria-controls="panelId(tab.id)"
+          :tabindex="activeView === tab.id ? 0 : -1"
+          class="mobile-tab__subtab"
+          :class="{ 'mobile-tab__subtab--active': activeView === tab.id }"
+          @keydown="onSubtabKeydown($event, tab.id)"
+          @click="activeView = tab.id"
+        >
+          {{ tab.label }}
+        </button>
+      </nav>
+      <section
+        v-if="accountAvailable"
+        :id="activeView === 'phones' ? undefined : panelId(activeView)"
+        :role="activeView === 'phones' ? undefined : 'tabpanel'"
+        :aria-labelledby="activeView === 'phones' ? undefined : tabId(activeView)"
+        class="mobile-tab__section"
+        :class="{ 'mobile-tab__section--auxiliary': activeView === 'phones' }"
+      >
+        <SettingsAccountTab
+          :view="activeView === 'phones' ? 'hidden' : activeView"
+          :visible="visible"
+          :phone-count="activePhoneCount"
+          @navigate-phones="activeView = 'phones'"
+          @navigate-account="activeView = 'account'"
+        />
       </section>
 
-      <!-- id targeted by SettingsAccountTab.vue's "Connect phone" button (plan §6, Fáze B) -->
-      <h3 v-if="accountAvailable" id="mobile-tab-phone-pairing" class="mobile-tab__section-title">Phone pairing</h3>
-      <p class="mobile-tab__intro">
-        Pair strIDEterm Mobile to open your profiles and terminals, receive notifications, and respond from your phone.
-      </p>
+      <section
+        v-if="activeView === 'overview' && pairingReady"
+        class="mobile-tab__overview-grid"
+        aria-label="Mobile connection summary"
+      >
+        <article v-if="hostedAccessBlocked" class="mobile-tab__summary-card mobile-tab__summary-card--wide">
+          <span class="mobile-tab__summary-label">Mobile access</span>
+          <strong>A plan is required</strong>
+          <span class="mobile-tab__summary-note">Choose a plan to connect phones and use the managed relay.</span>
+          <button type="button" class="button button--ghost mobile-tab__card-action" @click="activeView = 'account'">
+            Review plans
+          </button>
+        </article>
+        <article v-if="!hostedAccessBlocked" class="mobile-tab__summary-card">
+          <span class="mobile-tab__summary-label">Connection</span>
+          <strong>{{ overviewConnectionLabel }}</strong>
+          <span class="mobile-tab__summary-note"
+            >{{ activePhoneCount }} paired phone{{ activePhoneCount === 1 ? "" : "s" }}</span
+          >
+        </article>
+        <article v-if="!hostedAccessBlocked" class="mobile-tab__summary-card">
+          <span class="mobile-tab__summary-label">Managed relay</span>
+          <strong>{{ relayLabel }}</strong>
+          <span class="mobile-tab__summary-note">{{
+            mobileRelayEnabled ? "Remote terminal access from anywhere" : "Enable to open terminals away from home"
+          }}</span>
+          <button
+            v-if="!mobileRelayEnabled"
+            type="button"
+            class="button button--ghost mobile-tab__card-action"
+            @click="openRelaySettings"
+          >
+            Configure relay
+          </button>
+        </article>
+      </section>
 
-      <!-- THE ONE STEP THAT IS ACTUALLY AVAILABLE, and nothing else. A phone pairs to an installation,
+      <div
+        v-if="activeView === 'phones'"
+        :id="panelId('phones')"
+        role="tabpanel"
+        :aria-labelledby="accountAvailable ? tabId('phones') : undefined"
+        class="mobile-tab__phone-view"
+      >
+        <template v-if="!activePairing && !pairingSas">
+          <div class="mobile-tab__phone-header">
+            <h3 id="mobile-tab-phone-pairing" class="mobile-tab__section-title">
+              {{ mobileDevices.length ? "Your phones" : "Connect your first phone" }}
+            </h3>
+            <button
+              v-if="mobileDevices.length > 0 && !addPhoneSetupOpen"
+              type="button"
+              class="button button--ghost"
+              :disabled="paused"
+              @click="addPhoneSetupOpen = true"
+            >
+              Add phone
+            </button>
+          </div>
+          <p v-if="mobileDevices.length === 0" class="mobile-tab__intro">
+            Pair strIDEterm Mobile to open your profiles and terminals, receive notifications, and respond from your
+            phone.
+          </p>
+          <ol v-if="mobileDevices.length === 0" class="mobile-tab__steps" aria-label="Pairing progress">
+            <li :class="{ 'mobile-tab__step--active': !mobileEnabled }">
+              <strong>Prepare</strong><span>Turn on phone pairing.</span>
+            </li>
+            <li :class="{ 'mobile-tab__step--active': mobileEnabled }">
+              <strong>Scan</strong><span>In strIDEterm Mobile, open Pair device.</span>
+            </li>
+            <li><strong>Confirm</strong><span>Compare the code on both screens.</span></li>
+          </ol>
+        </template>
+
+        <!-- THE ONE STEP THAT IS ACTUALLY AVAILABLE, and nothing else. A phone pairs to an installation,
          so there is nothing to pair to until this computer is registered — and every control below
          would fail for a reason that is not where the person is looking. -->
-      <p v-if="accountAvailable && !installationRegistered" class="mobile-tab__intro mobile-tab__intro--note">
-        Register this computer first, in <strong>Account and subscription</strong> above. Pairing becomes available as
-        soon as it is registered.
-      </p>
-      <!-- `pairingReady` rather than `installationRegistered` so a build with NO account surface at all
+        <p v-if="accountAvailable && !installationRegistered" class="mobile-tab__intro mobile-tab__intro--note">
+          Register this computer first.
+          <button type="button" class="mobile-tab__inline-action" @click="activeView = 'account'">Go to Account</button>
+        </p>
+        <!-- `pairingReady` rather than `installationRegistered` so a build with NO account surface at all
          (the remote web client already loses the whole section; a build with no control plane keeps
          it) behaves as it always did, instead of being told to go and register somewhere that does
          not exist. -->
-      <template v-if="pairingReady">
-        <p
-          class="mobile-tab__intro mobile-tab__intro--note"
-          title="A paired phone cannot start a brand-new public exposure by itself — it can only resume a tunnel mechanism this desktop already explicitly enabled in Remote Access settings."
-        >
-          A paired phone can only <strong>resume</strong> a remote tunnel this desktop has already explicitly enabled —
-          it can never turn on a new public exposure by itself.
-        </p>
-
-        <!-- BEFORE THE FIRST PHONE, THE STEP — NOT THE SETTING. The checkbox's real job is the ongoing
+        <template v-if="pairingReady">
+          <!-- BEFORE THE FIRST PHONE, THE STEP — NOT THE SETTING. The checkbox's real job is the ongoing
            one its own tooltip describes: silence a paired phone without unpairing it. As the gate in
            front of a first pairing it was a second, unexplained question asked of somebody who had
            just registered this computer and started a trial FOR these features, and who then found
            an unticked box and no stated reason. So until there is something to silence, the page
            offers the thing they came to do; the switch itself lives in Advanced at the bottom, since
            by the time it has a job the answer to "do I want this?" is already yes. -->
-        <template v-if="!mobileEnabled && mobileDevices.length === 0">
-          <button type="button" class="button" :disabled="enableBusy" @click="enableMobile">
-            <span v-if="enableBusy" class="mobile-tab__spinner" aria-hidden="true"></span>
-            Turn on phone pairing
-          </button>
-          <p class="mobile-tab__intro mobile-tab__intro--muted">
-            This opens the connection to the account service so a phone can be paired and receive pushes. You can turn
-            it off again at any time, without unpairing anything.
-          </p>
-          <p v-if="enableError" class="mobile-tab__error">{{ enableError }}</p>
+          <fieldset class="mobile-tab__mutation-group" :disabled="paused">
+            <template v-if="!mobileEnabled && mobileDevices.length === 0">
+              <button type="button" class="button" :disabled="enableBusy" @click="enableMobile">
+                <span v-if="enableBusy" class="mobile-tab__spinner" aria-hidden="true"></span>
+                Turn on phone pairing
+              </button>
+              <p class="mobile-tab__intro mobile-tab__intro--muted">
+                This opens the connection to the account service so a phone can be paired and receive pushes. You can
+                turn it off again at any time, without unpairing anything.
+              </p>
+              <p v-if="enableError" class="mobile-tab__error">{{ enableError }}</p>
+            </template>
+          </fieldset>
         </template>
-      </template>
 
-      <template v-if="pairingReady && mobileEnabled">
-        <!--
+        <div v-if="paused && mobileDevices.some((device) => !device.revoked)" class="mobile-tab__resume-card">
+          <strong>Phone access is paused</strong>
+          <span>Your pairings and access settings are preserved.</span>
+          <RemoteAccessPauseControl />
+        </div>
+
+        <template v-if="pairingReady && mobileEnabled">
+          <!--
         The pairing SAS, and the decision that turns it into an authorization (review 3 §P0.1).
 
         Both ends derive this from the same transcript — both public keys, both device ids, the
@@ -80,55 +172,59 @@
         no command and gets no WebView session; "Mismatch" revokes it outright; and closing this dialog
         without choosing leaves it inert until the server's pending-approval TTL sweeps it.
       -->
-        <div v-if="pairingSas" ref="sasBlock" class="pairing-sas">
-          <p class="pairing-sas__title">Compare this code with the phone</p>
-          <p class="pairing-sas__code">{{ pairingSas.sas }}</p>
-          <p class="pairing-sas__hint">
-            <strong>{{ pairingSas.label || "The new device" }}</strong> is showing a code for this pairing right now. It
-            can do nothing at all until you confirm the two match. If they differ, choose Mismatch — a code that does
-            not match means the two ends are not holding the same keys, and something has substituted one of them.
-          </p>
-          <p v-if="approvalError" class="pairing-sas__error">{{ approvalError }}</p>
-          <div class="pairing-sas__actions">
-            <button
-              type="button"
-              class="button button--primary"
-              :disabled="approvalBusy"
-              title="Activate this device. Only press this if the code above matches the one on the phone."
-              @click="approvePairing"
-            >
-              Codes match — activate
-            </button>
-            <button
-              type="button"
-              class="button button--danger"
-              :disabled="approvalBusy"
-              title="Revoke this device. Its cloud access, token and queued commands are removed."
-              @click="rejectPairing('sas-mismatch')"
-            >
-              Mismatch — revoke
-            </button>
-            <button
-              type="button"
-              class="button button--ghost"
-              :disabled="approvalBusy"
-              title="Decide later. The device stays inactive and is revoked automatically if you never confirm."
-              @click="dismissSas"
-            >
-              Decide later
-            </button>
-          </div>
-        </div>
+          <fieldset
+            v-if="pairingSas || activePairing || mobileDevices.length === 0 || addPhoneSetupOpen"
+            class="mobile-tab__mutation-group"
+            :disabled="paused"
+          >
+            <div v-if="pairingSas" ref="sasBlock" class="pairing-sas">
+              <p class="pairing-sas__title">Compare this code with the phone</p>
+              <p class="pairing-sas__code">{{ pairingSas.sas }}</p>
+              <p class="pairing-sas__hint">
+                Compare this code with the one shown on <strong>{{ pairingSas.label || "the new device" }}</strong
+                >. Only activate if they match.
+              </p>
+              <p v-if="approvalError" class="pairing-sas__error">{{ approvalError }}</p>
+              <div class="pairing-sas__actions">
+                <button
+                  type="button"
+                  class="button button--primary"
+                  :disabled="approvalBusy"
+                  title="Activate this device. Only press this if the code above matches the one on the phone."
+                  @click="approvePairing"
+                >
+                  Codes match — activate
+                </button>
+                <button
+                  type="button"
+                  class="button button--danger"
+                  :disabled="approvalBusy"
+                  title="Revoke this device. Its cloud access, token and queued commands are removed."
+                  @click="rejectPairing('sas-mismatch')"
+                >
+                  Mismatch — revoke
+                </button>
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="approvalBusy"
+                  title="Decide later. The device stays inactive and is revoked automatically if you never confirm."
+                  @click="dismissSas"
+                >
+                  Decide later
+                </button>
+              </div>
+            </div>
 
-        <!-- Pairing.
+            <!-- Pairing.
 
            HIDDEN WHILE A CODE IS PENDING, so the code takes the place on screen the QR had. The
            person has just held their phone up to that QR; the next thing they are told to do is
            compare a code, and leaving the QR (and a second "+ Pair device" button) below it left
            them scrolling a long tab looking for the one step that was actually theirs. "Decide
            later" brings this back. -->
-        <div v-if="!pairingSas" class="pairing-section">
-          <!--
+            <div v-if="!pairingSas" class="pairing-section">
+              <!--
           PAIR FIRST, NARROW LATER (and most people never will).
 
           This used to open with twelve checkboxes — one row of profiles and one row of capabilities,
@@ -141,73 +237,85 @@
           the fact, which is where a real "this phone should not touch that profile" decision tends
           to get made anyway.
         -->
-          <template v-if="!activePairing">
-            <p class="pairing-section__label">
-              The new phone gets <strong>{{ pairingGrantSummary }}</strong
-              >. You can change that per device afterwards, with <em>Edit access</em>.
-            </p>
-            <button
-              type="button"
-              class="button"
-              :disabled="pairingBusy"
-              title="Generate a single-use QR code. Valid for 120 seconds — scan it with strIDEterm Mobile's Pair device screen."
-              @click="startPairing"
-            >
-              {{ pairingBusy ? "Creating…" : "+ Pair device" }}
-            </button>
-            <p v-if="pairingError" class="mobile-tab__error">{{ pairingError }}</p>
-            <details class="pairing-limits">
-              <summary class="pairing-limits__summary">Limit what this phone may use</summary>
-              <p class="pairing-section__label">
-                All current and future profiles are included. Exclude individual profiles with Edit access after
-                pairing.
-              </p>
-              <p class="pairing-section__label">What it may do</p>
-              <div class="pairing-picker">
-                <label
-                  v-for="cap in CAPABILITY_OPTIONS"
-                  :key="cap.id"
-                  class="form-label form-label--inline"
-                  :title="cap.title"
+              <template v-if="!activePairing">
+                <p v-if="pairingExpired" class="mobile-tab__error" role="status">
+                  This pairing code expired. Generate a new one to continue.
+                </p>
+                <p class="pairing-section__label">
+                  The new phone gets <strong>{{ pairingGrantSummary }}</strong
+                  >. You can change that per device afterwards, with <em>Edit access</em>.
+                </p>
+                <button
+                  type="button"
+                  class="button pairing-section__action"
+                  :disabled="pairingBusy"
+                  title="Generate a single-use QR code. Valid for 120 seconds — scan it with strIDEterm Mobile's Pair device screen."
+                  @click="startPairing"
                 >
-                  <input v-model="pairingCapabilities" type="checkbox" :value="cap.id" />
-                  <span>{{ cap.label }}</span>
-                </label>
-              </div>
-            </details>
-          </template>
-          <div v-else class="pairing-qr">
-            <!--
+                  {{ pairingBusy ? "Creating…" : pairingExpired ? "Generate new code" : "Pair a phone" }}
+                </button>
+                <button
+                  v-if="mobileDevices.length > 0"
+                  type="button"
+                  class="button button--ghost pairing-section__action"
+                  @click="addPhoneSetupOpen = false"
+                >
+                  Close setup
+                </button>
+                <p v-if="pairingError" class="mobile-tab__error">{{ pairingError }}</p>
+                <details class="pairing-limits">
+                  <summary class="pairing-limits__summary">Limit what this phone may use</summary>
+                  <p class="pairing-section__label">
+                    All current and future profiles are included. Exclude individual profiles with Edit access after
+                    pairing.
+                  </p>
+                  <p class="pairing-section__label">What it may do</p>
+                  <div class="pairing-picker">
+                    <label
+                      v-for="cap in CAPABILITY_OPTIONS"
+                      :key="cap.id"
+                      class="form-label form-label--inline"
+                      :title="cap.title"
+                    >
+                      <input v-model="pairingCapabilities" type="checkbox" :value="cap.id" />
+                      <span>{{ cap.label }}</span>
+                    </label>
+                  </div>
+                </details>
+              </template>
+              <div v-else class="pairing-qr">
+                <!--
             OVER the code, not instead of it. Between the scan and the SAS appearing this desktop
             recomputes the key proof, checks the grants against what the human ticked and writes the
             record — and the screen used to show an unchanged QR for the whole of it, which is
             indistinguishable from a scan that did nothing. The code stays underneath because the
             work can still be REJECTED, and the next thing to do then is scan the same code again.
           -->
-            <div class="pairing-qr__frame">
-              <img v-if="qrDataUrl" :src="qrDataUrl" alt="Mobile pairing QR code" class="pairing-qr__img" />
-              <div v-if="claimInFlight" class="pairing-qr__working" role="status" aria-live="polite">
-                <span class="pairing-qr__spinner" aria-hidden="true"></span>
-                <span class="pairing-qr__working-label">Checking the phone…</span>
+                <div class="pairing-qr__frame">
+                  <img v-if="qrDataUrl" :src="qrDataUrl" alt="Mobile pairing QR code" class="pairing-qr__img" />
+                  <div v-if="claimInFlight" class="pairing-qr__working" role="status" aria-live="polite">
+                    <span class="pairing-qr__spinner" aria-hidden="true"></span>
+                    <span class="pairing-qr__working-label">Checking the phone…</span>
+                  </div>
+                </div>
+                <div class="pairing-qr__instructions">
+                  <span class="pairing-qr__step">Step 2 of 3</span>
+                  <h3>Scan this code</h3>
+                  <p>Open strIDEterm Mobile on your phone, then choose <strong>Pair device</strong>.</p>
+                  <p class="pairing-qr__meta" title="The QR contains a single-use invitation.">
+                    <template v-if="claimInFlight">Phone found. Verifying its key…</template>
+                    <template v-else
+                      >Expires in <strong>{{ countdownSeconds }}s</strong>.</template
+                    >
+                  </p>
+                  <button type="button" class="button button--ghost" @click="cancelPairing">Cancel</button>
+                </div>
               </div>
             </div>
-            <p
-              class="pairing-qr__meta"
-              title="The QR encodes a single-use pairing secret, never a permanent remote access token."
-            >
-              <template v-if="claimInFlight">
-                A phone scanned this code. Verifying its key before you compare the codes.
-              </template>
-              <template v-else>
-                Scan with strIDEterm Mobile → Pair device. Expires in <strong>{{ countdownSeconds }}s</strong>.
-              </template>
-            </p>
-            <button type="button" class="button button--ghost" @click="cancelPairing">Cancel</button>
-          </div>
-        </div>
+          </fieldset>
 
-        <!-- Devices -->
-        <!--
+          <!-- Devices -->
+          <!--
         THE CAPS LIVE ON THE ACCOUNT PAGE, and this points at them rather than repeating them
         (plan §8.3). What is listed below is what THIS desktop has paired; how many phones and
         desktops the ACCOUNT is allowed, and which of them are enrolled, is one account-wide fact and
@@ -215,62 +323,73 @@
         end up disagreeing on the screen where somebody is trying to work out why they cannot add
         another one.
       -->
-        <p v-if="accountUsageAvailable" class="mobile-tab__account-link">
-          Phones on this account: <strong>{{ accountPhoneUsage }}</strong> — the limits and billing are in
-          <strong>Account and subscription</strong> above.
-        </p>
-        <div class="device-list">
-          <p v-if="mobileDevices.length === 0" class="mobile-tab__empty">No devices paired yet.</p>
-          <div
-            v-for="device in mobileDevices"
-            :key="device.deviceId"
-            class="device-item"
-            :class="{ 'device-item--revoked': device.revoked }"
-          >
-            <div class="device-item__header">
-              <template v-if="renamingDeviceId === device.deviceId">
-                <input
-                  v-model="renameDraft"
-                  class="settings-input"
-                  maxlength="60"
-                  title="New display label for this device."
-                  @keyup.enter="confirmRename(device)"
-                />
-                <button type="button" class="button button--ghost" @click="confirmRename(device)">Save</button>
-                <button type="button" class="button button--ghost" @click="renamingDeviceId = null">Cancel</button>
-              </template>
-              <template v-else>
-                <span class="device-item__label">{{ device.label }}</span>
-                <span
-                  class="device-item__badge"
-                  :class="device.revoked ? 'badge--off' : 'badge--ok'"
-                  :title="
-                    device.revoked
-                      ? 'This device has been revoked and can no longer connect.'
-                      : 'Active — can receive pushes and send commands within its allowlist.'
-                  "
-                >
-                  {{ device.revoked ? "revoked" : "active" }}
-                </span>
-                <!--
+          <p v-if="accountUsageAvailable && !activePairing && !pairingSas" class="mobile-tab__account-link">
+            Phones on this account: <strong>{{ accountPhoneUsage }}</strong
+            >.
+            <button type="button" class="mobile-tab__inline-action" @click="activeView = 'account'">
+              View account limits
+            </button>
+          </p>
+          <div v-if="!activePairing && !pairingSas" class="device-list">
+            <p v-if="mobileDevices.length === 0" class="mobile-tab__empty">No devices paired yet.</p>
+            <div
+              v-for="device in mobileDevices"
+              :key="device.deviceId"
+              class="device-item"
+              :class="{ 'device-item--revoked': device.revoked }"
+            >
+              <div class="device-item__header">
+                <template v-if="renamingDeviceId === device.deviceId">
+                  <input
+                    v-model="renameDraft"
+                    class="settings-input"
+                    maxlength="60"
+                    title="New display label for this device."
+                    @keyup.enter="confirmRename(device)"
+                  />
+                  <button type="button" class="button button--ghost" @click="confirmRename(device)">Save</button>
+                  <button type="button" class="button button--ghost" @click="renamingDeviceId = null">Cancel</button>
+                </template>
+                <template v-else>
+                  <span class="device-item__label">{{ device.label }}</span>
+                  <span
+                    class="device-item__badge"
+                    :class="device.revoked ? 'badge--off' : device.state === 'active' ? 'badge--ok' : 'badge--pending'"
+                    :title="
+                      device.revoked
+                        ? 'This device has been revoked and can no longer connect.'
+                        : device.state === 'active'
+                          ? 'Active — can receive pushes and send commands within its allowlist.'
+                          : pendingStateHint(device.state)
+                    "
+                  >
+                    {{
+                      device.revoked
+                        ? "revoked"
+                        : device.state === "active"
+                          ? "active"
+                          : pendingStateLabel(device.state)
+                    }}
+                  </span>
+                  <!--
                 Clears the row, and nothing else. A revoked record is not what refuses that phone —
                 the same predicate turns away a missing record and a revoked one — so forgetting it
                 changes no permission; it removes an entry from a list that otherwise only grows.
                 The backend refuses it for an active device and for one whose cloud revocation is
                 still owed, so this button cannot become a "forget locally" back door.
               -->
-                <button
-                  v-if="device.revoked"
-                  type="button"
-                  class="device-item__forget"
-                  :disabled="forgetBusyId === device.deviceId"
-                  title="Remove this revoked device from the list. It stays revoked; this only clears the entry."
-                  aria-label="Remove this revoked device from the list"
-                  @click="forgetDevice(device)"
-                >
-                  ×
-                </button>
-                <!--
+                  <button
+                    v-if="device.revoked"
+                    type="button"
+                    class="device-item__forget"
+                    :disabled="paused || forgetBusyId === device.deviceId"
+                    title="Remove this revoked device from the list. It stays revoked; this only clears the entry."
+                    aria-label="Remove this revoked device from the list"
+                    @click="forgetDevice(device)"
+                  >
+                    ×
+                  </button>
+                  <!--
                 Claimed is not paired. The claim proves the phone held the invitation secret, and the key
                 proof proves it holds the private key behind the public key it published — but neither is
                 a human agreeing that this is the right phone. Until someone compares the code, the
@@ -278,130 +397,139 @@
                 §P0.1). Showing WHICH of those two steps it is waiting on is the difference between "the
                 pairing is still finishing" and "notifications are broken".
               -->
-                <span
-                  v-if="!device.revoked && device.state !== 'active'"
-                  class="device-item__badge badge--pending"
-                  :title="pendingStateHint(device.state)"
-                >
-                  {{ pendingStateLabel(device.state) }}
-                </span>
-                <button
-                  v-if="!device.revoked"
-                  type="button"
-                  class="button button--ghost device-item__action"
-                  title="Rename this device's display label."
-                  @click="startRename(device)"
-                >
-                  Rename
-                </button>
-              </template>
-            </div>
+                  <button
+                    v-if="!device.revoked"
+                    type="button"
+                    class="button button--ghost device-item__action"
+                    :disabled="paused"
+                    title="Rename this device's display label."
+                    @click="startRename(device)"
+                  >
+                    Rename
+                  </button>
+                  <button
+                    v-if="!device.revoked && device.state !== 'active'"
+                    type="button"
+                    class="button button--ghost device-item__action"
+                    :disabled="paused"
+                    title="Show the security code so you can compare it with this phone."
+                    @click="reviewPendingPairing(device.deviceId)"
+                  >
+                    Review pairing
+                  </button>
+                </template>
+              </div>
 
-            <div class="device-item__meta">
-              <span :title="'Platform: ' + device.platform">{{ device.platform }}</span>
-              <!--
+              <div class="device-item__meta">
+                <span :title="'Platform: ' + device.platform">{{ device.platform }}</span>
+                <!--
               The fingerprint of THIS device's public key, so the list names concrete installations
               rather than editable labels (review 2 §P0.7). A label is whatever the phone typed at
               pairing time and two phones may share one; the fingerprint is the digest of the key
               that pairing actually pinned, which is the value a user can compare against what their
               phone shows when deciding which row to revoke.
             -->
-              <span
-                class="device-item__fingerprint"
-                :title="'Key fingerprint for this installation: ' + device.fingerprint"
-                >{{ device.fingerprint }}</span
-              >
-              <span :title="'Last seen: ' + formatTimestamp(device.lastSeenAt)"
-                >last seen {{ formatTimestamp(device.lastSeenAt) }}</span
-              >
-              <span :title="'New profiles are included automatically'">
-                profiles: all, except {{ (device.excludedProfileIds || []).map(profileLabel).join(", ") || "none" }}
-              </span>
-              <span :title="'Capabilities granted to this device: ' + device.capabilities.join(', ')">
-                capabilities: {{ device.capabilities.map(capabilityLabel).join(", ") || "none" }}
-              </span>
-            </div>
+                <details class="device-item__fingerprint">
+                  <summary>Security fingerprint</summary>
+                  <code>{{ device.fingerprint }}</code>
+                </details>
+                <span :title="'Last seen: ' + formatTimestamp(device.lastSeenAt)"
+                  >last seen {{ formatTimestamp(device.lastSeenAt) }}</span
+                >
+                <span :title="'New profiles are included automatically'">
+                  profiles: all, except {{ (device.excludedProfileIds || []).map(profileLabel).join(", ") || "none" }}
+                </span>
+                <span :title="'Capabilities granted to this device: ' + device.capabilities.join(', ')">
+                  capabilities: {{ device.capabilities.map(capabilityLabel).join(", ") || "none" }}
+                </span>
+              </div>
 
-            <div v-if="!device.revoked" class="device-item__actions">
-              <button
-                type="button"
-                class="button button--ghost"
-                title="Change which profiles and capabilities this device is allowed to use."
-                @click="toggleAllowlistEdit(device)"
-              >
-                {{ editingAllowlistId === device.deviceId ? "Close" : "Edit access" }}
-              </button>
-              <button
-                type="button"
-                class="button button--ghost"
-                :disabled="testPushBusyId === device.deviceId"
-                title="Send a notification visibly labeled as a test — goes through the same delivery path and quota as a real push."
-                @click="sendTestPush(device)"
-              >
-                {{ testPushBusyId === device.deviceId ? "Sending…" : "Send test push" }}
-              </button>
-              <button
-                type="button"
-                class="button button--ghost button--danger"
-                title="Immediately revoke this device: it loses push notifications and remote access, and any active remote session is closed. Cannot be undone — the phone must be re-paired."
-                @click="confirmRevoke(device)"
-              >
-                Revoke
-              </button>
-            </div>
-            <p v-if="testPushResult[device.deviceId]" class="device-item__test-result">
-              {{ testPushResult[device.deviceId] }}
-            </p>
-            <p v-if="forgetError[device.deviceId]" class="device-item__test-result">
-              {{ forgetError[device.deviceId] }}
-            </p>
+              <div v-if="!device.revoked" class="device-item__actions">
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="paused"
+                  title="Change which profiles and capabilities this device is allowed to use."
+                  @click="toggleAllowlistEdit(device)"
+                >
+                  {{ editingAllowlistId === device.deviceId ? "Close" : "Edit access" }}
+                </button>
+                <button
+                  v-if="device.state === 'active'"
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="paused || testPushBusyId === device.deviceId"
+                  title="Send a notification visibly labeled as a test — goes through the same delivery path and quota as a real push."
+                  @click="sendTestPush(device)"
+                >
+                  {{ testPushBusyId === device.deviceId ? "Sending…" : "Send test push" }}
+                </button>
+                <button
+                  type="button"
+                  class="button button--ghost button--danger"
+                  title="Immediately revoke this device: it loses push notifications and remote access, and any active remote session is closed. Cannot be undone — the phone must be re-paired."
+                  @click="confirmRevoke(device)"
+                >
+                  Revoke
+                </button>
+              </div>
+              <p v-if="testPushResult[device.deviceId]" class="device-item__test-result">
+                {{ testPushResult[device.deviceId] }}
+              </p>
+              <p v-if="forgetError[device.deviceId]" class="device-item__test-result">
+                {{ forgetError[device.deviceId] }}
+              </p>
+              <p v-if="reviewError.get(device.deviceId)" class="mobile-tab__error" role="alert">
+                {{ reviewError.get(device.deviceId) }}
+              </p>
 
-            <!-- Now the primary place a grant gets narrowed (pairing hands out everything), so the two
+              <!-- Now the primary place a grant gets narrowed (pairing hands out everything), so the two
                questions are named here too rather than being one flat row of identical boxes. -->
-            <div v-if="editingAllowlistId === device.deviceId" class="device-item__allowlist-form">
-              <p class="pairing-section__label">Profiles excluded from this phone</p>
-              <div class="pairing-picker">
-                <label
-                  v-for="profile in profileOptions"
-                  :key="profile.id"
-                  class="form-label form-label--inline"
-                  :title="`Exclude profile “${profile.name}” from this phone.`"
-                >
-                  <input v-model="allowlistDraft.excludedProfileIds" type="checkbox" :value="profile.id" />
-                  <span>{{ profile.name }}</span>
-                </label>
-              </div>
-              <p class="pairing-section__label">What it may do</p>
-              <div class="pairing-picker">
-                <label
-                  v-for="cap in CAPABILITY_OPTIONS"
-                  :key="cap.id"
-                  class="form-label form-label--inline"
-                  :title="cap.title"
-                >
-                  <input v-model="allowlistDraft.capabilities" type="checkbox" :value="cap.id" />
-                  <span>{{ cap.label }}</span>
-                </label>
-              </div>
-              <button type="button" class="button" :disabled="accessSaving" @click="saveAllowlist(device)">
-                Save access
-              </button>
-              <p v-if="accessError" class="mobile-tab__error">{{ accessError }}</p>
+              <fieldset
+                v-if="editingAllowlistId === device.deviceId"
+                class="device-item__allowlist-form"
+                :disabled="paused"
+              >
+                <p class="pairing-section__label">Profiles excluded from this phone</p>
+                <div class="pairing-picker">
+                  <label
+                    v-for="profile in profileOptions"
+                    :key="profile.id"
+                    class="form-label form-label--inline"
+                    :title="`Exclude profile “${profile.name}” from this phone.`"
+                  >
+                    <input v-model="allowlistDraft.excludedProfileIds" type="checkbox" :value="profile.id" />
+                    <span>{{ profile.name }}</span>
+                  </label>
+                </div>
+                <p class="pairing-section__label">What it may do</p>
+                <div class="pairing-picker">
+                  <label
+                    v-for="cap in CAPABILITY_OPTIONS"
+                    :key="cap.id"
+                    class="form-label form-label--inline"
+                    :title="cap.title"
+                  >
+                    <input v-model="allowlistDraft.capabilities" type="checkbox" :value="cap.id" />
+                    <span>{{ cap.label }}</span>
+                  </label>
+                </div>
+                <button type="button" class="button" :disabled="accessSaving" @click="saveAllowlist(device)">
+                  Save access
+                </button>
+                <p v-if="accessError" class="mobile-tab__error">{{ accessError }}</p>
+              </fieldset>
             </div>
           </div>
-        </div>
 
-        <p class="mobile-tab__privacy">
-          <!-- No live, publicly hosted privacy policy URL exists yet — this points at the drafted
-             document in the strideterm-mobile repo instead of a fabricated URL, per the plan
-             §10.5/§12.6 retention summary. -->
-          Data retention: pairing invitations expire after 2 minutes, push events are retained up to 7 days, and audit
-          metadata up to 30 days. See the strIDEterm Mobile privacy policy in the strideterm-mobile repo
-          (<code>docs/PRIVACY-POLICY.md</code>) — publication pending.
-        </p>
-      </template>
+          <details v-if="!activePairing && !pairingSas" class="mobile-tab__privacy">
+            <summary>Privacy and retention</summary>
+            Pairing invitations expire after 2 minutes. Push events are retained up to 7 days and audit metadata up to
+            30 days.
+          </details>
+        </template>
 
-      <!--
+        <!--
       ADVANCED, AND LAST. Everything in here is a switch whose answer is already yes by the time
       anyone is on this page: the person came to pair a phone, so "Enable Mobile" and "Managed relay"
       are not questions to put in front of the thing they came to do — they are the two ways to
@@ -412,56 +540,61 @@
       that can turn it back on. `<details>` keeps its content in the DOM while closed, so nothing
       here becomes unreachable to a keyboard or to find-in-page.
     -->
-      <details v-if="pairingReady && (mobileEnabled || mobileDevices.length > 0)" class="mobile-tab__advanced">
-        <summary class="mobile-tab__advanced-summary">Advanced</summary>
-
-        <label
-          class="form-label form-label--inline"
-          title="Turns the whole Mobile feature on or off. Disabling stops the Firebase connection and any paired device stops receiving pushes/commands immediately (devices themselves stay paired)."
+        <details
+          v-if="pairingReady && !activePairing && !pairingSas && (mobileEnabled || mobileDevices.length > 0)"
+          ref="advancedSettings"
+          class="mobile-tab__advanced"
         >
-          <input type="checkbox" :checked="mobileEnabled" :disabled="enableBusy" @change="onToggleEnabled" />
-          <span>Enable Mobile</span>
-        </label>
-        <p v-if="enableError" class="mobile-tab__error">{{ enableError }}</p>
+          <summary class="mobile-tab__advanced-summary">Advanced</summary>
 
-        <template v-if="mobileEnabled">
-          <!-- Connection health -->
-          <div class="status-row">
-            <span class="status-badge" :class="healthBadgeClass" :title="healthTitle">
-              {{ healthLabel }}
-            </span>
-            <button
-              type="button"
-              class="button button--ghost"
-              :disabled="healthBusy"
-              title="Re-check the Firebase connection and, if disconnected, attempt to reconnect."
-              @click="refreshHealth"
+          <fieldset class="mobile-tab__mutation-group" :disabled="paused">
+            <label
+              class="form-label form-label--inline"
+              title="Turns the whole Mobile feature on or off. Disabling stops the Firebase connection and any paired device stops receiving pushes/commands immediately (devices themselves stay paired)."
             >
-              {{ healthBusy ? "Refreshing…" : "Refresh" }}
-            </button>
-          </div>
-          <p
-            v-if="mobileConnectionHealth?.lastError"
-            class="mobile-tab__error"
-            :title="mobileConnectionHealth.lastError"
-          >
-            {{ mobileConnectionHealth.lastError }}
-          </p>
+              <input type="checkbox" :checked="mobileEnabled" :disabled="enableBusy" @change="onToggleEnabled" />
+              <span>Enable Mobile</span>
+            </label>
+            <p v-if="enableError" class="mobile-tab__error">{{ enableError }}</p>
 
-          <!-- Quota -->
-          <div v-if="mobileQuota" class="quota-row" :title="quotaTitle">
-            <div class="quota-bar"><div class="quota-bar__fill" :style="{ width: quotaPercent + '%' }" /></div>
-            <span class="quota-label">
-              {{ mobileQuota.used }} / {{ mobileQuota.limit }} pushes today ·
-              {{ mobileQuota.reservedHighPriorityRemaining }} reserved for high-priority · resets
-              {{ formatResetTime(mobileQuota.resetAt) }}
-              <template v-if="mobileQuota.suppressedToday > 0">
-                · {{ mobileQuota.suppressedToday }} suppressed by quota today
-              </template>
-            </span>
-          </div>
+            <template v-if="mobileEnabled">
+              <!-- Connection health -->
+              <div class="status-row">
+                <span class="status-badge" :class="healthBadgeClass" :title="healthTitle">
+                  {{ healthLabel }}
+                </span>
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="healthBusy"
+                  title="Re-check the Firebase connection and, if disconnected, attempt to reconnect."
+                  @click="refreshHealth"
+                >
+                  {{ healthBusy ? "Refreshing…" : "Refresh" }}
+                </button>
+              </div>
+              <p
+                v-if="mobileConnectionHealth?.lastError"
+                class="mobile-tab__error"
+                :title="mobileConnectionHealth.lastError"
+              >
+                {{ mobileConnectionHealth.lastError }}
+              </p>
 
-          <!--
+              <!-- Quota -->
+              <div v-if="mobileQuota" class="quota-row" :title="quotaTitle">
+                <div class="quota-bar"><div class="quota-bar__fill" :style="{ width: quotaPercent + '%' }" /></div>
+                <span class="quota-label">
+                  {{ mobileQuota.used }} / {{ mobileQuota.limit }} pushes today ·
+                  {{ mobileQuota.reservedHighPriorityRemaining }} reserved for high-priority · resets
+                  {{ formatResetTime(mobileQuota.resetAt) }}
+                  <template v-if="mobileQuota.suppressedToday > 0">
+                    · {{ mobileQuota.suppressedToday }} suppressed by quota today
+                  </template>
+                </span>
+              </div>
+
+              <!--
           The managed relay, which is its OWN decision (relay plan §10, dev-environment finding 6).
 
           A separate switch rather than part of "Enable Mobile", because it starts something the mobile
@@ -471,24 +604,26 @@
           connected. The status line below is the relay's own state, so "on" can be told apart from
           "on and actually connected".
         -->
-          <div class="relay-block">
-            <label
-              class="form-label form-label--inline"
-              title="Lets a paired phone open a terminal through the hosted relay when this desktop is not reachable on the network. Off means no connector and no socket exist at all."
-            >
-              <input
-                type="checkbox"
-                :checked="mobileRelayEnabled"
-                :disabled="relayBusy"
-                @change="onToggleRelayEnabled"
-              />
-              <span>Managed relay (open a terminal from anywhere)</span>
-            </label>
-            <p class="mobile-tab__intro relay-block__hint">
-              Without it, a phone can only reach this desktop on your own network. With it, this desktop connects out to
-              the relay and the phone reaches it through that — nothing on this machine is exposed to the internet.
-            </p>
-            <!--
+              <div class="relay-block">
+                <label
+                  class="form-label form-label--inline"
+                  title="Lets a paired phone open a terminal through the hosted relay when this desktop is not reachable on the network. Off means no connector and no socket exist at all."
+                >
+                  <input
+                    ref="relayToggle"
+                    type="checkbox"
+                    :checked="mobileRelayEnabled"
+                    :disabled="relayBusy"
+                    @change="onToggleRelayEnabled"
+                  />
+                  <span>Managed relay (open a terminal from anywhere)</span>
+                </label>
+                <p class="mobile-tab__intro relay-block__hint">
+                  Without it, a phone can only reach this desktop on your own network. With it, this desktop connects
+                  out to the relay and the phone reaches it through that — nothing on this machine is exposed to the
+                  internet.
+                </p>
+                <!--
             The sentence the first paragraph does not say, and has to.
 
             "Nothing is exposed to the internet" is true about INBOUND reachability — there is no
@@ -502,32 +637,34 @@
             This is where consent is actually given — the toggle, not a policy document — so the
             distinction belongs here rather than only in docs/PRIVACY-POLICY.md.
           -->
-            <p class="mobile-tab__intro relay-block__hint">
-              A relay session is encrypted in transit and readable by the relay while it is in flight; notifications and
-              commands stay end-to-end encrypted.
-            </p>
-            <p v-if="relayError" class="mobile-tab__error">{{ relayError }}</p>
-            <div v-if="mobileRelayEnabled" class="status-row">
-              <span class="status-badge" :class="relayBadgeClass" :title="relayTitle">{{ relayLabel }}</span>
-              <button
-                type="button"
-                class="button button--ghost"
-                :disabled="relayStatusBusy"
-                title="Re-read the relay's own state."
-                @click="refreshRelayStatus"
-              >
-                {{ relayStatusBusy ? "Refreshing…" : "Refresh" }}
-              </button>
-            </div>
-          </div>
-        </template>
-      </details>
-    </fieldset>
+                <p class="mobile-tab__intro relay-block__hint">
+                  A relay session is encrypted in transit and readable by the relay while it is in flight; notifications
+                  and commands stay end-to-end encrypted.
+                </p>
+                <p v-if="relayError" class="mobile-tab__error">{{ relayError }}</p>
+                <div v-if="mobileRelayEnabled" class="status-row">
+                  <span class="status-badge" :class="relayBadgeClass" :title="relayTitle">{{ relayLabel }}</span>
+                  <button
+                    type="button"
+                    class="button button--ghost"
+                    :disabled="relayStatusBusy"
+                    title="Re-read the relay's own state."
+                    @click="refreshRelayStatus"
+                  >
+                    {{ relayStatusBusy ? "Refreshing…" : "Refresh" }}
+                  </button>
+                </div>
+              </div>
+            </template>
+          </fieldset>
+        </details>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, useId, watch } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useAccountStore } from "../../../stores/account.js";
 import RemoteAccessPauseControl from "../../layout/RemoteAccessPauseControl.vue";
@@ -540,15 +677,31 @@ interface ProfileOption {
   color?: string;
 }
 
+type MobileView = "overview" | "phones" | "account";
+
 interface Props {
   showPauseControl?: boolean;
+  visible?: boolean;
   profiles?: ProfileOption[];
+  initialView?: MobileView;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   profiles: () => [],
   showPauseControl: true,
+  visible: true,
+  initialView: "overview",
 });
+
+const mobileTabs: Array<{ id: MobileView; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "phones", label: "Phones" },
+  { id: "account", label: "Account" },
+];
+const activeView = ref<MobileView>(props.initialView);
+const tabsId = useId();
+const tabId = (view: MobileView) => `${tabsId}-${view}-tab`;
+const panelId = (view: MobileView) => `${tabsId}-${view}-panel`;
 
 const appStore = useAppStore();
 const accountStore = useAccountStore();
@@ -584,11 +737,64 @@ const accountPhoneUsage = computed(() => {
   const usage = accountStore.overview?.usage.mobileDevices;
   return usage ? `${usage.used} / ${usage.limit}` : "";
 });
+const hostedAccessBlocked = computed(() => {
+  const state = accountStore.entitlement?.state;
+  return state === "unbound" || state === "lapsed" || state === "revoked" || state === "billing_unconfigured";
+});
 const mobileEnabled = computed(() => appStore.mobileEnabled);
 const mobileDevices = computed(() => appStore.mobileDevices);
+const activePhoneCount = computed(
+  () => mobileDevices.value.filter((device) => !device.revoked && device.state === "active").length,
+);
 const mobileConnectionHealth = computed(() => appStore.mobileConnectionHealth);
 const mobileQuota = computed(() => appStore.mobileQuota);
 const pairingSas = computed(() => appStore.mobilePairingSas);
+const overviewConnectionLabel = computed(() => {
+  if (paused.value) return "Paused";
+  if (!mobileEnabled.value) return "Off";
+  return healthLabel.value;
+});
+
+watch(
+  accountAvailable,
+  (available) => {
+    if (!available && activeView.value !== "phones") activeView.value = "phones";
+  },
+  { immediate: true },
+);
+
+function onSubtabKeydown(event: KeyboardEvent, tab: MobileView): void {
+  const index = mobileTabs.findIndex((item) => item.id === tab);
+  if (index < 0) return;
+  const next =
+    event.key === "ArrowRight" || event.key === "ArrowDown"
+      ? index + 1
+      : event.key === "ArrowLeft" || event.key === "ArrowUp"
+        ? index - 1
+        : event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? mobileTabs.length - 1
+            : null;
+  if (next === null) return;
+  event.preventDefault();
+  activeView.value = mobileTabs[(next + mobileTabs.length) % mobileTabs.length]!.id;
+  (event.currentTarget as HTMLElement).parentElement
+    ?.querySelectorAll<HTMLButtonElement>("button")
+    [(next + mobileTabs.length) % mobileTabs.length]?.focus();
+}
+
+const advancedSettings = ref<HTMLDetailsElement | null>(null);
+const relayToggle = ref<HTMLInputElement | null>(null);
+async function openRelaySettings() {
+  activeView.value = "phones";
+  await nextTick();
+  if (!advancedSettings.value) return;
+  advancedSettings.value.open = true;
+  await nextTick();
+  relayToggle.value?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  relayToggle.value?.focus();
+}
 
 /**
  * The code block itself, so it can be brought to the person rather than the other way round.
@@ -603,9 +809,11 @@ watch(
   () => pairingSas.value?.deviceId ?? null,
   async (deviceId) => {
     if (!deviceId) return;
+    activeView.value = "phones";
     await nextTick();
     sasBlock.value?.scrollIntoView?.({ block: "center", behavior: "smooth" });
   },
+  { immediate: true },
 );
 
 /** True while an approve/reject call is in flight, so the three buttons cannot be double-fired. */
@@ -730,13 +938,11 @@ const CAPABILITY_OPTIONS = [
     title: "Open a live view of the whole remote web UI in a WebView.",
   },
 ];
-const CAPABILITY_LABELS: Record<string, string> = Object.fromEntries(CAPABILITY_OPTIONS.map((c) => [c.id, c.label]));
-
 function profileLabel(profileId: string): string {
   return profileOptions.value.find((p) => p.id === profileId)?.name || profileId;
 }
 function capabilityLabel(capability: string): string {
-  return CAPABILITY_LABELS[capability] || capability;
+  return CAPABILITY_OPTIONS.find((option) => option.id === capability)?.label || capability;
 }
 function formatTimestamp(ts: number): string {
   if (!ts) return "never";
@@ -906,6 +1112,7 @@ const quotaTitle = computed(
 // --- Pairing ---
 const pairingProfileIds = computed(() => profileOptions.value.map((p) => p.id));
 const pairingCapabilities = ref<string[]>(CAPABILITY_OPTIONS.map((c) => c.id));
+const addPhoneSetupOpen = ref(false);
 const pairingBusy = ref(false);
 const pairingError = ref("");
 
@@ -937,6 +1144,10 @@ const activePairing = computed(() => {
   if (!invitation?.expiresAt) return null;
   return invitation.expiresAt - nowTick.value > 0 ? invitation : null;
 });
+const pairingExpired = computed(() => {
+  const invitation = appStore.mobilePairingInvitation;
+  return !!invitation?.expiresAt && invitation.expiresAt <= nowTick.value;
+});
 const countdownSeconds = computed(() => {
   const invitation = appStore.mobilePairingInvitation;
   if (!invitation?.expiresAt) return 0;
@@ -967,11 +1178,13 @@ async function startPairing() {
   }
   pairingBusy.value = true;
   pairingError.value = "";
+  nowTick.value = Date.now();
   try {
     await appStore.createMobilePairingInvitation({
       profileAllowlist: [...pairingProfileIds.value],
       capabilities: [...pairingCapabilities.value],
     });
+    nowTick.value = Date.now();
   } catch (err) {
     pairingError.value = (err as Error)?.message || "Failed to create pairing invitation.";
   } finally {
@@ -980,6 +1193,19 @@ async function startPairing() {
 }
 async function cancelPairing() {
   await appStore.cancelMobilePairingInvitation();
+}
+
+const reviewError = reactive(new Map<string, string>());
+async function reviewPendingPairing(deviceId: string) {
+  reviewError.delete(deviceId);
+  try {
+    await appStore.refreshMobileDevicesAwaitingApproval(deviceId);
+    if (appStore.mobilePairingSas?.deviceId !== deviceId) {
+      reviewError.set(deviceId, "The pairing code for this phone is no longer available. Start pairing again.");
+    }
+  } catch (error) {
+    reviewError.set(deviceId, error instanceof Error ? error.message : "Could not load this pairing code.");
+  }
 }
 
 // --- Rename ---
@@ -1119,9 +1345,53 @@ onBeforeUnmount(() => {
   margin: 0;
   border: 0;
 }
+.mobile-tab__mutation-group {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.mobile-tab__phone-view {
+  display: grid;
+  gap: 12px;
+}
 .mobile-tab {
   display: grid;
   gap: 14px;
+  width: min(100%, 760px);
+  margin: 0 auto;
+}
+
+.mobile-tab__subtabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.mobile-tab__subtab {
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.mobile-tab__subtab--active {
+  color: var(--text, var(--fg, #222));
+  border-color: color-mix(in srgb, var(--accent, #f2a63b) 60%, transparent);
+  background: color-mix(in srgb, var(--accent, #f2a63b) 12%, transparent);
+}
+.mobile-tab__subtab:focus-visible,
+.mobile-tab button:focus-visible {
+  outline: 2px solid var(--accent, #f2a63b);
+  outline-offset: 2px;
 }
 
 /* The two halves of this tab. A rule rather than a blank line, because the account half is a whole
@@ -1132,6 +1402,58 @@ onBeforeUnmount(() => {
   padding-bottom: 14px;
   border-bottom: 1px solid var(--border, #333);
 }
+.mobile-tab__overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.mobile-tab__summary-card {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.mobile-tab__summary-card--wide {
+  grid-column: 1 / -1;
+}
+.mobile-tab__summary-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mobile-tab__summary-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mobile-tab__section--auxiliary {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.mobile-tab__section--auxiliary:has(.account-tab:empty) {
+  display: none;
+}
+.mobile-tab__card-action {
+  justify-self: start;
+  margin-top: 2px;
+}
+.mobile-tab__inline-action {
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
+@media (max-width: 520px) {
+  .mobile-tab__overview-grid {
+    grid-template-columns: 1fr;
+  }
+}
 
 .mobile-tab__section-title {
   margin: 0;
@@ -1139,6 +1461,12 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
+}
+.mobile-tab__phone-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .mobile-tab__intro {
@@ -1157,6 +1485,46 @@ onBeforeUnmount(() => {
 
 .mobile-tab__intro--muted {
   opacity: 0.75;
+}
+.mobile-tab__steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: mobile-step;
+}
+.mobile-tab__steps li {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--border, #333);
+  border-radius: 7px;
+  counter-increment: mobile-step;
+}
+.mobile-tab__steps li::before {
+  content: counter(mobile-step);
+  color: var(--accent, #f2a63b);
+  font-size: 11px;
+  font-weight: 700;
+}
+.mobile-tab__steps .mobile-tab__step--active {
+  border-color: color-mix(in srgb, var(--accent, #f2a63b) 70%, var(--border, #333));
+  background: color-mix(in srgb, var(--accent, #f2a63b) 8%, transparent);
+}
+.mobile-tab__steps strong {
+  font-size: 12px;
+}
+.mobile-tab__steps span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+@media (max-width: 560px) {
+  .mobile-tab__steps {
+    grid-template-columns: 1fr;
+  }
 }
 .mobile-tab__spinner {
   display: inline-block;
@@ -1235,6 +1603,23 @@ onBeforeUnmount(() => {
   color: var(--muted);
   line-height: 1.5;
   margin: 4px 0 0;
+}
+.mobile-tab__privacy summary {
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+.mobile-tab__resume-card {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #f2a63b) 55%, var(--border, #333));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent, #f2a63b) 8%, transparent);
+  font-size: 12px;
+}
+.mobile-tab__resume-card > span {
+  color: var(--muted);
 }
 
 .form-label--inline {
@@ -1363,6 +1748,9 @@ onBeforeUnmount(() => {
   color: var(--muted);
   margin: 0;
 }
+.pairing-section__action {
+  justify-self: start;
+}
 
 /* The optional narrowing. Same disclosure idiom as the tab's Advanced tail, one level in. */
 .pairing-limits[open] {
@@ -1389,8 +1777,43 @@ onBeforeUnmount(() => {
 
 .pairing-qr {
   display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.pairing-qr__instructions {
+  display: grid;
   justify-items: start;
   gap: 8px;
+  padding: 4px 8px;
+}
+.pairing-qr__instructions h3,
+.pairing-qr__instructions p {
+  margin: 0;
+}
+.pairing-qr__instructions h3 {
+  font-size: 16px;
+}
+.pairing-qr__instructions > p:not(.pairing-qr__meta) {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.pairing-qr__step {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+@media (max-width: 620px) {
+  .pairing-qr {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+  .pairing-qr__instructions {
+    padding: 0;
+  }
 }
 
 /*
@@ -1443,6 +1866,12 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.device-item__fingerprint summary {
+  cursor: pointer;
+}
+.device-item__fingerprint code {
+  overflow-wrap: anywhere;
 }
 
 .device-item__label {

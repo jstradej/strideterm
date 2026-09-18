@@ -96,6 +96,57 @@ function makeBasePayload(overrides: AnyApi = {}): AnyApi {
   };
 }
 
+function makeRemotePanelPayload(activePanelId = "panel-one"): AnyApi {
+  const workspace = {
+    id: "ws-panels",
+    name: "Panels",
+    profileId: "p1",
+    kind: "terminal",
+    cwd: "/tmp",
+    activePanelId,
+    panels: [
+      { id: "panel-one", title: "One", command: "" },
+      { id: "panel-two", title: "Two", command: "" },
+    ],
+  };
+  return makeBasePayload({
+    remoteClient: { id: "sess-panels", profileId: "p1", activeWorkspaceId: workspace.id, activeSessionId: "" },
+    appState: {
+      activeWorkspaceId: workspace.id,
+      profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [workspace.id] }],
+      workspaces: [workspace],
+      windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: workspace.id, activeSessionId: "" }],
+      settings: {},
+      tabTemplates: [],
+      ssh: {
+        hosts: [],
+        keys: [],
+        certificates: [],
+        knownHosts: {},
+        settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+      },
+    },
+    workspace: {
+      workspace,
+      project: workspace,
+      sessions: [
+        { sessionId: "ws-panels:panel-one", panelId: "panel-one", title: "One", command: "", status: "idle" },
+        { sessionId: "ws-panels:panel-two", panelId: "panel-two", title: "Two", command: "", status: "idle" },
+      ],
+    },
+  });
+}
+
+function requestRemotePanel(panelId: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    window.dispatchEvent(
+      new CustomEvent("strideterm:remote-select-panel", {
+        detail: { profileId: "p1", workspaceId: "ws-panels", panelId, handled: false, resolve, reject },
+      }),
+    );
+  });
+}
+
 describe("useAppStore — remote mode identity", () => {
   beforeEach(() => {
     // Each test gets a fresh Pinia so store state doesn't leak.
@@ -139,6 +190,60 @@ describe("useAppStore — remote mode identity", () => {
     await Promise.resolve();
 
     expect(store.myActiveProfileId).toBe("p2");
+  });
+
+  it("selects the requested panel when the current remote workspace already shows another panel", async () => {
+    const payload = makeRemotePanelPayload();
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await requestRemotePanel("panel-two");
+
+    expect(store.activeViewId).toBe("ws-panels:panel-two");
+    expect(transport.activateSession).toHaveBeenCalledWith("ws-panels:panel-two");
+  });
+
+  it("rejects a remote panel selection that is not in the active workspace", async () => {
+    const transport = makeRemoteTransport(makeRemotePanelPayload());
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(requestRemotePanel("missing-panel")).rejects.toThrow("Target panel is missing: missing-panel");
+    expect(store.activeViewId).not.toBe("ws-panels:missing-panel");
+  });
+
+  it("rejects failed panel activation on every attempt, including a repeated target", async () => {
+    const transport = makeRemoteTransport(makeRemotePanelPayload());
+    transport.activateSession.mockRejectedValue(new Error("Session unavailable"));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(requestRemotePanel("panel-two")).rejects.toThrow("Session unavailable");
+    await expect(requestRemotePanel("panel-two")).rejects.toThrow("Session unavailable");
+    expect(transport.activateSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("selects a panel after a cold renderer receives the replayed remote payload", async () => {
+    const coldPayload = makeBasePayload();
+    const transport = makeRemoteTransport(coldPayload);
+    transport.activateSession.mockResolvedValue(makeRemotePanelPayload("panel-two"));
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    transport._push(makeRemotePanelPayload());
+    await nextTick();
+    await requestRemotePanel("panel-two");
+
+    expect(store.activeViewId).toBe("ws-panels:panel-two");
   });
 
   it("keeps remote profile identity reactive when read before init", async () => {

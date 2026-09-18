@@ -558,6 +558,10 @@ export function pairCommandsPath(pairId: string): string {
   return `v2/pairs/${pairId}/commands`;
 }
 
+export function pairPendingCommandsPath(pairId: string): string {
+  return `v2/pairs/${pairId}/pendingCommands`;
+}
+
 export function pairCommandsPendingCountPath(pairId: string): string {
   return `v2/pairs/${pairId}/commandsPendingCount`;
 }

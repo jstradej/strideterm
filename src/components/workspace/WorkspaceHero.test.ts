@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import WorkspaceHero from "./WorkspaceHero.vue";
 import { useAppStore } from "../../stores/app.js";
+import { apiKey } from "../../types/keys.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 function buildPayload(): StatePayload {
@@ -83,6 +84,44 @@ describe("WorkspaceHero — copyPath feedback", () => {
   });
 });
 
+describe("WorkspaceHero — remote reconnect countdown", () => {
+  it("counts down from the transport deadline instead of leaving the original delay stale", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-19T12:00:00Z"));
+    const appStore = useAppStore();
+    appStore.remoteConnectionIssue = "The connection closed. Reconnecting in 10s...";
+    appStore.remoteReconnectAt = Date.now() + 10_000;
+    const wrapper = mount(WorkspaceHero, {
+      global: {
+        provide: { [apiKey as symbol]: { isRemote: true } },
+        stubs: { WorkspaceLayoutChip: true, NotificationBell: true },
+      },
+    });
+
+    expect(wrapper.get(".workspace-remote-alert__message").text()).toContain("Reconnecting in 10s...");
+    vi.advanceTimersByTime(1_000);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".workspace-remote-alert__message").text()).toContain("Reconnecting in 9s...");
+    vi.advanceTimersByTime(1_000);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".workspace-remote-alert__message").text()).toContain("Reconnecting in 8s...");
+    vi.advanceTimersByTime(8_000);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".workspace-remote-alert__message").text()).toContain("Reconnecting...");
+    expect(vi.getTimerCount()).toBe(0);
+    appStore.remoteReconnectAt = Date.now() + 20_000;
+    appStore.remoteConnectionIssue = "The connection closed. Reconnecting in 20s...";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".workspace-remote-alert__message").text()).toContain("Reconnecting in 20s...");
+    appStore.clearRemoteConnectionIssue();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".workspace-remote-alert__message").exists()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+});
+
 /**
  * The running-agent chip's placement is the whole point of F5: it sits as a
  * DIRECT child of `.workspace-meta`, next to the bell, and never inside
@@ -142,7 +181,6 @@ describe("WorkspaceHero — running-agent chip placement", () => {
       git: { workspaces: {} },
       taskRunner: { "ws-task": { state: "running" } },
       attention: { sessions: {}, alerts: [] },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as unknown as StatePayload;
   }
 

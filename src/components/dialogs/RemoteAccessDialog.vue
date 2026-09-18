@@ -53,7 +53,11 @@
     </div>
 
     <div v-if="!isRemote" v-show="selectedMode === 'mobile'" class="remote-access__mobile">
-      <MobileConnectionPanel :profiles="store.payload?.appState?.profiles || []" :show-pause-control="false" />
+      <MobileConnectionPanel
+        :profiles="store.payload?.appState?.profiles || []"
+        :show-pause-control="false"
+        :visible="selectedMode === 'mobile'"
+      />
     </div>
     <fieldset v-if="selectedMode !== 'mobile'" class="remote-access__legacy" :disabled="remoteConfig.paused">
       <!-- QR + share URL hero -->
@@ -288,11 +292,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject } from "vue";
+import { ref, computed, inject, watch } from "vue";
 import RemoteAccessPauseControl from "../layout/RemoteAccessPauseControl.vue";
 import MobileConnectionPanel from "./settings/MobileConnectionPanel.vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
+import { useAccountStore } from "../../stores/account.js";
 import { useRemoteConnection } from "../../composables/useRemoteConnection.js";
 import { useQrCode } from "../../composables/useQrCode.js";
 import type { Transport } from "../../transport.js";
@@ -302,9 +307,22 @@ const emit = defineEmits<{ close: [] }>();
 
 const api = inject<Transport>(apiKey);
 const store = useAppStore();
+const accountStore = useAccountStore();
 const isRemote = api?.isRemote || false;
 
 const selectedMode = ref(isRemote ? store.remoteAccessMode : "mobile");
+watch(
+  () => store.mobilePairingSas?.deviceId,
+  (deviceId) => {
+    if (deviceId && !isRemote) selectedMode.value = "mobile";
+  },
+);
+watch(
+  () => accountStore.auth?.phase,
+  (phase) => {
+    if (phase === "awaiting-confirmation" && !isRemote) selectedMode.value = "mobile";
+  },
+);
 function selectMode(mode: string) {
   selectedMode.value = mode;
   if (mode !== "mobile") store.setRemoteMode(mode);

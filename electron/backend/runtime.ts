@@ -103,6 +103,11 @@ import {
 } from "./mobile/mobile-crypto.js";
 import { PROTOCOL_VERSION, SESSION_KEY_HKDF_INFO, type MobileDeviceRecord } from "./mobile/mobile-schemas.js";
 import { buildExternalNotificationEvent } from "./notifications/external-notification-event.js";
+import {
+  buildNotificationBody,
+  notificationSummary,
+  recentTerminalExcerpt,
+} from "./notifications/notification-context.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 import { createNotifyUrlRegistry } from "./notify-url-registry.js";
 import {
@@ -124,6 +129,7 @@ import { AgentTaskRunner, COMPANION_ROLE_DISPLAY_NAMES } from "./agent-task-runn
 import type { RecoveryCandidate } from "../shared/types/state.js";
 import { getProvider } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
+import { CodexTerminalNotifications } from "./notifications/codex-terminal-notifications.js";
 import { decideAutoApprove, summarizePermissionRequestParts } from "./notifications/auto-approve.js";
 import type { RemoteClientRegistry } from "./remote-client-registry.js";
 import {
@@ -3107,12 +3113,24 @@ export async function createRuntime({
       const workspace = state.workspaces.find((w) => w.id === opts.projectId);
       const panel = workspace?.panels.find((p) => p.id === opts.panelId);
       const profileId = (workspace as { profileId?: string } | undefined)?.profileId || "default";
+      const signal = opts.sessionId ? sessionSignals.get(opts.sessionId) : undefined;
+      const message = String(opts.message || "").trim();
+      const excerpt = opts.sessionId ? recentTerminalExcerpt(terminalReplay.snapshot(String(opts.sessionId)).data) : "";
+      const body = buildNotificationBody({
+        kind: String(opts.kind || "info"),
+        detail: String(opts.detail || ""),
+        message,
+        exitCode: opts.exitCode,
+        recentOutput: excerpt,
+      });
+      const activity = String(signal?.currentCommand || "").trim();
+      const title = notificationSummary(String(opts.kind || "info"), String(opts.detail || ""), opts.exitCode);
       telegramManager
         .forwardAlert({
           alertId: opts.sessionId || `${opts.projectId}:${opts.panelId}`,
           workspaceId: opts.projectId || "",
           panelId: opts.panelId || "",
-          workspaceName: formatWorkspaceDisplayName(workspace) || opts.projectId || "",
+          workspaceName: formatWorkspaceDisplayName(workspace) || undefined,
           panelTitle: panel?.title || opts.panelId || "",
           kind: opts.kind || "info",
           urgency: opts.urgency || "normal",
@@ -3144,8 +3162,12 @@ export async function createRuntime({
           panelId: opts.panelId || null,
           kind: opts.kind || "info",
           urgency: opts.urgency === "urgent" ? "urgent" : "normal",
-          title: opts.title || "",
-          detail: opts.detail || "",
+          title,
+          detail: body,
+          workspaceName: formatWorkspaceDisplayName(workspace) || opts.projectId || "",
+          tab: panel?.title || undefined,
+          activity: activity || undefined,
+          exitCode: typeof opts.exitCode === "number" ? opts.exitCode : undefined,
         }),
       );
     }
@@ -3964,6 +3986,8 @@ export async function createRuntime({
     });
   }
 
+  const codexTerminalNotifications = new Map<string, CodexTerminalNotifications>();
+
   // New process generation under an existing sessionId (fresh spawn, implicit
   // ensureSession respawn, or SSH reconnect). Clear the previous generation's
   // replay so a later attach/subscribe doesn't prepend a dead process's screen
@@ -3973,6 +3997,7 @@ export async function createRuntime({
   // dispatch async after the spawn).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:spawned", (payload: any) => {
+    codexTerminalNotifications.delete(String(payload.sessionId || ""));
     clearTerminalReplay(String(payload.sessionId || ""));
   });
 
@@ -3984,6 +4009,7 @@ export async function createRuntime({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:removed", (payload: any) => {
     const sessionId = String(payload.sessionId || "");
+    codexTerminalNotifications.delete(sessionId);
     destroyTerminalReplay(sessionId);
     // A removed panel's attention alert has nothing left to point at. Workspace
     // deletion clears alerts wholesale via cleanupWorkspaceRuntimeState, but a
@@ -4011,6 +4037,30 @@ export async function createRuntime({
     // relay forward an ordered stream. Remote clients use it to order replay
     // against live frames; Electron ignores it.
     payload.seq = appendTerminalReplay(String(payload.sessionId || ""), rawText);
+
+    if (descriptor && project && panel && state.settings?.notifications?.agentHook !== false) {
+      let parser = codexTerminalNotifications.get(payload.sessionId);
+      if (!parser) {
+        parser = new CodexTerminalNotifications();
+        codexTerminalNotifications.set(payload.sessionId, parser);
+      }
+      for (const message of parser.feed(rawText)) {
+        const signal = getSessionSignal(payload.sessionId, project, panel);
+        cancelPromptTimer(signal);
+        // OSC questions can be hidden behind the TUI's queued-input overlay even in a visible tab.
+        raiseAlert({
+          sessionId: payload.sessionId,
+          projectId: descriptor.workspaceId,
+          panelId: descriptor.panelId,
+          title: panel.title || descriptor.panelId,
+          kind: "question",
+          tier: 1,
+          urgency: "urgent",
+          detail: "terminal:codex:question",
+          message,
+        });
+      }
+    }
 
     // Rate-limit detection runs for ANY agent in ANY tab — Docker shells,
     // plugin panels, plain terminals, task workers. Hitting a provider limit
@@ -8842,6 +8892,7 @@ export async function createRuntime({
         cancelPromptTimer(signal);
       }
       sessionSignals.clear();
+      codexTerminalNotifications.clear();
       dockerLogManager.closeAll();
       dockerShellManager.closeAll();
       if (dockerPoll) {

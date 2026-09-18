@@ -487,6 +487,13 @@ const accessoryKeys: AccessoryKey[] = [
 // space on the top row, alongside less-frequent line-editing and control keys.
 const menuKeys: AccessoryKey[] = [
   {
+    label: "⌥↑",
+    menuLabel: "⌥↑  Alt+Arrow Up (Codex)",
+    seq: "\x1b[1;3A",
+    flushDraft: true,
+    title: "Send Alt+Arrow Up to the terminal.",
+  },
+  {
     label: "←",
     menuLabel: "←  Left",
     seq: "\x1b[D",

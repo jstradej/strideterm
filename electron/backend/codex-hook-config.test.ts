@@ -13,6 +13,7 @@ import {
   getCodexConfigPath,
   getCodexHooksPath,
   HOOKS_TO_REGISTER,
+  ensureCodexTerminalNotifications,
 } from "./codex-hook-config.js";
 
 let tempDir: string;
@@ -20,6 +21,31 @@ let mockHomedir: string;
 let userDataPath: string;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let originalHomedir: any;
+
+test("terminal notifications use OSC 9 regardless of focus and preserve TUI filters", async () => {
+  await ensureCodexHooksFeatureFlag();
+  const configPath = getCodexConfigPath();
+  await fs.appendFile(
+    configPath,
+    '\n[tui] # my settings\nnotifications = [\n  "approval-requested",\n]\nnotification_method = "bel"\nnotification_condition = "unfocused"\nanimations = false\n\n[other]\nkey = 1\n',
+  );
+  expect((await ensureCodexTerminalNotifications()).ok).toBe(true);
+  const content = await fs.readFile(configPath, "utf8");
+  expect(content).toContain('notification_method = "osc9"');
+  expect(content).toContain('notification_condition = "always"');
+  expect(content).toContain('notifications = [\n  "approval-requested",\n]');
+  expect(content).toContain("animations = false");
+  expect(content).toContain("[other]\nkey = 1");
+  expect((await ensureCodexTerminalNotifications()).changed).toBe(false);
+});
+
+test("hook setup also configures terminal question notifications", async () => {
+  expect((await configureCodexHook(userDataPath)).ok).toBe(true);
+  const content = await fs.readFile(getCodexConfigPath(), "utf8");
+  expect(content).toContain("[tui]\nnotifications = true");
+  expect(content).toContain('notification_method = "osc9"');
+  expect(content).toContain('notification_condition = "always"');
+});
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-codex-hook-"));
