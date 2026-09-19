@@ -60,6 +60,12 @@ import {
   workspaceGridSetCellSchema,
   workspaceGridSetLayoutSchema,
   workspaceGridSwapCellsSchema,
+  nativeWorkspaceDirectoryListSchema,
+  nativeWorkspaceDirectoryCreateSchema,
+  nativeWorkspaceCreateSchema,
+  nativeWorkspaceProfileSchema,
+  nativeScratchpadKeepSchema,
+  nativeScratchpadDiscardSchema,
   wsDockerShellResizeSchema,
   wsDockerShellWriteSchema,
   wsResourceInterestSchema,
@@ -393,6 +399,21 @@ type AnyFn = (...args: any[]) => any;
  * The actual runtime object returned by createRuntime() satisfies this shape.
  */
 interface Runtime {
+  listWorkspaceDirectories?: (
+    profileId: string,
+    requestedPath?: string,
+    options?: { query?: string; sort?: "nameAsc" | "nameDesc" },
+  ) => Promise<unknown>;
+  createWorkspaceDirectory?: (profileId: string, parentPath: string, name: string) => Promise<unknown>;
+  createWorkspaceFromDirectory?: (profileId: string, cwd: string, name?: string, viewerId?: string) => Promise<unknown>;
+  listScratchpadWorkspaces?: (profileId: string) => Promise<unknown>;
+  createScratchpadWorkspace?: (profileId: string, viewerId?: string) => Promise<unknown>;
+  keepScratchpadWorkspace?: (
+    profileId: string,
+    workspaceId: string,
+    options?: Record<string, unknown>,
+  ) => Promise<unknown>;
+  discardScratchpadWorkspace?: (profileId: string, workspaceId: string, confirmed: boolean) => Promise<unknown>;
   getPayload(): {
     appState: {
       settings: {
@@ -1961,6 +1982,8 @@ async function handleApiRequest(
    * authenticated with the master token alone and never bound a session.
    */
   callerProfileId = "",
+  callerIsMobile = false,
+  callerSessionId = "",
 ): Promise<void> {
   const url = new URL(request.url!, "http://localhost");
 
@@ -2002,6 +2025,84 @@ async function handleApiRequest(
     // that deliver a core rather than an ack.
     const ackCtx = (response as ResponseWithCtx).__remoteCtx;
     if (ackCtx) ackCtx.body = body as Record<string, unknown>;
+
+    if (request.method === "POST" && url.pathname.startsWith("/api/mobile/workspaces/")) {
+      if (!callerIsMobile || !callerProfileId) {
+        json(response, 403, { error: "A bound mobile session is required" });
+        return;
+      }
+      const assertedProfile = typeof body.profileId === "string" ? body.profileId : "";
+      if (assertedProfile !== callerProfileId) {
+        json(response, 403, { error: "Profile does not match this mobile session" });
+        return;
+      }
+      try {
+        switch (url.pathname) {
+          case "/api/mobile/workspaces/directories/list": {
+            const parsed = validateIpc(nativeWorkspaceDirectoryListSchema, body, url.pathname);
+            json(
+              response,
+              200,
+              await runtime.listWorkspaceDirectories!(callerProfileId, parsed.path, {
+                query: parsed.query,
+                sort: parsed.sort,
+              }),
+            );
+            return;
+          }
+          case "/api/mobile/workspaces/directories/create": {
+            const parsed = validateIpc(nativeWorkspaceDirectoryCreateSchema, body, url.pathname);
+            json(
+              response,
+              200,
+              await runtime.createWorkspaceDirectory!(callerProfileId, parsed.parentPath, parsed.name),
+            );
+            return;
+          }
+          case "/api/mobile/workspaces/create": {
+            const parsed = validateIpc(nativeWorkspaceCreateSchema, body, url.pathname);
+            json(
+              response,
+              200,
+              await runtime.createWorkspaceFromDirectory!(
+                callerProfileId,
+                parsed.path,
+                parsed.name,
+                `remote:${callerSessionId}`,
+              ),
+            );
+            return;
+          }
+          case "/api/mobile/workspaces/scratchpads/list": {
+            validateIpc(nativeWorkspaceProfileSchema, body, url.pathname);
+            json(response, 200, await runtime.listScratchpadWorkspaces!(callerProfileId));
+            return;
+          }
+          case "/api/mobile/workspaces/scratchpads/create": {
+            validateIpc(nativeWorkspaceProfileSchema, body, url.pathname);
+            json(response, 200, await runtime.createScratchpadWorkspace!(callerProfileId, `remote:${callerSessionId}`));
+            return;
+          }
+          case "/api/mobile/workspaces/scratchpads/keep": {
+            const parsed = validateIpc(nativeScratchpadKeepSchema, body, url.pathname);
+            json(response, 200, await runtime.keepScratchpadWorkspace!(callerProfileId, parsed.workspaceId, parsed));
+            return;
+          }
+          case "/api/mobile/workspaces/scratchpads/discard": {
+            const parsed = validateIpc(nativeScratchpadDiscardSchema, body, url.pathname);
+            json(
+              response,
+              200,
+              await runtime.discardScratchpadWorkspace!(callerProfileId, parsed.workspaceId, parsed.confirmed),
+            );
+            return;
+          }
+        }
+      } catch (error) {
+        json(response, 400, { error: (error as Error).message || "Workspace operation failed" });
+        return;
+      }
+    }
 
     // NOTE: every POST pathname registered in `slotAwareRoute` (below, at the
     // server top level) is intercepted there UNCONDITIONALLY, before this
@@ -3110,6 +3211,8 @@ export async function startRemoteServer({
           response,
           broadcast,
           (apiSessionId && registry.get(apiSessionId)?.profileId) || "",
+          Boolean(apiSessionId && activeSessions.get(apiSessionId)?.deviceId),
+          apiSessionId,
         );
         return;
       }

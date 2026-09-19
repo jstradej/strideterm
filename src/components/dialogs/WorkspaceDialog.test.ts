@@ -377,6 +377,20 @@ describe("WorkspaceDialog", () => {
   });
 
   describe("browseCwd — rejection is caught and surfaced as a toast, not an unhandled rejection", () => {
+    test("accepted browse result updates the working directory field", async () => {
+      const browseDirectory = vi.fn().mockResolvedValueOnce("C:/picked");
+      const wrapper = mount(WorkspaceDialog, {
+        props: { onCancel: vi.fn(), onSubmit: vi.fn(), workspace: buildTaskDraft() },
+        global: { provide: { [apiKey]: { browseDirectory } } },
+      });
+
+      await wrapper.get('button[type="button"].input-with-action__btn').trigger("click");
+      await flushPromises();
+
+      expect(browseDirectory).toHaveBeenCalledWith("/tmp/project");
+      expect((wrapper.get('input[name="cwd"]').element as HTMLInputElement).value).toBe("C:/picked");
+    });
+
     test("browseDirectory rejecting shows an error notification instead of throwing", async () => {
       const browseDirectory = vi.fn().mockRejectedValueOnce(new Error("dialog picker crashed"));
       const wrapper = mount(WorkspaceDialog, {

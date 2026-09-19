@@ -121,6 +121,8 @@ export interface Transport extends Partial<
   Omit<StridetermAPI, "onConnectionState" | "getState" | "onStateUpdated" | "attachmentList" | "attachmentDelete">
 > {
   isRemote: boolean;
+  /** Native mobile host directory picker. Absent in ordinary browser tabs. */
+  browseDirectory?: (initialPath?: string) => Promise<unknown>;
   /** Manual state refresh — refetches /api/state and broadcasts the result.
    * Provided by the remote transport (no-op or absent for the Electron one,
    * where state is push-updated). Used by the mobile pull-up-to-refresh
@@ -350,6 +352,9 @@ export function createRemoteTransport(): Transport {
     persistToken(token);
   }
 
+  const mobileHost = (window as unknown as Record<string, unknown>).StridetermHost as
+    { postMessage?: (message: string) => void } | undefined;
+
   function emitConnectionState(payload: ConnectionStatePayload): void {
     listeners.connectionState.forEach((handler) => handler(payload));
   }
@@ -499,6 +504,9 @@ export function createRemoteTransport(): Transport {
   // on the WS `?rev=` so a reconnecting socket only gets a catch-up when the
   // server has newer state (bootstrap→WS handoff). -1 until the first snapshot.
   let lastCoreRevision = -1;
+  let selectedProfileId: string | null = null;
+  let selectedWorkspaceId: string | null = null;
+  let cancelActiveBrowse: (() => void) | null = null;
   // The FIRST WS is created synchronously at construction — before the HTTP
   // bootstrap has recorded a revision — so its URL cannot carry `?rev=` and the
   // server holds bootstrap-once. Once we DO have a revision we send it as a
@@ -524,25 +532,63 @@ export function createRemoteTransport(): Transport {
   }
 
   function noteCoreRevision(state: unknown): void {
-    const selection = (state as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } })?.remoteClient;
+    const selection = (
+      state as {
+        remoteClient?: {
+          profileId?: string;
+          activeWorkspaceId?: string;
+          activeViewId?: string | null;
+          activeSessionId?: string | null;
+        };
+      }
+    )?.remoteClient;
+    const nextProfileId = typeof selection?.profileId === "string" && selection.profileId ? selection.profileId : null;
+    const nextWorkspaceId =
+      typeof selection?.activeWorkspaceId === "string" && selection.activeWorkspaceId
+        ? selection.activeWorkspaceId
+        : null;
+    if (cancelActiveBrowse && (nextProfileId !== selectedProfileId || nextWorkspaceId !== selectedWorkspaceId)) {
+      cancelActiveBrowse();
+    }
+    selectedProfileId = nextProfileId;
+    selectedWorkspaceId = nextWorkspaceId;
     const appState = (state as { appState?: { workspaces?: unknown } })?.appState;
     const workspaces = Array.isArray(appState?.workspaces) ? appState.workspaces : [];
     const activeWorkspace = selection?.activeWorkspaceId
       ? (workspaces.find((workspace) => {
           const candidate = workspace as { id?: unknown };
           return candidate?.id === selection.activeWorkspaceId;
-        }) as { name?: unknown } | undefined)
+        }) as { name?: unknown; panels?: unknown[] } | undefined)
       : undefined;
     const workspaceName =
       typeof activeWorkspace?.name === "string" && activeWorkspace.name.trim()
         ? activeWorkspace.name.trim()
         : undefined;
+    const activeViewId =
+      typeof selection?.activeViewId === "string" && selection.activeViewId
+        ? selection.activeViewId
+        : typeof selection?.activeSessionId === "string"
+          ? selection.activeSessionId
+          : "";
+    const candidatePanelId =
+      nextWorkspaceId && activeViewId.startsWith(`${nextWorkspaceId}:`)
+        ? activeViewId.slice(nextWorkspaceId.length + 1)
+        : "";
+    const activePanel = candidatePanelId
+      ? (activeWorkspace?.panels?.find((panel) => (panel as { id?: unknown }).id === candidatePanelId) as
+          { title?: unknown } | undefined)
+      : undefined;
+    const panelId = activePanel ? candidatePanelId : "";
+    const panelName =
+      typeof activePanel?.title === "string" && activePanel.title.trim() ? activePanel.title.trim() : undefined;
     if (selection?.profileId)
       postHost({
         type: "selection-changed",
         profileId: selection.profileId,
         workspaceId: selection.activeWorkspaceId || null,
         ...(workspaceName ? { workspaceName } : {}),
+        ...(panelId ? { panelId } : {}),
+        ...(panelName ? { panelName } : {}),
       });
     const rev = (state as { coreRevision?: unknown })?.coreRevision;
     if (typeof rev === "number" && rev > lastCoreRevision) lastCoreRevision = rev;
@@ -936,6 +982,7 @@ export function createRemoteTransport(): Transport {
   function reportSessionLost(): void {
     if (sessionLost) return;
     sessionLost = true;
+    cancelActiveBrowse?.();
     suspendTransport();
     const host = (window as unknown as Record<string, unknown>).StridetermHost as
       { postMessage?: (message: string) => void } | undefined;
@@ -1206,6 +1253,70 @@ export function createRemoteTransport(): Transport {
     return body;
   }
 
+  async function browseDirectory(initialPath = ""): Promise<string | null> {
+    if (!mobileHost || typeof mobileHost.postMessage !== "function" || !selectedProfileId) return null;
+    const requestId =
+      typeof crypto?.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `workspace-browse-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const profileId = selectedProfileId;
+    const workspaceId = selectedWorkspaceId;
+    return new Promise<string | null>((resolve) => {
+      let settled = false;
+      let timeout = 0;
+      const cancel = () => finish(null, false);
+      const cleanup = () => {
+        window.removeEventListener("strideterm:workspace-browse-result", onResult);
+        window.removeEventListener("strideterm:workspace-browse-cancel", onCancel);
+        window.clearTimeout(timeout);
+        if (cancelActiveBrowse === cancel) cancelActiveBrowse = null;
+      };
+      const finish = (value: string | null, ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        postHost({ type: "workspace-browse-ack", requestId, ok });
+        resolve(value);
+      };
+      const onResult = (event: Event) => {
+        const detail = (event as CustomEvent<unknown>).detail;
+        if (!detail || typeof detail !== "object") return;
+        const candidate = detail as Record<string, unknown>;
+        if (
+          candidate.requestId !== requestId ||
+          candidate.profileId !== profileId ||
+          (candidate.workspaceId ?? null) !== workspaceId ||
+          selectedProfileId !== profileId ||
+          selectedWorkspaceId !== workspaceId ||
+          typeof candidate.path !== "string" ||
+          !candidate.path.trim() ||
+          candidate.path.length > 4096 ||
+          candidate.path.includes("\0")
+        ) {
+          return;
+        }
+        finish(candidate.path, true);
+      };
+      const onCancel = (event: Event) => {
+        const detail = (event as CustomEvent<unknown>).detail;
+        if (!detail || typeof detail !== "object" || (detail as Record<string, unknown>).requestId !== requestId)
+          return;
+        finish(null, false);
+      };
+      timeout = window.setTimeout(() => finish(null, false), 10 * 60_000);
+      cancelActiveBrowse = cancel;
+      window.addEventListener("strideterm:workspace-browse-result", onResult);
+      window.addEventListener("strideterm:workspace-browse-cancel", onCancel);
+      postHost({
+        type: "workspace-browse",
+        requestId,
+        profileId,
+        workspaceId,
+        initialPath: String(initialPath || ""),
+      });
+    });
+  }
+
   function send(message: WsMessage): void {
     const current = ws;
     if (current?.readyState === WebSocket.OPEN) {
@@ -1268,6 +1379,7 @@ export function createRemoteTransport(): Transport {
       window.open(nextUrl, "_blank", "noopener,noreferrer");
       return Promise.resolve();
     },
+    ...(mobileHost && typeof mobileHost.postMessage === "function" ? { browseDirectory } : {}),
     getState: async () => {
       const state = (await fetchJson("/api/state")) as CoreState;
       noteCoreRevision(state);

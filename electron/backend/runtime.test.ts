@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createRuntime, detectTerminalEnvironment, hasMeaningfulUserInput } from "./runtime.js";
+import { isValidNativeDirectoryName } from "./runtime.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
@@ -52,6 +53,198 @@ vi.mock("./logger.js", async (importOriginal) => {
     },
   };
 });
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+describe("native workspace and scratchpad lifecycle", () => {
+  test("creates a non-default workspace, keeps a renamed scratchpad, and moves files safely", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "other", name: "Other", workspaceIds: [] },
+        ],
+        workspaces: [],
+      },
+    });
+    fixtures.push(fixture);
+    const source = await fs.mkdtemp(path.join(os.tmpdir(), "native-source-"));
+    const destination = await fs.mkdtemp(path.join(os.tmpdir(), "native-destination-"));
+    tempPaths.push(source, destination);
+    await fs.writeFile(path.join(source, "notes.txt"), "keep me");
+
+    const workspace = await fixture.runtime.createWorkspaceFromDirectory("other", source, "Project");
+    expect(workspace.profileId).toBe("other");
+    const scratch = await fixture.runtime.createScratchpadWorkspace("other");
+    await fs.writeFile(path.join(scratch.path, "notes.txt"), "scratch bytes");
+    await fixture.store.mutate((draft: any) => {
+      const ws = draft.workspaces.find((item: any) => item.id === scratch.workspaceId);
+      ws.gitRoots = [scratch.path, path.join(scratch.path, "repo")];
+      ws.activeRootPath = scratch.path;
+      ws.panels[0].cwd = path.join(scratch.path, "repo");
+    });
+    const kept = await fixture.runtime.keepScratchpadWorkspace("other", scratch.workspaceId, { name: "Kept" });
+    expect(kept.name).toBe("Kept");
+    expect(fixture.store.getState().workspaces.find((item: any) => item.id === scratch.workspaceId)?.name).toBe("Kept");
+    expect(fixture.store.getState().scratchpads).toHaveLength(0);
+
+    const movedScratch = await fixture.runtime.createScratchpadWorkspace("other");
+    await fs.writeFile(path.join(movedScratch.path, "payload.txt"), "payload");
+    await fixture.store.mutate((draft: any) => {
+      const ws = draft.workspaces.find((item: any) => item.id === movedScratch.workspaceId);
+      ws.gitRoots = [movedScratch.path, path.join(movedScratch.path, "repo")];
+      ws.activeRootPath = movedScratch.path;
+      ws.panels[0].cwd = path.join(movedScratch.path, "repo");
+    });
+    const moved = await fixture.runtime.keepScratchpadWorkspace("other", movedScratch.workspaceId, {
+      parentPath: destination,
+      directoryName: "kept",
+    });
+    const movedPath = path.join(destination, "kept");
+    expect(moved.path).toBe(movedPath);
+    await expect(fs.readFile(path.join(movedPath, "payload.txt"), "utf8")).resolves.toBe("payload");
+    const movedWs = fixture.store
+      .getState()
+      .workspaces.find((item: any) => item.id === movedScratch.workspaceId) as any;
+    expect(movedWs.cwd).toBe(movedPath);
+    if (movedWs.activeRootPath) expect(movedWs.activeRootPath).toBe(movedPath);
+    expect(movedWs.gitRoots.map((value: string) => path.normalize(value))).toEqual([
+      path.normalize(movedPath),
+      path.normalize(path.join(movedPath, "repo")),
+    ]);
+    expect(path.normalize(movedWs.panels[0].cwd)).toBe(path.normalize(path.join(movedPath, "repo")));
+  });
+
+  test("rejects unsafe names, existing destinations, and symlink replacement on discard", async () => {
+    expect(isValidNativeDirectoryName("project0")).toBe(true);
+    for (const value of ["", ".", "..", "CON", "aux.txt", "name:", "name.", "name ", "a/b", "a\\b", "a\0b"]) {
+      expect(isValidNativeDirectoryName(value)).toBe(false);
+    }
+    const fixture = await createFixture({
+      initialState: { profiles: [{ id: "default", name: "Default", workspaceIds: [] }], workspaces: [] },
+    });
+    fixtures.push(fixture);
+    const destination = await fs.mkdtemp(path.join(os.tmpdir(), "native-destination-"));
+    tempPaths.push(destination);
+    const first = await fixture.runtime.createScratchpadWorkspace("default");
+    await expect(
+      fixture.runtime.keepScratchpadWorkspace("default", first.workspaceId, {
+        parentPath: destination,
+        directoryName: "kept",
+      }),
+    ).resolves.toMatchObject({ path: path.join(destination, "kept") });
+    const second = await fixture.runtime.createScratchpadWorkspace("default");
+    await expect(
+      fixture.runtime.keepScratchpadWorkspace("default", second.workspaceId, {
+        parentPath: destination,
+        directoryName: "kept",
+      }),
+    ).rejects.toThrow(/already exists/);
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "native-outside-"));
+    tempPaths.push(outside);
+    const record = fixture.store
+      .getState()
+      .scratchpads?.find((item: any) => item.workspaceId === second.workspaceId) as any;
+    await fs.rm(record.path, { recursive: true, force: true });
+    await fs.symlink(outside, record.path, "junction");
+    await expect(fixture.runtime.discardScratchpadWorkspace("default", second.workspaceId, true)).rejects.toThrow(
+      /unsafe/,
+    );
+    await expect(fs.stat(outside)).resolves.toBeTruthy();
+    const discarded = await fixture.runtime.createScratchpadWorkspace("default");
+    await fs.writeFile(path.join(discarded.path, "delete.txt"), "delete");
+    await expect(
+      fixture.runtime.discardScratchpadWorkspace("default", discarded.workspaceId, true),
+    ).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(fs.stat(discarded.path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(fixture.store.getState().workspaces.some((item: any) => item.id === discarded.workspaceId)).toBe(false);
+  });
+
+  test("filters before the bounded limit and applies deterministic natural sorting", async () => {
+    const fixture = await createFixture({
+      initialState: { profiles: [{ id: "default", name: "Default", workspaceIds: [] }], workspaces: [] },
+    });
+    fixtures.push(fixture);
+    const browseRoot = await fs.mkdtemp(path.join(os.tmpdir(), "native-browse-"));
+    tempPaths.push(browseRoot);
+    await Promise.all(Array.from({ length: 501 }, (_, index) => fs.mkdir(path.join(browseRoot, `other-${index}`))));
+    await fs.mkdir(path.join(browseRoot, "zzz-match-10"));
+    await fs.mkdir(path.join(browseRoot, "zzz-match-2"));
+
+    const unfiltered = await fixture.runtime.listWorkspaceDirectories("default", browseRoot);
+    expect(unfiltered.entries).toHaveLength(500);
+    expect(unfiltered.truncated).toBe(true);
+
+    const filtered = await fixture.runtime.listWorkspaceDirectories("default", browseRoot, {
+      query: "MATCH-",
+      sort: "nameAsc",
+    });
+    expect(filtered.entries.map((entry: any) => entry.name)).toEqual(["zzz-match-2", "zzz-match-10"]);
+    expect(filtered.truncated).toBe(false);
+    expect(filtered.supportsQuery).toBe(true);
+    expect(filtered.shortcuts.some((shortcut: any) => shortcut.name === "Home")).toBe(true);
+    expect(filtered.shortcuts.some((shortcut: any) => shortcut.name === "Temp")).toBe(true);
+
+    const descending = await fixture.runtime.listWorkspaceDirectories("default", browseRoot, {
+      query: "match-",
+      sort: "nameDesc",
+    });
+    expect(descending.entries.map((entry: any) => entry.name)).toEqual(["zzz-match-10", "zzz-match-2"]);
+  });
+
+  test("serializes concurrent keep and discard operations", async () => {
+    const fixture = await createFixture({
+      initialState: { profiles: [{ id: "default", name: "Default", workspaceIds: [] }], workspaces: [] },
+    });
+    fixtures.push(fixture);
+    const destination = await fs.mkdtemp(path.join(os.tmpdir(), "native-destination-"));
+    tempPaths.push(destination);
+    const scratch = await fixture.runtime.createScratchpadWorkspace("default");
+    await fs.writeFile(path.join(scratch.path, "data.txt"), "data");
+    const results = await Promise.allSettled([
+      fixture.runtime.keepScratchpadWorkspace("default", scratch.workspaceId, {
+        parentPath: destination,
+        directoryName: "kept",
+      }),
+      fixture.runtime.discardScratchpadWorkspace("default", scratch.workspaceId, true),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  });
+
+  test("rolls a filesystem move back when metadata persistence fails", async () => {
+    const fixture = await createFixture({
+      initialState: { profiles: [{ id: "default", name: "Default", workspaceIds: [] }], workspaces: [] },
+    });
+    fixtures.push(fixture);
+    const destination = await fs.mkdtemp(path.join(os.tmpdir(), "native-destination-"));
+    tempPaths.push(destination);
+    const scratch = await fixture.runtime.createScratchpadWorkspace("default");
+    await fs.writeFile(path.join(scratch.path, "recover.txt"), "recover");
+    const source = scratch.path;
+    const originalMutate = fixture.store.mutate;
+    let fail = true;
+    fixture.store.mutate = async (...args: Parameters<typeof fixture.store.mutate>) => {
+      if (fail) {
+        fail = false;
+        throw new Error("persist failed");
+      }
+      return Reflect.apply(originalMutate, fixture.store, args);
+    };
+    await expect(
+      fixture.runtime.keepScratchpadWorkspace("default", scratch.workspaceId, {
+        parentPath: destination,
+        directoryName: "rollback",
+      }),
+    ).rejects.toThrow(/persist failed/);
+    await expect(fs.readFile(path.join(source, "recover.txt"), "utf8")).resolves.toBe("recover");
+    await expect(fs.stat(path.join(destination, "rollback"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(fixture.store.getState().scratchpads?.some((item: any) => item.workspaceId === scratch.workspaceId)).toBe(
+      true,
+    );
+  });
+});
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 // Lets a single test force classifyHookEvent to throw so dispatchAgentHookEvent's
 // promise genuinely rejects (used by the dispatchAgentHookEvent call-site tests

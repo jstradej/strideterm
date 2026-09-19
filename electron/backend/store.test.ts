@@ -57,6 +57,50 @@ describe("store", () => {
     expect(store.getState().settings.sidebarWidth).toBe(360);
   });
 
+  test("restores in-memory state when persistence fails", async () => {
+    const statePath = await createTempStatePath();
+    const store = await createStore(statePath);
+    const originalWidth = store.getState().settings.sidebarWidth;
+    const originalPersisted = await fs.readFile(statePath, "utf8");
+    await fs.rm(statePath);
+    await fs.mkdir(statePath);
+
+    await expect(
+      store.mutate((draft) => {
+        draft.settings.sidebarWidth = originalWidth + 1;
+      }),
+    ).rejects.toThrow();
+
+    expect(store.getState().settings.sidebarWidth).toBe(originalWidth);
+    expect((await fs.stat(statePath)).isDirectory()).toBe(true);
+    await fs.rm(statePath, { recursive: true });
+    await store.mutate((draft) => {
+      draft.settings.sidebarWidth = originalWidth + 2;
+    });
+    expect(store.getState().settings.sidebarWidth).toBe(originalWidth + 2);
+    expect(JSON.parse(await fs.readFile(statePath, "utf8")).settings.sidebarWidth).toBe(originalWidth + 2);
+    expect(JSON.parse(originalPersisted).settings.sidebarWidth).toBe(originalWidth);
+  });
+
+  test("persists scratchpad metadata across a store restart", async () => {
+    const statePath = await createTempStatePath();
+    const store = await createStore(statePath);
+    const scratchpad = {
+      workspaceId: "scratch-workspace",
+      profileId: "profile-a",
+      name: "Scratchpad 2026-09-19T12:00:00.000Z",
+      path: path.join(path.dirname(statePath), "scratchpads", "scratch-workspace"),
+      createdAt: "2026-09-19T12:00:00.000Z",
+    };
+
+    await store.mutate((draft) => {
+      draft.scratchpads = [scratchpad];
+    });
+
+    const restarted = await createStore(statePath);
+    expect(restarted.getState().scratchpads).toEqual([scratchpad]);
+  });
+
   test("does not overwrite an unreadable existing state file", async () => {
     const statePath = await createTempStatePath();
     const brokenContent = "{ not-valid-json";

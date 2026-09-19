@@ -579,6 +579,14 @@ export interface WorkspaceGridState {
   cellWorkspaceIds: (string | null)[];
 }
 
+export interface ScratchpadRecord {
+  workspaceId: string;
+  profileId: string;
+  name: string;
+  path: string;
+  createdAt: string;
+}
+
 // ------- AppState (persisted) -------
 
 export interface AppState {
@@ -587,6 +595,8 @@ export interface AppState {
   tabTemplates: TabTemplate[];
   profiles: Profile[];
   workspaces: WorkspaceState[];
+  /** Backend-owned records for app-managed scratchpad workspaces. */
+  scratchpads?: ScratchpadRecord[];
   ssh: SshAppState;
   /** @deprecated Global grid moved to Profile.workspaceGrid; kept for downgrade compat. */
   workspaceGrid?: WorkspaceGridState | null;

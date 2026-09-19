@@ -886,6 +886,36 @@ export const workspaceDeleteOptionsSchema = z
   .strict();
 export type WorkspaceDeleteOptions = z.infer<typeof workspaceDeleteOptionsSchema>;
 
+export const nativeWorkspaceProfileSchema = z
+  .object({
+    profileId: z.string().min(1).max(128),
+    requestId: z.string().max(128).optional(),
+  })
+  .strict();
+export const nativeWorkspaceDirectoryListSchema = nativeWorkspaceProfileSchema.extend({
+  path: z.string().max(4096).optional(),
+  query: z.string().max(256).optional(),
+  sort: z.enum(["nameAsc", "nameDesc"]).optional(),
+});
+export const nativeWorkspaceDirectoryCreateSchema = nativeWorkspaceProfileSchema.extend({
+  parentPath: z.string().min(1).max(4096),
+  name: z.string().min(1).max(128),
+});
+export const nativeWorkspaceCreateSchema = nativeWorkspaceProfileSchema.extend({
+  path: z.string().min(1).max(4096),
+  name: z.string().max(120).optional(),
+});
+export const nativeScratchpadKeepSchema = nativeWorkspaceProfileSchema.extend({
+  workspaceId: workspaceIdSchema,
+  name: z.string().max(120).optional(),
+  parentPath: z.string().max(4096).optional(),
+  directoryName: z.string().max(128).optional(),
+});
+export const nativeScratchpadDiscardSchema = nativeWorkspaceProfileSchema.extend({
+  workspaceId: workspaceIdSchema,
+  confirmed: z.literal(true),
+});
+
 export const attentionSyncSchema = z.object({
   visibleSessionIds: z.array(z.string()).optional(),
   windowFocused: z.boolean().optional(),

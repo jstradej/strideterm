@@ -534,6 +534,12 @@
     position: relative;
     top: calc(-1 * var(--strideterm-keyboard-bottom, 0px));
     z-index: 20;
+    /* The native viewport already accounts for the device safe area. */
+    padding-bottom: 4px;
+  }
+
+  .native-keyboard-viewport .mobile-input-bar--collapsed {
+    padding-bottom: 0;
   }
 
   .native-keyboard-viewport .workspace-pane__body--terminal {

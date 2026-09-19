@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { watch, existsSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
-import { readFile, writeFile, mkdir, readdir, access, rm, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, access, rm, rename, lstat, realpath, cp } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -322,6 +322,74 @@ async function checkRemoteOrigin(
   throw new Error(
     `Remote access origin ${originUrl} is not responding${lastErrMessage ? ` (${lastErrMessage})` : ""}.`,
   );
+}
+
+const WINDOWS_RESERVED_DIRECTORY_NAMES = new Set([
+  "con",
+  "prn",
+  "aux",
+  "nul",
+  "com1",
+  "com2",
+  "com3",
+  "com4",
+  "com5",
+  "com6",
+  "com7",
+  "com8",
+  "com9",
+  "lpt1",
+  "lpt2",
+  "lpt3",
+  "lpt4",
+  "lpt5",
+  "lpt6",
+  "lpt7",
+  "lpt8",
+  "lpt9",
+]);
+export function isValidNativeDirectoryName(value: string): boolean {
+  return (
+    value.length >= 1 &&
+    value.length <= 128 &&
+    !value.includes("\\") &&
+    !value.includes("/") &&
+    !value.includes("\0") &&
+    !value.includes(":") &&
+    value !== "." &&
+    value !== ".." &&
+    !/[. ]$/.test(value) &&
+    !WINDOWS_RESERVED_DIRECTORY_NAMES.has(value.split(".", 1)[0].toLowerCase())
+  );
+}
+
+function assertProfileExists(state: AppState, profileId: string): void {
+  if (!profileId || !(state.profiles || []).some((profile) => profile.id === profileId)) {
+    throw new Error("Profile not found");
+  }
+}
+
+function assertContainedPath(root: string, candidate: string): string {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(candidate);
+  const relative = path.relative(resolvedRoot, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Path is outside the managed directory");
+  }
+  return resolved;
+}
+
+function assertNativePath(value: string): string {
+  if (
+    !value ||
+    value.includes("\0") ||
+    !path.isAbsolute(value) ||
+    /^[a-zA-Z]:[^\\/]/.test(value) ||
+    value.startsWith("\\\\.\\")
+  ) {
+    throw new Error("Invalid absolute path");
+  }
+  return path.resolve(value);
 }
 
 interface RuntimeDependencies {
@@ -4747,6 +4815,21 @@ export async function createRuntime({
   }
 
   const pendingWorktreeDeletions = new Set(); // paths being deleted — skip in syncWorktrees
+  const nativeWorkspaceOperations = new Map<string, Promise<unknown>>();
+  function withNativeWorkspaceLock<T>(workspaceId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = nativeWorkspaceOperations.get(workspaceId) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    nativeWorkspaceOperations.set(workspaceId, current);
+    void current.then(
+      () => {
+        if (nativeWorkspaceOperations.get(workspaceId) === current) nativeWorkspaceOperations.delete(workspaceId);
+      },
+      () => {
+        if (nativeWorkspaceOperations.get(workspaceId) === current) nativeWorkspaceOperations.delete(workspaceId);
+      },
+    );
+    return current;
+  }
 
   // Krok 6: background retry after a failed disk delete. When a worktree stays
   // locked longer than the foreground probe + rm retries (~7.5s — e.g. an
@@ -6398,6 +6481,338 @@ export async function createRuntime({
     ...gridHandlers,
     ...taskHandlers,
     ...typedHookProviderHandlers,
+    async listWorkspaceDirectories(
+      profileId: string,
+      requestedPath?: string,
+      options: { query?: string; sort?: "nameAsc" | "nameDesc" } = {},
+    ) {
+      const state = getState();
+      assertProfileExists(state, profileId);
+      const home = await realpath(os.homedir()).catch(() => path.resolve(os.homedir()));
+      const target = requestedPath ? assertNativePath(requestedPath) : path.resolve(home);
+      const info = await lstat(target).catch(() => null);
+      if (!info?.isDirectory() || info.isSymbolicLink()) throw new Error("Directory not found");
+      const directoryEntries = (await readdir(target, { withFileTypes: true })).filter(
+        (entry) => entry.isDirectory() && !entry.isSymbolicLink(),
+      );
+      const query = options.query?.toLocaleLowerCase() || "";
+      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+      const matchingEntries = directoryEntries
+        .filter((entry) => !query || entry.name.toLocaleLowerCase().includes(query))
+        .map((entry) => ({ name: entry.name, path: path.join(target, entry.name) }))
+        .sort((a, b) => collator.compare(a.name, b.name) || a.path.localeCompare(b.path));
+      if (options.sort === "nameDesc") matchingEntries.reverse();
+      const entries = matchingEntries.slice(0, 500);
+      const roots: Array<{ name: string; path: string }> = [{ name: "Home", path: home }];
+      if (process.platform === "win32") {
+        for (let code = 65; code <= 90; code++) {
+          const drive = `${String.fromCharCode(code)}:\\`;
+          if (
+            await access(drive)
+              .then(() => true)
+              .catch(() => false)
+          )
+            roots.push({ name: drive, path: drive });
+        }
+      } else if (!roots.some((root) => root.path === path.parse(target).root)) roots.push({ name: "/", path: "/" });
+      const canonicalTemp = await realpath(os.tmpdir()).catch(() => os.tmpdir());
+      const shortcutCandidates = [
+        { name: "Home", path: home },
+        { name: "Temp", path: canonicalTemp },
+        { name: "Desktop", path: path.join(home, "Desktop") },
+        { name: "Documents", path: path.join(home, "Documents") },
+        { name: "Downloads", path: path.join(home, "Downloads") },
+      ];
+      const shortcuts: Array<{ name: string; path: string }> = [];
+      const shortcutPaths = new Set<string>();
+      for (const shortcut of shortcutCandidates) {
+        const shortcutInfo = await lstat(shortcut.path).catch(() => null);
+        if (!shortcutInfo?.isDirectory() || shortcutInfo.isSymbolicLink()) continue;
+        const key = path.normalize(shortcut.path);
+        if (shortcutPaths.has(key)) continue;
+        shortcutPaths.add(key);
+        shortcuts.push(shortcut);
+      }
+      return {
+        path: target,
+        parentPath: path.dirname(target) === target ? null : path.dirname(target),
+        roots,
+        shortcuts,
+        supportsQuery: true,
+        entries,
+        truncated: matchingEntries.length > 500,
+      };
+    },
+    async createWorkspaceFromDirectory(profileId: string, cwd: string, name?: string, viewerId?: string) {
+      const state = getState();
+      assertProfileExists(state, profileId);
+      const resolved = assertNativePath(cwd);
+      const info = await lstat(resolved).catch(() => null);
+      if (!info?.isDirectory() || info.isSymbolicLink()) throw new Error("Directory not found");
+      const panelId = `panel-${randomUUID()}`;
+      const workspace = {
+        id: `workspace-${randomUUID()}`,
+        name: (name || path.basename(resolved) || "Workspace").trim().slice(0, 120),
+        icon: "📁",
+        color: "#ffa424",
+        kind: "terminal",
+        source: "manual",
+        pluginId: "",
+        cwd: resolved,
+        profileId,
+        notes: "",
+        activePanelId: panelId,
+        panels: [{ id: panelId, title: "Shell", command: "", shell: true, startup: "" }],
+      };
+      await this.saveWorkspace(workspace, viewerId);
+      const saved = findWorkspace(getState(), workspace.id);
+      return {
+        workspaceId: workspace.id,
+        profileId,
+        name: saved?.name || workspace.name,
+        path: saved?.cwd || resolved,
+      };
+    },
+    async createWorkspaceDirectory(profileId: string, parentPath: string, name: string) {
+      assertProfileExists(getState(), profileId);
+      if (!isValidNativeDirectoryName(name)) throw new Error("Invalid directory name");
+      const parent = assertNativePath(parentPath);
+      const info = await lstat(parent).catch(() => null);
+      if (!info?.isDirectory() || info.isSymbolicLink()) throw new Error("Parent directory not found");
+      const target = path.join(parent, name);
+      if (
+        await access(target)
+          .then(() => true)
+          .catch(() => false)
+      )
+        throw new Error("Directory already exists");
+      await mkdir(target);
+      return { path: target };
+    },
+    async listScratchpadWorkspaces(profileId: string) {
+      assertProfileExists(getState(), profileId);
+      return {
+        scratchpads: (getState().scratchpads || []).filter((record) => record.profileId === profileId),
+      };
+    },
+    async createScratchpadWorkspace(profileId: string, viewerId?: string) {
+      assertProfileExists(getState(), profileId);
+      const root = path.join(userDataPath, "scratchpads");
+      await mkdir(root, { recursive: true });
+      const dir = path.join(root, randomUUID());
+      await mkdir(dir);
+      const scratchName = `Scratchpad ${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      const workspaceId = `workspace-${randomUUID()}`;
+      const panelId = `panel-${randomUUID()}`;
+      const record = {
+        workspaceId,
+        profileId,
+        name: scratchName,
+        path: dir,
+        createdAt: new Date().toISOString(),
+      };
+      try {
+        await store.mutate((draft: AppState) => {
+          assertProfileExists(draft, profileId);
+          const normalized = normalizeWorkspace({
+            id: workspaceId,
+            name: scratchName,
+            icon: "📁",
+            color: "#ffa424",
+            kind: "terminal",
+            source: "manual",
+            pluginId: "",
+            cwd: dir,
+            profileId,
+            notes: "",
+            activePanelId: panelId,
+            panels: [{ id: panelId, title: "Shell", command: "", shell: true, startup: "" }],
+          });
+          insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(viewerId));
+          markWorkspaceWorked(draft, workspaceId);
+          draft.scratchpads = [...(draft.scratchpads || []).filter((item) => item.workspaceId !== workspaceId), record];
+          if (!draft.activeWorkspaceId) draft.activeWorkspaceId = workspaceId;
+        });
+      } catch (error) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
+      sessions.syncWithState(getState());
+      syncSessionSignalsWithState();
+      broadcastState();
+      syncTreeDirWatchers();
+      return record;
+    },
+    keepScratchpadWorkspace(
+      profileId: string,
+      workspaceId: string,
+      options: { name?: string; parentPath?: string; directoryName?: string } = {},
+    ) {
+      return withNativeWorkspaceLock(workspaceId, () =>
+        this.keepScratchpadWorkspaceUnsafe(profileId, workspaceId, options),
+      );
+    },
+    async keepScratchpadWorkspaceUnsafe(
+      profileId: string,
+      workspaceId: string,
+      options: { name?: string; parentPath?: string; directoryName?: string } = {},
+    ) {
+      assertProfileExists(getState(), profileId);
+      const record = (getState().scratchpads || []).find(
+        (item) => item.workspaceId === workspaceId && item.profileId === profileId,
+      );
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (!record || !workspace) throw new Error("Scratchpad not found");
+      if ((workspace.profileId || "default") !== profileId) throw new Error("Scratchpad profile mismatch");
+      if (path.resolve(record.path) !== path.resolve(workspace.cwd || ""))
+        throw new Error("Scratchpad metadata no longer matches workspace");
+      if (options.parentPath) {
+        if (!isValidNativeDirectoryName(options.directoryName || options.name || record.name))
+          throw new Error("Invalid directory name");
+        const parent = assertNativePath(options.parentPath);
+        const parentInfo = await lstat(parent).catch(() => null);
+        if (!parentInfo?.isDirectory() || parentInfo.isSymbolicLink())
+          throw new Error("Destination directory not found");
+        const destination = path.join(parent, options.directoryName || options.name || record.name);
+        const sourceRoot = path.join(userDataPath, "scratchpads");
+        assertContainedPath(sourceRoot, record.path);
+        const sourceInfo = await lstat(record.path).catch(() => null);
+        if (!sourceInfo?.isDirectory() || sourceInfo.isSymbolicLink())
+          throw new Error("Scratchpad directory is unsafe");
+        const sourceRealRoot = await realpath(sourceRoot);
+        const sourceRealPath = await realpath(record.path);
+        assertContainedPath(sourceRealRoot, sourceRealPath);
+        const sourceToDestination = path.relative(record.path, destination);
+        if (sourceToDestination && !sourceToDestination.startsWith("..") && !path.isAbsolute(sourceToDestination)) {
+          throw new Error("Destination cannot be inside the scratchpad");
+        }
+        if (
+          await access(destination)
+            .then(() => true)
+            .catch(() => false)
+        )
+          throw new Error("Destination already exists");
+        await sessions.removeWorkspaceSessions(workspaceId);
+        let moveMode: "rename" | "copy" = "rename";
+        try {
+          await rename(record.path, destination);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+          moveMode = "copy";
+          await cp(record.path, destination, {
+            recursive: true,
+            force: false,
+            errorOnExist: true,
+            verbatimSymlinks: true,
+          });
+        }
+        const sourceAbsolute = path.resolve(record.path);
+        const remap = (value?: string) => {
+          if (!value) return value;
+          const absolute = path.resolve(value);
+          const relative = path.relative(sourceAbsolute, absolute);
+          if (!relative) return destination;
+          if (!relative.startsWith("..") && !path.isAbsolute(relative)) return path.join(destination, relative);
+          return value;
+        };
+        const updatedWorkspace = {
+          ...workspace,
+          cwd: destination,
+          name: options.name || workspace.name,
+          gitRoots: (workspace.gitRoots || []).map((root: string) => remap(root)),
+          activeRootPath: remap(workspace.activeRootPath),
+          panels: workspace.panels.map((panel: { cwd?: string }) => ({
+            ...panel,
+            cwd: remap(panel.cwd),
+          })),
+        };
+        try {
+          await store.mutate((draft: AppState) => {
+            const index = draft.workspaces.findIndex((item) => item.id === workspaceId);
+            if (index < 0) throw new Error("Scratchpad workspace disappeared");
+            draft.workspaces[index] = normalizeWorkspace(updatedWorkspace);
+            draft.scratchpads = (draft.scratchpads || []).filter((item) => item.workspaceId !== workspaceId);
+          });
+        } catch (error) {
+          if (moveMode === "rename") await rename(destination, record.path).catch(() => {});
+          else await rm(destination, { recursive: true, force: true }).catch(() => {});
+          throw error;
+        }
+        if (moveMode === "copy") {
+          try {
+            await rm(record.path, { recursive: true, force: false });
+          } catch (error) {
+            log.warn("scratchpad keep: source cleanup failed after commit", {
+              workspaceId,
+              source: record.path,
+              destination,
+              err: (error as Error).message,
+            });
+          }
+        }
+        record.path = destination;
+        record.name = options.name || workspace.name;
+      } else if (options.name && options.name !== workspace.name) {
+        await store.mutate((draft: AppState) => {
+          const index = draft.workspaces.findIndex((item) => item.id === workspaceId);
+          if (index < 0) throw new Error("Scratchpad workspace disappeared");
+          draft.workspaces[index] = normalizeWorkspace({ ...workspace, name: options.name });
+          draft.scratchpads = (draft.scratchpads || []).filter((item) => item.workspaceId !== workspaceId);
+        });
+        record.name = options.name;
+      } else {
+        await store.mutate((draft: AppState) => {
+          draft.scratchpads = (draft.scratchpads || []).filter((item) => item.workspaceId !== workspaceId);
+        });
+      }
+      sessions.syncWithState(getState());
+      syncSessionSignalsWithState();
+      broadcastState();
+      syncTreeDirWatchers();
+      void refreshGit(workspaceId).catch(() => {});
+      return { workspaceId, profileId, name: record.name, path: record.path };
+    },
+    discardScratchpadWorkspace(profileId: string, workspaceId: string, confirmed: boolean) {
+      return withNativeWorkspaceLock(workspaceId, () =>
+        this.discardScratchpadWorkspaceUnsafe(profileId, workspaceId, confirmed),
+      );
+    },
+    async discardScratchpadWorkspaceUnsafe(profileId: string, workspaceId: string, confirmed: boolean) {
+      assertProfileExists(getState(), profileId);
+      if (!confirmed) throw new Error("Discard requires explicit confirmation");
+      const record = (getState().scratchpads || []).find(
+        (item) => item.workspaceId === workspaceId && item.profileId === profileId,
+      );
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (!record || !workspace) throw new Error("Scratchpad not found");
+      if ((workspace.profileId || "default") !== profileId) throw new Error("Scratchpad profile mismatch");
+      const root = path.join(userDataPath, "scratchpads");
+      const target = assertContainedPath(root, record.path);
+      if (path.resolve(workspace.cwd || "") !== target)
+        throw new Error("Scratchpad metadata no longer matches workspace");
+      const targetInfo = await lstat(target).catch(() => null);
+      if (!targetInfo) {
+        await this.deleteWorkspace(workspaceId, {}, undefined);
+        await store.mutate((draft: AppState) => {
+          draft.scratchpads = (draft.scratchpads || []).filter((item) => item.workspaceId !== workspaceId);
+        });
+        return { ok: true, workspaceId, profileId, alreadyAbsent: true };
+      }
+      if (!targetInfo?.isDirectory() || targetInfo.isSymbolicLink()) throw new Error("Scratchpad directory is unsafe");
+      const realRoot = await realpath(root);
+      const realTarget = await realpath(target);
+      assertContainedPath(realRoot, realTarget);
+      if (findActiveCompanionSource(getState(), workspaceId)) {
+        throw new Error("Cannot discard a workspace with an active companion task");
+      }
+      await sessions.removeWorkspaceSessions(workspaceId);
+      await rm(target, { recursive: true, force: false });
+      await this.deleteWorkspace(workspaceId, {}, undefined);
+      await store.mutate((draft: AppState) => {
+        draft.scratchpads = (draft.scratchpads || []).filter((item) => item.workspaceId !== workspaceId);
+      });
+      return { ok: true, workspaceId, profileId };
+    },
     /**
      * Re-scan parent workspaces for new/removed `.strideterm/tree/*` worktrees
      * and reconcile workspace state. Normally called from the git poll timer;
@@ -7589,6 +8004,9 @@ export async function createRuntime({
     async deleteWorkspace(workspaceId: any, options: any = {}, windowId?: string) {
       const state = getState();
       const workspace = findWorkspace(state, workspaceId);
+      const deletedScratchpadId = (state.scratchpads || []).some((item) => item.workspaceId === String(workspaceId))
+        ? String(workspaceId)
+        : "";
       // Cross-profile delete is data loss in another profile. Refuse it.
       assertWorkspaceInViewerProfile(String(workspaceId), windowId);
 
@@ -7656,6 +8074,9 @@ export async function createRuntime({
         await store.mutate((draft: AppState) => {
           const ws = draft.workspaces.find((item) => item.id === workspaceId);
           draft.workspaces = draft.workspaces.filter((item) => item.id !== workspaceId);
+          if (deletedScratchpadId) {
+            draft.scratchpads = (draft.scratchpads || []).filter((item) => item.workspaceId !== deletedScratchpadId);
+          }
           if (draft.activeWorkspaceId === workspaceId) {
             // Pick next-best in same profile
             const profileId = ws ? ws.profileId || "default" : "default";

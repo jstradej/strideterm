@@ -142,6 +142,49 @@ describe("remote transport endpoint routing", () => {
     });
   });
 
+  it("reports the active panel id and title when the renderer selection changes", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const payloads = [
+      {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel-a" },
+        appState: { workspaces: [{ id: "ws1", name: "Project", panels: [{ id: "panel-a", title: "Codex" }] }] },
+      },
+      {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel-b" },
+        appState: {
+          workspaces: [{ id: "ws1", name: "Project renamed", panels: [{ id: "panel-b", title: "Shell" }] }],
+        },
+      },
+    ];
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payloads.shift() }) as Response);
+    const transport = createRemoteTransport();
+    transport.onStateUpdated(vi.fn());
+    const bridge = (
+      window as unknown as { __stridetermRemote: { selectTarget: (...args: unknown[]) => Promise<void> } }
+    ).__stridetermRemote;
+
+    await bridge.selectTarget("p1", null, 11);
+    await bridge.selectTarget("p1", null, 12);
+
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "selection-changed",
+      profileId: "p1",
+      workspaceId: "ws1",
+      workspaceName: "Project",
+      panelId: "panel-a",
+      panelName: "Codex",
+    });
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "selection-changed",
+      profileId: "p1",
+      workspaceId: "ws1",
+      workspaceName: "Project renamed",
+      panelId: "panel-b",
+      panelName: "Shell",
+    });
+  });
+
   it("native selection waits for the renderer to select the requested panel", async () => {
     const postMessage = vi.fn();
     const selectPanel = vi.fn();
@@ -255,6 +298,134 @@ describe("remote transport endpoint routing", () => {
       profileId: "other",
       workspaceId: "workspace-other",
       panelId: "panel-codex",
+    });
+  });
+
+  it("exposes the mobile host directory picker and validates the result identity", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const payload = { remoteClient: { profileId: "profile-1", activeWorkspaceId: "workspace-1" } };
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
+    const transport = createRemoteTransport();
+    await transport.getState();
+
+    const pending = transport.browseDirectory!("C:/start");
+    const request = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string);
+    expect(request).toMatchObject({
+      type: "workspace-browse",
+      profileId: "profile-1",
+      workspaceId: "workspace-1",
+      initialPath: "C:/start",
+    });
+    expect(request.requestId).toEqual(expect.any(String));
+
+    window.dispatchEvent(
+      new CustomEvent("strideterm:workspace-browse-result", {
+        detail: { requestId: "stale", profileId: "profile-1", workspaceId: "workspace-1", path: "C:/stale" },
+      }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("strideterm:workspace-browse-result", {
+        detail: {
+          requestId: request.requestId,
+          profileId: "wrong-profile",
+          workspaceId: "workspace-1",
+          path: "C:/wrong",
+        },
+      }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("strideterm:workspace-browse-result", {
+        detail: {
+          requestId: request.requestId,
+          profileId: "profile-1",
+          workspaceId: "workspace-1",
+          path: `C:${"/".repeat(4097)}`,
+        },
+      }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("strideterm:workspace-browse-result", {
+        detail: { requestId: request.requestId, profileId: "profile-1", workspaceId: "workspace-1", path: "C:/picked" },
+      }),
+    );
+
+    await expect(pending).resolves.toBe("C:/picked");
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "workspace-browse-ack",
+      requestId: request.requestId,
+      ok: true,
+    });
+  });
+
+  it("resolves mobile browsing cancellation and leaves ordinary browser transport without a picker", async () => {
+    const plain = createRemoteTransport();
+    expect(plain.browseDirectory).toBeUndefined();
+
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const payload = { remoteClient: { profileId: "profile-1", activeWorkspaceId: null } };
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
+    const transport = createRemoteTransport();
+    await transport.getState();
+    const pending = transport.browseDirectory!("C:/start");
+    const request = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string);
+    window.dispatchEvent(
+      new CustomEvent("strideterm:workspace-browse-cancel", { detail: { requestId: request.requestId } }),
+    );
+
+    await expect(pending).resolves.toBeNull();
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "workspace-browse-ack",
+      requestId: request.requestId,
+      ok: false,
+    });
+  });
+
+  it("cancels a pending browse when the selected profile changes", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    let payload: unknown = { remoteClient: { profileId: "profile-1", activeWorkspaceId: "workspace-1" } };
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
+    const transport = createRemoteTransport();
+    await transport.getState();
+    const pending = transport.browseDirectory!("C:/start");
+    const request = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string);
+
+    payload = { remoteClient: { profileId: "profile-2", activeWorkspaceId: "workspace-2" } };
+    await transport.getState();
+
+    await expect(pending).resolves.toBeNull();
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "workspace-browse-ack",
+      requestId: request.requestId,
+      ok: false,
+    });
+  });
+
+  it("cancels a pending browse when the remote session is lost", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const payload = { remoteClient: { profileId: "profile-1", activeWorkspaceId: "workspace-1" } };
+    let requestCount = 0;
+    globalThis.fetch = vi.fn(async () => {
+      requestCount += 1;
+      return requestCount === 1
+        ? ({ ok: true, json: async () => payload } as Response)
+        : ({ ok: false, status: 401, text: async () => "Unauthorized" } as Response);
+    });
+    const transport = createRemoteTransport();
+    await transport.getState();
+    const pending = transport.browseDirectory!("C:/start");
+    const request = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string);
+
+    await transport.activateWorkspace("workspace-1").catch(() => {});
+
+    await expect(pending).resolves.toBeNull();
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "workspace-browse-ack",
+      requestId: request.requestId,
+      ok: false,
     });
   });
 

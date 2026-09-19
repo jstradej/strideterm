@@ -10,6 +10,7 @@ import type {
   TabTemplate,
   WorkspaceGridState,
   WorkspaceGridLayout,
+  ScratchpadRecord,
   WindowSlot,
   MobileCapability,
   MobileDeviceRecord,
@@ -607,6 +608,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       },
     ],
     workspaces: [] as WorkspaceState[],
+    scratchpads: [],
     windowSlots: [] as WindowSlot[],
     ssh: {
       hosts: [],
@@ -1650,6 +1652,34 @@ export function normalizeState(
     tabTemplates,
     profiles: profilesWithGrid,
     workspaces,
+    scratchpads: Array.isArray((rawState as Record<string, unknown>).scratchpads)
+      ? ((rawState as Record<string, unknown>).scratchpads as unknown[])
+          .filter(
+            (
+              record,
+            ): record is {
+              workspaceId: string;
+              path: string;
+              profileId?: unknown;
+              name?: unknown;
+              createdAt?: unknown;
+            } => {
+              if (!record || typeof record !== "object") return false;
+              const candidate = record as Record<string, unknown>;
+              return typeof candidate.workspaceId === "string" && typeof candidate.path === "string";
+            },
+          )
+          .map(
+            (record) =>
+              ({
+                workspaceId: record.workspaceId,
+                profileId: typeof record.profileId === "string" ? record.profileId : "default",
+                name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : "Scratchpad",
+                path: path.resolve(record.path),
+                createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date().toISOString(),
+              }) as ScratchpadRecord,
+          )
+      : [],
     workspaceGrid,
     windowSlots,
   };

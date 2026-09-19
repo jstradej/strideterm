@@ -318,6 +318,10 @@ export class RemoteClientRegistry {
   composePayload(sessionId: string, basePayload: unknown): unknown {
     const payload = basePayload as Record<string, unknown>;
     const appState = (payload.appState as Record<string, unknown>) || {};
+    // Scratchpad ownership is served only through the profile-bound native
+    // workspace endpoints; it must never ride in the broad state snapshot.
+    const remoteAppState = { ...appState };
+    delete remoteAppState.scratchpads;
     const slots = (appState.windowSlots as AnyState[]) || [];
     const reducedSlots = slots.map((slot: AnyState, idx: number) => ({
       id: slot.id,
@@ -326,12 +330,12 @@ export class RemoteClientRegistry {
     }));
     const client = this.clients.get(sessionId);
     if (!client) {
-      return { ...payload, appState: { ...appState, windowSlots: reducedSlots } };
+      return { ...payload, appState: { ...remoteAppState, windowSlots: reducedSlots } };
     }
     this.revalidate(client, appState);
     return {
       ...payload,
-      appState: { ...appState, windowSlots: reducedSlots },
+      appState: { ...remoteAppState, windowSlots: reducedSlots },
       remoteClient: {
         id: client.id,
         profileId: client.profileId,

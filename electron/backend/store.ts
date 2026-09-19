@@ -488,10 +488,17 @@ export async function createStore(statePath: string) {
       throw new Error("store.mutate requires a mutator");
     }
     return enqueue(label, async () => {
+      const previousState = state;
       const draft = structuredClone(state);
       const result = await mutator(draft);
-      state = normalizeState(result || draft, { seedRestoreIdsFromSlots: false });
-      await persist(label);
+      const nextState = normalizeState(result || draft, { seedRestoreIdsFromSlots: false });
+      state = nextState;
+      try {
+        await persist(label);
+      } catch (error) {
+        state = previousState;
+        throw error;
+      }
       return state;
     });
   }
