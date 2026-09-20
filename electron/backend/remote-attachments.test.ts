@@ -129,7 +129,7 @@ describe("encrypted mobile attachment route", () => {
       const sha256 = createHash("sha256").update(data).digest("hex");
       const begin = await send("attachment.begin", {
         workspaceId: "ws",
-        name: "a.bin",
+        name: "a.txt",
         size: data.length,
         sha256,
         idempotencyKey: "idem",
@@ -153,7 +153,7 @@ describe("encrypted mobile attachment route", () => {
       }
       const finish = await send("attachment.finish", { workspaceId: "ws", transferId });
       expect(finish.value.sha256).toBe(sha256);
-      expect(await readFile(path.join(root, ".strideterm/attachments", transferId, "a.bin"))).toEqual(data);
+      expect(await readFile(path.join(root, ".strideterm/attachments", transferId, "a.txt"))).toEqual(data);
       const status = await send("attachment.status", { workspaceId: "ws", transferId });
       expect(status.value.state).toBe("complete");
       expect(status.value.offset).toBe(data.length);
@@ -169,7 +169,7 @@ describe("encrypted mobile attachment route", () => {
       expect(switched.status, await switched.text()).toBe(200);
       const switchedProfile = await send("attachment.list", { workspaceId: "other-ws" });
       expect(switchedProfile.value.attachments).toHaveLength(1);
-      const sharedRemoved = await send("attachment.delete", { workspaceId: "other-ws", transferId, name: "a.bin" });
+      const sharedRemoved = await send("attachment.delete", { workspaceId: "other-ws", transferId, name: "a.txt" });
       expect(sharedRemoved.value.ok).toBe(true);
       expect((await send("attachment.list", { workspaceId: "other-ws" })).value.attachments).toHaveLength(0);
       const tampered = await send("attachment.list", { workspaceId: "ws" }, cookie, true);

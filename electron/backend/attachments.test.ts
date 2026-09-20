@@ -13,7 +13,7 @@ describe("attachments", () => {
   test("resumes chunks, verifies hash, and publishes atomically", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-attachments-"));
     try {
-      const body = Buffer.from("attachment payload");
+      const body = Buffer.from("89504e470d0a1a0a", "hex");
       const hash = crypto.createHash("sha256").update(body).digest("hex");
       const started = await begin(root, "../screenshot.png", body.length, hash);
       await chunk(root, started.transferId, 0, body.subarray(0, 5).toString("base64"));
@@ -67,11 +67,11 @@ describe("attachments", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-attachments-"));
     try {
       const hash = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
-      const started = await begin(root, "empty.bin", 0, hash, "owner");
+      const started = await begin(root, "empty.txt", 0, hash, "owner");
       const result = await finish(root, started.transferId, "owner");
       expect(result.size).toBe(0);
       expect(await finish(root, started.transferId, "owner")).toEqual(result);
-      await remove(root, started.transferId, "empty.bin", "owner");
+      await remove(root, started.transferId, "empty.txt", "owner");
       await rm(path.join(root, ".strideterm"), { recursive: true, force: true });
       await symlink(
         await mkdtemp(path.join(os.tmpdir(), "strideterm-outside-")),
@@ -123,7 +123,7 @@ describe("attachments", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-attachments-"));
     try {
       const hash = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
-      const started = await begin(root, "timestamped.bin", 0, hash);
+      const started = await begin(root, "timestamped.txt", 0, hash);
       const result = await finish(root, started.transferId);
       const statePath = path.join(root, ".strideterm", ".attachment-transfers", started.transferId, "state.json");
       const state = JSON.parse(await readFile(statePath, "utf8"));
@@ -142,8 +142,8 @@ describe("attachments", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-attachments-"));
     try {
       const hash = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
-      const pending = await begin(root, "pending.bin", 1, hash);
-      const done = await begin(root, "done.bin", 0, hash);
+      const pending = await begin(root, "pending.txt", 1, hash);
+      const done = await begin(root, "done.txt", 0, hash);
       await finish(root, done.transferId);
       const statePath = path.join(root, ".strideterm", ".attachment-transfers", pending.transferId, "state.json");
       const state = JSON.parse(await readFile(statePath, "utf8"));
@@ -192,7 +192,7 @@ describe("attachments", () => {
     try {
       const body = Buffer.from("abc");
       const hash = crypto.createHash("sha256").update(body).digest("hex");
-      const started = await begin(root, "tampered.bin", body.length, hash);
+      const started = await begin(root, "tampered.txt", body.length, hash);
       await chunk(root, started.transferId, 0, body.toString("base64"));
       await writeFile(
         path.join(root, ".strideterm", ".attachment-transfers", started.transferId, "payload.part"),

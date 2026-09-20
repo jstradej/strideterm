@@ -3,9 +3,14 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { validateAttachmentName, validateAttachmentContent, AttachmentPolicyError } from "./attachment-file-policy.js";
 
 export const CHUNK_SIZE = 512 * 1024;
 export const MAX_SIZE = 25 * 1024 * 1024;
+export const MAX_TOTAL_SIZE = 256 * 1024 * 1024;
+export const MAX_FILE_COUNT = 100;
+export const MAX_CONCURRENT_TRANSFERS = 4;
+const DAILY_RECEIVED_LIMIT = 128 * 1024 * 1024;
 const run = promisify(execFile);
 const locks = new Map<string, Promise<void>>();
 const excludeLocks = new Map<string, Promise<void>>();
@@ -28,6 +33,62 @@ type State = {
   done?: AttachmentResult;
 };
 
+async function usagePath(root: string) {
+  return safePath(root, ".strideterm/.attachment-usage.json");
+}
+async function recordReceivedUnlocked(root: string, bytes: number) {
+  const file = await usagePath(root);
+  let usage: { day: string; received: number } = { day: new Date().toISOString().slice(0, 10), received: 0 };
+  try {
+    const parsed = JSON.parse(await readFile(file, "utf8")) as Partial<typeof usage>;
+    if (
+      typeof parsed.day !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(parsed.day) ||
+      !Number.isSafeInteger(parsed.received) ||
+      (parsed.received as number) < 0
+    )
+      throw new Error("Attachment usage ledger is invalid");
+    usage = parsed as typeof usage;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  if (usage.day !== day) usage = { day, received: 0 };
+  if (!Number.isSafeInteger(bytes) || usage.received + bytes > DAILY_RECEIVED_LIMIT)
+    throw new Error("Attachment daily receive quota exceeded");
+  usage.received += bytes;
+  await atomic(file, JSON.stringify(usage));
+}
+async function recordReceived(root: string, bytes: number) {
+  const base = await workspace(root);
+  return locked(`${base}\u0000received-ledger`, () => recordReceivedUnlocked(base, bytes));
+}
+export async function usage(root: string) {
+  const base = await workspace(root);
+  let received = 0;
+  const day = new Date().toISOString().slice(0, 10);
+  try {
+    const value = JSON.parse(await readFile(await usagePath(base), "utf8")) as { day: string; received: number };
+    if (
+      typeof value.day !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(value.day) ||
+      !Number.isSafeInteger(value.received) ||
+      value.received < 0
+    )
+      throw new Error("Attachment usage ledger is invalid");
+    if (value.day === day) received = value.received;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return {
+    day,
+    received,
+    dailyLimit: DAILY_RECEIVED_LIMIT,
+    storageLimit: MAX_TOTAL_SIZE,
+    fileLimit: MAX_FILE_COUNT,
+    activeLimit: MAX_CONCURRENT_TRANSFERS,
+  };
+}
 function validId(value: string) {
   if (!UUID.test(value)) throw new Error("Invalid transfer id");
   return value;
@@ -123,7 +184,11 @@ async function configureGitExclude(root: string) {
   // eslint-disable-next-line no-useless-escape
   const escapeGit = (value: string) => value.replace(/[\\*?\[\]]/g, "\\$&");
   const escapedPrefix = rel ? `/${escapeGit(rel)}/` : "/";
-  const rules = [`${escapedPrefix}.strideterm/attachments/`, `${escapedPrefix}.strideterm/.attachment-transfers/`];
+  const rules = [
+    `${escapedPrefix}.strideterm/attachments/`,
+    `${escapedPrefix}.strideterm/.attachment-transfers/`,
+    `${escapedPrefix}.strideterm/.attachment-usage.json`,
+  ];
   let text = "";
   try {
     text = await readFile(exclude, "utf8");
@@ -259,6 +324,7 @@ async function beginUnlocked(
     throw new Error("Attachment exceeds the 25 MiB limit");
   if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid SHA-256");
   const name = safeName(originalName);
+  validateAttachmentName(name);
   const base = await workspace(root);
   await ensureGitExclude(base);
   const key = idempotencyKey === undefined ? undefined : String(idempotencyKey);
@@ -266,6 +332,24 @@ async function beginUnlocked(
   const transfers = await safePath(base, ".strideterm/.attachment-transfers");
   await mkdir(transfers, { recursive: true });
   await cleanup(base);
+  let reserved = 0,
+    files = 0,
+    active = 0;
+  try {
+    for (const entry of await readdir(transfers, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !UUID.test(entry.name)) continue;
+      try {
+        const prior = await load(base, entry.name);
+        files++;
+        reserved += prior.size;
+        if (!prior.done) active++;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   if (key)
     for (const entry of await readdir(transfers, { withFileTypes: true }))
       if (entry.isDirectory() && UUID.test(entry.name)) {
@@ -286,6 +370,8 @@ async function beginUnlocked(
           throw error;
         }
       }
+  if (files >= MAX_FILE_COUNT || reserved + size > MAX_TOTAL_SIZE) throw new Error("Attachment quota exceeded");
+  if (active >= MAX_CONCURRENT_TRANSFERS) throw new Error("Too many concurrent attachment transfers");
   const transferId = crypto.randomUUID();
   const dir = await safePath(base, `.strideterm/.attachment-transfers/${transferId}`);
   await mkdir(dir, { recursive: true });
@@ -320,9 +406,7 @@ export async function begin(
   idempotencyKey?: string,
 ) {
   const base = await workspace(root);
-  if (idempotencyKey === undefined)
-    return beginUnlocked(base, originalName, size, sha256, requestOwner, idempotencyKey);
-  return locked(`${base}\u0000begin\u0000${requestOwner ?? ""}\u0000${idempotencyKey}`, () =>
+  return locked(`${base}\u0000begin`, () =>
     beginUnlocked(base, originalName, size, sha256, requestOwner, idempotencyKey),
   );
 }
@@ -359,9 +443,13 @@ export async function chunk(root: string, transferId: string, offset: number, en
     if (offset < state.offset) {
       if (offset + bytes.length > state.offset) throw new Error("Invalid attachment chunk retry range");
       const existing = (await readFile(payload)).subarray(offset, offset + bytes.length);
-      if (existing.equals(bytes)) return { offset: state.offset };
+      if (existing.equals(bytes)) {
+        await recordReceived(root, bytes.length);
+        return { offset: state.offset };
+      }
       throw new Error("Invalid attachment chunk retry");
     }
+    await recordReceived(root, bytes.length);
     const handle = await open(payload, "r+");
     try {
       const written = await handle.write(bytes, 0, bytes.length, offset);
@@ -389,6 +477,17 @@ export async function finish(root: string, transferId: string, requestOwner?: st
     const bytes = await readFile(payload);
     if (bytes.length !== state.size || crypto.createHash("sha256").update(bytes).digest("hex") !== state.sha256)
       throw new Error("Attachment integrity check failed");
+    try {
+      await validateAttachmentContent(state.name, bytes);
+    } catch (error) {
+      if (error instanceof AttachmentPolicyError) {
+        await rm(await safePath(root, `.strideterm/.attachment-transfers/${state.id}`), {
+          recursive: true,
+          force: true,
+        });
+      }
+      throw error;
+    }
     const destination = await safePath(root, `.strideterm/attachments/${state.id}/${state.name}`);
     await mkdir(path.dirname(destination), { recursive: true });
     await rename(payload, destination);
@@ -434,6 +533,35 @@ export async function list(root: string): Promise<AttachmentListResult[]> {
       }
     }
   return result;
+}
+export async function listWithUsage(root: string) {
+  const attachments = await list(root);
+  const base = await workspace(root);
+  const activeDir = await safePath(base, ".strideterm/.attachment-transfers");
+  let storageBytes = 0;
+  let fileCount = 0;
+  let activeTransfers = 0;
+  try {
+    for (const entry of await readdir(activeDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !UUID.test(entry.name)) continue;
+      try {
+        const state = await load(base, entry.name);
+        if (state.done) {
+          storageBytes += state.done.size;
+          fileCount++;
+        } else {
+          storageBytes += state.offset;
+          activeTransfers++;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const current = await usage(base);
+  return { attachments, usage: { ...current, storageBytes, fileCount, activeTransfers } };
 }
 export async function remove(root: string, transferId: string, fileName: string, requestOwner?: string) {
   return locked(validId(transferId), async () => {
