@@ -29,11 +29,11 @@ jobs:
         run: |
           set -euo pipefail
           BASE="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
-          curl -sSL -o gitleaks.tar.gz "${BASE}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSL -o "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" "${BASE}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           curl -sSL -o gitleaks-checksums.txt "${BASE}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks-checksums.txt | sha256sum -c -
-          tar -xzf gitleaks.tar.gz gitleaks
-          ./gitleaks detect --source . --redact --no-banner --exit-code 1
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          ./gitleaks detect --source . --config .gitleaks.toml --redact --no-banner --exit-code 1
 
   licence-gate:
     name: Licence gate (shipped dependencies only)
