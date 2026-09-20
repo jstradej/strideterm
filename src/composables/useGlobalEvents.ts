@@ -27,16 +27,25 @@ export function useGlobalEvents() {
     )
       return;
     nativeGeometry = payload;
-    document.documentElement.dataset.controlsSide = payload.controlsSide === "left" ? "left" : "right";
+    const controlsSide = payload.controlsSide === "left" ? "left" : "right";
+    if (document.documentElement.dataset.controlsSide !== controlsSide) {
+      document.documentElement.dataset.controlsSide = controlsSide;
+    }
     const scale = window.innerWidth / payload.width;
     const bottom = payload.bottom * scale;
     const size = `${window.innerWidth}:${payload.height * scale}`;
-    document.documentElement.style.height = `${payload.height * scale}px`;
-    document.documentElement.style.setProperty("--strideterm-keyboard-bottom", `${bottom}px`);
-    if (bottom !== nativeBottom || size !== nativeSize) {
+    const sizeChanged = size !== nativeSize;
+    const bottomChanged = bottom !== nativeBottom;
+    if (sizeChanged) {
+      document.documentElement.style.height = `${payload.height * scale}px`;
+    }
+    if (bottomChanged) {
+      document.documentElement.style.setProperty("--strideterm-keyboard-bottom", `${bottom}px`);
+    }
+    if (bottomChanged || sizeChanged) {
       document.documentElement.style.setProperty("--strideterm-keyboard-pan", `${bottom}px`);
     }
-    if (size !== nativeSize && termStore.views.size > 0) termStore.scheduleAllVisibleResize();
+    if (sizeChanged && termStore.views.size > 0) termStore.scheduleAllVisibleResize();
     nativeBottom = bottom;
     nativeSize = size;
   }

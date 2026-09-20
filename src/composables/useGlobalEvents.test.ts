@@ -435,6 +435,41 @@ describe("useGlobalEvents — native viewport channel", () => {
     delete (window as unknown as { visualViewport?: unknown }).visualViewport;
   });
 
+  test("guards redundant native viewport DOM writes while preserving keyboard updates", async () => {
+    const wrapper = mountNative();
+    const style = document.documentElement.style;
+    const originalHeightDescriptor = Object.getOwnPropertyDescriptor(style, "height");
+    let heightWrites = 0;
+    Object.defineProperty(style, "height", {
+      configurable: true,
+      get: () => style.getPropertyValue("height"),
+      set: (value: string) => {
+        heightWrites++;
+        style.setProperty("height", value);
+      },
+    });
+    const sideMutations: MutationRecord[] = [];
+    const observer = new MutationObserver((records) => sideMutations.push(...records));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-controls-side"] });
+
+    update!({ width: 400, height: 800, bottom: 200, controlsSide: "right" });
+    await Promise.resolve();
+    heightWrites = 0;
+    sideMutations.length = 0;
+    update!({ width: 400, height: 800, bottom: 320, controlsSide: "right" });
+    await Promise.resolve();
+
+    expect(heightWrites).toBe(0);
+    expect(sideMutations).toHaveLength(0);
+    expect(document.documentElement.style.getPropertyValue("--strideterm-keyboard-bottom")).toBe("320px");
+    expect(document.documentElement.style.getPropertyValue("--strideterm-keyboard-pan")).toBe("320px");
+
+    observer.disconnect();
+    if (originalHeightDescriptor) Object.defineProperty(style, "height", originalHeightDescriptor);
+    else delete (style as unknown as { height?: string }).height;
+    wrapper.unmount();
+  });
+
   test("without the native channel, visualViewport resize still fits visible panes", () => {
     delete (window as unknown as { StridetermViewport?: unknown }).StridetermViewport;
     const visualViewport = new EventTarget();

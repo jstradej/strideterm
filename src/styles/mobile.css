@@ -75,6 +75,11 @@
     z-index: 60;
   }
 
+  /* Hero (30px) + compact toolbar (34px + 1px border) + 8px gap. */
+  .workspace-remote-alert {
+    top: calc(100% + 43px);
+  }
+
   .mobile-hamburger:hover {
     background: rgba(var(--tint), 0.08);
   }
@@ -542,6 +547,22 @@
     padding-bottom: 0;
   }
 
+  /* Keep the portrait composer on a compositor transform while its menu is
+     closed. The menu backdrop is position:fixed; leaving the existing top
+     fallback in force while the menu exists keeps it viewport-sized. */
+  .native-keyboard-viewport
+    .mobile-input-bar:not(.mobile-input-bar--landscape):not(.mobile-input-bar--system):not(
+      :has(.mobile-input-bar__menu)
+    ) {
+    top: 0;
+    transform: translate3d(0, calc(-1 * var(--strideterm-keyboard-bottom, 0px)), 0);
+    will-change: transform;
+  }
+
+  .native-keyboard-viewport .terminal-host {
+    will-change: transform;
+  }
+
   .native-keyboard-viewport .workspace-pane__body--terminal {
     clip-path: inset(0 0 min(var(--strideterm-keyboard-bottom, 0px), max(0px, calc(100% - 32px))) 0);
   }
@@ -689,6 +710,9 @@
 }
 .workspace-main:has(> .mobile-input-bar--landscape) > [data-role="workspace-hero"] {
   grid-row: 1;
+}
+.workspace-main:has(> .mobile-input-bar--system) .workspace-remote-alert {
+  top: calc(100% + 8px);
 }
 .workspace-main:has(> .mobile-input-bar--landscape) > .terminal-toolbar {
   grid-row: 2;
