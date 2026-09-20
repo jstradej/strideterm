@@ -43,15 +43,24 @@
  * `min-width: 0` on the body is the flex-child half of the same fix: a flex item defaults to
  * `min-width: auto`, which refuses to shrink below its content, so the overflow rules on the text
  * alone would never get the chance to apply. */
+[data-role="workspace-hero"] {
+  position: relative;
+}
+
 .workspace-remote-alert {
+  position: absolute;
+  inset-inline: 8px;
+  top: calc(100% + 8px);
+  z-index: 30;
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin: 0 0 8px;
+  margin: 0;
   padding: 10px 12px;
   border: 1px solid rgba(255, 111, 141, 0.35);
   border-radius: 4px;
-  background: rgba(255, 111, 141, 0.1);
+  background: var(--panel-elevated);
+  box-shadow: var(--shadow);
   color: #ffd7df;
   font-size: 13px;
   line-height: 1.45;

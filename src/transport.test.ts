@@ -572,9 +572,12 @@ describe("remote transport endpoint routing", () => {
 
     // The verdict is reached from the request, not from the socket — and it is the SAME verdict a
     // live page reaches on its own 401, so the host needs no second path to handle it.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(bridge.isSessionLost()).toBe(true);
     expect(bridge.isSuspended()).toBe(true);
-    expect(posted).toEqual([JSON.stringify({ type: "session-lost" })]);
+    expect(posted.map((message) => JSON.parse(message)).filter((message) => message.type === "session-lost")).toEqual([
+      { type: "session-lost" },
+    ]);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(MockWebSocket.instances.length).toBe(socketsAfterResume);
     delete (window as unknown as Record<string, unknown>).StridetermHost;
@@ -604,6 +607,212 @@ describe("remote transport endpoint routing", () => {
     bridge.suspend();
     bridge.resume();
     expect(MockWebSocket.instances.at(-1)!.url).toContain("rev=42");
+  });
+
+  it("recovers a resumed session from transient probe failures without showing them", async () => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("network waking up"))
+      .mockResolvedValueOnce({ ok: false, status: 502, text: async () => "" } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ coreRevision: 43 }) } as Response);
+    const connections: Array<{ connected: boolean; message?: string }> = [];
+    const states: unknown[] = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => connections.push(state));
+    transport.onStateUpdated((state) => states.push(state));
+    MockWebSocket.instances[0].open();
+    const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
+    bridge.suspend();
+    const connectionCount = connections.length;
+
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(states.at(-1)).toEqual({ coreRevision: 43 });
+    expect(connections.slice(connectionCount).filter((state) => !state.connected)).toEqual([]);
+  });
+
+  it.each([
+    [403, "not approved"],
+    [530, "origin has been unregistered from Argo Tunnel"],
+    [502, "origin has been unregistered from Argo Tunnel"],
+  ])("does not retry terminal wake probe failure %i", async (status, body) => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status, text: async () => body }) as unknown as Response);
+    const connections: Array<{ connected: boolean; code?: number }> = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => connections.push(state));
+    MockWebSocket.instances[0].open();
+    const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
+    bridge.suspend();
+    const connectionCount = connections.length;
+
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(connections.slice(connectionCount).filter((state) => !state.connected)).toEqual([
+      expect.objectContaining({ code: status }),
+    ]);
+  });
+
+  it("shows one failure after bounded wake recovery is exhausted", async () => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503, text: async () => "" }) as unknown as Response);
+    const connections: Array<{ connected: boolean; code?: number }> = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => connections.push(state));
+    MockWebSocket.instances[0].open();
+    const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
+    bridge.suspend();
+    const connectionCount = connections.length;
+
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(connections.slice(connectionCount).filter((state) => !state.connected)).toEqual([
+      expect.objectContaining({ code: 503 }),
+    ]);
+  });
+
+  it.each(["fetch", "body"] as const)(
+    "retries a wake timeout during %s and stops after three finite attempts",
+    async (phase) => {
+      vi.useFakeTimers();
+      globalThis.fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+        const signal = init?.signal as AbortSignal;
+        const aborts = new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+        if (phase === "fetch") return aborts;
+        return Promise.resolve({ ok: false, status: 503, text: () => aborts } as unknown as Response);
+      });
+      const connections: Array<{ connected: boolean; code?: number }> = [];
+      const transport = createRemoteTransport();
+      transport.onConnectionState((state) => connections.push(state));
+      MockWebSocket.instances[0].open();
+      const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
+      bridge.suspend();
+      const connectionCount = connections.length;
+
+      bridge.resume();
+      await vi.advanceTimersByTimeAsync(2_499);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      expect(connections.slice(connectionCount).filter((state) => !state.connected)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+      expect(connections.slice(connectionCount).filter((state) => !state.connected)).toHaveLength(1);
+    },
+  );
+
+  it("drops an old wake result after suspend and a newer resume", async () => {
+    vi.useFakeTimers();
+    let resolveOldJson!: (body: unknown) => void;
+    const oldJson = new Promise<unknown>((resolve) => {
+      resolveOldJson = resolve;
+    });
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => oldJson } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ coreRevision: 45 }) } as Response);
+    const states: unknown[] = [];
+    const transport = createRemoteTransport();
+    transport.onStateUpdated((state) => states.push(state));
+    MockWebSocket.instances[0].open();
+    const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
+
+    bridge.suspend();
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    bridge.suspend();
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    resolveOldJson({ coreRevision: 44 });
+    await vi.runAllTimersAsync();
+
+    expect(states).toEqual([{ coreRevision: 45 }]);
+  });
+
+  it("ignores a stale 401 whose body completes after a newer resume", async () => {
+    vi.useFakeTimers();
+    let resolveOldBody!: (body: string) => void;
+    const oldBody = new Promise<string>((resolve) => {
+      resolveOldBody = resolve;
+    });
+    const posted: string[] = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(message),
+    };
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 401, text: () => oldBody } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ coreRevision: 46 }) } as Response);
+    const states: unknown[] = [];
+    const transport = createRemoteTransport();
+    transport.onStateUpdated((state) => states.push(state));
+    MockWebSocket.instances[0].open();
+    const bridge = (
+      window as unknown as Record<
+        string,
+        { suspend(): void; resume(): void; isSessionLost(): boolean; isSuspended(): boolean }
+      >
+    ).__stridetermRemote;
+
+    bridge.suspend();
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    bridge.suspend();
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    resolveOldBody("no session");
+    await vi.runAllTimersAsync();
+
+    expect(states).toEqual([{ coreRevision: 46 }]);
+    expect(bridge.isSessionLost()).toBe(false);
+    expect(bridge.isSuspended()).toBe(false);
+    expect(posted.map((message) => JSON.parse(message)).filter((message) => message.type === "session-lost")).toEqual(
+      [],
+    );
+  });
+
+  it("accepts a live resumed socket as recovery and cancels probe retries", async () => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503, text: async () => "" }) as unknown as Response);
+    const connections: Array<{ connected: boolean; message?: string }> = [];
+    const states: unknown[] = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => connections.push(state));
+    transport.onStateUpdated((state) => states.push(state));
+    const first = MockWebSocket.instances[0];
+    first.open();
+    first.message({ type: "state:updated", payload: { coreRevision: 46 } });
+    transport.subscribeTerminals(["ws1:a"]);
+    const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
+    bridge.suspend();
+    const connectionCount = connections.length;
+
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    const resumed = MockWebSocket.instances.at(-1)!;
+    expect(resumed.url).toContain("rev=46");
+    transport.writeTerminal("ws1:a", "draft");
+    resumed.open();
+    resumed.message({ type: "state:updated", payload: { coreRevision: 47 } });
+    await vi.runAllTimersAsync();
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(connections.slice(connectionCount).filter((state) => !state.connected)).toEqual([]);
+    expect(states.at(-1)).toEqual({ coreRevision: 47 });
+    expect(resumed.sent.map((message) => JSON.parse(message))).toEqual(
+      expect.arrayContaining([
+        { type: "terminal:subscribe", sessionIds: ["ws1:a"] },
+        { type: "terminal:input", sessionId: "ws1:a", data: "draft" },
+      ]),
+    );
   });
 
   it("a resume asks for the state once, not once per foreground event", async () => {
@@ -675,7 +884,9 @@ describe("remote transport endpoint routing", () => {
 
     // The host hears it exactly once, however many requests were already in flight.
     await expect(transport.getState()).rejects.toThrow();
-    expect(posted).toEqual([JSON.stringify({ type: "session-lost" })]);
+    expect(posted.map((message) => JSON.parse(message)).filter((message) => message.type === "session-lost")).toEqual([
+      { type: "session-lost" },
+    ]);
 
     // And the banner says the session ended rather than "reconnecting" — the page is not coming back
     // on its own, the host is what brings it back, and with a host listening the banner may say so.
@@ -776,6 +987,77 @@ describe("remote transport endpoint routing", () => {
     // is the only state transfer on resync.
     second.message({ type: "state:updated", payload: { coreRevision: 6 } });
     expect(states).toHaveLength(2);
+  });
+
+  it("stops a WebSocket handshake that stays CONNECTING instead of leaving the reconnect banner forever", async () => {
+    vi.useFakeTimers();
+    const connections: Array<{ connected: boolean; reconnecting?: boolean; attempt?: number }> = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => connections.push(state));
+    const first = MockWebSocket.instances[0];
+    first.open();
+
+    first.close(1006);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(MockWebSocket.instances.at(-1)!.readyState).toBe(MockWebSocket.CONNECTING);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances.at(-1)!.readyState).toBe(MockWebSocket.CONNECTING);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(MockWebSocket.instances.at(-1)!.readyState).toBe(MockWebSocket.CONNECTING);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(connections.at(-1)).toEqual(expect.objectContaining({ connected: false, reconnecting: false, attempt: 3 }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("puts a deadline on the initial WebSocket handshake too", async () => {
+    vi.useFakeTimers();
+    const connections: Array<{ connected: boolean; reconnecting?: boolean; attempt?: number }> = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => connections.push(state));
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(MockWebSocket.instances[0].readyState).toBe(MockWebSocket.CLOSED);
+    expect(connections.at(-1)).toEqual(expect.objectContaining({ connected: false, reconnecting: true, attempt: 1 }));
+  });
+
+  it("counts handshake timeouts separately from ordinary close retries", async () => {
+    vi.useFakeTimers();
+    const connections: Array<{ connected: boolean; reconnecting?: boolean; attempt?: number }> = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => connections.push(state));
+    MockWebSocket.instances[0].open();
+
+    MockWebSocket.instances[0].close(1006);
+    await vi.advanceTimersByTimeAsync(500);
+    MockWebSocket.instances.at(-1)!.close(1006);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(connections.at(-1)).toEqual(expect.objectContaining({ connected: false, reconnecting: true }));
+    expect(MockWebSocket.instances.at(-1)!.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it("reports deduplicated redacted connection-state diagnostics to the native host", () => {
+    const posted: string[] = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(message),
+    };
+    createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+
+    socket.open();
+    socket.open();
+    socket.close(1006, "secret reason must not cross the host boundary");
+
+    expect(posted.map((message) => JSON.parse(message))).toEqual([
+      { type: "connection-state", connected: true, reconnecting: false },
+      { type: "connection-state", connected: false, reconnecting: true, attempt: 1, code: 1006 },
+    ]);
   });
 
   it("sends state:sync with the bootstrap revision on first-connect open (closes the [bootstrap, open] window)", async () => {

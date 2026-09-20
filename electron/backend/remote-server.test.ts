@@ -409,7 +409,7 @@ describe("stripSecretsForRemote", () => {
     expect(JSON.stringify(stripped)).not.toContain("super-secret-master-token");
   });
 
-  // --- stripShareUrls: the managed relay's extra strip ---
+  // --- stripShareUrls: relay and device-bound mobile response strip ---
   //
   // `payload.remoteAccess.urls[*]` embeds `?token=<master>` and residual R1 accepts that, on the
   // premise that the URL only ever travels desktop → the OWNER's own browser. Over the managed
@@ -417,9 +417,9 @@ describe("stripSecretsForRemote", () => {
   // hold: the token would reach the relay operator, and unlike a relay session cookie it is
   // long-lived and keeps unlocking the whole remote API over the LAN after the session ends.
   //
-  // The pair of tests below is the point: the SAME payload strips differently per transport. If a
-  // refactor ever makes this unconditional it breaks "Copy share URL" on the desktop; if it makes
-  // it never apply, the relay leaks the token again.
+  // The pair of tests below is the point: the SAME payload strips differently for remote viewers
+  // and desktop/browser share flows. If a refactor ever makes this unconditional it breaks
+  // "Copy share URL" on the desktop; if it makes it never apply, remote viewers leak the token.
   function payloadWithShareUrls() {
     return {
       appState: {

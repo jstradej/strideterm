@@ -355,8 +355,23 @@ export function createRemoteTransport(): Transport {
   const mobileHost = (window as unknown as Record<string, unknown>).StridetermHost as
     { postMessage?: (message: string) => void } | undefined;
 
+  let lastPostedConnectionState = "";
   function emitConnectionState(payload: ConnectionStatePayload): void {
     listeners.connectionState.forEach((handler) => handler(payload));
+    const hostPayload = {
+      type: "connection-state",
+      connected: payload.connected,
+      reconnecting: Boolean(payload.reconnecting),
+      ...(typeof payload.attempt === "number" && Number.isFinite(payload.attempt)
+        ? { attempt: Math.max(0, Math.min(1_000, Math.trunc(payload.attempt))) }
+        : {}),
+      ...(typeof payload.code === "number" && Number.isFinite(payload.code) ? { code: Math.trunc(payload.code) } : {}),
+    };
+    const serialized = JSON.stringify(hostPayload);
+    if (serialized !== lastPostedConnectionState) {
+      lastPostedConnectionState = serialized;
+      postHost(hostPayload);
+    }
   }
 
   interface RemoteIssueOptions {
@@ -472,11 +487,20 @@ export function createRemoteTransport(): Transport {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const reconnectBaseDelayMs = 500;
   const reconnectMaxDelayMs = 10_000;
+  const webSocketConnectTimeoutMs = 10_000;
+  const maxConsecutiveConnectTimeouts = 3;
   const pendingWsMessages: WsMessage[] = [];
   let ws: WebSocket | null = null;
   let reconnectTimer = 0;
+  let webSocketConnectTimer = 0;
   let reconnectAttempt = 0;
+  let consecutiveConnectTimeouts = 0;
   let openedOnce = false;
+  const WAKE_PROBE_ATTEMPTS = 3;
+  const WAKE_PROBE_TIMEOUT_MS = 2_500;
+  const WAKE_PROBE_RETRY_DELAYS_MS = [250, 500];
+  let wakeProbeEpoch = 0;
+  let activeWakeProbe: { epoch: number; controller: AbortController | null } | null = null;
   // The complete set of terminal sessions this client currently renders. We
   // remember it so the subscription can be re-sent verbatim after every
   // reconnect (the server drops per-socket subscriptions on close). Empty until
@@ -647,14 +671,16 @@ export function createRemoteTransport(): Transport {
     reconnectAttempt += 1;
     const delay = Math.min(reconnectMaxDelayMs, reconnectBaseDelayMs * 2 ** Math.min(reconnectAttempt - 1, 5));
     const reconnectAt = Date.now() + delay;
-    emitConnectionState({
-      connected: false,
-      reconnecting: true,
-      message: `${error.message} Reconnecting in ${Math.round(delay / 1000)}s...`,
-      code,
-      attempt: reconnectAttempt,
-      reconnectAt,
-    });
+    if (!activeWakeProbe) {
+      emitConnectionState({
+        connected: false,
+        reconnecting: true,
+        message: `${error.message} Reconnecting in ${Math.round(delay / 1000)}s...`,
+        code,
+        attempt: reconnectAttempt,
+        reconnectAt,
+      });
+    }
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = 0;
       connectWebSocket();
@@ -795,12 +821,46 @@ export function createRemoteTransport(): Transport {
   function connectWebSocket(): void {
     const nextWs = new WebSocket(buildWsUrl());
     ws = nextWs;
+    const connectTimeout = window.setTimeout(() => {
+      if (ws !== nextWs || nextWs.readyState !== WebSocket.CONNECTING) return;
+      webSocketConnectTimer = 0;
+      consecutiveConnectTimeouts += 1;
+      const error = createRemoteIssue({ kind: "ws-error", rawMessage: "WebSocket handshake timed out" });
+      // Detach before close: browsers may deliver `close` synchronously or much later, and neither
+      // path may schedule another reconnect on top of this timeout's single verdict.
+      ws = null;
+      try {
+        nextWs.close();
+      } catch {
+        // Already gone.
+      }
+      if (consecutiveConnectTimeouts >= maxConsecutiveConnectTimeouts) {
+        emitConnectionState({
+          connected: false,
+          reconnecting: false,
+          message: error.message,
+          code: 0,
+          attempt: consecutiveConnectTimeouts,
+        });
+        return;
+      }
+      scheduleReconnect(error);
+    }, webSocketConnectTimeoutMs);
+    webSocketConnectTimer = connectTimeout;
+
+    const clearConnectTimeout = () => {
+      window.clearTimeout(connectTimeout);
+      if (webSocketConnectTimer === connectTimeout) webSocketConnectTimer = 0;
+    };
 
     nextWs.addEventListener("open", () => {
       if (ws !== nextWs) return;
+      clearConnectTimeout();
+      cancelWakeProbe();
       const reconnected = openedOnce;
       openedOnce = true;
       reconnectAttempt = 0;
+      consecutiveConnectTimeouts = 0;
       emitConnectionState({ connected: true, message: "", reconnected });
       flushPendingWsMessages();
       // Re-send the full terminal subscription so the server rebuilds this
@@ -837,6 +897,7 @@ export function createRemoteTransport(): Transport {
 
     nextWs.addEventListener("close", (event: CloseEvent) => {
       if (ws !== nextWs) return;
+      clearConnectTimeout();
       const error = createRemoteIssue({
         kind: "ws-closed",
         rawMessage: event.reason || "",
@@ -846,6 +907,7 @@ export function createRemoteTransport(): Transport {
 
     nextWs.addEventListener("error", () => {
       if (ws !== nextWs) return;
+      if (activeWakeProbe) return;
       const error = createRemoteIssue({ kind: "ws-error" });
       emitConnectionState({
         connected: false,
@@ -903,9 +965,101 @@ export function createRemoteTransport(): Transport {
    */
   let sessionLost = false;
 
+  function cancelWakeProbe(): void {
+    wakeProbeEpoch += 1;
+    activeWakeProbe?.controller?.abort();
+    activeWakeProbe = null;
+  }
+
+  function isCurrentWakeProbe(epoch: number): boolean {
+    return !suspended && activeWakeProbe?.epoch === epoch;
+  }
+
+  function isRetryableWakeError(error: unknown): error is RemoteError {
+    const issue = error as Partial<RemoteError>;
+    if (!issue?.isRemoteTransport) return false;
+    if (/origin has been unregistered from argo tunnel/i.test(issue.rawMessage || "")) return false;
+    if (issue.kind === "network") return true;
+    return Boolean(issue.statusCode && issue.statusCode >= 500 && issue.statusCode < 600 && issue.statusCode !== 530);
+  }
+
+  function emitWakeProbeFailure(error: RemoteError): void {
+    emitConnectionState({
+      connected: false,
+      message: error.message,
+      hint: error.hint,
+      code: error.statusCode,
+    });
+  }
+
+  function startWakeProbe(socketToCloseOnFailure?: WebSocket): void {
+    if (activeWakeProbe || suspended || sessionLost) return;
+    const epoch = ++wakeProbeEpoch;
+    activeWakeProbe = { epoch, controller: null };
+    void (async () => {
+      let finalError: RemoteError | null = null;
+      for (let attempt = 0; attempt < WAKE_PROBE_ATTEMPTS; attempt += 1) {
+        if (!isCurrentWakeProbe(epoch)) return;
+        const controller = new AbortController();
+        activeWakeProbe.controller = controller;
+        const timeout = window.setTimeout(() => controller.abort(), WAKE_PROBE_TIMEOUT_MS);
+        try {
+          const payload = await fetchJson("/api/state", undefined, {
+            signal: controller.signal,
+            emitConnectionState: false,
+          });
+          if (!isCurrentWakeProbe(epoch)) return;
+          noteCoreRevision(payload);
+          emitConnectionState({ connected: true, message: "" });
+          safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
+          return;
+        } catch (error) {
+          if (!isCurrentWakeProbe(epoch)) return;
+          finalError = (error as Partial<RemoteError>)?.isRemoteTransport
+            ? (error as RemoteError)
+            : createRemoteIssue({
+                kind: controller.signal.aborted ? "network" : "request-failed",
+                rawMessage: (error as { message?: string })?.message || "",
+                recoverable: controller.signal.aborted,
+              });
+          if (sessionLost || !isRetryableWakeError(finalError) || attempt === WAKE_PROBE_ATTEMPTS - 1) break;
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, WAKE_PROBE_RETRY_DELAYS_MS[attempt] ?? 0);
+          });
+        } finally {
+          window.clearTimeout(timeout);
+          if (activeWakeProbe?.epoch === epoch && activeWakeProbe.controller === controller) {
+            activeWakeProbe.controller = null;
+          }
+        }
+      }
+      if (!isCurrentWakeProbe(epoch) || !finalError || sessionLost) return;
+      emitWakeProbeFailure(finalError);
+      if (socketToCloseOnFailure && ws === socketToCloseOnFailure) {
+        try {
+          socketToCloseOnFailure.close();
+        } catch {
+          // Already gone.
+        }
+      }
+    })()
+      .catch((error) => {
+        rlog("warn", "Wake probe failed unexpectedly", { error: (error as Error)?.message || String(error) });
+      })
+      .finally(() => {
+        if (activeWakeProbe?.epoch === epoch) activeWakeProbe = null;
+      });
+  }
+
   function suspendTransport(): void {
     if (suspended) return;
     suspended = true;
+    cancelWakeProbe();
+    if (webSocketConnectTimer) {
+      window.clearTimeout(webSocketConnectTimer);
+      webSocketConnectTimer = 0;
+    }
+    consecutiveConnectTimeouts = 0;
     if (reconnectTimer) {
       window.clearTimeout(reconnectTimer);
       reconnectTimer = 0;
@@ -931,12 +1085,13 @@ export function createRemoteTransport(): Transport {
     // whether this page has a session, so the latch must not survive one.
     sessionLost = false;
     reconnectAttempt = 0;
+    consecutiveConnectTimeouts = 0;
     // The fresh socket's URL carries `?rev=` (see `buildWsUrl`), so the server sends ONE catch-up
     // core if state moved while we were away, and the re-sent `terminal:subscribe` produces the
     // desktop's own BOUNDED replay per session — not the whole history. That bound is what keeps a
     // reconnect from undoing the data saving the suspend achieved.
     connectWebSocket();
-    // AND ONE REQUEST, BECAUSE A SOCKET CANNOT REPORT ITS OWN REFUSAL. A resume happens after an
+    // AND ONE BOUNDED PROBE, BECAUSE A SOCKET CANNOT REPORT ITS OWN REFUSAL. A resume happens after an
     // arbitrary time away, so the session it is reattaching to may be gone — the desktop's idle
     // deadline, the relay's viewer TTL, a desktop that restarted. A rejected WebSocket UPGRADE
     // reaches the page as a close event and nothing else: no status, no body, indistinguishable from
@@ -949,22 +1104,13 @@ export function createRemoteTransport(): Transport {
     // one. It re-syncs the state it fetches too, the way `probeAfterResume` does for a live socket,
     // which is not a side benefit: a page returning from the background needs it either way.
     //
-    // IT COUNTS AS THE PROBE. A foreground fires `visibilitychange`, `pageshow` and `focus` within
+    // IT CLAIMS THE PROBE WINDOW. A foreground fires `visibilitychange`, `pageshow` and `focus` within
     // milliseconds of the host's `resume()`, and `probeAfterResume` answers those with this same
-    // request — so without claiming the throttle window here, every single resume sent `/api/state`
-    // twice. That window is the one thing standing between a tab-switch and a small thundering herd
-    // on the notify server, and a resume is exactly when it must hold.
+    // recovery — so without claiming the throttle window here, every resume started the same recovery
+    // twice. A healthy wake still makes one request; transient failures get the bounded retries in
+    // `startWakeProbe`.
     lastProbeAt = Date.now();
-    void fetchJson("/api/state")
-      .then((payload) => {
-        noteCoreRevision(payload);
-        emitConnectionState({ connected: true, message: "" });
-        listeners.stateUpdated.forEach((handler) => handler(payload as CoreState));
-      })
-      .catch(() => {
-        // `fetchJson` has already emitted the banner, and a 401 has already latched `sessionLost`
-        // and told the host. Anything else is a network the socket is entitled to keep retrying.
-      });
+    startWakeProbe();
   }
 
   /**
@@ -1141,22 +1287,8 @@ export function createRemoteTransport(): Transport {
       return;
     }
     // Technically OPEN but might be a zombie. Verify via /api/state and
-    // re-sync the payload in one shot. On failure, close the socket so
-    // the close handler queues a reconnect.
-    void fetchJson("/api/state")
-      .then((payload) => {
-        emitConnectionState({ connected: true, message: "" });
-        listeners.stateUpdated.forEach((handler) => handler(payload as StatePayload));
-      })
-      .catch(() => {
-        // fetchJson already emitted a connection-issue state. Close the
-        // zombie socket; close handler will schedule reconnect.
-        try {
-          current.close();
-        } catch {
-          // Already gone — close handler will fire (or already did).
-        }
-      });
+    // re-sync the payload. Close the socket only after bounded recovery fails.
+    startWakeProbe(current);
   }
 
   if (typeof document !== "undefined") {
@@ -1181,7 +1313,11 @@ export function createRemoteTransport(): Transport {
     return query ? `${pathname}?${query}` : pathname;
   }
 
-  async function fetchJson(pathname: string, payload?: unknown): Promise<unknown> {
+  async function fetchJson(
+    pathname: string,
+    payload?: unknown,
+    options: { signal?: AbortSignal; emitConnectionState?: boolean } = {},
+  ): Promise<unknown> {
     // Without a token we fall through to the cookie-based path: the
     // bootstrap redirect set `strideterm_session=…; HttpOnly` and the
     // browser attaches it to every same-origin fetch. The server's
@@ -1207,27 +1343,38 @@ export function createRemoteTransport(): Transport {
         method: payload ? "POST" : "GET",
         headers,
         body: payload ? JSON.stringify(payload) : undefined,
+        signal: options.signal,
       });
     } catch (cause) {
       const error = createRemoteIssue({
         kind: "network",
         rawMessage: (cause as { message?: string })?.message || "",
       });
-      emitConnectionState({ connected: false, message: error.message, hint: error.hint, code: 0 });
+      if (options.emitConnectionState !== false && !options.signal?.aborted) {
+        emitConnectionState({ connected: false, message: error.message, hint: error.hint, code: 0 });
+      }
       throw error;
+    }
+
+    if (options.signal?.aborted) {
+      throw createRemoteIssue({ kind: "cancelled", recoverable: false });
     }
 
     // 304 Not Modified — the resource is unchanged; reuse the cached body.
     if (response.status === 304 && cachedEntry) {
-      emitConnectionState({ connected: true, message: "" });
+      if (options.emitConnectionState !== false) emitConnectionState({ connected: true, message: "" });
       return cachedEntry.body;
     }
 
     if (!response.ok) {
+      const rawMessage = await response.text();
+      if (options.signal?.aborted) {
+        throw createRemoteIssue({ kind: "cancelled", recoverable: false });
+      }
       const error = createRemoteIssue({
         kind: "http",
         statusCode: response.status,
-        rawMessage: await response.text(),
+        rawMessage,
       });
       // 401 is the session ending, not a request failing. Everything else falls through to the
       // ordinary banner-and-throw below.
@@ -1235,17 +1382,22 @@ export function createRemoteTransport(): Transport {
         reportSessionLost();
         throw error;
       }
-      emitConnectionState({
-        connected: false,
-        message: error.message,
-        hint: error.hint,
-        code: response.status,
-      });
+      if (options.emitConnectionState !== false) {
+        emitConnectionState({
+          connected: false,
+          message: error.message,
+          hint: error.hint,
+          code: response.status,
+        });
+      }
       throw error;
     }
 
-    emitConnectionState({ connected: true, message: "" });
+    if (options.emitConnectionState !== false) emitConnectionState({ connected: true, message: "" });
     const body = (await response.json()) as unknown;
+    if (options.signal?.aborted) {
+      throw createRemoteIssue({ kind: "cancelled", recoverable: false });
+    }
     // Remember the ETag so the next GET of this path can revalidate. Optional
     // chaining guards environments/mocks whose Response omits `headers`.
     const etag = isGet ? (response.headers?.get?.("ETag") ?? null) : null;

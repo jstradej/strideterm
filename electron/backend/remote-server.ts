@@ -10,6 +10,7 @@ import { brotliCompressSync, gzipSync } from "node:zlib";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import * as attachments from "./attachments.js";
+import { AttachmentPolicyError } from "./attachment-file-policy.js";
 import { deriveSessionKey, openEnvelope, publicKeyFromRaw, sealEnvelope } from "./mobile/mobile-crypto.js";
 import { decodeCanonicalPublicKey } from "./mobile/mobile-crypto.js";
 import {
@@ -803,14 +804,13 @@ export interface StripSecretsOptions {
    * Also blank `payload.remoteAccess.urls[*]` — the share URLs that embed
    * `?token=<master>`.
    *
-   * Set for the managed relay's loopback-origin server ONLY, and false
-   * everywhere else, because the two transports have different parties on the
-   * data path:
+   * Set for managed relay responses and device-bound mobile sessions. Desktop
+   * browser sessions retain share URLs so the ordinary QR/share flow keeps
+   * working:
    *
    *  - On the user's own LAN listener or their own Cloudflare tunnel the share
-   *    URL travels desktop → the owner's own browser. That is the premise
-   *    SEC-004 / residual R1 accepted it under, and "Copy share URL" is a real
-   *    hand-off affordance there.
+   *    URL travels desktop → the owner's own browser, and "Copy share URL" is
+   *    a real hand-off affordance there.
    *  - Over the managed relay the same response crosses a hosted Worker that
    *    TERMINATES TLS and forwards decrypted frames (there is no end-to-end
    *    layer on the relay viewer path — see mobile-relay-connector.ts, which
@@ -1812,6 +1812,20 @@ function resolveAttachmentRoot(runtime: Runtime, workspaceId: string, profileId:
   return cwd;
 }
 
+function targetBelongsToCaller(
+  runtime: Runtime,
+  targetId: string,
+  callerProfileId: string,
+  sessionTarget = false,
+): boolean {
+  if (!callerProfileId) return true;
+  const payload = runtime.getPayload() as { appState?: { workspaces?: Array<Record<string, unknown>> } };
+  const parts = targetId.split(":");
+  const workspaceId = sessionTarget && parts.length > 1 ? parts.slice(0, -1).join(":") : targetId;
+  const workspace = payload.appState?.workspaces?.find((candidate) => String(candidate.id ?? "") === workspaceId);
+  return workspace !== undefined && String(workspace.profileId || "default") === callerProfileId;
+}
+
 async function handleMobileAttachmentRequest(
   runtime: Runtime,
   session: MobileSessionRecord,
@@ -1942,7 +1956,7 @@ async function handleMobileAttachmentRequest(
         result = await attachments.cancel(root, String(payload.transferId ?? ""), owner);
         break;
       case "attachment.list":
-        result = { attachments: await attachments.list(root) };
+        result = await attachments.listWithUsage(root);
         break;
       case "attachment.delete":
         result = await attachments.remove(root, String(payload.transferId ?? ""), String(payload.name ?? ""));
@@ -1951,8 +1965,17 @@ async function handleMobileAttachmentRequest(
         throw new Error("Unknown attachment operation");
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Attachment operation failed";
+    const code =
+      error instanceof AttachmentPolicyError
+        ? error.code
+        : /daily receive quota/i.test(message)
+          ? "attachment-daily-quota-exceeded"
+          : /quota exceeded|concurrent attachment/i.test(message)
+            ? "attachment-quota-exceeded"
+            : "attachment-failed";
     result = {
-      error: { code: "attachment-failed", message: (error as Error).message || "Attachment operation failed" },
+      error: { code },
     };
   }
   const response = sealEnvelope(
@@ -2213,6 +2236,20 @@ async function handleApiRequest(
     if (request.method === "POST") {
       const handler = API_ROUTES[url.pathname];
       if (handler) {
+        if (
+          url.pathname === "/api/terminal/replay" &&
+          !targetBelongsToCaller(runtime, String(body.sessionId ?? ""), callerProfileId, true)
+        ) {
+          json(response, 403, { error: "Target session is not available in this profile" });
+          return;
+        }
+        if (
+          url.pathname === "/api/task/status" &&
+          !targetBelongsToCaller(runtime, String(body.workspaceId ?? ""), callerProfileId)
+        ) {
+          json(response, 403, { error: "Target workspace is not available in this profile" });
+          return;
+        }
         json(response, 200, await handler(runtime, body));
         return;
       }
@@ -3014,7 +3051,7 @@ export async function startRemoteServer({
           ifNoneMatch: Array.isArray(request.headers["if-none-match"])
             ? request.headers["if-none-match"][0]
             : request.headers["if-none-match"],
-          stripShareUrls: isLoopbackOrigin,
+          stripShareUrls: isLoopbackOrigin || Boolean(apiSessionId && activeSessions.get(apiSessionId)?.deviceId),
           noStore: isLoopbackOrigin || Boolean(apiSessionId && activeSessions.get(apiSessionId)?.deviceId),
         };
 
@@ -3065,7 +3102,7 @@ export async function startRemoteServer({
             const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId : "";
             const root = resolveAttachmentRoot(runtime, workspaceId, profileId);
             if (url.pathname === "/api/attachment/list") {
-              json(response, 200, { attachments: await attachments.list(root) });
+              json(response, 200, await attachments.listWithUsage(root));
             } else {
               const transferId = typeof body.transferId === "string" ? body.transferId : "";
               const name = typeof body.name === "string" ? body.name : "";
@@ -3733,7 +3770,7 @@ export async function startRemoteServer({
         deliverCore: true, // a catch-up frame IS a core push, not a mutation ack
         sessionId: wsSessionId || "",
         registry,
-        stripShareUrls: isLoopbackOrigin,
+        stripShareUrls: isLoopbackOrigin || Boolean(wsSessionId && activeSessions.get(wsSessionId)?.deviceId),
       });
       sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload }));
     } catch (err) {
@@ -3995,7 +4032,7 @@ export async function startRemoteServer({
           deliverCore: true, // a WS state:updated frame IS the authoritative core push
           sessionId: sessionId || "",
           registry,
-          stripShareUrls: isLoopbackOrigin,
+          stripShareUrls: isLoopbackOrigin || Boolean(sessionId && activeSessions.get(sessionId)?.deviceId),
         });
         sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload: adapted }));
         // Only protocol-2 sockets fetch details; a legacy socket carries the full
