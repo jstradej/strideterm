@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { ipcMain, dialog, BrowserWindow, shell, clipboard, Notification, app } from "electron";
+import { ipcMain, dialog, BrowserWindow, shell, clipboard, ClipboardItem, Notification, app } from "electron";
 import path, { join } from "node:path";
 import { homedir } from "node:os";
 import { stat, mkdir, writeFile, readFile } from "node:fs/promises";
@@ -152,6 +152,15 @@ import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-life
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
+
+/**
+ * Wraps a raw OS clipboard format name (CF_HDROP, public.file-url, …) in the
+ * custom MIME type Electron 44's W3C-aligned clipboard uses to address it.
+ * Before 44 these were passed bare to read/writeBuffer.
+ */
+function osClipboardFormat(name: string): string {
+  return `electron application/osclipboard;format="${name}"`;
+}
 
 export function registerIpc(
   runtime: Runtime,
@@ -2108,38 +2117,44 @@ export function registerIpc(
     withOperationPromise({ opId: "file:clipboard-copy" }, async () => {
       const p = validateIpc(fileReadSchema, payload, "file:clipboard-copy");
       const absPath = fm.resolveWorkspaceAbsPath(p.rootPath, p.relativePath);
-      // Always put the absolute path on the clipboard as plain text — works
-      // everywhere as a fallback (paste into a terminal, editor, address bar).
-      clipboard.writeText(absPath);
-      // Best-effort native "copy file" so OS file managers (Finder, Explorer,
-      // GNOME Files, etc.) accept the subsequent paste as a real file copy.
-      // Wrapped in try/catch — if a particular Electron build doesn't accept
-      // the raw format, the plain-text path above still got copied.
+      // The absolute path as plain text is the fallback that works
+      // everywhere (paste into a terminal, editor, address bar); the raw
+      // OS format next to it is what makes file managers (Finder,
+      // Explorer, GNOME Files) treat the paste as a real file copy.
+      // Electron 44's write() commits every entry atomically, so both
+      // land in one shot instead of clobbering each other.
+      const entries: Record<string, string | Blob> = { "text/plain": absPath };
+      if (process.platform === "darwin") {
+        // NSPasteboard accepts a single file URL via the public.file-url UTI.
+        const fileURL = pathToFileURL(absPath).href;
+        entries[osClipboardFormat("public.file-url")] = new Blob([Buffer.from(fileURL, "utf8")]);
+      } else if (process.platform === "win32") {
+        // CF_HDROP: DROPFILES header (20 bytes) + UTF-16LE filenames,
+        // null-separated and double-null-terminated.
+        const header = Buffer.alloc(20);
+        header.writeUInt32LE(20, 0); // pFiles offset
+        header.writeInt32LE(0, 4); // pt.x
+        header.writeInt32LE(0, 8); // pt.y
+        header.writeUInt32LE(0, 12); // fNC
+        header.writeUInt32LE(1, 16); // fWide = 1 (Unicode)
+        const list = Buffer.from(absPath + "\0\0", "utf16le");
+        entries[osClipboardFormat("CF_HDROP")] = new Blob([Buffer.concat([header, list])]);
+      } else {
+        // Linux/BSD: text/uri-list is the cross-DE standard; GNOME also
+        // honors x-special/gnome-copied-files for "Paste" in Files/Nautilus.
+        const fileURL = pathToFileURL(absPath).href;
+        entries[osClipboardFormat("text/uri-list")] = new Blob([Buffer.from(fileURL + "\n", "utf8")]);
+        entries[osClipboardFormat("x-special/gnome-copied-files")] = new Blob([
+          Buffer.from(`copy\n${fileURL}`, "utf8"),
+        ]);
+      }
       try {
-        if (process.platform === "darwin") {
-          // NSPasteboard accepts a single file URL via the public.file-url UTI.
-          const fileURL = pathToFileURL(absPath).href;
-          clipboard.writeBuffer("public.file-url", Buffer.from(fileURL, "utf8"));
-        } else if (process.platform === "win32") {
-          // CF_HDROP: DROPFILES header (20 bytes) + UTF-16LE filenames,
-          // null-separated and double-null-terminated.
-          const header = Buffer.alloc(20);
-          header.writeUInt32LE(20, 0); // pFiles offset
-          header.writeInt32LE(0, 4); // pt.x
-          header.writeInt32LE(0, 8); // pt.y
-          header.writeUInt32LE(0, 12); // fNC
-          header.writeUInt32LE(1, 16); // fWide = 1 (Unicode)
-          const list = Buffer.from(absPath + "\0\0", "utf16le");
-          clipboard.writeBuffer("CF_HDROP", Buffer.concat([header, list]));
-        } else {
-          // Linux/BSD: text/uri-list is the cross-DE standard; GNOME also
-          // honors x-special/gnome-copied-files for "Paste" in Files/Nautilus.
-          const fileURL = pathToFileURL(absPath).href;
-          clipboard.writeBuffer("text/uri-list", Buffer.from(fileURL + "\n", "utf8"));
-          clipboard.writeBuffer("x-special/gnome-copied-files", Buffer.from(`copy\n${fileURL}`, "utf8"));
-        }
+        await clipboard.write([new ClipboardItem(entries)]);
       } catch {
-        // Fall back to the plain-text path that was already written above.
+        // A platform that rejects the raw format would otherwise take the
+        // plain-text path down with it — the whole write is atomic — so
+        // retry with text alone rather than leaving the clipboard untouched.
+        await clipboard.write([new ClipboardItem({ "text/plain": absPath })]);
       }
     }),
   );
@@ -2176,10 +2191,30 @@ export function registerIpc(
 
       const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"]);
 
-      function pathFromClipboard(): string | null {
+      // Electron 44 hands every clipboard entry over as a Blob keyed by MIME
+      // type, so the raw byte reads below go through one read() + getType()
+      // instead of the old synchronous readBuffer(format).
+      async function readClipboardBytes(mimetype: string): Promise<Buffer | null> {
+        try {
+          const items = await clipboard.read();
+          for (const item of items) {
+            if (!item.types.includes(mimetype)) continue;
+            const blob = await item.getType(mimetype);
+            // getType() also resolves to a ClipboardBookmark for the bookmark
+            // format — narrow so a non-Blob can't reach Buffer.from().
+            if (!(blob instanceof Blob)) continue;
+            return Buffer.from(await blob.arrayBuffer());
+          }
+        } catch {
+          // Format unavailable or rejected by the platform — same as absent.
+        }
+        return null;
+      }
+
+      async function pathFromClipboard(): Promise<string | null> {
         try {
           if (process.platform === "win32") {
-            const buf = clipboard.readBuffer("CF_HDROP");
+            const buf = await readClipboardBytes(osClipboardFormat("CF_HDROP"));
             if (!buf || buf.length < 20) return null;
             const offset = buf.readUInt32LE(0);
             const wide = buf.readUInt32LE(16) !== 0;
@@ -2189,13 +2224,13 @@ export function registerIpc(
             return first || null;
           }
           if (process.platform === "darwin") {
-            const buf = clipboard.readBuffer("public.file-url");
+            const buf = await readClipboardBytes(osClipboardFormat("public.file-url"));
             if (!buf || buf.length === 0) return null;
             const url = buf.toString("utf8").trim();
             if (!url.startsWith("file:")) return null;
             return fileURLToPath(new URL(url));
           }
-          const buf = clipboard.readBuffer("text/uri-list");
+          const buf = await readClipboardBytes(osClipboardFormat("text/uri-list"));
           if (!buf || buf.length === 0) return null;
           const first = buf
             .toString("utf8")
@@ -2209,7 +2244,7 @@ export function registerIpc(
         }
       }
 
-      const clipPath = pathFromClipboard();
+      const clipPath = await pathFromClipboard();
       if (clipPath) {
         const ext = path.extname(clipPath).toLowerCase();
         if (IMAGE_EXTS.has(ext)) {
@@ -2224,8 +2259,10 @@ export function registerIpc(
         }
       }
 
-      const img = clipboard.readImage();
-      if (img.isEmpty()) {
+      // The bitmap arrives as PNG bytes directly — 44 dropped readImage()
+      // and with it the NativeImage round-trip the old toPNG() needed.
+      const png = await readClipboardBytes("image/png");
+      if (!png || png.length === 0) {
         return { ok: false, reason: "no-image" };
       }
       // Resolve the target directory. Honour `clipboardImagePasteDir` if
@@ -2253,7 +2290,7 @@ export function registerIpc(
       const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const dest = path.join(dir, `strideterm-${ts}.png`);
       try {
-        await writeFile(dest, img.toPNG());
+        await writeFile(dest, png);
       } catch (err) {
         return { ok: false, reason: `write-failed:${(err as Error)?.message || "unknown"}` };
       }

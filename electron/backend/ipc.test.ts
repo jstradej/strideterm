@@ -67,9 +67,18 @@ vi.mock("electron", () => ({
   shell: { openExternal: vi.fn(), openPath: vi.fn(), showItemInFolder: vi.fn() },
   clipboard: {
     writeText: vi.fn(),
-    writeBuffer: vi.fn(),
-    readBuffer: vi.fn(),
-    readImage: () => ({ isEmpty: () => true }),
+    write: vi.fn(async () => {}),
+    read: vi.fn(async () => []),
+    has: vi.fn(async () => false),
+  },
+  ClipboardItem: class {
+    types: string[];
+    constructor(private readonly entries: Record<string, unknown>) {
+      this.types = Object.keys(entries);
+    }
+    async getType(type: string): Promise<unknown> {
+      return this.entries[type];
+    }
   },
   Notification: class {
     static isSupported(): boolean {
