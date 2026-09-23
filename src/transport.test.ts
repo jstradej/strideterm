@@ -63,6 +63,15 @@ class MockWebSocket {
   }
 }
 
+function redirectedResponse(body: BodyInit, url: string, init: ResponseInit = {}): Response {
+  const response = new Response(body, init);
+  Object.defineProperties(response, {
+    redirected: { value: true },
+    url: { value: url },
+  });
+  return response;
+}
+
 describe("remote transport endpoint routing", () => {
   let originalFetch: typeof globalThis.fetch;
   let originalWebSocket: typeof globalThis.WebSocket;
@@ -102,6 +111,19 @@ describe("remote transport endpoint routing", () => {
     globalThis.fetch = originalFetch;
     globalThis.WebSocket = originalWebSocket;
     vi.useRealTimers();
+  });
+
+  it("tells the native host only after the callable remote bridge is installed", () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+
+    createRemoteTransport();
+
+    expect(
+      typeof (window as unknown as { __stridetermRemote?: { selectTarget?: unknown } }).__stridetermRemote
+        ?.selectTarget,
+    ).toBe("function");
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({ type: "bridge-ready" });
   });
 
   it("activateProfile calls /api/remote-client/profile/activate with profileId", async () => {
@@ -903,6 +925,87 @@ describe("remote transport endpoint routing", () => {
     delete (window as unknown as Record<string, unknown>).StridetermHost;
   });
 
+  it("a wake probe redirected to the same-origin relay bootstrap reports the session lost", async () => {
+    vi.useFakeTimers();
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    globalThis.fetch = vi.fn(async () =>
+      redirectedResponse(
+        "<!doctype html><title>Relay bootstrap</title>",
+        `${window.location.origin}/__relay/bootstrap`,
+        {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        },
+      ),
+    );
+    const transport = createRemoteTransport();
+    transport.onConnectionState(() => {});
+    MockWebSocket.instances[0].open();
+    const bridge = (
+      window as unknown as Record<
+        string,
+        { suspend(): void; resume(): void; isSessionLost(): boolean; isSuspended(): boolean }
+      >
+    ).__stridetermRemote;
+
+    bridge.suspend();
+    bridge.resume();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bridge.isSessionLost()).toBe(true);
+    expect(bridge.isSuspended()).toBe(true);
+    expect(
+      postMessage.mock.calls
+        .map(([message]) => JSON.parse(message as string))
+        .filter(({ type }) => type === "session-lost"),
+    ).toEqual([{ type: "session-lost" }]);
+  });
+
+  it("a burst of relay bootstrap redirects reports the session lost exactly once", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    globalThis.fetch = vi.fn(async () =>
+      redirectedResponse("<html>expired</html>", `${window.location.origin}/__relay/bootstrap?return=%2Fapi%2Fstate`, {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    const transport = createRemoteTransport();
+
+    await Promise.allSettled([transport.getState(), transport.getState(), transport.getState()]);
+
+    expect(
+      postMessage.mock.calls
+        .map(([message]) => JSON.parse(message as string))
+        .filter(({ type }) => type === "session-lost"),
+    ).toEqual([{ type: "session-lost" }]);
+  });
+
+  it("does not report an unrelated redirected HTML response as connected or session loss", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    globalThis.fetch = vi.fn(async () =>
+      redirectedResponse("<!doctype html><title>Proxy page</title>", "https://login.example.test/sign-in", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    const connections: Array<{ connected: boolean }> = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => connections.push(state));
+    const before = connections.length;
+
+    await expect(transport.getState()).rejects.toThrow(/invalid JSON response/i);
+
+    expect(connections.slice(before)).toEqual([expect.objectContaining({ connected: false })]);
+    expect(
+      postMessage.mock.calls
+        .map(([message]) => JSON.parse(message as string))
+        .filter(({ type }) => type === "session-lost"),
+    ).toEqual([]);
+  });
+
   it("with no native host the banner asks the person to reload, and promises no app", async () => {
     // The same 401, in a browser tab opened from a share URL. Nothing is going to re-bootstrap this
     // page: the reader IS the recovery mechanism, so a banner saying the app is reopening it would be
@@ -1055,6 +1158,7 @@ describe("remote transport endpoint routing", () => {
     socket.close(1006, "secret reason must not cross the host boundary");
 
     expect(posted.map((message) => JSON.parse(message))).toEqual([
+      { type: "bridge-ready" },
       { type: "connection-state", connected: true, reconnecting: false },
       { type: "connection-state", connected: false, reconnecting: true, attempt: 1, code: 1006 },
     ]);

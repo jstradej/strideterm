@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, shallowRef, computed, watch, nextTick } from "vue";
+import { ref, shallowRef, computed, watch } from "vue";
 import {
   getWorkspaceTabs,
   getVisibleTabs,
@@ -1645,17 +1645,36 @@ export const useAppStore = defineStore("app", () => {
         detail.handled = true;
 
         void (async () => {
-          await nextTick();
-          if (myActiveProfileId.value !== detail.profileId) {
-            throw new Error(`Target profile is not active: ${detail.profileId}`);
-          }
-          if (myActiveWorkspaceId.value !== detail.workspaceId) {
-            throw new Error(`Target workspace is not active: ${detail.workspaceId}`);
-          }
           const viewId = `${detail.workspaceId}:${detail.panelId}`;
-          if (!(workspaceTabs.value as AnyApi[]).some((tab: AnyApi) => tab.id === viewId)) {
-            throw new Error(`Target panel is missing: ${detail.panelId}`);
-          }
+          await new Promise<void>((resolve, reject) => {
+            let timeout = 0;
+            let stop = () => {};
+            const finish = (complete: () => void) => {
+              window.clearTimeout(timeout);
+              stop();
+              complete();
+            };
+            const inspectTarget = () => {
+              if (myActiveProfileId.value !== detail.profileId || myActiveWorkspaceId.value !== detail.workspaceId) {
+                return;
+              }
+              const scopedWorkspaceId = ((payload.value as AnyApi)?.workspace?.workspace as AnyApi)?.id;
+              if (scopedWorkspaceId !== detail.workspaceId) return;
+              if (!(workspaceTabs.value as AnyApi[]).some((tab: AnyApi) => tab.id === viewId)) {
+                finish(() => reject(new Error(`Target panel is missing: ${detail.panelId}`)));
+                return;
+              }
+              finish(resolve);
+            };
+            stop = watch([myActiveProfileId, myActiveWorkspaceId, payload, workspaceTabs], inspectTarget, {
+              flush: "post",
+            });
+            timeout = window.setTimeout(
+              () => finish(() => reject(new Error("Renderer panel selection state did not become ready"))),
+              5_000,
+            );
+            inspectTarget();
+          });
           await activateView(viewId, { requireConfirmation: true });
           if (activeViewId.value !== viewId) {
             throw new Error(`Target panel was not selected: ${detail.panelId}`);

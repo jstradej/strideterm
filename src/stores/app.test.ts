@@ -246,6 +246,30 @@ describe("useAppStore — remote mode identity", () => {
     expect(store.activeViewId).toBe("ws-panels:panel-two");
   });
 
+  it("keeps a cold panel request pending until the scoped workspace details are ready", async () => {
+    const transport = makeRemoteTransport(makeBasePayload());
+    transport.activateSession.mockResolvedValue(makeRemotePanelPayload("panel-two"));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    let settled = false;
+    const selection = requestRemotePanel("panel-two").finally(() => {
+      settled = true;
+    });
+    await nextTick();
+    expect(settled).toBe(false);
+    expect(transport.activateSession).not.toHaveBeenCalled();
+
+    transport._push(makeRemotePanelPayload());
+    await selection;
+
+    expect(transport.activateSession).toHaveBeenCalledWith("ws-panels:panel-two");
+    expect(store.activeViewId).toBe("ws-panels:panel-two");
+    expect(store.activeSessionId).toBe("ws-panels:panel-two");
+  });
+
   it("keeps remote profile identity reactive when read before init", async () => {
     const payload = makeBasePayload({
       remoteClient: { id: "sess1", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" },

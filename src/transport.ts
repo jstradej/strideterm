@@ -1224,6 +1224,10 @@ export function createRemoteTransport(): Transport {
        */
       isSessionLost: () => sessionLost,
     };
+    // `onPageFinished` can precede this assignment (notably while the one-time mobile bootstrap
+    // reload is still changing documents). Tell the native host when this document's callable
+    // bridge actually exists; it scopes the signal to its current navigation before selecting.
+    postHost({ type: "bridge-ready" });
   }
 
   // --------------------------------------------------------------------
@@ -1313,6 +1317,16 @@ export function createRemoteTransport(): Transport {
     return query ? `${pathname}?${query}` : pathname;
   }
 
+  function isRelayBootstrapRedirect(response: Response): boolean {
+    if (!response.redirected || !response.url) return false;
+    try {
+      const target = new URL(response.url, window.location.href);
+      return target.origin === window.location.origin && target.pathname === "/__relay/bootstrap";
+    } catch {
+      return false;
+    }
+  }
+
   async function fetchJson(
     pathname: string,
     payload?: unknown,
@@ -1360,6 +1374,16 @@ export function createRemoteTransport(): Transport {
       throw createRemoteIssue({ kind: "cancelled", recoverable: false });
     }
 
+    // A relay with an expired viewer cookie historically answered API requests with a redirect to
+    // its HTML bootstrap page. Fetch follows that redirect, so the renderer sees 200 rather than
+    // the original 302. Treat only the relay's same-origin bootstrap destination as the equivalent
+    // of a 401; unrelated redirects and HTML responses remain ordinary malformed API responses.
+    if (isRelayBootstrapRedirect(response)) {
+      const error = createRemoteIssue({ kind: "http", statusCode: 401 });
+      reportSessionLost();
+      throw error;
+    }
+
     // 304 Not Modified — the resource is unchanged; reuse the cached body.
     if (response.status === 304 && cachedEntry) {
       if (options.emitConnectionState !== false) emitConnectionState({ connected: true, message: "" });
@@ -1393,11 +1417,26 @@ export function createRemoteTransport(): Transport {
       throw error;
     }
 
-    if (options.emitConnectionState !== false) emitConnectionState({ connected: true, message: "" });
-    const body = (await response.json()) as unknown;
+    let body: unknown;
+    try {
+      body = (await response.json()) as unknown;
+    } catch {
+      if (options.signal?.aborted) {
+        throw createRemoteIssue({ kind: "cancelled", recoverable: false });
+      }
+      const error = createRemoteIssue({
+        kind: "invalid-response",
+        rawMessage: "The remote server returned an invalid JSON response.",
+      });
+      if (options.emitConnectionState !== false) {
+        emitConnectionState({ connected: false, message: error.message, hint: error.hint, code: response.status });
+      }
+      throw error;
+    }
     if (options.signal?.aborted) {
       throw createRemoteIssue({ kind: "cancelled", recoverable: false });
     }
+    if (options.emitConnectionState !== false) emitConnectionState({ connected: true, message: "" });
     // Remember the ETag so the next GET of this path can revalidate. Optional
     // chaining guards environments/mocks whose Response omits `headers`.
     const etag = isGet ? (response.headers?.get?.("ETag") ?? null) : null;
