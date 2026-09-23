@@ -64,6 +64,43 @@ function fakes(options: { refreshRejects?: boolean } = {}) {
 }
 
 describe("the installation token-refresh listener", () => {
+  it("refreshes the final marker after the cooldown without needing another event", async () => {
+    vi.useFakeTimers();
+    const harness = fakes();
+    try {
+      await harness.listener.start();
+      harness.emit({ revision: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      harness.emit({ revision: 2 });
+      harness.emit({ revision: 3 });
+      expect(harness.client.refreshSession).toHaveBeenCalledTimes(1);
+      harness.advance(TOKEN_REFRESH_MIN_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(TOKEN_REFRESH_MIN_INTERVAL_MS);
+      expect(harness.client.refreshSession).toHaveBeenCalledTimes(2);
+    } finally {
+      harness.listener.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a queued refresh when stopped", async () => {
+    vi.useFakeTimers();
+    const harness = fakes();
+    try {
+      await harness.listener.start();
+      harness.emit({ revision: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      harness.emit({ revision: 2 });
+      harness.listener.stop();
+      harness.advance(TOKEN_REFRESH_MIN_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(TOKEN_REFRESH_MIN_INTERVAL_MS);
+      expect(harness.client.refreshSession).toHaveBeenCalledTimes(1);
+    } finally {
+      harness.listener.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("subscribes to the marker for ITS OWN uid, taken from the session", async () => {
     // The marker's own rule is `auth.uid === $uid`, so a listener on anybody else's path would be
     // refused — and asking for one would mean this module had an opinion about which installation it

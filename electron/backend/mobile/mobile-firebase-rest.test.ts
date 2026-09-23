@@ -138,6 +138,40 @@ describe("Auth session lifecycle", () => {
     expect(credentialStore.secrets.get(REFRESH_REF)).toBe("refresh-new");
   });
 
+  test("a claims refresh starts a new exchange after an older session request settles", async () => {
+    const credentialStore = makeCredentialStore({ [REFRESH_REF]: "refresh-1" });
+    let releaseOld!: () => void;
+    const oldResponse = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    let exchanges = 0;
+    const fetchImpl: FetchLike = async (input) => {
+      if (!input.includes("securetoken")) throw new Error(`unrouted fetch: ${input}`);
+      exchanges += 1;
+      if (exchanges === 1) await oldResponse;
+      return json({
+        id_token: exchanges === 1 ? "id-before-claims" : "id-with-claims",
+        refresh_token: "refresh-1",
+        user_id: "uid-1",
+        expires_in: "3600",
+      });
+    };
+    const client = createMobileFirebaseRestClient({
+      config: CONFIG,
+      credentialStore,
+      refreshTokenRef: REFRESH_REF,
+      fetchImpl,
+    });
+
+    const ordinarySession = client.currentSession();
+    const claimsSession = client.refreshSession();
+    releaseOld();
+
+    await expect(ordinarySession).resolves.toMatchObject({ idToken: "id-before-claims" });
+    await expect(claimsSession).resolves.toMatchObject({ idToken: "id-with-claims" });
+    expect(exchanges).toBe(2);
+  });
+
   test("an unusable stored refresh token falls back to a fresh anonymous account and clears it", async () => {
     const credentialStore = makeCredentialStore({ [REFRESH_REF]: "revoked" });
     const { fetchImpl } = makeFetch([
@@ -658,6 +692,36 @@ describe("callable functions", () => {
     await expect(client.callFunction("createPairingInvitation", {})).rejects.toMatchObject({
       name: "MobileFirebaseCallableError",
       status: "RESOURCE_EXHAUSTED",
+    });
+  });
+
+  test("classifies the reviewed pairing refusal without retaining remote text", async () => {
+    const { client } = callableClient(() =>
+      json(
+        {
+          error: {
+            status: "PERMISSION_DENIED",
+            message:
+              "This desktop device id is already paired under a different account, or its key cannot be rotated while devices are still paired.",
+          },
+        },
+        { status: 403 },
+      ),
+    );
+    await expect(client.callFunction("createPairingInvitation", {})).rejects.toMatchObject({
+      message: "createPairingInvitation failed (PERMISSION_DENIED: desktop-device-conflict)",
+      reason: "desktop-device-conflict",
+    });
+  });
+
+  test("does not echo an unrecognized callable message", async () => {
+    const secret = "secret-that-must-not-reach-the-error";
+    const { client } = callableClient(() =>
+      json({ error: { status: "PERMISSION_DENIED", message: `unexpected refusal: ${secret}` } }, { status: 403 }),
+    );
+    await expect(client.callFunction("createPairingInvitation", {})).rejects.toMatchObject({
+      message: "createPairingInvitation failed (PERMISSION_DENIED)",
+      reason: null,
     });
   });
 

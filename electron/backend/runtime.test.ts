@@ -13304,6 +13304,20 @@ describe("the runtime's passwordless sign-in wiring", () => {
     expect(source).not.toContain('throw new Error("the mobile control plane is not configured")');
   });
 
+  test("starts the claims listener when the shared installation client is first created", async () => {
+    const source = await fs.readFile(path.join(import.meta.dirname, "runtime.ts"), "utf8");
+    const clientConstruction = source.indexOf("installationRestClient ??= createMobileFirebaseRestClient({");
+    const listenerKick = source.indexOf("startInstallationTokenRefresh?.();");
+    const listenerFactory = source.indexOf("startInstallationTokenRefresh = () => {");
+    expect(clientConstruction).toBeGreaterThan(-1);
+    expect(listenerKick).toBeGreaterThan(clientConstruction);
+    expect(listenerFactory).toBeGreaterThan(listenerKick);
+    // The listener is not constructed at runtime startup, so an unused desktop does not sign in.
+    expect(source).toContain(
+      "let installationTokenRefresh: ReturnType<typeof createInstallationTokenRefreshListener> | null = null;",
+    );
+  });
+
   test("a build with no auth-link configuration refuses a NEW sign-in and nothing else", async () => {
     // A local build gets no broker unless it names one, and it must NOT fall back to prod: a test
     // address brokered through the real host is how one ends up in a real account.

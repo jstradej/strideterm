@@ -97,12 +97,43 @@ export class MobileFirebasePermissionDeniedError extends Error {
 export class MobileFirebaseCallableError extends Error {
   readonly functionName: string;
   readonly status: string;
+  readonly reason: string | null;
 
-  constructor(functionName: string, status: string) {
-    super(`${functionName} failed (${status})`);
+  constructor(functionName: string, status: string, reason: string | null = null) {
+    super(`${functionName} failed (${status}${reason ? `: ${reason}` : ""})`);
     this.name = "MobileFirebaseCallableError";
     this.functionName = functionName;
     this.status = status;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Maps only the create-pairing callable's reviewed, fixed response messages to safe diagnostics.
+ * Remote text is deliberately never copied into an Error: the response body is not trusted log
+ * material, and this boundary is used by the loopback QA harness as well as the product.
+ */
+function callableReason(functionName: string, message: unknown): string | null {
+  if (functionName !== "createPairingInvitation" || typeof message !== "string") return null;
+  const prefix = "createPairingInvitation rejected: ";
+  if (
+    message ===
+    "This desktop device id is already paired under a different account, or its key cannot be rotated while devices are still paired."
+  ) {
+    return "desktop-device-conflict";
+  }
+  if (!message.startsWith(prefix)) return null;
+  const reason = message.slice(prefix.length);
+  switch (reason) {
+    case "entitlement-required":
+    case "daily-limit-reached":
+    case "too-many-pairs-for-uid":
+    case "too-many-active":
+    case "fingerprint-mismatch":
+    case "malformed":
+      return reason;
+    default:
+      return null;
   }
 }
 
@@ -281,6 +312,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
 
   let session: AuthSession | null = null;
   let inFlight: Promise<AuthSession> | null = null;
+  let forcedRefresh: Promise<AuthSession> | null = null;
   const openStreams = new Set<AbortController>();
 
   /** Server clock minus local clock, in ms. `null` until the first sample lands. */
@@ -491,10 +523,20 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
       return currentSession();
     },
     async refreshSession() {
-      // The cached token is dropped first, so `currentSession` cannot answer with the very token
-      // this call exists to replace.
-      session = null;
-      return currentSession();
+      if (forcedRefresh) return forcedRefresh;
+      forcedRefresh = (async () => {
+        // An ordinary exchange may have started before the claims marker was written. Joining that
+        // request can therefore return a token minted before the claims changed. Let it settle, then
+        // force one exchange whose request is known to start after the marker was observed.
+        const earlier = inFlight;
+        session = null;
+        if (earlier) await earlier.catch(() => undefined);
+        session = null;
+        return currentSession();
+      })().finally(() => {
+        forcedRefresh = null;
+      });
+      return forcedRefresh;
     },
 
     currentSession,
@@ -641,9 +683,13 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
       const body = (await readJson(response)) as Record<string, unknown> | null;
       const error = body?.error as { status?: string; message?: string } | undefined;
       if (error) {
-        // `status` is a gRPC status code the callable itself chose; the message is not carried into
-        // the error at all — see MobileFirebaseCallableError's doc and mobile-error-codes.ts.
-        throw new MobileFirebaseCallableError(name, error.status ?? String(response.status));
+        // `status` is a gRPC status code the callable itself chose. Only a reviewed, fixed reason
+        // from this callable's closed set is carried into the error; arbitrary response text is not.
+        throw new MobileFirebaseCallableError(
+          name,
+          error.status ?? String(response.status),
+          callableReason(name, error.message),
+        );
       }
       if (!response.ok) {
         throw new MobileFirebaseCallableError(name, String(response.status));

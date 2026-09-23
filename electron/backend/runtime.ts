@@ -1464,6 +1464,9 @@ export async function createRuntime({
    * shape as `_externalUrlOpener` and `_mobileRemoteSessionRevoker`.
    */
   let accountManagerRef: AccountManager | null = null;
+  // Installed after the first real Firebase client use. Keeping this lazy avoids creating an
+  // anonymous session on desktops that never use the hosted control plane.
+  let startInstallationTokenRefresh: (() => void) | null = null;
   /**
    * The installation's own Firebase session, created once and shared.
    *
@@ -1500,6 +1503,7 @@ export async function createRuntime({
       isAccountBound: () =>
         newIdentityIsRefused(readInstallationBinding(), accountManagerRef?.state().installationRegistered === true),
     });
+    startInstallationTokenRefresh?.();
     return installationRestClient;
   };
   const createMobileFirebaseTransportImpl =
@@ -1777,27 +1781,31 @@ export async function createRuntime({
   // an IPC method a renderer could call is not a listener, so the only thing that ever picked up a
   // claim change was the next token expiry — up to an hour of a paid account being refused, and up to
   // an hour of a revoked one still being served on its long-lived RTDB stream.
-  const installationTokenRefresh = installationRestClient
-    ? createInstallationTokenRefreshListener({
-        client: installationRestClient,
-        // A stream authenticates ONCE, at connect. Refreshing the token and leaving the stream up is
-        // the half-fix that looks like it worked, so the manager's streams are torn down and re-opened.
-        restartStreams: async () => {
-          await mobileManager.stop();
-          if (getState().settings.integrations.mobile.enabled && !getState().settings.remoteAccess.paused)
-            mobileManager.start();
-        },
-        refreshAccount: () => accountManager.onClaimsChanged(),
-        onError: (error) => {
-          log.warn("installation token-refresh listener failed", { error: String(error) });
-        },
-      })
-    : null;
-  void installationTokenRefresh?.start().catch((error: unknown) => {
-    // A listener that cannot subscribe is a staler client, not a broken one: the token still expires
-    // on its own hour, and every foreground action re-reads. Never a failed launch.
-    log.warn("could not subscribe to the installation token-refresh marker", { error: String(error) });
-  });
+  let installationTokenRefresh: ReturnType<typeof createInstallationTokenRefreshListener> | null = null;
+  startInstallationTokenRefresh = () => {
+    if (installationTokenRefresh || !installationRestClient) return;
+    installationTokenRefresh = createInstallationTokenRefreshListener({
+      client: installationRestClient,
+      // A stream authenticates ONCE, at connect. Refreshing the token and leaving the stream up is
+      // the half-fix that looks like it worked, so the manager's streams are torn down and re-opened.
+      restartStreams: async () => {
+        await mobileManager.stop();
+        if (getState().settings.integrations.mobile.enabled && !getState().settings.remoteAccess.paused)
+          mobileManager.start();
+      },
+      refreshAccount: () => accountManager.onClaimsChanged(),
+      onError: (error) => {
+        log.warn("installation token-refresh listener failed", { error: String(error) });
+      },
+    });
+    void installationTokenRefresh.start().catch((error: unknown) => {
+      // A listener that cannot subscribe is a staler client, not a broken one: the token still expires
+      // on its own hour, and every foreground action re-reads. Never a failed launch.
+      log.warn("could not subscribe to the installation token-refresh marker", { error: String(error) });
+    });
+  };
+
+  startInstallationTokenRefresh();
 
   // The managed relay (relay plan §10). Built once, like MobileManager and for the same reason: one
   // per installation, whatever the window count. Absent when this build wired no origin starter,
@@ -9354,6 +9362,8 @@ export async function createRuntime({
       // that resumes into a stale one — plan §9: "Restart, shutdown a změna konfigurace uklidí pending
       // flow, časovače i owner retenci."
       accountManager.dispose();
+      startInstallationTokenRefresh = null;
+      installationTokenRefresh?.stop();
       emailSignInBroker?.dispose();
       // The relay's own listener and outbound socket are not the mobile manager's to close, and a
       // process that exits with either still open leaves a bound loopback port behind.

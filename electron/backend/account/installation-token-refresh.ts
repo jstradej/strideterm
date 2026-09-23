@@ -63,12 +63,35 @@ export function createInstallationTokenRefreshListener(
   let unsubscribe: (() => void) | null = null;
   let lastAppliedAt = 0;
   let applying: Promise<void> | null = null;
+  let pending = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+
+  function requestRefresh(): void {
+    if (stopped) return;
+    pending = true;
+    if (applying !== null) return;
+    const remaining = minIntervalMs - (now() - lastAppliedAt);
+    if (remaining > 0) {
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        requestRefresh();
+      }, remaining);
+      timer.unref?.();
+      return;
+    }
+    void apply();
+  }
 
   async function apply(): Promise<void> {
     // One at a time, and never more often than the interval. A claim re-issue across five devices
     // writes five markers within a second; five stream restarts would be worse than the staleness.
     if (applying !== null) return applying;
     if (now() - lastAppliedAt < minIntervalMs) return;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    pending = false;
     applying = (async () => {
       try {
         await deps.client.refreshSession();
@@ -81,7 +104,9 @@ export function createInstallationTokenRefreshListener(
         // next foreground action, tries again.
         deps.onError?.(error);
       } finally {
+        lastAppliedAt = now();
         applying = null;
+        if (pending) requestRefresh();
       }
     })();
     return applying;
@@ -89,6 +114,7 @@ export function createInstallationTokenRefreshListener(
 
   return {
     async start(): Promise<void> {
+      stopped = false;
       if (unsubscribe !== null) return;
       // The uid comes from the SESSION, never from a caller: the marker's own rule is
       // `auth.uid === $uid`, so a listener on anybody else's path would simply be refused — and
@@ -101,12 +127,16 @@ export function createInstallationTokenRefreshListener(
           // anything else is applied, and the interval is what stops the initial value costing a
           // restart on every start-up.
           if (event.data === null || event.data === undefined) return;
-          void apply();
+          requestRefresh();
         },
         onError: (error) => deps.onError?.(error),
       });
     },
     stop(): void {
+      stopped = true;
+      pending = false;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
       unsubscribe?.();
       unsubscribe = null;
     },
