@@ -187,6 +187,24 @@ export interface MobileDeviceRecord {
   verifiedAt: number | null;
   /** When a human pressed "Codes match" AND the cloud confirmed. Null means nobody has approved this. */
   activatedAt: number | null;
+  /**
+   * The cloud half of a revocation this desktop has already applied locally, still owed.
+   *
+   * Set the moment `applyLocalRevocation` lands and cleared only when the Cloud Function confirms
+   * (`MobileManager.flushCloudRevoke`/`markCloudRevokePending`, mobile-device-store.ts). Optional so a
+   * record written before this existed loads unchanged.
+   */
+  pendingCloudRevoke?: {
+    /** Which Cloud Function is owed: a revoke of an adopted device, or a rejection of a claim. */
+    kind: "revoke" | "reject";
+    /** `rejectPairing`'s reason. Absent for `kind: "revoke"`, which takes none. */
+    reason?: string;
+    requestedAt: number;
+    attempts: number;
+    lastAttemptAt?: number;
+    /** A stable `mobileErrorCode`, never a transport message — this crosses into the renderer. */
+    lastErrorCode?: string;
+  };
 }
 
 /**

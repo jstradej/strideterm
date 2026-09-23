@@ -45,6 +45,7 @@
  * instruction" and flags the result as degraded (`data.degraded === true`)
  * rather than pretending the mobile-authored text was delivered.
  */
+import type { KeyObject } from "node:crypto";
 import { canReconnectTunnel } from "../tunnel-manager.js";
 import { getLogger } from "../logger.js";
 import { findWorkspace } from "../runtime-utils.js";
@@ -52,6 +53,18 @@ import { formatWorkspaceDisplayName } from "../../shared/workspace-display.js";
 import { checkCommandPolicy, policyFor } from "./mobile-command-policy.js";
 import { deviceAllowsProfile, deviceHasCapability, isDeviceUsable } from "./mobile-device-store.js";
 import { REMOTE_WEB_SESSION_CAPABILITY } from "./mobile-web-session-ticket-store.js";
+import { RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS } from "./mobile-relay-protocol.js";
+import {
+  decodeCanonicalPublicKey,
+  deriveRelayE2eKeys,
+  publicKeyFromRaw,
+  relayE2eInfo,
+  relayE2eSalt,
+  type RelayE2eDesktopOffer,
+  type RelayE2ePhoneAcceptance,
+} from "./mobile-crypto.js";
+import type { RelayE2eOfferRecord, RelayE2eOfferStore } from "./mobile-relay-e2e-offer-store.js";
+import type { RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
 import type { MobileAuditLogStore } from "./mobile-audit-log-store.js";
 import type { MobileNotificationOriginStore } from "./mobile-notification-origin-store.js";
 import type { MobileIdempotencyStore } from "./mobile-idempotency-store.js";
@@ -154,6 +167,18 @@ export interface MobileCommandDispatcherDeps {
    * has already performed, which is exactly the old behaviour.
    */
   notificationOrigins?: MobileNotificationOriginStore;
+  /**
+   * This installation's own long-lived pairing X25519 private key (the same one
+   * `mobile-manager.ts` uses for the envelope channel). Needed to derive relay end-to-end
+   * encryption session keys (plan 2026-09-23, decision 1) — absent in a test/build that does not
+   * wire relay end-to-end encryption at all, in which case `remote.endpoint.request` never offers
+   * an `e2e` block and `remote.webSession.issue` ignores one if a client sends it anyway.
+   */
+  ownPrivateKey?: KeyObject;
+  /** Ephemeral key-exchange offers minted by `remote.endpoint.request`, redeemed by `remote.webSession.issue`. */
+  e2eOfferStore?: RelayE2eOfferStore;
+  /** Where the derived session keys land, keyed by the ticket that was issued alongside them. */
+  e2eSessionStore?: RelayE2eSessionStore;
   now?: () => number;
 }
 
@@ -239,6 +264,21 @@ function buildEndpointMetadata(args: {
 
 /** How long an endpoint answer describes. Short: it is a snapshot of a transport, not a lease. */
 const REMOTE_ENDPOINT_TTL_MS = 300_000;
+
+/**
+ * The relay end-to-end encryption offer to fold into a `managedRelay` endpoint answer (plan
+ * 2026-09-23, decision 1), or `{}` on a build with no `e2eOfferStore` wired — which is exactly the
+ * "no e2e" answer an older desktop would send, so a phone that understands the block falls back to
+ * the plaintext relay viewer path and one that does not simply never sees the field.
+ *
+ * A fresh ephemeral pair is minted on EVERY call (never reused across answers), with the SAME TTL
+ * as the answer itself — the offer must not outlive the endpoint metadata that named its `keyId`.
+ */
+function buildRelayE2eOffer(deps: MobileCommandDispatcherDeps): { e2e?: RelayE2eDesktopOffer } {
+  if (!deps.e2eOfferStore) return {};
+  const offer = deps.e2eOfferStore.createOffer(REMOTE_ENDPOINT_TTL_MS);
+  return { e2e: { v: 1, keyId: offer.keyId, desktopEphemeralPub: offer.desktopEphemeralPub } };
+}
 
 /**
  * The host a Cloudflare-transport answer names: the tunnel's public URL host, or nothing.
@@ -515,6 +555,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
               now: now(),
               ttlMs: REMOTE_ENDPOINT_TTL_MS,
             }),
+            ...buildRelayE2eOffer(deps),
           });
         }
         if (!canReconnectTunnel(state.settings.remoteAccess)) {
@@ -600,6 +641,24 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         }
         if (expectedOrigin !== command.payload.allowedOrigin) return failed("origin-mismatch");
 
+        // Relay end-to-end encryption acceptance (plan 2026-09-23, decision 1). Only meaningful
+        // over the relay transport, and only when the phone actually sent one — an `e2e` block on
+        // a legacy-transport request is ignored rather than refused (a client that raced the relay
+        // going down between its two calls is not an attacker). A relay-transport request that DID
+        // send one but names an offer this desktop cannot find — unknown `keyId`, expired, or this
+        // desktop has no `e2eOfferStore`/`ownPrivateKey` wired at all — refuses the WHOLE ticket:
+        // "Desktop bez shody keyId ticket nevydá" is what keeps the relay from ever being able to
+        // force a plaintext downgrade on its own; only a missing offer or acceptance can produce
+        // one, never the relay. Checked BEFORE minting a ticket, so a mismatch never even causes
+        // one to be created.
+        const e2eAcceptance = command.payload.e2e;
+        let e2eOffer: RelayE2eOfferRecord | null = null;
+        if (relayOrigin && e2eAcceptance) {
+          if (!deps.e2eOfferStore || !deps.ownPrivateKey) return failed("relay-e2e-key-mismatch");
+          e2eOffer = deps.e2eOfferStore.getOffer(e2eAcceptance.keyId);
+          if (!e2eOffer) return failed("relay-e2e-key-mismatch");
+        }
+
         // Which server this ticket is for is decided here, from what the desktop is running — the
         // same decision that chose `expectedOrigin` above, recorded so the redeeming server can
         // refuse a ticket that was minted for the other one.
@@ -611,6 +670,50 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           allowedOrigin: command.payload.allowedOrigin,
           transport,
         });
+
+        if (e2eOffer && e2eAcceptance && deps.ownPrivateKey) {
+          const desktopOffer: RelayE2eDesktopOffer = {
+            v: 1,
+            keyId: e2eAcceptance.keyId,
+            // From the stored offer itself, never trusted from the request: the salt must be built
+            // from what THIS desktop actually sent, not from a value a client could substitute.
+            desktopEphemeralPub: e2eOffer.desktopEphemeralPub,
+          };
+          const phoneAcceptance: RelayE2ePhoneAcceptance = {
+            v: 1,
+            keyId: e2eAcceptance.keyId,
+            phoneEphemeralPub: e2eAcceptance.phoneEphemeralPub,
+          };
+          try {
+            const salt = relayE2eSalt(desktopOffer, phoneAcceptance);
+            // ticketId folds THIS ticket into the derivation, per plan decision 1 — a session key
+            // never outlives the ticket that produced it under a mismatched identity, and no two
+            // tickets (even for the same offer, if the phone re-issued) share a derived key.
+            const info = relayE2eInfo(fresh.pairId, fresh.deviceId, ticket.ticketId);
+            const relayE2eKeys = deriveRelayE2eKeys(
+              e2eOffer.ephemeralPrivateKey,
+              publicKeyFromRaw(decodeCanonicalPublicKey(phoneAcceptance.phoneEphemeralPub)),
+              deps.ownPrivateKey,
+              publicKeyFromRaw(decodeCanonicalPublicKey(fresh.publicKey)),
+              salt,
+              info,
+            );
+            // Keyed by deviceId, not ticketId: the relay Worker (P2) stamps the viewer-grant-verified
+            // device id — never the ticket, which is a desktop-issued credential the relay never
+            // sees — onto the e2e.open frame it forwards to the connector, and that is the only
+            // correlation the connector will have for a newly opened, otherwise opaque stream. See
+            // mobile-relay-e2e-session-store.ts's own doc comment.
+            deps.e2eSessionStore?.put(fresh.deviceId, relayE2eKeys, RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS);
+          } catch (err) {
+            // A malformed phoneEphemeralPub (wrong length, not canonical base64) must not silently
+            // fall back to handing out an unencrypted ticket — the whole command fails instead, and
+            // the ticket that was already minted is simply never returned to the caller and expires
+            // unused (60s), same as any other early return after `issueTicket` leaves behind.
+            log.warn("relay e2e key derivation failed", { code: (err as Error)?.message });
+            return failed("relay-e2e-key-mismatch");
+          }
+        }
+
         // Every field of the protocol's RemoteWebSessionTicket, because the phone parses exactly
         // that shape. `ticketSecret` rather than `secret`: the wire name is the protocol's.
         return succeeded({

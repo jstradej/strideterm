@@ -38,6 +38,7 @@ import {
   type RelayConnectorGrant,
 } from "./mobile-firebase-transport.js";
 import type { RelayIdentityCredentialStore } from "./mobile-relay-identity.js";
+import type { RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
 
 const log = getLogger("mobile-relay-manager");
 
@@ -84,6 +85,13 @@ export interface MobileRelayManagerOptions {
    * file everything else does.
    */
   listRevocations: () => Array<{ deviceId: string; revokedAt: number | null }>;
+  /**
+   * Where the derived relay end-to-end encryption keys live (plan 2026-09-23, decisions 1/2),
+   * written by `mobile-command-dispatch.ts`'s `remote.webSession.issue` handler as tickets are
+   * issued. Absent on a build with no e2e support wired at all, in which case the connector refuses
+   * every `e2e.*` frame outright rather than treating a missing store as a reason to try plaintext.
+   */
+  e2eSessionStore?: RelayE2eSessionStore;
   createConnector?: typeof createRelayConnector;
   /** Injectable so a test can drive the start-failure retry without waiting real seconds. */
   retryDelayMs?: (attempt: number) => number;
@@ -218,6 +226,7 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
       listRelayRevocations: relayRevocations,
       onStateChange: (state) => log.info("relay connector state", { state }),
       definitiveRefusalRetryDelayMs,
+      e2eSessionStore: options.e2eSessionStore,
     });
     connector.start();
     log.info("managed relay started", { internalPort: address.port });

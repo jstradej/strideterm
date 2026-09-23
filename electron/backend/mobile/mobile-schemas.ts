@@ -321,6 +321,13 @@ export type RemoteTunnelReconnectPayload = z.infer<typeof RemoteTunnelReconnectP
 export const RemoteWebSessionIssuePayloadSchema = z.object({
   workspaceId: z.string().min(1).optional(),
   allowedOrigin: z.string().min(1),
+  e2e: z
+    .object({
+      v: z.literal(1),
+      keyId: z.string().min(1),
+      phoneEphemeralPub: z.string(),
+    })
+    .optional(),
 });
 export type RemoteWebSessionIssuePayload = z.infer<typeof RemoteWebSessionIssuePayloadSchema>;
 
@@ -1008,6 +1015,13 @@ export const RemoteEndpointMetadataSchema = z.object({
   issuedAt: z.number().int().min(0),
   expiresAt: z.number().int().min(0),
   transport: z.enum(["cloudflare", "managedRelay"]),
+  e2e: z
+    .object({
+      v: z.literal(1),
+      keyId: z.string().min(1),
+      desktopEphemeralPub: z.string(),
+    })
+    .optional(),
 });
 export type RemoteEndpointMetadata = z.infer<typeof RemoteEndpointMetadataSchema>;
 
@@ -1071,7 +1085,7 @@ export const RESERVED_HIGH_PRIORITY_DAILY_PUSH_SLOTS = 10 as const;
 // The diagnostics-report door (`submitDiagnosticsReport`). The desktop IS a caller of it — the
 // Account page's opt-in "send diagnostics" — so these are the bounds `account-diagnostics.ts`
 // trims to before sending, not merely a mirrored set the drift check compares.
-export const MAX_DIAGNOSTIC_REPORTS_PER_PRINCIPAL_PER_UTC_DAY = 5 as const;
+export const MAX_DIAGNOSTIC_REPORTS_PER_PRINCIPAL_PER_UTC_DAY = 100 as const;
 export const MAX_DIAGNOSTIC_REPORT_BYTES = 65536 as const;
 export const MAX_DIAGNOSTIC_REPORT_ENTRIES = 400 as const;
 export const DIAGNOSTIC_REPORT_RETENTION_MS = 1209600000 as const;

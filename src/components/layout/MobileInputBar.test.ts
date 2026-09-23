@@ -52,6 +52,7 @@ describe("MobileInputBar", () => {
     window.sessionStorage.clear();
     (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
     delete (window as AnyApi).StridetermHost;
+    delete window.StridetermViewport;
     const store = useAppStore();
     store.payload = {
       appState: {
@@ -137,6 +138,20 @@ describe("MobileInputBar", () => {
   });
 
   describe("visibility gating", () => {
+    it("reports keyboard availability to the native rail as tabs change", async () => {
+      const postMessage = vi.fn();
+      window.StridetermViewport = { postMessage };
+      const { wrapper } = mountBar();
+      expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toEqual({ type: "keyboard-available", available: true });
+      const store = useAppStore();
+      store.activeSessionId = null;
+      store.activeViewId = "files:ws-a";
+      await nextTick();
+      expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toEqual({ type: "keyboard-available", available: false });
+      wrapper.unmount();
+      delete window.StridetermViewport;
+    });
+
     it("renders nothing on a non-remote (desktop IPC) transport", () => {
       const { wrapper } = mountBar({ isRemote: false });
       expect(wrapper.find("[data-role='mobile-input-bar']").exists()).toBe(false);

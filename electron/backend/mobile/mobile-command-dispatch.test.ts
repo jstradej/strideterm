@@ -1,13 +1,30 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import type { KeyObject } from "node:crypto";
 import { afterEach, describe, expect, test } from "vitest";
 import { createMobileCommandDispatcher, type MobileCommandRuntime } from "./mobile-command-dispatch.js";
 import { createMobileIdempotencyStore } from "./mobile-idempotency-store.js";
 import { createMobileAuditLogStore } from "./mobile-audit-log-store.js";
 import { createMobileWebSessionTicketStore } from "./mobile-web-session-ticket-store.js";
 import { createMobileNotificationOriginStore } from "./mobile-notification-origin-store.js";
+import {
+  deriveRelayE2eKeys,
+  exportRawPublicKey,
+  generateX25519KeyPair,
+  openRelayE2eFrame,
+  relayE2eInfo,
+  relayE2eSalt,
+  sealRelayE2eFrame,
+  type RelayE2eDesktopOffer,
+  type RelayE2ePhoneAcceptance,
+} from "./mobile-crypto.js";
+import { createRelayE2eOfferStore, type RelayE2eOfferStore } from "./mobile-relay-e2e-offer-store.js";
+import { createRelayE2eSessionStore, type RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
+import { RELAY_PROTOCOL_VERSION } from "./mobile-relay-protocol.js";
 import type { Command, MobileDeviceRecord } from "./mobile-schemas.js";
+import { createStore } from "../store.js";
+import { createCredentialStore } from "../shared/credential-store.js";
 import type { AppState } from "../../shared/types/state.js";
 
 /**
@@ -207,7 +224,11 @@ function createFakeRuntime(): MobileCommandRuntime & {
 /** What the dispatcher is told about a managed relay. `null` means this build has none at all. */
 type RelayFixture = { enabled: boolean; state: string; relayOrigin: string } | null;
 
-async function createFixture(stateOverrides: Partial<AppState> = {}, relay: RelayFixture = null) {
+async function createFixture(
+  stateOverrides: Partial<AppState> = {},
+  relay: RelayFixture = null,
+  e2e: { ownPrivateKey: KeyObject; offerStore: RelayE2eOfferStore; sessionStore: RelayE2eSessionStore } | null = null,
+) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-dispatch-"));
   tempDirs.push(dir);
   const idempotencyStore = createMobileIdempotencyStore(path.join(dir, "idempotency.db"));
@@ -225,6 +246,9 @@ async function createFixture(stateOverrides: Partial<AppState> = {}, relay: Rela
     ticketIssuer: ticketStore,
     notificationOrigins,
     relay: relay ? { status: () => relay } : undefined,
+    ownPrivateKey: e2e?.ownPrivateKey,
+    e2eOfferStore: e2e?.offerStore,
+    e2eSessionStore: e2e?.sessionStore,
   });
   return { dispatcher, runtime, idempotencyStore, auditLogStore, ticketStore, notificationOrigins, state };
 }
@@ -1121,5 +1145,352 @@ describe("notification.acknowledge clears the alert it names", () => {
 
     expect(result.status).toBe("failed");
     expect(runtime.calls.some((c) => c.startsWith("clearAlertForSession"))).toBe(false);
+  });
+});
+
+describe("relay end-to-end encryption key exchange (plan 2026-09-23)", () => {
+  const RELAY_ORIGIN = "https://relay.test.invalid";
+  const READY_RELAY = { enabled: true, state: "ready", relayOrigin: RELAY_ORIGIN };
+
+  function makeE2eDeps() {
+    const ownPrivateKey = generateX25519KeyPair().privateKey;
+    return { ownPrivateKey, offerStore: createRelayE2eOfferStore(), sessionStore: createRelayE2eSessionStore() };
+  }
+
+  function makeE2eDevice() {
+    const phonePairing = generateX25519KeyPair();
+    return {
+      device: makeDevice({
+        capabilities: ["remote.request", "remote.webSession"],
+        publicKey: exportRawPublicKey(phonePairing.publicKey).toString("base64"),
+      }),
+      phonePairingPrivateKey: phonePairing.privateKey,
+    };
+  }
+
+  test("remote.endpoint.request offers no e2e block when this build has no e2eOfferStore wired", async () => {
+    const { dispatcher } = await createFixture({}, READY_RELAY, null);
+    const command = makeCommand({ type: "remote.endpoint.request", payload: {} });
+    const result = await dispatcher.dispatch(command, makeDevice({ capabilities: ["remote.request"] }));
+    expect(result.status).toBe("succeeded");
+    expect(result.data).not.toHaveProperty("e2e");
+  });
+
+  test("remote.endpoint.request offers a fresh e2e block on every call when wired", async () => {
+    const { dispatcher } = await createFixture({}, READY_RELAY, makeE2eDeps());
+    const command = makeCommand({ type: "remote.endpoint.request", payload: {} });
+    const first = await dispatcher.dispatch(command, makeDevice({ capabilities: ["remote.request"] }));
+    const second = await dispatcher.dispatch(
+      { ...command, commandId: "cmd-2", idempotencyKey: "idem-2" } as Command,
+      makeDevice({ capabilities: ["remote.request"] }),
+    );
+    expect(first.data).toMatchObject({ e2e: { v: 1 } });
+    expect(second.data).toMatchObject({ e2e: { v: 1 } });
+    const firstE2e = (first.data as { e2e: { keyId: string; desktopEphemeralPub: string } }).e2e;
+    const secondE2e = (second.data as { e2e: { keyId: string; desktopEphemeralPub: string } }).e2e;
+    expect(firstE2e.keyId).not.toBe(secondE2e.keyId);
+    expect(firstE2e.desktopEphemeralPub).not.toBe(secondE2e.desktopEphemeralPub);
+  });
+
+  test("compatibility: no e2e offered and none accepted issues today's ticket unchanged", async () => {
+    const { dispatcher } = await createFixture({}, READY_RELAY, makeE2eDeps());
+    const command = makeCommand({
+      type: "remote.webSession.issue",
+      payload: { allowedOrigin: RELAY_ORIGIN },
+    });
+    const result = await dispatcher.dispatch(command, makeDevice({ capabilities: ["remote.webSession"] }));
+    expect(result.status).toBe("succeeded");
+    expect(result.data).not.toHaveProperty("e2e");
+    expect(result.data).toMatchObject({ transport: "relay" });
+  });
+
+  test("an e2e acceptance naming an unknown keyId refuses the whole ticket", async () => {
+    const { dispatcher } = await createFixture({}, READY_RELAY, makeE2eDeps());
+    const { device } = makeE2eDevice();
+    const command = makeCommand({
+      type: "remote.webSession.issue",
+      payload: {
+        allowedOrigin: RELAY_ORIGIN,
+        e2e: {
+          v: 1,
+          keyId: "no-such-offer",
+          phoneEphemeralPub: exportRawPublicKey(generateX25519KeyPair().publicKey).toString("base64"),
+        },
+      },
+    });
+    const result = await dispatcher.dispatch(command, device);
+    expect(result).toMatchObject({ status: "failed", errorCode: "relay-e2e-key-mismatch" });
+  });
+
+  test("an e2e acceptance on a build with no e2eOfferStore wired refuses the ticket rather than silently downgrading", async () => {
+    const { dispatcher } = await createFixture({}, READY_RELAY, null);
+    const { device } = makeE2eDevice();
+    const command = makeCommand({
+      type: "remote.webSession.issue",
+      payload: {
+        allowedOrigin: RELAY_ORIGIN,
+        e2e: {
+          v: 1,
+          keyId: "kid-1",
+          phoneEphemeralPub: exportRawPublicKey(generateX25519KeyPair().publicKey).toString("base64"),
+        },
+      },
+    });
+    const result = await dispatcher.dispatch(command, device);
+    expect(result).toMatchObject({ status: "failed", errorCode: "relay-e2e-key-mismatch" });
+  });
+
+  test("a malformed phoneEphemeralPub refuses the ticket instead of falling back to plaintext", async () => {
+    const e2e = makeE2eDeps();
+    const { dispatcher } = await createFixture({}, READY_RELAY, e2e);
+    const { device } = makeE2eDevice();
+    const endpointResult = await dispatcher.dispatch(
+      makeCommand({ type: "remote.endpoint.request", payload: {} }),
+      device,
+    );
+    const keyId = (endpointResult.data as { e2e: { keyId: string } }).e2e.keyId;
+    const command = makeCommand({
+      commandId: "cmd-2",
+      idempotencyKey: "idem-2",
+      type: "remote.webSession.issue",
+      payload: { allowedOrigin: RELAY_ORIGIN, e2e: { v: 1, keyId, phoneEphemeralPub: "not-a-valid-key" } },
+    });
+    const result = await dispatcher.dispatch(command, device);
+    expect(result).toMatchObject({ status: "failed", errorCode: "relay-e2e-key-mismatch" });
+  });
+
+  test("a matching e2e acceptance derives directional keys the phone can independently reproduce, stored by deviceId", async () => {
+    const e2e = makeE2eDeps();
+    const { dispatcher } = await createFixture({}, READY_RELAY, e2e);
+    const { device, phonePairingPrivateKey } = makeE2eDevice();
+
+    const endpointResult = await dispatcher.dispatch(
+      makeCommand({ type: "remote.endpoint.request", payload: {} }),
+      device,
+    );
+    expect(endpointResult.status).toBe("succeeded");
+    const desktopOffer = (endpointResult.data as { e2e: RelayE2eDesktopOffer }).e2e;
+
+    const phoneEphemeral = generateX25519KeyPair();
+    const phoneAcceptance: RelayE2ePhoneAcceptance = {
+      v: 1,
+      keyId: desktopOffer.keyId,
+      phoneEphemeralPub: exportRawPublicKey(phoneEphemeral.publicKey).toString("base64"),
+    };
+    const issueResult = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-2",
+        idempotencyKey: "idem-2",
+        type: "remote.webSession.issue",
+        payload: { allowedOrigin: RELAY_ORIGIN, e2e: phoneAcceptance },
+      }),
+      device,
+    );
+    expect(issueResult.status).toBe("succeeded");
+    const ticketId = (issueResult.data as { ticketId: string }).ticketId;
+
+    const storedKeys = e2e.sessionStore.get(device.deviceId);
+    expect(storedKeys).not.toBeNull();
+
+    // The phone independently derives the SAME keys from its own key material plus the two public
+    // wire values it already has (the desktop's ephemeral pub from the endpoint answer, and its own
+    // long-term view of the desktop's pairing public key) — proving the desktop's derivation is
+    // something a real phone (with no access to this process's memory) could reproduce, not merely
+    // self-consistent with itself.
+    const { publicKeyFromRaw, decodeCanonicalPublicKey } = await import("./mobile-crypto.js");
+    const { createPublicKey } = await import("node:crypto");
+    const desktopPairingPublicKey = createPublicKey(e2e.ownPrivateKey);
+    const salt = relayE2eSalt(desktopOffer, phoneAcceptance);
+    const info = relayE2eInfo(device.pairId, device.deviceId, ticketId);
+    const phoneDerivedKeys = deriveRelayE2eKeys(
+      phoneEphemeral.privateKey,
+      publicKeyFromRaw(decodeCanonicalPublicKey(desktopOffer.desktopEphemeralPub)),
+      phonePairingPrivateKey,
+      desktopPairingPublicKey,
+      salt,
+      info,
+    );
+    expect(storedKeys?.desktopToPhone.toString("hex")).toBe(phoneDerivedKeys.desktopToPhone.toString("hex"));
+    expect(storedKeys?.phoneToDesktop.toString("hex")).toBe(phoneDerivedKeys.phoneToDesktop.toString("hex"));
+  });
+
+  test("a second issuance for the same device overwrites its stored session key with a fresh one", async () => {
+    const e2e = makeE2eDeps();
+    const { dispatcher } = await createFixture({}, READY_RELAY, e2e);
+    const { device } = makeE2eDevice();
+
+    async function issueOnce(commandId: string) {
+      const endpointResult = await dispatcher.dispatch(
+        makeCommand({ commandId, idempotencyKey: `${commandId}-idem`, type: "remote.endpoint.request", payload: {} }),
+        device,
+      );
+      const desktopOffer = (endpointResult.data as { e2e: RelayE2eDesktopOffer }).e2e;
+      const phoneEphemeral = generateX25519KeyPair();
+      await dispatcher.dispatch(
+        makeCommand({
+          commandId: `${commandId}-issue`,
+          idempotencyKey: `${commandId}-issue-idem`,
+          type: "remote.webSession.issue",
+          payload: {
+            allowedOrigin: RELAY_ORIGIN,
+            e2e: {
+              v: 1,
+              keyId: desktopOffer.keyId,
+              phoneEphemeralPub: exportRawPublicKey(phoneEphemeral.publicKey).toString("base64"),
+            },
+          },
+        }),
+        device,
+      );
+    }
+
+    await issueOnce("cmd-a");
+    const firstKeys = e2e.sessionStore.get(device.deviceId);
+    expect(firstKeys).not.toBeNull();
+
+    await issueOnce("cmd-b");
+    const secondKeys = e2e.sessionStore.get(device.deviceId);
+    expect(secondKeys).not.toBeNull();
+    expect(secondKeys?.desktopToPhone.toString("hex")).not.toBe(firstKeys?.desktopToPhone.toString("hex"));
+  });
+
+  test("a session key never reaches the persisted state", async () => {
+    const e2e = makeE2eDeps();
+    const { dispatcher, state } = await createFixture({}, READY_RELAY, e2e);
+    const { device } = makeE2eDevice();
+    const endpointResult = await dispatcher.dispatch(
+      makeCommand({ type: "remote.endpoint.request", payload: {} }),
+      device,
+    );
+    const desktopOffer = (endpointResult.data as { e2e: RelayE2eDesktopOffer }).e2e;
+    const phoneEphemeral = generateX25519KeyPair();
+    const issueResult = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-2",
+        idempotencyKey: "idem-2",
+        type: "remote.webSession.issue",
+        payload: {
+          allowedOrigin: RELAY_ORIGIN,
+          e2e: {
+            v: 1,
+            keyId: desktopOffer.keyId,
+            phoneEphemeralPub: exportRawPublicKey(phoneEphemeral.publicKey).toString("base64"),
+          },
+        },
+      }),
+      device,
+    );
+    expect(issueResult.status).toBe("succeeded");
+    // The state object this dispatcher was given is never mutated by any of this — the session-key
+    // store is a wholly separate, desktop-memory-only structure.
+    expect(JSON.stringify(state)).not.toContain((issueResult.data as { ticketId: string }).ticketId);
+  });
+
+  test("a full e2e session leaves credentials.json and the persisted state file byte-for-byte unchanged (plan P3)", async () => {
+    // Unlike the in-memory `state` object above, this wires REAL disk-backed stores — the same
+    // ones production uses (../store.js, ../shared/credential-store.js) — so the claim is about
+    // actual files on disk, not just an object this test happens to control. A decoy secret is
+    // added to the credential store first so the file is non-empty and a would-be leak has
+    // somewhere plausible to land.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-e2e-persistence-"));
+    tempDirs.push(dir);
+
+    const statePath = path.join(dir, "state.json");
+    const store = await createStore(statePath);
+    // Seed the one precondition `remote.endpoint.request` needs (a workspace in the device's
+    // profile) BEFORE snapshotting — the snapshot is the state a real session would actually run
+    // against, not an empty-store edge case the dispatcher would refuse before touching anything.
+    await store.mutate("seed-fixture-workspace", (draft) => {
+      draft.workspaces = [
+        { id: "ws-1", profileId: "default", kind: "task", name: "Fix the parser", task: { taskId: "task-1" } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any;
+      return draft;
+    });
+    const stateBefore = await fs.readFile(statePath);
+
+    const credentialsPath = path.join(dir, "credentials.json");
+    const credentialStore = await createCredentialStore(credentialsPath);
+    await credentialStore.setSecret("ssh:key:decoy", "not-a-real-secret", { forcePlaintext: true });
+    const credentialsBefore = await fs.readFile(credentialsPath);
+
+    const idempotencyStore = createMobileIdempotencyStore(path.join(dir, "idempotency.db"));
+    const auditLogStore = createMobileAuditLogStore(path.join(dir, "audit.db"));
+    openStores.push(idempotencyStore, auditLogStore);
+    const runtime = createFakeRuntime();
+    const ticketStore = createMobileWebSessionTicketStore();
+    const notificationOrigins = createMobileNotificationOriginStore();
+    const e2e = makeE2eDeps();
+    const dispatcher = createMobileCommandDispatcher({
+      getState: () => store.getState(),
+      runtime,
+      idempotencyStore,
+      auditLogStore,
+      ticketIssuer: ticketStore,
+      notificationOrigins,
+      relay: { status: () => READY_RELAY },
+      ownPrivateKey: e2e.ownPrivateKey,
+      e2eOfferStore: e2e.offerStore,
+      e2eSessionStore: e2e.sessionStore,
+    });
+    const { device } = makeE2eDevice();
+
+    const endpointResult = await dispatcher.dispatch(
+      makeCommand({ type: "remote.endpoint.request", payload: {} }),
+      device,
+    );
+    const desktopOffer = (endpointResult.data as { e2e: RelayE2eDesktopOffer }).e2e;
+    const phoneEphemeral = generateX25519KeyPair();
+    const issueResult = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-2",
+        idempotencyKey: "idem-2",
+        type: "remote.webSession.issue",
+        payload: {
+          allowedOrigin: RELAY_ORIGIN,
+          e2e: {
+            v: 1,
+            keyId: desktopOffer.keyId,
+            phoneEphemeralPub: exportRawPublicKey(phoneEphemeral.publicKey).toString("base64"),
+          },
+        },
+      }),
+      device,
+    );
+    expect(issueResult.status).toBe("succeeded");
+    const derivedKeys = e2e.sessionStore.get(device.deviceId);
+    expect(derivedKeys).not.toBeNull();
+
+    // Actually use the derived keys the way a live relay session would — seal and open a frame —
+    // rather than only deriving and discarding them, so "a session" means more than a handshake.
+    const aad = Buffer.from(
+      JSON.stringify({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.data",
+        src: "connector",
+        dst: "viewer",
+        s: "s-1",
+        id: "id-1",
+        q: 0,
+      }),
+      "utf8",
+    );
+    const sealed = sealRelayE2eFrame(Buffer.from("hello from a live session"), derivedKeys!.desktopToPhone, 0n, aad);
+    const opened = openRelayE2eFrame(sealed, derivedKeys!.desktopToPhone, aad);
+    expect(opened.toString("utf8")).toBe("hello from a live session");
+
+    const stateAfter = await fs.readFile(statePath);
+    const credentialsAfter = await fs.readFile(credentialsPath);
+    expect(stateAfter.equals(stateBefore)).toBe(true);
+    expect(credentialsAfter.equals(credentialsBefore)).toBe(true);
+
+    // Not just "nothing changed yet, by luck": the derived key material itself never appears in
+    // either file's bytes, base64-encoded or raw.
+    for (const key of [derivedKeys!.desktopToPhone, derivedKeys!.phoneToDesktop]) {
+      expect(stateAfter.toString("latin1")).not.toContain(key.toString("base64"));
+      expect(credentialsAfter.toString("latin1")).not.toContain(key.toString("base64"));
+      expect(stateAfter.includes(key)).toBe(false);
+      expect(credentialsAfter.includes(key)).toBe(false);
+    }
   });
 });

@@ -111,7 +111,7 @@ describe("the relay frame codec mirror", () => {
   });
 
   test("payloads are allowed on exactly the ordered frame types", () => {
-    expect(RELAY_FRAME_TYPES).toHaveLength(24);
+    expect(RELAY_FRAME_TYPES).toHaveLength(27);
     for (const type of RELAY_FRAME_TYPES) {
       expect(relayFrameCarriesPayload(type)).toBe(RELAY_FRAME_RULES[type].required.includes("q"));
     }

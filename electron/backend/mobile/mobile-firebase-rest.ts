@@ -61,6 +61,16 @@ const TOKEN_REFRESH_MARGIN_MS = 60_000;
  */
 const SERVER_TIME_SAMPLE_TTL_MS = 5 * 60_000;
 
+/**
+ * How long an RTDB SSE stream may go without ANY frame — including `keep-alive`, which RTDB sends
+ * roughly every 30s — before the reader treats it as silently dead and reconnects. A NAT, proxy or
+ * sleeping network adapter can drop the underlying connection without ever closing it, in which
+ * case `reader.read()` simply never resolves again: the desktop shows "Connected" and no phone
+ * command arrives until the process restarts. 90s is 3x the observed keep-alive cadence, so one or
+ * two missed keep-alives are tolerated before the watchdog fires.
+ */
+const RTDB_STREAM_IDLE_TIMEOUT_MS = 90_000;
+
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 /**
@@ -251,7 +261,7 @@ export interface RtdbStreamHandlers {
   onError?(error: Error): void;
 }
 
-type RtdbStreamEndReason = "ended" | "restart-auth" | "restart-cancelled";
+type RtdbStreamEndReason = "ended" | "restart-auth" | "restart-cancelled" | "idle";
 
 export interface MobileFirebaseRestClient {
   /** Establishes (or restores) the Auth session. Idempotent and safe to call repeatedly. */
@@ -629,6 +639,9 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
               // this iteration explicitly and forget the cached ID token: the next `authParams()`
               // call exchanges the durable refresh token and opens a fresh authenticated stream.
               if (endReason === "restart-auth") session = null;
+              if (endReason === "idle") {
+                log.warn("RTDB stream went idle; reconnecting", { code: "rtdb-stream-idle", path });
+              }
               await new Promise((resolve) => setTimeout(resolve, backoffMs));
               backoffMs = Math.min(backoffMs * 2, 30_000);
             }
@@ -709,14 +722,31 @@ export async function consumeEventStream(
   body: ReadableStream<Uint8Array>,
   handlers: RtdbStreamHandlers,
   isClosed: () => boolean,
+  idleTimeoutMs: number = RTDB_STREAM_IDLE_TIMEOUT_MS,
 ): Promise<RtdbStreamEndReason> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let idle = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const armIdleTimer = (): void => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idle = true;
+      // Best-effort: resolves the pending `read()` below so the loop notices `idle` promptly
+      // instead of waiting for the underlying connection to time out on its own.
+      void reader.cancel().catch(() => {});
+    }, idleTimeoutMs);
+  };
+  armIdleTimer();
   try {
     for (;;) {
       const { value, done } = await reader.read();
+      // The watchdog firing wins over whatever `read()` settled with — a frame that happened to
+      // arrive in the same tick the timer fired does not un-declare the stream idle.
+      if (idle) return "idle";
       if (done || isClosed()) return "ended";
+      armIdleTimer();
       buffer += decoder.decode(value, { stream: true });
       let separator = buffer.indexOf("\n\n");
       while (separator >= 0) {
@@ -728,6 +758,7 @@ export async function consumeEventStream(
       }
     }
   } finally {
+    clearTimeout(idleTimer);
     try {
       reader.releaseLock();
     } catch {

@@ -105,7 +105,12 @@ function makeFakeRuntime(): MobileCommandRuntime & { calls: string[] } {
 }
 
 async function createFixture(
-  overrides: { now?: () => number; ownDeviceId?: string; getProfileIds?: () => string[] } = {},
+  overrides: {
+    now?: () => number;
+    ownDeviceId?: string;
+    getProfileIds?: () => string[];
+    getCatalogSignature?: (allowedProfileIds: string[]) => string;
+  } = {},
 ) {
   // The desktop installation this manager IS. Defaults to the one every existing test uses; a
   // test that needs a second computer passes its own, because the installation (data dir) is the
@@ -194,6 +199,7 @@ async function createFixture(
     revokeRemoteSessions,
     now: overrides.now,
     getProfileIds: overrides.getProfileIds,
+    getCatalogSignature: overrides.getCatalogSignature,
   });
 
   return {
@@ -2336,6 +2342,41 @@ describe("MobileManager presence: the desktop says it is reachable", () => {
 });
 
 describe("default profile access and live synchronization", () => {
+  test("publishes a new opaque revision only when this device's allowed catalog changes", async () => {
+    let workName = "Work";
+    let privateName = "Private";
+    const { manager, deviceStore, transport } = await createFixture({
+      getProfileIds: () => ["work", "private"],
+      getCatalogSignature: (allowed) =>
+        JSON.stringify(allowed.map((id) => [id, id === "work" ? workName : privateName])),
+    });
+    const { deviceId } = await addMobileDevice(deviceStore, {
+      profileAllowlist: ["work"],
+    });
+    const publish = vi.spyOn(transport, "updateDeviceAccess");
+    await manager.start();
+    try {
+      await manager.updateDeviceAllowlist(deviceId, { excludedProfileIds: ["private"] });
+      await manager.syncProfileAccess();
+      const firstRevision = publish.mock.lastCall?.[4];
+      expect(firstRevision).toMatch(/^[0-9a-f-]{36}$/);
+      expect(publish.mock.lastCall?.[1]).toBe(deviceId);
+      const calls = publish.mock.calls.length;
+
+      privateName = "Private renamed";
+      await manager.syncProfileAccess();
+      expect(publish).toHaveBeenCalledTimes(calls);
+      workName = "Work renamed";
+      await manager.syncProfileAccess();
+      expect(publish).toHaveBeenCalledTimes(calls + 1);
+      expect(publish.mock.lastCall?.[4]).not.toBe(firstRevision);
+      await manager.syncProfileAccess();
+      expect(publish).toHaveBeenCalledTimes(calls + 1);
+    } finally {
+      manager.stop();
+    }
+  });
+
   test("migrates an existing pairing and includes profiles created later without reconnecting", async () => {
     let profiles = ["default", "other"];
     const { manager, deviceStore, transport } = await createFixture({ getProfileIds: () => profiles });

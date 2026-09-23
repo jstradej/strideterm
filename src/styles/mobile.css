@@ -615,6 +615,12 @@
 .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed) {
   --composer-width: 48px;
 }
+.native-session-rail {
+  --native-session-rail-supported: 1;
+}
+.native-session-rail .mobile-input-bar--landscape.mobile-input-bar--collapsed {
+  display: none;
+}
 .mobile-input-bar.mobile-input-bar--landscape {
   grid-column: 2;
   grid-row: 1 / 4;
@@ -735,6 +741,19 @@
 [data-controls-side="left"] .mobile-input-bar--landscape .mobile-input-bar__menu {
   left: 8px;
   right: auto;
+}
+.native-session-rail .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed),
+.native-session-rail[data-controls-side="left"]
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.native-session-rail
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed)
+  > :not(.mobile-input-bar),
+.native-session-rail[data-controls-side="left"]
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed)
+  > :not(.mobile-input-bar) {
+  grid-column: 1;
 }
 
 .mobile-input-bar--landscape .mobile-input-bar__more {

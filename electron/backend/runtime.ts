@@ -60,6 +60,8 @@ import { createMobileAuditLogStore } from "./mobile/mobile-audit-log-store.js";
 import { createMobileCommandDispatcher, type MobileCommandRuntime } from "./mobile/mobile-command-dispatch.js";
 import { createMobileNotificationOriginStore } from "./mobile/mobile-notification-origin-store.js";
 import { createMobileWebSessionTicketStore } from "./mobile/mobile-web-session-ticket-store.js";
+import { createRelayE2eOfferStore } from "./mobile/mobile-relay-e2e-offer-store.js";
+import { createRelayE2eSessionStore } from "./mobile/mobile-relay-e2e-session-store.js";
 import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
 import { createMobileFirebaseRestClient } from "./mobile/mobile-firebase-rest.js";
 import { createInstallationTokenRefreshListener } from "./account/installation-token-refresh.js";
@@ -1263,6 +1265,15 @@ export async function createRuntime({
   // never a separate store, or an issued ticket would never be found.
   const mobileWebSessionTicketStore = createMobileWebSessionTicketStore();
 
+  // Relay end-to-end encryption (plan 2026-09-23, decision 1): the offer store is written by
+  // remote.endpoint.request and read by remote.webSession.issue below, the session-key store is
+  // written there and read by the relay connector (mobile-relay-connector.ts) as it wraps/unwraps
+  // e2e.* frames, keyed by mobileDeviceId — passed to it below via createMobileRelayManager's
+  // e2eSessionStore option. Both are single shared instances for the same reason the ticket store is
+  // one.
+  const mobileRelayE2eOfferStore = createRelayE2eOfferStore();
+  const mobileRelayE2eSessionStore = createRelayE2eSessionStore();
+
   // Single shared instance for the same reason the ticket store is one: MobileManager records an
   // event's origin as it sends it and the dispatcher reads that record when the acknowledgement
   // comes back, so two instances would mean every ack finding nothing to clear.
@@ -1289,6 +1300,9 @@ export async function createRuntime({
     ticketIssuer: mobileWebSessionTicketStore,
     notificationOrigins: mobileNotificationOrigins,
     relay: { status: () => mobileRelayManager?.status() ?? RELAY_OFF },
+    ownPrivateKey: mobileOwnKeyPair.privateKey,
+    e2eOfferStore: mobileRelayE2eOfferStore,
+    e2eSessionStore: mobileRelayE2eSessionStore,
     // Read at mint time, not at dispatch time: a ticket outlives the authorisation that produced it
     // by a minute, so the record is re-read immediately before it is issued (production hardening §5
     // "Ticket" 5).
@@ -1569,6 +1583,24 @@ export async function createRuntime({
   const MobileManagerImpl = dependencies.MobileManager || MobileManager;
   const mobileManager = new MobileManagerImpl({
     getProfileIds: () => (getState().profiles || []).map((profile) => profile.id),
+    getCatalogSignature: (allowedProfileIds: string[]) => {
+      const state = getState();
+      return JSON.stringify(
+        allowedProfileIds.map((id) => {
+          const profile = state.profiles.find((entry) => entry.id === id);
+          const workspaces = state.workspaces.filter((workspace) => (workspace.profileId || "default") === id);
+          return [
+            id,
+            profile?.name ?? null,
+            workspaces.length,
+            workspaces
+              .map((workspace) => formatWorkspaceDisplayName(workspace))
+              .filter(Boolean)
+              .slice(0, 5),
+          ];
+        }),
+      );
+    },
     transport: mobileTransport,
     pairing: mobilePairing,
     deviceStore: mobileDeviceStore,
@@ -1836,6 +1868,7 @@ export async function createRuntime({
             .listDevices()
             .filter((device) => device.revoked)
             .map((device) => ({ deviceId: device.deviceId, revokedAt: device.revokedAt })),
+        e2eSessionStore: mobileRelayE2eSessionStore,
       })
     : null;
 

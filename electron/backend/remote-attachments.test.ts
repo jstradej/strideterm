@@ -137,6 +137,19 @@ describe("encrypted mobile attachment route", () => {
       expect(begin.response.status).toBe(200);
       const transferId = begin.value.transferId as string;
       expect(transferId).toBeTruthy();
+
+      // `idempotencyKey` is genuinely optional (mobileAttachmentOperationSchema) — a begin that
+      // omits it entirely must not be refused as though an empty key had been sent on purpose.
+      const noKeyBegin = await send("attachment.begin", {
+        workspaceId: "ws",
+        name: "no-idempotency-key.txt",
+        size: 3,
+        sha256: createHash("sha256").update(Buffer.from("abc")).digest("hex"),
+      });
+      expect(noKeyBegin.response.status).toBe(200);
+      expect(noKeyBegin.value.transferId).toBeTruthy();
+      await send("attachment.cancel", { workspaceId: "ws", transferId: noKeyBegin.value.transferId });
+
       for (let offset = 0; offset < data.length; offset += 512 * 1024) {
         const end = Math.min(offset + 512 * 1024, data.length);
         const chunk = await send("attachment.chunk", {

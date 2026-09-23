@@ -60,6 +60,7 @@ export const PAIRING_CLAIM_DECISIONS_ROOT = "v2/pairingClaimDecisions";
 export const PAIRING_CLAIM_DECISION_QUARANTINE_ROOT = "v2/pairingClaimDecisionQuarantine";
 export const TRIAL_INSTALLATIONS_ROOT = "v2/trialInstallations";
 export const INCIDENT_COMPENSATION_ROOT = "v2/system/incidentCompensation";
+export const OPERATOR_STATUS_ROOT = "v2/system/operatorStatus";
 export const BILLING_CUSTOMERS_ROOT = "v2/billing/customers";
 export const BILLING_SUBSCRIPTIONS_ROOT = "v2/billing/subscriptions";
 export const BILLING_TRANSACTIONS_ROOT = "v2/billing/transactions";
@@ -343,6 +344,15 @@ export function trialInstallationPath(ed25519Fingerprint: string): string {
  */
 export function incidentCompensationPath(incidentId: string): string {
   return `v2/system/incidentCompensation/${incidentId}`;
+}
+
+/**
+ * The latest bounded operational aggregate for one explicitly declared deployment environment.
+ * The collector writes this from paged account/Auth reads; the operator endpoint only reads the
+ * last complete snapshot and reports it stale or unknown when the collector has not finished.
+ */
+export function operatorStatusPath(environment: string): string {
+  return `v2/system/operatorStatus/${environment}`;
 }
 
 /** Paddle customer id -> accountId. Routing only; no address, no payment method, no email. */

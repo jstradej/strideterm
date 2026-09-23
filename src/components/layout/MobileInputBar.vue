@@ -383,12 +383,14 @@ async function focusComposer() {
   inputRef.value?.focus({ preventScroll: true });
 }
 onUnmounted(() => {
+  postKeyboardAvailability(false);
   window.removeEventListener("strideterm:focus-composer", focusComposer);
   window.removeEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
 });
 onMounted(() => {
+  postKeyboardAvailability(!!api?.isRemote && !!targetSessionId.value);
   window.addEventListener("strideterm:focus-composer", focusComposer);
   window.addEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.addEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
@@ -399,6 +401,14 @@ onMounted(() => {
   restoreDraft(targetSessionId.value);
   setTimeout(dropAutofilledValue, AUTOFILL_SETTLE_MS);
 });
+
+function postKeyboardAvailability(available: boolean) {
+  try {
+    window.StridetermViewport?.postMessage?.(JSON.stringify({ type: "keyboard-available", available }));
+  } catch {
+    // The browser has no native host.
+  }
+}
 
 // Which session the CURRENT field contents belong to. A plain variable rather than a computed,
 // because it has to change at an exact point inside the session-switch handler below: between
@@ -421,6 +431,7 @@ watch(
 );
 
 watch(targetSessionId, (sessionId, previousSessionId) => {
+  postKeyboardAvailability(!!api?.isRemote && !!sessionId);
   if (sessionId !== previousSessionId) {
     rewritingDraft = true;
     ignoreCompositionEnd.value = composing.value;
@@ -962,6 +973,7 @@ function collapse(): void {
 
 async function expand(): Promise<void> {
   if (landscape.value) {
+    if (document.documentElement.classList.contains("native-session-rail")) systemKeyboard.value = false;
     landscapeExpanded.value = true;
     await nextTick();
     if (systemKeyboard.value) inputRef.value?.focus({ preventScroll: true });

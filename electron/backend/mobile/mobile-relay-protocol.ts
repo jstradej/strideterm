@@ -137,7 +137,10 @@ export type RelayFrameType =
   | "ws.error"
   | "flow.credit"
   | "flow.overflow"
-  | "flow.timeout";
+  | "flow.timeout"
+  | "e2e.open"
+  | "e2e.data"
+  | "e2e.close";
 
 export type RelayHttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 export const RELAY_HTTP_METHODS: readonly RelayHttpMethod[] = [
@@ -255,6 +258,15 @@ export const RELAY_FRAME_RULES: Readonly<Record<RelayFrameType, FrameRule>> = {
   "flow.credit": { required: ["s", "id", "w"], optional: [], src: "any", dst: "any" },
   "flow.overflow": { required: ["s", "id", "e"], optional: [], src: "any", dst: "any" },
   "flow.timeout": { required: ["s", "id", "e"], optional: [], src: "any", dst: "any" },
+  // Relay end-to-end encryption (plan 2026-09-23, decision 2). The payload is an opaque
+  // AEAD-encrypted inner relay frame; none of `m`/`u`/`h` is declared here, so the generic
+  // allow-list below refuses them on these types like any other undeclared field.
+  // `d`, when present, is the relay stamping the viewer-grant-verified device id onto the frame it
+  // forwards to the connector — the connector's only way to find the right derived session key for
+  // a newly opened stream.
+  "e2e.open": { required: ["s", "id"], optional: ["d"], src: "any", dst: "any" },
+  "e2e.data": { required: ["s", "id", "q"], optional: [], src: "any", dst: "any" },
+  "e2e.close": { required: ["s", "id", "e"], optional: [], src: "any", dst: "any" },
 };
 
 export const RELAY_FRAME_TYPES = Object.keys(RELAY_FRAME_RULES) as RelayFrameType[];

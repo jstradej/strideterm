@@ -66,6 +66,11 @@ const PAIRING_VECTORS_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobil
 const RELAY_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-relay-protocol.ts");
 const RELAY_VECTORS_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-relay-vectors.json");
 const BOOTSTRAP_VECTORS_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-bootstrap-vectors.json");
+// Relay end-to-end encryption (plan 2026-09-23): its constants mirror into mobile-crypto.ts rather
+// than mobile-schemas.ts, same reasoning as the relay transport contract living in
+// mobile-relay-protocol.ts — a distinct contract with a distinct owner.
+const RELAY_E2E_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-crypto.ts");
+const RELAY_E2E_VECTORS_MIRROR_PATH = path.join(REPO_ROOT, "electron/backend/mobile/mobile-relay-e2e-vectors.json");
 
 // Exports in mobile-schemas.ts that are deliberately local-only (no protocol-package equivalent
 // — see the "Local-only additions" section at the bottom of that file). Excluded from comparison
@@ -131,6 +136,7 @@ async function main(): Promise<void> {
   // mobile-schemas.ts would make one very large file that changes for two unrelated reasons.
   const generatedRelayLimitsPath = path.join(siblingRepo, "protocol/typescript/src/generated/relay-limits.ts");
   const generatedRelayFramesPath = path.join(siblingRepo, "protocol/typescript/src/relay/frames.ts");
+  const generatedRelayE2ePath = path.join(siblingRepo, "protocol/typescript/src/generated/relay-e2e.ts");
   // Two generated modules the desktop deliberately does NOT mirror. The operator API is the
   // IAM-only support/recovery surface — its consumers are cloud/functions and the private
   // `strideterm-ops` CLI, which generates its own client from the same schemas — and the backup
@@ -151,6 +157,8 @@ async function main(): Promise<void> {
     generatedRelayFrames,
     generatedOperatorApi,
     generatedBackupManifest,
+    relayE2eMirror,
+    generatedRelayE2e,
   ] = await Promise.all([
     import(pathToFileURL(MIRROR_PATH).href) as Promise<Record<string, unknown>>,
     import(pathToFileURL(generatedIndexPath).href) as Promise<Record<string, unknown>>,
@@ -161,6 +169,8 @@ async function main(): Promise<void> {
     import(pathToFileURL(generatedRelayFramesPath).href) as Promise<Record<string, unknown>>,
     import(pathToFileURL(generatedOperatorApiPath).href) as Promise<Record<string, unknown>>,
     import(pathToFileURL(generatedBackupManifestPath).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(RELAY_E2E_MIRROR_PATH).href) as Promise<Record<string, unknown>>,
+    import(pathToFileURL(generatedRelayE2ePath).href) as Promise<Record<string, unknown>>,
   ]);
 
   // The generated index re-exports the path contract too, but that is a *different* mirror in
@@ -169,13 +179,19 @@ async function main(): Promise<void> {
   const PATH_CONTRACT_EXPORTS = new Set(Object.keys(generatedPaths));
   // Same exclusion, same reason, for the relay transport contract.
   const RELAY_CONTRACT_EXPORTS = new Set(Object.keys(generatedRelayLimits));
+  // Same exclusion again, for the relay end-to-end crypto contract (mirrored into mobile-crypto.ts).
+  const RELAY_E2E_CONTRACT_EXPORTS = new Set(Object.keys(generatedRelayE2e));
   // The server-only surfaces. See the comment where these modules are located above.
   const SERVER_ONLY_EXPORTS = new Set([...Object.keys(generatedOperatorApi), ...Object.keys(generatedBackupManifest)]);
 
   const mirrorKeys = new Set(Object.keys(mirror).filter((k) => !LOCAL_ONLY_EXPORTS.has(k)));
   const generatedKeys = new Set(
     Object.keys(generated).filter(
-      (k) => !PATH_CONTRACT_EXPORTS.has(k) && !RELAY_CONTRACT_EXPORTS.has(k) && !SERVER_ONLY_EXPORTS.has(k),
+      (k) =>
+        !PATH_CONTRACT_EXPORTS.has(k) &&
+        !RELAY_CONTRACT_EXPORTS.has(k) &&
+        !RELAY_E2E_CONTRACT_EXPORTS.has(k) &&
+        !SERVER_ONLY_EXPORTS.has(k),
     ),
   );
 
@@ -355,6 +371,27 @@ async function main(): Promise<void> {
     }
   }
 
+  // --- 3b. Relay end-to-end encryption contract mirror ---------------------
+  // Every constant here feeds either a key derivation (a wrong byte count silently truncates or
+  // mis-splits the HKDF output) or the nonce layout (a wrong reserved/counter split changes what
+  // bytes get authenticated) — a mismatch is not cosmetic, it is a desktop and phone that derive
+  // different keys or disagree about how to read the same nonce.
+  for (const [name, generatedValue] of Object.entries(generatedRelayE2e)) {
+    comparedRelay++;
+    const mirrorValue = relayE2eMirror[name];
+    if (mirrorValue === undefined) {
+      mismatches.push({
+        name: `relay-e2e:${name}`,
+        detail: "declared by the generated relay-e2e contract but missing from mobile-crypto.ts.",
+      });
+    } else if (mirrorValue !== generatedValue) {
+      mismatches.push({
+        name: `relay-e2e:${name}`,
+        detail: `mobile-crypto.ts has ${JSON.stringify(mirrorValue)}, the generated contract has ${JSON.stringify(generatedValue)}.`,
+      });
+    }
+  }
+
   // --- 4. Canonical-AAD, pairing-transcript and relay-grant fixtures --------
   // Compare content, not line endings: this repo checks out CRLF on Windows and the sibling may
   // not, which would otherwise report drift on every line of an identical file.
@@ -375,6 +412,11 @@ async function main(): Promise<void> {
       mirror: RELAY_VECTORS_MIRROR_PATH,
       original: path.join(siblingRepo, "protocol/test-vectors/relay-grants.json"),
       name: "relay-grants.json",
+    },
+    {
+      mirror: RELAY_E2E_VECTORS_MIRROR_PATH,
+      original: path.join(siblingRepo, "protocol/test-vectors/relay-e2e.json"),
+      name: "relay-e2e.json",
     },
     {
       // The sharpest of the four. This desktop, the Flutter app and `strideterm-ops

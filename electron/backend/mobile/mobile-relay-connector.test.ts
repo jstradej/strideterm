@@ -10,7 +10,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import http from "node:http";
 import net from "node:net";
-import { createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import zlib from "node:zlib";
+import { createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 
 import {
@@ -19,6 +20,8 @@ import {
   defaultReconnectDelay,
   type RelayConnector,
 } from "./mobile-relay-connector.js";
+import { sealRelayE2eFrame, openRelayE2eFrame, type RelayE2eKeys } from "./mobile-crypto.js";
+import { createRelayE2eSessionStore, type RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
 import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 import type { RelayInstallationIdentity } from "./mobile-relay-identity.js";
 import {
@@ -292,7 +295,12 @@ async function startFakeRelay(
     frames,
     ready,
     send(header, payload) {
-      live?.send(encodeRelayFrame({ ...header, s: header.s === undefined ? undefined : sessionId }, payload));
+      // The real relay never rewrites `s`/`id` on an `e2e.*` frame (AAD binds the outer header end to
+      // end — see relay/worker's own notes), so this fake one does not either; every other type keeps
+      // the existing behaviour of stamping the CURRENT session onto anything that named one at all.
+      const isE2e = typeof header.t === "string" && header.t.startsWith("e2e.");
+      const outgoing = isE2e ? header : { ...header, s: header.s === undefined ? undefined : sessionId };
+      live?.send(encodeRelayFrame(outgoing, payload));
     },
     sendRaw(data) {
       live?.send(data);
@@ -1047,5 +1055,571 @@ describe("lifecycle and bounds", () => {
     });
     await awaitConnectorReady(created);
     expect(calls).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Relay end-to-end encryption (plan 2026-09-23, decisions 1/2, §P3 acceptance).
+//
+// A `FakePhone` below plays the OTHER end of the encrypted channel by hand — sealing/opening with
+// the same `mobile-crypto.ts` primitives a real Dart `RelayE2eProxy` mirrors, over frames sent
+// through the SAME `FakeRelay` every other test in this file uses (which, after the edit above,
+// forwards `e2e.*` frames' `s`/`id` unchanged, exactly like the real relay Worker).
+// ---------------------------------------------------------------------------
+
+interface FakePhone {
+  /** Seals an inner frame as `e2e.data` src=viewer, ready to hand to `relay.send`. */
+  sealToConnector(
+    outerId: string,
+    s: string,
+    innerHeader: RelayFrameHeader,
+    innerPayload?: Buffer,
+  ): { header: RelayFrameHeader; payload: Buffer };
+  /** Opens an `e2e.data` frame the connector sent (src=connector), recovering the inner frame. */
+  open(frame: RelayFrame): { header: RelayFrameHeader; payload: Buffer };
+}
+
+function makeE2eKeys(): RelayE2eKeys {
+  return { desktopToPhone: randomBytes(32), phoneToDesktop: randomBytes(32) };
+}
+
+function fakePhone(keys: RelayE2eKeys): FakePhone {
+  let outCounter = 0n;
+  return {
+    sealToConnector(outerId, s, innerHeader, innerPayload) {
+      const innerBytes = Buffer.from(encodeRelayFrame(innerHeader, innerPayload));
+      const outerHeader: RelayFrameHeader = {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.data",
+        src: "viewer",
+        dst: "connector",
+        s,
+        id: outerId,
+        q: 0,
+      };
+      const aad = Buffer.from(JSON.stringify(outerHeader), "utf8");
+      const sealed = sealRelayE2eFrame(innerBytes, keys.phoneToDesktop, outCounter, aad);
+      outCounter += 1n;
+      return { header: outerHeader, payload: sealed };
+    },
+    open(frame) {
+      const aad = Buffer.from(JSON.stringify(frame.header), "utf8");
+      const innerBytes = openRelayE2eFrame(frame.payload, keys.desktopToPhone, aad);
+      return decodeRelayFrame(innerBytes);
+    },
+  };
+}
+
+describe("relay end-to-end encryption", () => {
+  const DEVICE_ID = "mobile-device-e2e-under-test";
+
+  test("a viewer-opened e2e stream reaches the real internal origin, and the response comes back sealed", async () => {
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    store.put(DEVICE_ID, keys, 60_000);
+    const created = startConnector({ e2eSessionStore: store });
+    await awaitConnectorReady(created);
+    const phone = fakePhone(keys);
+
+    const outerId = "outer-stream-1";
+    const s = "phone-chosen-s-value";
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s,
+      id: outerId,
+      d: DEVICE_ID,
+    });
+
+    const start = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.start",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-stream-1",
+      m: "GET",
+      u: "/hello?x=1",
+      h: [["accept", "text/plain"]],
+    });
+    relay.send(start.header, start.payload);
+    const end = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.end",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-stream-1",
+    });
+    relay.send(end.header, end.payload);
+
+    // The desktop's own loopback origin — same one every plaintext test in this file uses — sees a
+    // completely ordinary request. It has no idea the path to it was encrypted.
+    await waitFor(() => internal.requests.length > 0, 10_000, "the internal origin to see the request");
+    expect(internal.requests.at(-1)!.url).toBe("/hello?x=1");
+
+    // The response comes back as e2e.data, never as a plaintext http.response.*.
+    const sealedStart = await relay.waitFor(
+      (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.response.start",
+    );
+    expect(relay.frames.some((frame) => frame.header.t === "http.response.start")).toBe(false);
+    const openedStart = phone.open(sealedStart);
+    expect(openedStart.header.c).toBe(200);
+
+    const sealedEnd = await relay.waitFor(
+      (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.response.end",
+    );
+    expect(phone.open(sealedEnd).header.id).toBe("inner-stream-1");
+  });
+
+  test("multi-megabyte encrypted request bodies return exact ciphertext credit before the next chunk", async () => {
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    store.put(DEVICE_ID, keys, 60_000);
+    const created = startConnector({ e2eSessionStore: store });
+    await awaitConnectorReady(created);
+    const phone = fakePhone(keys);
+    const outerId = "outer-upload-credit";
+    const innerId = "inner-upload-credit";
+    const s = "phone-upload-session";
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s,
+      id: outerId,
+      d: DEVICE_ID,
+    });
+
+    async function sendAndExpectCredit(innerHeader: RelayFrameHeader, body?: Buffer): Promise<void> {
+      const sealed = phone.sealToConnector(outerId, s, innerHeader, body);
+      const previousCredits = relay.frames.filter(
+        (frame) => frame.header.t === "flow.credit" && frame.header.id === outerId,
+      ).length;
+      relay.send(sealed.header, sealed.payload);
+      await waitFor(
+        () =>
+          relay.frames.filter((frame) => frame.header.t === "flow.credit" && frame.header.id === outerId).length >
+          previousCredits,
+        10_000,
+        "encrypted ingress credit",
+      );
+      const credits = relay.frames.filter((frame) => frame.header.t === "flow.credit" && frame.header.id === outerId);
+      expect(credits.at(-1)?.header.w).toBe(sealed.payload.length);
+    }
+
+    await sendAndExpectCredit({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.start",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: innerId,
+      m: "POST",
+      u: "/hello",
+      h: [["content-type", "application/octet-stream"]],
+    });
+    const chunk = Buffer.alloc(64 * 1024, 0x42);
+    for (let i = 0; i < 34; i++) {
+      await sendAndExpectCredit(
+        {
+          v: RELAY_PROTOCOL_VERSION,
+          t: "http.request.body",
+          src: "viewer",
+          dst: "connector",
+          s: "inner-session",
+          id: innerId,
+          q: i,
+        },
+        chunk,
+      );
+    }
+    const end = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.end",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: innerId,
+    });
+    relay.send(end.header, end.payload);
+    await waitFor(() => internal.requests.length === 1, 10_000, "full encrypted upload at the internal origin");
+    expect(internal.requests[0]!.body.length).toBe(34 * chunk.length);
+    expect(internal.requests[0]!.body.subarray(-chunk.length)).toEqual(chunk);
+  }, 20_000);
+
+  test("an e2e.open for a device with no derived key is refused, never falls back to plaintext", async () => {
+    const store = createRelayE2eSessionStore();
+    // Deliberately no `store.put(...)` — this device has no derived key.
+    const created = startConnector({ e2eSessionStore: store });
+    await awaitConnectorReady(created);
+
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s: "x",
+      id: "outer-no-key",
+      d: "device-with-no-key",
+    });
+    const close = await relay.waitFor((frame) => frame.header.t === "e2e.close");
+    expect(close.header.id).toBe("outer-no-key");
+    expect(close.header.e).toBe("unauthorized");
+    expect(internal.requests.length).toBe(0);
+  });
+
+  test("a corrupted ciphertext ends the stream via e2e.close and never reaches the internal origin", async () => {
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    store.put(DEVICE_ID, keys, 60_000);
+    const created = startConnector({ e2eSessionStore: store });
+    await awaitConnectorReady(created);
+    const phone = fakePhone(keys);
+
+    const outerId = "outer-corrupt";
+    const s = "x";
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s,
+      id: outerId,
+      d: DEVICE_ID,
+    });
+
+    const sealed = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.start",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-corrupt",
+      m: "GET",
+      u: "/hello",
+      h: [],
+    });
+    // Flip one ciphertext byte after the nonce — the auth tag can no longer verify.
+    const tampered = Buffer.from(sealed.payload);
+    tampered[tampered.length - 1] = tampered[tampered.length - 1]! ^ 0xff;
+    relay.send(sealed.header, tampered);
+
+    const close = await relay.waitFor((frame) => frame.header.t === "e2e.close");
+    expect(close.header.id).toBe(outerId);
+    expect(close.header.e).toBe("protocol-error");
+    // Never attempted as plaintext: the inner frame never reached the internal origin at all.
+    expect(internal.requests.length).toBe(0);
+  });
+
+  test("RELAY_MAX_HTTP_REQUEST_BODY_BYTES is enforced over the decrypted inner body", async () => {
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    store.put(DEVICE_ID, keys, 60_000);
+    const created = startConnector({ e2eSessionStore: store });
+    await awaitConnectorReady(created);
+    const phone = fakePhone(keys);
+
+    const outerId = "outer-toolarge";
+    const s = "x";
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s,
+      id: outerId,
+      d: DEVICE_ID,
+    });
+
+    const start = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.start",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-toolarge",
+      m: "POST",
+      u: "/echo",
+      h: [["content-type", "application/octet-stream"]],
+    });
+    relay.send(start.header, start.payload);
+
+    // RELAY_MAX_HTTP_REQUEST_BODY_BYTES is 4 MiB; a single outer frame may not itself exceed
+    // RELAY_MAX_FRAME_BYTES (1 MiB, header included), so five 900 KiB inner chunks cross the body
+    // limit over multiple frames instead of one oversized one.
+    const chunk = Buffer.alloc(900_000, 0x41);
+    for (let i = 0; i < 5; i++) {
+      const body = phone.sealToConnector(
+        outerId,
+        s,
+        {
+          v: RELAY_PROTOCOL_VERSION,
+          t: "http.request.body",
+          src: "viewer",
+          dst: "connector",
+          s: "inner-session",
+          id: "inner-toolarge",
+          q: i,
+        },
+        chunk,
+      );
+      relay.send(body.header, body.payload);
+    }
+
+    const cancel = await relay.waitFor(
+      (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.cancel",
+    );
+    expect(phone.open(cancel).header.e).toBe("too-large");
+  });
+
+  test("a replayed e2e.data (the same counter twice) is refused the second time", async () => {
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    store.put(DEVICE_ID, keys, 60_000);
+    const created = startConnector({ e2eSessionStore: store });
+    await awaitConnectorReady(created);
+    const phone = fakePhone(keys);
+
+    const outerId = "outer-replay";
+    const s = "x";
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s,
+      id: outerId,
+      d: DEVICE_ID,
+    });
+
+    const start = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.start",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-replay",
+      m: "GET",
+      u: "/hello",
+      h: [],
+    });
+    relay.send(start.header, start.payload);
+    const end = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.end",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-replay",
+    });
+    relay.send(end.header, end.payload);
+    await waitFor(() => internal.requests.length > 0, 10_000, "the first (legitimate) request");
+    const seenAfterFirst = internal.requests.length;
+
+    // The exact same sealed bytes again — same counter, same ciphertext.
+    relay.send(start.header, start.payload);
+    const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === outerId);
+    expect(close.header.e).toBe("protocol-error");
+    // The replay never produced a second request to the internal origin.
+    expect(internal.requests.length).toBe(seenAfterFirst);
+  });
+
+  test("a key that disappears mid-stream ends the stream, rather than silently dropping frames", async () => {
+    // security review finding (round 2): sendE2eWrapped failing (missing key, encode error, socket
+    // gone) used to return `false` and stop there — most of its callers (flushHttpQueue,
+    // flushWsQueue, …) never check that return value, since a plaintext send() only ever failed
+    // when the whole socket was down. A vanished key is a NEW failure mode, and left unhandled it
+    // meant a browser request could sit unanswered until ITS OWN timeout rather than failing
+    // promptly. Fixed by ending the outer stream (an explicit e2e.close) the moment a wrap fails.
+    const realStore = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    realStore.put(DEVICE_ID, keys, 60_000);
+    let calls = 0;
+    // Real keys for e2e.open and the two inbound request frames; gone by the time the connector
+    // tries to send the FIRST outbound frame (http.response.start).
+    const vanishingStore: RelayE2eSessionStore = {
+      put: (deviceId, k, ttlMs) => realStore.put(deviceId, k, ttlMs),
+      get: (deviceId) => {
+        calls += 1;
+        return calls <= 3 ? realStore.get(deviceId) : null;
+      },
+    };
+    const created = startConnector({ e2eSessionStore: vanishingStore });
+    await awaitConnectorReady(created);
+    const phone = fakePhone(keys);
+
+    const outerId = "outer-key-vanishes";
+    const s = "x";
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s,
+      id: outerId,
+      d: DEVICE_ID,
+    });
+    const start = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.start",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-vanish",
+      m: "GET",
+      u: "/hello",
+      h: [],
+    });
+    relay.send(start.header, start.payload);
+    const end = phone.sealToConnector(outerId, s, {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.end",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-vanish",
+    });
+    relay.send(end.header, end.payload);
+
+    const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === outerId);
+    expect(close.header.e).toBe("protocol-error");
+    // No response frame ever made it out — the key vanished before the very first send.
+    expect(relay.frames.some((frame) => frame.header.t === "e2e.data" && frame.header.id === outerId)).toBe(false);
+  });
+
+  // Plan 2026-09-23, decision 4: the connector deflates a text-typed response body before sealing
+  // it, so a viewer opening the (uncompressed, per `inboundHeaders`'s forced `identity`) internal
+  // origin's response over an e2e session gets it back smaller, never larger.
+  describe("response compression (plan decision 4)", () => {
+    test("a text/plain response is deflated, with content-length dropped rather than left stale", async () => {
+      const store = createRelayE2eSessionStore();
+      const keys = makeE2eKeys();
+      store.put(DEVICE_ID, keys, 60_000);
+      const created = startConnector({ e2eSessionStore: store });
+      await awaitConnectorReady(created);
+      const phone = fakePhone(keys);
+
+      const outerId = "outer-compress";
+      const s = "x";
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s,
+        id: outerId,
+        d: DEVICE_ID,
+      });
+      // The shared internal origin's catch-all answers any unmatched path with `text/plain`, body
+      // "ok" — see `startInternalOrigin`'s default handler.
+      const start = phone.sealToConnector(outerId, s, {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.start",
+        src: "viewer",
+        dst: "connector",
+        s: "inner-session",
+        id: "inner-compress",
+        m: "GET",
+        u: "/hello",
+        h: [],
+      });
+      relay.send(start.header, start.payload);
+      const end = phone.sealToConnector(outerId, s, {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.end",
+        src: "viewer",
+        dst: "connector",
+        s: "inner-session",
+        id: "inner-compress",
+      });
+      relay.send(end.header, end.payload);
+
+      const sealedStart = await relay.waitFor(
+        (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.response.start",
+      );
+      const openedStart = phone.open(sealedStart);
+      expect(openedStart.header.h).toContainEqual(["content-encoding", "deflate"]);
+      expect((openedStart.header.h ?? []).some(([name]) => name === "content-length")).toBe(false);
+
+      const sealedBody = await relay.waitFor(
+        (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.response.body",
+      );
+      const openedBody = phone.open(sealedBody);
+      expect(zlib.inflateRawSync(openedBody.payload as Buffer).toString("utf8")).toBe("ok");
+    });
+
+    test("an application/octet-stream response (e.g. an attachment) is never compressed", async () => {
+      const store = createRelayE2eSessionStore();
+      const keys = makeE2eKeys();
+      store.put(DEVICE_ID, keys, 60_000);
+      const created = startConnector({ e2eSessionStore: store });
+      await awaitConnectorReady(created);
+      const phone = fakePhone(keys);
+
+      const outerId = "outer-nocompress";
+      const s = "x";
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s,
+        id: outerId,
+        d: DEVICE_ID,
+      });
+      // `/echo` answers `application/octet-stream`, echoing the request body verbatim.
+      const start = phone.sealToConnector(outerId, s, {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.start",
+        src: "viewer",
+        dst: "connector",
+        s: "inner-session",
+        id: "inner-nocompress",
+        m: "POST",
+        u: "/echo",
+        h: [["content-type", "application/octet-stream"]],
+      });
+      relay.send(start.header, start.payload);
+      const body = phone.sealToConnector(
+        outerId,
+        s,
+        {
+          v: RELAY_PROTOCOL_VERSION,
+          t: "http.request.body",
+          src: "viewer",
+          dst: "connector",
+          s: "inner-session",
+          id: "inner-nocompress",
+          q: 0,
+        },
+        Buffer.from("binary-payload"),
+      );
+      relay.send(body.header, body.payload);
+      const end = phone.sealToConnector(outerId, s, {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.end",
+        src: "viewer",
+        dst: "connector",
+        s: "inner-session",
+        id: "inner-nocompress",
+      });
+      relay.send(end.header, end.payload);
+
+      const sealedStart = await relay.waitFor(
+        (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.response.start",
+      );
+      const openedStart = phone.open(sealedStart);
+      expect((openedStart.header.h ?? []).some(([name]) => name === "content-encoding")).toBe(false);
+
+      const sealedBody = await relay.waitFor(
+        (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.response.body",
+      );
+      const openedBody = phone.open(sealedBody);
+      expect((openedBody.payload as Buffer).toString("utf8")).toBe("binary-payload");
+    });
   });
 });

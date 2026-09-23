@@ -1935,7 +1935,12 @@ async function handleMobileAttachmentRequest(
           Number(payload.size),
           String(payload.sha256 ?? ""),
           owner,
-          String(payload.idempotencyKey ?? ""),
+          // `idempotencyKey` is genuinely OPTIONAL (mobileAttachmentOperationSchema), and
+          // `attachments.begin` treats "a key was provided" and "no key was provided" as two
+          // different, both-valid states — coercing an absent key to "" collapsed them: `beginUnlocked`
+          // refuses an EMPTY key ("Invalid idempotency key") to catch a caller that sent a blank
+          // string on purpose, and that refusal fired on every begin that simply omitted the field.
+          payload.idempotencyKey === undefined ? undefined : String(payload.idempotencyKey),
         );
         break;
       case "attachment.chunk":

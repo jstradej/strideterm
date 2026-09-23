@@ -37,8 +37,15 @@ outside the app and not listed here.
 
 - **Firebase channel** (notifications, commands): end-to-end encrypted between the desktop and the
   paired phone (X25519 + AES-256-GCM). Google only sees ciphertext.
-- **Managed relay:** encrypted in transit only (TLS to the Cloudflare Worker). The relay can read the
-  terminal / WebView traffic while it is in flight.
+- **Managed relay:** end to end, between a desktop and app that both support it — TLS to the
+  Cloudflare Worker either way, but the session key never travels over that TLS hop at all: it is
+  agreed over the already end-to-end-encrypted Firebase channel above, and every HTTP/WebSocket
+  frame between the WebView and this desktop is sealed under it (AES-256-GCM). The relay Worker
+  sees only routing metadata — session/stream ids, frame order, ciphertext length for flow control
+  and budget — never plaintext, and has no code path that could decrypt one. Falls back to
+  encrypted-in-transit-only (TLS to the Worker; the relay can read the terminal/WebView traffic
+  while it is in flight) whenever either end has not adopted the key exchange — see
+  `docs/architecture.md`'s managed-relay section for the compatibility table.
 - **Network access on 43123:** not encrypted.
 
 ## TLS inspection

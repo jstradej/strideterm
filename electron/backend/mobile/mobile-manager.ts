@@ -178,6 +178,7 @@ export interface MobileQuotaSnapshot {
 
 export interface MobileManagerDeps {
   getProfileIds?: () => string[];
+  getCatalogSignature?: (allowedProfileIds: string[]) => string;
   transport: MobileFirebaseTransport;
   pairing: MobilePairing;
   deviceStore: MobileDeviceStore;
@@ -270,6 +271,7 @@ export class MobileManager extends EventEmitter {
   private lifecycleGeneration = 0;
 
   private getProfileIds?: () => string[];
+  private getCatalogSignature?: (allowedProfileIds: string[]) => string;
   private profileSync: Promise<void> | null = null;
   private profileSyncRequested = false;
   private profileSyncRetryAt = 0;
@@ -279,6 +281,7 @@ export class MobileManager extends EventEmitter {
     super();
     this.transport = deps.transport;
     this.getProfileIds = deps.getProfileIds;
+    this.getCatalogSignature = deps.getCatalogSignature;
     this.pairing = deps.pairing;
     this.deviceStore = deps.deviceStore;
     this.auditLogStore = deps.auditLogStore;
@@ -885,13 +888,18 @@ export class MobileManager extends EventEmitter {
           }
           const device = this.deviceStore.getDevice(original.deviceId);
           if (!device || device.revoked || device.state !== "active") continue;
-          const signature = JSON.stringify([device.capabilities, device.profileAllowlist]);
+          const signature = JSON.stringify([
+            device.capabilities,
+            device.profileAllowlist,
+            this.getCatalogSignature?.(device.profileAllowlist),
+          ]);
           if (this.syncedAccess.get(device.deviceId) === signature) continue;
           await this.transport.updateDeviceAccess(
             this.ownDeviceId,
             device.deviceId,
             device.capabilities,
             device.profileAllowlist,
+            ...(this.getCatalogSignature ? [randomUUID()] : []),
           );
           this.syncedAccess.set(device.deviceId, signature);
         }

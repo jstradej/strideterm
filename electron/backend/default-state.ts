@@ -1258,6 +1258,31 @@ export function normalizeState(
           : typeof device?.verifiedAt === "number"
             ? device.verifiedAt
             : null,
+      pendingCloudRevoke: normalizeMobilePendingCloudRevoke(device?.pendingCloudRevoke),
+    };
+  }
+
+  /**
+   * Backfills/validates the outbox entry for a cloud revocation this desktop still owes.
+   *
+   * Dropped here silently used to mean dropped forever: `normalizeState()` runs after every
+   * `store.mutate()` (including the one `markCloudRevokePending` just wrote), and rebuilding a device
+   * record without copying this field made `MobileManager.flushCloudRevoke` read back `pending:
+   * undefined` on the very same tick it was set — so the desktop's own revocation never reached the
+   * Cloud Function and a revoked device kept getting fresh relay grants.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
+  function normalizeMobilePendingCloudRevoke(raw: any): MobileDeviceRecord["pendingCloudRevoke"] {
+    if (!raw || typeof raw !== "object") return undefined;
+    if (raw.kind !== "revoke" && raw.kind !== "reject") return undefined;
+    if (typeof raw.requestedAt !== "number") return undefined;
+    return {
+      kind: raw.kind,
+      ...(typeof raw.reason === "string" ? { reason: raw.reason } : {}),
+      requestedAt: raw.requestedAt,
+      attempts: Number.isInteger(raw.attempts) && raw.attempts >= 0 ? raw.attempts : 0,
+      ...(typeof raw.lastAttemptAt === "number" ? { lastAttemptAt: raw.lastAttemptAt } : {}),
+      ...(typeof raw.lastErrorCode === "string" ? { lastErrorCode: raw.lastErrorCode } : {}),
     };
   }
 

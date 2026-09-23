@@ -174,6 +174,7 @@ export interface MobileFirebaseTransport {
     deviceId: string,
     capabilities: Device["capabilities"],
     profileAllowlist: string[],
+    catalogRevision?: string,
   ): Promise<void>;
 
   /** Calls the revokeDevice Cloud Function. */
@@ -371,8 +372,12 @@ export function createInMemoryMobileFirebaseTransport(
       applyRemoteState(pairId, deviceId, { state: "keyProven", keyProvenAt: now() });
     },
 
-    async updateDeviceAccess(pairId, deviceId, capabilities, profileAllowlist) {
-      applyRemoteState(pairId, deviceId, { capabilities, profileAllowlist });
+    async updateDeviceAccess(pairId, deviceId, capabilities, profileAllowlist, catalogRevision) {
+      applyRemoteState(pairId, deviceId, {
+        capabilities,
+        profileAllowlist,
+        ...(catalogRevision ? { catalogRevision } : {}),
+      });
     },
 
     async approvePairing(pairId, deviceId, pairingId, transcriptHash) {

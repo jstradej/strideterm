@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   consumeEventStream,
   createMobileFirebaseRestClient,
@@ -534,6 +534,60 @@ describe("RTDB stream lifecycle", () => {
     expect(streamTokens).toEqual(["id-expired", "id-refreshed"]);
     expect(refreshCalls).toBe(1);
   });
+
+  test("reconnects with a fresh authParams() call after the stream goes idle for 90s", async () => {
+    vi.useFakeTimers();
+    try {
+      const credentialStore = makeCredentialStore();
+      const encoder = new TextEncoder();
+      let streamRequests = 0;
+
+      const deadStream = new ReadableStream<Uint8Array>({
+        start() {
+          // Never enqueues, never closes: a connection that silently died in the network rather
+          // than one Firebase ended cleanly.
+        },
+      });
+      const liveStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('event: put\ndata: {"path":"/after-idle","data":{"ok":true}}\n\n'));
+        },
+      });
+
+      const fetchImpl: FetchLike = async (input) => {
+        if (input.includes("accounts:signUp")) {
+          return json({ idToken: "id-1", refreshToken: "refresh-1", localId: "uid-1", expiresIn: "3600" });
+        }
+        streamRequests += 1;
+        return new Response(streamRequests === 1 ? deadStream : liveStream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      };
+
+      const client = createMobileFirebaseRestClient({
+        config: CONFIG,
+        credentialStore,
+        refreshTokenRef: REFRESH_REF,
+        fetchImpl,
+      });
+
+      const delivered = new Promise<void>((resolve) => {
+        client.stream("v2/pairs/pair-1/commands", {
+          onEvent: (event) => {
+            if (event.path === "/after-idle") resolve();
+          },
+        });
+      });
+
+      // 90s idle timeout, then the fixed 500ms reconnect backoff before the second request.
+      await vi.advanceTimersByTimeAsync(90_000 + 500);
+      await delivered;
+      expect(streamRequests).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("server clock", () => {
@@ -792,5 +846,55 @@ describe("server-sent event framing", () => {
   test("a deletion arrives as a put with null data", async () => {
     const { events } = await collect(['event: put\ndata: {"path":"/c1","data":null}\n\n']);
     expect(events).toEqual([{ type: "put", path: "/c1", data: null }]);
+  });
+
+  test("declares the stream idle after 90s with no frame at all, not just no data frame", async () => {
+    vi.useFakeTimers();
+    try {
+      // Enqueues once, then never again and never closes — a silently dropped connection (NAT,
+      // proxy, sleeping network adapter) looks exactly like this: `reader.read()` simply never
+      // resolves again on its own.
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('event: put\ndata: {"path":"/","data":1}\n\n'));
+        },
+      });
+      const events: RtdbStreamEvent[] = [];
+      const result = consumeEventStream(stream, { onEvent: (e) => events.push(e) }, () => false);
+      await vi.advanceTimersByTimeAsync(90_000);
+      await expect(result).resolves.toBe("idle");
+      expect(events).toEqual([{ type: "put", path: "/", data: 1 }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a steady stream of keep-alives never trips the idle watchdog", async () => {
+    vi.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          let ticks = 0;
+          const emit = (): void => {
+            ticks += 1;
+            controller.enqueue(encoder.encode("event: keep-alive\ndata: null\n\n"));
+            if (ticks >= 5) {
+              controller.close();
+              return;
+            }
+            setTimeout(emit, 30_000);
+          };
+          setTimeout(emit, 30_000);
+        },
+      });
+      const result = consumeEventStream(stream, { onEvent: () => {} }, () => false);
+      // 5 * 30s = 150s of total elapsed time, comfortably past the 90s idle window — but every
+      // keep-alive arrives well inside it, so the watchdog must never fire.
+      await vi.advanceTimersByTimeAsync(5 * 30_000 + 1_000);
+      await expect(result).resolves.toBe("ended");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

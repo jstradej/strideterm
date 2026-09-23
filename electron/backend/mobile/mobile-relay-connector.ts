@@ -23,6 +23,7 @@
  */
 import http from "node:http";
 import { randomBytes } from "node:crypto";
+import zlib from "node:zlib";
 import type { IncomingMessage } from "node:http";
 import { WebSocket } from "ws";
 
@@ -37,6 +38,7 @@ import {
   RELAY_FLOW_CREDIT_BYTES,
   RELAY_GRANT_DEFINITIVE_REFUSAL_RETRY_DELAY_MS,
   RELAY_HTTP_REQUEST_TIMEOUT_MS,
+  RELAY_MAX_HTTP_REQUEST_BODY_BYTES,
   RELAY_MAX_HTTP_RESPONSE_BODY_BYTES,
   RELAY_MAX_WS_MESSAGE_BYTES,
   RELAY_PROTOCOL_VERSION,
@@ -51,11 +53,41 @@ import {
 } from "./mobile-relay-protocol.js";
 import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 import type { RelayInstallationIdentity } from "./mobile-relay-identity.js";
+import {
+  RELAY_E2E_NONCE_BYTES,
+  openRelayE2eFrame,
+  relayE2eCounterOf,
+  sealRelayE2eFrame,
+  type RelayE2eKeys,
+} from "./mobile-crypto.js";
+import type { RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
 
 const log = getLogger("mobile-relay-connector");
 
 /** The largest slice of a body this connector puts in one frame. */
 const BODY_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * Whether an HTTP response's body is worth deflating before it crosses the e2e boundary (plan
+ * 2026-09-23, decision 4): text content the browser will otherwise receive uncompressed, since the
+ * request into this connector's own internal origin already asks for `identity` (`inboundHeaders`)
+ * and nothing upstream of it compresses on the connector's behalf. Never a `Content-Encoding` this
+ * response already carries — this connector does not re-encode an encoding it does not understand,
+ * and one should not exist here anyway, since the request that produced it asked for `identity`.
+ */
+function isCompressibleResponse(response: IncomingMessage): boolean {
+  if (response.headers["content-encoding"]) return false;
+  const contentType = response.headers["content-type"];
+  const essence = (Array.isArray(contentType) ? contentType[0] : contentType)?.split(";")[0]?.trim().toLowerCase();
+  if (!essence) return false;
+  if (essence.startsWith("text/")) return true;
+  return (
+    essence === "application/javascript" ||
+    essence === "application/json" ||
+    essence === "image/svg+xml" ||
+    essence.endsWith("+json")
+  );
+}
 
 /**
  * Request headers the connector never forwards inward.
@@ -166,6 +198,13 @@ export interface RelayConnectorOptions {
   syncTimeoutMs?: number;
   /** Injectable purely so tests can observe the socket; production always builds a real one. */
   createSocket?: (url: string, protocols: string[]) => WebSocket;
+  /**
+   * Where the derived relay end-to-end encryption keys live, keyed by `mobileDeviceId` (plan
+   * 2026-09-23, decisions 1/2). Absent on an older build with no e2e support wired at all — every
+   * `e2e.*` frame is then refused (`e2e.open` gets `unauthorized`), never treated as a reason to fall
+   * back to plaintext for a stream that was never plaintext to begin with.
+   */
+  e2eSessionStore?: RelayE2eSessionStore;
 }
 
 interface HttpStream {
@@ -181,8 +220,24 @@ interface HttpStream {
   inSeq: number;
   response: IncomingMessage | null;
   bytesOut: number;
+  /**
+   * Cumulative request-body bytes accepted so far. The plaintext path is already bounded by the
+   * Worker before a byte reaches this connector; an e2e-wrapped one is not — the Worker cannot see
+   * an inner frame at all (plan 2026-09-23, §P3 acceptance) — so this is the ONLY enforcement of
+   * `RELAY_MAX_HTTP_REQUEST_BODY_BYTES` for that path, and it costs the plaintext path nothing to
+   * share it.
+   */
+  bytesIn: number;
   ended: boolean;
   timer: NodeJS.Timeout | null;
+  /**
+   * Non-null while this response's body is being accumulated for deflate (plan 2026-09-23,
+   * decision 4) rather than relayed as it arrives — set once, at `http.response.start` time, for an
+   * e2e-wrapped stream whose response is text-typed and carries no `Content-Encoding` of its own.
+   * Null for every other stream: the ordinary flow-controlled pass-through this connector already
+   * did before decision 4 existed, byte for byte.
+   */
+  pendingRawChunks: Buffer[] | null;
 }
 
 interface WsStream {
@@ -257,6 +312,329 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
 
   const httpStreams = new Map<string, HttpStream>();
   const wsStreams = new Map<string, WsStream>();
+
+  // ---------------------------------------------------------------------------
+  // Relay end-to-end encryption state (plan 2026-09-23, decisions 1/2). Every map here is emptied on
+  // reconnect (`onDisconnected`) EXCEPT `e2eDeviceSessions` — the derived key is tied to the ticket's
+  // own TTL (`mobile-relay-e2e-session-store.ts`), not to this socket, and its counters must keep
+  // advancing across a reconnect rather than resetting, or the same key could seal two different
+  // frames under the same nonce.
+  // ---------------------------------------------------------------------------
+
+  interface E2eDeviceSession {
+    keys: RelayE2eKeys;
+    /** Next counter this connector will use to seal a desktop→phone frame under `keys`. */
+    outCounter: bigint;
+    /** Highest counter accepted from the phone under `keys` so far; starts at -1 (none yet). */
+    inCounter: bigint;
+  }
+  const e2eDeviceSessions = new Map<string, E2eDeviceSession>();
+  /** The outer e2e stream id → the device it was opened for (from `e2e.open`'s relay-stamped `d`). */
+  const e2eOuterDeviceId = new Map<string, string>();
+  /** The outer e2e stream id → the INNER frame id it carries, learned from the first `e2e.data`. */
+  const e2eOuterToInner = new Map<string, string>();
+  const e2eExhaustedDevices = new Set<string>();
+  /** The inner frame id → its outer wrapping, so `send()` can intercept and re-wrap a plain reply. */
+  const e2eInnerToOuter = new Map<string, { deviceId: string; outerId: string }>();
+  /** Per-outer-stream outgoing sequence for `e2e.data`'s `q` — bookkeeping only; the Worker does not
+   *  enforce ordering on it (the AEAD nonce counter is what actually protects the channel). */
+  const e2eOuterSeq = new Map<string, number>();
+
+  /**
+   * The device's current derived-key session, or null if none is on offer (an unpaired build, an
+   * expired ticket, or a device this connector has never derived a key for). The counters here are
+   * reset to zero ONLY when the underlying `RelayE2eKeys` object changes identity — `put()` in
+   * `mobile-relay-e2e-session-store.ts` replaces the whole entry on a fresh `remote.webSession.issue`,
+   * so a new object reference IS a new key, and only a new key may start its nonce counter over.
+   */
+  function e2eSessionFor(deviceId: string): E2eDeviceSession | null {
+    const keys = options.e2eSessionStore?.get(deviceId) ?? null;
+    if (!keys) {
+      e2eDeviceSessions.delete(deviceId);
+      return null;
+    }
+    const existing = e2eDeviceSessions.get(deviceId);
+    if (existing && existing.keys === keys) {
+      return e2eExhaustedDevices.has(deviceId) ? null : existing;
+    }
+    e2eExhaustedDevices.delete(deviceId);
+    const fresh: E2eDeviceSession = { keys, outCounter: 0n, inCounter: -1n };
+    e2eDeviceSessions.set(deviceId, fresh);
+    return fresh;
+  }
+
+  function nextE2eOuterSeq(outerId: string): number {
+    const next = e2eOuterSeq.get(outerId) ?? 0;
+    e2eOuterSeq.set(outerId, next + 1);
+    return next;
+  }
+
+  /** Ends one multiplexed e2e stream: forgets its wiring and, if an inner stream ever existed, ends it. */
+  function endE2eOuterStream(outerId: string, reason: RelayReason): void {
+    const innerId = e2eOuterToInner.get(outerId);
+    e2eOuterToInner.delete(outerId);
+    e2eOuterDeviceId.delete(outerId);
+    e2eOuterSeq.delete(outerId);
+    if (innerId) {
+      e2eInnerToOuter.delete(innerId);
+      endHttpStream(innerId, reason);
+      endWsStream(innerId, 1011, reason);
+    }
+  }
+
+  /**
+   * Same local cleanup as {@link endE2eOuterStream}, PLUS an outer `e2e.close` sent to the relay —
+   * the two are separate functions because `endE2eBadFrame` (a frame that failed to authenticate)
+   * has no key it could seal a WRAPPED reply under either, so it already sends its own unwrapped
+   * `e2e.close` before calling the local-only cleanup. This is the sibling for the OTHER place a
+   * stream can die from this side: `sendE2eWrapped` failing to deliver an outgoing frame at all.
+   */
+  function endE2eOuterStreamAndNotify(outerId: string, reason: RelayReason): void {
+    send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.close",
+      src: "connector",
+      dst: "viewer",
+      s: sessionId,
+      id: outerId,
+      e: reason,
+    });
+    endE2eOuterStream(outerId, reason);
+  }
+
+  /**
+   * A frame that failed to authenticate, decode, or arrived out of order under its key.
+   *
+   * NEVER A PLAINTEXT FALLBACK (plan §P3 acceptance) — the only two things this does are tell the
+   * phone the stream is over and end whatever inner stream it had reached. Nothing here inspects
+   * `payload` as anything other than opaque bytes that failed to open.
+   */
+  function endE2eBadFrame(outerId: string, code: "protocol-error" | "unauthorized" = "protocol-error"): void {
+    stats.lastError = "relay-e2e-auth-failed";
+    log.warn("relay e2e frame refused", { code: "relay-e2e-auth-failed" });
+    send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.close",
+      src: "connector",
+      dst: "viewer",
+      s: sessionId,
+      id: outerId,
+      e: code,
+    });
+    endE2eOuterStream(outerId, code);
+  }
+
+  function onE2eOpen(header: RelayFrameHeader): void {
+    const outerId = header.id as string;
+    const deviceId = header.d as string | undefined;
+    if (!deviceId || !e2eSessionFor(deviceId)) {
+      endE2eBadFrame(outerId, "unauthorized");
+      return;
+    }
+    if (e2eOuterDeviceId.has(outerId)) {
+      // A repeated `e2e.open` on the same outer id is either a bug or a replay; both are refused.
+      endE2eBadFrame(outerId, "protocol-error");
+      return;
+    }
+    e2eOuterDeviceId.set(outerId, deviceId);
+  }
+
+  function onE2eData(header: RelayFrameHeader, payload: Buffer): void {
+    const outerId = header.id as string;
+    const deviceId = e2eOuterDeviceId.get(outerId);
+    if (!deviceId) {
+      endE2eBadFrame(outerId, "protocol-error");
+      return;
+    }
+    const session = e2eSessionFor(deviceId);
+    if (!session) {
+      endE2eBadFrame(outerId, "unauthorized");
+      return;
+    }
+    if (payload.length < RELAY_E2E_NONCE_BYTES) {
+      endE2eBadFrame(outerId);
+      return;
+    }
+    let counter: bigint;
+    try {
+      counter = relayE2eCounterOf(payload.subarray(0, RELAY_E2E_NONCE_BYTES));
+    } catch {
+      endE2eBadFrame(outerId);
+      return;
+    }
+    // Replay/reordering under this key is refused BEFORE decryption is even attempted — a repeated
+    // or reordered counter is refused whether or not the ciphertext happens to still authenticate.
+    if (counter <= session.inCounter) {
+      endE2eBadFrame(outerId);
+      return;
+    }
+    // AAD = the canonical outer header bytes, exactly as received — never reconstructed, so this
+    // reproduces precisely what the sender authenticated (plan decision 2; see
+    // `relay/worker`'s own note on why the relay must never rewrite `s`/`id` on this frame).
+    const aad = Buffer.from(JSON.stringify(header), "utf8");
+    let innerBytes: Buffer;
+    try {
+      innerBytes = openRelayE2eFrame(payload, session.keys.phoneToDesktop, aad);
+    } catch {
+      // A bad AEAD tag ends the stream. Never a plaintext fallback.
+      endE2eBadFrame(outerId);
+      return;
+    }
+    session.inCounter = counter;
+
+    let innerFrame: { header: RelayFrameHeader; payload: Buffer };
+    try {
+      const decoded = decodeRelayFrame(innerBytes);
+      innerFrame = { header: decoded.header, payload: Buffer.from(decoded.payload) };
+    } catch {
+      endE2eBadFrame(outerId);
+      return;
+    }
+
+    const innerId = innerFrame.header.id;
+    if (innerId) {
+      const knownInnerId = e2eOuterToInner.get(outerId);
+      if (!knownInnerId) {
+        e2eOuterToInner.set(outerId, innerId);
+        e2eInnerToOuter.set(innerId, { deviceId, outerId });
+      } else if (knownInnerId !== innerId) {
+        // A stream may not change which inner id it multiplexes mid-flight.
+        endE2eBadFrame(outerId);
+        return;
+      }
+    }
+    // Credit the opaque ciphertext only after the inner frame has been accepted. HTTP request
+    // bodies can remain in Node's writable buffer, so wait for its write callback before returning
+    // that part of the relay's bounded per-stream window.
+    const ingressSocket = socket;
+    const ingressHttpStream = innerFrame.header.t === "http.request.body" ? httpStreams.get(innerId as string) : null;
+    if (innerFrame.header.t === "http.request.body" && !ingressHttpStream) {
+      endE2eOuterStreamAndNotify(outerId, "protocol-error");
+      return;
+    }
+    const creditIngress = (): void => {
+      if (
+        e2eOuterDeviceId.get(outerId) !== deviceId ||
+        (ingressHttpStream && httpStreams.get(innerId as string) !== ingressHttpStream) ||
+        socket !== ingressSocket ||
+        !socket ||
+        socket.readyState !== WebSocket.OPEN
+      )
+        return;
+      try {
+        socket.send(
+          encodeRelayFrame({
+            v: RELAY_PROTOCOL_VERSION,
+            t: "flow.credit",
+            src: "connector",
+            dst: "viewer",
+            s: sessionId,
+            id: outerId,
+            w: payload.length,
+          }),
+        );
+      } catch {
+        endE2eOuterStreamAndNotify(outerId, "protocol-error");
+      }
+    };
+    if (innerFrame.header.t === "http.request.body") {
+      writeHttpBody(innerFrame.header, innerFrame.payload, creditIngress);
+    } else {
+      dispatchViewerFrame(innerFrame.header, innerFrame.payload);
+      creditIngress();
+    }
+  }
+
+  function onE2eClose(header: RelayFrameHeader): void {
+    endE2eOuterStream(header.id as string, header.e ?? "normal");
+  }
+
+  /**
+   * Wraps [header]/[payload] — an otherwise-plaintext viewer-bound frame `send()` is about to emit
+   * for an e2e-multiplexed inner stream — as `e2e.data`, sealed under the owning device's current
+   * key. Called from `send()` alone, so every existing caller (the HTTP and WS bridges, `flow.credit`,
+   * `http.cancel`, …) is wrapped identically without having to know it is happening.
+   */
+  function sendE2eWrapped(
+    wrapping: { deviceId: string; outerId: string },
+    header: RelayFrameHeader,
+    payload?: Buffer,
+  ): boolean {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    const session = e2eSessionFor(wrapping.deviceId);
+    if (!session) {
+      stats.lastError = "relay-e2e-key-missing";
+      // The caller (`send()`) is used from many sites (`flushHttpQueue`, `flushWsQueue`, …) that do
+      // not all check its boolean result — most existing ones never had a reason to, since plaintext
+      // `send()` only ever failed when the whole socket was down. A vanished key is a NEW failure
+      // mode with no such excuse to leave silent: without ending the local stream here, a browser
+      // request could sit unanswered until its own timeout instead of failing promptly.
+      endE2eOuterStreamAndNotify(wrapping.outerId, "protocol-error");
+      return false;
+    }
+    if (header.t === "flow.credit") {
+      // Flow control is outer transport metadata. The relay must see credits so it can replenish
+      // the ciphertext window without learning or parsing the encrypted inner frame.
+      try {
+        socket.send(
+          encodeRelayFrame({
+            v: RELAY_PROTOCOL_VERSION,
+            t: "flow.credit",
+            src: "connector",
+            dst: "viewer",
+            s: sessionId,
+            id: wrapping.outerId,
+            w: header.w ?? 0,
+          }),
+        );
+        return true;
+      } catch {
+        endE2eOuterStreamAndNotify(wrapping.outerId, "protocol-error");
+        return false;
+      }
+    }
+    if (session.outCounter >= 1n << 64n) {
+      e2eExhaustedDevices.add(wrapping.deviceId);
+      for (const [outerId, deviceId] of e2eOuterDeviceId) {
+        if (deviceId === wrapping.deviceId) endE2eOuterStreamAndNotify(outerId, "protocol-error");
+      }
+      return false;
+    }
+    const innerHeader: RelayFrameHeader = { ...header, ...(header.s === undefined ? {} : { s: sessionId }) };
+    let innerBytes: Buffer;
+    try {
+      innerBytes = Buffer.from(encodeRelayFrame(innerHeader, payload));
+    } catch (error) {
+      stats.lastError = error instanceof RelayFrameError ? error.code : "encode-failed";
+      endE2eOuterStreamAndNotify(wrapping.outerId, "protocol-error");
+      return false;
+    }
+    const counter = session.outCounter;
+    session.outCounter += 1n;
+    const outerHeader: RelayFrameHeader = {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.data",
+      src: "connector",
+      dst: "viewer",
+      s: sessionId,
+      id: wrapping.outerId,
+      q: nextE2eOuterSeq(wrapping.outerId),
+    };
+    const aad = Buffer.from(JSON.stringify(outerHeader), "utf8");
+    const sealed = sealRelayE2eFrame(innerBytes, session.keys.desktopToPhone, counter, aad);
+    try {
+      socket.send(encodeRelayFrame(outerHeader, sealed));
+      return true;
+    } catch (error) {
+      stats.lastError = error instanceof RelayFrameError ? error.code : "send-failed";
+      // The socket itself is what just failed to send, so a follow-up e2e.close attempt below is a
+      // best-effort courtesy, not something to depend on — the local cleanup half of
+      // `endE2eOuterStreamAndNotify` is what actually matters here, and always runs regardless.
+      endE2eOuterStreamAndNotify(wrapping.outerId, "protocol-error");
+      return false;
+    }
+  }
+
   const stats = {
     connects: 0,
     httpStreams: 0,
@@ -278,6 +656,11 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
 
   function send(header: RelayFrameHeader, payload?: Buffer): boolean {
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    // Every viewer-bound frame this connector ever sends passes through here — the ONE place that
+    // needs to know whether `header.id` names an e2e-multiplexed inner stream, rather than every call
+    // site (the HTTP and WS bridges, `flow.credit`, `http.cancel`, …) having to know it separately.
+    const wrapping = typeof header.id === "string" ? e2eInnerToOuter.get(header.id) : undefined;
+    if (wrapping) return sendE2eWrapped(wrapping, header, payload);
     try {
       // `s` is rewritten to the session this socket actually holds when the caller asked for one, and
       // left absent when it did not — which is what lets the sync phase, where no session exists yet,
@@ -382,6 +765,14 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     // what keeps a reconnect from resuming into half-open local requests and orphaned PTY sockets.
     for (const streamId of [...httpStreams.keys()]) endHttpStream(streamId, "connector-gone");
     for (const streamId of [...wsStreams.keys()]) endWsStream(streamId, 1012, "connector-gone");
+    // The e2e routing maps are scoped to THIS socket's outer stream ids, which mean nothing to a
+    // reconnect's fresh session — but NOT `e2eDeviceSessions`: the derived key and its nonce counters
+    // are tied to the ticket's own TTL, not to this socket, and must keep advancing rather than
+    // resetting (a reset would let the same key seal two different frames under the same nonce).
+    e2eOuterDeviceId.clear();
+    e2eOuterToInner.clear();
+    e2eInnerToOuter.clear();
+    e2eOuterSeq.clear();
     if (stopped) {
       setState("closed");
       return;
@@ -555,6 +946,48 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       case "conn.close":
         closeSocket(1000, header.e ?? "normal");
         return;
+      case "e2e.open":
+        onE2eOpen(header);
+        return;
+      case "e2e.data":
+        onE2eData(header, payload);
+        return;
+      case "e2e.close":
+        onE2eClose(header);
+        return;
+      case "flow.credit": {
+        const innerId = e2eOuterToInner.get(header.id ?? "");
+        if (innerId) creditStream(innerId, header.w ?? 0);
+        return;
+      }
+      case "http.request.start":
+      case "http.request.body":
+      case "http.request.end":
+      case "http.cancel":
+      case "ws.open":
+      case "ws.data":
+      case "ws.close":
+      case "ws.error":
+      case "flow.overflow":
+      case "flow.timeout":
+        dispatchViewerFrame(header, payload);
+        return;
+      default:
+        // A connector→relay frame arriving FROM the relay is a protocol violation, not noise.
+        stats.lastError = "unexpected-frame";
+        closeSocket(1002, "protocol-error");
+    }
+  }
+
+  /**
+   * The viewer-bound/viewer-originated frame types, dispatched identically whether [header] arrived
+   * plaintext on the connector's own socket or was just recovered by `onE2eData` from an `e2e.data`
+   * payload (plan §P3 acceptance: "dispatch the recovered inner frame through the SAME onFrame switch
+   * that handles plaintext frames today"). Nothing here can tell which path a call came from, which
+   * is the point — the inner frame format is unchanged by wrapping (plan decision 2).
+   */
+  function dispatchViewerFrame(header: RelayFrameHeader, payload: Buffer): void {
+    switch (header.t) {
       case "http.request.start":
         startHttpStream(header);
         return;
@@ -588,9 +1021,12 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
         endWsStream(header.id as string, 1011, header.e ?? "protocol-error");
         return;
       default:
-        // A connector→relay frame arriving FROM the relay is a protocol violation, not noise.
-        stats.lastError = "unexpected-frame";
-        closeSocket(1002, "protocol-error");
+        // An inner frame of any other type is a peer bug, not an attack (the AEAD tag already
+        // authenticated it when it arrived via `onE2eData`) — logged, and otherwise ignored, rather
+        // than escalated into closing the whole connector socket the way an outer protocol violation
+        // in `onFrame` does.
+        stats.lastError = "unexpected-inner-frame";
+        log.warn("unexpected inner frame type", { code: "unexpected-inner-frame" });
     }
   }
 
@@ -625,8 +1061,10 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       inSeq: -1,
       response: null,
       bytesOut: 0,
+      bytesIn: 0,
       ended: false,
       timer: null,
+      pendingRawChunks: null,
     };
     httpStreams.set(streamId, stream);
     stats.httpStreams += 1;
@@ -640,25 +1078,70 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
         clearTimeout(stream.timer);
         stream.timer = null;
       }
-      send({
-        v: RELAY_PROTOCOL_VERSION,
-        t: "http.response.start",
-        src: "connector",
-        dst: "viewer",
-        s: sessionId,
-        id: streamId,
-        c: response.statusCode ?? 502,
-        h: outboundHeaders(response),
-      });
+      // Compression only ever applies to an e2e-wrapped stream: the plaintext path is relayed to a
+      // Worker that would otherwise have to preserve `Content-Encoding` byte-perfectly across two
+      // hops for no gain on a loopback hop (see `inboundHeaders`), and this connector has no way to
+      // ask the phone-side proxy to inflate on a build that predates decision 4.
+      const compress = e2eInnerToOuter.has(streamId) && isCompressibleResponse(response);
+      if (compress) stream.pendingRawChunks = [];
+      const headers = outboundHeaders(response);
+      if (compress) {
+        // The compressed length is not known until the whole body has arrived (deflated as one
+        // block below); a stale `Content-Length` would corrupt how the phone-side proxy — and, past
+        // it, the WebView — parses the body, so it is dropped rather than corrected. Its absence is
+        // exactly what tells `http.HttpServer` on the proxy's side to chunk the response instead.
+        const withoutLength = headers.filter(([name]) => name !== "content-length");
+        withoutLength.push(["content-encoding", "deflate"]);
+        send({
+          v: RELAY_PROTOCOL_VERSION,
+          t: "http.response.start",
+          src: "connector",
+          dst: "viewer",
+          s: sessionId,
+          id: streamId,
+          c: response.statusCode ?? 502,
+          h: withoutLength,
+        });
+      } else {
+        send({
+          v: RELAY_PROTOCOL_VERSION,
+          t: "http.response.start",
+          src: "connector",
+          dst: "viewer",
+          s: sessionId,
+          id: streamId,
+          c: response.statusCode ?? 502,
+          h: headers,
+        });
+      }
       response.on("data", (chunk: Buffer) => {
         stream.bytesOut += chunk.length;
         if (stream.bytesOut > RELAY_MAX_HTTP_RESPONSE_BODY_BYTES) {
           failStream(streamId, "too-large");
           return;
         }
+        if (stream.pendingRawChunks) {
+          stream.pendingRawChunks.push(chunk);
+          return;
+        }
         for (const slice of sliceBody(chunk)) enqueueResponseBody(streamId, stream, slice);
       });
       response.on("end", () => {
+        if (stream.pendingRawChunks) {
+          const raw = stream.pendingRawChunks;
+          stream.pendingRawChunks = null;
+          let deflated: Buffer;
+          try {
+            deflated = zlib.deflateRawSync(Buffer.concat(raw));
+          } catch (error) {
+            // Already committed to `content-encoding: deflate` in the header frame sent above —
+            // there is no correct plaintext fallback left to send, only a clean failure.
+            stats.lastError = error instanceof Error ? error.message : "deflate-failed";
+            failStream(streamId, "protocol-error");
+            return;
+          }
+          for (const slice of sliceBody(deflated)) enqueueResponseBody(streamId, stream, slice);
+        }
         stream.ended = true;
         flushHttpQueue(streamId, stream);
       });
@@ -670,7 +1153,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     });
   }
 
-  function writeHttpBody(header: RelayFrameHeader, payload: Buffer): void {
+  function writeHttpBody(header: RelayFrameHeader, payload: Buffer, onConsumed?: () => void): void {
     const streamId = header.id as string;
     const stream = httpStreams.get(streamId);
     if (!stream) return;
@@ -680,8 +1163,22 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       return;
     }
     stream.inSeq = sequence;
+    stream.bytesIn += payload.length;
+    // The plaintext path is already bounded by the Worker before a byte reaches this connector; an
+    // e2e-wrapped one is not, since the Worker never sees the inner frame at all — this is that
+    // enforcement, over the INNER (decrypted) body (plan 2026-09-23, §P3 acceptance).
+    if (stream.bytesIn > RELAY_MAX_HTTP_REQUEST_BODY_BYTES) {
+      failStream(streamId, "too-large");
+      return;
+    }
     stats.bytesIn += payload.length;
-    stream.request.write(payload);
+    if (onConsumed) {
+      stream.request.write(payload, (error?: Error | null) => {
+        if (!error) onConsumed();
+      });
+    } else {
+      stream.request.write(payload);
+    }
   }
 
   function endHttpRequestBody(header: RelayFrameHeader): void {
@@ -903,15 +1400,16 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
         wsInbound.set(streamId, held);
         // Credit is still returned per fragment: the bytes are held by this connector, and the relay
         // needs its window back to send the rest of the same message.
-        send({
-          v: RELAY_PROTOCOL_VERSION,
-          t: "flow.credit",
-          src: "connector",
-          dst: "viewer",
-          s: sessionId,
-          id: streamId,
-          w: Math.max(1, payload.length),
-        });
+        if (!e2eInnerToOuter.has(streamId))
+          send({
+            v: RELAY_PROTOCOL_VERSION,
+            t: "flow.credit",
+            src: "connector",
+            dst: "viewer",
+            s: sessionId,
+            id: streamId,
+            w: Math.max(1, payload.length),
+          });
         return;
       }
       wsInbound.delete(streamId);
@@ -921,15 +1419,16 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       stream.socket.send(header.b ? payload : payload.toString("utf8"));
     }
     // Credit is returned only after the bytes reached the local socket.
-    send({
-      v: RELAY_PROTOCOL_VERSION,
-      t: "flow.credit",
-      src: "connector",
-      dst: "viewer",
-      s: sessionId,
-      id: streamId,
-      w: Math.max(1, payload.length),
-    });
+    if (!e2eInnerToOuter.has(streamId))
+      send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "flow.credit",
+        src: "connector",
+        dst: "viewer",
+        s: sessionId,
+        id: streamId,
+        w: Math.max(1, payload.length),
+      });
   }
 
   function enqueueWsData(streamId: string, stream: WsStream, data: Buffer, binary: boolean, final: boolean): void {

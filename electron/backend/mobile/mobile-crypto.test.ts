@@ -9,9 +9,16 @@ import {
   computePairingSas,
   decodeCanonicalKeyProofChallenge,
   decodeCanonicalPublicKey,
+  deriveRelayE2eKeys,
   deriveSessionKey,
   keyProofsEqual,
+  openRelayE2eFrame,
+  relayE2eCounterOf,
+  relayE2eInfo,
+  relayE2eNonce,
+  relayE2eSalt,
   routingAadMatches,
+  RELAY_E2E_NONCE_BYTES,
   exportPrivateKeyPem,
   exportRawPublicKey,
   generateX25519KeyPair,
@@ -20,8 +27,11 @@ import {
   openEnvelope,
   publicKeyFromRaw,
   sealEnvelope,
+  sealRelayE2eFrame,
   sealToCombinedBase64,
   x25519KeyPairFromSeed,
+  type RelayE2eDesktopOffer,
+  type RelayE2ePhoneAcceptance,
 } from "./mobile-crypto.js";
 
 describe("mobile-crypto round trip", () => {
@@ -558,5 +568,128 @@ describe("pairing transcript (shared fixtures with strideterm-mobile)", () => {
     // if either failed to move both values, key substitution would be invisible.
     expect(new Set(vectors.cases.map((c) => c.fingerprint)).size).toBe(vectors.cases.length);
     expect(new Set(vectors.cases.map((c) => c.sas)).size).toBe(vectors.cases.length);
+  });
+});
+
+describe("relay end-to-end encryption (shared fixtures with strideterm-mobile)", () => {
+  // mobile-relay-e2e-vectors.json is a committed copy of strideterm-mobile's
+  // protocol/test-vectors/relay-e2e.json (generated there from that repo's
+  // relay-e2e-crypto.ts, which this file's relay-e2e section hand-mirrors). `npm run
+  // check:mobile-schema-drift` fails if the copy diverges.
+  const vectors = JSON.parse(readFileSync(new URL("./mobile-relay-e2e-vectors.json", import.meta.url), "utf8")) as {
+    vectors: Array<{
+      description: string;
+      keyId: string;
+      pairId: string;
+      deviceId: string;
+      ticketId: string;
+      desktopEphemeralSeedHex: string;
+      phoneEphemeralSeedHex: string;
+      desktopPairingSeedHex: string;
+      phonePairingSeedHex: string;
+      desktopEphemeralPubBase64: string;
+      phoneEphemeralPubBase64: string;
+      saltHex: string;
+      infoUtf8: string;
+      expectedDesktopToPhoneKeyHex: string;
+      expectedPhoneToDesktopKeyHex: string;
+      outerHeader: Record<string, unknown>;
+      counter: number;
+      plaintextUtf8: string;
+      payloadHex: string;
+      mustFailToDecrypt?: boolean;
+    }>;
+  };
+
+  test("the fixture file has at least 3 valid cases plus 1 deliberately corrupted", () => {
+    expect(vectors.vectors.filter((v) => !v.mustFailToDecrypt).length).toBeGreaterThanOrEqual(3);
+    expect(vectors.vectors.some((v) => v.mustFailToDecrypt === true)).toBe(true);
+  });
+
+  for (const v of vectors.vectors) {
+    test(`matches the shared vector: ${v.description}`, () => {
+      const desktopEphemeral = x25519KeyPairFromSeed(Buffer.from(v.desktopEphemeralSeedHex, "hex"));
+      const phoneEphemeral = x25519KeyPairFromSeed(Buffer.from(v.phoneEphemeralSeedHex, "hex"));
+      const desktopPairing = x25519KeyPairFromSeed(Buffer.from(v.desktopPairingSeedHex, "hex"));
+      const phonePairing = x25519KeyPairFromSeed(Buffer.from(v.phonePairingSeedHex, "hex"));
+
+      expect(exportRawPublicKey(desktopEphemeral.publicKey).toString("base64")).toBe(v.desktopEphemeralPubBase64);
+      expect(exportRawPublicKey(phoneEphemeral.publicKey).toString("base64")).toBe(v.phoneEphemeralPubBase64);
+
+      const desktopOffer: RelayE2eDesktopOffer = {
+        v: 1,
+        keyId: v.keyId,
+        desktopEphemeralPub: v.desktopEphemeralPubBase64,
+      };
+      const phoneAcceptance: RelayE2ePhoneAcceptance = {
+        v: 1,
+        keyId: v.keyId,
+        phoneEphemeralPub: v.phoneEphemeralPubBase64,
+      };
+
+      const salt = relayE2eSalt(desktopOffer, phoneAcceptance);
+      expect(salt.toString("hex")).toBe(v.saltHex);
+      const info = relayE2eInfo(v.pairId, v.deviceId, v.ticketId);
+      expect(info.toString("utf8")).toBe(v.infoUtf8);
+
+      // Derived from the DESKTOP's own key material and the phone's raw public keys, exactly as
+      // the real connector would from a wire e2e block.
+      const keys = deriveRelayE2eKeys(
+        desktopEphemeral.privateKey,
+        publicKeyFromRaw(Buffer.from(v.phoneEphemeralPubBase64, "base64")),
+        desktopPairing.privateKey,
+        phonePairing.publicKey,
+        salt,
+        info,
+      );
+      expect(keys.desktopToPhone.toString("hex")).toBe(v.expectedDesktopToPhoneKeyHex);
+      expect(keys.phoneToDesktop.toString("hex")).toBe(v.expectedPhoneToDesktopKeyHex);
+
+      const aad = Buffer.from(JSON.stringify(v.outerHeader), "utf8");
+      const payload = Buffer.from(v.payloadHex, "hex");
+
+      if (v.mustFailToDecrypt) {
+        expect(() => openRelayE2eFrame(payload, keys.phoneToDesktop, aad)).toThrow();
+        return;
+      }
+
+      const opened = openRelayE2eFrame(payload, keys.phoneToDesktop, aad);
+      expect(opened.toString("utf8")).toBe(v.plaintextUtf8);
+      expect(relayE2eCounterOf(payload.subarray(0, RELAY_E2E_NONCE_BYTES))).toBe(BigInt(v.counter));
+
+      const resealed = sealRelayE2eFrame(
+        Buffer.from(v.plaintextUtf8, "utf8"),
+        keys.phoneToDesktop,
+        BigInt(v.counter),
+        aad,
+      );
+      expect(resealed.toString("hex")).toBe(v.payloadHex);
+    });
+  }
+
+  test("a payload authenticated under one AAD is refused under another", () => {
+    const key = Buffer.alloc(32, 0x42);
+    const aad = Buffer.from(
+      JSON.stringify({ v: 2, t: "e2e.data", src: "viewer", dst: "connector", s: "s1", id: "i1", q: 0 }),
+    );
+    const otherAad = Buffer.from(
+      JSON.stringify({ v: 2, t: "e2e.data", src: "viewer", dst: "connector", s: "s1", id: "i2", q: 0 }),
+    );
+    const sealed = sealRelayE2eFrame(Buffer.from("hello"), key, 0n, aad);
+    expect(() => openRelayE2eFrame(sealed, key, otherAad)).toThrow();
+    expect(() => openRelayE2eFrame(sealed, key, aad)).not.toThrow();
+  });
+
+  test("the nonce is 4 reserved zero bytes followed by the big-endian counter", () => {
+    const nonce = relayE2eNonce(300n);
+    expect(nonce.length).toBe(RELAY_E2E_NONCE_BYTES);
+    expect([...nonce.subarray(0, 4)]).toEqual([0, 0, 0, 0]);
+    expect(relayE2eCounterOf(nonce)).toBe(300n);
+  });
+
+  test("a negative counter is refused, and the counter never silently wraps past 64 bits", () => {
+    expect(() => relayE2eNonce(-1n)).toThrow();
+    expect(() => relayE2eNonce(0xffffffffffffffffn)).not.toThrow();
+    expect(() => relayE2eNonce(0x10000000000000000n)).toThrow();
   });
 });

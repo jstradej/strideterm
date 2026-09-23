@@ -119,6 +119,12 @@ Eleven more invariants worth not breaking:
 
 `settings.appliedMigrations: string[]` records migrations that have already run. `normalizeState()` runs on load AND after every mutation, so a migration written as "add X whenever Y" is not a migration — it is a rule that keeps re-asserting itself and the user can never undo it. That is what happened to the Telegram `forwardKinds` widening (`TELEGRAM_QUESTION_FORWARD_MIGRATION`): `question` was re-added the moment it was unticked. Gate any new migration on a marker id and test the opt-out afterwards, not just the absence of duplicates.
 
+### Managed relay end-to-end encryption — the session key never touches the relay
+
+The relay session key never leaves the desktop and the phone; the key agreement goes over Firebase, never the relay. `electron/backend/mobile/mobile-command-dispatch.ts`'s `remote.endpoint.request`/`remote.webSession.issue` pair mints and exchanges the ephemeral X25519 offer/acceptance over the ALREADY end-to-end-encrypted Firebase envelope channel — the relay Worker is not a party to that exchange and never sees it. Both directional AES-256-GCM keys (`mobile-crypto.ts`'s `deriveRelayE2eKeys`) live only in `mobile-relay-e2e-session-store.ts`, an in-memory, TTL-bound map keyed by `mobileDeviceId` — never Firebase, never persisted state, never logged.
+
+This is why a downgrade to plaintext can only ever be a missing offer or a missing acceptance on a CLIENT, never something the relay can force or even detect: `mobile-command-dispatch.ts` refuses the WHOLE ticket with `relay-e2e-key-mismatch` on an unknown/expired `keyId` rather than ever falling back to minting one without `e2e`, and the relay Worker (`relay/worker/src/durable-object.ts`) has no code path that decrypts or parses an `e2e.*` frame's payload — pinned as a test over the Worker's own source (`relay-e2e-source-shape.test.mts`), not a comment, so a future change that added one would fail a test rather than merely disagree with this paragraph. `mobile-relay-connector.ts` is the desktop's other end of the sealed channel: a bad AEAD tag, a replayed nonce counter, or a stream with no derived key ends that stream — never an attempt to interpret the bytes as plaintext.
+
 ---
 
 # Behavioral Guidelines

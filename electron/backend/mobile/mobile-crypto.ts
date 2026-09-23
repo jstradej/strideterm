@@ -567,3 +567,150 @@ export function computePairingApprovalTranscriptHash(fields: PairingApprovalFiel
     )
     .digest("hex");
 }
+
+// ---------------------------------------------------------------------------
+// Relay end-to-end encryption (plan 2026-09-23, decisions 1 and 2).
+//
+// Hand mirror of strideterm-mobile/protocol/typescript/src/crypto/relay-e2e-crypto.ts, same
+// reasoning as the rest of this file for why it is a mirror rather than an import. The shared
+// fixtures in mobile-relay-e2e-vectors.json (a copy of that repo's protocol/test-vectors/
+// relay-e2e.json, kept in sync by `npm run check:mobile-schema-drift`) are what pin the agreement
+// between this implementation and the mobile app's.
+//
+// INVARIANT this whole section exists to uphold: the relay session key never leaves this process
+// and the phone's — it is derived from material agreed over the Firebase envelope channel, never
+// from anything the relay Worker sends or can influence. See mobile-relay-connector.ts for where
+// the derived keys and the per-direction counters actually live (in memory only, TTL bound to the
+// ticket, never logged or persisted — CLAUDE.md's "relay session key" invariant).
+// ---------------------------------------------------------------------------
+
+export const RELAY_E2E_VERSION = 1 as const;
+export const RELAY_E2E_HKDF_INFO = "strideterm-relay-e2e/v1" as const;
+export const RELAY_E2E_AEAD_ALG = "AES-256-GCM" as const;
+export const RELAY_E2E_KEY_BYTES = 32 as const;
+export const RELAY_E2E_DERIVED_KEY_BYTES = 64 as const;
+export const RELAY_E2E_NONCE_BYTES = 12 as const;
+export const RELAY_E2E_NONCE_RESERVED_BYTES = 4 as const;
+export const RELAY_E2E_NONCE_COUNTER_BYTES = 8 as const;
+export const RELAY_E2E_X25519_PUBLIC_KEY_BYTES = 32 as const;
+
+const RELAY_E2E_AES_GCM_TAG_BYTES = 16;
+
+/** The desktop's half of the key-exchange transcript — the `e2e` block of a `remote.endpoint.request` answer. */
+export interface RelayE2eDesktopOffer {
+  v: 1;
+  keyId: string;
+  desktopEphemeralPub: string;
+}
+
+/** The phone's half — the `e2e` block of its `remote.webSession.issue`. */
+export interface RelayE2ePhoneAcceptance {
+  v: 1;
+  keyId: string;
+  phoneEphemeralPub: string;
+}
+
+/**
+ * HKDF salt: SHA-256 over both `e2e` blocks, desktop offer first, each as a canonical JSON object
+ * with exactly its three keys in this exact order, no whitespace, concatenated (not itself one
+ * JSON document) before hashing.
+ */
+export function relayE2eSalt(desktop: RelayE2eDesktopOffer, phone: RelayE2ePhoneAcceptance): Buffer {
+  const canonical =
+    JSON.stringify({ v: desktop.v, keyId: desktop.keyId, desktopEphemeralPub: desktop.desktopEphemeralPub }) +
+    JSON.stringify({ v: phone.v, keyId: phone.keyId, phoneEphemeralPub: phone.phoneEphemeralPub });
+  return createHash("sha256").update(canonical, "utf8").digest();
+}
+
+/**
+ * HKDF info: `RELAY_E2E_HKDF_INFO` and the pairing/device/ticket identifiers, slash-delimited —
+ * the same domain-separation shape as `PAIRING_SAS_DOMAIN` elsewhere in this file, chosen so
+ * `pairId="ab", deviceId="cd"` cannot collide with `pairId="a", deviceId="bcd"` the way raw
+ * concatenation would.
+ */
+export function relayE2eInfo(pairId: string, deviceId: string, ticketId: string): Buffer {
+  return Buffer.from(`${RELAY_E2E_HKDF_INFO}/${pairId}/${deviceId}/${ticketId}`, "utf8");
+}
+
+export interface RelayE2eKeys {
+  desktopToPhone: Buffer;
+  phoneToDesktop: Buffer;
+}
+
+/**
+ * Derives the two directional session keys from the ephemeral ECDH output (forward secrecy for
+ * this one relay session) followed by the long-term pairing-key ECDH output (binds the session to
+ * the paired device, exactly like the existing envelope session key). `RELAY_E2E_DERIVED_KEY_BYTES`
+ * bytes come out of HKDF-SHA-256 and split evenly: the first half is the desktop->phone key, the
+ * second the phone->desktop key.
+ */
+export function deriveRelayE2eKeys(
+  ephemeralPrivateKey: KeyObject,
+  ephemeralRemotePublicKey: KeyObject,
+  pairingPrivateKey: KeyObject,
+  pairingRemotePublicKey: KeyObject,
+  salt: Buffer,
+  info: Buffer,
+): RelayE2eKeys {
+  const ephemeralShared = diffieHellman({ privateKey: ephemeralPrivateKey, publicKey: ephemeralRemotePublicKey });
+  const pairingShared = diffieHellman({ privateKey: pairingPrivateKey, publicKey: pairingRemotePublicKey });
+  const ikm = Buffer.concat([ephemeralShared, pairingShared]);
+  const derived = Buffer.from(hkdfSync("sha256", ikm, salt, info, RELAY_E2E_DERIVED_KEY_BYTES));
+  return {
+    desktopToPhone: derived.subarray(0, RELAY_E2E_KEY_BYTES),
+    phoneToDesktop: derived.subarray(RELAY_E2E_KEY_BYTES, 2 * RELAY_E2E_KEY_BYTES),
+  };
+}
+
+/** Builds the 12-byte nonce for frame `counter` in one direction: 4 reserved zero bytes + an 8-byte big-endian counter. */
+export function relayE2eNonce(counter: bigint): Buffer {
+  if (counter < 0n) throw new Error("relayE2eNonce: counter must not be negative");
+  if (counter > 0xffffffffffffffffn) {
+    throw new Error("relayE2eNonce: counter overflowed 64 bits — the session must end");
+  }
+  const nonce = Buffer.alloc(RELAY_E2E_NONCE_BYTES);
+  nonce.writeBigUInt64BE(counter, RELAY_E2E_NONCE_RESERVED_BYTES);
+  return nonce;
+}
+
+/**
+ * Seals `plaintext` (a complete inner relay frame, produced by `encodeRelayFrame`) under `key` for
+ * frame `counter` in this direction, authenticating `aad` (the canonical outer `e2e.data` frame
+ * header bytes). Returns the exact `e2e.data` payload: `nonce || ciphertext-with-tag`.
+ */
+export function sealRelayE2eFrame(plaintext: Buffer, key: Buffer, counter: bigint, aad: Buffer): Buffer {
+  if (key.length !== RELAY_E2E_KEY_BYTES) throw new Error(`relay-e2e key must be exactly ${RELAY_E2E_KEY_BYTES} bytes`);
+  const nonce = relayE2eNonce(counter);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  cipher.setAAD(aad);
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return Buffer.concat([nonce, encrypted, authTag]);
+}
+
+/**
+ * Opens an `e2e.data` payload produced by {@link sealRelayE2eFrame}. `aad` must exactly match what
+ * the sender authenticated or this throws — never attempt a plaintext fallback on failure; the
+ * caller ends the stream (`ws.error`) instead.
+ */
+export function openRelayE2eFrame(payload: Buffer, key: Buffer, aad: Buffer): Buffer {
+  if (key.length !== RELAY_E2E_KEY_BYTES) throw new Error(`relay-e2e key must be exactly ${RELAY_E2E_KEY_BYTES} bytes`);
+  if (payload.length < RELAY_E2E_NONCE_BYTES + RELAY_E2E_AES_GCM_TAG_BYTES) {
+    throw new Error("relay-e2e payload too short to contain a nonce and an auth tag");
+  }
+  const nonce = payload.subarray(0, RELAY_E2E_NONCE_BYTES);
+  const rest = payload.subarray(RELAY_E2E_NONCE_BYTES);
+  const authTag = rest.subarray(rest.length - RELAY_E2E_AES_GCM_TAG_BYTES);
+  const encrypted = rest.subarray(0, rest.length - RELAY_E2E_AES_GCM_TAG_BYTES);
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+  decipher.setAAD(aad);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+}
+
+/** Reads the frame counter back out of a nonce, for replay/ordering checks. */
+export function relayE2eCounterOf(nonce: Buffer): bigint {
+  if (nonce.length !== RELAY_E2E_NONCE_BYTES)
+    throw new Error(`relay-e2e nonce must be exactly ${RELAY_E2E_NONCE_BYTES} bytes`);
+  return nonce.readBigUInt64BE(RELAY_E2E_NONCE_RESERVED_BYTES);
+}

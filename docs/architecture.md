@@ -315,8 +315,30 @@ Third transport — the managed relay (mobile app only):
   TLS-terminating hop on that path, so `stripSecretsForRemote(..., { stripShareUrls: true })` blanks
   the URL list for the loopback-origin server only — the token is long-lived and keeps unlocking the
   remote API over the LAN after the session ends, and a phone never reaches this desktop through a
-  LAN share URL anyway. The notification/command plane is separately end-to-end encrypted; the
-  relay viewer path is not, and the relay can read a session while it is in flight.
+  LAN share URL anyway.
+- **the relay viewer path is end-to-end encrypted** between a desktop and app that both support it
+  (plan `.private/plan-relay-e2e-2026-09-23.md`; ADR `0034-relay-end-to-end-encryption.md` in the
+  sibling repo). The session key is agreed over the ALREADY end-to-end-encrypted Firebase envelope
+  channel — never over the relay — during `remote.endpoint.request` /
+  `remote.webSession.issue`: both sides mint a fresh X25519 ephemeral pair, and HKDF-SHA-256 over the
+  ephemeral ECDH output _and_ the long-term pairing-key ECDH output yields two directional
+  AES-256-GCM keys. Every HTTP request/response and WebSocket message the WebView exchanges with
+  this desktop travels as an `e2e.data` outer frame whose payload is a whole inner relay frame,
+  sealed under those keys; the relay Worker (`relay/worker/src/durable-object.ts`) only ever reads
+  the OUTER header — routing id, sequence, ciphertext length for flow control and the
+  attachment-traffic budget — and there is no code path in it that decrypts or even parses an
+  `e2e.*` payload (pinned by `relay-e2e-source-shape.test.mts`, a test over the Worker's own source,
+  not a comment). `mobile-relay-connector.ts` is the desktop's other end: it wraps every
+  outgoing viewer-bound frame and unwraps every incoming one, keyed by
+  `mobile-relay-e2e-session-store.ts` (in memory only, TTL-bound to the ticket, never logged or
+  persisted); a bad AEAD tag or a replayed/reordered nonce counter ends the stream, never a
+  plaintext fallback.
+- **compatibility, not a switch.** An endpoint response with no `e2e` offer (an old desktop) or a
+  `remote.webSession.issue` with no `e2e` acceptance (an old app) both fall back to today's
+  plaintext viewer path byte-for-byte unchanged. The mobile proxy, desktop connector and Worker
+  source implementations now include the encrypted path. This source status does not establish
+  which app or Worker build is currently released; verify release versions and each tier's reported
+  Worker build separately before making a deployment claim.
 - `electron/backend/mobile/mobile-relay-{manager,connector,identity,protocol}.ts`; the decision and
   its limits are in the sibling repo’s `docs/adr/0023-managed-relay-mvp.md` and `docs/RELAY-MVP.md`.
 
@@ -339,7 +361,10 @@ source-shape test that fails if one appears.
 What is paid for is the **hosted control plane**: the pairing handshake, the Firebase event and
 command path, push delivery, and the managed relay with its signed grants. That boundary is the whole
 of the decision; the sibling repo's `docs/adr/0025-entitlement-boundary-and-merchant-of-record.md`
-records why it is drawn there.
+records why it is drawn there. The Firebase event/command path is read over an RTDB server-sent-event
+stream (`mobile-firebase-rest.ts`'s `consumeEventStream`), watched by an idle timer so a connection a
+NAT or proxy drops silently (never closing, never erroring) is noticed and reconnected rather than
+left open forever with nothing arriving.
 
 ### The account manager
 
