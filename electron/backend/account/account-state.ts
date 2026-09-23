@@ -362,6 +362,10 @@ export const ACCOUNT_ERROR_CODES = [
   "requires-recent-login",
   "user-disabled",
   "network",
+  // A `network` failure whose cause was an untrusted certificate chain: the network is intercepting
+  // TLS (security software or a corporate proxy). Its own code so the page can say so; every rule
+  // keyed on the transport outcome still reads the underlying `network`.
+  "network-tls",
   // R04. The service ANSWERED and the answer could not be read — a body that was too large, or not
   // JSON, or not the shape the contract describes. Not `network`: the request arrived. Not a refusal:
   // nothing was refused. The mutation it was about may have happened, and the page has to say so
@@ -432,6 +436,7 @@ export function toAccountErrorCode(error: unknown): AccountErrorCode {
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === "string") {
     const normalized = normalizeReason(code);
+    if (normalized === "network" && (error as { detail?: unknown }).detail === "tls-untrusted") return "network-tls";
     if (normalized !== null) return normalized;
   }
   const details = (error as { details?: { reason?: unknown } } | null)?.details?.reason;

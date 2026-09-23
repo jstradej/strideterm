@@ -7,6 +7,7 @@ import {
   normalizeWorkspaceGrid,
   TELEGRAM_QUESTION_FORWARD_MIGRATION,
 } from "./default-state.js";
+import { resolveRemoteBindHost } from "../../config/app-config.js";
 
 describe("default state", () => {
   test("createAccessToken returns a non-trivial token", () => {
@@ -320,6 +321,30 @@ describe("default state", () => {
     expect(state.settings.remoteAccess.token).toBe("custom-token");
     expect(state.settings.remoteAccess.customPublicUrl).toBe("https://strideterm.example.com");
     expect(state.settings.remoteAccess.cloudflaredPath).toBe("C:/Tools/cloudflared.exe");
+  });
+
+  describe("remoteAccess.networkAccess", () => {
+    test("a new install and an existing state without the key both get networkAccess: true", () => {
+      expect(createDefaultState().settings.remoteAccess.networkAccess).toBe(true);
+      const existing = normalizeState({ settings: { remoteAccess: { enabled: true, host: "0.0.0.0" } } });
+      expect(existing.settings.remoteAccess.networkAccess).toBe(true);
+    });
+
+    test("a stored false survives repeated normalizeState()", () => {
+      let state = normalizeState({ settings: { remoteAccess: { enabled: true, networkAccess: false } } });
+      for (let i = 0; i < 3; i++) state = normalizeState(JSON.parse(JSON.stringify(state)));
+      expect(state.settings.remoteAccess.networkAccess).toBe(false);
+    });
+
+    test("host 127.0.0.1 is no longer rewritten to 0.0.0.0", () => {
+      const state = normalizeState({ settings: { remoteAccess: { host: "127.0.0.1" } } });
+      expect(state.settings.remoteAccess.host).toBe("127.0.0.1");
+    });
+
+    test("the untouched default binds the same address as before (0.0.0.0)", () => {
+      const state = normalizeState({});
+      expect(resolveRemoteBindHost(state.settings.remoteAccess, null)).toBe("0.0.0.0");
+    });
   });
 
   test("default state includes Azure DevOps integration settings", () => {

@@ -112,6 +112,7 @@ describe("sanitizeSettingsFromRemote", () => {
         cloudflaredPath: "/tmp/evil.sh",
         enabled: false,
         host: "0.0.0.0",
+        networkAccess: true,
         port: 1234,
         token: "attacker-chosen",
         customPublicUrl: "https://my.tunnel.example",
@@ -724,6 +725,101 @@ describe("remote token client profile context", () => {
         })
       ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
       expect(initial.remoteClient).toMatchObject({ profileId: "p2", activeWorkspaceId: "ws2" });
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("remoteAccess.networkAccess (desktop-only, loopback bind)", () => {
+  function makeRuntime(auth: string, port: number, remoteAccess: Record<string, unknown>) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, port, token: auth, ...remoteAccess } },
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [],
+        windowSlots: [{ id: "win-1", profileId: "default", activeWorkspaceId: "" }],
+      },
+    };
+    const updates: Array<Record<string, unknown>> = [];
+    let info: { urls?: string[]; host?: string } | undefined;
+    return {
+      updates,
+      info: () => info,
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: (value: { urls?: string[]; host?: string }) => {
+          info = value;
+        },
+        listRemoteUrls: () => info?.urls ?? [],
+        on: () => () => undefined,
+        setRemoteClientRegistry: () => undefined,
+        updateSettings: async (settings: Record<string, unknown>) => {
+          updates.push(JSON.parse(JSON.stringify(settings)));
+          return { payload };
+        },
+      },
+    };
+  }
+
+  test.each([true, false])(
+    "/api/settings/update with remoteAccess.networkAccess: %s does not change it",
+    async (value) => {
+      const port = await getFreePort();
+      const auth = "test-token-network-access";
+      const fixture = makeRuntime(auth, port, { host: "127.0.0.1" });
+      const server = await startRemoteServer({
+        runtime: fixture.runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+        staticRoot: process.cwd(),
+      });
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/settings/update`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${auth}`,
+            "Content-Type": "application/json",
+            "X-Strideterm-Client-Id": "test-client",
+          },
+          body: JSON.stringify({ settings: { remoteAccess: { networkAccess: value }, logLevel: "debug" } }),
+        });
+        expect(res.status).toBe(200);
+        expect(fixture.updates).toHaveLength(1);
+        expect(fixture.updates[0]).toEqual({ remoteAccess: {}, logLevel: "debug" });
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test("networkAccess: false with a wildcard host binds loopback and advertises no network URL", async () => {
+    const port = await getFreePort();
+    const fixture = makeRuntime("t", port, { host: "0.0.0.0", networkAccess: false });
+    const server = await startRemoteServer({
+      runtime: fixture.runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      expect(server.address?.host).toBe("127.0.0.1");
+      expect(fixture.info()?.host).toBe("127.0.0.1");
+      expect(fixture.info()?.urls).toEqual([]);
+      const res = await fetch(`http://127.0.0.1:${port}/`);
+      expect(res.status).toBeGreaterThan(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("networkAccess: true with a wildcard host binds every interface as before", async () => {
+    const port = await getFreePort();
+    const fixture = makeRuntime("t", port, { host: "0.0.0.0", networkAccess: true });
+    const server = await startRemoteServer({
+      runtime: fixture.runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      expect(fixture.info()?.host).toBe("0.0.0.0");
+      for (const url of fixture.info()?.urls ?? []) expect(url).not.toMatch(/127\.0\.0\.1/);
     } finally {
       await server.close();
     }

@@ -46,6 +46,13 @@ export interface RemoteAccessSettings {
   enabled: boolean;
   paused?: boolean;
   host: string;
+  /**
+   * Allow access from other devices on the network (LAN, VPN, Tailscale). Default true. When false,
+   * a wildcard/loopback `host` binds loopback only — enough for the tunnel and the relay. An
+   * explicit address in `host` or `STRIDETERM_REMOTE_HOST` still wins. Never changed automatically
+   * and never writable by a remote client.
+   */
+  networkAccess: boolean;
   port: number;
   token: string;
   customPublicUrl: string;

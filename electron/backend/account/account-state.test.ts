@@ -234,6 +234,14 @@ describe("signing out", () => {
 });
 
 describe("error codes", () => {
+  test("a network failure with a tls-untrusted detail is network-tls; any other stays network", () => {
+    expect(toAccountErrorCode({ code: "network", detail: "tls-untrusted" })).toBe("network-tls");
+    expect(toAccountErrorCode({ code: "network", detail: "dns" })).toBe("network");
+    expect(toAccountErrorCode({ code: "network", detail: null })).toBe("network");
+    expect(toAccountErrorCode({ code: "network" })).toBe("network");
+    expect(toAccountErrorCode({ code: "invalid-email", detail: "tls-untrusted" })).toBe("invalid-email");
+  });
+
   test("a structured code, a structured reason and our own refusal text all resolve", () => {
     expect(toAccountErrorCode({ code: "expired-code" })).toBe("expired-code");
     expect(toAccountErrorCode({ code: "auth-unavailable" })).toBe("auth-unavailable");

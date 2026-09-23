@@ -40,9 +40,13 @@ import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { chromium, devices, type Browser, type Page } from "playwright";
 import { createRuntime } from "../electron/backend/runtime.js";
+import { applySystemCaTrust } from "../electron/backend/net/system-ca.js";
 import { startRemoteServer } from "../electron/backend/remote-server.js";
 import { AzureDevOpsManager } from "../electron/backend/azure-devops-manager.js";
 import { GitHubManager } from "../electron/backend/github-manager.js";
+
+// Same TLS trust as the app (electron/main.ts): before anything can open an outbound connection.
+console.log("tls trust store", JSON.stringify(applySystemCaTrust()));
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 47_355;

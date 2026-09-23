@@ -74,7 +74,7 @@ import {
   wsTerminalResizeSchema,
   wsTerminalSubscribeSchema,
 } from "./ipc-schemas.js";
-import { resolveRemoteAccessPort } from "../../config/app-config.js";
+import { isLoopbackBindHost, resolveRemoteAccessPort, resolveRemoteBindHost } from "../../config/app-config.js";
 import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import {
@@ -635,6 +635,10 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
   "cloudflaredPath",
   "enabled",
   "host",
+  // `networkAccess` opens (or closes) the port to the network. Turning it on is a deliberate step
+  // taken at the machine — same reasoning as `autoTunnel` — and turning it off from a LAN client
+  // would cut that client's own connection. Dropped in both directions.
+  "networkAccess",
   "port",
   "token",
   // `customPublicUrl` is display-only metadata — but the desktop "Copy share
@@ -1322,6 +1326,9 @@ function tokensEqual(a: string, b: string): boolean {
 
 function listRemoteUrls(host: string, port: number, token: string): string[] {
   const urls: string[] = [];
+  // Bound to loopback (network access off): no other device can use any URL, so none is advertised
+  // and Settings shows only the tunnel and the relay.
+  if (isLoopbackBindHost(host)) return urls;
   const interfaces = os.networkInterfaces();
 
   if (host === "0.0.0.0") {
@@ -2387,7 +2394,7 @@ export async function startRemoteServer({
   if (isLoopbackOrigin && loopbackOrigin.host !== "127.0.0.1" && loopbackOrigin.host !== "::1") {
     throw new Error(`loopbackOrigin.host must be 127.0.0.1 or ::1 (got ${loopbackOrigin.host})`);
   }
-  const host = isLoopbackOrigin ? loopbackOrigin.host : configured.host;
+  const host = isLoopbackOrigin ? loopbackOrigin.host : resolveRemoteBindHost(configured);
   // The configured port goes through the resolver, not straight off the settings object:
   // `STRIDETERM_REMOTE_PORT` has to be able to move a build that already HAS a settings file,
   // which is the only situation anybody sets it in (a dev build beside a production install,

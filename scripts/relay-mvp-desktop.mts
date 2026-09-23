@@ -29,7 +29,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
-import { setLogDir } from "../electron/backend/logger.js";
+import { getLogger, setLogDir } from "../electron/backend/logger.js";
+import { applySystemCaTrust } from "../electron/backend/net/system-ca.js";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -53,6 +54,8 @@ fs.mkdirSync(dataDir, { recursive: true });
 // — which both pollutes a production directory and leaves a test's trail behind after a runner that
 // promises to clean up everything it created.
 setLogDir(path.join(dataDir, "logs"));
+// Same TLS trust as the app (electron/main.ts): before anything can open an outbound connection.
+getLogger("relay-mvp-desktop").info("tls trust store", applySystemCaTrust());
 
 const { createRuntime } = await import("../electron/backend/runtime.js");
 const { startRemoteServer } = await import("../electron/backend/remote-server.js");
@@ -198,6 +201,66 @@ const server = http.createServer((request, response) => {
           const body = await readBody(request);
           await runtime.setMobileRelayEnabled(body.enabled !== false);
           json(200, { ok: true, relay: runtime.getMobileRelayStatus() });
+          return;
+        }
+        // The only account bootstrap surface is an explicitly opted-in QA harness process. The
+        // caller supplies a link minted by Identity Toolkit with returnOobLink=true; the runtime
+        // then executes its normal parser, owner verification, installation enrolment and trial.
+        // This route is loopback-only and token-protected like every other control route, and it is
+        // deliberately unavailable to dev, prod and ordinary desktop launches.
+        case "POST /account/bootstrap": {
+          if (process.env.STRIDETERM_ENV !== "qa" || process.env.STRIDETERM_QA_HEADLESS_ACCOUNT_BOOTSTRAP !== "1") {
+            json(404, { error: "unknown route" });
+            return;
+          }
+          const body = await readBody(request);
+          if (
+            typeof body.email !== "string" ||
+            body.email.length > 320 ||
+            typeof body.link !== "string" ||
+            body.link.length > 4096
+          ) {
+            json(400, { error: "invalid bootstrap payload" });
+            return;
+          }
+          await runtime.accountBootstrapExternalSignIn(body.email, body.link);
+          const bootstrap = await runtime.accountBootstrapDiagnostics();
+          if (process.env.STRIDETERM_QA_CLAIM_PROBE === "1") {
+            await new Promise((resolve) => setTimeout(resolve, 15_000));
+            const delayed = await runtime.accountBootstrapDiagnostics();
+            const refreshed = await runtime.accountBootstrapDiagnostics(true);
+            json(200, { ok: true, bootstrap, delayed, refreshed });
+          } else {
+            json(200, { ok: true, bootstrap });
+          }
+          return;
+        }
+        case "GET /account/diagnostics": {
+          if (process.env.STRIDETERM_ENV !== "qa" || process.env.STRIDETERM_QA_HEADLESS_ACCOUNT_BOOTSTRAP !== "1") {
+            json(404, { error: "unknown route" });
+            return;
+          }
+          json(200, await runtime.accountBootstrapDiagnostics());
+          return;
+        }
+        case "POST /account/cleanup": {
+          if (process.env.STRIDETERM_ENV !== "qa" || process.env.STRIDETERM_QA_HEADLESS_ACCOUNT_BOOTSTRAP !== "1") {
+            json(404, { error: "unknown route" });
+            return;
+          }
+          const body = await readBody(request);
+          if (
+            typeof body.email !== "string" ||
+            body.email.length > 320 ||
+            typeof body.link !== "string" ||
+            body.link.length > 4096 ||
+            body.confirmationPhrase !== "DELETE MY ACCOUNT"
+          ) {
+            json(400, { error: "invalid cleanup payload" });
+            return;
+          }
+          await runtime.accountBootstrapExternalDeletion(body.email, body.link, body.confirmationPhrase);
+          json(200, { ok: true, deleted: true });
           return;
         }
         case "POST /pairing/invitation": {

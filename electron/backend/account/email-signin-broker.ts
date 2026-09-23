@@ -26,6 +26,7 @@
 // file, and nothing in the UI it feeds, may claim the link was revoked.
 
 import { EventEmitter } from "node:events";
+import type { NetworkFailureKind } from "../net/network-error.js";
 import { createHash, randomBytes } from "node:crypto";
 
 import type { AccountClient } from "./account-client.js";
@@ -167,11 +168,14 @@ export type SignInFailureCode =
 
 export class SignInBrokerError extends Error {
   readonly code: SignInFailureCode;
+  /** For `network` only: which kind of transport failure it was (TLS inspection above all). */
+  readonly detail: NetworkFailureKind;
 
-  constructor(code: SignInFailureCode) {
+  constructor(code: SignInFailureCode, detail: NetworkFailureKind = null) {
     super(`sign-in refused: ${code}`);
     this.name = "SignInBrokerError";
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -392,6 +396,42 @@ export class EmailSignInBroker extends EventEmitter {
     // A NEW FLOW resets the send budget. A resend of the SAME flow does not — see `resend()`.
     this.sendTimestamps = [];
     await this.startAttempt(email, purpose);
+  }
+
+  /**
+   * Seeds a manual-only attempt for the authenticated headless QA harness.
+   *
+   * The harness obtains the link from Identity Toolkit with `returnOobLink: true`, so calling the
+   * normal begin path would send a second link. The link is still parsed by this broker and must name
+   * its own attempt; this method creates no broker record and is intentionally not exposed to IPC.
+   */
+  beginExternalLink(rawEmail: string, rawLink: string, purpose: SignInPurpose): void {
+    const email = normalizeAuthEmail(rawEmail);
+    if (email === null) throw new SignInBrokerError("invalid-email");
+    const parsed = parseSignInLink(this.deps.authlink, rawLink);
+    if (parsed === null) throw new SignInBrokerError("invalid-code");
+    const replaced = this.attempt;
+    if (replaced !== null) void this.releaseAttempt(replaced.attemptId, replaced.claimSecret, "cancel");
+    this.stopPolling();
+    const startedAt = this.now();
+    this.generation += 1;
+    this.sendTimestamps = [];
+    this.attempt = {
+      generation: this.generation,
+      attemptId: parsed.attemptId,
+      claimSecret: this.newOpaqueId(),
+      email,
+      purpose,
+      startedAt,
+      expiresAt: startedAt + LOCAL_ATTEMPT_TTL_MS,
+      manualOnly: true,
+      phase: "awaiting-link",
+      canResendAt: startedAt,
+      polls: 0,
+      payload: { email, oobCode: parsed.oobCode },
+      sendOutcome: "unknown",
+    };
+    this.publish();
   }
 
   /**
@@ -873,6 +913,7 @@ function toBrokerError(error: unknown): SignInBrokerError {
       // responded 200 and the body was not one of its — the message is as likely in the mailbox as
       // after a lost answer, and the attempt has to stay open for the same reason.
       case "network":
+        return new SignInBrokerError("network", error.detail);
       case "malformed-response":
         return new SignInBrokerError("network");
       case "invalid-email":

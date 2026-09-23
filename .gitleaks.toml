@@ -45,3 +45,7 @@ regexTarget = "secret"
 paths = ['^electron/backend/notifications/auto-approve\.test\.ts$']
 regexes = ['^(?:abcdef123456|sk-ant-super-secret-value)$']
 
+
+[[allowlists]]
+description = "audited deterministic fixtures: test-only TLS leaf key for electron/backend/net/system-ca.integration.test.ts (trusted by nothing outside that test)"
+paths = ['^electron/backend/net/__fixtures__/test-server\.key$']

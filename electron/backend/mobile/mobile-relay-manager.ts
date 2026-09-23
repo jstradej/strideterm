@@ -21,6 +21,7 @@
 import { randomBytes } from "node:crypto";
 
 import { getLogger } from "../logger.js";
+import { classifyNetworkError } from "../net/network-error.js";
 import {
   createRelayConnector,
   defaultDefinitiveRefusalRetryDelay,
@@ -296,9 +297,13 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
             cancelRetry();
             retryAttempt = 0;
           } catch (error) {
-            lastError = (error as Error).message;
+            const message = (error as Error).message;
+            // The UI gets a fixed code for a classified transport failure (TLS inspection above
+            // all); the log keeps the original text for support. Anything else is shown as before.
+            const net = classifyNetworkError(error);
+            lastError = net ? `network:${net}` : message;
             const definitive = error instanceof MobileRelayGrantDefinitiveRefusalError;
-            log.warn("managed relay unavailable", { err: lastError, definitive });
+            log.warn("managed relay unavailable", { err: message, definitive });
             await stopInternal();
             scheduleRetry(definitive);
           }

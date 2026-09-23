@@ -18,6 +18,11 @@ import type { RelayConnector } from "./mobile-relay-connector.js";
 import { RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
 import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock("../logger.js", () => ({
+  getLogger: () => ({ info: vi.fn(), warn: logWarn, error: vi.fn(), debug: vi.fn() }),
+}));
+
 const INSTALLATION_ID = "installation-under-test";
 const RELAY_ORIGIN = "https://relay.test.invalid";
 
@@ -284,6 +289,43 @@ describe("the managed relay's lifecycle", () => {
 
     expect(harness.originsClosed).toBe(1);
     expect(harness.manager.stats()).toBeNull();
+  });
+});
+
+describe("a start failure's lastError", () => {
+  test("a TLS failure shows a fixed code and the log keeps the original message", async () => {
+    logWarn.mockClear();
+    const tlsError = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("unable to get local issuer certificate"), {
+        code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+      }),
+    });
+    const harness = makeHarness({
+      grant: async () => {
+        throw tlsError;
+      },
+      retryDelayMs: () => 60_000,
+    });
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+    expect(harness.manager.status().lastError).toBe("network:tls-untrusted");
+    expect(logWarn).toHaveBeenCalledWith("managed relay unavailable", expect.objectContaining({ err: "fetch failed" }));
+    harness.setEnabled(false);
+    await harness.manager.reconfigure();
+  });
+
+  test("an unclassified failure shows error.message as before", async () => {
+    const harness = makeHarness({
+      grant: async () => {
+        throw new Error("issueRelayConnectorGrant failed (UNAUTHENTICATED)");
+      },
+      retryDelayMs: () => 60_000,
+    });
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+    expect(harness.manager.status().lastError).toBe("issueRelayConnectorGrant failed (UNAUTHENTICATED)");
+    harness.setEnabled(false);
+    await harness.manager.reconfigure();
   });
 });
 

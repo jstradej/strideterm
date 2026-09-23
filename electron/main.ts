@@ -16,6 +16,7 @@ import { inheritShellPath } from "./backend/fix-path.js";
 import { startFreezeWatchdog } from "./backend/freeze-watchdog.js";
 import { APP_CONFIG, getRendererDevUrl, resolveRemoteAccessPort } from "../config/app-config.js";
 import { getLogger, getLogDir, setLogDir, shutdownLogger } from "./backend/logger.js";
+import { applySystemCaTrust } from "./backend/net/system-ca.js";
 import { SMOKE_READY_MARKER } from "./shared/smoke-protocol.js";
 import { createPerformanceSampler } from "./performance-metrics.js";
 import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
@@ -85,6 +86,11 @@ if (customDataDir) {
 }
 
 const log = getLogger("main");
+
+// Trust the OS certificate store alongside Node's bundled roots, so fetch/ws work behind corporate
+// TLS inspection. Top level, before app.whenReady() and before anything can open a pooled
+// connection; logs counts and time only, never certificates.
+log.info("tls trust store", applySystemCaTrust());
 // Use app.getVersion() instead of require("../package.json") to avoid
 // path resolution issues after compilation to dist-electron/.
 const packageVersion = app.getVersion();

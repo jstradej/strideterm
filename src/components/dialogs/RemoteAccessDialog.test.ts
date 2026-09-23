@@ -106,3 +106,75 @@ test("pause writes only the pause flag and surfaces errors without changing conf
   expect(store.payload?.appState.settings.remoteAccess.enabled).toBe(true);
   wrapper.unmount();
 });
+
+describe("RemoteAccessDialog — network access (opt-in loopback bind)", () => {
+  async function openLan(provide: Record<string, unknown> = {}, remoteAccess: Record<string, unknown> = {}) {
+    const store = useAppStore();
+    store.payload = {
+      appState: { settings: { remoteAccess: { enabled: true, host: "0.0.0.0", port: 43123, ...remoteAccess } } },
+      remoteAccess: { enabled: true, host: "0.0.0.0", port: 43123, urls: [], tunnel: {} },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    const updateSettings = vi.spyOn(store, "updateSettings").mockResolvedValue(undefined as never);
+    const wrapper = mount(RemoteAccessDialog, { global: { provide: { [apiKey]: provide } } });
+    const lan = wrapper.findAll(".remote-mode-tab").find((b) => b.text() === "LAN");
+    await lan!.trigger("click");
+    return { wrapper, updateSettings };
+  }
+
+  test("is checked by default and says the traffic is not encrypted", async () => {
+    const { wrapper } = await openLan();
+    const box = wrapper.find('[data-testid="network-access"]');
+    expect((box.element as HTMLInputElement).checked).toBe(true);
+    expect((box.element as HTMLInputElement).disabled).toBe(false);
+    expect(wrapper.text()).toContain("Allow access from other devices on the network (LAN, VPN, Tailscale)");
+    expect(wrapper.find('[data-testid="network-access-note"]').text()).toContain("not encrypted");
+  });
+
+  test("unticking writes networkAccess: false through the desktop settings path", async () => {
+    const { wrapper, updateSettings } = await openLan();
+    const box = wrapper.find('[data-testid="network-access"]');
+    (box.element as HTMLInputElement).checked = false;
+    await box.trigger("change");
+    expect(updateSettings).toHaveBeenCalledWith({ remoteAccess: { networkAccess: false } });
+  });
+
+  test("a stored false renders unticked", async () => {
+    const { wrapper } = await openLan({}, { networkAccess: false });
+    expect((wrapper.find('[data-testid="network-access"]').element as HTMLInputElement).checked).toBe(false);
+  });
+
+  test("a remote client sees the box disabled with a desktop-only hint, and cannot write it", async () => {
+    const { wrapper, updateSettings } = await openLan({ isRemote: true });
+    const box = wrapper.find('[data-testid="network-access"]');
+    expect((box.element as HTMLInputElement).disabled).toBe(true);
+    expect(wrapper.find('[data-testid="network-access-note"]').text()).toContain("Desktop only");
+    await box.trigger("change");
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe("RemoteAccessDialog — quick tunnel note", () => {
+  test("the note renders and the tunnel can still be created as before", async () => {
+    const store = useAppStore();
+    store.payload = {
+      appState: { settings: { remoteAccess: { enabled: true, host: "0.0.0.0", port: 43123 } } },
+      remoteAccess: { enabled: true, host: "0.0.0.0", port: 43123, urls: [], tunnel: { available: true } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    const create = vi.spyOn(store, "createCloudflareTunnel").mockResolvedValue(undefined as never);
+    const wrapper = mount(RemoteAccessDialog, { global: { provide: { [apiKey]: {} } } });
+    await wrapper
+      .findAll(".remote-mode-tab")
+      .find((b) => b.text() === "Cloudflare")!
+      .trigger("click");
+    const note = wrapper.find('[data-testid="quick-tunnel-note"]');
+    expect(note.text()).toContain("trycloudflare.com");
+    expect(note.text()).toContain("the managed relay is an alternative");
+    const button = wrapper.findAll("button").find((b) => b.text() === "Create tunnel")!;
+    expect(button.attributes("disabled")).toBeUndefined();
+    await button.trigger("click");
+    await flushPromises();
+    expect(create).toHaveBeenCalled();
+  });
+});

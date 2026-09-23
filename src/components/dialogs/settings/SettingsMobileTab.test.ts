@@ -805,6 +805,70 @@ describe("SettingsMobileTab", () => {
     expect(halfText).not.toContain("Connected");
   });
 
+  test("a TLS-inspection failure is explained in words, with the raw code kept in the title", async () => {
+    const { wrapper } = await mountTab(
+      {
+        refreshMobileConnectionHealth: vi.fn(async () => ({
+          health: {
+            running: true,
+            connectionState: "disconnected",
+            lastError: "network:tls-untrusted",
+            deviceCount: 0,
+            pendingInvitation: null,
+          },
+          quota: null,
+        })),
+        getMobileRelayStatus: vi.fn(async () => ({
+          enabled: true,
+          state: "idle",
+          relayOrigin: "",
+          internalPort: 0,
+          lastError: "network:tls-untrusted",
+          stats: null,
+        })),
+      },
+      { enabled: true, devices: [], relay: { enabled: true } },
+    );
+    const health = wrapper.find(".mobile-tab__error");
+    expect(health.text()).toContain("intercepting encrypted connections");
+    expect(health.attributes("title")).toBe("network:tls-untrusted");
+    expect(health.text()).not.toContain("TypeError");
+    const relay = wrapper.find('[data-testid="relay-network-error"]');
+    expect(relay.text()).toContain("intercepting encrypted connections");
+    expect(relay.attributes("title")).toBe("network:tls-untrusted");
+  });
+
+  test("an unknown error code is shown as before", async () => {
+    const { wrapper } = await mountTab(
+      {
+        refreshMobileConnectionHealth: vi.fn(async () => ({
+          health: {
+            running: true,
+            connectionState: "disconnected",
+            lastError: "TypeError",
+            deviceCount: 0,
+            pendingInvitation: null,
+          },
+          quota: null,
+        })),
+        getMobileRelayStatus: vi.fn(async () => ({
+          enabled: true,
+          state: "idle",
+          relayOrigin: "",
+          internalPort: 0,
+          lastError: "issueRelayConnectorGrant failed (UNAUTHENTICATED)",
+          stats: null,
+        })),
+      },
+      { enabled: true, devices: [], relay: { enabled: true } },
+    );
+    expect(wrapper.find(".mobile-tab__error").text()).toBe("TypeError");
+    expect(wrapper.find('[data-testid="relay-network-error"]').exists()).toBe(false);
+    expect(wrapper.find(".relay-block .status-badge").attributes("title")).toContain(
+      "last error: issueRelayConnectorGrant failed (UNAUTHENTICATED)",
+    );
+  });
+
   test("the relay switch says what the relay can read, not only that no port is opened", async () => {
     // "Nothing on this machine is exposed to the internet" is true about INBOUND reachability and
     // silent about confidentiality — and because the notification/command plane genuinely IS

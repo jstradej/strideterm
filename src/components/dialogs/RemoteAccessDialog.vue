@@ -141,12 +141,44 @@
             </span>
           </div>
           <p v-if="runtimeRemote.error" class="inline-error">{{ runtimeRemote.error }}</p>
+          <label
+            class="remote-access__checkbox"
+            :title="
+              isRemote
+                ? 'Desktop only: opening or closing the port to the network is changed at the desktop.'
+                : 'When off, the server listens on this computer only (127.0.0.1). The tunnel and the managed relay keep working.'
+            "
+          >
+            <input
+              type="checkbox"
+              data-testid="network-access"
+              :checked="networkAccess"
+              :disabled="isRemote"
+              @change="setNetworkAccess(($event.target as HTMLInputElement).checked)"
+            />
+            <span
+              >Allow access from other devices on the network (LAN, VPN, Tailscale) — http://&lt;IP&gt;:{{
+                lanPort
+              }}</span
+            >
+          </label>
+          <p class="remote-access__note" data-testid="network-access-note">
+            This traffic is not encrypted. The tunnel and the managed relay don't need it.
+            <template v-if="!isRemote && networkAccess && relayEnabled">
+              With the managed relay on, you can turn it off.</template
+            >
+            <template v-if="isRemote"> Desktop only.</template>
+          </p>
         </div>
 
         <!-- Cloudflare panel -->
         <div :class="['remote-mode-panel', store.remoteAccessMode === 'cloudflare' && 'remote-mode-panel--active']">
           <p class="remote-access__headline">
             Create a Cloudflare Quick Tunnel for public access without port forwarding.
+          </p>
+          <p class="remote-access__note" data-testid="quick-tunnel-note">
+            Uses a public trycloudflare.com URL through the cloudflared binary. On managed machines, security tools may
+            flag it — the managed relay is an alternative.
           </p>
           <label class="remote-access__field">
             <span>Tunnel URL</span>
@@ -355,6 +387,15 @@ const { qrDataUrl } = useQrCode(activeShareUrl);
 
 const lanHost = computed(() => runtimeRemote.value.host || remoteConfig.value.host || "0.0.0.0");
 const lanPort = computed(() => String(runtimeRemote.value.port || remoteConfig.value.port || ""));
+
+// Default true (today's behaviour); only an explicit false binds loopback. Never flipped
+// automatically — the relay tip above is a hint, not an action.
+const networkAccess = computed(() => remoteConfig.value.networkAccess !== false);
+const relayEnabled = computed(() => store.mobileRelayEnabled === true);
+async function setNetworkAccess(value: boolean): Promise<void> {
+  if (isRemote) return;
+  await store.updateSettings({ remoteAccess: { networkAccess: value } });
+}
 
 const cloudflaredPathInput = ref(remoteConfig.value.cloudflaredPath || "");
 const customUrlInput = ref(customPublicUrl.value);

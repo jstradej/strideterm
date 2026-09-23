@@ -241,23 +241,27 @@ function buildEndpointMetadata(args: {
 const REMOTE_ENDPOINT_TTL_MS = 300_000;
 
 /**
- * The host a Cloudflare-transport answer names.
+ * The host a Cloudflare-transport answer names: the tunnel's public URL host, or nothing.
  *
- * The tunnel's public URL when there is one, and the LAN host otherwise — which is what this
- * command has always effectively reported, now stated as one value instead of left for the client
- * to assemble out of `host` and `tunnelUrl`.
+ * It used to fall back to the configured LAN host (`0.0.0.0` by default). The desktop never issues
+ * a WebView ticket for anything but a connected tunnel (`currentAllowedOrigin`), so that answer was
+ * useless to the phone every time — including for a hand-set IP — and it read as "your desktop
+ * said no". No host now means the command fails with `tunnel-unavailable`.
  */
 function cloudflareEndpointHost(payload: ReturnType<MobileCommandRuntime["getPayload"]>): string {
   const publicUrl = payload?.remoteAccess?.tunnel?.publicUrl || "";
-  if (publicUrl) {
-    try {
-      return new URL(publicUrl).host;
-    } catch {
-      // Fall through to the configured host: a malformed tunnel URL is not a reason to answer
-      // with one.
-    }
+  if (!publicUrl) return "";
+  try {
+    return new URL(publicUrl).host;
+  } catch {
+    return "";
   }
-  return typeof payload?.remoteAccess?.host === "string" ? payload.remoteAccess.host : "";
+}
+
+/** Relay switched on but not attached (e.g. its TLS handshake fails behind inspection). */
+function relayEnabledButNotReady(relay: MobileRelayTransportStatus | undefined): boolean {
+  const status = relay?.status();
+  return status?.enabled === true && status.state !== "ready";
 }
 
 function currentAllowedOrigin(payload: ReturnType<MobileCommandRuntime["getPayload"]>): string {
@@ -514,7 +518,9 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           });
         }
         if (!canReconnectTunnel(state.settings.remoteAccess)) {
-          return failed("tunnel-not-approved");
+          // Fixed codes only, never free text. A relay that is on but not attached is not a refusal
+          // by anybody — the desktop simply has no route right now — and the phone says so.
+          return failed(relayEnabledButNotReady(deps.relay) ? "relay-unavailable" : "tunnel-not-approved");
         }
         let payload = deps.runtime.getPayload();
         const liveOrigin = currentAllowedOrigin(payload);
@@ -527,14 +533,23 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           log.info("remote endpoint requested tunnel reconnect", {
             status: payload.remoteAccess?.tunnel?.status || "unknown",
           });
-          await deps.runtime.createCloudflareTunnel();
+          try {
+            await deps.runtime.createCloudflareTunnel();
+          } catch (err) {
+            // The error's text (a cloudflared path, a user directory) goes to the log only; the phone
+            // gets a fixed code.
+            log.warn("remote endpoint tunnel start failed", { err: (err as Error)?.message });
+            return failed("tunnel-unavailable");
+          }
           payload = deps.runtime.getPayload();
         }
+        const endpointHost = currentAllowedOrigin(payload) ? cloudflareEndpointHost(payload) : "";
+        if (!endpointHost) return failed("tunnel-unavailable");
         return succeeded({
           ...sanitizeRemoteStatus(payload),
           ...buildEndpointMetadata({
             transport: "cloudflare",
-            host: cloudflareEndpointHost(payload),
+            host: endpointHost,
             tunnelKind: payload?.remoteAccess?.tunnel?.mode || "quick",
             now: now(),
             ttlMs: REMOTE_ENDPOINT_TTL_MS,

@@ -97,6 +97,9 @@ export const APP_CONFIG = {
     // set explicitly and must win over whatever a settings file already holds. See
     // `resolveRemoteAccessPort` for why that distinction turned out to matter.
     portOverride: envOptionalNumber("STRIDETERM_REMOTE_PORT"),
+    // Same distinction for the host: set explicitly, it is a deliberate choice of interface and
+    // wins over `remoteAccess.networkAccess` (see `resolveRemoteBindHost`).
+    hostOverride: envString("STRIDETERM_REMOTE_HOST", "").trim() || null,
   },
   session: {
     scrollback: envNumber("STRIDETERM_TERM_SCROLLBACK", 3000),
@@ -202,6 +205,37 @@ export function getRendererDevUrl(): string {
  * The variable now wins. It is deliberately NOT written back into the settings file: an override
  * that persists is one a user cannot undo by unsetting it, and this one exists to be temporary.
  */
+const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
+
+function isIpv6Literal(host: string): boolean {
+  return host.includes(":");
+}
+
+/**
+ * The address the remote server should actually bind.
+ *
+ * `networkAccess` (default true) only decides what a WILDCARD host means: with it on, `0.0.0.0` /
+ * `::` bind every interface exactly as before; with it off they bind loopback (`127.0.0.1` / `::1`),
+ * which is all the tunnel and the relay need. Any concrete address in `host` — loopback chosen by
+ * hand, a Tailscale IP, one adapter — and `STRIDETERM_REMOTE_HOST` are a deliberate choice and are
+ * bound as given, whatever `networkAccess` says.
+ */
+export function resolveRemoteBindHost(
+  remoteAccess: { host?: string | null; networkAccess?: boolean | null } = {},
+  hostOverride: string | null = APP_CONFIG.remoteAccess.hostOverride,
+): string {
+  if (hostOverride) return hostOverride;
+  const host = String(remoteAccess.host ?? "").trim() || "0.0.0.0";
+  if (!WILDCARD_HOSTS.has(host) || remoteAccess.networkAccess !== false) return host;
+  return isIpv6Literal(host) ? "::1" : "127.0.0.1";
+}
+
+/** True when `host` (as bound) is reachable only from this machine. */
+export function isLoopbackBindHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.trim().toLowerCase());
+}
+
 export function resolveRemoteAccessPort(saved?: number | null): number {
   if (APP_CONFIG.remoteAccess.portOverride !== null) {
     return APP_CONFIG.remoteAccess.portOverride;

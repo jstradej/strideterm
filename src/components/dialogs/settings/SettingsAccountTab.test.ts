@@ -736,6 +736,16 @@ describe("the account page", () => {
     expect(wrapper.text()).toContain("maximum number of desktops");
   });
 
+  test("a failure behind TLS inspection says so, and a plain network failure keeps its sentence", async () => {
+    const { wrapper, store } = await render(stateFor());
+    store.actionError = "network-tls";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".account-error").text()).toContain("intercepting encrypted connections");
+    store.actionError = "network";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".account-error").text()).toBe("Could not reach the account service. Check your connection.");
+  });
+
   test("every account error code has copy of its own, not the generic fallback", async () => {
     // THE FALLBACK IS THE BUG THIS CATCHES. A code with no entry renders as "That did not work. Try
     // again." — which is advice for a transient failure and wrong for every one of these: a cap, a

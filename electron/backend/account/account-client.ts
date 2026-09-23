@@ -31,6 +31,7 @@
 // log will see.
 
 import { identityToolkitUrl, secureTokenUrl, type MobileFirebaseConfig } from "../mobile/mobile-firebase-config.js";
+import { classifyNetworkError, type NetworkFailureKind } from "../net/network-error.js";
 import { readBoundedJsonBody, requestDeadline, type BoundedJson } from "./bounded-http.js";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -98,11 +99,14 @@ export type AccountAuthErrorCode =
 
 export class AccountAuthError extends Error {
   readonly code: AccountAuthErrorCode;
+  /** For `network` only: which kind of transport failure it was (TLS inspection above all). */
+  readonly detail: NetworkFailureKind;
 
-  constructor(code: AccountAuthErrorCode, message: string) {
+  constructor(code: AccountAuthErrorCode, message: string, detail: NetworkFailureKind = null) {
     super(message);
     this.name = "AccountAuthError";
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -282,11 +286,11 @@ export function createAccountClient(deps: AccountClientDeps): AccountClient {
           redirect: "error",
           signal: deadline.signal,
         });
-      } catch {
+      } catch (error) {
         // A transport failure is its own code: a sign-in form that says "that code is wrong" when the
         // network is down teaches people to ask for a second link that will not help either. An
         // ABANDONED FLOW is not one of those, and says so — see `AccountCallOptions`.
-        throw transportError(deadline, options?.signal);
+        throw transportError(deadline, options?.signal, error);
       }
       const body = await readBoundedJsonBody(response, MAX_RESPONSE_BYTES);
       return acceptBody(response, body, deadline, options?.signal);
@@ -328,11 +332,15 @@ export function createAccountClient(deps: AccountClientDeps): AccountClient {
   }
 
   /** Which of the two transport outcomes this was: the caller stopped waiting, or nothing answered. */
-  function transportError(deadline: { timedOut(): boolean }, signal?: AbortSignal): AccountAuthError {
+  function transportError(deadline: { timedOut(): boolean }, signal?: AbortSignal, cause?: unknown): AccountAuthError {
     if (signal?.aborted === true && !deadline.timedOut()) {
       return new AccountAuthError("aborted", "the flow that made this request was abandoned.");
     }
-    return new AccountAuthError("network", "the identity service could not be reached.");
+    return new AccountAuthError(
+      "network",
+      "the identity service could not be reached.",
+      cause === undefined ? null : classifyNetworkError(cause),
+    );
   }
 
   /**
@@ -409,8 +417,8 @@ export function createAccountClient(deps: AccountClientDeps): AccountClient {
             redirect: "error",
             signal: deadline.signal,
           });
-        } catch {
-          throw transportError(deadline, options?.signal);
+        } catch (error) {
+          throw transportError(deadline, options?.signal, error);
         }
         const body = acceptBody(
           response,

@@ -11,6 +11,7 @@
 // a direct passthrough with no logic of its own to get wrong.
 
 import { callableUrl, type MobileFirebaseConfig } from "../mobile/mobile-firebase-config.js";
+import { classifyNetworkError, type NetworkFailureKind } from "../net/network-error.js";
 import {
   AccountNoticeAckResponseSchema,
   AccountOverviewSchema,
@@ -71,12 +72,15 @@ export class AccountCallableError extends Error {
   /** The server's own refusal reason, from its closed set. Never free text shown to a user. */
   readonly reason: string;
   readonly status: number;
+  /** For `network` only: which kind of transport failure it was (TLS inspection above all). */
+  readonly detail: NetworkFailureKind;
 
-  constructor(reason: string, status: number) {
+  constructor(reason: string, status: number, detail: NetworkFailureKind = null) {
     super(`account callable rejected: ${reason}`);
     this.name = "AccountCallableError";
     this.reason = reason;
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -295,11 +299,12 @@ export function createAccountTransport(deps: AccountTransportDeps): AccountTrans
         redirect: "error",
         signal: deadline.signal,
       });
-    } catch {
+    } catch (error) {
       // THE OPERATION ENDED, or the network did — two different sentences (S02). Both leave the
       // server's state unknown, and the manager keeps the idempotency key for both; only the first is
       // the person's own doing, and is reported to them as such rather than as an outage.
-      throw new AccountCallableError(abandoned(external, deadline) ? "aborted" : "network", 0);
+      if (abandoned(external, deadline)) throw new AccountCallableError("aborted", 0);
+      throw new AccountCallableError("network", 0, classifyNetworkError(error));
     }
     // BOUNDED, and read through the same deadline as the request (F04). `response.json()` reads
     // whatever arrives, for as long as it keeps arriving.

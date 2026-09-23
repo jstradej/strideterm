@@ -128,6 +128,25 @@ describe("everything else about a refusal", () => {
     });
     await expect(transport.ensureAccount("idem-1")).rejects.toMatchObject({ reason: "network", status: 0 });
   });
+
+  test("a TLS-inspection failure stays `network` and carries the tls-untrusted detail", async () => {
+    const transport = createAccountTransport({
+      config: CONFIG,
+      tokenFor: async () => "id-token",
+      fetchImpl: async () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("unable to get local issuer certificate"), {
+            code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+          }),
+        });
+      },
+    });
+    await expect(transport.ensureAccount("idem-1")).rejects.toMatchObject({
+      reason: "network",
+      status: 0,
+      detail: "tls-untrusted",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

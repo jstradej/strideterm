@@ -27,6 +27,7 @@ import {
   MobileFirebasePermissionDeniedError,
 } from "./mobile-firebase-rest.js";
 import { MobileQuotaExceededError } from "./mobile-firebase-transport.js";
+import { classifyNetworkError } from "../net/network-error.js";
 
 /**
  * A fixed code for `err`, safe to log.
@@ -47,6 +48,11 @@ export function mobileErrorCode(err: unknown): string {
   if (err instanceof MobileFirebaseAuthRejectedError) return `auth-rejected:${err.reason}`;
   if (err instanceof MobileQuotaExceededError) return "quota-exceeded";
   if (err instanceof MobileFirebaseNotConfiguredError) return "not-configured";
+  // A transport failure (undici's `TypeError: fetch failed` with the code in `cause`, or a `ws`
+  // error with `code` on it) gets a fixed kind the UI can explain — TLS inspection above all —
+  // instead of the bare class name. Unclassified errors keep the class name below.
+  const net = classifyNetworkError(err);
+  if (net) return `network:${net}`;
   if (err instanceof Error) {
     // `name` for a built-in is a class name (`TypeError`, `AbortError`, `SyntaxError`); for a
     // custom error it is whatever the constructor set, which in this codebase is always a literal.

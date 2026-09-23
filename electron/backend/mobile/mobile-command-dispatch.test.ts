@@ -771,6 +771,82 @@ describe("the managed relay as a third transport", () => {
     expect(runtime.calls).not.toContain("createCloudflareTunnel");
   });
 
+  describe("fixed codes instead of an unusable endpoint", () => {
+    const TUNNEL_OFF = {
+      settings: {
+        remoteAccess: {
+          enabled: false,
+          host: "0.0.0.0",
+          port: 4756,
+          token: MASTER_TOKEN,
+          customPublicUrl: "",
+          cloudflaredPath: "",
+          autoTunnel: true,
+        },
+      } as AppState["settings"],
+    };
+    const endpointRequest = () => makeCommand({ type: "remote.endpoint.request", payload: { workspaceId: "ws-1" } });
+    const device = () => makeDevice({ capabilities: ["remote.request"] });
+
+    test("relay enabled but connecting, tunnel not approved → relay-unavailable", async () => {
+      const { dispatcher, runtime } = await createFixture(TUNNEL_OFF, {
+        enabled: true,
+        state: "connecting",
+        relayOrigin: RELAY_ORIGIN,
+      });
+      const result = await dispatcher.dispatch(endpointRequest(), device());
+      expect(result).toMatchObject({ status: "failed", errorCode: "relay-unavailable" });
+      expect(runtime.calls).not.toContain("createCloudflareTunnel");
+    });
+
+    test("relay disabled, tunnel not approved → tunnel-not-approved (unchanged)", async () => {
+      const { dispatcher } = await createFixture(TUNNEL_OFF, { enabled: false, state: "off", relayOrigin: "" });
+      const result = await dispatcher.dispatch(endpointRequest(), device());
+      expect(result).toMatchObject({ status: "failed", errorCode: "tunnel-not-approved" });
+    });
+
+    test("relay ready → managedRelay answer (unchanged), even with the tunnel not approved", async () => {
+      const { dispatcher } = await createFixture(TUNNEL_OFF, READY_RELAY);
+      const result = await dispatcher.dispatch(endpointRequest(), device());
+      expect(result.status).toBe("succeeded");
+      expect(result.data).toMatchObject({ transport: "managedRelay", host: RELAY_ORIGIN });
+    });
+
+    test("tunnel approved but createCloudflareTunnel ends without a publicUrl → tunnel-unavailable, no 0.0.0.0", async () => {
+      const { dispatcher, runtime } = await createFixture();
+      runtime.setTunnelState("idle");
+      runtime.createCloudflareTunnel = async () => {
+        runtime.calls.push("createCloudflareTunnel");
+        runtime.setTunnelState("error", "");
+      };
+      const result = await dispatcher.dispatch(endpointRequest(), device());
+      expect(result).toMatchObject({ status: "failed", errorCode: "tunnel-unavailable" });
+      expect(runtime.calls).toContain("createCloudflareTunnel");
+      expect(JSON.stringify(result)).not.toContain("0.0.0.0");
+    });
+
+    test("createCloudflareTunnel throws → tunnel-unavailable and the error text never reaches the phone", async () => {
+      const { dispatcher, runtime } = await createFixture();
+      runtime.setTunnelState("idle");
+      runtime.createCloudflareTunnel = async () => {
+        throw new Error("spawn cloudflared ENOENT C:\\Users\\someone\\bin\\cloudflared.exe");
+      };
+      const result = await dispatcher.dispatch(endpointRequest(), device());
+      expect(result.errorCode).toBe("tunnel-unavailable");
+      expect(result.status).toBe("failed");
+      const text = JSON.stringify(result);
+      expect(text).not.toContain("ENOENT");
+      expect(text).not.toContain("Users");
+    });
+
+    test("tunnel connected → cloudflare answer with the tunnel host (unchanged)", async () => {
+      const { dispatcher } = await createFixture();
+      const result = await dispatcher.dispatch(endpointRequest(), device());
+      expect(result.status).toBe("succeeded");
+      expect(result.data).toMatchObject({ transport: "cloudflare", host: "example.trycloudflare.com" });
+    });
+  });
+
   test("remote.tunnel.reconnect stays relay-unaware: reconnecting the tunnel means the tunnel", async () => {
     const { dispatcher, runtime } = await createFixture({}, READY_RELAY);
     const command = makeCommand({

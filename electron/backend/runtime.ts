@@ -191,7 +191,7 @@ import {
   shouldRefreshNow,
   createIntervalGate,
 } from "./runtime-utils.js";
-import { APP_CONFIG, resolveRemoteAccessPort } from "../../config/app-config.js";
+import { APP_CONFIG, resolveRemoteAccessPort, resolveRemoteBindHost } from "../../config/app-config.js";
 // @ts-ignore — version-checker.js will be migrated in a later phase
 import { createVersionChecker } from "./version-checker.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.js";
@@ -245,8 +245,12 @@ export { hasMeaningfulUserInput };
  * ended", ST-RMT-04). Fixed here rather than at the two call sites so a third one cannot get it
  * wrong.
  */
-export function createTunnelOriginUrl(remoteConfig: { host?: string; port?: number } = {}): string {
-  const rawHost = String(remoteConfig.host || "").trim();
+export function createTunnelOriginUrl(
+  remoteConfig: { host?: string; port?: number; networkAccess?: boolean } = {},
+): string {
+  // The address actually bound (see `resolveRemoteBindHost`), so an env override or a loopback-only
+  // bind is where the tunnel points too.
+  const rawHost = resolveRemoteBindHost(remoteConfig);
   const host =
     !rawHost || rawHost === "0.0.0.0" ? "127.0.0.1" : rawHost === "::" || rawHost === "[::]" ? "::1" : rawHost;
   const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
@@ -3757,7 +3761,11 @@ export async function createRuntime({
     });
   }
 
-  async function ensureRemoteOriginReady(remoteConfig: { host?: string; port?: number }): Promise<string> {
+  async function ensureRemoteOriginReady(remoteConfig: {
+    host?: string;
+    port?: number;
+    networkAccess?: boolean;
+  }): Promise<string> {
     const originUrl = createTunnelOriginUrl(remoteConfig);
     await checkRemoteOriginImpl(originUrl);
     return originUrl;
@@ -7005,6 +7013,48 @@ export async function createRuntime({
     getAccountState() {
       return accountManager.state();
     },
+    /** QA bootstrap evidence only: claim presence and the already-sanitized account summary. */
+    async accountBootstrapDiagnostics(refresh = false) {
+      if (process.env.STRIDETERM_ENV !== "qa" || process.env.STRIDETERM_QA_HEADLESS_ACCOUNT_BOOTSTRAP !== "1") {
+        throw new Error("QA bootstrap diagnostics are disabled");
+      }
+      const state = accountManager.state();
+      let entitlementIdPresent = false;
+      let issuerPresent = false;
+      let notAfterValid = false;
+      const config = mobileFirebase.config;
+      if (config) {
+        try {
+          if (refresh) await ensureInstallationRestClient(config).refreshSession();
+          const token = (await ensureInstallationRestClient(config).currentSession()).idToken;
+          const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+            entitlementId?: unknown;
+            entitlementIssuer?: unknown;
+            entitlementNotAfter?: unknown;
+          };
+          entitlementIdPresent = typeof payload.entitlementId === "string" && payload.entitlementId.length > 0;
+          issuerPresent = typeof payload.entitlementIssuer === "string" && payload.entitlementIssuer.length > 0;
+          notAfterValid =
+            typeof payload.entitlementNotAfter === "number" &&
+            Number.isInteger(payload.entitlementNotAfter) &&
+            payload.entitlementNotAfter > Date.now();
+        } catch {
+          // The response remains a fixed false/absent shape; token parsing failures expose no text.
+        }
+      }
+      return {
+        phase: state.phase,
+        lastError: state.lastError ?? null,
+        installationRegistered: state.installationRegistered,
+        entitlementState: state.entitlement?.state ?? null,
+        entitlementSource: state.entitlement?.source ?? null,
+        entitlementNotAfterPresent: typeof state.entitlement?.notAfter === "number",
+        entitlementIdPresent,
+        issuerPresent,
+        notAfterValid,
+        entitlementClaimsUsable: entitlementIdPresent && issuerPresent && notAfterValid,
+      };
+    },
     /**
      * Starts a passwordless sign-in and RETURNS QUICKLY.
      *
@@ -7061,6 +7111,12 @@ export async function createRuntime({
      */
     accountSubmitSignInLink(link: string) {
       accountManager.submitSignInLink(link);
+    },
+    accountBootstrapExternalSignIn(email: string, link: string) {
+      return accountManager.bootstrapExternalSignIn(email, link);
+    },
+    accountBootstrapExternalDeletion(email: string, link: string, confirmationPhrase: string) {
+      return accountManager.bootstrapExternalDeletion(email, link, confirmationPhrase);
     },
     accountChangeLoginEmail(email: string) {
       return accountManager.requestLoginEmailChange(email);

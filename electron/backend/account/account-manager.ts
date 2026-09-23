@@ -562,10 +562,38 @@ export class AccountManager extends EventEmitter {
         await broker.begin(email, purpose);
       } catch (error) {
         throw new AccountManagerError(
-          error instanceof SignInBrokerError ? toAccountErrorCode({ code: error.code }) : "unknown",
+          error instanceof SignInBrokerError
+            ? toAccountErrorCode({ code: error.code, detail: error.detail })
+            : "unknown",
         );
       }
     });
+  }
+
+  /**
+   * Completes a hosted, no-email sign-in link supplied by the headless QA harness.
+   *
+   * This deliberately uses the same broker parser, owner verification, enrolment and trial chain
+   * as the shipped account flow. It is not wired to renderer IPC; the loopback harness enables it
+   * only for an explicitly opted-in QA process.
+   */
+  async bootstrapExternalSignIn(email: string, link: string): Promise<void> {
+    const broker = this.requireBroker();
+    this.abandonOperations();
+    this.releaseOwnerSession();
+    this.pendingOfferId = null;
+    broker.beginExternalLink(email, link, "enrol-with-trial");
+    await this.confirmEmailSignIn();
+  }
+
+  async bootstrapExternalDeletion(email: string, link: string, confirmationPhrase: string): Promise<void> {
+    const broker = this.requireBroker();
+    this.abandonOperations();
+    this.releaseOwnerSession();
+    this.pendingOfferId = null;
+    broker.beginExternalLink(email, link, "delete-account");
+    await this.confirmEmailSignIn();
+    await this.deleteAccount(confirmationPhrase);
   }
 
   /** Sends another link for the same flow. Bounded by the broker: a cooldown and a per-flow ceiling. */
@@ -580,7 +608,9 @@ export class AccountManager extends EventEmitter {
         await broker.resend();
       } catch (error) {
         throw new AccountManagerError(
-          error instanceof SignInBrokerError ? toAccountErrorCode({ code: error.code }) : "unknown",
+          error instanceof SignInBrokerError
+            ? toAccountErrorCode({ code: error.code, detail: error.detail })
+            : "unknown",
         );
       }
     });
@@ -598,7 +628,8 @@ export class AccountManager extends EventEmitter {
     try {
       broker.submitLink(link);
     } catch (error) {
-      const code = error instanceof SignInBrokerError ? toAccountErrorCode({ code: error.code }) : "unknown";
+      const code =
+        error instanceof SignInBrokerError ? toAccountErrorCode({ code: error.code, detail: error.detail }) : "unknown";
       this.lastError = code;
       this.publish();
       throw new AccountManagerError(code);
@@ -706,7 +737,7 @@ export class AccountManager extends EventEmitter {
       started = broker.beginVerification();
     } catch (error) {
       throw new AccountManagerError(
-        error instanceof SignInBrokerError ? toAccountErrorCode({ code: error.code }) : "unknown",
+        error instanceof SignInBrokerError ? toAccountErrorCode({ code: error.code, detail: error.detail }) : "unknown",
       );
     }
     // EVERYTHING THIS COMPLETION WILL EVER KNOW, decided here and immutable from here (F01). Reading
@@ -2384,7 +2415,9 @@ function codeOf(error: unknown): AccountErrorCode {
   if (error instanceof AccountAuthError)
     return error.code === "aborted" ? "sign-in-superseded" : toAccountErrorCode(error);
   if (error instanceof AccountCallableError) {
-    return error.reason === "aborted" ? "sign-in-superseded" : toAccountErrorCode({ code: error.reason });
+    return error.reason === "aborted"
+      ? "sign-in-superseded"
+      : toAccountErrorCode({ code: error.reason, detail: error.detail });
   }
   return "unknown";
 }

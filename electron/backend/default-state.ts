@@ -512,6 +512,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         enabled: APP_CONFIG.remoteAccess.enabled,
         paused: false,
         host: APP_CONFIG.remoteAccess.host,
+        networkAccess: true,
         port: APP_CONFIG.remoteAccess.port,
         token: createAccessToken(),
         customPublicUrl: "",
@@ -1332,8 +1333,13 @@ export function normalizeState(
       ...defaults.settings.remoteAccess,
       ...rawRemoteAccess,
       paused: rawRemoteAccess.paused === true,
-      host:
-        rawRemoteAccess.host === "127.0.0.1" ? "0.0.0.0" : rawRemoteAccess.host || defaults.settings.remoteAccess.host,
+      host: rawRemoteAccess.host || defaults.settings.remoteAccess.host,
+      // A plain default backfill, not a migration: a missing key gets `true` (today's behaviour), a
+      // stored `false` is never overwritten.
+      networkAccess:
+        typeof rawRemoteAccess.networkAccess === "boolean"
+          ? rawRemoteAccess.networkAccess
+          : defaults.settings.remoteAccess.networkAccess,
       token: rawRemoteAccess.token || defaults.settings.remoteAccess.token,
     },
     integrations: {

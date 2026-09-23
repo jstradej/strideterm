@@ -128,6 +128,38 @@ describe("asking for a sign-in link", () => {
     });
     await expect(account.startEmailSignIn("a@b.test", CONTINUE_URL)).rejects.toMatchObject({ code: "network" });
   });
+
+  test("a TLS-inspection failure stays `network` and carries the tls-untrusted detail", async () => {
+    const account = createAccountClient({
+      config: CONFIG,
+      now: () => NOW,
+      fetchImpl: async () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("unable to get local issuer certificate"), {
+            code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+          }),
+        });
+      },
+    });
+    await expect(account.startEmailSignIn("a@b.test", CONTINUE_URL)).rejects.toMatchObject({
+      code: "network",
+      detail: "tls-untrusted",
+    });
+  });
+
+  test("an unclassified transport failure has no detail", async () => {
+    const account = createAccountClient({
+      config: CONFIG,
+      now: () => NOW,
+      fetchImpl: async () => {
+        throw new Error("boom");
+      },
+    });
+    await expect(account.startEmailSignIn("a@b.test", CONTINUE_URL)).rejects.toMatchObject({
+      code: "network",
+      detail: null,
+    });
+  });
 });
 
 describe("redeeming the link", () => {

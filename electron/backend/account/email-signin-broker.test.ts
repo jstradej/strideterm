@@ -330,6 +330,18 @@ describe("resending", () => {
     expect(h.broker.pendingPayload()).toEqual({ email: "owner@example.test", oobCode: "CODE" });
   });
 
+  test("an externally minted link seeds a manual-only attempt without sending or broker calls", () => {
+    const h = harness();
+    h.broker.beginExternalLink(
+      "owner@example.test",
+      `${AUTHLINK.origin}/c?attempt=${ATTEMPT}&oobCode=EXTERNAL`,
+      "enrol-with-trial",
+    );
+    expect(h.calls).toHaveLength(0);
+    expect(h.broker.state()).toMatchObject({ phase: "awaiting-link", manualOnly: true, sendOutcome: "unknown" });
+    expect(h.broker.pendingPayload()).toEqual({ email: "owner@example.test", oobCode: "EXTERNAL" });
+  });
+
   test("an ANSWERED refusal is not an unknown result: the attempt ends", async () => {
     // The other half of the same distinction. Everything but a transport failure is a message that
     // arrived — a malformed address, this address's rate limit, a project that cannot serve the flow —

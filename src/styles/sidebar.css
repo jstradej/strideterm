@@ -801,6 +801,20 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   line-height: 1.5;
 }
 
+.remote-access__checkbox {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.remote-access__note {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .remote-access__primary-actions {
   display: flex;
   gap: 6px;

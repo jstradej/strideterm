@@ -26,6 +26,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import { useAccountStore } from "../../../stores/account.js";
+import { NETWORK_TLS_UNTRUSTED_COPY } from "../../../lib/network-error-copy.js";
 
 type AccountView = "overview" | "account" | "hidden";
 
@@ -200,6 +201,7 @@ const ERROR_COPY: Record<string, string> = {
   "requires-recent-login": "Confirm it is you again to do that.",
   "user-disabled": "That account has been disabled.",
   network: "Could not reach the account service. Check your connection.",
+  "network-tls": NETWORK_TLS_UNTRUSTED_COPY,
   "not-configured": "This build has no hosted control plane configured.",
   "installation-limit": "This account already has the maximum number of desktops.",
   "mobile-device-limit": "This account already has the maximum number of phones.",

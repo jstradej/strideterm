@@ -850,6 +850,18 @@ describe("state broadcast", () => {
     expect(manager.state().busy).toBe(false);
   });
 
+  test("a network failure behind TLS inspection is shown as network-tls; an unclassified one as network", async () => {
+    const { manager, transport } = fakes();
+    await signIn(manager);
+    const overview = transport.getAccountOverview as ReturnType<typeof vi.fn>;
+    overview.mockRejectedValueOnce(new AccountCallableError("network", 0, "tls-untrusted"));
+    await expect(manager.refreshOverview()).rejects.toBeInstanceOf(AccountManagerError);
+    expect(manager.state().lastError).toBe("network-tls");
+    overview.mockRejectedValueOnce(new AccountCallableError("network", 0));
+    await expect(manager.refreshOverview()).rejects.toBeInstanceOf(AccountManagerError);
+    expect(manager.state().lastError).toBe("network");
+  });
+
   test("a background claim refresh never flashes an error at somebody who did not ask", async () => {
     const { manager, transport } = fakes();
     await signIn(manager);

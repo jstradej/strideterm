@@ -578,7 +578,7 @@
                 class="mobile-tab__error"
                 :title="mobileConnectionHealth.lastError"
               >
-                {{ mobileConnectionHealth.lastError }}
+                {{ describeNetworkErrorCode(mobileConnectionHealth.lastError) ?? mobileConnectionHealth.lastError }}
               </p>
 
               <!-- Quota -->
@@ -654,6 +654,14 @@
                     {{ relayStatusBusy ? "Refreshing…" : "Refresh" }}
                   </button>
                 </div>
+                <p
+                  v-if="mobileRelayEnabled && relayNetworkErrorText"
+                  class="mobile-tab__error"
+                  data-testid="relay-network-error"
+                  :title="mobileRelayStatus?.lastError"
+                >
+                  {{ relayNetworkErrorText }}
+                </p>
               </div>
             </template>
           </fieldset>
@@ -669,6 +677,7 @@ import { useAppStore } from "../../../stores/app.js";
 import { useAccountStore } from "../../../stores/account.js";
 import RemoteAccessPauseControl from "../../layout/RemoteAccessPauseControl.vue";
 import SettingsAccountTab from "./SettingsAccountTab.vue";
+import { describeNetworkErrorCode } from "../../../lib/network-error-copy.js";
 import { QR_COLORS_FOR_SCANNING, useQrCode } from "../../../composables/useQrCode.js";
 
 interface ProfileOption {
@@ -1041,6 +1050,10 @@ const relayLabel = computed(() => {
       return state;
   }
 });
+
+// A classified transport failure (TLS inspection above all) is explained in words; any other
+// relay error stays in the badge's title, as before.
+const relayNetworkErrorText = computed(() => describeNetworkErrorCode(mobileRelayStatus.value?.lastError));
 
 const relayBadgeClass = computed(() => {
   const state = String(mobileRelayStatus.value?.state ?? "");
