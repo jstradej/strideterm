@@ -2044,7 +2044,10 @@ export async function createRuntime({
       log.debug("hook ignored: waiting already raised (not urgent)", { sessionId, hook });
       return;
     }
-    if (isSessionVisible(sessionId)) {
+    const freshTurn = signal.lastPromptAt > 0 && signal.lastPromptAt > signal.lastAlertAt;
+    const currentlyVisible = isSessionCurrentlyVisible(sessionId);
+    const recentlyVisible = !currentlyVisible && isSessionVisible(sessionId);
+    if (currentlyVisible || (recentlyVisible && classification.urgency !== "urgent" && !freshTurn)) {
       log.trace("hook: session visible, resetting signal", { sessionId });
       resetSessionSignal(sessionId);
       return;
@@ -3143,6 +3146,7 @@ export async function createRuntime({
     updateVisibleSessions,
     dropViewerVisibility,
     isSessionVisible,
+    isSessionCurrentlyVisible,
     markSessionPromptInjected,
   } = createRuntimeAttentionManager({
     log,

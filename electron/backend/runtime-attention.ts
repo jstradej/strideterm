@@ -579,6 +579,10 @@ export function createRuntimeAttentionManager({
     return until != null && Date.now() < until;
   }
 
+  function isSessionCurrentlyVisible(sessionId: string): boolean {
+    return attentionContext.visibleSessionIds.has(sessionId);
+  }
+
   function markSessionPromptInjected(sessionId: string): void {
     const signal = sessionSignals.get(sessionId);
     if (!signal) {
@@ -608,6 +612,7 @@ export function createRuntimeAttentionManager({
     updateVisibleSessions,
     dropViewerVisibility,
     isSessionVisible,
+    isSessionCurrentlyVisible,
     markSessionPromptInjected,
   };
 }

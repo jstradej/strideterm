@@ -11702,6 +11702,14 @@ describe("syncAttentionContext — per-viewer visibility union (mobile flip-flop
     fixture.sessionManager.emit("terminal:exit", { sessionId: "backend:tests", exitCode: 2, intentional: false });
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function prepareAgentHookSession(fixture: any) {
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:tests", data: "$ " });
+    await vi.advanceTimersByTimeAsync(16_000);
+    fixture.runtime.writeToSession("backend:tests", "claude\r");
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["backend:tests"], windowId: "win-a" });
+  }
+
   test("a second viewer reporting [] does not wipe the first viewer's visible session", async () => {
     const fixture = await createTwoViewerFixture();
     fixtures.push(fixture);
@@ -11751,6 +11759,76 @@ describe("syncAttentionContext — per-viewer visibility union (mobile flip-flop
       runToFailingExit(fixture);
 
       expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("recent-visibility grace still suppresses an ordinary same-turn completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoViewerFixture();
+      fixtures.push(fixture);
+      await prepareAgentHookSession(fixture);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).dropViewerVisibility("win-a");
+      await vi.advanceTimersByTimeAsync(1_000);
+      fixture.runtime.notifyAgentHook("backend:tests", "", "Stop");
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("urgent hooks bypass recent-visibility grace after the viewer drops", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoViewerFixture();
+      fixtures.push(fixture);
+      await prepareAgentHookSession(fixture);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).dropViewerVisibility("win-a");
+      await vi.advanceTimersByTimeAsync(1_000);
+      fixture.runtime.notifyAgentHook("backend:tests", "permission_prompt");
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a completion from a newer submitted turn bypasses recent-visibility grace", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoViewerFixture();
+      fixtures.push(fixture);
+      await prepareAgentHookSession(fixture);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).dropViewerVisibility("win-a");
+      await vi.advanceTimersByTimeAsync(1_000);
+      fixture.runtime.notifyAgentHook("backend:tests", "", "UserPromptSubmit");
+      fixture.runtime.notifyAgentHook("backend:tests", "", "Stop");
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("actual visibility still suppresses urgent hooks", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoViewerFixture();
+      fixtures.push(fixture);
+      await prepareAgentHookSession(fixture);
+
+      fixture.runtime.notifyAgentHook("backend:tests", "permission_prompt");
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
