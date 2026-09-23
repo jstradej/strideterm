@@ -23,7 +23,7 @@
         "startup": "default",
         "platforms": {
           "win32": {
-            "command": "\"C:\\Program Files\\bottom\\bin\\btm.exe\" 2>nul || btm 2>nul || powershell -ExecutionPolicy Bypass -Command \"& { Write-Host 'bottom (btm) not found. Install it:' -Fore Yellow; Write-Host '  winget install Clement.bottom' -Fore Cyan; Write-Host ''; Write-Host 'Then restart this tab.' -Fore Gray; pause }\""
+            "command": "\"C:\\Program Files\\bottom\\bin\\btm.exe\" 2>nul || btm 2>nul || powershell -Command \"& { Write-Host 'bottom (btm) not found. Install it:' -Fore Yellow; Write-Host '  winget install Clement.bottom' -Fore Cyan; Write-Host ''; Write-Host 'Then restart this tab.' -Fore Gray; pause }\""
           },
           "linux": { "command": "btm 2>/dev/null || btop 2>/dev/null || htop 2>/dev/null || top" },
           "darwin": { "command": "btm 2>/dev/null || btop 2>/dev/null || htop 2>/dev/null || top" }
