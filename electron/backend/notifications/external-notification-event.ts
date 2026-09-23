@@ -30,10 +30,12 @@ export interface BuildExternalNotificationEventInput {
   title: string;
   detail?: string;
   workspaceName?: string;
+  taskId?: string;
   tab?: string;
   activity?: string;
   prompt?: string;
   exitCode?: number | null;
+  durationMs?: number;
   createdAt?: number;
 }
 
@@ -99,10 +101,12 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
     title: truncateUtf8Head(displayText(input.title, 500) || "", 500),
     detail: truncateUtf8Head(input.detail || "", 1500),
     ...(displayText(input.workspaceName, 120) ? { workspaceName: displayText(input.workspaceName, 120) } : {}),
+    ...(input.taskId && input.taskId.length <= 200 ? { taskId: input.taskId } : {}),
     ...(displayText(input.tab, 120) ? { tab: displayText(input.tab, 120) } : {}),
     ...(displayText(input.activity, 200) ? { activity: displayText(input.activity, 200) } : {}),
     ...(input.prompt ? { prompt: truncateUtf8Head(input.prompt, 500) } : {}),
     ...(Number.isInteger(input.exitCode) ? { exitCode: input.exitCode! } : {}),
+    ...(Number.isInteger(input.durationMs) && input.durationMs! >= 0 ? { durationMs: input.durationMs! } : {}),
     dedupeKey,
     // Only low-priority events collapse — waiting/error/normal events must
     // never silently disappear behind a later one (plan §7/§11.5).

@@ -3200,6 +3200,8 @@ export async function createRuntime({
         recentOutput: excerpt,
       });
       const activity = String(signal?.currentCommand || "").trim();
+      const taskId = workspace?.kind === "task" ? workspace.task?.taskId : undefined;
+      const durationMs = signal?.activityStartedAt ? Math.max(0, Date.now() - signal.activityStartedAt) : undefined;
       const title = notificationSummary(String(opts.kind || "info"), String(opts.detail || ""), opts.exitCode);
       telegramManager
         .forwardAlert({
@@ -3241,9 +3243,11 @@ export async function createRuntime({
           title,
           detail: body,
           workspaceName: formatWorkspaceDisplayName(workspace) || opts.projectId || "",
+          taskId,
           tab: panel?.title || undefined,
           activity: activity || undefined,
           exitCode: typeof opts.exitCode === "number" ? opts.exitCode : undefined,
+          durationMs,
         }),
       );
     }

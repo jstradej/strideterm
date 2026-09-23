@@ -107,16 +107,20 @@ describe("buildExternalNotificationEvent", () => {
       title: "Shell",
       detail: "Command finished\n\nRecent terminal output:\npassed",
       workspaceName: "api",
+      taskId: "task-42",
       tab: "Tests",
       activity: "pnpm test",
       exitCode: 0,
+      durationMs: 12_345,
     });
 
     expect(event).toMatchObject({
       workspaceName: "api",
+      taskId: "task-42",
       tab: "Tests",
       activity: "pnpm test",
       exitCode: 0,
+      durationMs: 12_345,
     });
     expect(
       buildExternalNotificationEvent({

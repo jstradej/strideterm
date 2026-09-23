@@ -72,10 +72,12 @@ export interface ExternalNotificationEvent {
   detail: string;
   /** Display context carried inside the encrypted mobile payload. */
   workspaceName?: string;
+  taskId?: string;
   tab?: string;
   activity?: string;
   prompt?: string;
   exitCode?: number;
+  durationMs?: number;
   /** Stable key for collapsing duplicate OS/mobile notifications of the same alert. */
   dedupeKey: string;
   /** Set only for low-priority/repeatable kinds — see buildExternalNotificationEvent(). */

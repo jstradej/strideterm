@@ -1222,11 +1222,13 @@ export class MobileManager extends EventEmitter {
       actions: event.actions,
       isTest,
       ...(event.workspaceName ? { workspaceName: event.workspaceName } : {}),
+      ...(event.taskId ? { taskId: event.taskId } : {}),
       ...(event.panelId ? { panelId: event.panelId } : {}),
       ...(event.tab ? { tab: event.tab } : {}),
       ...(event.activity ? { activity: event.activity } : {}),
       ...(event.prompt ? { prompt: event.prompt } : {}),
       ...(typeof event.exitCode === "number" ? { exitCode: event.exitCode } : {}),
+      ...(typeof event.durationMs === "number" ? { durationMs: event.durationMs } : {}),
     };
     const plaintext = Buffer.from(JSON.stringify(payload));
     const ciphertext = sealToCombinedBase64(plaintext, key, aad);

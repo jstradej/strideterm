@@ -880,10 +880,12 @@ describe("MobileManager outbox: ExternalNotificationEvent -> encrypted per-devic
         title: "Secret alert title",
         detail: "Approve deployment?\n\nRecent terminal output:\npassed ✅",
         workspaceName: "api-gateway",
+        taskId: "task-42",
         panelId: "panel-codex",
         tab: "Claude Code",
         activity: "pnpm test",
         exitCode: 0,
+        durationMs: 12_345,
       }),
     );
     await flush();
@@ -899,12 +901,14 @@ describe("MobileManager outbox: ExternalNotificationEvent -> encrypted per-devic
     expect(plaintext).toMatchObject({
       body: "Approve deployment?\n\nRecent terminal output:\npassed ✅",
       workspaceName: "api-gateway",
+      taskId: "task-42",
       panelId: "panel-codex",
       tab: "Claude Code",
       activity: "pnpm test",
       exitCode: 0,
+      durationMs: 12_345,
     });
-    for (const field of ["body", "workspaceName", "panelId", "tab", "activity", "exitCode"]) {
+    for (const field of ["body", "workspaceName", "taskId", "panelId", "tab", "activity", "exitCode", "durationMs"]) {
       expect(sent).not.toHaveProperty(field);
     }
     expect(Buffer.byteLength(JSON.stringify(sent), "utf8")).toBeLessThanOrEqual(MAX_EVENT_ENVELOPE_BYTES);
