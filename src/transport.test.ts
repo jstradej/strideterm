@@ -1586,6 +1586,7 @@ describe("remote transport API parity — no method silently missing its remote 
     // now is a live sign-in code, which is worse rather than better.
     // `remote-server.ts` routes none of them — asserted separately in remote-server.test.ts.
     "getAccountState",
+    "onAccountUpdated",
     // The passwordless sign-in, which is desktop-only for a sharper reason than the rest: the flow
     // holds a live sign-in code and a claim secret in the backend for a few minutes, and the manual
     // fallback carries the whole email link across one IPC hop. None of that belongs on a remote HTTP
@@ -1603,6 +1604,7 @@ describe("remote transport API parity — no method silently missing its remote 
     "accountStartTrial",
     "accountRefreshOverview",
     "accountOpenCheckout",
+    "accountCopyCheckoutUrl",
     "accountOpenBillingPortal",
     "accountRevoke",
     "accountAcknowledgeNotice",

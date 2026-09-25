@@ -515,7 +515,9 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   // --- Settings / help / profiles / azure connection dialogs -------------
 
-  function openSettingsDialog(opts: { initialTab?: string } = {}): void {
+  function openSettingsDialog(
+    opts: { initialTab?: string; initialMobileView?: "overview" | "phones" | "account" } = {},
+  ): void {
     openDialog("SettingsDialog", {
       settings: ctx.payload.value?.appState?.settings || {},
       tabTemplates: ctx.payload.value?.appState?.tabTemplates || [],
@@ -524,6 +526,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       repositoryUrl: (ctx.payload.value as AnyApi)?.meta?.repositoryUrl || "",
       versionCheck: (ctx.payload.value as AnyApi)?.meta?.versionCheck || null,
       initialTab: opts.initialTab || "general",
+      initialMobileView: opts.initialMobileView,
       onCancel: closeDialog,
       onSave: async (patch: AnyApi) => {
         try {

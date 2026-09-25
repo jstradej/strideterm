@@ -20,36 +20,37 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import type { AccountUiState } from "../../electron/backend/account/account-state.js";
+import type { StridetermAPI } from "../../electron/shared/ipc-bridge.js";
 
 /** The transport surface this store needs. Optional throughout: the remote client has none of it. */
-interface AccountApi {
-  getAccountState?: () => Promise<unknown>;
-  accountBeginSignIn?: (payload: { email: string; purpose: string; offerId?: string }) => Promise<unknown>;
-  accountConfirmSignIn?: () => Promise<unknown>;
-  accountResendSignIn?: () => Promise<unknown>;
-  accountCancelSignIn?: () => Promise<unknown>;
-  accountReleaseSignInFlow?: () => Promise<unknown>;
-  accountSubmitSignInLink?: (payload: { link: string }) => Promise<unknown>;
-  accountChangeLoginEmail?: (payload: { email: string }) => Promise<unknown>;
-  accountClearPendingEmailChange?: () => Promise<unknown>;
-  accountEnrolInstallation?: (payload: { mode: "register" | "recover-uid"; pairHints?: string[] }) => Promise<unknown>;
-  accountStartTrial?: () => Promise<unknown>;
-  accountRefreshOverview?: () => Promise<unknown>;
-  accountOpenCheckout?: (payload: { offerId: string }) => Promise<unknown>;
-  accountOpenBillingPortal?: () => Promise<unknown>;
-  accountRevoke?: (payload: { kind: string; targetId?: string }) => Promise<unknown>;
-  accountAcknowledgeNotice?: (payload: { noticeId: string }) => Promise<unknown>;
-  accountSignOut?: (payload: { disconnect: boolean }) => Promise<unknown>;
-  accountDelete?: (payload: { confirmationPhrase: string }) => Promise<unknown>;
-  accountSubmitDiagnostics?: (payload: { note?: string }) => Promise<unknown>;
-  accountExportDiagnostics?: (payload: { note?: string }) => Promise<unknown>;
-  saveFile?: (options: {
-    defaultPath?: string;
-    filters?: Array<{ name: string; extensions: string[] }>;
-    content?: string;
-  }) => Promise<unknown>;
-  on?: (channel: string, handler: (payload: unknown) => void) => () => void;
-}
+type AccountApi = Partial<
+  Pick<
+    StridetermAPI,
+    | "getAccountState"
+    | "onAccountUpdated"
+    | "accountBeginSignIn"
+    | "accountConfirmSignIn"
+    | "accountResendSignIn"
+    | "accountCancelSignIn"
+    | "accountReleaseSignInFlow"
+    | "accountSubmitSignInLink"
+    | "accountChangeLoginEmail"
+    | "accountClearPendingEmailChange"
+    | "accountEnrolInstallation"
+    | "accountStartTrial"
+    | "accountRefreshOverview"
+    | "accountOpenCheckout"
+    | "accountCopyCheckoutUrl"
+    | "accountOpenBillingPortal"
+    | "accountRevoke"
+    | "accountAcknowledgeNotice"
+    | "accountSignOut"
+    | "accountDelete"
+    | "accountSubmitDiagnostics"
+    | "accountExportDiagnostics"
+    | "saveFile"
+  >
+>;
 
 const UNCONFIGURED: AccountUiState = {
   phase: "unconfigured",
@@ -63,6 +64,11 @@ export const useAccountStore = defineStore("account", () => {
   const state = ref<AccountUiState>(UNCONFIGURED);
   /** The last thing an action refused with. A fixed code — never a remote string. */
   const actionError = ref<string | null>(null);
+  const checkoutLinkAvailable = ref(false);
+  const checkoutLinkOfferId = ref<string | null>(null);
+  const checkoutRequestInFlight = ref(false);
+  const checkoutRequestOfferId = ref<string | null>(null);
+  const checkoutPendingOfferId = ref<string | null>(null);
   let api: AccountApi | null = null;
   let unsubscribe: (() => void) | null = null;
 
@@ -87,15 +93,18 @@ export const useAccountStore = defineStore("account", () => {
   }
   const pendingEmailChange = computed(() => state.value.pendingEmailChange ?? null);
 
-  function attach(transport: unknown): void {
-    api = (transport ?? null) as AccountApi | null;
+  function attach(transport: AccountApi | null): void {
+    api = transport;
+    checkoutLinkAvailable.value = false;
+    checkoutLinkOfferId.value = null;
+    checkoutPendingOfferId.value = null;
     unsubscribe?.();
     unsubscribe = null;
-    if (!api?.on) return;
+    if (!api?.onAccountUpdated) return;
     // One subscription, one payload. Every window gets the same object, which is what makes two
     // windows showing different things impossible rather than merely unlikely.
-    unsubscribe = api.on("account:updated", (payload) => {
-      state.value = payload as AccountUiState;
+    unsubscribe = api.onAccountUpdated((payload) => {
+      state.value = payload;
     });
   }
 
@@ -103,6 +112,9 @@ export const useAccountStore = defineStore("account", () => {
     unsubscribe?.();
     unsubscribe = null;
     api = null;
+    checkoutLinkAvailable.value = false;
+    checkoutLinkOfferId.value = null;
+    checkoutPendingOfferId.value = null;
     state.value = UNCONFIGURED;
   }
 
@@ -137,7 +149,11 @@ export const useAccountStore = defineStore("account", () => {
   }
 
   /** Asks for a sign-in link. Returns as soon as the request is made — the wait is in the state. */
-  const beginSignIn = (email: string, purpose: string, offerId?: string) =>
+  const beginSignIn = (
+    email: string,
+    purpose: Parameters<StridetermAPI["accountBeginSignIn"]>[0]["purpose"],
+    offerId?: string,
+  ) =>
     run(() => api!.accountBeginSignIn!({ email, purpose, ...(offerId === undefined ? {} : { offerId }) }), undefined);
   const confirmSignIn = () => run(() => api!.accountConfirmSignIn!(), undefined);
   const resendSignIn = () => run(() => api!.accountResendSignIn!(), undefined);
@@ -175,12 +191,54 @@ export const useAccountStore = defineStore("account", () => {
   const refreshOverview = () => run(() => api!.accountRefreshOverview!(), undefined);
   /** Answers `opened` or `pending`. The URL is opened by the main process and never seen here. */
   const openCheckout = async (offerId: string): Promise<string> => {
-    const outcome = await run(() => api!.accountOpenCheckout!({ offerId }) as Promise<string>, "failed");
-    if (outcome === "pending") actionError.value = "checkout-pending";
-    return outcome;
+    if (checkoutRequestInFlight.value) return "pending";
+    if (checkoutPendingOfferId.value !== null && checkoutPendingOfferId.value !== offerId) {
+      actionError.value = "checkout-pending";
+      return "pending";
+    }
+    if (checkoutLinkOfferId.value !== offerId) {
+      checkoutLinkAvailable.value = false;
+      checkoutLinkOfferId.value = null;
+    }
+    checkoutRequestInFlight.value = true;
+    checkoutRequestOfferId.value = offerId;
+    try {
+      const outcome = await run(() => api!.accountOpenCheckout!({ offerId }) as Promise<string>, "failed");
+      if (outcome === "pending") {
+        checkoutPendingOfferId.value = offerId;
+        actionError.value = "checkout-pending";
+      } else if (outcome === "opened") {
+        checkoutPendingOfferId.value = null;
+        checkoutLinkAvailable.value = true;
+        checkoutLinkOfferId.value = offerId;
+      } else if (checkoutPendingOfferId.value === offerId && actionError.value !== null) {
+        // A retry of an unresolved request stays pending if the provider cannot answer yet.
+        actionError.value = "checkout-pending";
+      }
+      return outcome;
+    } finally {
+      checkoutRequestInFlight.value = false;
+      checkoutRequestOfferId.value = null;
+    }
+  };
+  const copyCheckoutUrl = async (): Promise<boolean> => {
+    const offerId = checkoutLinkOfferId.value;
+    if (offerId === null) return false;
+    const outcome = await run(
+      () => api!.accountCopyCheckoutUrl!({ offerId }) as Promise<"copied" | "unavailable">,
+      "unavailable",
+    );
+    if (outcome !== "copied") {
+      checkoutLinkAvailable.value = false;
+      checkoutLinkOfferId.value = null;
+      actionError.value = "checkout-link-unavailable";
+      return false;
+    }
+    return true;
   };
   const openBillingPortal = () => run(() => api!.accountOpenBillingPortal!(), undefined);
-  const revoke = (kind: string, targetId?: string) => run(() => api!.accountRevoke!({ kind, targetId }), undefined);
+  const revoke = (kind: Parameters<StridetermAPI["accountRevoke"]>[0]["kind"], targetId?: string) =>
+    run(() => api!.accountRevoke!({ kind, targetId }), undefined);
   const acknowledgeNotice = (noticeId: string) => run(() => api!.accountAcknowledgeNotice!({ noticeId }), undefined);
   const signOut = (disconnect: boolean) => run(() => api!.accountSignOut!({ disconnect }), undefined);
   const deleteAccount = (confirmationPhrase: string) =>
@@ -227,6 +285,10 @@ export const useAccountStore = defineStore("account", () => {
   return {
     state,
     actionError,
+    checkoutLinkAvailable,
+    checkoutRequestInFlight,
+    checkoutRequestOfferId,
+    checkoutPendingOfferId,
     available,
     overview,
     entitlement,
@@ -250,6 +312,7 @@ export const useAccountStore = defineStore("account", () => {
     startTrial,
     refreshOverview,
     openCheckout,
+    copyCheckoutUrl,
     openBillingPortal,
     revoke,
     acknowledgeNotice,

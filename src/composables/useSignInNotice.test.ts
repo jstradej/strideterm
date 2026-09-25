@@ -2,13 +2,15 @@
 // to go and read their mail.
 
 import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h } from "vue";
 import { mount } from "@vue/test-utils";
 
 import { useSignInNotice } from "./useSignInNotice.js";
 import { useAccountStore } from "../stores/account.js";
 import { useNotificationStore } from "../stores/notifications.js";
+import { useAppStore } from "../stores/app.js";
+import PersistentToastStack from "../components/layout/PersistentToastStack.vue";
 
 const Host = defineComponent({
   setup() {
@@ -41,7 +43,10 @@ function setPhase(account: ReturnType<typeof useAccountStore>, phase: string | n
 }
 
 describe("useSignInNotice", () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.restoreAllMocks();
+  });
 
   it("raises one persistent toast when the desktop starts waiting and the panel is elsewhere", async () => {
     const account = useAccountStore();
@@ -118,5 +123,21 @@ describe("useSignInNotice", () => {
     await wrapper.vm.$nextTick();
     expect(notifications.persistentToasts).toHaveLength(1);
     wrapper.unmount();
+  });
+
+  it("opens Mobile Account directly when the sign-in notice is clicked", async () => {
+    const account = useAccountStore();
+    const openSettings = vi.spyOn(useAppStore(), "openSettingsDialog").mockImplementation(() => {});
+    const host = mount(Host);
+    const stack = mount(PersistentToastStack);
+
+    setPhase(account, "awaiting-confirmation");
+    await host.vm.$nextTick();
+    await stack.vm.$nextTick();
+    await stack.find(".persistent-toast__target").trigger("click");
+
+    expect(openSettings).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "account" });
+    stack.unmount();
+    host.unmount();
   });
 });

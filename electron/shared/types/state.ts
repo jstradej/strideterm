@@ -210,10 +210,9 @@ export interface MobileDeviceRecord {
 /**
  * The managed relay: a THIRD remote transport, used only by the mobile app.
  *
- * Off by default and independent of everything else. Turning it on does not open a LAN listener,
- * does not start or stop a Cloudflare tunnel and does not change the browser remote's URL or token;
- * turning it off leaves no connector, no listener and no socket behind. It is its own flag
- * precisely so that "I want a relay" and "I want remote access on my LAN" stay two decisions.
+ * Enabled automatically after account registration. The user can turn it off afterward.
+ * Turning it on does not open a LAN listener, start a Cloudflare tunnel or change the browser
+ * remote's URL or token; turning it off leaves no relay connector, listener or socket behind.
  */
 export interface MobileRelaySettings {
   enabled: boolean;

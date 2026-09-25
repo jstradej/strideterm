@@ -43,7 +43,7 @@
     </div>
 
     <div v-else-if="activeTab === 'mobile'" class="settings-tab-content">
-      <SettingsMobileTab :profiles="profiles" />
+      <SettingsMobileTab :profiles="profiles" :initial-view="initialMobileView" />
     </div>
 
     <div v-else-if="activeTab === 'about'" class="settings-tab-content">
@@ -190,6 +190,7 @@ interface Props {
   saveError?: string;
   /** Tab to open on mount. Defaults to `"general"`. */
   initialTab?: string;
+  initialMobileView?: "overview" | "phones" | "account";
 }
 
 const props = withDefaults(defineProps<Props>(), {

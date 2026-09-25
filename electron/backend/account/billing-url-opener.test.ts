@@ -15,9 +15,7 @@
 // and that question survives a malformed, truncated or compromised callable response — which is
 // exactly the case the server's own check cannot help with.
 //
-// WHERE THE ALLOWLIST COMES FROM: `billingCheckoutHosts` on the SIGNED control-plane bootstrap
-// envelope. Not an environment variable (editable by whatever launched the app) and not a compiled-in
-// constant (a merchant host has to be able to move during a recovery without a new release).
+// Signed bootstrap hosts replace the QA build's initial sandbox host pins, including an empty list.
 //
 // TWO SURFACES ARE TESTED HERE. `billing-url.ts` is the behavioural half, exercised directly. The
 // `ipc.ts` opener is the scheme-and-parse backstop for every OTHER external URL in the app, and it
@@ -29,12 +27,46 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkBillingUrl } from "./billing-url.js";
+import { billingHostsForBuild, checkBillingUrl } from "./billing-url.js";
+import type { MobileFirebaseConfig } from "../mobile/mobile-firebase-config.js";
 
 const BACKEND_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const IPC_SOURCE = readFileSync(path.join(BACKEND_DIR, "ipc.ts"), "utf8");
 
 const ALLOWLIST = ["checkout.paddle.com", "strideterm.paddle.com"];
+
+describe("QA billing before bootstrap activation", () => {
+  const config: MobileFirebaseConfig = {
+    projectId: "strideterm-mobile-qa",
+    apiKey: "test",
+    functionsRegion: "europe-west1",
+    databaseUrl: "https://example.test",
+    emulators: null,
+  };
+
+  it("opens only the QA checkout and sandbox portal hosts", () => {
+    const hosts = billingHostsForBuild("qa", config);
+    expect(checkBillingUrl("https://strideterm.com/checkout", hosts)).toBeNull();
+    expect(checkBillingUrl("https://sandbox-customer-portal.paddle.com/session", hosts)).toBeNull();
+    expect(checkBillingUrl("https://customer-portal.paddle.com/session", hosts)).toBe("host-not-allowed");
+    expect(checkBillingUrl("https://strideterm.com.evil.test/checkout", hosts)).toBe("host-not-allowed");
+  });
+
+  it("never introduces QA defaults into another tier or project", () => {
+    for (const environment of ["prod", "dev", "local", "unresolved"]) {
+      expect(billingHostsForBuild(environment, config)).toEqual([]);
+    }
+    expect(billingHostsForBuild("qa", { ...config, projectId: "another-project" })).toEqual([]);
+    expect(billingHostsForBuild("qa", null)).toEqual([]);
+  });
+
+  it("honors signed replacement hosts and an explicit empty list", () => {
+    expect(billingHostsForBuild("qa", { ...config, billingCheckoutHosts: [] })).toEqual([]);
+    expect(billingHostsForBuild("qa", { ...config, billingCheckoutHosts: ["recovery.example"] })).toEqual([
+      "recovery.example",
+    ]);
+  });
+});
 
 describe("the desktop's own billing URL check", () => {
   it("accepts an HTTPS URL whose host is exactly on the signed allowlist", () => {

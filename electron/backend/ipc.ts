@@ -126,6 +126,7 @@ import {
   taskCompanionAnswerSchema,
   telegramConnectionSchema,
   accountCheckoutSchema,
+  accountCheckoutCopySchema,
   accountDeleteSchema,
   accountDiagnosticsSchema,
   accountEmailSchema,
@@ -1069,6 +1070,15 @@ export function registerIpc(
   handle("account:checkout", async (_event, payload) => {
     const { offerId } = validateIpc(accountCheckoutSchema, payload, "account:checkout");
     return withOperationPromise({ opId: "account:checkout" }, () => runtime.accountOpenCheckout(offerId));
+  });
+  handle("account:checkout:copy", async (_event, payload) => {
+    const { offerId } = validateIpc(accountCheckoutCopySchema, payload, "account:checkout:copy");
+    return withOperationPromise({ opId: "account:checkout:copy" }, async () => {
+      const url = runtime.accountCheckoutUrlForCopy(offerId);
+      if (url === null) return "unavailable";
+      await clipboard.writeText(url);
+      return "copied";
+    });
   });
   handle("account:portal", async () =>
     withOperationPromise({ opId: "account:portal" }, () => runtime.accountOpenBillingPortal()),

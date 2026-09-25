@@ -45,6 +45,7 @@ export interface PersistentToast {
   body: string;
   kind: NotificationKind;
   copyPath?: string;
+  action?: "open-mobile-account";
   at: string;
 }
 
@@ -997,17 +998,19 @@ export const useNotificationStore = defineStore("notifications", () => {
     kind = "error",
     copyPath = "",
     profileId = "",
+    action,
   }: {
     title: string;
     body: string;
     kind?: NotificationKind;
     copyPath?: string;
     profileId?: string;
+    action?: PersistentToast["action"];
   }): string {
     const id = crypto.randomUUID();
     persistentToasts.value = [
       ...persistentToasts.value,
-      { id, title, body, kind, copyPath, at: new Date().toISOString() },
+      { id, title, body, kind, copyPath, action, at: new Date().toISOString() },
     ];
     // Mirror to the dock so a quick "X" on the toast doesn't lose the error
     // entirely — the user can still find it later in the notification panel.

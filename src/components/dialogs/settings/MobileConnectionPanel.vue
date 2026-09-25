@@ -36,6 +36,7 @@
           :visible="visible"
           :phone-count="activePhoneCount"
           @navigate-phones="activeView = 'phones'"
+          @connect-first-phone="connectFirstPhone"
           @navigate-account="activeView = 'account'"
         />
       </section>
@@ -53,27 +54,123 @@
             Review plans
           </button>
         </article>
-        <article v-if="!hostedAccessBlocked" class="mobile-tab__summary-card">
-          <span class="mobile-tab__summary-label">Connection</span>
-          <strong>{{ overviewConnectionLabel }}</strong>
-          <span class="mobile-tab__summary-note"
-            >{{ activePhoneCount }} paired phone{{ activePhoneCount === 1 ? "" : "s" }}</span
-          >
-        </article>
-        <article v-if="!hostedAccessBlocked" class="mobile-tab__summary-card">
-          <span class="mobile-tab__summary-label">Managed relay</span>
-          <strong>{{ relayLabel }}</strong>
-          <span class="mobile-tab__summary-note">{{
-            mobileRelayEnabled ? "Remote terminal access from anywhere" : "Enable to open terminals away from home"
-          }}</span>
+        <article
+          v-if="!hostedAccessBlocked"
+          class="mobile-tab__summary-card"
+          :class="{ 'mobile-tab__summary-card--ready': overviewConnectionLabel === 'Connected' }"
+        >
+          <span class="mobile-tab__summary-label">Desktop connection</span>
+          <div class="mobile-tab__summary-status" role="status" aria-live="polite">
+            <span
+              class="mobile-tab__state-icon"
+              :class="
+                overviewConnectionLabel === 'Connected'
+                  ? 'mobile-tab__state-icon--ready'
+                  : 'mobile-tab__state-icon--idle'
+              "
+              aria-hidden="true"
+            >
+              <svg v-if="overviewConnectionLabel === 'Connected'" viewBox="0 0 20 20" fill="none">
+                <path
+                  d="m4 10 4 4 8-8"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <svg v-else viewBox="0 0 20 20" fill="none">
+                <path d="M5 10h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+            </span>
+            <strong>{{ overviewConnectionLabel }}</strong>
+          </div>
+          <div v-if="activePhones.length" class="mobile-tab__paired-phones">
+            <span v-for="device in activePhones" :key="device.deviceId" class="mobile-tab__phone-name">
+              Paired: {{ device.label?.trim() || device.platform || "Unnamed phone" }}
+            </span>
+          </div>
+          <span v-else class="mobile-tab__summary-note">No phones paired yet.</span>
           <button
-            v-if="!mobileRelayEnabled"
+            v-if="activePhones.length"
             type="button"
             class="button button--ghost mobile-tab__card-action"
-            @click="openRelaySettings"
+            @click="activeView = 'phones'"
           >
-            Configure relay
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path
+                d="M4 10h11m-4-4 4 4-4 4"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            {{ activePhoneCount === 1 ? "View phone details" : "View phones" }}
           </button>
+        </article>
+        <article
+          v-if="!hostedAccessBlocked"
+          class="mobile-tab__summary-card"
+          :class="{ 'mobile-tab__summary-card--ready': relayReady }"
+        >
+          <span class="mobile-tab__summary-label">Managed relay</span>
+          <div class="mobile-tab__summary-status" role="status" aria-live="polite">
+            <span
+              class="mobile-tab__state-icon"
+              :class="relayReady ? 'mobile-tab__state-icon--ready' : 'mobile-tab__state-icon--idle'"
+              aria-hidden="true"
+            >
+              <svg v-if="relayReady" viewBox="0 0 20 20" fill="none">
+                <path
+                  d="m4 10 4 4 8-8"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <svg v-else viewBox="0 0 20 20" fill="none">
+                <path d="M5 10h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+            </span>
+            <strong>{{ paused ? "Paused" : mobileRelayEnabled ? `Enabled · ${relayLabel}` : "Off" }}</strong>
+          </div>
+          <span class="mobile-tab__summary-note">{{ overviewRelayNote }}</span>
+          <div
+            v-if="mobileRelayEnabled && relayTraffic"
+            class="mobile-tab__relay-traffic"
+            title="Relayed payload bytes since this connector started. The counts reset when the connector restarts."
+          >
+            <span>Relay data this run</span>
+            <strong :aria-label="`Received ${relayTraffic.received}, sent ${relayTraffic.sent}`"
+              >↓ {{ relayTraffic.received }} · ↑ {{ relayTraffic.sent }}</strong
+            >
+          </div>
+          <button
+            type="button"
+            class="button mobile-tab__card-action"
+            :class="{ 'button--ghost': mobileRelayEnabled, 'mobile-tab__relay-action--stop': mobileRelayEnabled }"
+            :disabled="paused || relayBusy"
+            :title="
+              mobileRelayEnabled
+                ? 'Disconnects the relay and ends active remote sessions. Phones remain paired.'
+                : 'Connects the managed relay for paired phones.'
+            "
+            @click="setRelayEnabled(!mobileRelayEnabled)"
+          >
+            <svg v-if="mobileRelayEnabled" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <rect x="5" y="5" width="10" height="10" rx="1" fill="currentColor" />
+            </svg>
+            <svg v-else viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M10 3v7m-4.5-5a7 7 0 1 0 9 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            {{ relayBusy ? "Updating…" : mobileRelayEnabled ? "Disconnect relay" : "Enable relay" }}
+          </button>
+          <p v-if="activeView === 'overview' && relayError" class="mobile-tab__error" role="alert">
+            {{ relayError }}
+          </p>
+          <p v-if="relayStatusError" class="mobile-tab__error" role="status">{{ relayStatusError }}</p>
         </article>
       </section>
 
@@ -103,6 +200,19 @@
             Pair strIDEterm Mobile to open your profiles and terminals, receive notifications, and respond from your
             phone.
           </p>
+          <div v-if="enableBusy || pairingBusy" class="pairing-progress" role="status" aria-live="polite">
+            <span class="pairing-progress__spinner" aria-hidden="true"></span>
+            <div>
+              <strong>{{ pairingBusy ? "Generating pairing QR code…" : "Preparing phone pairing…" }}</strong>
+              <p>
+                {{
+                  pairingBusy
+                    ? "Creating a secure, single-use invitation. Keep this window open."
+                    : "Connecting this desktop to your account. The QR code comes next."
+                }}
+              </p>
+            </div>
+          </div>
           <ol v-if="mobileDevices.length === 0" class="mobile-tab__steps" aria-label="Pairing progress">
             <li :class="{ 'mobile-tab__step--active': !mobileEnabled }">
               <strong>Prepare</strong><span>Turn on phone pairing.</span>
@@ -283,7 +393,7 @@
                   </div>
                 </details>
               </template>
-              <div v-else class="pairing-qr">
+              <div v-else ref="pairingQr" class="pairing-qr">
                 <!--
             OVER the code, not instead of it. Between the scan and the SAS appearing this desktop
             recomputes the key proof, checks the grants against what the human ticked and writes the
@@ -524,16 +634,18 @@
 
           <details v-if="!activePairing && !pairingSas" class="mobile-tab__privacy">
             <summary>Privacy and retention</summary>
-            Pairing invitations expire after 2 minutes. Push events are retained up to 7 days and audit metadata up to
-            30 days.
+            <p class="mobile-tab__privacy-copy">
+              Pairing invitations expire after 2 minutes. Push events are retained up to 7 days and audit metadata up to
+              30 days.
+            </p>
           </details>
         </template>
 
         <!--
       ADVANCED, AND LAST. Everything in here is a switch whose answer is already yes by the time
-      anyone is on this page: the person came to pair a phone, so "Enable Mobile" and "Managed relay"
-      are not questions to put in front of the thing they came to do — they are the two ways to
-      change their mind later, plus the status lines that belong with them. Collapsed by default and
+      anyone is on this page: the person came to pair a phone, so "Enable Mobile" is not a question
+      to put in front of the thing they came to do. These controls let them change their mind later,
+      plus the status lines that belong with them. Collapsed by default and
       below the device list, so the page reads as pair → devices → and, if you need it, the plumbing.
 
       NOT gated on `mobileEnabled`: with Mobile off but a phone still paired, this is the only place
@@ -545,7 +657,7 @@
           ref="advancedSettings"
           class="mobile-tab__advanced"
         >
-          <summary class="mobile-tab__advanced-summary">Advanced</summary>
+          <summary>Advanced</summary>
 
           <fieldset class="mobile-tab__mutation-group" :disabled="paused">
             <label
@@ -594,49 +706,29 @@
                 </span>
               </div>
 
-              <!--
-          The managed relay, which is its OWN decision (relay plan §10, dev-environment finding 6).
-
-          A separate switch rather than part of "Enable Mobile", because it starts something the mobile
-          integration alone does not: an outbound connector from this desktop to a hosted relay origin,
-          which is how a phone reaches a terminal without this machine being reachable from the internet.
-          Off means no connector, no socket and no loopback origin — not a disabled feature that is still
-          connected. The status line below is the relay's own state, so "on" can be told apart from
-          "on and actually connected".
-        -->
+              <!-- Relay can be disabled here after automatic setup during account registration. -->
               <div class="relay-block">
                 <label
                   class="form-label form-label--inline"
                   title="Lets a paired phone open a terminal through the hosted relay when this desktop is not reachable on the network. Off means no connector and no socket exist at all."
                 >
                   <input
-                    ref="relayToggle"
                     type="checkbox"
                     :checked="mobileRelayEnabled"
                     :disabled="relayBusy"
                     @change="onToggleRelayEnabled"
                   />
-                  <span>Managed relay (open a terminal from anywhere)</span>
+                  <span>Managed relay</span>
                 </label>
+                <p class="mobile-tab__intro relay-block__hint">
+                  Enabled automatically when you register this computer. Turn it off here any time. When connected,
+                  paired phones can open terminals from outside your network.
+                </p>
                 <p class="mobile-tab__intro relay-block__hint">
                   Without it, a phone can only reach this desktop on your own network. With it, this desktop connects
                   out to the relay and the phone reaches it through that — nothing on this machine is exposed to the
                   internet.
                 </p>
-                <!--
-            The sentence the first paragraph does not say, and has to.
-
-            "Nothing is exposed to the internet" is true about INBOUND reachability — there is no
-            listener and no open port — and says nothing about confidentiality. The notification and
-            command plane IS end-to-end encrypted (AEAD under a key only this desktop and the phone
-            hold), which is exactly what makes the omission misleading rather than merely incomplete:
-            a user who knows that part can reasonably read the whole relay as end-to-end. It is not.
-            The relay terminates TLS and forwards decrypted frames, so a session's terminal output
-            and file contents are readable by it while they are in flight.
-
-            This is where consent is actually given — the toggle, not a policy document — so the
-            distinction belongs here rather than only in docs/PRIVACY-POLICY.md.
-          -->
                 <p class="mobile-tab__intro relay-block__hint">
                   A relay session is encrypted in transit and readable by the relay while it is in flight; notifications
                   and commands stay end-to-end encrypted.
@@ -752,9 +844,10 @@ const hostedAccessBlocked = computed(() => {
 });
 const mobileEnabled = computed(() => appStore.mobileEnabled);
 const mobileDevices = computed(() => appStore.mobileDevices);
-const activePhoneCount = computed(
-  () => mobileDevices.value.filter((device) => !device.revoked && device.state === "active").length,
+const activePhones = computed(() =>
+  mobileDevices.value.filter((device) => !device.revoked && device.state === "active"),
 );
+const activePhoneCount = computed(() => activePhones.value.length);
 const mobileConnectionHealth = computed(() => appStore.mobileConnectionHealth);
 const mobileQuota = computed(() => appStore.mobileQuota);
 const pairingSas = computed(() => appStore.mobilePairingSas);
@@ -794,17 +887,6 @@ function onSubtabKeydown(event: KeyboardEvent, tab: MobileView): void {
 }
 
 const advancedSettings = ref<HTMLDetailsElement | null>(null);
-const relayToggle = ref<HTMLInputElement | null>(null);
-async function openRelaySettings() {
-  activeView.value = "phones";
-  await nextTick();
-  if (!advancedSettings.value) return;
-  advancedSettings.value.open = true;
-  await nextTick();
-  relayToggle.value?.scrollIntoView?.({ block: "center", behavior: "smooth" });
-  relayToggle.value?.focus();
-}
-
 /**
  * The code block itself, so it can be brought to the person rather than the other way round.
  *
@@ -970,13 +1052,15 @@ function formatResetTime(ts: number): string {
 // --- Enable/disable ---
 const enableBusy = ref(false);
 const enableError = ref("");
-async function setEnabled(checked: boolean) {
+async function setEnabled(checked: boolean): Promise<boolean> {
   enableBusy.value = true;
   enableError.value = "";
   try {
     await appStore.setMobileEnabled(checked);
+    return true;
   } catch (err) {
     enableError.value = (err as Error)?.message || "Failed to update.";
+    return false;
   } finally {
     enableBusy.value = false;
   }
@@ -997,13 +1081,41 @@ const mobileRelayStatus = computed(() => appStore.mobileRelayStatus);
 const relayBusy = ref(false);
 const relayStatusBusy = ref(false);
 const relayError = ref("");
+const relayStatusError = ref("");
+const relayReady = computed(
+  () => !paused.value && mobileRelayEnabled.value && mobileRelayStatus.value?.state === "ready",
+);
+
+function formatRelayBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const unit = bytes < 1024 ** 2 ? "KiB" : bytes < 1024 ** 3 ? "MiB" : "GiB";
+  const divisor = unit === "KiB" ? 1024 : unit === "MiB" ? 1024 ** 2 : 1024 ** 3;
+  return `${(bytes / divisor).toFixed(1)} ${unit}`;
+}
+
+const relayTraffic = computed(() => {
+  const stats = mobileRelayStatus.value?.stats;
+  if (
+    !stats ||
+    !Number.isFinite(stats.bytesIn) ||
+    !Number.isFinite(stats.bytesOut) ||
+    stats.bytesIn < 0 ||
+    stats.bytesOut < 0
+  )
+    return null;
+  return { received: formatRelayBytes(stats.bytesIn), sent: formatRelayBytes(stats.bytesOut) };
+});
 
 async function onToggleRelayEnabled(event: Event) {
   const checked = (event.target as HTMLInputElement).checked;
+  await setRelayEnabled(checked);
+}
+
+async function setRelayEnabled(enabled: boolean) {
   relayBusy.value = true;
   relayError.value = "";
   try {
-    await appStore.setMobileRelayEnabled(checked);
+    await appStore.setMobileRelayEnabled(enabled);
   } catch (err) {
     relayError.value = (err as Error)?.message || "Failed to update.";
   } finally {
@@ -1012,9 +1124,13 @@ async function onToggleRelayEnabled(event: Event) {
 }
 
 async function refreshRelayStatus() {
+  if (relayStatusBusy.value) return;
   relayStatusBusy.value = true;
   try {
     await appStore.refreshMobileRelayStatus();
+    relayStatusError.value = "";
+  } catch {
+    relayStatusError.value = "Could not refresh relay status.";
   } finally {
     relayStatusBusy.value = false;
   }
@@ -1049,6 +1165,16 @@ const relayLabel = computed(() => {
     default:
       return state;
   }
+});
+
+const overviewRelayNote = computed(() => {
+  if (paused.value) return "Remote connections are paused. Your phones remain paired.";
+  if (mobileRelayEnabled.value) {
+    return mobileRelayStatus.value?.state === "ready"
+      ? "Connected and ready for paired phones."
+      : `Relay is enabled; status: ${relayLabel.value}.`;
+  }
+  return "Relay sessions are disconnected. Your phones remain paired.";
 });
 
 // A classified transport failure (TLS inspection above all) is explained in words; any other
@@ -1126,6 +1252,7 @@ const quotaTitle = computed(
 const pairingProfileIds = computed(() => profileOptions.value.map((p) => p.id));
 const pairingCapabilities = ref<string[]>(CAPABILITY_OPTIONS.map((c) => c.id));
 const addPhoneSetupOpen = ref(false);
+const pairingQr = ref<HTMLElement | null>(null);
 const pairingBusy = ref(false);
 const pairingError = ref("");
 
@@ -1151,6 +1278,7 @@ const pairingGrantSummary = computed(() => {
 });
 const nowTick = ref(Date.now());
 let tickTimer: ReturnType<typeof setInterval> | null = null;
+let relayOverviewTimer: ReturnType<typeof setInterval> | null = null;
 
 const activePairing = computed(() => {
   const invitation = appStore.mobilePairingInvitation;
@@ -1203,6 +1331,25 @@ async function startPairing() {
   } finally {
     pairingBusy.value = false;
   }
+}
+
+async function connectFirstPhone(): Promise<void> {
+  activeView.value = "phones";
+  await nextTick();
+  if (paused.value || !pairingReady.value || hostedAccessBlocked.value || pairingBusy.value || pairingSas.value) return;
+
+  if (!mobileEnabled.value) {
+    if (!(await setEnabled(true))) return;
+    await nextTick();
+    if (!mobileEnabled.value) {
+      enableError.value = "Phone pairing is still off. Try turning it on again.";
+      return;
+    }
+  }
+
+  if (!activePairing.value) await startPairing();
+  await nextTick();
+  pairingQr.value?.scrollIntoView?.({ block: "center", behavior: "smooth" });
 }
 async function cancelPairing() {
   await appStore.cancelMobilePairingInvitation();
@@ -1334,7 +1481,7 @@ onMounted(() => {
   void appStore.refreshMobileDevices();
   void appStore.refreshMobileConnectionHealth();
   // The relay's state is runtime-only, so it is read rather than derived from the payload.
-  void appStore.refreshMobileRelayStatus();
+  void refreshRelayStatus();
   // Re-present a pairing code that was waiting for a decision when this desktop was last closed
   // (review 3 §P0.1's restart case). The code is derived from the transcript rather than stored, so
   // this asks the backend to recompute it; without it, a device claimed just before a restart would sit
@@ -1343,9 +1490,23 @@ onMounted(() => {
   tickTimer = setInterval(() => {
     nowTick.value = Date.now();
   }, 1000);
+  relayOverviewTimer = setInterval(() => {
+    if (props.visible && activeView.value === "overview" && mobileRelayEnabled.value && !paused.value)
+      void refreshRelayStatus();
+  }, 10000);
 });
+watch(
+  () => [activeView.value, props.visible] as const,
+  ([view, visible]) => {
+    if (view === "overview" && visible) {
+      void appStore.refreshMobileDevices();
+      if (mobileRelayEnabled.value) void refreshRelayStatus();
+    }
+  },
+);
 onBeforeUnmount(() => {
   if (tickTimer) clearInterval(tickTimer);
+  if (relayOverviewTimer) clearInterval(relayOverviewTimer);
 });
 </script>
 
@@ -1402,7 +1563,9 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--accent, #f2a63b) 12%, transparent);
 }
 .mobile-tab__subtab:focus-visible,
-.mobile-tab button:focus-visible {
+.mobile-tab button:focus-visible,
+.mobile-tab__privacy > summary:focus-visible,
+.mobile-tab__advanced > summary:focus-visible {
   outline: 2px solid var(--accent, #f2a63b);
   outline-offset: 2px;
 }
@@ -1429,6 +1592,9 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
 }
+.mobile-tab__summary-card--ready {
+  border-color: color-mix(in srgb, #34d399 34%, var(--border, #333));
+}
 .mobile-tab__summary-card--wide {
   grid-column: 1 / -1;
 }
@@ -1442,6 +1608,74 @@ onBeforeUnmount(() => {
   color: var(--muted);
   font-size: 12px;
 }
+.mobile-tab__summary-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 24px;
+}
+.mobile-tab__state-icon {
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  flex: none;
+  border-radius: 50%;
+}
+.mobile-tab__state-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.mobile-tab__state-icon--ready {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.12);
+}
+.mobile-tab__state-icon--idle {
+  color: var(--muted);
+  background: rgba(var(--tint), 0.07);
+}
+.mobile-tab__paired-phones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 3px;
+}
+.mobile-tab__phone-name {
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.mobile-tab__relay-traffic {
+  display: grid;
+  gap: 2px;
+  margin-top: 3px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border, #333);
+  font-size: 11px;
+}
+.mobile-tab__relay-traffic span {
+  color: var(--muted);
+}
+.mobile-tab__relay-traffic strong {
+  font-size: 12px;
+}
+.mobile-tab__card-action svg {
+  width: 14px;
+  height: 14px;
+}
+.mobile-tab__relay-action--stop {
+  color: var(--text);
+}
+.mobile-tab__relay-action--stop svg {
+  color: #ff8ca4;
+}
+.mobile-tab__relay-action--stop:hover:not(:disabled) {
+  background: rgba(255, 111, 141, 0.11);
+}
 .mobile-tab__section--auxiliary {
   padding-bottom: 0;
   border-bottom: 0;
@@ -1450,8 +1684,12 @@ onBeforeUnmount(() => {
   display: none;
 }
 .mobile-tab__card-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
   justify-self: start;
-  margin-top: 2px;
+  margin-top: auto;
 }
 .mobile-tab__inline-action {
   padding: 0;
@@ -1570,7 +1808,7 @@ onBeforeUnmount(() => {
 /* The collapsed tail of the tab. `display: grid` only once open, so the closed state is just the
    summary line and not a grid with a hidden row's gap under it. */
 .mobile-tab__advanced {
-  padding-top: 12px;
+  padding-top: 8px;
   border-top: 1px solid var(--border, #333);
 }
 
@@ -1579,17 +1817,41 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.mobile-tab__advanced-summary {
+.mobile-tab__privacy > summary,
+.mobile-tab__advanced > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
   cursor: pointer;
+  list-style: none;
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-weight: 600;
   color: var(--muted);
   user-select: none;
 }
-
-.mobile-tab__advanced-summary:hover {
-  color: var(--fg, inherit);
+.mobile-tab__privacy > summary::-webkit-details-marker,
+.mobile-tab__advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.mobile-tab__privacy > summary::before,
+.mobile-tab__advanced > summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  margin-left: 2px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+.mobile-tab__privacy[open] > summary::before,
+.mobile-tab__advanced[open] > summary::before {
+  transform: rotate(45deg);
+}
+.mobile-tab__privacy > summary:hover,
+.mobile-tab__advanced > summary:hover {
+  color: var(--text);
 }
 
 .relay-block {
@@ -1612,14 +1874,13 @@ onBeforeUnmount(() => {
 }
 
 .mobile-tab__privacy {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   line-height: 1.5;
-  margin: 4px 0 0;
+  margin: 0;
 }
-.mobile-tab__privacy summary {
-  cursor: pointer;
-  margin-bottom: 4px;
+.mobile-tab__privacy-copy {
+  margin: 4px 0 0 19px;
 }
 .mobile-tab__resume-card {
   display: grid;
@@ -1763,6 +2024,42 @@ onBeforeUnmount(() => {
 }
 .pairing-section__action {
   justify-self: start;
+}
+
+.pairing-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent, #f59e0b);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, #f59e0b) 9%, transparent);
+}
+
+.pairing-progress__spinner {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--accent, #f59e0b);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: mobile-tab-spin 0.8s linear infinite;
+}
+
+.pairing-progress strong {
+  display: block;
+}
+
+.pairing-progress p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pairing-progress__spinner {
+    animation: none;
+  }
 }
 
 /* The optional narrowing. Same disclosure idiom as the tab's Advanced tail, one level in. */

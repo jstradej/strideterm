@@ -172,6 +172,71 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).toContain("Connect your first phone");
   });
 
+  test("Connect first phone enables pairing and opens the QR in one click", async () => {
+    let finishInvitation!: (invitation: AnyApi) => void;
+    const pendingInvitation = new Promise<AnyApi>((resolve) => {
+      finishInvitation = resolve;
+    });
+    const account = useAccountStore();
+    const entitlement = { state: "trial", source: "trial", notAfter: Date.now() + 14 * 86_400_000 };
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        busy: false,
+        ownerEmail: "owner@example.test",
+        installationRegistered: true,
+        signInAvailable: true,
+        entitlement,
+        overview: {
+          entitlement,
+          offers: [],
+          usage: {
+            installations: { used: 1, limit: 5 },
+            mobileDevices: { used: 0, limit: 5 },
+            activeRelaySessions: { used: 0, limit: 8 },
+          },
+          installations: [],
+          mobileDevices: [],
+          notices: [],
+        },
+      }),
+    } as AnyApi);
+    await account.refreshState();
+
+    const { wrapper, transport } = await mountTab(
+      {
+        setMobileEnabled: vi.fn(async () => makePayload({ enabled: true, devices: [] })),
+        createMobilePairingInvitation: vi.fn(() => pendingInvitation),
+      },
+      { enabled: false, devices: [] },
+      "overview",
+    );
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Connect first phone")!
+      .trigger("click");
+    await flushPromises();
+
+    expect(transport.setMobileEnabled).toHaveBeenCalledWith(true);
+    expect(transport.createMobilePairingInvitation).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Phones");
+    expect(wrapper.find('[role="status"].pairing-progress').text()).toContain("Generating pairing QR code…");
+    expect(wrapper.find(".pairing-progress__spinner").exists()).toBe(true);
+
+    finishInvitation({
+      protocolVersion: 1,
+      pairingId: "pairing-1",
+      secret: "s",
+      desktopLabel: "Desktop",
+      desktopFingerprint: "AB:CD",
+      expiresAt: Date.now() + 120_000,
+    });
+    await flushPromises();
+
+    expect(wrapper.find(".pairing-progress").exists()).toBe(false);
+    expect(wrapper.find(".pairing-qr").exists()).toBe(true);
+  });
+
   test("shows an active account confirmation while the Phones panel is selected", async () => {
     const account = useAccountStore();
     account.attach({
@@ -568,10 +633,9 @@ describe("SettingsMobileTab", () => {
     expect(scrollIntoView).toHaveBeenCalled();
   });
 
-  // "Enable Mobile" and "Managed relay" are answered by the fact that somebody opened this tab to
-  // pair a phone. They are how you change your mind later, so they sit at the end, collapsed —
-  // not in front of the thing the page is for.
-  test("the two on/off switches live in Advanced, at the end", async () => {
+  // The advanced switches remain available for settings; the overview also exposes the relay's
+  // automatic registration state and an immediate manual override.
+  test("the settings switches live in Advanced, at the end", async () => {
     const { wrapper } = await mountTab({}, { enabled: true, devices: [], relay: { enabled: false } });
 
     const advanced = wrapper.find("details.mobile-tab__advanced");
@@ -739,6 +803,51 @@ describe("SettingsMobileTab", () => {
     await flushPromises();
 
     expect(transport.setMobileRelayEnabled).toHaveBeenCalledWith(true);
+  });
+
+  test("the overview exposes relay state and lets the user enable or disable it", async () => {
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({ phase: "ready", installationRegistered: true }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper, transport } = await mountTab(
+      {
+        getMobileRelayStatus: vi.fn(async () => ({
+          enabled: true,
+          state: "ready",
+          relayOrigin: "https://relay.example.test",
+          internalPort: 5123,
+          lastError: "",
+          stats: null,
+        })),
+      },
+      { enabled: true, devices: [], relay: { enabled: true } },
+      "overview",
+    );
+
+    expect(wrapper.find(".mobile-tab__overview-grid").text()).toContain("Enabled · Connected");
+    expect(wrapper.find(".mobile-tab__overview-grid").text()).toContain("Connected and ready for paired phones.");
+    await wrapper.find(".mobile-tab__overview-grid").find("button").trigger("click");
+    await flushPromises();
+    expect(transport.setMobileRelayEnabled).toHaveBeenCalledWith(false);
+  });
+
+  test("the overview shows relay toggle failures beside the control", async () => {
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({ phase: "ready", installationRegistered: true }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper } = await mountTab(
+      { setMobileRelayEnabled: vi.fn(async () => Promise.reject(new Error("Relay could not start"))) },
+      { enabled: true, devices: [], relay: { enabled: false } },
+      "overview",
+    );
+
+    await wrapper.find(".mobile-tab__overview-grid").find("button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find('.mobile-tab__overview-grid [role="alert"]').text()).toBe("Relay could not start");
   });
 
   test("a connected transport whose pair no longer recognises this desktop does not read as 'Connected'", async () => {

@@ -82,6 +82,7 @@ import { AccountCallableError, createAccountTransport } from "./account/account-
 import { resolveMobileFirebaseConfig, type MobileFirebaseConfig } from "./mobile/mobile-firebase-config.js";
 import { resolveBootstrapFirebaseConfig, createControlPlaneBootstrapClient } from "./mobile/bootstrap-client.js";
 import { BOOTSTRAP_ENV_VARS, bootstrapEnvironmentFor, bootstrapTrustSet } from "./mobile/bootstrap-trust.js";
+import { billingHostsForBuild } from "./account/billing-url.js";
 import type { BootstrapEnvironment } from "./mobile/control-plane-bootstrap.js";
 import { bindDataDirToEnvironment } from "./mobile/data-dir-environment.js";
 import { FUNCTIONS_REGION } from "./mobile/mobile-rtdb-paths.js";
@@ -92,6 +93,7 @@ import {
   type MobileRelayStatus,
   type RelayOriginStarter,
 } from "./mobile/mobile-relay-manager.js";
+import { createMobileRegistrationOnboarding } from "./mobile/registration-onboarding.js";
 import {
   computeKeyProof,
   decodeCanonicalPublicKey,
@@ -1334,6 +1336,7 @@ export async function createRuntime({
    * survives a restart without asking anybody.
    */
   const MOBILE_ACCOUNT_BINDING_REF = "mobile:account-binding";
+  const MOBILE_REGISTRATION_ONBOARDING_REF = "mobile:relay-registration-configured";
   /**
    * The marker as a STATE, not a boolean (G13 — see `account-binding.ts`). A store that cannot be
    * read answers `unknown`, which the guard below treats exactly like `absent`: the identity is kept
@@ -1351,8 +1354,31 @@ export async function createRuntime({
    * Writes a marker. `none` is WRITTEN, never a deletion: an absent marker means "the server has never
    * answered", and that is not the same fact as "the server said this machine is not bound".
    */
+  let mobileRuntimeInitialized = false;
+  const registrationOnboarding = createMobileRegistrationOnboarding({
+    readMarker: () => credentialStore.getSecret(MOBILE_REGISTRATION_ONBOARDING_REF),
+    writeMarker: (value) => credentialStore.setSecret(MOBILE_REGISTRATION_ONBOARDING_REF, value),
+    clearMarker: () => credentialStore.deleteSecret(MOBILE_REGISTRATION_ONBOARDING_REF),
+    enable: async () => {
+      await store.mutate("mobile:registration-onboarding", (draft: AppState) => {
+        draft.settings.integrations.mobile.enabled = true;
+        draft.settings.integrations.mobile.relay.enabled = true;
+      });
+      broadcastState();
+      if (mobileRuntimeInitialized) {
+        void reconfigureMobile().catch(() => {
+          log.warn("could not reconfigure mobile after account registration", { reason: "reconfigure-failed" });
+        });
+      }
+    },
+  });
   const writeInstallationBinding = async (marker: InstallationBindingMarker): Promise<void> => {
     await credentialStore.setSecret(MOBILE_ACCOUNT_BINDING_REF, marker);
+    if (marker === "none") {
+      await registrationOnboarding.unbound();
+    } else if (marker === "bound") {
+      await registrationOnboarding.bound();
+    }
   };
   const configuredFirebase = resolveMobileFirebaseConfig(process.env, FUNCTIONS_REGION);
 
@@ -1738,7 +1764,7 @@ export async function createRuntime({
     // THE SIGNED ALLOWLIST, read at the moment a URL is about to be opened rather than captured at
     // construction: a recovery can replace the envelope while this process is running, and an
     // allowlist captured once would be the old merchant's.
-    billingHosts: () => mobileFirebase.config?.billingCheckoutHosts ?? [],
+    billingHosts: () => billingHostsForBuild(declaredEnvironment, mobileFirebase.config),
     // The pairs this machine already has, as adoption LOCATORS for an enrolment. The server proves
     // ownership from each pair's own `publicMeta.desktopUid`; a hint is not evidence. Without them a
     // desktop that paired before it had an account enrolled with its phones left behind.
@@ -5627,6 +5653,7 @@ export async function createRuntime({
   ensureGitPolling();
   syncTreeDirWatchers();
   reconfigureTelegram();
+  mobileRuntimeInitialized = true;
   void reconfigureMobile();
   if (deferInitialRefresh) {
     scheduleAzurePolling();
@@ -7170,6 +7197,10 @@ export async function createRuntime({
     accountOpenCheckout(offerId: string) {
       return accountManager.openCheckout(offerId);
     },
+    /** Main-process IPC uses this only to copy the still-valid link; it never crosses into a renderer. */
+    accountCheckoutUrlForCopy(offerId: string) {
+      return accountManager.checkoutUrlForCopy(offerId);
+    },
     accountOpenBillingPortal() {
       return accountManager.openBillingPortal();
     },
@@ -7329,6 +7360,7 @@ export async function createRuntime({
 
     /** Toggles the whole mobile feature — mirrors reconfigureMobile()'s existing settings:update reactivity, exposed as its own dedicated action (plan §10.5) rather than requiring a full settings payload. */
     async setMobileEnabled(enabled: boolean) {
+      if (readInstallationBinding() === "bound") await registrationOnboarding.explicitlyConfigured();
       await store.mutate("mobile:enabled", (draft: AppState) => {
         draft.settings.integrations.mobile.enabled = enabled;
       });
@@ -7351,6 +7383,7 @@ export async function createRuntime({
      * feature with no way in (dev-environment finding 6).
      */
     async setMobileRelayEnabled(enabled: boolean) {
+      if (readInstallationBinding() === "bound") await registrationOnboarding.explicitlyConfigured();
       await store.mutate("mobile:relay:enabled", (draft: AppState) => {
         draft.settings.integrations.mobile.relay.enabled = enabled;
       });

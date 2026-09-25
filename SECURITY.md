@@ -6,7 +6,7 @@ Thanks for taking the time to report a security issue. strIDEterm handles creden
 
 **Preferred:** open a private report through GitHub Security Advisories — go to the [Security tab](https://github.com/jstradej/strideterm/security) and click **Report a vulnerability**. This keeps the report private until a fix is released.
 
-**Backup:** email <strideterm@stradej.cz> with `[security]` in the subject. Do not open a public GitHub issue for unfixed vulnerabilities.
+**Backup:** email <support@strideterm.com> with `[security]` in the subject. Do not open a public GitHub issue for unfixed vulnerabilities.
 
 A useful report includes:
 

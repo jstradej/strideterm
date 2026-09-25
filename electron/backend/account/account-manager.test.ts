@@ -728,7 +728,7 @@ describe("billing", () => {
     // open anything the server happened to return.
     const { manager, opened } = fakes({ billingHosts: [] });
     await signIn(manager);
-    await expect(manager.openCheckout("personal-monthly")).rejects.toMatchObject({ code: "not-configured" });
+    await expect(manager.openCheckout("personal-monthly")).rejects.toMatchObject({ code: "billing-unconfigured" });
     expect(opened).toEqual([]);
   });
 
@@ -754,6 +754,19 @@ describe("billing", () => {
       expect.objectContaining({ offerId: "personal-monthly", installationId: "inst-1" }),
       expect.anything(),
     );
+  });
+
+  test("the opened checkout URL stays available to the main-process copy path for one hour", async () => {
+    const fixture = fakes();
+    await fixture.manager.restoreFromInstallation();
+    expect(fixture.manager.checkoutUrlForCopy("personal-monthly")).toBeNull();
+
+    await fixture.manager.openCheckout("personal-monthly");
+    expect(fixture.manager.checkoutUrlForCopy("personal-annual")).toBeNull();
+    expect(fixture.manager.checkoutUrlForCopy("personal-monthly")).toBe("https://checkout.example/pay");
+
+    fixture.clock.now += 60 * 60_000;
+    expect(fixture.manager.checkoutUrlForCopy("personal-monthly")).toBeNull();
   });
 
   test("this desktop opens the billing portal with no owner session at all", async () => {

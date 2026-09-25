@@ -1,5 +1,16 @@
 # Development Guide
 
+## QA sandbox checkout
+
+Before signed bootstrap activation, the desktop pins billing hosts for the declared `qa`
+environment and `strideterm-mobile-qa` project to `strideterm.com` and
+`sandbox-customer-portal.paddle.com`. An accepted bootstrap replaces this list, including
+an explicitly empty list; other environments and projects receive no fallback.
+The QA backend must use `https://sandbox-api.paddle.com`. After changing backend code,
+restart through the QA launcher if its watcher has not restarted the desktop. Verify
+that **Account → Subscribe** opens a checkout marked **Test Mode**, then use a Paddle
+test card. A successful backend configuration check alone does not verify this UI flow.
+
 This document is for contributors building strIDEterm from source. **Most users should use the [pre-built binaries](https://github.com/jstradej/strideterm/releases/latest)** — they are signed, ready to run, and auto-update.
 
 ## Requirements
@@ -96,6 +107,17 @@ launcher, never a guess made from a project id, a data directory or a Git branch
 
 #### Running against dev, qa or prod
 
+On the test workstation, use the wrappers in `C:\work\strideterm-ops\dev\` for an interactive
+desktop dev run against QA or production. `run-prod-desktop.ps1` selects the production Firebase
+config, `STRIDETERM_ENV=prod`, an isolated `~/.strideterm-prod-dev` data directory and remote port 43126. It verifies the named config belongs to `strideterm-mobile-prod` before launching:
+
+```powershell
+& C:\work\strideterm-ops\dev\run-prod-desktop.ps1
+```
+
+This launcher exercises the desktop client only. The production Firebase Functions and operator
+identity must be deployed and verified separately before production sign-in or pairing can succeed.
+
 `STRIDETERM_ENV=dev` (or `qa`, or `prod`) on its own is **not** a complete configuration for that
 tier, and the launcher refuses it. The declaration chooses the broker (`https://auth-dev.strideterm.com`,
 `https://auth-qa.strideterm.com` or `https://auth.strideterm.com`) and the bootstrap trust set; the
@@ -113,6 +135,10 @@ The complete procedure, in a **fresh console** (nothing from configuration A bel
 $env:STRIDETERM_ENV = "qa"
 .\dev.ps1 -DataDir "$env:USERPROFILE\.strideterm-qa" -MobileFirebaseConfigPath "C:\secrets\strideterm-qa\google-services.json"
 ```
+
+The downloaded Android file may omit `project_info.firebase_url`. In that case the desktop derives
+the default Realtime Database URL from the project ID, as the mobile app does. A non-default database
+instance still needs an explicit `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL`.
 
 Or set the three variables yourself instead of naming the file (`STRIDETERM_MOBILE_FIREBASE_PROJECT_ID`,
 `STRIDETERM_MOBILE_FIREBASE_API_KEY`, `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL`, all three, all from

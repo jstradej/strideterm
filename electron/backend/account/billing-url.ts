@@ -13,11 +13,9 @@
 // The test beside it asserted, in words, that the host allowlist could not be repeated here — which
 // is the opposite of what the plan asks for, and a green test proving a deviation.
 //
-// WHERE THE ALLOWLIST COMES FROM. The SIGNED control-plane bootstrap envelope
-// (`billingCheckoutHosts`), which is the only environment-scoped, signed statement this process has
-// about which merchant it uses. Not an environment variable — one of those is editable by whatever
-// launched the app — and not a compiled-in constant, because a merchant host has to be able to move
-// during a recovery without a new release.
+// The signed bootstrap's billingCheckoutHosts take precedence, including an empty list.
+// Before bootstrap activation, the QA build pins its sandbox hosts to the QA project.
+// Recovery envelopes can replace them without a new release; environment variables cannot.
 //
 // AN EMPTY ALLOWLIST REFUSES EVERYTHING. A build that has not been told which merchant it uses opens
 // nothing. That is the opposite of the old behaviour and it is the right way round: the failure mode
@@ -25,6 +23,16 @@
 // to somebody else's page from inside our app.
 
 import { isAllowedBillingHost } from "../mobile/control-plane-bootstrap.js";
+import type { MobileFirebaseConfig } from "../mobile/mobile-firebase-config.js";
+
+export function billingHostsForBuild(environment: string, config: MobileFirebaseConfig | null): readonly string[] {
+  if (!config) return [];
+  if (config.billingCheckoutHosts !== undefined) return config.billingCheckoutHosts;
+  if (environment === "qa" && config.projectId === "strideterm-mobile-qa" && !config.emulators) {
+    return ["strideterm.com", "sandbox-customer-portal.paddle.com"];
+  }
+  return [];
+}
 
 /** Why a billing URL was not opened. A fixed code; never remote text. */
 export type BillingUrlRefusal = "not-a-url" | "not-https" | "host-not-allowed" | "no-allowlist";

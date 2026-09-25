@@ -56,7 +56,8 @@ export function useSignInNotice(): void {
         // renders over whatever they are sharing or screenshotting; the deadline would be a number
         // that keeps being wrong, since a toast does not tick. The panel shows both, accurately, and
         // this is a pointer to the panel.
-        body: "Your sign-in link was opened. Confirm it in Settings → Mobile to complete the sign-in.",
+        body: "Your sign-in link was opened. Click to confirm it in Settings → Mobile → Account.",
+        action: "open-mobile-account",
       });
     },
     { immediate: true },

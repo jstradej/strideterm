@@ -145,10 +145,12 @@ function Import-MobileFirebaseDevConfig {
     try {
         $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
         $projectId = [string]$config.project_info.project_id
-        $databaseUrl = [string]$config.project_info.firebase_url
+        $databaseUrl = if ($config.project_info.PSObject.Properties.Name -contains 'firebase_url') {
+            [string]$config.project_info.firebase_url
+        } else { '' }
         $apiKey = [string]$config.client[0].api_key[0].current_key
-        if (-not $projectId -or -not $databaseUrl -or -not $apiKey) {
-            throw 'project_id, firebase_url or client api_key is missing'
+        if (-not $projectId -or -not $apiKey) {
+            throw 'project_id or client api_key is missing'
         }
 
         # ONE PROJECT, OR NONE OF IT (follow-up F10). These three values describe ONE Firebase
@@ -166,10 +168,13 @@ function Import-MobileFirebaseDevConfig {
 
         if (-not $existingProject) { Set-Item -Path "Env:$projectVar" -Value $projectId }
         if (-not $existingApiKey) { Set-Item -Path "Env:$apiKeyVar" -Value $apiKey }
-        if (-not $existingDatabase) { Set-Item -Path "Env:$databaseVar" -Value $databaseUrl }
-        Write-Ok "Loaded Mobile Firebase client config from $configPath (values hidden)."
+        if (-not $existingDatabase -and $databaseUrl) { Set-Item -Path "Env:$databaseVar" -Value $databaseUrl }
+        Write-Ok "Loaded Mobile Firebase client config from $configPath (values hidden; RTDB URL is derived when absent)."
     }
     catch {
+        if (-not $isLocal) {
+            throw "Mobile Firebase config at $configPath could not be loaded: $($_.Exception.Message)"
+        }
         Write-Warn "Mobile Firebase local demo config could not be loaded from $configPath; mobile commands will be unavailable. $($_.Exception.Message)"
     }
 }

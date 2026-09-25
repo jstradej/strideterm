@@ -19,9 +19,9 @@
  * charged. Payment methods, receipts and cancellation are the merchant's own portal, opened fresh
  * each time — the portal URL is temporary and is never cached anywhere.
  *
- * THE RENDERER DERIVES NO ENTITLEMENT. Every state below is read from the server's summary. There is
- * no local expiry comparison and no "isPaid" computed: the backend refuses the request regardless,
- * so a UI that disagreed with it would only ever lie to its user.
+ * THE RENDERER DERIVES NO ENTITLEMENT. Every state below is read from the server's summary. A local
+ * clock only formats countdown text; it never decides whether access is active. The backend refuses
+ * a request regardless, so a UI that disagreed with it would only ever lie to its user.
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
@@ -35,7 +35,7 @@ const props = withDefaults(defineProps<{ view?: AccountView; phoneCount?: number
   phoneCount: 0,
   visible: true,
 });
-const emit = defineEmits<{ "navigate-phones": []; "navigate-account": [] }>();
+const emit = defineEmits<{ "navigate-phones": []; "navigate-account": []; "connect-first-phone": [] }>();
 
 const account = useAccountStore();
 
@@ -62,6 +62,8 @@ const requestedAuth = ref<{
   title: string;
 } | null>(null);
 const copiedReference = ref(false);
+const checkoutLinkCopied = ref(false);
+let checkoutLinkCopyTimer: ReturnType<typeof setTimeout> | null = null;
 const showDiagnostics = ref(false);
 const diagnosticsNote = ref("");
 /** Where the last local export was written. Shown so somebody can go and find the file. */
@@ -87,6 +89,7 @@ watch(
 );
 onUnmounted(() => {
   if (tick !== null) clearInterval(tick);
+  if (checkoutLinkCopyTimer !== null) clearTimeout(checkoutLinkCopyTimer);
   account.setSignInPanelMounted(false);
   // F09. CLOSING THIS PANEL RELEASES WHAT NEEDED THE FORM — the owner retention, and every operation
   // in flight — and only for the flow this panel owns. The backend decides whether THIS panel is the
@@ -152,14 +155,51 @@ const busyLabel = computed(() => {
 const overview = computed(() => account.overview);
 const entitlement = computed(() => account.entitlement ?? account.overview?.entitlement);
 const auth = computed(() => account.auth);
+// The consumed link is cleared before registration finishes; keep progress until the operation ends.
+const completingPurpose = ref<string | null>(null);
+watch(
+  () => [account.auth, account.state.busy] as const,
+  ([attempt, working]) => {
+    if (attempt?.phase === "verifying") completingPurpose.value = attempt.purpose;
+    else if (!working) completingPurpose.value = null;
+  },
+  { immediate: true, flush: "sync" },
+);
+const completionMessage = computed(() => {
+  if (completingPurpose.value === "enrol-with-trial") {
+    return "We are verifying your email, registering this computer and activating your free trial.";
+  }
+  if (completingPurpose.value === "enrol") return "We are verifying your email and registering this computer.";
+  return "We are verifying your email and completing your request.";
+});
 const pendingEmailChange = computed(() => account.pendingEmailChange);
 const trialDaysLeft = computed(() => {
   if (entitlement.value?.state !== "trial" || !entitlement.value.notAfter) return null;
-  return Math.max(0, Math.ceil((entitlement.value.notAfter - Date.now()) / 86_400_000));
+  return Math.max(0, Math.ceil((entitlement.value.notAfter - nowMs.value) / 86_400_000));
 });
 const trialProgress = computed(() =>
   trialDaysLeft.value === null ? 0 : Math.min(100, Math.round((trialDaysLeft.value / 14) * 100)),
 );
+const cancellationAt = computed(() =>
+  entitlement.value?.state === "active" && entitlement.value.source === "subscription"
+    ? entitlement.value.cancellationAt
+    : undefined,
+);
+const cancellationCountdown = computed(() => {
+  if (cancellationAt.value === undefined) return null;
+  const remainingMs = cancellationAt.value - nowMs.value;
+  if (remainingMs <= 0) return { amount: "", unit: "Cancellation is being processed" };
+  if (remainingMs >= 86_400_000) {
+    const days = Math.ceil(remainingMs / 86_400_000);
+    return { amount: String(days), unit: days === 1 ? "day left" : "days left" };
+  }
+  if (remainingMs >= 3_600_000) {
+    const hours = Math.ceil(remainingMs / 3_600_000);
+    return { amount: String(hours), unit: hours === 1 ? "hour left" : "hours left" };
+  }
+  const minutes = Math.ceil(remainingMs / 60_000);
+  return { amount: String(minutes), unit: minutes === 1 ? "minute left" : "minutes left" };
+});
 
 const resendInSeconds = computed(() => {
   if (!auth.value) return 0;
@@ -212,6 +252,7 @@ const ERROR_COPY: Record<string, string> = {
   "already-subscribed": "This account already has a subscription.",
   "trial-already-used": "This desktop has already used its free trial.",
   "checkout-pending": "A checkout is already being prepared. Try again in a moment.",
+  "checkout-link-unavailable": "The checkout link is no longer available. Start checkout again.",
   "provider-unavailable": "The payment service could not prepare the payment page. Try again later.",
   "entitlement-required": "This needs an active subscription.",
   "daily-limit": "You have sent the most diagnostics reports allowed today. Save the file instead.",
@@ -245,6 +286,7 @@ const ERROR_COPY: Record<string, string> = {
  */
 const errorMessage = computed(() => {
   const code = account.actionError ?? account.state.lastError ?? "";
+  if (code === "checkout-pending" && account.checkoutPendingOfferId !== null) return "";
   return code ? (ERROR_COPY[code] ?? ERROR_COPY.unknown) : "";
 });
 
@@ -303,6 +345,18 @@ function formatDate(epochMs: number | undefined): string {
   return new Date(epochMs).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
+function formatDateTime(epochMs: number | undefined): string {
+  if (!epochMs) return "—";
+  return new Date(epochMs).toLocaleString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 /**
  * A DAY, never a time of day (plan §8.4).
  *
@@ -322,7 +376,9 @@ const stateCopy = computed(() => {
   if (state === "trial") return { title: "Free trial", tone: "ok" };
   if (state === "active") {
     return entitlement.value?.source === "subscription"
-      ? { title: "Subscribed", tone: "ok" }
+      ? cancellationAt.value !== undefined
+        ? { title: "Cancellation scheduled", tone: "warn" }
+        : { title: "Subscribed", tone: "ok" }
       : { title: "Active access", tone: "ok" };
   }
   if (state === "past_due") return { title: "Payment problem", tone: "warn" };
@@ -352,13 +408,9 @@ const hasActiveHostedAccess = computed(() => {
   return state === "trial" || state === "active";
 });
 
-/**
- * Scrolls to the Phone pairing section rendered below this one on the same Mobile settings tab
- * (`SettingsMobileTab.vue`'s `#mobile-tab-phone-pairing` heading) — the plain pairing flow the plan
- * (§6, Fáze B) says "Připojit telefon" must lead into, rather than a QR/enrollment path of its own.
- */
-function scrollToPhonePairing(): void {
-  emit("navigate-phones");
+function openPhones(): void {
+  if (props.phoneCount > 0) emit("navigate-phones");
+  else emit("connect-first-phone");
 }
 
 async function copyReference(): Promise<void> {
@@ -400,7 +452,24 @@ async function submitContinue(): Promise<void> {
  * and still needs one), this never has to detour through a fresh sign-in first.
  */
 async function startPurchase(offerId: string): Promise<void> {
-  await account.openCheckout(offerId);
+  const outcome = await account.openCheckout(offerId);
+  if (outcome === "opened") checkoutLinkCopied.value = false;
+}
+
+async function retryPendingCheckout(): Promise<void> {
+  const offerId = account.checkoutPendingOfferId;
+  if (offerId !== null) await account.openCheckout(offerId);
+}
+
+async function copyCheckoutLink(): Promise<void> {
+  checkoutLinkCopied.value = await account.copyCheckoutUrl();
+  if (checkoutLinkCopyTimer !== null) clearTimeout(checkoutLinkCopyTimer);
+  if (checkoutLinkCopied.value) {
+    checkoutLinkCopyTimer = setTimeout(() => {
+      checkoutLinkCopied.value = false;
+      checkoutLinkCopyTimer = null;
+    }, 2000);
+  }
 }
 
 /**
@@ -515,17 +584,39 @@ async function submitDelete(): Promise<void> {
          belongs above the thing it is about. -->
     <p v-if="errorMessage" class="account-error" role="alert">{{ errorMessage }}</p>
 
+    <div
+      v-if="completingPurpose"
+      class="account-confirm account-completing"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <span class="account-spinner" aria-hidden="true"></span>
+      <h3>Finishing sign-in…</h3>
+      <p class="account-note">{{ completionMessage }}</p>
+      <p class="account-note">This may take a moment. This page will update automatically when everything is ready.</p>
+    </div>
+
     <!-- THE FALLBACK LINE, for work no button on this page started — a refresh the backend issued,
          or an operation begun in another window. When somebody DID press a button, the spinner lives
          in that button instead: a progress line at the top of the panel is not feedback for a click
          that happened further down, which is exactly how a five-second registration read as a page
          that had ignored the press. `aria-live` because a spinner nobody can see is not feedback. -->
-    <p v-if="busy && pendingAction === null" class="account-busy" role="status" aria-live="polite">
+    <p
+      v-if="!completingPurpose && busy && pendingAction === null"
+      class="account-busy"
+      role="status"
+      aria-live="polite"
+    >
       <span class="account-spinner" aria-hidden="true"></span>
       <span>{{ busyLabel }}</span>
     </p>
 
-    <div v-if="requestedAuth && !auth" class="account-confirm account-auth account-auth--requested" role="region">
+    <div
+      v-if="!completingPurpose && requestedAuth && !auth"
+      class="account-confirm account-auth account-auth--requested"
+      role="region"
+    >
       <h4>{{ requestedAuth.title }}</h4>
       <p class="account-note">Enter the login email for this account. We will send a one-time link.</p>
       <label class="account-field">
@@ -548,7 +639,10 @@ async function submitDelete(): Promise<void> {
       </div>
     </div>
 
-    <div v-if="props.view === 'overview' && !auth && !requestedAuth" class="account-overview-card">
+    <div
+      v-if="!completingPurpose && props.view === 'overview' && !auth && !requestedAuth"
+      class="account-overview-card"
+    >
       <div>
         <p class="account-kicker">strIDEterm Mobile</p>
         <h3 v-if="phase === 'ready'">{{ stateCopy.title }}</h3>
@@ -589,7 +683,10 @@ async function submitDelete(): Promise<void> {
           <span v-if="pendingAction === 'continue'" class="button-spinner" aria-hidden="true"></span>
           Continue with email
         </button>
-        <p class="account-note">We'll email you a one-time sign-in link. The desktop app stays free.</p>
+        <p class="account-note">
+          We'll email you a one-time sign-in link. The desktop app is free; Mobile includes a 14-day trial and requires
+          a plan afterwards.
+        </p>
         <button type="button" class="link account-restore" @click="intent = 'recover-uid'">
           Restore a previous enrolment
         </button>
@@ -638,10 +735,27 @@ async function submitDelete(): Promise<void> {
             props.phoneCount > 0 ? "Manage your connected phones below." : "Connect your phone to get started."
           }}</small>
         </div>
+        <div
+          v-else-if="cancellationAt !== undefined && cancellationCountdown"
+          class="trial-indicator cancellation-indicator"
+          role="status"
+        >
+          <div class="trial-indicator__heading">
+            <span
+              ><strong v-if="cancellationCountdown.amount">{{ cancellationCountdown.amount }}</strong
+              ><small>{{ cancellationCountdown.unit }}</small></span
+            >
+            <small>Cancels {{ formatDateTime(cancellationAt) }}</small>
+          </div>
+          <small>Mobile remains available until cancellation. The subscription will not renew.</small>
+        </div>
         <p v-else-if="entitlement?.state === 'active' && entitlement?.renewalAt" class="account-note">
           Renews {{ formatDate(entitlement.renewalAt) }}
         </p>
-        <p v-else-if="entitlement?.state === 'active' && entitlement?.notAfter" class="account-note">
+        <p
+          v-else-if="entitlement?.state === 'active' && entitlement?.source !== 'subscription' && entitlement?.notAfter"
+          class="account-note"
+        >
           Access until {{ formatDate(entitlement.notAfter) }}
         </p>
         <p v-if="entitlement?.state === 'past_due'" class="account-note account-note--warn">
@@ -665,7 +779,7 @@ async function submitDelete(): Promise<void> {
             v-if="hasActiveHostedAccess"
             type="button"
             class="button account-overview-card__action"
-            @click="scrollToPhonePairing"
+            @click="openPhones"
           >
             {{ props.phoneCount > 0 ? "Manage phones" : "Connect first phone" }}
           </button>
@@ -691,7 +805,7 @@ async function submitDelete(): Promise<void> {
       </template>
     </div>
 
-    <div v-if="props.view === 'account' || auth" class="account-detail">
+    <div v-if="!completingPurpose && (props.view === 'account' || auth)" class="account-detail">
       <p v-if="!account.available" class="account-note">The hosted account is only available in the desktop app.</p>
 
       <template v-else-if="phase === 'unconfigured'">
@@ -929,15 +1043,35 @@ async function submitDelete(): Promise<void> {
                 <dt>Trial ends</dt>
                 <dd>{{ formatDate(entitlement?.notAfter) }}</dd>
               </template>
+              <template v-else-if="cancellationAt !== undefined">
+                <dt>Cancels on</dt>
+                <dd>{{ formatDateTime(cancellationAt) }}</dd>
+              </template>
               <template v-else-if="entitlement?.renewalAt">
                 <dt>Renews</dt>
                 <dd>{{ formatDate(entitlement?.renewalAt) }}</dd>
               </template>
-              <template v-else-if="entitlement?.notAfter">
+              <template
+                v-else-if="
+                  entitlement?.notAfter && (entitlement?.state !== 'active' || entitlement?.source !== 'subscription')
+                "
+              >
                 <dt>Access until</dt>
                 <dd>{{ formatDate(entitlement?.notAfter) }}</dd>
               </template>
             </dl>
+
+            <p
+              v-if="cancellationCountdown"
+              class="account-note account-note--warn cancellation-countdown"
+              role="status"
+            >
+              <strong v-if="cancellationCountdown.amount"
+                >{{ cancellationCountdown.amount }} {{ cancellationCountdown.unit }}.</strong
+              >
+              <strong v-else>{{ cancellationCountdown.unit }}.</strong>
+              Mobile remains available until cancellation; this subscription will not renew.
+            </p>
 
             <p v-if="entitlement?.state === 'past_due'" class="account-note account-note--warn">
               A payment did not go through. Everything local keeps working; update the payment method in the billing
@@ -958,7 +1092,7 @@ async function submitDelete(): Promise<void> {
                 :key="offer.offerId"
                 type="button"
                 :class="['button', { 'button--ghost': index > 0 }]"
-                :disabled="busy"
+                :disabled="busy || account.checkoutRequestInFlight || account.checkoutPendingOfferId !== null"
                 @click="startPurchase(offer.offerId)"
               >
                 {{ offer.billingPeriod === "annual" ? "Subscribe yearly" : "Subscribe monthly" }} —
@@ -974,10 +1108,45 @@ async function submitDelete(): Promise<void> {
                 Start 14-day trial
               </button>
             </div>
+            <p
+              v-if="account.checkoutRequestInFlight && canChoosePlan"
+              class="account-note"
+              role="status"
+              aria-live="polite"
+            >
+              Preparing checkout…
+            </p>
+            <div v-else-if="account.checkoutPendingOfferId && canChoosePlan" class="account-offers">
+              <p class="account-note account-note--warn" role="status" aria-live="polite">
+                A checkout request is still pending. Another plan cannot be started until this one is resolved.
+              </p>
+              <button
+                type="button"
+                class="button button--ghost"
+                :disabled="busy || account.checkoutRequestInFlight"
+                @click="retryPendingCheckout"
+              >
+                Retry this checkout
+              </button>
+            </div>
+            <div v-if="account.checkoutLinkAvailable && canChoosePlan" class="account-offers">
+              <p class="account-note">
+                The checkout opened in your browser. If the page could not start, copy the link and try it in another
+                browser.
+              </p>
+              <button
+                type="button"
+                class="button button--ghost"
+                :disabled="busy || account.checkoutRequestInFlight"
+                @click="copyCheckoutLink"
+              >
+                {{ checkoutLinkCopied ? "Checkout link copied" : "Copy checkout link" }}
+              </button>
+            </div>
             <button
               v-if="overview?.billingConfigured && entitlement?.source === 'subscription'"
               type="button"
-              class="button button--ghost"
+              :class="['button', { 'button--ghost': canChoosePlan }]"
               :disabled="busy"
               @click="startPortal"
             >
@@ -1074,7 +1243,7 @@ async function submitDelete(): Promise<void> {
               type="button"
               class="button button--ghost button--small account-connect-phone"
               title="Opens the same phone pairing flow as the Phone pairing section on this tab."
-              @click="scrollToPhonePairing"
+              @click="emit('navigate-phones')"
             >
               Connect phone
             </button>
@@ -1114,14 +1283,13 @@ async function submitDelete(): Promise<void> {
                 ><strong>Login and support</strong><small>{{ account.state.ownerEmail }}</small></span
               >
             </summary>
-            <h5>Login and support</h5>
-            <p class="account-note">
-              Support reference
+            <div class="account-support-reference">
+              <span>Support reference</span>
               <code>{{ overview?.supportReference }}</code>
-              <button type="button" class="link" @click="copyReference">
+              <button type="button" class="button button--ghost button--small" @click="copyReference">
                 {{ copiedReference ? "Copied" : "Copy" }}
               </button>
-            </p>
+            </div>
 
             <!--
           The last sentence is a MEASUREMENT, not a caution: phase 0 row 39 — applying the change ends
@@ -1189,10 +1357,10 @@ async function submitDelete(): Promise<void> {
               >
             </summary>
             <div class="account-danger">
-              <button type="button" class="link" :disabled="busy" @click="showSignOut = !showSignOut">
+              <button type="button" class="button button--ghost" :disabled="busy" @click="showSignOut = !showSignOut">
                 Sign this desktop out
               </button>
-              <button type="button" class="link" :disabled="busy" @click="showDelete = !showDelete">
+              <button type="button" class="button button--danger" :disabled="busy" @click="showDelete = !showDelete">
                 Delete account
               </button>
             </div>
@@ -1425,6 +1593,18 @@ async function submitDelete(): Promise<void> {
 .trial-indicator small {
   color: var(--muted);
 }
+.cancellation-indicator {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warn, #d08a34) 45%, var(--border, #333));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn, #d08a34) 8%, transparent);
+}
+.cancellation-indicator .trial-indicator__heading > span :is(strong, small) {
+  color: var(--warn, #d08a34);
+}
+.cancellation-countdown {
+  margin-top: 10px;
+}
 .account-state--warn {
   color: var(--warn, #d08a34);
 }
@@ -1474,13 +1654,32 @@ async function submitDelete(): Promise<void> {
   display: block;
 }
 .account-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   cursor: pointer;
-  list-style-position: outside;
+  list-style: none;
+}
+.account-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.account-disclosure > summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  margin-left: 2px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+}
+.account-disclosure[open] > summary::before {
+  transform: rotate(45deg);
 }
 .account-disclosure > summary span {
-  display: inline-grid;
+  display: grid;
   gap: 2px;
-  margin-left: 3px;
+  min-width: 0;
 }
 .account-disclosure > summary small {
   color: var(--muted);
@@ -1491,6 +1690,32 @@ async function submitDelete(): Promise<void> {
 }
 .account-disclosure--danger[open] {
   border-color: color-mix(in srgb, var(--danger, #c0392b) 45%, var(--border, #333));
+}
+.account-support-reference {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) auto;
+  align-items: center;
+  justify-content: start;
+  gap: 6px 10px;
+  margin-bottom: 14px;
+  font-size: 12px;
+}
+.account-support-reference > span {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+.account-support-reference code {
+  overflow-wrap: anywhere;
+}
+.account-reauth {
+  display: grid;
+  gap: 10px;
+}
+.account-disclosure .account-field {
+  max-width: 480px;
+}
+.account-disclosure > .account-danger {
+  margin-top: 0;
 }
 .account-note {
   color: var(--muted);
@@ -1625,6 +1850,19 @@ async function submitDelete(): Promise<void> {
   margin: 0;
   font-size: 12px;
   color: var(--muted);
+}
+.account-completing {
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+}
+.account-completing .account-spinner {
+  width: 28px;
+  height: 28px;
 }
 .account-spinner {
   width: 12px;

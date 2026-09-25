@@ -44,6 +44,12 @@ const FIXTURE = {
 
 const pwshAvailable = spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"], { shell: false }).status === 0;
 
+function stringValues(vars: Record<string, string | null>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(vars).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+}
+
 /** The body of one `function <name> { … }` from a PowerShell script, by matching braces. */
 function extractFunction(script: string, name: string): string {
   const header = `function ${name} {`;
@@ -78,12 +84,15 @@ afterAll(() => {
  */
 function runImport(
   env: Record<string, string>,
-  options: { configPath?: string | null } = {},
+  options: {
+    configPath?: string | null;
+    fixture?: { project_info: { project_id: string; firebase_url?: string }; client: typeof FIXTURE.client };
+  } = {},
 ): { vars: Record<string, string | null> | null; output: string; status: number | null } {
   const root = mkdtempSync(join(tmpdir(), "dev-ps1-firebase-"));
   roots.push(root);
   const fixturePath = join(root, "google-services.json");
-  writeFileSync(fixturePath, JSON.stringify(FIXTURE), "utf8");
+  writeFileSync(fixturePath, JSON.stringify(options.fixture ?? FIXTURE), "utf8");
   const configPath = options.configPath === undefined ? fixturePath : options.configPath;
 
   const body = extractFunction(readFileSync(resolve(process.cwd(), "dev.ps1"), "utf8"), FUNCTION_NAME);
@@ -92,6 +101,7 @@ function runImport(
     .join("\n");
   const harness = [
     "$ErrorActionPreference = 'Stop'",
+    "Set-StrictMode -Version Latest",
     'function Write-Ok($msg) { Write-Host "LOG $msg" }',
     'function Write-Warn($msg) { Write-Host "LOG $msg" }',
     // The launcher's own defaults for the variables the function reads: none of them leaks in from
@@ -147,6 +157,31 @@ describe.skipIf(!pwshAvailable)("dev.ps1 imports one Firebase project, or none o
     expect(vars![MOBILE_FIREBASE_ENV_VARS.projectId]).toBe("fixture-project");
     expect(vars![MOBILE_FIREBASE_ENV_VARS.apiKey]).toBe("AIza-fixture-key");
     expect(vars![MOBILE_FIREBASE_ENV_VARS.databaseUrl]).toBe(FIXTURE.project_info.firebase_url);
+  });
+
+  test("a QA Android config without firebase_url derives the default database instance", () => {
+    const { vars, status } = runImport(
+      { STRIDETERM_ENV: "qa" },
+      { fixture: { ...FIXTURE, project_info: { project_id: "fixture-project" } } },
+    );
+    expect(status).toBe(0);
+    expect(vars).toMatchObject({
+      [MOBILE_FIREBASE_ENV_VARS.projectId]: "fixture-project",
+      [MOBILE_FIREBASE_ENV_VARS.apiKey]: "AIza-fixture-key",
+      [MOBILE_FIREBASE_ENV_VARS.databaseUrl]: null,
+    });
+    const { config } = resolveMobileFirebaseConfig({ STRIDETERM_ENV: "qa", ...stringValues(vars!) }, FUNCTIONS_REGION);
+    expect(config?.databaseUrl).toBe("https://fixture-project-default-rtdb.europe-west1.firebasedatabase.app");
+  });
+
+  test("a malformed named QA config stops before Electron starts", () => {
+    const { status, vars, output } = runImport(
+      { STRIDETERM_ENV: "qa" },
+      { fixture: { ...FIXTURE, client: [{ api_key: [{ current_key: "" }] }] } },
+    );
+    expect(status).not.toBe(0);
+    expect(vars).toBeNull();
+    expect(output).toContain("client api_key is missing");
   });
 
   test("a DIFFERENT project id imports neither the key nor the database URL", () => {
@@ -316,12 +351,6 @@ describe.skipIf(!pwshAvailable)("switching environments is unambiguous (R06)", (
     expect(refusal?.reason).toBe("environment-contradiction");
     expect(refusal?.detail).toContain(MOBILE_FIREBASE_ENV_VARS.databaseUrl);
   });
-
-  function stringValues(vars: Record<string, string | null>): Record<string, string> {
-    return Object.fromEntries(
-      Object.entries(vars).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-    );
-  }
 });
 
 test("pwsh is what runs the launcher, and the launcher still defines the function", () => {

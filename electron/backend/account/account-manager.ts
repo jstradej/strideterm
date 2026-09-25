@@ -94,6 +94,8 @@ import {
 } from "./account-diagnostics.js";
 import type { AccountOverview } from "../mobile/mobile-schemas.js";
 
+const CHECKOUT_LINK_COPY_TTL_MS = 60 * 60_000;
+
 /** The installation half: its stable id, its Ed25519 public key and the signature over a transcript. */
 export interface InstallationIdentity {
   readonly installationId: string;
@@ -134,7 +136,7 @@ export interface AccountManagerDeps {
   /** Which build produced the report. Version and platform only — see `account-diagnostics.ts`. */
   readonly appInfo?: DiagnosticsApp;
   /**
-   * The EXACT hostnames a checkout or portal URL may point at, from the signed bootstrap envelope.
+   * Exact billing hostnames resolved from the signed bootstrap or the build's initial QA pins.
    *
    * A function rather than a value because the envelope can be replaced at runtime by a recovery, and
    * an allowlist captured at construction would be the old merchant's. Absent or empty means nothing
@@ -326,6 +328,8 @@ export class AccountManager extends EventEmitter {
   private readonly newKey: () => string;
 
   private owner: OwnerSession | null = null;
+  private recentCheckoutLink: { readonly offerId: string; readonly url: string; readonly expiresAt: number } | null =
+    null;
   /**
    * Which owner session `this.owner` is, as a number that moves every time it is set or dropped.
    *
@@ -1643,9 +1647,9 @@ export class AccountManager extends EventEmitter {
   /**
    * Asks for a checkout URL and opens it in the user's own browser.
    *
-   * The URL is returned by the call, validated by the SERVER against an exact host allowlist, opened
-   * once and never stored. It is not returned to the renderer either: a URL that reaches a renderer
-   * is a URL that reaches a state diff, a devtools console and a crash report.
+   * The URL is validated against the exact host allowlist and opened once. The manager keeps it in
+   * memory for a short copy window; the renderer can ask the main process to copy it but never sees
+   * the URL itself.
    */
   async openCheckout(offerId: string): Promise<"opened" | "pending"> {
     const generation = this.ownerGeneration;
@@ -1654,6 +1658,21 @@ export class AccountManager extends EventEmitter {
     );
     this.releaseAfterOperation(generation, "open-checkout");
     return outcome;
+  }
+
+  /** A short-lived, main-process-only copy source for a checkout already opened by this app. */
+  checkoutUrlForCopy(offerId: string): string | null {
+    const entry = this.recentCheckoutLink;
+    if (entry === null || entry.expiresAt <= this.now()) {
+      this.recentCheckoutLink = null;
+      return null;
+    }
+    if (entry.offerId !== offerId) return null;
+    if (checkBillingUrl(entry.url, this.deps.billingHosts?.() ?? []) !== null) {
+      this.recentCheckoutLink = null;
+      return null;
+    }
+    return entry.url;
   }
 
   private async checkoutWithin(
@@ -1680,6 +1699,11 @@ export class AccountManager extends EventEmitter {
     );
     if (result.status === "ready" && result.checkoutUrl) {
       await this.openBillingUrl(scope, result.checkoutUrl);
+      this.recentCheckoutLink = {
+        offerId,
+        url: result.checkoutUrl,
+        expiresAt: this.now() + CHECKOUT_LINK_COPY_TTL_MS,
+      };
       return "opened" as const;
     }
     if (result.status === "checkout-pending") return "pending" as const;
@@ -1714,7 +1738,7 @@ export class AccountManager extends EventEmitter {
   /**
    * The one place a billing URL leaves this process.
    *
-   * HTTPS and an EXACT host from the signed bootstrap allowlist, checked HERE and not only at the
+   * HTTPS and an EXACT host from the resolved billing allowlist, checked HERE and not only at the
    * server (plan §2 asks for both boundaries). "It came from the callable" is not a property that
    * survives a malformed or compromised response, and the opener's job is to hand a URL to the
    * operating system — `shell.openExternal` invokes the registered protocol handler, so the last
@@ -1730,7 +1754,7 @@ export class AccountManager extends EventEmitter {
     if (refusal !== null) {
       // A REFUSAL, not a silent success. A checkout that "worked" and opened nothing is a payment
       // problem the user cannot act on and support cannot see.
-      throw new AccountManagerError(refusal === "no-allowlist" ? "not-configured" : "checkout-url-not-allowed");
+      throw new AccountManagerError(refusal === "no-allowlist" ? "billing-unconfigured" : "checkout-url-not-allowed");
     }
     this.requireScope(scope);
     await this.deps.openExternal(url);
@@ -1806,6 +1830,7 @@ export class AccountManager extends EventEmitter {
       // object's own fields — which is all this used to do — left the token on disk, and the next
       // start signed the machine straight back in as an installation the server had just revoked.
       await this.deps.forgetInstallationCredential?.();
+      this.recentCheckoutLink = null;
       // And the durable marker with it: this machine is deliberately no longer bound, so a fresh
       // anonymous identity IS the right answer for it from here on. `none` is the one marker that
       // releases it — which also makes this the way out of the recovery state for a machine whose
@@ -2307,6 +2332,7 @@ export class AccountManager extends EventEmitter {
     // against a configuration nobody chose for it; ending the flow aborts its requests and makes every
     // remaining step a refusal rather than a surprise.
     this.abandonOperations();
+    this.recentCheckoutLink = null;
     this.deps.broker?.cancel();
     this.releaseOwnerSession();
     // A clear (T02): a request still out answers into a configuration nobody chose for it.

@@ -106,6 +106,7 @@ import type {
 } from "../backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "./types/ssh.js";
 import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "./performance.js";
+import type { AccountUiState } from "../backend/account/account-state.js";
 
 export type { StatePayload };
 
@@ -334,6 +335,7 @@ export interface StridetermAPI {
   // none of them. `getAccountState` is a read and is desktop-only for the same reason: the state it
   // returns is this installation's.
   getAccountState: () => Promise<unknown>;
+  onAccountUpdated: (handler: (payload: AccountUiState) => void) => () => void;
   /**
    * Starts a passwordless sign-in for one pinned purpose. Returns as soon as the link is requested.
    *
@@ -364,6 +366,8 @@ export interface StridetermAPI {
   accountRefreshOverview: () => Promise<unknown>;
   /** Answers `opened` or `pending`. NEVER the URL: a URL here is a URL in a state diff. */
   accountOpenCheckout: (payload: AccountCheckout) => Promise<unknown>;
+  /** Copies the recent checkout link in the main process; the link itself never crosses IPC. */
+  accountCopyCheckoutUrl: (payload: AccountCheckout) => Promise<unknown>;
   accountOpenBillingPortal: () => Promise<unknown>;
   accountRevoke: (payload: AccountRevoke) => Promise<unknown>;
   accountAcknowledgeNotice: (payload: AccountNoticeAck) => Promise<unknown>;

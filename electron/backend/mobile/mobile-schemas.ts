@@ -588,6 +588,7 @@ export const EntitlementSummarySchema = z.object({
   state: z.enum(["unbound", "trial", "active", "past_due", "lapsed", "revoked", "billing_unconfigured"]),
   notAfter: z.number().int().min(0).optional(),
   renewalAt: z.number().int().min(0).optional(),
+  cancellationAt: z.number().int().min(0).optional(),
   planLabel: z.string().optional(),
   source: z.enum(["none", "trial", "subscription", "operator", "incident"]),
 });

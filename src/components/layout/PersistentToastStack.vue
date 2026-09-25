@@ -7,17 +7,31 @@
         class="persistent-toast"
         :class="`persistent-toast--${t.kind}`"
       >
-        <div class="persistent-toast__icon">{{ iconFor(t.kind) }}</div>
-        <div class="persistent-toast__content">
-          <strong class="persistent-toast__title">{{ t.title }}</strong>
-          <p class="persistent-toast__body">{{ t.body }}</p>
-          <p v-if="t.copyPath" class="persistent-toast__path" :title="t.copyPath">{{ t.copyPath }}</p>
-          <div v-if="t.copyPath" class="persistent-toast__actions">
-            <button type="button" class="persistent-toast__copy" :data-copied="copiedId === t.id" @click="copyPath(t)">
-              {{ copiedId === t.id ? "Copied" : "Copy path" }}
-            </button>
+        <button v-if="t.action" type="button" class="persistent-toast__target" @click="openAction(t)">
+          <span class="persistent-toast__icon">{{ iconFor(t.kind) }}</span>
+          <span class="persistent-toast__content">
+            <strong class="persistent-toast__title">{{ t.title }}</strong>
+            <span class="persistent-toast__body">{{ t.body }}</span>
+          </span>
+        </button>
+        <template v-else>
+          <div class="persistent-toast__icon">{{ iconFor(t.kind) }}</div>
+          <div class="persistent-toast__content">
+            <strong class="persistent-toast__title">{{ t.title }}</strong>
+            <p class="persistent-toast__body">{{ t.body }}</p>
+            <p v-if="t.copyPath" class="persistent-toast__path" :title="t.copyPath">{{ t.copyPath }}</p>
+            <div v-if="t.copyPath" class="persistent-toast__actions">
+              <button
+                type="button"
+                class="persistent-toast__copy"
+                :data-copied="copiedId === t.id"
+                @click="copyPath(t)"
+              >
+                {{ copiedId === t.id ? "Copied" : "Copy path" }}
+              </button>
+            </div>
           </div>
-        </div>
+        </template>
         <button
           type="button"
           class="persistent-toast__close"
@@ -34,8 +48,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useNotificationStore, type PersistentToast } from "../../stores/notifications.js";
+import { useAppStore } from "../../stores/app.js";
 
 const notifStore = useNotificationStore();
+const appStore = useAppStore();
 const copiedId = ref<string | null>(null);
 
 function iconFor(kind: string): string {
@@ -44,6 +60,12 @@ function iconFor(kind: string): string {
   // Info is used for transient success confirmations (e.g. git action toasts) —
   // a checkmark reads as "done", which is what the user just did.
   return "✓";
+}
+
+function openAction(t: PersistentToast): void {
+  if (t.action === "open-mobile-account") {
+    appStore.openSettingsDialog({ initialTab: "mobile", initialMobileView: "account" });
+  }
 }
 
 async function copyPath(t: PersistentToast): Promise<void> {
@@ -88,6 +110,32 @@ async function copyPath(t: PersistentToast): Promise<void> {
   padding: 8px 10px 8px 11px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
   font-size: 12.5px;
+}
+
+.persistent-toast__target {
+  grid-column: 1 / 3;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.persistent-toast__target:hover .persistent-toast__title {
+  text-decoration: underline;
+}
+
+.persistent-toast__target:focus-visible {
+  outline: 2px solid #9ecdf3;
+  outline-offset: 4px;
+  border-radius: 2px;
 }
 
 /* Error (default for pushPersistentToast) — loud, must be noticed. */

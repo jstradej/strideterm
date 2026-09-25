@@ -27,6 +27,8 @@
 
 import { EventEmitter } from "node:events";
 import type { NetworkFailureKind } from "../net/network-error.js";
+import { classifyNetworkError } from "../net/network-error.js";
+import { getLogger } from "../logger.js";
 import { createHash, randomBytes } from "node:crypto";
 
 import type { AccountClient } from "./account-client.js";
@@ -43,6 +45,8 @@ import {
 } from "./authlink-config.js";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+const log = getLogger("email-signin");
 
 /**
  * Why this sign-in was started. Pinned when the attempt is created and never changed by anything
@@ -795,6 +799,7 @@ export class EmailSignInBroker extends EventEmitter {
 
   private fail(code: SignInFailureCode): void {
     const current = this.attempt;
+    log.warn("sign-in attempt failed", { environment: this.environment, code });
     this.clear();
     if (current !== null) this.emit("failed", code);
   }
@@ -812,6 +817,11 @@ export class EmailSignInBroker extends EventEmitter {
   }
 
   private publish(): void {
+    log.debug("sign-in state changed", {
+      environment: this.environment,
+      phase: this.attempt?.phase ?? "idle",
+      manualOnly: this.attempt?.manualOnly ?? false,
+    });
     this.emit("state", this.state());
   }
 
@@ -843,13 +853,14 @@ export class EmailSignInBroker extends EventEmitter {
    * method and the body — so a redirect is an instruction to send that secret to another host.
    */
   private async post(
-    path: string,
+    path: "/start" | "/claim" | "/ack" | "/cancel",
     body: Record<string, unknown>,
   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown>; retryAfterMs: number }> {
     // THE DEADLINE COVERS THE BODY TOO (F04). It is disarmed after `readBoundedJsonBody` has returned, not
     // when `fetch` resolves: a peer that sends headers promptly and then trickles a body for ever is a
     // hung request, and a timer cleared at the earlier point never sees it.
     const deadline = requestDeadline(REQUEST_TIMEOUT_MS);
+    const startedAt = this.now();
     try {
       const response = await this.doFetch(`${this.deps.authlink.origin}${path}`, {
         method: "POST",
@@ -866,12 +877,39 @@ export class EmailSignInBroker extends EventEmitter {
       // the caller's own retry rule applies.
       const read = await readBoundedJsonBody(response, MAX_RESPONSE_BYTES);
       if (read.kind === "unreadable") throw new SignInBrokerError("network");
+      const state = read.kind === "ok" ? read.value["state"] : undefined;
+      const remoteState =
+        state === "pending" ||
+        state === "confirmed" ||
+        state === "cancelled" ||
+        state === "acknowledged" ||
+        state === "expired"
+          ? state
+          : "unknown";
+      const meta = {
+        environment: this.environment,
+        path,
+        status: response.status,
+        remoteState,
+        bodyKind: read.kind,
+        durationMs: Math.max(0, this.now() - startedAt),
+      };
+      if (response.ok && read.kind === "ok") log.debug("sign-in broker response", meta);
+      else log.warn("sign-in broker response", meta);
       return {
         ok: response.ok,
         status: response.status,
         body: read.kind === "ok" ? read.value : {},
         retryAfterMs: retryAfterMs(response.headers.get("retry-after")),
       };
+    } catch (error) {
+      log.warn("sign-in broker request failed", {
+        environment: this.environment,
+        path,
+        failure: deadline.timedOut() ? "timeout" : (classifyNetworkError(error) ?? "network"),
+        durationMs: Math.max(0, this.now() - startedAt),
+      });
+      throw error;
     } finally {
       deadline.dispose();
     }

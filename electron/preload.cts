@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import { contextBridge, ipcRenderer } from "electron";
 import type { StridetermAPI } from "./shared/ipc-bridge.js";
+import type { AccountUiState } from "./backend/account/account-state.js";
 
 // Startup flags injected by main via webPreferences.additionalArguments.
 // Reading process.argv here is safe — preload runs in the renderer's Node
@@ -129,6 +130,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   accountStartTrial: () => ipcRenderer.invoke("account:start-trial"),
   accountRefreshOverview: () => ipcRenderer.invoke("account:refresh"),
   accountOpenCheckout: (payload) => ipcRenderer.invoke("account:checkout", payload),
+  accountCopyCheckoutUrl: (payload) => ipcRenderer.invoke("account:checkout:copy", payload),
   accountOpenBillingPortal: () => ipcRenderer.invoke("account:portal"),
   accountRevoke: (payload) => ipcRenderer.invoke("account:revoke", payload),
   accountAcknowledgeNotice: (payload) => ipcRenderer.invoke("account:notice-ack", payload),
@@ -332,6 +334,11 @@ contextBridge.exposeInMainWorld("strideterm", {
   revealCpuProfile: (filePath) => ipcRenderer.invoke("perf:reveal-cpu-profile", filePath),
   onTerminalInputBlocked: (handler) => ipcRenderer.on("terminal:input-blocked", (_event, payload) => handler(payload)),
   onStateUpdated: (handler) => ipcRenderer.on("state:updated", (_event, payload) => handler(payload)),
+  onAccountUpdated: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload as AccountUiState);
+    ipcRenderer.on("account:updated", listener);
+    return () => ipcRenderer.removeListener("account:updated", listener);
+  },
   onTerminalData: (handler) => ipcRenderer.on("terminal:data", (_event, payload) => handler(payload)),
   onTerminalExit: (handler) => ipcRenderer.on("terminal:exit", (_event, payload) => handler(payload)),
   onGitPushProgress: (handler) => ipcRenderer.on("git:push-progress", (_event, payload) => handler(payload)),

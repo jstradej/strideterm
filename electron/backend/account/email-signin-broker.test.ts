@@ -23,6 +23,9 @@ import type { AccountClient } from "./account-client.js";
 import { AccountAuthError } from "./account-client.js";
 import { MAX_OOB_CODE_LENGTH, type AuthLinkConfig } from "./authlink-config.js";
 
+const diagnostics = vi.hoisted(() => ({ debug: vi.fn(), warn: vi.fn() }));
+vi.mock("../logger.js", () => ({ getLogger: () => diagnostics }));
+
 const NOW = 1_760_000_000_000;
 const AUTHLINK: AuthLinkConfig = {
   environment: "local",
@@ -33,6 +36,71 @@ const AUTHLINK: AuthLinkConfig = {
 };
 const ATTEMPT = "a".repeat(43);
 const SECRET = "s".repeat(43);
+
+test("broker diagnostics show polling and confirmation without request or response secrets", async () => {
+  diagnostics.debug.mockClear();
+  diagnostics.warn.mockClear();
+  const h = harness();
+  await h.broker.begin("owner@example.test", "enrol");
+  await h.runScheduled();
+  h.claimAnswer = { status: 401, body: { state: "private-response-state", code: "private-response-code" } };
+  await h.runScheduled();
+  h.claimAnswer = {
+    status: 200,
+    body: { state: "confirmed", email: "owner@example.test", oobCode: "private-oob-code" },
+  };
+  await h.runScheduled();
+  expect(diagnostics.debug).toHaveBeenCalledWith(
+    "sign-in broker response",
+    expect.objectContaining({
+      environment: "local",
+      path: "/claim",
+      status: 200,
+      remoteState: "confirmed",
+    }),
+  );
+  expect(diagnostics.warn).toHaveBeenCalledWith(
+    "sign-in broker response",
+    expect.objectContaining({
+      path: "/claim",
+      status: 401,
+      remoteState: "unknown",
+    }),
+  );
+  const logged = JSON.stringify([diagnostics.debug.mock.calls, diagnostics.warn.mock.calls]);
+  for (const secret of [
+    ATTEMPT,
+    SECRET,
+    "owner@example.test",
+    "private-oob-code",
+    "private-response-state",
+    "private-response-code",
+  ]) {
+    expect(logged).not.toContain(secret);
+  }
+});
+
+test("broker diagnostics record network failures and manual fallback", async () => {
+  diagnostics.warn.mockClear();
+  const h = harness();
+  h.startAnswer = "unreachable";
+  await h.broker.begin("owner@example.test", "enrol");
+  expect(diagnostics.warn).toHaveBeenCalledWith(
+    "sign-in broker request failed",
+    expect.objectContaining({
+      environment: "local",
+      path: "/start",
+      failure: "network",
+    }),
+  );
+  expect(diagnostics.debug).toHaveBeenCalledWith(
+    "sign-in state changed",
+    expect.objectContaining({
+      phase: "awaiting-link",
+      manualOnly: true,
+    }),
+  );
+});
 
 interface Harness {
   broker: EmailSignInBroker;

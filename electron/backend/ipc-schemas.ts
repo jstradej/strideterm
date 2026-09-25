@@ -1528,6 +1528,9 @@ export type AccountEnrol = z.infer<typeof accountEnrolSchema>;
 export const accountCheckoutSchema = z.object({ offerId: nonEmptyString });
 export type AccountCheckout = z.infer<typeof accountCheckoutSchema>;
 
+/** `account:checkout:copy` — identifies which offer to copy; the URL never crosses IPC. */
+export const accountCheckoutCopySchema = z.object({ offerId: nonEmptyString });
+
 export const accountRevokeSchema = z.object({
   kind: z.enum(["installation", "mobile-device", "pair", "account-wide"]),
   targetId: nonEmptyString.optional(),

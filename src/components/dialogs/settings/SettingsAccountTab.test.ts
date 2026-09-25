@@ -121,6 +121,10 @@ function makeApi(state: AnyState, overrides: AnyState = {}) {
       accountStartTrial: record("accountStartTrial"),
       accountRefreshOverview: record("accountRefreshOverview"),
       accountOpenCheckout: record("accountOpenCheckout"),
+      accountCopyCheckoutUrl: async (payload?: unknown) => {
+        calls.push({ method: "accountCopyCheckoutUrl", payload });
+        return "copied";
+      },
       accountOpenBillingPortal: record("accountOpenBillingPortal"),
       accountRevoke: record("accountRevoke"),
       accountAcknowledgeNotice: record("accountAcknowledgeNotice"),
@@ -138,7 +142,7 @@ function makeApi(state: AnyState, overrides: AnyState = {}) {
         calls.push({ method: "saveFile", payload });
         return "C:/Users/me/Downloads/strideterm-diagnostics-2026-03-10T00-00-00.json";
       },
-      on: () => () => {},
+      onAccountUpdated: () => () => {},
       // Last, so a test can replace one method with a promise it controls — which is the only way to
       // observe a spinner that is up only while a call is in flight.
       ...overrides,
@@ -172,6 +176,61 @@ beforeEach(() => {
 });
 
 describe("the account page", () => {
+  test.each(["overview", "account"] as const)(
+    "%s keeps progress visible after the email link is consumed",
+    async (view) => {
+      const { wrapper, store } = await render(
+        stateFor({
+          phase: "signing-in",
+          busy: true,
+          auth: authState({ phase: "verifying", purpose: "enrol-with-trial" }),
+        }),
+        {},
+        { view },
+      );
+      expect(wrapper.text()).toContain("Finishing sign-in…");
+      expect(wrapper.text()).toContain("activating your free trial");
+      expect(wrapper.find('[role="status"] .account-spinner').exists()).toBe(true);
+
+      store.state = {
+        phase: "signed-out",
+        busy: true,
+        needsRecentAuth: true,
+        installationRegistered: false,
+        signInAvailable: true,
+      };
+      await flushPromises();
+      expect(wrapper.text()).toContain("Finishing sign-in…");
+      expect(wrapper.find('input[type="email"]').exists()).toBe(false);
+
+      store.state = stateFor({ busy: false, auth: undefined });
+      await flushPromises();
+      expect(wrapper.text()).not.toContain("Finishing sign-in…");
+      wrapper.unmount();
+    },
+  );
+
+  test("failed registration exits progress and shows the error", async () => {
+    const { wrapper, store } = await render(
+      stateFor({ phase: "signing-in", busy: true, auth: authState({ phase: "verifying", purpose: "enrol" }) }),
+      {},
+      { view: "overview" },
+    );
+    store.state = {
+      phase: "signed-out",
+      busy: false,
+      needsRecentAuth: true,
+      installationRegistered: false,
+      signInAvailable: true,
+      lastError: "network",
+    };
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("Finishing sign-in…");
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    expect(wrapper.find('input[type="email"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   test("signed out, it is ONE address field and a Continue button, with no password anywhere", async () => {
     const { wrapper } = await render({
       phase: "signed-out",
@@ -326,6 +385,49 @@ describe("the account page", () => {
     expect(wrapper.text()).not.toContain("€6 / month");
   });
 
+  test("a scheduled cancellation shows its exact local deadline and a countdown, not the grace expiry", async () => {
+    const end = Date.now() + 12 * 86_400_000;
+    const scheduled = overview({
+      entitlement: {
+        state: "active",
+        source: "subscription",
+        notAfter: end + 3 * 86_400_000,
+        cancellationAt: end,
+        planLabel: "strIDEterm",
+      },
+    });
+    const localDeadline = new Date(end).toLocaleString(undefined, {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    });
+    for (const view of ["overview", "account"] as const) {
+      const { wrapper } = await render(
+        stateFor({ overview: scheduled, entitlement: scheduled.entitlement }),
+        {},
+        { view },
+      );
+      expect(wrapper.text()).toContain("Cancellation scheduled");
+      expect(wrapper.text()).toMatch(/12\s*days left/);
+      expect(wrapper.text()).toContain(localDeadline);
+      expect(wrapper.text()).not.toContain(new Date(end + 3 * 86_400_000).toLocaleDateString());
+      expect(wrapper.text()).not.toContain("Subscribe monthly");
+      wrapper.unmount();
+    }
+  });
+
+  test("after cancellation the desktop keeps its free features and offers a new subscription", async () => {
+    const ended = overview({ entitlement: { state: "lapsed", source: "none" } });
+    const { wrapper } = await render(stateFor({ overview: ended, entitlement: ended.entitlement }));
+    expect(wrapper.text()).toContain("Subscription ended");
+    expect(wrapper.text()).toContain("Subscribe monthly");
+    expect(wrapper.text()).toContain("Your terminals, workspaces");
+    expect(wrapper.text()).not.toContain("Cancellation scheduled");
+  });
+
   test("dates are dates, and a renewal is labelled as one", async () => {
     const { wrapper } = await render(stateFor());
     expect(wrapper.text()).toContain("Renews");
@@ -446,8 +548,18 @@ describe("the account page", () => {
       .findAll("button")
       .find((button) => button.text() === "View plans")!
       .trigger("click");
-    expect(wrapper.emitted("navigate-phones")).toHaveLength(1);
+    expect(wrapper.emitted("connect-first-phone")).toHaveLength(1);
     expect(wrapper.emitted("navigate-account")).toHaveLength(1);
+  });
+
+  test("Manage phones keeps the existing Phones navigation", async () => {
+    const { wrapper } = await render(stateFor(), {}, { view: "overview", phoneCount: 1 });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Manage phones")!
+      .trigger("click");
+    expect(wrapper.emitted("navigate-phones")).toHaveLength(1);
+    expect(wrapper.emitted("connect-first-phone")).toBeUndefined();
   });
 
   test("trial lifecycle copy distinguishes the last day and an ended trial", async () => {
@@ -562,7 +674,7 @@ describe("the account page", () => {
     expect(calls.some((call) => call.method === "accountStartTrial")).toBe(false);
   });
 
-  test("checkout asks the main process to open it and the URL never reaches the page", async () => {
+  test("checkout opens in the main process and its private copy action never reveals the URL", async () => {
     const trial = overview({ entitlement: { state: "trial", source: "trial", notAfter: NOW + 3 * 86_400_000 } });
     const { wrapper, calls } = await render(stateFor({ overview: trial, entitlement: trial.entitlement }));
     const subscribe = wrapper.findAll("button").find((button) => button.text().startsWith("Subscribe monthly"))!;
@@ -572,19 +684,56 @@ describe("the account page", () => {
       offerId: "personal-monthly",
     });
     expect(wrapper.html()).not.toContain("http");
+    const copy = wrapper.findAll("button").find((button) => button.text() === "Copy checkout link");
+    expect(copy).toBeDefined();
+    await copy!.trigger("click");
+    await flushPromises();
+    expect(calls.some((call) => call.method === "accountCopyCheckoutUrl")).toBe(true);
+    expect(wrapper.text()).toContain("Checkout link copied");
+    expect(wrapper.html()).not.toContain("http");
   });
 
-  test("a pending checkout shows the existing pending message", async () => {
+  test("a pending checkout remains visible and only retries the same request", async () => {
     const trial = overview({ entitlement: { state: "trial", source: "trial", notAfter: NOW + 3 * 86_400_000 } });
+    const checkout = vi.fn(async () => "pending");
     const { wrapper } = await render(stateFor({ overview: trial, entitlement: trial.entitlement }), {
-      accountOpenCheckout: async () => "pending",
+      accountOpenCheckout: checkout,
     });
     const subscribe = wrapper.findAll("button").find((button) => button.text().startsWith("Subscribe monthly"))!;
 
     await subscribe.trigger("click");
     await flushPromises();
 
-    expect(wrapper.find(".account-error").text()).toBe("A checkout is already being prepared. Try again in a moment.");
+    expect(wrapper.find(".account-note--warn").text()).toContain("A checkout request is still pending");
+    expect(wrapper.find(".account-error").exists()).toBe(false);
+    expect((subscribe.element as HTMLButtonElement).disabled).toBe(true);
+
+    const retry = wrapper.findAll("button").find((button) => button.text() === "Retry this checkout")!;
+    await retry.trigger("click");
+    await flushPromises();
+    expect(checkout).toHaveBeenCalledTimes(2);
+    expect(checkout).toHaveBeenNthCalledWith(1, { offerId: "personal-monthly" });
+    expect(checkout).toHaveBeenNthCalledWith(2, { offerId: "personal-monthly" });
+  });
+
+  test("plan buttons disable immediately while checkout is being requested", async () => {
+    const trial = overview({ entitlement: { state: "trial", source: "trial", notAfter: NOW + 3 * 86_400_000 } });
+    let resolveCheckout!: (outcome: "opened") => void;
+    const checkoutResponse = new Promise<"opened">((resolve) => {
+      resolveCheckout = resolve;
+    });
+    const { wrapper } = await render(stateFor({ overview: trial, entitlement: trial.entitlement }), {
+      accountOpenCheckout: async () => checkoutResponse,
+    });
+    const subscribe = wrapper.findAll("button").find((button) => button.text().startsWith("Subscribe monthly"))!;
+
+    await subscribe.trigger("click");
+    expect(wrapper.text()).toContain("Preparing checkout…");
+    expect((subscribe.element as HTMLButtonElement).disabled).toBe(true);
+
+    resolveCheckout("opened");
+    await flushPromises();
+    expect((subscribe.element as HTMLButtonElement).disabled).toBe(false);
   });
 
   test("with no owner session, Subscribe still opens checkout directly (I3: installation-authorized)", async () => {
@@ -1072,9 +1221,9 @@ describe("progress and refusals are where the person is looking", () => {
       },
     });
 
-    const busy = wrapper.find(".account-busy");
+    const busy = wrapper.find(".account-completing");
     expect(busy.exists()).toBe(true);
-    expect(busy.text()).toContain("Signing in and registering this computer");
+    expect(busy.text()).toContain("registering this computer and activating your free trial");
     // Announced, not merely drawn: the spinner itself is decorative.
     expect(busy.attributes("role")).toBe("status");
     expect(wrapper.find(".account-spinner").attributes("aria-hidden")).toBe("true");
