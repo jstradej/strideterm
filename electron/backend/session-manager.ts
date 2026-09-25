@@ -908,7 +908,10 @@ export class SessionManager extends EventEmitter {
     const { args, cleanupFn } = await buildSystemSshArgs(host, this.sshManager!.credentialStore, {
       sshManager: this.sshManager,
     });
-    const sshExec = APP_CONFIG.ssh.systemSshPath || "ssh";
+    // node-pty resolves a relative name against PATH literally (no PATHEXT), so
+    // a bare "ssh" is never found on Windows — spell the extension out, as the
+    // WSL path does with "wsl.exe".
+    const sshExec = APP_CONFIG.ssh.systemSshPath || (process.platform === "win32" ? "ssh.exe" : "ssh");
 
     log.debug("spawning system-ssh session", { sessionId, host: host.host, user: host.username });
 

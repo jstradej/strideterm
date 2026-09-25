@@ -231,6 +231,30 @@ describe("SessionManager", () => {
     }
   });
 
+  test.each([
+    ["win32", "ssh.exe"],
+    ["linux", "ssh"],
+    ["darwin", "ssh"],
+  ])("system-ssh on %s spawns %s by default", async (platform, expected) => {
+    // node-pty does not apply PATHEXT when resolving a relative file on Windows,
+    // so a bare "ssh" fails there with "File not found" although ssh.exe is on PATH.
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    try {
+      const manager = new SessionManager({ sshManager: { credentialStore: {} } as never });
+      const workspace = { id: "ws-sys", panels: [{ id: "remote" }] };
+      const panel = { id: "remote", title: "Remote", launch: { sshHostId: "h1" } };
+      await manager.ensureSystemSshSession({} as never, workspace as never, panel as never, "ws-sys:remote", {
+        id: "h1",
+        host: "mini.local",
+        username: "js",
+      } as never);
+      expect(spawnCalls[0]?.file).toBe(expected);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
   test("removeWorkspaceSessions prunes the deleted workspace's failed spawns", async () => {
     // deleteWorkspace/pruneOrphanedWorkspaces go through removeWorkspaceSessions
     // (not syncWithState), so a failed spawn's id would otherwise leak in the set
