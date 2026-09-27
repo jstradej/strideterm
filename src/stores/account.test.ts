@@ -105,4 +105,38 @@ describe("account event updates", () => {
     account.detach();
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
+
+  test("online bootstrap progress is authoritative and retry/cancel use dedicated actions", async () => {
+    const retry = vi.fn(async () => undefined);
+    const cancel = vi.fn(async () => undefined);
+    let onAccountUpdated: ((payload: AccountUiState) => void) | undefined;
+    const account = useAccountStore();
+    account.attach({
+      onAccountUpdated: (handler) => {
+        onAccountUpdated = handler;
+        return () => {};
+      },
+      accountRetryOnlineBootstrap: retry,
+      accountCancelOnlineBootstrap: cancel,
+    });
+
+    onAccountUpdated?.({
+      phase: "signed-out",
+      busy: false,
+      installationRegistered: false,
+      needsRecentAuth: true,
+      signInAvailable: true,
+      onlineBootstrap: {
+        phase: "downloading",
+        purpose: "refresh",
+        url: "https://bootstrap.example.test/prod.json",
+      },
+    });
+    expect(account.onlineBootstrap.phase).toBe("downloading");
+
+    await account.retryOnlineBootstrap();
+    await account.cancelOnlineBootstrap();
+    expect(retry).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
 });

@@ -14,12 +14,9 @@
 // never the prod keys, and a build hardened for one tier holds nothing that verifies the other's
 // envelope.
 //
-// PLAN §14 SUPPLIES THE REAL VALUES. The production and QA trust sets and bootstrap URLs are
-// external activation inputs — a domain in a different failure domain from the Firebase project, two
-// public keys per tier whose private halves live in an offline kit. Until they exist, a tier's trust
-// set is empty and that build simply has no bootstrap: it uses the endpoints it was configured with,
-// which is exactly today's behaviour. An empty set is honest; a placeholder key would be a key — and
-// the release gate must not call such an artifact a verified QA/prod bootstrap.
+// Production's URL and public keys are active build constants. The matching private signing keys
+// remain outside this repository. QA has a separate trust set and remains unconfigured until its own
+// activation; neither environment can use the other's keys.
 
 import type { BootstrapEnvironment } from "./control-plane-bootstrap.js";
 
@@ -33,22 +30,24 @@ export interface BootstrapTrust {
 /**
  * The compiled-in production trust set.
  *
- * Empty until §14's external activation supplies it. Deliberately not read from the environment: see
- * the module header.
+ * Deliberately not read from the environment: see the module header.
  */
 const PRODUCTION_TRUST: {
   readonly keys: readonly { keyId: string; publicKeyBase64: string }[];
   readonly url?: string;
 } = {
-  keys: [],
+  url: "https://bootstrap.strideterm.com/prod.json",
+  keys: [
+    { keyId: "prod-bootstrap-20260928-a", publicKeyBase64: "bISfTxDs38sa1vEvjB0bP5kkNLv5E/GFQVPGcXYFl1Y=" },
+    { keyId: "prod-bootstrap-20260928-b", publicKeyBase64: "G5qV4+RacP+qOrUcv6uIvv7gTslJTxD3dKr5gm3gDgA=" },
+  ],
 };
 
 /**
  * The compiled-in QA trust set — its own keys and its own URL, never prod's.
  *
- * Empty until §14's external activation supplies it, same as {@link PRODUCTION_TRUST}. QA is a tier
- * other people enter (plan §2 table: "Klíče a URL zabudované v buildu", same row as prod), so it gets
- * the same treatment as prod rather than falling through to the environment-configurable branch below.
+ * QA has a separate trust set and never falls through to production or the environment-configurable
+ * branch below.
  */
 const QA_TRUST: {
   readonly keys: readonly { keyId: string; publicKeyBase64: string }[];
@@ -78,9 +77,9 @@ export const BOOTSTRAP_ENV_VARS = {
    * SECOND PRODUCTION instance with separate state, made that instance's sign-in unavailable.
    *
    * An unrecognised value is a REFUSAL rather than a guess — see the function. Nothing in this module
-   * derives it from a project id, a data directory or a Git branch any more (plan §3.1): `main.ts`
-   * sets a BUILD DEFAULT when it is unset at all — `prod` for a packaged install, `local` for an
-   * unpackaged one — and `dev.ps1` sets it explicitly to `local` for the bare dev loop. By the time
+   * derives it from a project id, a data directory or a Git branch any more: `main.ts` defaults an
+   * absent declaration to `prod` for both packaged and source launches, and `dev.ps1` sets it
+   * explicitly to `local` for the bare dev loop. By the time
    * this function runs, the variable is expected to already be set; an empty read is `"unresolved"`,
    * never a guess.
    */
@@ -155,9 +154,8 @@ export function bootstrapTrustSet(environment: BootstrapEnvironment, env: NodeJS
  *
  * WHO IS RESPONSIBLE FOR IT BEING SET, THEN — because a bare Electron launch has to end up with some
  * value before this function is asked. `dev.ps1` sets `STRIDETERM_ENV=local` explicitly for the bare
- * dev loop (plan §3.1's "holý vývojový launcher defaultuje na local"), and `main.ts` sets an explicit
- * BUILD DEFAULT — `prod` for a packaged install, `local` for an unpackaged one run any other way — as
- * a safety net when neither the operator nor `dev.ps1` named one. Both are declarations made by the
+ * dev loop, and `main.ts` sets an explicit launch default of `prod` for packaged and source launches
+ * when neither the operator nor `dev.ps1` named one. Both are declarations made by the
  * LAUNCHER, once, in one place; neither is a guess made HERE from a project id, a data directory or a
  * Git branch, which is the distinction plan §3.1 draws.
  *

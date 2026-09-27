@@ -66,21 +66,27 @@ import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transpor
 import { createMobileFirebaseRestClient } from "./mobile/mobile-firebase-rest.js";
 import { createInstallationTokenRefreshListener } from "./account/installation-token-refresh.js";
 import { loadRelayInstallationIdentity } from "./mobile/mobile-relay-identity.js";
-import { AccountManager } from "./account/account-manager.js";
+import { AccountManager, AccountManagerError } from "./account/account-manager.js";
+import type { AccountManagerDeps } from "./account/account-manager.js";
 import {
+  bindingSaysEnrolled,
   newIdentityIsRefused,
   parseInstallationBinding,
   type InstallationBindingMarker,
   type InstallationBindingState,
 } from "./account/account-binding.js";
 import { applyEpochTransition } from "./mobile/epoch-transition.js";
-import type { AccountUiState } from "./account/account-state.js";
+import { signedOutState, type AccountUiState } from "./account/account-state.js";
 import { createAccountClient } from "./account/account-client.js";
-import { resolveAuthLinkConfig } from "./account/authlink-config.js";
+import { normalizeAuthEmail, resolveAuthLinkConfig } from "./account/authlink-config.js";
 import { EmailSignInBroker, type SignInPurpose } from "./account/email-signin-broker.js";
 import { AccountCallableError, createAccountTransport } from "./account/account-transport.js";
 import { resolveMobileFirebaseConfig, type MobileFirebaseConfig } from "./mobile/mobile-firebase-config.js";
-import { resolveBootstrapFirebaseConfig, createControlPlaneBootstrapClient } from "./mobile/bootstrap-client.js";
+import {
+  resolveBootstrapFirebaseConfig,
+  createControlPlaneBootstrapClient,
+  isLocalBootstrapUrl,
+} from "./mobile/bootstrap-client.js";
 import { BOOTSTRAP_ENV_VARS, bootstrapEnvironmentFor, bootstrapTrustSet } from "./mobile/bootstrap-trust.js";
 import { billingHostsForBuild } from "./account/billing-url.js";
 import type { BootstrapEnvironment } from "./mobile/control-plane-bootstrap.js";
@@ -1439,21 +1445,11 @@ export async function createRuntime({
         url: bootstrapTrust.url,
         trust: bootstrapTrust,
       });
-  // RE-VERIFIED, not merely read. `current()` used to hand back whatever was on disk, and the
-  // runtime believed it as configuration — so an envelope written by an older build, under a key
-  // since retired, for a different environment, or at an epoch the floor has moved past, was adopted
-  // without any of those being checked again. The signature is the cheap part; the epoch floor is the
-  // one that matters, because it is what makes a rollback impossible rather than merely unlikely.
-  if (bootstrapClient && bootstrapTrust.url && bootstrapTrust.keys.size > 0) {
-    const result = await bootstrapClient.refresh();
-    if (result.changed) {
-      log.info(`control-plane bootstrap: adopted epoch ${result.envelope?.payload.configEpoch}`);
-    } else if (result.refusal && result.refusal !== "epoch-not-newer" && result.refusal !== "not-configured") {
-      log.warn(`control-plane bootstrap: refused (${result.refusal}); keeping the current configuration`);
-    }
-  }
+  // Re-verify local state at launch, without contacting the bootstrap host. A cache is local data,
+  // not permission to start online services; the first fetch happens only when an online feature is
+  // activated below.
   const bootstrapEnvelope = bootstrapClient?.currentVerified() ?? null;
-  const mobileFirebase = environmentMismatch
+  let mobileFirebase = environmentMismatch
     ? {
         config: null,
         missing: [] as string[],
@@ -1467,26 +1463,6 @@ export async function createRuntime({
       }
     : resolveBootstrapFirebaseConfig(configuredFirebase, bootstrapEnvelope, FUNCTIONS_REGION);
 
-  // THE EPOCH TRANSITION, CARRIED OUT — here, before a single client is built (F14).
-  //
-  // Apply a verified project's transition before constructing clients with its configuration.
-  // Persisting the transition separately also makes an interrupted startup resumable.
-  //
-  // ONLY WHEN THE PROJECT CHANGES: an epoch that rotates a key or moves an endpoint is not a reason
-  // to sign anybody out. And the marker is written LAST, AND ONLY IF EVERY STEP SUCCEEDED (G06) — the
-  // old code logged a failed cleanup as "it stays pending" and then marked it applied on the very next
-  // line. `applyEpochTransition` owns that ordering; see `mobile/epoch-transition.ts`.
-  const pendingTransition = bootstrapClient?.pendingTransition(configuredFirebase.config?.projectId) ?? null;
-  if (pendingTransition && bootstrapClient && mobileFirebase.config) {
-    await applyEpochTransition(pendingTransition, {
-      credentialStore,
-      refreshTokenRef: MOBILE_FIREBASE_REFRESH_TOKEN_REF,
-      bindingRef: MOBILE_ACCOUNT_BINDING_REF,
-      deviceStore: mobileDeviceStore,
-      markApplied: (epoch, projectId) => bootstrapClient.markEpochApplied(epoch, projectId),
-      log,
-    });
-  }
   // ONE REST client over the credential slot, and one only.
   //
   // There used to be two — this one and a second built for the account transport's installation leg —
@@ -1546,21 +1522,24 @@ export async function createRuntime({
       // older build never wrote all KEEP it. See `account-binding.ts`.
       isAccountBound: () =>
         newIdentityIsRefused(readInstallationBinding(), accountManagerRef?.state().installationRegistered === true),
+      isPositivelyBound: () => {
+        const binding = readInstallationBinding();
+        return binding === "bound" || accountManagerRef?.state().installationRegistered === true;
+      },
     });
     startInstallationTokenRefresh?.();
     return installationRestClient;
   };
+  const mobileTransportDeps = {
+    config: mobileFirebase.config,
+    missingConfig: mobileFirebase.missing,
+    configRefusal: mobileFirebase.refusal,
+    // ONE CLIENT, WHICHEVER SIDE ASKS FIRST. The pairing transport and the account flow share a
+    // single anonymous session by construction: two would be two uids for one machine.
+    createClient: (config: MobileFirebaseConfig) => ensureInstallationRestClient(config),
+  };
   const createMobileFirebaseTransportImpl =
-    dependencies.createMobileFirebaseTransport ||
-    (() =>
-      createFirebaseMobileTransport({
-        config: mobileFirebase.config,
-        missingConfig: mobileFirebase.missing,
-        configRefusal: mobileFirebase.refusal,
-        // ONE CLIENT, WHICHEVER SIDE ASKS FIRST. The pairing transport and the account flow share a
-        // single anonymous session by construction: two would be two uids for one machine.
-        createClient: (config) => ensureInstallationRestClient(config),
-      }));
+    dependencies.createMobileFirebaseTransport || (() => createFirebaseMobileTransport(mobileTransportDeps));
   const mobileTransport: MobileFirebaseTransport = createMobileFirebaseTransportImpl();
 
   const mobilePairing = createMobilePairing({
@@ -1683,7 +1662,7 @@ export async function createRuntime({
   // ONE account client, shared by the manager and the sign-in broker. The broker asks Firebase to
   // SEND the link; the manager redeems it. Two clients over one configuration would be two places to
   // change when the configuration moves.
-  const accountClient = mobileFirebase.config ? createAccountClient({ config: mobileFirebase.config }) : null;
+  let accountClient: ReturnType<typeof createAccountClient> | null = null;
 
   /**
    * Where this build's sign-in links come back to.
@@ -1695,7 +1674,7 @@ export async function createRuntime({
    * sign-in and touches nothing else: an enrolled desktop keeps its installation credential, its
    * pairings and its device list.
    */
-  const authLink = resolveAuthLinkConfig({
+  let authLink = resolveAuthLinkConfig({
     firebase: mobileFirebase.config ?? null,
     // THE DECLARED answer, not the fail-closed substitute above: an unresolved declaration must
     // REFUSE a sign-in, and handing this `production` would have started one against the production
@@ -1719,10 +1698,7 @@ export async function createRuntime({
    * NOT SHARED WITH THE RELAY TRANSPORT and not shared between instances: it is constructed here, per
    * runtime, and a second data directory gets its own.
    */
-  const emailSignInBroker =
-    authLink.config && accountClient
-      ? new EmailSignInBroker({ authlink: authLink.config, client: accountClient })
-      : null;
+  let emailSignInBroker: EmailSignInBroker | null = null;
 
   /**
    * The window that OWNS the sign-in attempt in flight, if any.
@@ -1734,25 +1710,11 @@ export async function createRuntime({
    */
   let signInOwnerWindowId: string | null = null;
 
-  const accountManager: AccountManager = new AccountManager({
-    client: accountClient,
-    broker: emailSignInBroker,
+  const accountManagerDeps: AccountManagerDeps = {
+    client: null,
+    broker: null,
     authLinkRefusal: authLink.refusal,
-    transport: mobileFirebase.config
-      ? createAccountTransport({
-          config: mobileFirebase.config,
-          tokenFor: async (kind, signal): Promise<string> => {
-            // THE OPERATION'S SIGNAL GOES WITH THE ASK (S02): an owner refresh for an operation that has
-            // ended answers with a refusal, never with whichever session the manager holds by then.
-            if (kind === "owner") return accountManager.tokenFor("owner", signal);
-            // The challenge leg runs as the INSTALLATION session, so the server records that uid on
-            // the challenge and the owner leg cannot choose which installation it is registering.
-            // The installation session is one shared refresh for every caller, so the signal cannot
-            // be threaded into it; the transport re-checks the signal after this await instead.
-            return installationIdToken();
-          },
-        })
-      : null,
+    transport: null,
     identity: {
       installationId: accountInstallationIdentity.installationId,
       publicKeyBase64Url: accountInstallationIdentity.publicKeyBase64Url,
@@ -1823,20 +1785,69 @@ export async function createRuntime({
       // `dev.ps1`. A report from the dev instance must not be read as one from the shipped app.
       buildMode: process.env.STRIDETERM_DATA_DIR ? "development" : "release",
     },
-  });
+  };
+  const accountManager: AccountManager = new AccountManager(accountManagerDeps);
   accountManagerRef = accountManager;
-  accountManager.on("state", (state: AccountUiState) => {
-    // One event, one payload, every window. The renderer subscribes to this and computes nothing.
-    events.emit("account:updated", state);
-  });
+  let onlineBootstrapState: NonNullable<AccountUiState["onlineBootstrap"]> = { phase: "idle" };
+  let onlineServicesReady = false;
+  let onlinePreparation: Promise<boolean> | null = null;
+  let onlinePreparationController: AbortController | null = null;
+  let onlinePreparationGeneration = 0;
+  let pendingSignInIntent: {
+    readonly email: string;
+    readonly purpose: SignInPurpose;
+    readonly offerId?: string;
+    readonly ownerWindowId: string | null;
+  } | null = null;
+  let activeSignInIntent: {
+    readonly email: string;
+    readonly purpose: SignInPurpose;
+    readonly offerId?: string;
+    readonly ownerWindowId: string | null;
+  } | null = null;
+  let signInPreparationGeneration = 0;
+  const productionBootstrapUrl = (() => {
+    try {
+      const url = bootstrapTrust.url ? new URL(bootstrapTrust.url) : null;
+      if (!url || url.username || url.password || url.search || url.hash) return "";
+      if (url.protocol !== "https:" && !isLocalBootstrapUrl(bootstrapTrust.url!)) return "";
+      return `${url.protocol}//${url.host}${url.pathname}`;
+    } catch {
+      return "";
+    }
+  })();
 
-  // WHAT THIS MACHINE ALREADY IS, restored from its PERSISTENT installation session.
-  //
-  // The owner session is transient (plan §2), so after a restart there is none — and before this
-  // call the account page showed "signed out" on a desktop that was enrolled, entitled and working,
-  // until somebody signed in again. The overview is a `bound-account-recovery` door: an installation
-  // uid resolves it, which is exactly the credential this machine is supposed to have.
-  void accountManager.restoreFromInstallation();
+  function accountUiState(): AccountUiState {
+    const state = accountManager.state();
+    const canPrepare =
+      !environmentMismatch &&
+      declaredEnvironment !== "unresolved" &&
+      !(mobileFirebase.config && authLink.config === null) &&
+      ((bootstrapTrust.url && bootstrapTrust.keys.size > 0) ||
+        (declaredEnvironment !== "prod" && mobileFirebase.config !== null));
+    if (!onlineServicesReady && canPrepare && state.phase === "unconfigured") {
+      return {
+        ...signedOutState(),
+        signInAvailable: true,
+        authEnvironment: declaredEnvironment as "local" | "dev" | "qa" | "prod",
+        onlineBootstrap: onlineBootstrapState,
+      };
+    }
+    return { ...state, onlineBootstrap: onlineBootstrapState };
+  }
+
+  function publishAccountState(): void {
+    events.emit("account:updated", accountUiState());
+  }
+
+  accountManager.on("state", (_state: AccountUiState) => {
+    // One event, one payload, every window. The renderer subscribes to this and computes nothing.
+    events.emit("account:updated", accountUiState());
+  });
+  function setOnlineBootstrapState(next: NonNullable<AccountUiState["onlineBootstrap"]>): void {
+    onlineBootstrapState = next;
+    publishAccountState();
+  }
 
   // THE SERVER-SIDE TOKEN-REFRESH LISTENER (plan §6.4). `v2/tokenRefresh/{uid}` is the issuer saying
   // "your claims changed, ask again now", and until now nothing in the desktop was subscribed to it:
@@ -1866,6 +1877,292 @@ export async function createRuntime({
       log.warn("could not subscribe to the installation token-refresh marker", { error: String(error) });
     });
   };
+
+  async function ensureOnlineServicesReady(
+    options: {
+      readonly signal?: AbortSignal;
+      readonly purpose?: "sign-in" | "refresh";
+    } = {},
+  ): Promise<boolean> {
+    if (onlineServicesReady) return true;
+    if (
+      onlineBootstrapState.phase === "failed" &&
+      onlineBootstrapState.retryAt !== undefined &&
+      Date.now() < onlineBootstrapState.retryAt
+    )
+      return false;
+    if (onlinePreparation) return onlinePreparation;
+    const generation = ++onlinePreparationGeneration;
+    const publishPreparationState = (next: NonNullable<AccountUiState["onlineBootstrap"]>) => {
+      if (generation === onlinePreparationGeneration) setOnlineBootstrapState(next);
+    };
+    const controller = new AbortController();
+    onlinePreparationController = controller;
+    const abort = () => controller.abort();
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) controller.abort();
+    const preparation = Promise.resolve().then(async () => {
+      const purpose = options.purpose ?? "refresh";
+      publishPreparationState({ phase: "downloading", purpose, url: productionBootstrapUrl });
+      try {
+        if (declaredEnvironment === "unresolved" || environmentMismatch) {
+          const refusal: import("./mobile/bootstrap-client.js").BootstrapError = {
+            stage: "verify",
+            category: "verification",
+            code: environmentMismatch ? "ENVIRONMENT_MISMATCH" : "ENVIRONMENT_UNRESOLVED",
+            ...(productionBootstrapUrl ? { url: productionBootstrapUrl } : {}),
+            message: environmentMismatch
+              ? "This data directory belongs to a different environment. Use a separate data directory."
+              : "This version was started with an unsupported environment name.",
+          };
+          publishPreparationState({ phase: "failed", purpose, url: productionBootstrapUrl, error: refusal });
+          return false;
+        }
+        const refreshed = await bootstrapClient?.refresh({ signal: controller.signal });
+        if (controller.signal.aborted) {
+          publishPreparationState({ phase: "idle" });
+          return false;
+        }
+        if (refreshed?.changed) {
+          log.info(`control-plane bootstrap: adopted epoch ${refreshed.envelope?.payload.configEpoch}`);
+        }
+        const envelope = bootstrapClient?.currentVerified() ?? null;
+        const resolved = environmentMismatch
+          ? mobileFirebase
+          : resolveBootstrapFirebaseConfig(configuredFirebase, envelope, FUNCTIONS_REGION);
+        const requiresSignedBootstrap = declaredEnvironment === "prod";
+        const usingVerifiedCache = envelope !== null;
+        const error = refreshed?.error;
+        if ((!resolved.config || (requiresSignedBootstrap && !usingVerifiedCache)) && error) {
+          const retryAt = error.retryAfterMs === undefined ? undefined : Date.now() + error.retryAfterMs;
+          publishPreparationState({
+            phase: "failed",
+            purpose,
+            url: productionBootstrapUrl,
+            error,
+            ...(retryAt === undefined ? {} : { retryAt }),
+          });
+          return false;
+        }
+        if (!resolved.config || (requiresSignedBootstrap && !usingVerifiedCache)) {
+          const missing: import("./mobile/bootstrap-client.js").BootstrapError = {
+            stage: "fetch",
+            category: "not-configured",
+            refusal: "not-configured",
+            ...(productionBootstrapUrl ? { url: productionBootstrapUrl } : {}),
+            message: "This version has no configured online service bootstrap.",
+          };
+          publishPreparationState({ phase: "failed", purpose, url: productionBootstrapUrl, error: missing });
+          return false;
+        }
+
+        // A cached config is useful offline only after it was re-verified above. A failed refresh is
+        // visible, but does not block an already usable configuration.
+        const pendingTransition = bootstrapClient?.pendingTransition(configuredFirebase.config?.projectId) ?? null;
+        if (pendingTransition && bootstrapClient && resolved.config) {
+          await applyEpochTransition(pendingTransition, {
+            credentialStore,
+            refreshTokenRef: MOBILE_FIREBASE_REFRESH_TOKEN_REF,
+            bindingRef: MOBILE_ACCOUNT_BINDING_REF,
+            deviceStore: mobileDeviceStore,
+            markApplied: (epoch, projectId) => bootstrapClient.markEpochApplied(epoch, projectId),
+            log,
+          });
+        }
+        if (controller.signal.aborted) {
+          publishPreparationState({ phase: "idle" });
+          return false;
+        }
+        mobileFirebase = resolved;
+        mobileTransportDeps.config = mobileFirebase.config;
+        mobileTransportDeps.missingConfig = mobileFirebase.missing;
+        mobileTransportDeps.configRefusal = mobileFirebase.refusal;
+        if (mobileFirebase.config) {
+          accountClient = createAccountClient({ config: mobileFirebase.config });
+          authLink = resolveAuthLinkConfig({
+            firebase: mobileFirebase.config,
+            environment: declaredEnvironment,
+            env: process.env,
+            firebaseRefusal: mobileFirebase.refusal,
+          });
+          emailSignInBroker =
+            authLink.config && accountClient
+              ? new EmailSignInBroker({ authlink: authLink.config, client: accountClient })
+              : null;
+          const transport = createAccountTransport({
+            config: mobileFirebase.config,
+            tokenFor: async (kind, signal): Promise<string> => {
+              if (kind === "owner") return accountManager.tokenFor("owner", signal);
+              return installationIdToken();
+            },
+          });
+          accountManager.setOnlineServices({
+            client: accountClient,
+            transport,
+            broker: emailSignInBroker,
+            authLinkRefusal: authLink.refusal,
+          });
+        }
+        onlineServicesReady = true;
+        startInstallationTokenRefresh?.();
+        if (bindingSaysEnrolled(readInstallationBinding())) {
+          // The local marker is positive evidence that this installation was previously enrolled.
+          // Cache presence alone never starts Firebase or mints an anonymous identity.
+          void accountManager.restoreFromInstallation();
+        }
+        if (error && usingVerifiedCache) {
+          const retryAt = error.retryAfterMs === undefined ? undefined : Date.now() + error.retryAfterMs;
+          publishPreparationState({
+            phase: "cache-warning",
+            purpose,
+            url: productionBootstrapUrl,
+            error,
+            ...(retryAt === undefined ? {} : { retryAt }),
+          });
+        } else {
+          publishPreparationState({ phase: "idle" });
+        }
+        return true;
+      } catch (error) {
+        if (controller.signal.aborted) {
+          publishPreparationState({ phase: "idle" });
+          return false;
+        }
+        const rawCode = (error as { code?: unknown } | null)?.code;
+        const code = typeof rawCode === "string" && /^[A-Z0-9_]{2,32}$/.test(rawCode) ? rawCode : undefined;
+        const storageFailure = code !== undefined && ["EACCES", "EPERM", "ENOSPC", "EROFS"].includes(code);
+        log.warn("online service preparation failed", { code: code ?? "PREPARE_FAILED" });
+        const failure: import("./mobile/bootstrap-client.js").BootstrapError = {
+          stage: storageFailure ? "persist" : "verify",
+          category: storageFailure ? "storage" : "verification",
+          code: code ?? "PREPARE_FAILED",
+          url: productionBootstrapUrl,
+          message: storageFailure
+            ? "The configuration could not be saved."
+            : "The online service configuration could not be applied safely.",
+        };
+        publishPreparationState({
+          phase: "failed",
+          purpose: options.purpose ?? "refresh",
+          url: productionBootstrapUrl,
+          error: failure,
+        });
+        return false;
+      } finally {
+        options.signal?.removeEventListener("abort", abort);
+        if (onlinePreparation === preparation) {
+          onlinePreparation = null;
+          onlinePreparationController = null;
+        }
+      }
+    });
+    onlinePreparation = preparation;
+    return preparation;
+  }
+
+  let signInStartInFlight = false;
+  function startCapturedSignIn(intent: NonNullable<typeof pendingSignInIntent>): void {
+    signInPreparationGeneration += 1;
+    const generation = signInPreparationGeneration;
+    pendingSignInIntent = intent;
+    signInOwnerWindowId = intent.ownerWindowId;
+    const controller = new AbortController();
+    onlinePreparationController?.abort();
+    // Detach the cancelled initialization immediately. Its late finally block is identity-checked
+    // and cannot clear this newer promise.
+    onlinePreparation = null;
+    onlinePreparationController = controller;
+    signInStartInFlight = true;
+    void ensureOnlineServicesReady({ signal: controller.signal, purpose: "sign-in" })
+      .then(async (ready) => {
+        if (
+          !ready ||
+          controller.signal.aborted ||
+          generation !== signInPreparationGeneration ||
+          pendingSignInIntent !== intent ||
+          signInOwnerWindowId !== intent.ownerWindowId
+        )
+          return;
+        // Consume before the first account/Firebase await. A retry after this point refreshes only the
+        // config and can never send the same email twice.
+        pendingSignInIntent = null;
+        activeSignInIntent = intent;
+        await accountManager.beginEmailSignIn(intent.email, intent.purpose, intent.offerId);
+      })
+      .catch((error: unknown) => {
+        log.warn("could not start passwordless sign-in", {
+          code: (error as { code?: string } | null)?.code ?? "SIGN_IN_START_FAILED",
+        });
+      })
+      .finally(() => {
+        if (generation === signInPreparationGeneration) {
+          signInStartInFlight = false;
+          activeSignInIntent = null;
+        }
+      });
+  }
+
+  function cancelOnlineBootstrap(): void {
+    signInPreparationGeneration += 1;
+    onlinePreparationGeneration += 1;
+    onlinePreparationController?.abort();
+    onlinePreparation = null;
+    onlinePreparationController = null;
+    pendingSignInIntent = null;
+    signInStartInFlight = false;
+    setOnlineBootstrapState({ phase: "idle" });
+  }
+
+  async function retryOnlineBootstrap(windowId?: string): Promise<void> {
+    if (pendingSignInIntent) {
+      if (pendingSignInIntent.ownerWindowId !== null && pendingSignInIntent.ownerWindowId !== windowId) return;
+      const intent = pendingSignInIntent;
+      startCapturedSignIn(intent);
+      return;
+    }
+    if (!onlineServicesReady) {
+      await ensureOnlineServicesReady({ purpose: "refresh" });
+      return;
+    }
+    if (accountManager.state().auth !== undefined) return;
+    if (
+      (onlineBootstrapState.phase === "failed" || onlineBootstrapState.phase === "cache-warning") &&
+      onlineBootstrapState.retryAt !== undefined &&
+      Date.now() < onlineBootstrapState.retryAt
+    )
+      return;
+    if (declaredEnvironment === "unresolved" || environmentMismatch) {
+      await ensureOnlineServicesReady({ purpose: "refresh" });
+      return;
+    }
+    // A cache-warning retry is an update check only. It never replays an email send or changes the
+    // clients already serving this runtime; an accepted newer epoch is picked up at the next safe
+    // activation (after restart).
+    const controller = new AbortController();
+    onlinePreparationController?.abort();
+    onlinePreparationController = controller;
+    const purpose = "refresh" as const;
+    setOnlineBootstrapState({ phase: "downloading", purpose, url: productionBootstrapUrl });
+    try {
+      const result = await bootstrapClient?.refresh({ signal: controller.signal });
+      if (controller.signal.aborted) return;
+      const error = result?.error;
+      if (error) {
+        const retryAt = error.retryAfterMs === undefined ? undefined : Date.now() + error.retryAfterMs;
+        setOnlineBootstrapState({
+          phase: "cache-warning",
+          purpose,
+          url: productionBootstrapUrl,
+          error,
+          ...(retryAt === undefined ? {} : { retryAt }),
+        });
+      } else {
+        setOnlineBootstrapState({ phase: "idle" });
+      }
+    } finally {
+      if (onlinePreparationController === controller) onlinePreparationController = null;
+    }
+  }
 
   startInstallationTokenRefresh();
 
@@ -1899,14 +2196,25 @@ export async function createRuntime({
     : null;
 
   /** Mirrors reconfigureTelegram()'s stop-then-conditionally-start shape. */
+  let mobileReconfigureGeneration = 0;
   async function reconfigureMobile(state = getState()) {
+    const generation = ++mobileReconfigureGeneration;
     await mobileManager.stop();
-    if (state.settings.integrations.mobile.enabled && !state.settings.remoteAccess.paused) mobileManager.start();
+    if (generation !== mobileReconfigureGeneration) return;
+    const wantsMobile = state.settings.integrations.mobile.enabled && !state.settings.remoteAccess.paused;
+    const ready = wantsMobile ? await ensureOnlineServicesReady({ purpose: "refresh" }) : false;
+    if (generation !== mobileReconfigureGeneration) return;
+    const current = getState().settings;
+    if (!current.integrations.mobile.enabled || current.remoteAccess.paused) {
+      return mobileRelayManager?.reconfigure().catch(() => undefined);
+    }
+    if (wantsMobile && ready) mobileManager.start();
     // AFTER the manager, not before: the relay's first act is to ask the control plane for a
     // connector grant, and the transport carrying that call is the one `start()` connects. The
     // manager retries on its own if the sign-in has not landed yet, but starting it into a
     // guaranteed failure would burn the first attempt every time. It reads the flags itself rather
     // than being told, so it and this function cannot disagree about whether a relay is wanted.
+    if (wantsMobile && !ready) return;
     return mobileRelayManager?.reconfigure().catch(() => undefined);
   }
 
@@ -5654,6 +5962,9 @@ export async function createRuntime({
   syncTreeDirWatchers();
   reconfigureTelegram();
   mobileRuntimeInitialized = true;
+  if (bindingSaysEnrolled(readInstallationBinding()) && !getState().settings.integrations.mobile.enabled) {
+    void ensureOnlineServicesReady({ purpose: "refresh" });
+  }
   void reconfigureMobile();
   if (deferInitialRefresh) {
     scheduleAzurePolling();
@@ -7071,7 +7382,7 @@ export async function createRuntime({
     // a small, already-safe value. Notably NOT among them: anything that returns a URL, a token or a
     // password.
     getAccountState() {
-      return accountManager.state();
+      return accountUiState();
     },
     /** QA bootstrap evidence only: claim presence and the already-sanitized account summary. */
     async accountBootstrapDiagnostics(refresh = false) {
@@ -7124,10 +7435,39 @@ export async function createRuntime({
      * already subscribes to.
      */
     accountBeginSignIn(email: string, purpose: SignInPurpose, offerId?: string, windowId?: string) {
+      if (!normalizeAuthEmail(email)) return Promise.reject(new AccountManagerError("invalid-email"));
+      const sameIntent = (intent: NonNullable<typeof pendingSignInIntent>) =>
+        normalizeAuthEmail(intent.email) === normalizeAuthEmail(email) &&
+        intent.purpose === purpose &&
+        intent.offerId === offerId;
+      if (signInStartInFlight && activeSignInIntent && sameIntent(activeSignInIntent)) return Promise.resolve();
+      if (pendingSignInIntent && sameIntent(pendingSignInIntent)) {
+        if (onlineBootstrapState.phase !== "failed") return Promise.resolve();
+        startCapturedSignIn(pendingSignInIntent);
+        return Promise.resolve();
+      }
+      if (pendingSignInIntent || onlinePreparationController) cancelOnlineBootstrap();
       // The owner is recorded BEFORE the attempt starts, so a window that closes while the request is
       // still in flight is still recognised as the one that owns it.
-      signInOwnerWindowId = windowId ?? null;
-      return accountManager.beginEmailSignIn(email, purpose, offerId);
+      startCapturedSignIn({
+        email,
+        purpose,
+        ...(offerId === undefined ? {} : { offerId }),
+        ownerWindowId: windowId ?? null,
+      });
+      return Promise.resolve();
+    },
+    accountRetryOnlineBootstrap(windowId?: string) {
+      return retryOnlineBootstrap(windowId);
+    },
+    accountCancelOnlineBootstrap(windowId?: string) {
+      if (
+        pendingSignInIntent &&
+        pendingSignInIntent.ownerWindowId !== null &&
+        pendingSignInIntent.ownerWindowId !== windowId
+      )
+        return;
+      cancelOnlineBootstrap();
     },
     accountConfirmSignIn() {
       return accountManager.confirmEmailSignIn();
@@ -7136,6 +7476,7 @@ export async function createRuntime({
       return accountManager.resendEmailSignIn();
     },
     accountCancelSignIn() {
+      cancelOnlineBootstrap();
       signInOwnerWindowId = null;
       accountManager.cancelEmailSignIn();
     },
@@ -7153,6 +7494,11 @@ export async function createRuntime({
      */
     accountReleaseSignInFlow(windowId?: string) {
       if (signInOwnerWindowId === null || windowId === undefined || signInOwnerWindowId !== windowId) return;
+      if (pendingSignInIntent && pendingSignInIntent.ownerWindowId === windowId) {
+        cancelOnlineBootstrap();
+        signInOwnerWindowId = null;
+        return;
+      }
       // THE OWNERSHIP IS NOT CONSUMED WHEN A LINK IS STILL WAITING. It used to be cleared here
       // unconditionally, which was right while this call ended the flow: the flow was over, so there
       // was nothing left to own. Now that a waiting attempt survives the panel, clearing it would
@@ -7172,10 +7518,12 @@ export async function createRuntime({
     accountSubmitSignInLink(link: string) {
       accountManager.submitSignInLink(link);
     },
-    accountBootstrapExternalSignIn(email: string, link: string) {
+    async accountBootstrapExternalSignIn(email: string, link: string) {
+      if (!(await ensureOnlineServicesReady({ purpose: "sign-in" }))) return;
       return accountManager.bootstrapExternalSignIn(email, link);
     },
-    accountBootstrapExternalDeletion(email: string, link: string, confirmationPhrase: string) {
+    async accountBootstrapExternalDeletion(email: string, link: string, confirmationPhrase: string) {
+      if (!(await ensureOnlineServicesReady({ purpose: "sign-in" }))) return;
       return accountManager.bootstrapExternalDeletion(email, link, confirmationPhrase);
     },
     accountChangeLoginEmail(email: string) {
@@ -7902,6 +8250,9 @@ export async function createRuntime({
       // The window that started the sign-in is closing, so the person who started it is gone. Any
       // OTHER window closing leaves the attempt alone — the link may be open on a phone right now.
       if (signInOwnerWindowId !== null && signInOwnerWindowId === windowId) {
+        if (onlineBootstrapState.phase === "downloading" && onlineBootstrapState.purpose === "sign-in") {
+          cancelOnlineBootstrap();
+        }
         signInOwnerWindowId = null;
         accountManager.cancelEmailSignIn();
       }
@@ -9444,6 +9795,9 @@ export async function createRuntime({
     },
     async stop() {
       log.info("runtime shutting down");
+      ++mobileReconfigureGeneration;
+      cancelOnlineBootstrap();
+      signInOwnerWindowId = null;
       // Stop the notify server first so no new callbacks arrive
       // while we clear session signals below.
       await stopAgentNotifyServer();

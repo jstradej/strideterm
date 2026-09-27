@@ -3,6 +3,27 @@
 [extend]
 useDefault = true
 
+# Firebase client keys are public identifiers, but this repository deliberately
+# distributes production configuration through a signed bootstrap instead of Git.
+[[rules]]
+id = "firebase-client-api-key-in-git"
+description = "Firebase API key must be delivered outside Git, even though it is public client configuration"
+regex = '''AIza[0-9A-Za-z_-]{30,}'''
+
+[[rules.allowlists]]
+description = "Published synthetic bootstrap vector, never a real Firebase project key"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^electron/backend/mobile/mobile-bootstrap-vectors\.json$']
+regexes = ['^AIzaSyD-Example-Public-Identifier-0001$']
+
+[[allowlists]]
+description = "Synthetic secret-scan canary in the security and release workflows"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^\.github/workflows/(?:security|release)\.yml$']
+regexes = ['^V8mK3pR7sW2nX9qT4yZ6aB1cD5eF8gH0jL2uN7rP$']
+
 [[allowlists]]
 description = "audited deterministic fixtures: electron/backend/logger-redaction\\\\.test\\\\.ts"
 condition = "AND"
@@ -49,3 +70,10 @@ regexes = ['^(?:abcdef123456|sk-ant-super-secret-value)$']
 [[allowlists]]
 description = "audited deterministic fixtures: test-only TLS leaf key for electron/backend/net/system-ca.integration.test.ts (trusted by nothing outside that test)"
 paths = ['^electron/backend/net/__fixtures__/test-server\.key$']
+
+[[allowlists]]
+description = "audited deterministic relay E2E expected keys derived from committed test seeds"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^electron/backend/mobile/mobile-relay-e2e-vectors\.json$']
+regexes = ['^(?:4337da770b9a358587567f8ae2b78e0b41337cfa307cbb95fddd539162183e91|43c6653d0892469541bc22b2e67fd594e2e645f26ca6e45c0b30de5c7ec5e58a|5b32cb70b63e0796d0a914411dfd3f75138e0927dae6645eb754355e4da6bfd0|7fb7dc972d965188bac258a0377997ce4d6faf81b263d397aa4da201ac14c565)$']

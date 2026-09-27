@@ -39,6 +39,7 @@ release/
 out/
 
 # Playwright
+.playwright-mcp/
 test-results/
 test-results-electron/
 playwright-report/

@@ -136,6 +136,7 @@ import {
   accountSignInLinkSchema,
   accountSignInStartSchema,
   accountSignOutSchema,
+  sanitizeAccountUiStateOutput,
   mobileCreatePairingInvitationSchema,
   mobileRejectDeviceSchema,
   mobileRenameDeviceSchema,
@@ -211,7 +212,9 @@ export function registerIpc(
     runtime.on("mobile:device-revoked", (payload: any) => emitToRenderer("mobile:device-revoked", payload)),
     // One derived account state, broadcast to EVERY window. The renderer computes nothing from it —
     // see account-state.ts for what it carries and, more to the point, what it never does.
-    runtime.on("account:updated", (payload: unknown) => emitToRenderer("account:updated", payload)),
+    runtime.on("account:updated", (payload: unknown) =>
+      emitToRenderer("account:updated", sanitizeAccountUiStateOutput(payload)),
+    ),
   ];
 
   // Electron's `shell` lives here, and the runtime is constructed before this registration runs, so
@@ -1006,7 +1009,11 @@ export function registerIpc(
   // land at this machine, and a credential crossing a remote HTTP hop is a credential in one more
   // place than it needs to be — and since this flow is passwordless, that credential is a live
   // sign-in code rather than a password, which is worse rather than better.
-  handle("account:state", async () => withOperationPromise({ opId: "account:state" }, () => runtime.getAccountState()));
+  handle("account:state", async () =>
+    withOperationPromise({ opId: "account:state" }, async () =>
+      sanitizeAccountUiStateOutput(await runtime.getAccountState()),
+    ),
+  );
   // THE FOUR SIGN-IN CHANNELS, and none of them is a long-running call. `start` returns as soon as
   // the link has been requested; the wait is carried by `account:updated`, which every window already
   // subscribes to. That is what makes "all windows see the same state" and "the flow can be cancelled
@@ -1019,6 +1026,17 @@ export function registerIpc(
     return withOperationPromise({ opId: "account:sign-in:start" }, () =>
       runtime.accountBeginSignIn(email, purpose, offerId, windowId || undefined),
     );
+  });
+  handle("account:online-bootstrap:retry", async (event) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "account:online-bootstrap:retry" }, () =>
+      runtime.accountRetryOnlineBootstrap(windowId || undefined),
+    );
+  });
+  handle("account:online-bootstrap:cancel", async (event) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    runtime.accountCancelOnlineBootstrap(windowId || undefined);
+    return { ok: true };
   });
   handle("account:sign-in:confirm", async () =>
     withOperationPromise({ opId: "account:sign-in:confirm" }, () => runtime.accountConfirmSignIn()),

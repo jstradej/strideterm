@@ -69,6 +69,45 @@ function json(body: unknown, init: ResponseInit = {}): Response {
 const REFRESH_REF = "mobile:firebase-refresh-token";
 
 describe("Auth session lifecycle", () => {
+  test("a previously bound installation with no refresh token refuses a replacement identity without network", async () => {
+    const credentialStore = makeCredentialStore();
+    const { fetchImpl, calls } = makeFetch([]);
+    const client = createMobileFirebaseRestClient({
+      config: CONFIG,
+      credentialStore,
+      refreshTokenRef: REFRESH_REF,
+      fetchImpl,
+      isAccountBound: () => true,
+      isPositivelyBound: () => true,
+    });
+    await expect(client.signIn()).rejects.toMatchObject({ reason: "MISSING_REFRESH_TOKEN" });
+    expect(calls).toHaveLength(0);
+    expect(credentialStore.secrets.size).toBe(0);
+  });
+
+  test("a first enrolment can establish its initial identity before any refresh token exists", async () => {
+    const credentialStore = makeCredentialStore();
+    const { fetchImpl, calls } = makeFetch([
+      {
+        match: "accounts:signUp",
+        respond: () =>
+          json({ idToken: "id-first", refreshToken: "refresh-first", localId: "uid-first", expiresIn: "3600" }),
+      },
+    ]);
+    const client = createMobileFirebaseRestClient({
+      config: CONFIG,
+      credentialStore,
+      refreshTokenRef: REFRESH_REF,
+      fetchImpl,
+      // An enrolling marker protects an existing identity, but is not proof of a completed enrolment.
+      isAccountBound: () => true,
+      isPositivelyBound: () => false,
+    });
+    expect(await client.signIn()).toMatchObject({ uid: "uid-first" });
+    expect(calls).toHaveLength(1);
+    expect(credentialStore.secrets.get(REFRESH_REF)).toBe("refresh-first");
+  });
+
   test("signs in anonymously on first use and persists the refresh token to the credential store", async () => {
     const credentialStore = makeCredentialStore();
     const { fetchImpl, calls } = makeFetch([

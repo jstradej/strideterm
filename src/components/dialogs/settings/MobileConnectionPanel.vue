@@ -41,6 +41,16 @@
         />
       </section>
 
+      <p
+        v-if="activeView === 'overview' && showTestingNotice"
+        class="mobile-tab__intro mobile-tab__intro--note mobile-tab__testing-notice"
+      >
+        strIDEterm Mobile is currently in internal testing. Register and verify your email first. Once your email is
+        verified, you can
+        <a href="https://strideterm.com/mobile/#access-request-title" target="_blank" rel="noopener noreferrer"
+          >request access to the Google Play internal test</a
+        >.
+      </p>
       <section
         v-if="activeView === 'overview' && pairingReady"
         class="mobile-tab__overview-grid"
@@ -181,6 +191,13 @@
         :aria-labelledby="accountAvailable ? tabId('phones') : undefined"
         class="mobile-tab__phone-view"
       >
+        <p v-if="showTestingNotice" class="mobile-tab__intro mobile-tab__intro--note mobile-tab__testing-notice">
+          strIDEterm Mobile is currently in internal testing. Register and verify your email first. Once your email is
+          verified, you can
+          <a href="https://strideterm.com/mobile/#access-request-title" target="_blank" rel="noopener noreferrer"
+            >request access to the Google Play internal test</a
+          >.
+        </p>
         <template v-if="!activePairing && !pairingSas">
           <div class="mobile-tab__phone-header">
             <h3 id="mobile-tab-phone-pairing" class="mobile-tab__section-title">
@@ -264,7 +281,7 @@
           <RemoteAccessPauseControl />
         </div>
 
-        <template v-if="pairingReady && mobileEnabled">
+        <template v-if="pairingReady && (mobileEnabled || mobileDevices.length > 0)">
           <!--
         The pairing SAS, and the decision that turns it into an authorization (review 3 §P0.1).
 
@@ -283,7 +300,7 @@
         without choosing leaves it inert until the server's pending-approval TTL sweeps it.
       -->
           <fieldset
-            v-if="pairingSas || activePairing || mobileDevices.length === 0 || addPhoneSetupOpen"
+            v-if="mobileEnabled && (pairingSas || activePairing || mobileDevices.length === 0 || addPhoneSetupOpen)"
             class="mobile-tab__mutation-group"
             :disabled="paused"
           >
@@ -842,6 +859,7 @@ const hostedAccessBlocked = computed(() => {
   const state = accountStore.entitlement?.state;
   return state === "unbound" || state === "lapsed" || state === "revoked" || state === "billing_unconfigured";
 });
+const showTestingNotice = computed(() => accountAvailable.value && mobileDevices.value.length === 0);
 const mobileEnabled = computed(() => appStore.mobileEnabled);
 const mobileDevices = computed(() => appStore.mobileDevices);
 const activePhones = computed(() =>

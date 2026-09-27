@@ -189,6 +189,32 @@ describe("the pasted-link parser", () => {
     expect(parseSignInLink(config, webApp)).toEqual({ attemptId: ATTEMPT, oobCode: code });
   });
 
+  test("accepts the fixed production mail domain only for its project and environment", () => {
+    const handler = "https://mail.strideterm.com/__/auth/action";
+    expect(parseSignInLink(config, liveLink({ handler, code: "MAIL-CODE" }))).toEqual({
+      attemptId: ATTEMPT,
+      oobCode: "MAIL-CODE",
+    });
+    for (const environment of ["dev", "qa"] as const) {
+      const other = resolveAuthLinkConfig({ firebase: PROD_FIREBASE, environment, env: {} }).config!;
+      const inner = `${other.origin}/c?attempt=${ATTEMPT}`;
+      expect(parseSignInLink(other, liveLink({ handler, inner }))).toBeNull();
+    }
+    const otherProject = resolveAuthLinkConfig({
+      firebase: { ...PROD_FIREBASE, projectId: "another-project" },
+      environment: "prod",
+      env: {},
+    }).config!;
+    expect(parseSignInLink(otherProject, liveLink({ handler }))).toBeNull();
+    for (const invalidHandler of [
+      "http://mail.strideterm.com/__/auth/action",
+      "https://mail.strideterm.com.evil.test/__/auth/action",
+      "https://mail.strideterm.com/__/auth/other",
+    ]) {
+      expect(parseSignInLink(config, liveLink({ handler: invalidHandler }))).toBeNull();
+    }
+  });
+
   test("a nested link for ANOTHER environment is refused rather than followed", () => {
     const other = liveLink({ inner: `https://auth-qa.strideterm.com/c?attempt=${ATTEMPT}` });
     expect(parseSignInLink(config, other)).toBeNull();

@@ -155,6 +155,73 @@ const busyLabel = computed(() => {
 const overview = computed(() => account.overview);
 const entitlement = computed(() => account.entitlement ?? account.overview?.entitlement);
 const auth = computed(() => account.auth);
+const onlineBootstrap = computed(() => account.onlineBootstrap);
+const bootstrapError = computed(() =>
+  onlineBootstrap.value.phase === "failed" || onlineBootstrap.value.phase === "cache-warning"
+    ? onlineBootstrap.value.error
+    : null,
+);
+const bootstrapPreparing = computed(() => onlineBootstrap.value.phase === "downloading");
+const bootstrapTitle = computed(() => {
+  if (!bootstrapError.value) return "";
+  if (bootstrapError.value.stage === "verify") return "Online services configuration could not be verified";
+  if (bootstrapError.value.stage === "persist") return "Online services configuration could not be saved";
+  return "Online services configuration could not be downloaded";
+});
+const bootstrapErrorCode = computed(() => {
+  const error = bootstrapError.value;
+  if (!error) return "";
+  return [error.code ?? error.refusal ?? error.category, error.status === undefined ? "" : `HTTP ${error.status}`]
+    .filter(Boolean)
+    .join(" · ");
+});
+const bootstrapRetrySeconds = computed(() => {
+  if (onlineBootstrap.value.phase !== "failed" && onlineBootstrap.value.phase !== "cache-warning") return 0;
+  const retryAt = onlineBootstrap.value.retryAt;
+  if (retryAt === undefined) return 0;
+  return Math.max(0, Math.ceil((retryAt - nowMs.value) / 1000));
+});
+const bootstrapHelp = computed(() => {
+  const error = bootstrapError.value;
+  if (!error) return "";
+  if (error.stage === "verify") {
+    return "This response did not pass the app's security checks. It was not used. Update strIDEterm if a newer version is available.";
+  }
+  if (error.stage === "persist") {
+    return "The configuration was downloaded but could not be saved on this computer. Check available disk space and folder permissions, then try again.";
+  }
+  if (error.category === "not-configured") {
+    return "This version does not have online configuration set up. Install a supported current version of strIDEterm.";
+  }
+  if (error.category === "http" && error.status === 404) {
+    return "The configuration was not found at this address. This may be a publishing problem.";
+  }
+  if (error.category === "http" && error.status === 429) {
+    return "The server is temporarily limiting requests. Wait for the retry time shown below, then try again.";
+  }
+  if (error.category === "http" && error.status !== undefined && error.status >= 500) {
+    return "The configuration server is temporarily unavailable. Try again later.";
+  }
+  if (error.category === "redirect")
+    return "This address redirected the request, which strIDEterm does not follow for security.";
+  if (error.category === "tls")
+    return "Check the computer's date and time, or ask your network administrator about HTTPS inspection.";
+  if (error.category === "invalid-response") {
+    return "The server did not return valid configuration data. A proxy sign-in page can sometimes cause this; ask your network administrator if needed.";
+  }
+  if (
+    error.category === "dns" ||
+    error.category === "timeout" ||
+    error.category === "connection-refused" ||
+    error.category === "connection-reset" ||
+    error.category === "network"
+  ) {
+    return "Check your internet connection. A company firewall or proxy may restrict this HTTPS address; ask your network administrator if needed.";
+  }
+  return "Check your connection and try again later.";
+});
+const bootstrapDetailsCopied = ref(false);
+const bootstrapCopyFailed = ref(false);
 // The consumed link is cleared before registration finishes; keep progress until the operation ends.
 const completingPurpose = ref<string | null>(null);
 watch(
@@ -443,6 +510,39 @@ async function submitContinue(): Promise<void> {
   await account.beginSignIn(email.value, intent.value);
 }
 
+async function retryOnlineBootstrap(): Promise<void> {
+  bootstrapDetailsCopied.value = false;
+  bootstrapCopyFailed.value = false;
+  await account.retryOnlineBootstrap();
+}
+
+async function cancelOnlineBootstrap(): Promise<void> {
+  await account.cancelOnlineBootstrap();
+}
+
+async function copyOnlineBootstrapDetails(): Promise<void> {
+  const current = onlineBootstrap.value;
+  if (current.phase !== "failed" && current.phase !== "cache-warning") return;
+  const error = current.error;
+  const details = [
+    "strIDEterm online services configuration",
+    `Address: ${current.url}`,
+    `Stage: ${error.stage}`,
+    `Error: ${error.message}`,
+    `Code: ${error.code ?? error.refusal ?? error.category}`,
+    ...(error.status === undefined ? [] : [`HTTP status: ${error.status}`]),
+    ...(error.retryAfterMs === undefined ? [] : [`Retry after: ${Math.ceil(error.retryAfterMs / 1000)} seconds`]),
+  ].join("\n");
+  try {
+    await navigator.clipboard.writeText(details);
+    bootstrapDetailsCopied.value = true;
+    bootstrapCopyFailed.value = false;
+  } catch {
+    bootstrapCopyFailed.value = true;
+    bootstrapDetailsCopied.value = false;
+  }
+}
+
 /**
  * Subscribe.
  *
@@ -612,6 +712,113 @@ async function submitDelete(): Promise<void> {
       <span>{{ busyLabel }}</span>
     </p>
 
+    <section
+      v-if="!completingPurpose && onlineBootstrap.phase === 'downloading'"
+      class="account-confirm account-bootstrap account-bootstrap--loading"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <h4>Downloading online services configuration</h4>
+      <p v-if="onlineBootstrap.purpose === 'sign-in'" class="account-note">
+        strIDEterm needs this configuration to communicate with Firebase and our relay servers for sign-in and online
+        features. Your email has not been sent yet.
+      </p>
+      <p v-else class="account-note">
+        strIDEterm is refreshing the configuration for online services. No email is being sent as part of this update.
+      </p>
+      <p class="account-note">
+        Address: <code>{{ onlineBootstrap.url || "not configured in this version" }}</code>
+      </p>
+      <div class="account-actions">
+        <button type="button" class="button button--ghost" @click="cancelOnlineBootstrap">Cancel</button>
+      </div>
+    </section>
+
+    <section
+      v-else-if="!completingPurpose && onlineBootstrap.phase === 'failed'"
+      class="account-confirm account-bootstrap account-bootstrap--error"
+      role="alert"
+      aria-live="assertive"
+    >
+      <h4>{{ bootstrapTitle }}</h4>
+      <p v-if="onlineBootstrap.purpose === 'sign-in'" class="account-note">
+        This configuration is required to communicate with Firebase and our relay servers. We could not continue the
+        sign-in, and the email was not sent. Local strIDEterm features remain available.
+      </p>
+      <p v-else class="account-note">
+        strIDEterm could not prepare the configuration for an online operation. Local features remain available.
+      </p>
+      <p class="account-note">
+        Address: <code>{{ onlineBootstrap.url || "not configured in this version" }}</code>
+      </p>
+      <p class="account-note">
+        <strong>Error:</strong> {{ onlineBootstrap.error.message }} <code>({{ bootstrapErrorCode }})</code>
+      </p>
+      <p class="account-note">{{ bootstrapHelp }}</p>
+      <p v-if="bootstrapRetrySeconds > 0" class="account-note account-note--muted">
+        Try again in {{ bootstrapRetrySeconds }} seconds.
+      </p>
+      <p v-if="bootstrapDetailsCopied" class="account-note" role="status">Details copied.</p>
+      <p v-else-if="bootstrapCopyFailed" class="account-note account-note--warn" role="status">
+        Could not copy details. You can select and copy the error above.
+      </p>
+      <div class="account-actions">
+        <button
+          type="button"
+          class="button"
+          :disabled="busy || bootstrapPreparing || bootstrapRetrySeconds > 0"
+          @click="act('bootstrap-retry', retryOnlineBootstrap)"
+        >
+          <span v-if="pendingAction === 'bootstrap-retry'" class="button-spinner" aria-hidden="true"></span>
+          Try again
+        </button>
+        <button type="button" class="button button--ghost" @click="copyOnlineBootstrapDetails">Copy details</button>
+        <button type="button" class="button button--ghost" :disabled="busy" @click="cancelOnlineBootstrap">
+          Cancel
+        </button>
+      </div>
+    </section>
+
+    <section
+      v-else-if="!completingPurpose && onlineBootstrap.phase === 'cache-warning'"
+      class="account-confirm account-bootstrap account-bootstrap--warning"
+      role="status"
+      aria-live="polite"
+    >
+      <h4>Configuration update unavailable</h4>
+      <p class="account-note">
+        We could not update the configuration. A previously verified saved configuration remains available and can be
+        used for online services.
+      </p>
+      <p class="account-note">
+        Error: {{ onlineBootstrap.error.message }} <code>({{ bootstrapErrorCode }})</code>
+      </p>
+      <p class="account-note">
+        Address: <code>{{ onlineBootstrap.url || "not configured in this version" }}</code>
+      </p>
+      <p v-if="bootstrapRetrySeconds > 0" class="account-note account-note--muted">
+        Try an update again in {{ bootstrapRetrySeconds }} seconds.
+      </p>
+      <p v-if="bootstrapDetailsCopied" class="account-note" role="status">Details copied.</p>
+      <p v-else-if="bootstrapCopyFailed" class="account-note account-note--warn" role="status">
+        Could not copy details. You can select and copy the error above.
+      </p>
+      <div class="account-actions">
+        <button
+          v-if="onlineBootstrap.purpose === 'refresh'"
+          type="button"
+          class="button button--ghost"
+          :disabled="busy || bootstrapRetrySeconds > 0"
+          @click="act('bootstrap-retry', retryOnlineBootstrap)"
+        >
+          <span v-if="pendingAction === 'bootstrap-retry'" class="button-spinner" aria-hidden="true"></span>
+          Try update again
+        </button>
+        <button type="button" class="button button--ghost" @click="copyOnlineBootstrapDetails">Copy details</button>
+      </div>
+    </section>
+
     <div
       v-if="!completingPurpose && requestedAuth && !auth"
       class="account-confirm account-auth account-auth--requested"
@@ -621,13 +828,13 @@ async function submitDelete(): Promise<void> {
       <p class="account-note">Enter the login email for this account. We will send a one-time link.</p>
       <label class="account-field">
         <span>Login email</span>
-        <input v-model="email" type="email" autocomplete="username" :disabled="busy" />
+        <input v-model="email" type="email" autocomplete="username" :disabled="busy || bootstrapPreparing" />
       </label>
       <div class="account-actions">
         <button
           type="button"
           class="button"
-          :disabled="busy || !email"
+          :disabled="busy || bootstrapPreparing || !email"
           @click="act('requested-auth', submitRequestedAuth)"
         >
           <span v-if="pendingAction === 'requested-auth'" class="button-spinner" aria-hidden="true"></span>
@@ -672,12 +879,13 @@ async function submitDelete(): Promise<void> {
           </label>
         </div>
         <label class="account-field"
-          ><span>Email</span><input v-model="email" type="email" autocomplete="username" :disabled="busy"
+          ><span>Email</span
+          ><input v-model="email" type="email" autocomplete="username" :disabled="busy || bootstrapPreparing"
         /></label>
         <button
           type="button"
           class="button account-overview-card__action"
-          :disabled="busy || !email || !account.state.signInAvailable"
+          :disabled="busy || bootstrapPreparing || !email || !account.state.signInAvailable"
           @click="act('continue', submitContinue)"
         >
           <span v-if="pendingAction === 'continue'" class="button-spinner" aria-hidden="true"></span>
@@ -960,7 +1168,7 @@ async function submitDelete(): Promise<void> {
 
           <label class="account-field">
             <span>Email</span>
-            <input v-model="email" type="email" autocomplete="username" :disabled="busy" />
+            <input v-model="email" type="email" autocomplete="username" :disabled="busy || bootstrapPreparing" />
           </label>
           <label class="account-field">
             <span>What should this do?</span>
@@ -974,7 +1182,7 @@ async function submitDelete(): Promise<void> {
             <button
               type="button"
               class="button"
-              :disabled="busy || !email || !account.state.signInAvailable"
+              :disabled="busy || bootstrapPreparing || !email || !account.state.signInAvailable"
               @click="act('continue', submitContinue)"
             >
               <span v-if="pendingAction === 'continue'" class="button-spinner" aria-hidden="true"></span>
@@ -1823,6 +2031,24 @@ async function submitDelete(): Promise<void> {
 }
 .account-auth--requested {
   border-color: color-mix(in srgb, var(--accent, #f2a63b) 42%, var(--border, #333));
+}
+.account-bootstrap {
+  max-width: 720px;
+}
+.account-bootstrap h4 {
+  margin: 0;
+}
+.account-bootstrap--loading {
+  border-color: color-mix(in srgb, var(--accent, #f2a63b) 42%, var(--border, #333));
+}
+.account-bootstrap--error {
+  border-color: var(--danger, #c0392b);
+}
+.account-bootstrap--warning {
+  border-color: color-mix(in srgb, var(--warn, #d08a34) 45%, var(--border, #333));
+}
+.account-bootstrap code {
+  overflow-wrap: anywhere;
 }
 .account-confirm--danger {
   border-color: var(--danger, #c0392b);

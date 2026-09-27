@@ -990,6 +990,14 @@ const tempPaths: string[] = [];
 // + `retryDelay` is the canonical workaround.
 const RM_OPTS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
 
+function configureInMemoryMobileRuntime(): void {
+  vi.stubEnv("STRIDETERM_ENV", "local");
+  vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "demo-strideterm-runtime");
+  vi.stubEnv("FIREBASE_AUTH_EMULATOR_HOST", "127.0.0.1:9099");
+  vi.stubEnv("FIREBASE_DATABASE_EMULATOR_HOST", "127.0.0.1:9000");
+  vi.stubEnv("FIREBASE_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001");
+}
+
 afterEach(async () => {
   await Promise.all(
     fixtures.splice(0).map(async (fixture) => {
@@ -998,6 +1006,7 @@ afterEach(async () => {
     }),
   );
   await Promise.all(tempPaths.splice(0).map((targetPath) => fs.rm(targetPath, RM_OPTS)));
+  vi.unstubAllEnvs();
 });
 
 // Two-workspace fixture used by the hook-alert tests: the "frontend" panel is
@@ -8013,6 +8022,7 @@ describe("runtime integration", () => {
     // event desktop notification, rolled into a once-a-day summary) WITHOUT
     // touching Telegram's send for the same underlying alert.
     test("a quota-exceeded mobile push is suppressed (once-a-day summary only) while Telegram's forwardAlert for the same alert is unaffected", async () => {
+      configureInMemoryMobileRuntime();
       vi.useFakeTimers();
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -8180,13 +8190,15 @@ describe("runtime integration", () => {
       for (let i = 0; i < 8; i++) await Promise.resolve();
 
       expect(fixture.runtime._mobileManagerForTest().getConnectionHealth()).toMatchObject({
-        running: true,
+        running: false,
         connectionState: "disconnected",
-        lastError: "not-configured",
+        lastError: null,
       });
+      expect(fixture.runtime.getAccountState().onlineBootstrap).toMatchObject({ phase: "failed" });
     });
 
     async function createMobileFixture() {
+      configureInMemoryMobileRuntime();
       let capturedTransport: ReturnType<typeof createInMemoryMobileFirebaseTransport> | null = null;
       const fixture = await createFixture({
         dependencies: {
@@ -13246,6 +13258,7 @@ describe("desktop installation identity (review 2 §Multiwindow)", () => {
   }
 
   async function createMobileFixture(dataDir?: string) {
+    configureInMemoryMobileRuntime();
     return createFixture({
       dataDir,
       dependencies: { createMobileFirebaseTransport: () => createInMemoryMobileFirebaseTransport() },
@@ -13360,6 +13373,85 @@ describe("the runtime's passwordless sign-in wiring", () => {
     vi.stubEnv("FIREBASE_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001");
   }
 
+  async function makeSignedDevBootstrap() {
+    const seed = Buffer.from("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", "hex");
+    const { createPrivateKey, createPublicKey, sign } = await import("node:crypto");
+    const privateKey = createPrivateKey({
+      key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]),
+      format: "der",
+      type: "pkcs8",
+    });
+    const publicRaw = createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32);
+    const { bootstrapSigningInput, BOOTSTRAP_SCHEMA_VERSION } = await import("./mobile/control-plane-bootstrap.js");
+    const payload = {
+      schemaVersion: BOOTSTRAP_SCHEMA_VERSION,
+      environment: "dev" as const,
+      configEpoch: 1,
+      issuedAt: Date.now() - 1_000,
+      projectId: "strideterm-bootstrap-dev",
+      apiKey: "synthetic-bootstrap-key",
+      appId: "1:1:web:abc",
+      messagingSenderId: "1",
+      databaseUrl: "https://strideterm-bootstrap-dev-default-rtdb.europe-west1.firebasedatabase.app",
+      functionsBaseUrl: "https://europe-west1-strideterm-bootstrap-dev.cloudfunctions.net",
+    };
+    return {
+      envelope: {
+        v: 1 as const,
+        keyId: "dev-test",
+        payload,
+        signature: sign(null, Buffer.from(bootstrapSigningInput(payload)), privateKey).toString("base64"),
+      },
+      publicRaw,
+    };
+  }
+
+  function stubDevBootstrap(publicRaw: Uint8Array): void {
+    vi.stubEnv("STRIDETERM_ENV", "dev");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "");
+    vi.stubEnv("STRIDETERM_BOOTSTRAP_URL", "https://bootstrap.example.test/dev.json");
+    vi.stubEnv("STRIDETERM_BOOTSTRAP_TRUST_KEYS", `dev-test=${Buffer.from(publicRaw).toString("base64")}`);
+  }
+
+  function stubAuthNetwork(envelope: unknown, options: { failBootstrap?: () => boolean } = {}) {
+    const requests: string[] = [];
+    const sentEmails: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "https://bootstrap.example.test/dev.json") {
+        if (options.failBootstrap?.()) {
+          const cause = Object.assign(new Error("dns failure"), { code: "ENOTFOUND" });
+          throw Object.assign(new TypeError("fetch failed"), { cause });
+        }
+        return Response.json(envelope);
+      }
+      if (url === "https://auth-dev.strideterm.com/start") {
+        return Response.json({ expiresAt: Date.now() + 15 * 60_000 });
+      }
+      if (url.includes("identitytoolkit.googleapis.com/v1/accounts:sendOobCode")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { email?: string };
+        sentEmails.push(body.email ?? "");
+        return Response.json({ email: body.email ?? "" });
+      }
+      throw new Error(`Unexpected test network request to ${url}`);
+    });
+    return { fetchMock, requests, sentEmails };
+  }
+
+  async function waitForAccount(fixture: Awaited<ReturnType<typeof createFixture>>, predicate: () => boolean) {
+    await vi.waitFor(
+      () => {
+        if (!predicate())
+          throw new Error(
+            `Account state did not reach the expected phase: ${JSON.stringify(fixture.runtime.getAccountState())}`,
+          );
+      },
+      { timeout: 3_000, interval: 10 },
+    );
+  }
+
   test("the installation session does not hang off the Mobile toggle (source shape)", async () => {
     // THE REGRESSION THIS PINS. `beginInstallationRegistration` authenticates as the INSTALLATION,
     // and the installation's Firebase client used to be born only inside the pairing transport's
@@ -13376,7 +13468,7 @@ describe("the runtime's passwordless sign-in wiring", () => {
     expect(source).toMatch(/const ensureInstallationRestClient = \(config: MobileFirebaseConfig\)/);
     expect(source.match(/createMobileFirebaseRestClient\(\{/g) ?? []).toHaveLength(1);
     // The transport shares it rather than owning it.
-    expect(source).toMatch(/createClient: \(config\) => ensureInstallationRestClient\(config\)/);
+    expect(source).toMatch(/createClient: \(config: MobileFirebaseConfig\) => ensureInstallationRestClient\(config\)/);
     // And the refusal is a mapped code, never a bare Error.
     expect(source).toMatch(/throw new AccountCallableError\("not-configured", 0\)/);
     expect(source).not.toContain('throw new Error("the mobile control plane is not configured")');
@@ -13404,9 +13496,12 @@ describe("the runtime's passwordless sign-in wiring", () => {
     fixtures.push(fixture);
 
     expect(fixture.runtime.getAccountState().signInAvailable).toBe(false);
-    await expect(fixture.runtime.accountBeginSignIn("owner@example.test", "reauth")).rejects.toMatchObject({
-      code: "auth-unavailable",
-    });
+    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth");
+    await waitForAccount(
+      fixture,
+      () => fixture.runtime.getAccountState().signInUnavailableReason === "local-origin-missing",
+    );
+    expect(fixture.runtime.getAccountState().auth).toBeUndefined();
   });
 
   test("with an explicit dev origin the broker exists and the manager can reach it", async () => {
@@ -13425,6 +13520,7 @@ describe("the runtime's passwordless sign-in wiring", () => {
     // was built AND handed to the account manager. `auth-unavailable`, or no attempt at all, would
     // mean the wiring itself was missing.
     await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth");
+    await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
     const auth = fixture.runtime.getAccountState().auth;
     expect(auth?.email).toBe("owner@example.test");
     expect(auth?.manualOnly).toBe(true);
@@ -13512,9 +13608,9 @@ describe("the runtime's passwordless sign-in wiring", () => {
     expect(state.signInAvailable).toBe(false);
     expect(state.signInUnavailableReason).toBe("environment-unresolved");
     expect(state.authEnvironment).toBeUndefined();
-    await expect(fixture.runtime.accountBeginSignIn("owner@example.test", "reauth")).rejects.toMatchObject({
-      code: "auth-unavailable",
-    });
+    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth");
+    await waitForAccount(fixture, () => fixture.runtime.getAccountState().onlineBootstrap?.phase === "failed");
+    expect(fixture.runtime.getAccountState().auth).toBeUndefined();
   });
 
   test("a local build with a missing origin names THAT as the reason, not the environment", async () => {
@@ -13522,59 +13618,253 @@ describe("the runtime's passwordless sign-in wiring", () => {
     stubDemoFirebase();
     const fixture = await createFixture();
     fixtures.push(fixture);
+    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth");
+    await waitForAccount(fixture, () => fixture.runtime.getAccountState().phase === "signed-out");
     expect(fixture.runtime.getAccountState().signInUnavailableReason).toBe("local-origin-missing");
   });
 
-  test("a fresh desktop uses its fetched bootstrap immediately and keeps it for an offline restart", async () => {
-    const { generateKeyPairSync, sign } = await import("node:crypto");
-    const { bootstrapSigningInput, BOOTSTRAP_SCHEMA_VERSION } = await import("./mobile/control-plane-bootstrap.js");
-    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-    const publicRaw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
-    const payload = {
-      schemaVersion: BOOTSTRAP_SCHEMA_VERSION,
-      environment: "dev" as const,
-      configEpoch: 1,
-      issuedAt: Date.now() - 1_000,
-      projectId: "strideterm-bootstrap-dev",
-      apiKey: "synthetic-bootstrap-key",
-      appId: "1:1:web:abc",
-      messagingSenderId: "1",
-      databaseUrl: "https://strideterm-bootstrap-dev-default-rtdb.europe-west1.firebasedatabase.app",
-      functionsBaseUrl: "https://europe-west1-strideterm-bootstrap-dev.cloudfunctions.net",
-    };
-    const envelope = {
-      v: 1 as const,
-      keyId: "dev-test",
-      payload,
-      signature: sign(null, Buffer.from(bootstrapSigningInput(payload)), privateKey).toString("base64"),
-    };
-    vi.stubEnv("STRIDETERM_ENV", "dev");
+  test("a fresh production desktop does not contact bootstrap or Firebase at startup", async () => {
+    vi.stubEnv("STRIDETERM_ENV", "prod");
     vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "");
     vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "");
-    vi.stubEnv("STRIDETERM_BOOTSTRAP_URL", "https://bootstrap.example.test/dev.json");
-    vi.stubEnv("STRIDETERM_BOOTSTRAP_TRUST_KEYS", `dev-test=${publicRaw.toString("base64")}`);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      if (String(input) === "https://bootstrap.example.test/dev.json") return Response.json(envelope);
-      throw new Error("No live network in this test");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("Unexpected startup network request");
     });
     try {
-      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bootstrap-first-start-"));
-      tempPaths.push(dataDir);
-      const first = await createFixture({ dataDir });
-      fixtures.push(first);
-      expect(first.runtime.getAccountState().signInAvailable).toBe(true);
-      expect(first.runtime.getAccountState().authEnvironment).toBe("dev");
-      expect(JSON.parse(await fs.readFile(path.join(dataDir, "control-plane-bootstrap.json"), "utf8"))).toMatchObject({
-        envelope,
-        highestSeenEpoch: 1,
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fixture.runtime.getAccountState().phase).toBe("signed-out");
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("a fresh desktop does not fetch at startup; duplicate submits send one email", async () => {
+    const { envelope, publicRaw } = await makeSignedDevBootstrap();
+    stubDevBootstrap(publicRaw);
+    const { fetchMock, requests, sentEmails } = stubAuthNetwork(envelope);
+    try {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fixture.runtime.getAccountState()).toMatchObject({ phase: "signed-out", signInAvailable: true });
+
+      await fixture.runtime.accountBeginSignIn("owner@example.test", "enrol", undefined, "window-a");
+      // Simulate a double click while bootstrap is still in flight.
+      await fixture.runtime.accountBeginSignIn("owner@example.test", "enrol", undefined, "window-a");
+      await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
+      expect(requests.filter((url) => url === "https://bootstrap.example.test/dev.json")).toHaveLength(1);
+      expect(requests.filter((url) => url.includes("/accounts:sendOobCode"))).toHaveLength(1);
+      expect(sentEmails).toEqual(["owner@example.test"]);
+      expect(
+        JSON.parse(await fs.readFile(path.join(fixture.userDataPath, "control-plane-bootstrap.json"), "utf8")),
+      ).toMatchObject({ envelope, highestSeenEpoch: 1 });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("an invalid email is rejected before bootstrap or Firebase network calls", async () => {
+    const { envelope } = await makeSignedDevBootstrap();
+    const { fetchMock, requests } = stubAuthNetwork(envelope);
+    try {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      await expect(
+        fixture.runtime.accountBeginSignIn("not-an-address", "enrol", undefined, "window-a"),
+      ).rejects.toMatchObject({ code: "invalid-email" });
+      expect(requests).toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("a failed bootstrap keeps the intent and retry continues sign-in once", async () => {
+    const { envelope, publicRaw } = await makeSignedDevBootstrap();
+    stubDevBootstrap(publicRaw);
+    let fail = true;
+    const { fetchMock, requests, sentEmails } = stubAuthNetwork(envelope, { failBootstrap: () => fail });
+    try {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.accountBeginSignIn("owner@example.test", "enrol-with-trial", undefined, "window-a");
+      await waitForAccount(fixture, () => fixture.runtime.getAccountState().onlineBootstrap?.phase === "failed");
+      expect(fixture.runtime.getAccountState().onlineBootstrap).toMatchObject({
+        phase: "failed",
+        purpose: "sign-in",
+        error: { category: "dns", code: "ENOTFOUND" },
       });
-      await first.runtime.stop();
-      fixtures.splice(fixtures.indexOf(first), 1);
-      fetchMock.mockRejectedValue(new Error("offline"));
-      const restarted = await createFixture({ dataDir });
-      fixtures.push(restarted);
-      expect(restarted.runtime.getAccountState().signInAvailable).toBe(true);
-      expect(restarted.runtime.getAccountState().authEnvironment).toBe("dev");
+      expect(sentEmails).toHaveLength(0);
+
+      fail = false;
+      await fixture.runtime.accountRetryOnlineBootstrap("window-a");
+      await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
+      expect(requests.filter((url) => url === "https://bootstrap.example.test/dev.json")).toHaveLength(2);
+      expect(sentEmails).toEqual(["owner@example.test"]);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("a valid cached config remains usable after a failed refresh", async () => {
+    const { envelope, publicRaw } = await makeSignedDevBootstrap();
+    stubDevBootstrap(publicRaw);
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bootstrap-cache-"));
+    tempPaths.push(dataDir);
+    await fs.writeFile(
+      path.join(dataDir, "control-plane-bootstrap.json"),
+      JSON.stringify({ envelope, highestSeenEpoch: 1, acceptedAt: Date.now() }),
+      "utf8",
+    );
+    const { fetchMock, requests, sentEmails } = stubAuthNetwork(envelope, { failBootstrap: () => true });
+    try {
+      const fixture = await createFixture({ dataDir });
+      fixtures.push(fixture);
+      expect(fetchMock).not.toHaveBeenCalled();
+      await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth", undefined, "window-a");
+      await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
+      expect(fixture.runtime.getAccountState().onlineBootstrap).toMatchObject({
+        phase: "cache-warning",
+        purpose: "sign-in",
+        error: { category: "dns", code: "ENOTFOUND" },
+      });
+      expect(requests.filter((url) => url === "https://bootstrap.example.test/dev.json")).toHaveLength(1);
+      expect(sentEmails).toEqual(["owner@example.test"]);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("runtime shutdown fences a late bootstrap response from sending email", async () => {
+    const { envelope, publicRaw } = await makeSignedDevBootstrap();
+    stubDevBootstrap(publicRaw);
+    let resolveBootstrap!: (response: Response) => void;
+    let notifyBootstrapStarted!: () => void;
+    const bootstrapStarted = new Promise<void>((resolve) => (notifyBootstrapStarted = resolve));
+    const requests: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "https://bootstrap.example.test/dev.json") {
+        notifyBootstrapStarted();
+        return new Promise<Response>((resolve) => (resolveBootstrap = resolve));
+      }
+      throw new Error(`Unexpected test network request to ${url}`);
+    });
+    try {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.accountBeginSignIn("owner@example.test", "enrol", undefined, "window-a");
+      await bootstrapStarted;
+      await fixture.runtime.stop();
+      resolveBootstrap(Response.json(envelope));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(requests).toEqual(["https://bootstrap.example.test/dev.json"]);
+      expect(fixture.runtime.getAccountState().auth).toBeUndefined();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("a cancelled old fetch cannot send mail after a newer intent starts", async () => {
+    const { envelope, publicRaw } = await makeSignedDevBootstrap();
+    stubDevBootstrap(publicRaw);
+    let bootstrapCalls = 0;
+    const requests: string[] = [];
+    const sentEmails: string[] = [];
+    let resolveFirst!: () => void;
+    const firstStarted = new Promise<void>((resolve) => (resolveFirst = resolve));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "https://bootstrap.example.test/dev.json") {
+        bootstrapCalls++;
+        if (bootstrapCalls === 1) {
+          resolveFirst();
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(Object.assign(new Error("cancelled"), { name: "AbortError" })),
+              { once: true },
+            );
+          });
+        }
+        return Response.json(envelope);
+      }
+      if (url === "https://auth-dev.strideterm.com/start")
+        return Response.json({ expiresAt: Date.now() + 15 * 60_000 });
+      if (url.includes("identitytoolkit.googleapis.com/v1/accounts:sendOobCode")) {
+        sentEmails.push((JSON.parse(String(init?.body ?? "{}")) as { email?: string }).email ?? "");
+        return Response.json({ email: sentEmails.at(-1) });
+      }
+      throw new Error(`Unexpected test network request to ${url}`);
+    });
+    try {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.accountBeginSignIn("old@example.test", "enrol", undefined, "window-a");
+      await firstStarted;
+      await fixture.runtime.accountCancelOnlineBootstrap();
+      await fixture.runtime.accountBeginSignIn("new@example.test", "enrol", undefined, "window-a");
+      await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "new@example.test");
+      expect(bootstrapCalls).toBe(2);
+      expect(sentEmails).toEqual(["new@example.test"]);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("an unresolved environment does not fall back to the compiled production bootstrap", async () => {
+    vi.stubEnv("STRIDETERM_ENV", "stage");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_PROJECT_ID", "");
+    vi.stubEnv("STRIDETERM_MOBILE_FIREBASE_API_KEY", "");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not reach prod"));
+    try {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth", undefined, "window-a");
+      await waitForAccount(fixture, () => fixture.runtime.getAccountState().onlineBootstrap?.phase === "failed");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fixture.runtime.getAccountState().onlineBootstrap).toMatchObject({
+        phase: "failed",
+        purpose: "sign-in",
+        error: { category: "verification", code: "ENVIRONMENT_UNRESOLVED" },
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("a positive binding marker activates cached online services on startup without minting a new uid", async () => {
+    const { envelope, publicRaw } = await makeSignedDevBootstrap();
+    stubDevBootstrap(publicRaw);
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-bootstrap-bound-"));
+    tempPaths.push(dataDir);
+    await fs.writeFile(
+      path.join(dataDir, "control-plane-bootstrap.json"),
+      JSON.stringify({ envelope, highestSeenEpoch: 1, acceptedAt: Date.now() }),
+      "utf8",
+    );
+    const credentials = {
+      version: 1,
+      secrets: {
+        "mobile:account-binding": {
+          value: `plain:${Buffer.from("bound").toString("base64")}`,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    };
+    await fs.writeFile(path.join(dataDir, "credentials.json"), JSON.stringify(credentials), "utf8");
+    const { fetchMock, requests } = stubAuthNetwork(envelope);
+    try {
+      const fixture = await createFixture({ dataDir });
+      fixtures.push(fixture);
+      await waitForAccount(fixture, () => requests.some((url) => url === "https://bootstrap.example.test/dev.json"));
+      expect(requests.filter((url) => url === "https://bootstrap.example.test/dev.json")).toHaveLength(1);
+      expect(requests.some((url) => url.includes("accounts:signUp"))).toBe(false);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("accounts:signUp"))).toBe(false);
     } finally {
       fetchMock.mockRestore();
     }
@@ -13701,9 +13991,15 @@ describe("the runtime's passwordless sign-in wiring", () => {
       // the transport, so nothing here could have read the `local` epoch floor or written a `dev`
       // refresh token into a slot `local` might read on its next restart.
       expect(state.phase).toBe("unconfigured");
-      await expect(dev.runtime.accountBeginSignIn("owner@example.test", "reauth")).rejects.toMatchObject({
-        code: "auth-unavailable",
-      });
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not reach any service"));
+      try {
+        await dev.runtime.accountBeginSignIn("owner@example.test", "reauth");
+        await waitForAccount(dev, () => dev.runtime.getAccountState().onlineBootstrap?.phase === "failed");
+        expect(dev.runtime.getAccountState().auth).toBeUndefined();
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        fetchMock.mockRestore();
+      }
 
       // THE BINDING DOES NOT MOVE. A mismatched launch must not itself become the new binding, or a
       // second mismatched declaration would look like agreement with the first.
@@ -13788,9 +14084,15 @@ describe("the runtime's passwordless sign-in wiring", () => {
     expect(state.signInAvailable).toBe(false);
     expect(state.signInUnavailableReason).toBe("environment-contradiction");
     expect(state.authEnvironment).toBeUndefined();
-    await expect(fixture.runtime.accountBeginSignIn("owner@example.test", "reauth")).rejects.toMatchObject({
-      code: "auth-unavailable",
-    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not reach any service"));
+    try {
+      await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth");
+      await waitForAccount(fixture, () => fixture.runtime.getAccountState().onlineBootstrap?.phase === "failed");
+      expect(fixture.runtime.getAccountState().auth).toBeUndefined();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   test("qa plus an explicit plain-HTTP database URL is the same refusal", async () => {
@@ -13857,6 +14159,7 @@ describe("the runtime's passwordless sign-in wiring", () => {
     // The broker is unreachable, so the attempt falls back to manual-only and the send has an unknown
     // result; what is being tested is the OWNERSHIP bookkeeping, recorded before either happens.
     await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth", undefined, "window-a");
+    await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
     await fixture.runtime.removeWindowSlot("window-b");
     // The other window's close did not end the attempt.
     expect(fixture.runtime.getAccountState().auth?.email).toBe("owner@example.test");
@@ -13882,6 +14185,7 @@ describe("the runtime's passwordless sign-in wiring", () => {
     fixtures.push(fixture);
 
     await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth", undefined, "window-a");
+    await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
     // The panel in the OTHER window closes. Every window renders this attempt; only one owns it.
     fixture.runtime.accountReleaseSignInFlow("window-b");
     expect(fixture.runtime.getAccountState().auth?.email).toBe("owner@example.test");
@@ -13908,6 +14212,7 @@ describe("the runtime's passwordless sign-in wiring", () => {
     fixtures.push(fixture);
 
     await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth", undefined, "window-a");
+    await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
     for (let visit = 0; visit < 3; visit++) {
       fixture.runtime.accountReleaseSignInFlow("window-a");
       expect(fixture.runtime.getAccountState().auth?.email).toBe("owner@example.test");
@@ -13918,6 +14223,7 @@ describe("the runtime's passwordless sign-in wiring", () => {
 
     // A NEW attempt supersedes the old one, exactly as before, and closing the panel keeps THAT one.
     await fixture.runtime.accountBeginSignIn("someone@example.test", "reauth", undefined, "window-a");
+    await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "someone@example.test");
     expect(fixture.runtime.getAccountState().auth?.email).toBe("someone@example.test");
     fixture.runtime.accountReleaseSignInFlow("window-a");
     expect(fixture.runtime.getAccountState().auth?.email).toBe("someone@example.test");

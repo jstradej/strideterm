@@ -142,10 +142,16 @@ function runImport(
 }
 
 /** The `env` a documented PowerShell block assigns, plus whether it names the config file. */
-function documentedBlock(markdown: string, heading: string): { env: Record<string, string>; namesConfigFile: boolean } {
+function documentedBlock(
+  markdown: string,
+  heading: string,
+  environment: string,
+): { env: Record<string, string>; namesConfigFile: boolean } {
   const section = markdown.slice(markdown.indexOf(heading));
-  const fence = /```powershell\r?\n([\s\S]*?)```/.exec(section);
-  if (!fence) throw new Error(`${heading}: no powershell block`);
+  const fence = [...section.matchAll(/```powershell\r?\n([\s\S]*?)```/g)].find((match) =>
+    match[1]?.includes(`$env:STRIDETERM_ENV = "${environment}"`),
+  );
+  if (!fence) throw new Error(`${heading}: no powershell block for ${environment}`);
   const env: Record<string, string> = {};
   for (const match of fence[1]!.matchAll(/\$env:([A-Z_0-9]+)\s*=\s*"([^"]*)"/g)) env[match[1]!] = match[2]!;
   return { env, namesConfigFile: /-MobileFirebaseConfigPath\s+"/.test(fence[1]!) };
@@ -260,7 +266,7 @@ describe.skipIf(!pwshAvailable)("dev.ps1 imports one Firebase project, or none o
  */
 describe.skipIf(!pwshAvailable)("switching environments is unambiguous (R06)", () => {
   const documentation = readFileSync(resolve(process.cwd(), "docs/development.md"), "utf8");
-  const qa = documentedBlock(documentation, "#### Running against dev, qa or prod");
+  const qa = documentedBlock(documentation, "#### Running against dev, qa or prod", "qa");
 
   test("the document declares qa and names the config file, and nothing else", () => {
     expect(qa.env).toEqual({ STRIDETERM_ENV: "qa" });

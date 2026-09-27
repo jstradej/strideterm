@@ -80,12 +80,16 @@ sleep 3 && npm run dev:electron &
 
 Avoid `npm run dev` from a non-interactive shell — `concurrently -k` kills all four processes when any one exits, which fights with backgrounded shells.
 
-### Which remote environment a dev build talks to
+### Which remote environment a desktop launch talks to
 
 `STRIDETERM_ENV` — `local`, `dev`, `qa` or `prod` — is the **one** declaration of which backend this
 desktop uses. It is read by the Firebase configuration, the bootstrap trust set and the sign-in
-broker, so those three cannot disagree. `dev.ps1` defaults it to `local` when nothing else names one,
-so an ordinary bare loop talks only to the Firebase emulators — never to a real server by default.
+broker, so those three cannot disagree. `dev.ps1` explicitly sets it to `local` when nothing else
+names one, so the normal development loop does not use a real server. Other Electron launches,
+including source launches such as `npm start`, default to `prod` only when the variable is absent.
+The environment default itself does not fetch configuration or contact online services. On a fresh
+installation, online setup begins when the user submits a valid sign-in form; an existing registered
+installation can restore online services it previously enabled.
 
 It exists because the answer used to be inferred from `STRIDETERM_DATA_DIR`, which is a statement
 about where an installation keeps its **files**. Two different questions:
@@ -97,13 +101,12 @@ about where an installation keeps its **files**. Two different questions:
 - `--data-dir`, which exists so a **second production** instance can keep separate state, made that
   instance's sign-in unavailable for the same reason.
 
-A value this build does not recognise — including the retired `staging`/`production` spellings, or
-nothing declared at all by anything in the launch chain — blocks a **new** sign-in and says so (the
-refusal is `environment-unresolved`); it never falls back to `prod`, and it never disconnects a
-working installation. A packaged install with nothing declared gets an explicit BUILD default instead
-of ever reaching that refusal: `electron/main.ts` sets `STRIDETERM_ENV=prod` for a packaged run and
-`local` for an unpackaged one, only when nothing set it already — a declaration made once, by the
-launcher, never a guess made from a project id, a data directory or a Git branch.
+A value this build does not recognise — including the retired `staging`/`production` spellings —
+blocks a **new** sign-in and says so (the refusal is `environment-unresolved`); it never falls back to
+`prod`, and it never disconnects a working installation. When the variable is absent, Electron's
+launch entry point sets `STRIDETERM_ENV=prod` for both packaged and source launches. A declaration
+already supplied by the user or launcher is preserved. This default is never inferred from a project
+id, a data directory or a Git branch.
 
 #### Running against dev, qa or prod
 
@@ -126,6 +129,11 @@ the sibling `strideterm-mobile/app/android/app/src/local/google-services.json` �
 and it is a committed synthetic `demo-` fixture with no real project or secret in it. Outside `local`
 the launcher imports nothing it was not told to, and stops before Electron starts if the three values
 are not supplied.
+
+This paragraph describes the **development launcher**. A packaged production desktop is expected to
+obtain those public client values from a signed bootstrap before pairing; see
+[Production mobile bootstrap](production-bootstrap.md). The release gate refuses a build while the
+production bootstrap URL, public trust keys, or hosted envelope are missing.
 
 The complete procedure, in a **fresh console** (nothing from configuration A below may still be set):
 

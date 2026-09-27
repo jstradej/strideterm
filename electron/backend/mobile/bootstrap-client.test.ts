@@ -76,19 +76,34 @@ afterEach(() => {
 
 function client(
   options: {
-    respond?: () => Promise<Response>;
+    respond?: (input?: RequestInit) => Promise<Response>;
     url?: string | undefined;
     environment?: "local" | "dev" | "qa" | "prod";
+    stateDir?: string;
+    timeoutMs?: number;
   } = {},
 ) {
   return createControlPlaneBootstrapClient({
-    stateDir,
+    stateDir: options.stateDir ?? stateDir,
     environment: options.environment ?? "prod",
     url: "url" in options ? options.url : "https://bootstrap.strideterm.com/prod.json",
     trust: { keys: new Map([[KEY_ID, publicRaw]]) },
     now: () => NOW,
-    fetchImpl: options.respond ?? (async () => new Response(JSON.stringify(envelopeFor(payload())), { status: 200 })),
+    timeoutMs: options.timeoutMs,
+    fetchImpl: options.respond
+      ? (_url, init) => options.respond!(init)
+      : async () => new Response(JSON.stringify(envelopeFor(payload())), { status: 200 }),
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("adopting an envelope", () => {
@@ -120,7 +135,40 @@ describe("adopting an envelope", () => {
       expect(result.changed).toBe(false);
       expect(result.refusal).toBe("epoch-not-newer");
       expect(result.envelope?.payload.configEpoch).toBe(9);
+      if (replayed === 9) {
+        // An identical signed document at the accepted epoch is the normal unchanged case.
+        expect(result.error).toBeUndefined();
+      } else {
+        // A different same-epoch document or an older document is a rollback/refusal worth surfacing.
+        expect(result.error).toMatchObject({ stage: "verify", category: "verification", refusal: "epoch-not-newer" });
+      }
     }
+  });
+
+  test("an identical current epoch is a normal unchanged result", async () => {
+    await client().refresh();
+    const result = await client().refresh();
+    expect(result).toMatchObject({ changed: false, refusal: "epoch-not-newer" });
+    expect(result.error).toBeUndefined();
+    expect(result.envelope?.payload.configEpoch).toBe(5);
+  });
+
+  test("a different signed payload at the current epoch is refused and diagnosed", async () => {
+    await client({
+      respond: async () => new Response(JSON.stringify(envelopeFor(payload({ configEpoch: 9 }))), { status: 200 }),
+    }).refresh();
+    const conflict = payload({
+      configEpoch: 9,
+      projectId: "strideterm-conflicting-project",
+      databaseUrl: "https://strideterm-conflicting-project-default-rtdb.europe-west1.firebasedatabase.app",
+      functionsBaseUrl: "https://europe-west1-strideterm-conflicting-project.cloudfunctions.net",
+    });
+    const result = await client({
+      respond: async () => new Response(JSON.stringify(envelopeFor(conflict)), { status: 200 }),
+    }).refresh();
+    expect(result.envelope?.payload.projectId).toBe("strideterm-prod");
+    expect(result.error).toMatchObject({ stage: "verify", category: "verification", refusal: "epoch-not-newer" });
+    expect(result.error?.message).toContain("already accepted epoch");
   });
 
   test("the rollback floor survives the envelope being deleted", async () => {
@@ -154,6 +202,161 @@ describe("never making things worse", () => {
     expect(result.envelope?.payload.configEpoch).toBe(5);
   });
 
+  test("a DNS failure keeps only a safe code, category and fixed copy", async () => {
+    const result = await client({
+      respond: async () => {
+        const cause = Object.assign(new Error("private proxy detail"), { code: "ENOTFOUND" });
+        throw Object.assign(new TypeError("raw host and request data"), { cause });
+      },
+    }).refresh();
+    expect(result.error).toMatchObject({
+      stage: "fetch",
+      category: "dns",
+      code: "ENOTFOUND",
+      url: "https://bootstrap.strideterm.com/prod.json",
+      message: "The server address could not be resolved.",
+    });
+    expect(JSON.stringify(result.error)).not.toContain("private proxy detail");
+    expect(JSON.stringify(result.error)).not.toContain("raw host");
+  });
+
+  test("HTTP 429 reports a bounded Retry-After and redirects are never followed", async () => {
+    const limited = await client({
+      respond: async () => new Response("ignored body", { status: 429, headers: { "retry-after": "30" } }),
+    }).refresh();
+    expect(limited.error).toMatchObject({ stage: "fetch", category: "http", status: 429, retryAfterMs: 30_000 });
+
+    let requests = 0;
+    const redirected = await client({
+      respond: async () => {
+        requests++;
+        return new Response(null, { status: 302, headers: { location: "https://attacker.example/config.json" } });
+      },
+    }).refresh();
+    expect(requests).toBe(1);
+    expect(redirected.error).toMatchObject({ stage: "fetch", category: "redirect", status: 302 });
+  });
+
+  test("timeout is distinct from caller cancellation", async () => {
+    const waitForAbort = (signal: AbortSignal) =>
+      new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), {
+          once: true,
+        });
+      });
+    const timedOut = await client({
+      timeoutMs: 5,
+      respond: async (init) => waitForAbort(init!.signal as AbortSignal),
+    }).refresh();
+    expect(timedOut.error).toMatchObject({
+      stage: "fetch",
+      category: "timeout",
+      message: "The server did not respond within 1 seconds.",
+    });
+
+    const controller = new AbortController();
+    const entered = deferred<void>();
+    const cancelledPromise = client({
+      timeoutMs: 5_000,
+      respond: async (init) => {
+        entered.resolve();
+        return waitForAbort(init!.signal as AbortSignal);
+      },
+    }).refresh({ signal: controller.signal });
+    await entered.promise;
+    controller.abort();
+    const cancelled = await cancelledPromise;
+    expect(cancelled.error).toMatchObject({ stage: "fetch", category: "cancelled" });
+  });
+
+  test("caller cancellation interrupts a streamed response body", async () => {
+    const controller = new AbortController();
+    const bodyRead = deferred<void>();
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new TextEncoder().encode("{"));
+        bodyRead.resolve();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const pending = client({ respond: async () => new Response(body, { status: 200 }), timeoutMs: 5_000 }).refresh({
+      signal: controller.signal,
+    });
+    await bodyRead.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort();
+    const result = await pending;
+    expect(result.error).toMatchObject({ stage: "fetch", category: "cancelled" });
+    expect(cancelled).toBe(true);
+  });
+
+  test("an oversized stream cannot hold refresh open while its cancellation cleanup stalls", async () => {
+    let cancelCalled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new Uint8Array(64 * 1024));
+        stream.enqueue(new Uint8Array(1));
+      },
+      cancel() {
+        cancelCalled = true;
+        return new Promise<void>(() => {});
+      },
+    });
+    const result = await Promise.race([
+      client({ respond: async () => new Response(body, { status: 200 }), timeoutMs: 10_000 }).refresh(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+    ]);
+    expect(cancelCalled).toBe(true);
+    expect(result).not.toBeNull();
+    expect(result && result.error).toMatchObject({ category: "invalid-response", code: "BOOTSTRAP_TOO_LARGE" });
+  });
+
+  test("diagnostics never include URL credentials, query secrets, or unsupported schemes", async () => {
+    const secretUrl = "https://user:password@bootstrap.example/prod.json?token=private";
+    const controller = new AbortController();
+    controller.abort();
+    const result = await client({ url: secretUrl }).refresh({ signal: controller.signal });
+    expect(JSON.stringify(result.error)).not.toContain("password");
+    expect(JSON.stringify(result.error)).not.toContain("token=private");
+
+    const unsupported = await client({
+      url: "ftp://bootstrap.example/prod.json",
+      respond: async () => {
+        throw new Error("offline");
+      },
+    }).refresh();
+    expect(unsupported.error?.url).toBeUndefined();
+  });
+
+  test("an unavailable refresh can use only a verified cached envelope", async () => {
+    await client().refresh();
+    const available = await client({
+      respond: async () => {
+        throw new Error("offline");
+      },
+    }).refresh();
+    expect(available.envelope?.payload.projectId).toBe("strideterm-prod");
+    expect(client({ url: undefined }).currentVerified()?.payload.projectId).toBe("strideterm-prod");
+
+    const statePath = join(stateDir, "control-plane-bootstrap.json");
+    const stored = JSON.parse(readFileSync(statePath, "utf8")) as {
+      envelope: ReturnType<typeof envelopeFor>;
+      highestSeenEpoch: number;
+    };
+    stored.envelope.signature = Buffer.alloc(64).toString("base64");
+    writeFileSync(statePath, JSON.stringify(stored));
+    const invalid = await client({
+      respond: async () => {
+        throw new Error("offline");
+      },
+    }).refresh();
+    expect(invalid.envelope).toBeNull();
+    expect(client().currentVerified()).toBeNull();
+  });
+
   test("a non-OK response is a network failure, not an envelope", async () => {
     const result = await client({ respond: async () => new Response("nope", { status: 503 }) }).refresh();
     expect(result.refusal).toBe("network");
@@ -163,6 +366,37 @@ describe("never making things worse", () => {
   test("a body that is not JSON is refused rather than crashing the launch", async () => {
     const result = await client({ respond: async () => new Response("<html>", { status: 200 }) }).refresh();
     expect(result.refusal).toBe("network");
+    expect(result.error).toMatchObject({ stage: "fetch", category: "invalid-response", code: "INVALID_JSON" });
+  });
+
+  test("oversized streamed bodies are stopped even without Content-Length", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+        controller.enqueue(new Uint8Array(1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const result = await client({ respond: async () => new Response(body, { status: 200 }) }).refresh();
+    expect(result.error).toMatchObject({ stage: "fetch", category: "invalid-response", code: "BOOTSTRAP_TOO_LARGE" });
+    expect(cancelled).toBe(true);
+  });
+
+  test("an advertised oversized body is cancelled before returning", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const result = await client({
+      respond: async () => new Response(body, { status: 200, headers: { "content-length": String(64 * 1024 + 1) } }),
+    }).refresh();
+    expect(result.error).toMatchObject({ category: "invalid-response", code: "BOOTSTRAP_TOO_LARGE" });
+    expect(cancelled).toBe(true);
   });
 
   test("a build with no bootstrap URL says so and keeps what it has", async () => {
@@ -188,6 +422,15 @@ describe("never making things worse", () => {
     expect(result.envelope?.payload.projectId).toBe("strideterm-prod");
   });
 
+  test("a persistence failure is classified separately from a fetch failure", async () => {
+    const blockedDirectory = join(stateDir, "not-a-directory");
+    writeFileSync(blockedDirectory, "file blocks mkdir");
+    const result = await client({ stateDir: blockedDirectory }).refresh();
+    expect(result.changed).toBe(false);
+    expect(result.error).toMatchObject({ stage: "persist", category: "storage", code: expect.any(String) });
+    expect(result.envelope).toBeNull();
+  });
+
   test("a production build refuses an envelope pointing at loopback", async () => {
     const local = envelopeFor(
       payload({ configEpoch: 9, databaseUrl: "https://[::1]:9000", functionsBaseUrl: "https://127.0.0.1:5001" }),
@@ -205,11 +448,14 @@ describe("the trust set is the build's", () => {
       [`STRIDETERM_BOOTSTRAP_TRUST_KEYS`]: `${KEY_ID}=${Buffer.from(publicRaw).toString("base64")}`,
       [`STRIDETERM_BOOTSTRAP_URL`]: "https://attacker.example.com/bootstrap.json",
     } as NodeJS.ProcessEnv;
+    const compiled = bootstrapTrustSet("prod", {} as NodeJS.ProcessEnv);
     const trust = bootstrapTrustSet("prod", env);
     // If this ever passes a key through, anything that can set an environment variable can point a
     // prod install at its own control plane and the signature proves nothing.
-    expect(trust.keys.size).toBe(0);
-    expect(trust.url).toBeUndefined();
+    expect(trust.url).toBe(compiled.url);
+    expect([...trust.keys.entries()]).toEqual([...compiled.keys.entries()]);
+    expect(trust.url).toBe("https://bootstrap.strideterm.com/prod.json");
+    expect(trust.keys.size).toBeGreaterThan(0);
   });
 
   test("local and dev may supply their own, because they have to", () => {

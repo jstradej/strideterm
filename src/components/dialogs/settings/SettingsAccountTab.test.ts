@@ -269,6 +269,72 @@ describe("the account page", () => {
     });
   });
 
+  test("bootstrap failure stays in the sign-in form, preserves the email, and retries the frozen request", async () => {
+    const retry = vi.fn(async () => undefined);
+    const { wrapper, calls } = await render(
+      stateFor({
+        phase: "signed-out",
+        onlineBootstrap: {
+          phase: "failed",
+          purpose: "sign-in",
+          url: "https://bootstrap.example.test/prod.json",
+          error: {
+            stage: "fetch",
+            category: "dns",
+            code: "ENOTFOUND",
+            message: "The server address could not be resolved.",
+          },
+        },
+      }),
+      { accountRetryOnlineBootstrap: retry },
+    );
+
+    const email = wrapper.find('input[type="email"]');
+    await email.setValue("owner@example.test");
+    expect(wrapper.text()).toContain("Online services configuration could not be downloaded");
+    expect(wrapper.text()).toContain("Firebase and our relay servers");
+    expect(wrapper.text()).toContain("email was not sent");
+    expect(wrapper.text()).toContain("ENOTFOUND");
+    expect(wrapper.text()).toContain("https://bootstrap.example.test/prod.json");
+    expect(calls.some((call) => call.method === "accountBeginSignIn")).toBe(false);
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Try again")!
+      .trigger("click");
+    await flushPromises();
+    expect(retry).toHaveBeenCalledOnce();
+    expect((wrapper.find('input[type="email"]').element as HTMLInputElement).value).toBe("owner@example.test");
+    expect(calls.some((call) => call.method === "accountBeginSignIn")).toBe(false);
+    wrapper.unmount();
+  });
+
+  test("a cached configuration warning stays non-blocking and cannot retry a sign-in", async () => {
+    const { wrapper } = await render(
+      stateFor({
+        phase: "signing-in",
+        lastError: "network",
+        onlineBootstrap: {
+          phase: "cache-warning",
+          purpose: "sign-in",
+          url: "https://bootstrap.example.test/prod.json",
+          error: {
+            stage: "verify",
+            category: "verification",
+            refusal: "unknown-key",
+            message: "The configuration was signed by an untrusted key.",
+          },
+        },
+        auth: authState(),
+      }),
+    );
+    expect(wrapper.text()).toContain("A previously verified saved configuration remains available");
+    expect(wrapper.text()).toContain("Could not reach the account service. Check your connection.");
+    expect(wrapper.findAll("button").some((button) => button.text() === "Try update again")).toBe(false);
+    expect(wrapper.text()).toContain("Check your email");
+    wrapper.unmount();
+  });
+
   test("a build with no sign-in configuration says so and disables Continue", async () => {
     const { wrapper } = await render({
       phase: "signed-out",

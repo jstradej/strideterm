@@ -378,10 +378,13 @@ it:
   handshake is only meaningful if neither can name the other's.
 - `authlink-config.ts` — where a sign-in link is allowed to come back to. The environment comes from
   the same call the bootstrap trust set uses (`bootstrapEnvironmentFor`, which reads the configured
-  Firebase project), and maps to two fixed hosts. A deployed build cannot be pointed elsewhere by
-  anything in its environment; a dev build must name a loopback origin explicitly or it gets no
-  broker at all. It also holds the pasted-link parser, which accepts one shape, unwraps exactly one
-  level of `continueUrl`, and never fetches what it was given.
+  environment), and maps `dev`, `qa`, and `prod` to three fixed broker hosts. A deployed build cannot
+  override its broker origin through environment variables; a `local` build must name its broker
+  origin explicitly or it gets no broker at all. It also holds the pasted-link parser, which accepts
+  allowlisted handlers, unwraps exactly one level of `continueUrl`, and never fetches what it was
+  given. The exact `https://mail.strideterm.com/__/auth/action` handler is accepted only for `prod`
+  using the `strideterm-mobile-prod` project. See [authentication email delivery](auth-email-delivery.md)
+  for the separate Firebase, SMTP, DNS, and rollout settings.
 - `email-signin-broker.ts` — one attempt at a time: the attempt id, the claim secret (only its
   SHA-256 leaves this process), the pinned address, the pinned PURPOSE, the deadline, the polling
   schedule, the manual paste and the cancel/ack. Every await is followed by a generation check, so a

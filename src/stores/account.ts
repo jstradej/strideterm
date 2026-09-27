@@ -29,6 +29,8 @@ type AccountApi = Partial<
     | "getAccountState"
     | "onAccountUpdated"
     | "accountBeginSignIn"
+    | "accountRetryOnlineBootstrap"
+    | "accountCancelOnlineBootstrap"
     | "accountConfirmSignIn"
     | "accountResendSignIn"
     | "accountCancelSignIn"
@@ -79,6 +81,8 @@ export const useAccountStore = defineStore("account", () => {
   const notices = computed(() => overview.value?.notices ?? []);
   /** The sign-in attempt in flight, or null. A sanitized substate — see `account-state.ts`. */
   const auth = computed(() => state.value.auth ?? null);
+  /** Bootstrap preparation/error feedback for the sign-in form, authored by the backend. */
+  const onlineBootstrap = computed(() => state.value.onlineBootstrap ?? { phase: "idle" as const });
   /**
    * Whether the account panel is on screen right now.
    *
@@ -155,6 +159,8 @@ export const useAccountStore = defineStore("account", () => {
     offerId?: string,
   ) =>
     run(() => api!.accountBeginSignIn!({ email, purpose, ...(offerId === undefined ? {} : { offerId }) }), undefined);
+  const retryOnlineBootstrap = () => run(() => api!.accountRetryOnlineBootstrap!(), undefined);
+  const cancelOnlineBootstrap = () => run(() => api!.accountCancelOnlineBootstrap!(), undefined);
   const confirmSignIn = () => run(() => api!.accountConfirmSignIn!(), undefined);
   const resendSignIn = () => run(() => api!.accountResendSignIn!(), undefined);
   const cancelSignIn = () => run(() => api!.accountCancelSignIn!(), undefined);
@@ -294,6 +300,7 @@ export const useAccountStore = defineStore("account", () => {
     entitlement,
     notices,
     auth,
+    onlineBootstrap,
     pendingEmailChange,
     signInPanelMounted,
     setSignInPanelMounted,
@@ -301,6 +308,8 @@ export const useAccountStore = defineStore("account", () => {
     detach,
     refreshState,
     beginSignIn,
+    retryOnlineBootstrap,
+    cancelOnlineBootstrap,
     confirmSignIn,
     resendSignIn,
     cancelSignIn,

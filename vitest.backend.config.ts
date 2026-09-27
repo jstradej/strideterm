@@ -16,6 +16,7 @@ export default defineConfig({
       // performance-metrics sampler). Pure, node-env-friendly logic.
       "electron/*.test.js",
       "electron/*.test.ts",
+      "scripts/**/*.test.ts",
     ],
     // Windows CI runners hit the default 5000ms ceiling on a few runtime
     // tests that exercise the full createRuntime → stop lifecycle (e.g.

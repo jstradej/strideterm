@@ -234,11 +234,12 @@ function describe(
 /**
  * The action-handler shapes this build accepts as the OUTER layer of a pasted link.
  *
- * THREE SOURCES, AND NO FOURTH:
+ * Accepted sources:
  *
  *   - Firebase's own two hosts for the project, `<project>.firebaseapp.com` and `<project>.web.app`,
  *     both serving `/__/auth/action`. Phase-0 row 8 measured the first of these live; the second is the
  *     same handler on the project's other default domain, which Firebase serves identically.
+ *   - The production project's fixed custom domain, `mail.strideterm.com`.
  *   - The AUTH EMULATOR's handler, `http://<host>/emulator/action`, and only in a `local` build with an
  *     emulator configured. It is what configuration A pastes — the emulator-only procedure named by
  *     `docs/development.md`, written out in `docs/PASSWORDLESS-LOCAL-TESTING.md` in the cloud
@@ -258,6 +259,9 @@ function actionHandlersFor(
     { origin: `https://${firebase.projectId}.firebaseapp.com`, path: FIREBASE_ACTION_PATH },
     { origin: `https://${firebase.projectId}.web.app`, path: FIREBASE_ACTION_PATH },
   ];
+  if (environment === "prod" && firebase.projectId === "strideterm-mobile-prod") {
+    handlers.push({ origin: "https://mail.strideterm.com", path: FIREBASE_ACTION_PATH });
+  }
   const emulator = firebase.emulators?.auth;
   if (environment === "local" && emulator) handlers.push({ origin: `http://${emulator}`, path: EMULATOR_ACTION_PATH });
   // PROD NAMES NOTHING FROM THE ENVIRONMENT, the same rule the broker origin follows.

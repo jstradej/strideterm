@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { AccountUiState } from "./account/account-state.js";
+
 /**
  * Zod schemas for IPC payload validation.
  * Only covers handlers that accept complex objects from the renderer.
@@ -1492,6 +1494,91 @@ export const accountSignInStartSchema = z
   })
   .strict();
 export type AccountSignInStart = z.infer<typeof accountSignInStartSchema>;
+
+const bootstrapErrorOutputSchema = z
+  .object({
+    stage: z.enum(["fetch", "verify", "persist"]),
+    category: z.enum([
+      "dns",
+      "timeout",
+      "connection-refused",
+      "connection-reset",
+      "tls",
+      "http",
+      "redirect",
+      "invalid-response",
+      "verification",
+      "not-configured",
+      "storage",
+      "network",
+      "cancelled",
+    ]),
+    code: z.string().max(64).optional(),
+    status: z.number().int().min(100).max(599).optional(),
+    url: z.string().max(2048).optional(),
+    retryAfterMs: z.number().finite().min(0).max(3_600_000).optional(),
+    refusal: z
+      .enum([
+        "unsupported-version",
+        "unknown-key",
+        "bad-signature",
+        "wrong-environment",
+        "epoch-not-newer",
+        "not-yet-valid",
+        "insecure-endpoint",
+        "malformed",
+        "not-configured",
+      ])
+      .optional(),
+    message: z.string().min(1).max(500),
+  })
+  .strict();
+
+export const onlineBootstrapStateOutputSchema = z.discriminatedUnion("phase", [
+  z.object({ phase: z.literal("idle") }).strict(),
+  z
+    .object({
+      phase: z.literal("downloading"),
+      purpose: z.enum(["sign-in", "refresh"]),
+      url: z.string().max(2048),
+    })
+    .strict(),
+  z
+    .object({
+      phase: z.literal("failed"),
+      purpose: z.enum(["sign-in", "refresh"]),
+      url: z.string().max(2048),
+      error: bootstrapErrorOutputSchema,
+      retryAt: z.number().finite().nonnegative().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      phase: z.literal("cache-warning"),
+      purpose: z.enum(["sign-in", "refresh"]),
+      url: z.string().max(2048),
+      error: bootstrapErrorOutputSchema,
+      retryAt: z.number().finite().nonnegative().optional(),
+    })
+    .strict(),
+]);
+
+/**
+ * Validates the new dynamic bootstrap substate while preserving the account DTO's existing fields.
+ * If a future or malformed bootstrap field is present, omit that field so the rest of Account stays
+ * usable; never forward unchecked server or network text to a renderer.
+ */
+export function sanitizeAccountUiStateOutput(value: unknown): AccountUiState {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid account state output");
+  }
+  const state = value as Record<string, unknown>;
+  if (state.onlineBootstrap === undefined) return state as unknown as AccountUiState;
+  const onlineBootstrap = onlineBootstrapStateOutputSchema.safeParse(state.onlineBootstrap);
+  if (onlineBootstrap.success) return { ...state, onlineBootstrap: onlineBootstrap.data } as unknown as AccountUiState;
+  const { onlineBootstrap: _invalidBootstrapState, ...safeState } = state;
+  return safeState as unknown as AccountUiState;
+}
 
 /**
  * `account:sign-in:link` — the whole link, pasted out of a mail client.

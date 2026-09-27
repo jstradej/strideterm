@@ -13,7 +13,59 @@ permissions:
   contents: read
 
 jobs:
+  bootstrap-check:
+    name: Fresh production desktop can reach the control plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:production-bootstrap
+
+  secret-scan:
+    name: Secret scan before release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Scan full history
+        env:
+          GITLEAKS_VERSION: "8.30.0"
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          curl -sSL -o "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" "${BASE}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSL -o gitleaks-checksums.txt "${BASE}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks-checksums.txt | sha256sum -c -
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          CANARY_DIR="$(mktemp -d)"
+          printf '%s\n' 'api_key = "V8mK3pR7sW2nX9qT4yZ6aB1cD5eF8gH0jL2uN7rP"' > "${CANARY_DIR}/canary.txt"
+          set +e
+          ./gitleaks detect --no-git --source "${CANARY_DIR}" --config .gitleaks.toml --redact --no-banner --exit-code 42 >/dev/null 2>&1
+          CANARY_EXIT=$?
+          set -e
+          if [ "${CANARY_EXIT}" -ne 42 ]; then
+            echo "::error::Gitleaks did not detect the synthetic canary (exit ${CANARY_EXIT})"
+            exit 1
+          fi
+          printf 'firebase_api_key = "AIza%s"\n' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' > "${CANARY_DIR}/canary.txt"
+          set +e
+          ./gitleaks detect --no-git --source "${CANARY_DIR}" --config .gitleaks.toml --redact --no-banner --exit-code 42 >/dev/null 2>&1
+          FIREBASE_CANARY_EXIT=$?
+          set -e
+          rm -rf "${CANARY_DIR}"
+          if [ "${FIREBASE_CANARY_EXIT}" -ne 42 ]; then
+            echo "::error::Gitleaks did not detect the synthetic Firebase key (exit ${FIREBASE_CANARY_EXIT})"
+            exit 1
+          fi
+          ./gitleaks detect --source . --config .gitleaks.toml --redact --no-banner --exit-code 1
+
   build:
+    needs: [bootstrap-check, secret-scan]
     permissions:
       contents: read
     strategy:

@@ -22,6 +22,25 @@
 //     rotatable; the opaque account id is not for showing.
 
 import type { AccountOverview, EntitlementSummary } from "../mobile/mobile-schemas.js";
+import type { BootstrapError } from "../mobile/bootstrap-client.js";
+
+export type OnlineBootstrapState =
+  | { readonly phase: "idle" }
+  | { readonly phase: "downloading"; readonly purpose: "sign-in" | "refresh"; readonly url: string }
+  | {
+      readonly phase: "failed";
+      readonly purpose: "sign-in" | "refresh";
+      readonly url: string;
+      readonly error: BootstrapError;
+      readonly retryAt?: number;
+    }
+  | {
+      readonly phase: "cache-warning";
+      readonly purpose: "sign-in" | "refresh";
+      readonly url: string;
+      readonly error: BootstrapError;
+      readonly retryAt?: number;
+    };
 
 /** Where the account flow currently is, as one value the UI switches on. */
 export type AccountPhase =
@@ -71,6 +90,8 @@ export interface AccountAuthState {
 
 export interface AccountUiState {
   readonly phase: AccountPhase;
+  /** Preparation of online services, separate from the Firebase email-send phase. */
+  readonly onlineBootstrap?: OnlineBootstrapState;
   /**
    * The signed-in address, shown so somebody can tell WHICH account this is.
    *

@@ -308,6 +308,41 @@ describe("registerIpc — provider review mutations carry the viewer's window", 
   });
 });
 
+describe("registerIpc — online bootstrap actions are bound to their sending window", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+  });
+
+  test("retry and cancel carry the sender's window id and accept no renderer payload", async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, method: string) => {
+          if (method === "on") return callable;
+          return (...args: unknown[]) => {
+            calls.push({ method, args });
+            return { ok: true };
+          };
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: (id) => (id === 7 ? "account-window" : undefined),
+    });
+
+    const retry = handleRegistry.get("account:online-bootstrap:retry") as (event: unknown) => Promise<unknown>;
+    const cancel = handleRegistry.get("account:online-bootstrap:cancel") as (event: unknown) => Promise<unknown>;
+    await retry({ sender: { id: 7 } });
+    await cancel({ sender: { id: 7 } });
+
+    expect(calls.find((call) => call.method === "accountRetryOnlineBootstrap")?.args).toEqual(["account-window"]);
+    expect(calls.find((call) => call.method === "accountCancelOnlineBootstrap")?.args).toEqual(["account-window"]);
+    dispose();
+  });
+});
+
 describe("notification:target-removed IPC forwarding", () => {
   beforeEach(() => {
     resetIpcMainMock();

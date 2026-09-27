@@ -1593,6 +1593,8 @@ describe("remote transport API parity — no method silently missing its remote 
     // transport, and the confirmation that redeems the code has to happen at the machine being signed
     // in.
     "accountBeginSignIn",
+    "accountRetryOnlineBootstrap",
+    "accountCancelOnlineBootstrap",
     "accountConfirmSignIn",
     "accountResendSignIn",
     "accountCancelSignIn",

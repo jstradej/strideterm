@@ -344,6 +344,8 @@ export interface StridetermAPI {
    * arrives on `account:updated`.
    */
   accountBeginSignIn: (payload: AccountSignInStart) => Promise<unknown>;
+  accountRetryOnlineBootstrap: () => Promise<unknown>;
+  accountCancelOnlineBootstrap: () => Promise<unknown>;
   /** The final confirmation, ON THIS DESKTOP: redeem the code and do the thing it was started for. */
   accountConfirmSignIn: () => Promise<unknown>;
   accountResendSignIn: () => Promise<unknown>;

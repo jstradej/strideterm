@@ -225,6 +225,8 @@ export interface MobileFirebaseRestClientDeps {
    * Absent means "not bound", which is today's behaviour for every caller that has no account.
    */
   isAccountBound?: () => boolean;
+  /** A positive durable marker that an anonymous identity already belongs to an account. */
+  isPositivelyBound?: () => boolean;
 }
 
 /**
@@ -435,6 +437,11 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
 
   async function establishSession(): Promise<AuthSession> {
     const storedRefreshToken = credentialStore.getSecret(refreshTokenRef);
+    if (!storedRefreshToken && deps.isPositivelyBound?.() === true) {
+      // A durable bound marker with no token is identity loss, not a fresh install. Creating an
+      // anonymous uid here would silently detach every account installation row and pairing.
+      throw new MobileFirebaseIdentityLostError("MISSING_REFRESH_TOKEN");
+    }
     if (storedRefreshToken) {
       try {
         const restored = await exchangeRefreshToken(storedRefreshToken);

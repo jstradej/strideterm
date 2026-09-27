@@ -3,6 +3,7 @@
   "compilerOptions": {
     "lib": ["ES2023", "DOM"],
     "types": ["node", "vitest/globals"],
+    "allowImportingTsExtensions": true,
     "noEmit": true
   },
   "include": ["**/*.test.ts", "test/**/*.ts", "src/types/**/*.d.ts"],

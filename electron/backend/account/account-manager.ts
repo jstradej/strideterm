@@ -104,8 +104,9 @@ export interface InstallationIdentity {
 }
 
 export interface AccountManagerDeps {
-  readonly client: AccountClient | null;
-  readonly transport: AccountTransport | null;
+  /** Mutable only so signed online services can be attached after on-demand bootstrap. */
+  client: AccountClient | null;
+  transport: AccountTransport | null;
   readonly identity: InstallationIdentity | null;
   /**
    * The passwordless sign-in broker, or null when this build has no auth-link configuration.
@@ -115,9 +116,9 @@ export interface AccountManagerDeps {
    * nothing else. An installation that is already enrolled keeps its credential, its pairings and its
    * device list; see `authlink-config.ts` for why that separation is the whole point.
    */
-  readonly broker?: EmailSignInBroker | null;
+  broker?: EmailSignInBroker | null;
   /** Why there is no broker, when there is none. Carried into the UI as a fixed code. */
-  readonly authLinkRefusal?: AuthLinkConfigRefusal | null;
+  authLinkRefusal?: AuthLinkConfigRefusal | null;
   /** Opens a URL in the user's own browser, through the existing vetted external opener. */
   readonly openExternal: (url: string) => Promise<void>;
   /** A stable label for this machine, shown on the account page's device list. */
@@ -463,6 +464,7 @@ export class AccountManager extends EventEmitter {
   private busy = false;
   private lastError: AccountErrorCode | null = null;
   private lastState: AccountUiState | null = null;
+  private onlineServicesAttached: boolean;
   /** What this installation did, bounded. The whole of what a diagnostics report is made of. */
   private readonly diagnostics = new DiagnosticsRing();
   private lastDiagnosticsReportId: string | null = null;
@@ -470,15 +472,45 @@ export class AccountManager extends EventEmitter {
   constructor(deps: AccountManagerDeps) {
     super();
     this.deps = deps;
+    this.onlineServicesAttached = deps.client !== null || deps.transport !== null || deps.broker != null;
     this.now = deps.now ?? (() => Date.now());
     this.newKey = deps.newIdempotencyKey ?? (() => crypto.randomUUID().replace(/-/g, ""));
     // ONE derived state, so every window agrees about the attempt too. The broker owns the timers and
     // the secret; this manager owns what anybody is allowed to see.
-    deps.broker?.on("state", (state: SignInAttemptState | null) => {
+    this.attachBroker(deps.broker ?? null);
+  }
+
+  /** Attaches the verified online clients after the first explicit online use. */
+  setOnlineServices(args: {
+    readonly client: AccountClient | null;
+    readonly transport: AccountTransport | null;
+    readonly broker: EmailSignInBroker | null;
+    readonly authLinkRefusal: AuthLinkConfigRefusal | null;
+  }): void {
+    if (
+      this.onlineServicesAttached ||
+      this.auth !== null ||
+      this.busy ||
+      this.owner !== null ||
+      this.overview !== null
+    ) {
+      throw new Error("Online services can only be attached before account services are first used");
+    }
+    this.deps.client = args.client;
+    this.deps.transport = args.transport;
+    this.deps.broker = args.broker;
+    this.deps.authLinkRefusal = args.authLinkRefusal;
+    this.onlineServicesAttached = true;
+    this.attachBroker(args.broker);
+    this.publish();
+  }
+
+  private attachBroker(broker: EmailSignInBroker | null): void {
+    broker?.on("state", (state: SignInAttemptState | null) => {
       this.auth = state;
       this.publish();
     });
-    deps.broker?.on("failed", (code: string) => {
+    broker?.on("failed", (code: string) => {
       this.auth = null;
       this.lastError = toAccountErrorCode({ code });
       this.publish();

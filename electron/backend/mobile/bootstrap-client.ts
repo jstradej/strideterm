@@ -25,6 +25,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
+  canonicalJsonStringify,
   verifyControlPlaneBootstrap,
   type BootstrapEnvironment,
   type BootstrapRefusal,
@@ -78,6 +79,36 @@ export interface BootstrapFetchResult {
   readonly changed: boolean;
   /** Why a fetched envelope was not adopted. Absent when nothing was fetched or it was accepted. */
   readonly refusal?: BootstrapRefusal | "network" | "not-configured";
+  /** Safe details for a user initiated fetch. Never contains response text or an Error object. */
+  readonly error?: BootstrapError;
+}
+
+export type BootstrapErrorStage = "fetch" | "verify" | "persist";
+export type BootstrapErrorCategory =
+  | "dns"
+  | "timeout"
+  | "connection-refused"
+  | "connection-reset"
+  | "tls"
+  | "http"
+  | "redirect"
+  | "invalid-response"
+  | "verification"
+  | "not-configured"
+  | "storage"
+  | "network"
+  | "cancelled";
+
+/** Renderer-safe bootstrap diagnostics. All strings are fixed or bounded and sanitized. */
+export interface BootstrapError {
+  readonly stage: BootstrapErrorStage;
+  readonly category: BootstrapErrorCategory;
+  readonly code?: string;
+  readonly status?: number;
+  readonly url?: string;
+  readonly retryAfterMs?: number;
+  readonly refusal?: BootstrapRefusal | "not-configured";
+  readonly message: string;
 }
 
 export interface BootstrapClientDeps {
@@ -91,10 +122,155 @@ export interface BootstrapClientDeps {
   readonly now?: () => number;
   /** How long a fetch may take. A bootstrap that hangs must not delay startup. */
   readonly timeoutMs?: number;
+  /** Optional caller cancellation, distinct from the client's own timeout. */
+  readonly signal?: AbortSignal;
 }
 
 const STATE_FILE = "control-plane-bootstrap.json";
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_BOOTSTRAP_BYTES = 64 * 1024;
+
+function safeNodeCode(error: unknown): string | undefined {
+  const value =
+    (error as { cause?: { code?: unknown }; code?: unknown } | null)?.cause?.code ??
+    (error as { code?: unknown } | null)?.code;
+  return typeof value === "string" && /^[A-Z0-9_]{2,32}$/.test(value) ? value : undefined;
+}
+
+function errorForNetwork(error: unknown, timedOut: boolean, url: string, timeoutMs: number): BootstrapError {
+  const code = safeNodeCode(error);
+  const name = (error as { name?: unknown } | null)?.name;
+  if (name === "AbortError" && !timedOut) {
+    return { stage: "fetch", category: "cancelled", url, message: "Download cancelled." };
+  }
+  if (timedOut)
+    return {
+      stage: "fetch",
+      category: "timeout",
+      url,
+      message: `The server did not respond within ${Math.ceil(timeoutMs / 1000)} seconds.`,
+    };
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ENODATA")
+    return { stage: "fetch", category: "dns", code, url, message: "The server address could not be resolved." };
+  if (code === "ECONNREFUSED")
+    return { stage: "fetch", category: "connection-refused", code, url, message: "The server refused the connection." };
+  if (code === "ECONNRESET" || code === "EPIPE")
+    return { stage: "fetch", category: "connection-reset", code, url, message: "The connection was interrupted." };
+  if (code?.startsWith("ERR_TLS") || code?.includes("CERT") || code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE")
+    return { stage: "fetch", category: "tls", code, url, message: "The secure connection could not be verified." };
+  return {
+    stage: "fetch",
+    category: "network",
+    ...(code ? { code } : {}),
+    url,
+    message: "The network connection failed.",
+  };
+}
+
+function retryAfterMs(value: string | null, now: number): number | undefined {
+  if (!value) return undefined;
+  let delay: number;
+  const trimmed = value.trim();
+  const deltaSeconds =
+    trimmed.length <= 16 &&
+    trimmed.length > 0 &&
+    [...trimmed].every((character) => (character >= "0" && character <= "9") || character === ".") &&
+    trimmed.split(".").length <= 2 &&
+    trimmed.replace(".", "").length > 0;
+  if (deltaSeconds) delay = Number(trimmed) * 1000;
+  else {
+    const at = Date.parse(value);
+    if (!Number.isFinite(at)) return undefined;
+    delay = at - now;
+  }
+  // Honor only useful, bounded cooldowns. The response header is untrusted input.
+  return Math.max(0, Math.min(60 * 60_000, delay));
+}
+
+function sanitizedBootstrapUrl(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (url.username || url.password || url.search || url.hash) return undefined;
+    if (url.protocol !== "https:" && !isLocalBootstrapUrl(raw)) return undefined;
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function refusalMessage(refusal: BootstrapRefusal): string {
+  switch (refusal) {
+    case "unsupported-version":
+      return "The configuration uses an unsupported schema version.";
+    case "unknown-key":
+      return "The configuration was signed by an untrusted key.";
+    case "bad-signature":
+      return "The configuration signature is invalid.";
+    case "wrong-environment":
+      return "The configuration belongs to a different environment.";
+    case "epoch-not-newer":
+      return "The stored configuration is already current.";
+    case "not-yet-valid":
+      return "The configuration is not valid yet.";
+    case "insecure-endpoint":
+      return "The configuration contains an endpoint that is not allowed.";
+    case "malformed":
+      return "The server did not return a valid configuration.";
+  }
+}
+
+async function readLimitedBody(response: Response, limit: number, signal: AbortSignal): Promise<Uint8Array> {
+  const advertised = Number(response.headers.get("content-length"));
+  if (Number.isFinite(advertised) && advertised > limit) {
+    void response.body?.cancel().catch(() => undefined);
+    throw Object.assign(new Error("response-too-large"), { code: "BOOTSTRAP_TOO_LARGE" });
+  }
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > limit) throw Object.assign(new Error("response-too-large"), { code: "BOOTSTRAP_TOO_LARGE" });
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      if (signal.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      const { done, value } = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
+        const abort = () => {
+          void reader.cancel().catch(() => undefined);
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        reader
+          .read()
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener("abort", abort));
+      });
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        void reader.cancel().catch(() => undefined);
+        throw Object.assign(new Error("response-too-large"), { code: "BOOTSTRAP_TOO_LARGE" });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* An aborted stream can still be unwinding its read. */
+    }
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
 
 /** Ed25519 over raw bytes, via Node. The rules are the shared module's; this is only the primitive. */
 function verifySignature(args: { message: Uint8Array; signature: Uint8Array; publicKey: Uint8Array }): boolean {
@@ -222,33 +398,123 @@ export function createControlPlaneBootstrapClient(deps: BootstrapClientDeps) {
      * Never throws. Every failure path answers with what is already in force, because a bootstrap
      * that could break a working install is worse than one that is occasionally out of date.
      */
-    async refresh(): Promise<BootstrapFetchResult> {
+    async refresh(options: { readonly signal?: AbortSignal } = {}): Promise<BootstrapFetchResult> {
       const stored = read();
-      const held = stored?.envelope ?? null;
-      if (!deps.url) return { envelope: held, changed: false, refusal: "not-configured" };
+      const held = this.currentVerified();
+      const errorUrl = sanitizedBootstrapUrl(deps.url);
+      if (!deps.url || !errorUrl || trust.keys.size === 0) {
+        const error: BootstrapError = {
+          stage: "fetch",
+          category: "not-configured",
+          ...(errorUrl ? { url: errorUrl } : {}),
+          refusal: "not-configured",
+          message: "This version has no configured online service bootstrap.",
+        };
+        return { envelope: held, changed: false, refusal: "not-configured", error };
+      }
       if (deps.environment === "local" && !isLocalBootstrapUrl(deps.url)) {
-        return { envelope: held, changed: false, refusal: "insecure-endpoint" };
+        const error: BootstrapError = {
+          stage: "verify",
+          category: "verification",
+          refusal: "insecure-endpoint",
+          url: errorUrl,
+          message: "The configured bootstrap address is not allowed for this environment.",
+        };
+        return { envelope: held, changed: false, refusal: "insecure-endpoint", error };
       }
 
       let body: unknown;
+      const controller = new AbortController();
+      let timedOut = false;
+      const forwardAbort = () => controller.abort();
+      options.signal?.addEventListener("abort", forwardAbort, { once: true });
+      const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-        try {
-          const response = await doFetch(deps.url, {
-            redirect: "error",
-            signal: controller.signal,
-            // A bootstrap document is public and versioned by epoch; nothing here authenticates the
-            // caller, and no cookie or token may be attached to a request to a recovery domain.
-            headers: { accept: "application/json" },
-          });
-          if (!response.ok) return { envelope: held, changed: false, refusal: "network" };
-          body = await response.json();
-        } finally {
-          clearTimeout(timer);
+        if (options.signal?.aborted) {
+          const error: BootstrapError = {
+            stage: "fetch",
+            category: "cancelled",
+            url: errorUrl,
+            message: "Download cancelled.",
+          };
+          return { envelope: held, changed: false, refusal: "network", error };
         }
-      } catch {
-        return { envelope: held, changed: false, refusal: "network" };
+        const response = await doFetch(deps.url, {
+          redirect: "manual",
+          signal: controller.signal,
+          // A bootstrap document is public and versioned by epoch; nothing here authenticates the
+          // caller, and no cookie or token may be attached to a request to a recovery domain.
+          headers: { accept: "application/json" },
+        });
+        if (response.status >= 300 && response.status < 400) {
+          void response.body?.cancel().catch(() => undefined);
+          const error: BootstrapError = {
+            stage: "fetch",
+            category: "redirect",
+            status: response.status,
+            url: errorUrl,
+            message: "The server redirected the bootstrap request.",
+          };
+          return { envelope: held, changed: false, refusal: "network", error };
+        }
+        if (!response.ok) {
+          void response.body?.cancel().catch(() => undefined);
+          const retry = response.status === 429 ? retryAfterMs(response.headers.get("retry-after"), now()) : undefined;
+          const error: BootstrapError = {
+            stage: "fetch",
+            category: "http",
+            status: response.status,
+            url: errorUrl,
+            ...(retry === undefined ? {} : { retryAfterMs: retry }),
+            message:
+              response.status === 429
+                ? "The server is temporarily limiting requests."
+                : response.status === 404
+                  ? "The bootstrap configuration was not found (HTTP 404)."
+                  : response.status >= 500
+                    ? "The configuration server is temporarily unavailable."
+                    : `The server returned HTTP ${response.status}.`,
+          };
+          return { envelope: held, changed: false, refusal: "network", error };
+        }
+        let bytes: Uint8Array;
+        try {
+          bytes = await readLimitedBody(response, MAX_BOOTSTRAP_BYTES, controller.signal);
+        } catch (error) {
+          if (safeNodeCode(error) === "BOOTSTRAP_TOO_LARGE") {
+            const detail: BootstrapError = {
+              stage: "fetch",
+              category: "invalid-response",
+              code: "BOOTSTRAP_TOO_LARGE",
+              url: errorUrl,
+              message: "The server response is too large to be a configuration.",
+            };
+            return { envelope: held, changed: false, refusal: "network", error: detail };
+          }
+          throw error;
+        }
+        try {
+          body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+        } catch {
+          const error: BootstrapError = {
+            stage: "fetch",
+            category: "invalid-response",
+            code: "INVALID_JSON",
+            url: errorUrl,
+            message: "The server did not return a valid configuration.",
+          };
+          return { envelope: held, changed: false, refusal: "network", error };
+        }
+      } catch (error) {
+        const detail = errorForNetwork(error, timedOut, errorUrl, timeoutMs);
+        return { envelope: held, changed: false, refusal: "network", error: detail };
+      } finally {
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", forwardAbort);
       }
 
       const verdict = verifyControlPlaneBootstrap({
@@ -259,20 +525,58 @@ export function createControlPlaneBootstrapClient(deps: BootstrapClientDeps) {
         now: now(),
         verifySignature,
       });
-      if (!verdict.accepted) return { envelope: held, changed: false, refusal: verdict.refusal };
+      if (!verdict.accepted) {
+        const refusal = verdict.refusal ?? "malformed";
+        if (refusal === "epoch-not-newer") {
+          const candidate = body as Partial<ControlPlaneBootstrapEnvelope>;
+          const candidatePayload = candidate && typeof candidate === "object" ? candidate.payload : undefined;
+          const sameAsHeld =
+            held !== null &&
+            candidatePayload !== undefined &&
+            typeof candidatePayload === "object" &&
+            canonicalJsonStringify(candidatePayload) === canonicalJsonStringify(held.payload);
+          if (sameAsHeld) return { envelope: held, changed: false, refusal };
+          const message =
+            (candidatePayload as { configEpoch?: unknown } | undefined)?.configEpoch === stored?.highestSeenEpoch
+              ? "A different configuration used an already accepted epoch."
+              : "The server returned an older configuration; the rollback check refused it.";
+          const detail: BootstrapError = { stage: "verify", category: "verification", refusal, url: errorUrl, message };
+          return { envelope: held, changed: false, refusal, error: detail };
+        }
+        const detail: BootstrapError = {
+          stage: "verify",
+          category: "verification",
+          refusal,
+          url: errorUrl,
+          message: refusalMessage(refusal),
+        };
+        return { envelope: held, changed: false, refusal, error: detail };
+      }
 
       const accepted = body as ControlPlaneBootstrapEnvelope;
-      write({
-        envelope: accepted,
-        highestSeenEpoch: Math.max(stored?.highestSeenEpoch ?? 0, accepted.payload.configEpoch),
-        acceptedAt: now(),
-        // ACCEPTING IS NOT APPLYING (F14). The applied marker is carried across untouched: it records
-        // the transition this installation has actually CARRIED OUT, and dropping it here would both
-        // lose which project the identity currently belongs to and make the new envelope look like a
-        // first adoption off the compiled configuration.
-        ...(stored?.appliedEpoch === undefined ? {} : { appliedEpoch: stored.appliedEpoch }),
-        ...(stored?.appliedProjectId === undefined ? {} : { appliedProjectId: stored.appliedProjectId }),
-      });
+      try {
+        write({
+          envelope: accepted,
+          highestSeenEpoch: Math.max(stored?.highestSeenEpoch ?? 0, accepted.payload.configEpoch),
+          acceptedAt: now(),
+          // ACCEPTING IS NOT APPLYING (F14). The applied marker is carried across untouched: it records
+          // the transition this installation has actually CARRIED OUT, and dropping it here would both
+          // lose which project the identity currently belongs to and make the new envelope look like a
+          // first adoption off the compiled configuration.
+          ...(stored?.appliedEpoch === undefined ? {} : { appliedEpoch: stored.appliedEpoch }),
+          ...(stored?.appliedProjectId === undefined ? {} : { appliedProjectId: stored.appliedProjectId }),
+        });
+      } catch (error) {
+        const code = safeNodeCode(error);
+        const detail: BootstrapError = {
+          stage: "persist",
+          category: "storage",
+          ...(code ? { code } : {}),
+          url: errorUrl,
+          message: "The configuration was downloaded but could not be saved.",
+        };
+        return { envelope: held, changed: false, refusal: "network", error: detail };
+      }
       return { envelope: accepted, changed: true };
     },
   };

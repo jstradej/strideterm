@@ -27,6 +27,8 @@ import {
   mobileUpdateDeviceAllowlistSchema,
   mobileAuditLogQuerySchema,
   accountSignInStartSchema,
+  onlineBootstrapStateOutputSchema,
+  sanitizeAccountUiStateOutput,
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
@@ -63,6 +65,56 @@ describe("ipc-schemas", () => {
       expect(() =>
         validateIpc(accountSignInStartSchema, { email: "owner@example.test", purpose: "not-a-purpose" }, "test"),
       ).toThrow();
+    });
+  });
+
+  describe("onlineBootstrapStateOutputSchema", () => {
+    test("accepts the bounded safe error fields and preserves the state update", () => {
+      const state = sanitizeAccountUiStateOutput({
+        phase: "signed-out",
+        onlineBootstrap: {
+          phase: "failed",
+          purpose: "sign-in",
+          url: "https://bootstrap.example.test/prod.json",
+          retryAt: 1_800_000_000_000,
+          error: {
+            stage: "fetch",
+            category: "http",
+            status: 503,
+            retryAfterMs: 30_000,
+            message: "The configuration server is temporarily unavailable.",
+          },
+        },
+      });
+      expect(state.phase).toBe("signed-out");
+      expect(state.onlineBootstrap?.phase).toBe("failed");
+      expect(state.onlineBootstrap?.phase === "failed" && state.onlineBootstrap.error.status).toBe(503);
+    });
+
+    test("drops a malformed bootstrap detail without losing the rest of the account state", () => {
+      const state = sanitizeAccountUiStateOutput({
+        phase: "signed-out",
+        ownerEmail: "owner@example.test",
+        onlineBootstrap: {
+          phase: "failed",
+          purpose: "sign-in",
+          url: "https://bootstrap.example.test/prod.json",
+          error: {
+            stage: "fetch",
+            category: "http",
+            message: "x".repeat(501),
+          },
+        },
+      });
+      expect(state.phase).toBe("signed-out");
+      expect(state.ownerEmail).toBe("owner@example.test");
+      expect(state.onlineBootstrap).toBeUndefined();
+    });
+
+    test("rejects an invalid discriminant directly", () => {
+      expect(
+        onlineBootstrapStateOutputSchema.safeParse({ phase: "downloading", url: "https://example.test" }).success,
+      ).toBe(false);
     });
   });
 

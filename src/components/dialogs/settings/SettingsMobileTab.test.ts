@@ -170,6 +170,36 @@ describe("SettingsMobileTab", () => {
 
     expect(wrapper.find('[role="tabpanel"]').attributes("id")).toContain("phones-panel");
     expect(wrapper.text()).toContain("Connect your first phone");
+    expect(wrapper.text()).toContain("Turn on phone pairing");
+    expect(wrapper.find(".mobile-tab__testing-notice").exists()).toBe(false);
+  });
+
+  test("shows the internal testing access instructions before phone pairing", async () => {
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        installationRegistered: true,
+        entitlement: { state: "trial", source: "trial" },
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper } = await mountTab({}, { enabled: true, devices: [] });
+    expect(account.available).toBe(true);
+    expect(account.entitlement?.source).toBe("trial");
+    const notice = wrapper.find(".mobile-tab__testing-notice");
+
+    expect(notice.text()).toContain("Register and verify your email first");
+    expect(notice.text()).toContain("request access to the Google Play internal test");
+    expect(notice.find("a").attributes("href")).toBe("https://strideterm.com/mobile/#access-request-title");
+    expect(wrapper.find(".pairing-section__action").text()).toContain("Pair a phone");
+
+    await wrapper
+      .findAll('[role="tab"]')
+      .find((tab) => tab.text() === "Overview")!
+      .trigger("click");
+    expect(wrapper.find(".mobile-tab__testing-notice").text()).toContain("Register and verify your email first");
+    expect(wrapper.text()).toContain("Connect first phone");
   });
 
   test("Connect first phone enables pairing and opens the QR in one click", async () => {
@@ -1094,6 +1124,13 @@ describe("SettingsMobileTab", () => {
     expect(transport.setMobileEnabled).toHaveBeenCalledWith(true);
   });
 
+  test("a user must turn on phone pairing before seeing the Pair a phone action", async () => {
+    const { wrapper } = await mountTab({}, { enabled: false, devices: [] });
+
+    expect(wrapper.text()).toContain("Turn on phone pairing");
+    expect(wrapper.find(".pairing-section__action").exists()).toBe(false);
+  });
+
   test("once there is something to silence, the switch is back", async () => {
     const account = useAccountStore();
     account.attach({
@@ -1111,13 +1148,35 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).not.toContain("Turn on phone pairing");
   });
 
-  test("a build with no hosted account keeps pairing, rather than pointing at a section it lacks", async () => {
-    // `accountAvailable` is false here — the remote web client, and a build with no control plane.
-    // There is no registration to wait for, so gating pairing on one would make the feature
-    // unreachable while naming a section that is not rendered.
+  test("a build with no hosted account keeps its local pairing fallback", async () => {
     const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
     expect(wrapper.text()).not.toContain("Register this computer first");
     expect(wrapper.text()).toContain("Enable Mobile");
+  });
+
+  test("trial users see the tester notice and can add phones", async () => {
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        installationRegistered: true,
+        entitlement: { state: "trial", source: "trial" },
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper } = await mountTab(
+      { listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) },
+      { enabled: true, devices: [SAMPLE_DEVICE] },
+    );
+
+    expect(wrapper.find(".mobile-tab__testing-notice").exists()).toBe(false);
+    expect(wrapper.text()).toContain("Pixel 8");
+    expect(wrapper.text()).toContain("Edit access");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Add phone")!
+      .trigger("click");
+    expect(wrapper.find(".pairing-section__action").text()).toContain("Pair a phone");
   });
 
   test("without a hosted account there is no dangling reference to a page that is not there", async () => {

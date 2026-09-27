@@ -47,6 +47,7 @@
     "audit:security": "npm audit --audit-level=high",
     "audit:package-age": "tsx scripts/check-package-age.mts",
     "check:mobile-schema-drift": "tsx scripts/check-mobile-schema-drift.mts",
+    "check:production-bootstrap": "tsx scripts/check-production-bootstrap.mts",
     "verify:live-account-client": "tsx scripts/verify-live-account-client.mts",
     "check:licences": "tsx scripts/check-licences.mts",
     "prepare": "husky"
@@ -210,7 +211,7 @@
     "dompurify": "3.4.13",
     "uuid": "^14.0.0",
     "fast-uri": "^3.1.5",
-    "hono": "4.12.34",
+    "hono": "4.13.9",
     "ip-address": "^10.4.0",
     "tar": "^7.5.22",
     "undici@6": "^6.28.0",

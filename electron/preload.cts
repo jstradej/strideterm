@@ -119,6 +119,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   refreshTelegram: () => ipcRenderer.invoke("telegram:refresh"),
   getAccountState: () => ipcRenderer.invoke("account:state"),
   accountBeginSignIn: (payload) => ipcRenderer.invoke("account:sign-in:start", payload),
+  accountRetryOnlineBootstrap: () => ipcRenderer.invoke("account:online-bootstrap:retry"),
+  accountCancelOnlineBootstrap: () => ipcRenderer.invoke("account:online-bootstrap:cancel"),
   accountConfirmSignIn: () => ipcRenderer.invoke("account:sign-in:confirm"),
   accountResendSignIn: () => ipcRenderer.invoke("account:sign-in:resend"),
   accountCancelSignIn: () => ipcRenderer.invoke("account:sign-in:cancel"),

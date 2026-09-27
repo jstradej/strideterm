@@ -138,14 +138,14 @@ process.on("unhandledRejection", (reason: unknown) => {
 });
 
 const isDev = !app.isPackaged;
-// WHICH REMOTE ENVIRONMENT this launch talks to, when nothing else declared one (plan §3.1). This is
-// the LAUNCHER's explicit build default, not a guess from a project id, a data directory or a Git
-// branch — `bootstrap-trust.ts#bootstrapEnvironmentFor` never derives one itself. `dev.ps1` already
-// sets `STRIDETERM_ENV=local` for the bare dev loop, so this is a no-op there; it exists for a
-// packaged install run normally (double-clicked, no environment variables at all) and for any other
-// unpackaged launch that bypassed `dev.ps1`.
-if (!process.env.STRIDETERM_ENV) {
-  process.env.STRIDETERM_ENV = isDev ? "local" : "prod";
+// WHICH REMOTE ENVIRONMENT this launch talks to, when nothing else declared one. This is the
+// launcher's explicit default, not a guess from a project id, a data directory or a Git branch —
+// `bootstrap-trust.ts#bootstrapEnvironmentFor` never derives one itself. `dev.ps1` explicitly sets
+// `STRIDETERM_ENV=local` for the development loop. All other bare Electron launches default to prod,
+// whether packaged or run from source. This only declares the environment; online services are
+// prepared lazily when the user requests an online action.
+if (process.env.STRIDETERM_ENV === undefined) {
+  process.env.STRIDETERM_ENV = "prod";
 }
 const rendererUrl = getRendererDevUrl();
 const isSmokeTest = process.env.STRIDETERM_SMOKE_TEST === "1";
