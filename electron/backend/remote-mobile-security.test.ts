@@ -102,7 +102,10 @@ describe("remote mobile security boundaries", () => {
       ] as const) {
         expect((await fetch(base + path, { method: "POST", headers, body: JSON.stringify(body) })).status).toBe(403);
       }
-      const ws = new WebSocket(`ws://127.0.0.1:${p}/ws`, { headers: { Cookie: cookie } });
+      // The official client connects as protocol 2 with the revision it bootstrapped over HTTP; a
+      // revision the server does not hold makes the open handoff send one catch-up core. A mobile
+      // socket is v2 whatever it sends, so there is no legacy first frame to wait for any more.
+      const ws = new WebSocket(`ws://127.0.0.1:${p}/ws?sp=2&rev=999999`, { headers: { Cookie: cookie } });
       const frame = await new Promise<string>((resolve, reject) => {
         ws.once("message", (m) => resolve(String(m)));
         ws.once("error", reject);
@@ -161,7 +164,7 @@ describe("remote mobile security boundaries", () => {
     });
     const base = `http://127.0.0.1:${p}`;
     try {
-      const guard = { "x-strideterm-relay-origin": "guard" };
+      const guard = { "x-strideterm-relay-origin": "guard", "x-strideterm-relay-device": "phone" };
       const boot = await fetch(`${base}/api/mobile/session/bootstrap`, {
         method: "POST",
         headers: { ...guard, "content-type": "application/json" },

@@ -153,8 +153,7 @@ export function startNotifyServer({
       }
       if (!secretMatch) {
         log.warn("rejected request: invalid secret", {
-          providedSecretPrefix: providedSecret.slice(0, 8) + "...",
-          expectedSecretPrefix: secret.slice(0, 8) + "...",
+          hadSecret: providedSecret.length > 0,
           sid: url.searchParams.get("sid") || "",
         });
         response.writeHead(403, { "Content-Type": "text/plain" });

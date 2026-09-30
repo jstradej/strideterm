@@ -16,7 +16,12 @@ import {
   normalizeReviewRoot,
 } from "./provider-utils.js";
 import { appendReviewActivity, buildConnectionErrorEvent, shouldSeedConnection } from "./review-activity.js";
-import { encodeAuthHeader, sanitizeGitEnvironment } from "./git-auth-utils.js";
+import {
+  createGitConfigEnvProbe,
+  encodeAuthHeader,
+  gitAuthEnvironment,
+  sanitizeGitEnvironment,
+} from "./git-auth-utils.js";
 import type { Logger } from "../logger.js";
 import { getLogger } from "../logger.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -307,6 +312,9 @@ interface BaseProviderManagerOptions {
   auditLogStore?: AuditLogStore | null;
   fetchImpl?: typeof globalThis.fetch;
   execFileTextImpl?: typeof defaultExecFileText;
+  // Returns the `git --version` text; separate from execFileTextImpl so probing the version
+  // does not show up as one of the git calls a test is counting.
+  gitVersionImpl?: () => Promise<string>;
   now?: () => number;
   createApi: ApiFactory;
 }
@@ -348,6 +356,8 @@ export class BaseProviderManager extends EventEmitter {
   auditLogStore: AuditLogStore | null;
   fetchImpl: typeof globalThis.fetch;
   execFileText: typeof defaultExecFileText;
+  // Memoized "git >= 2.31" (GIT_CONFIG_* support); see runGit.
+  supportsGitConfigEnv: () => Promise<boolean>;
   now: () => number;
   _auditConnectionId: string;
   _auditUserInitiated: boolean;
@@ -373,6 +383,7 @@ export class BaseProviderManager extends EventEmitter {
     auditLogStore = null,
     fetchImpl = globalThis.fetch,
     execFileTextImpl = defaultExecFileText,
+    gitVersionImpl = async () => (await defaultExecFileText("git", ["--version"])).stdout,
     now = () => Date.now(),
     createApi,
   }: BaseProviderManagerOptions) {
@@ -383,6 +394,7 @@ export class BaseProviderManager extends EventEmitter {
     this.auditLogStore = auditLogStore;
     this.fetchImpl = fetchImpl;
     this.execFileText = execFileTextImpl;
+    this.supportsGitConfigEnv = createGitConfigEnvProbe(gitVersionImpl);
     this.now = now;
 
     this._auditConnectionId = "";
@@ -763,15 +775,22 @@ export class BaseProviderManager extends EventEmitter {
       extraArgs.push("-c", "core.longpaths=true");
     }
     const effectiveLogin = login ?? this.defaultGitLogin;
+    let env = sanitizeGitEnvironment();
     if (token) {
-      extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(effectiveLogin, token)}`);
+      // git >= 2.31 takes the header from the environment, keeping the token off the
+      // command line; older (or unidentifiable) gits get `-c http.extraheader=…`.
+      if (await this.supportsGitConfigEnv()) {
+        env = gitAuthEnvironment(effectiveLogin, token, env);
+      } else {
+        extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(effectiveLogin, token)}`);
+      }
     }
-    // Log only user-visible args (extraArgs contain credentials)
+    // Log only user-visible args (the argv fallback's extraArgs contain credentials)
     this.log.debug(`git ${args.join(" ")}`, { cwd });
     try {
       return await this.execFileText("git", [...extraArgs, ...args], {
         cwd,
-        env: sanitizeGitEnvironment(),
+        env,
       });
     } catch (error) {
       // Sanitize credentials from error output before re-throwing

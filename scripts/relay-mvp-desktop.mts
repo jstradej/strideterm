@@ -98,6 +98,14 @@ const runtime: any = await createRuntime({
   userDataPath: dataDir,
   deferInitialRefresh: true,
   dependencies: {
+    // A headless run has no OS keychain, and Mobile's keys are never stored as plaintext — so without
+    // one the runtime refuses to turn Mobile on at all. This stands in for the keychain (the data dir
+    // is a throwaway) so the integration can be exercised end to end; it is not encryption.
+    safeStorage: {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`harness:${value}`, "utf8"),
+      decryptString: (value: Buffer) => value.toString("utf8").replace(/^harness:/, ""),
+    },
     // The relay's internal origin, wired exactly as electron/main.ts wires it.
     startRelayOrigin: async (loopbackOrigin: {
       host: string;

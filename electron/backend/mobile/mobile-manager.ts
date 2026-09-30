@@ -208,6 +208,13 @@ export interface MobileManagerDeps {
    */
   revokeRemoteSessions?: (deviceId: string) => void;
   /**
+   * Withdraws a device's relay end-to-end keys and ends its live e2e streams (plan 2026-09-23). The
+   * keys sit in memory for up to the relay session's lifetime; without this a revoked phone's
+   * connector keeps decrypting and serving its frames until they expire, whether or not the relay
+   * closed the viewer socket.
+   */
+  revokeRelayE2eSession?: (deviceId: string) => void;
+  /**
    * Same shared instance mobile-command-dispatch.ts reads acknowledgements against. An event's
    * origin is recorded here on the way out so that `notification.acknowledge` — whose payload is
    * only `{eventId}` — can find the alert it refers to on the way back.
@@ -254,6 +261,7 @@ export class MobileManager extends EventEmitter {
   private ownPrivateKey: KeyObject;
   private ticketStore: { revokeForDevice(deviceId: string): void } | undefined;
   private revokeRemoteSessions: ((deviceId: string) => void) | undefined;
+  private revokeRelayE2eSession: ((deviceId: string) => void) | undefined;
   private notificationOrigins: MobileNotificationOriginStore | undefined;
   private now: () => number;
 
@@ -291,6 +299,7 @@ export class MobileManager extends EventEmitter {
     this.ownPrivateKey = deps.ownPrivateKey;
     this.ticketStore = deps.ticketStore;
     this.revokeRemoteSessions = deps.revokeRemoteSessions;
+    this.revokeRelayE2eSession = deps.revokeRelayE2eSession;
     this.notificationOrigins = deps.notificationOrigins;
     this.now = deps.now || (() => Date.now());
 
@@ -311,16 +320,15 @@ export class MobileManager extends EventEmitter {
           status: "awaiting-approval",
           deviceId: outcome.device.deviceId,
           label: outcome.device.label,
-          // The short authentication string, derived here from both public keys, both device ids,
+          // The short authentication string is derived here from both public keys, both device ids,
           // the pair and the invitation — nothing that travelled through the backend. The phone
-          // computes the same value from the same transcript and shows it too; two screens agreeing
-          // is evidence the two installations hold the same two keys, and a substituted key makes
-          // them visibly differ (review 2 §P0.4).
-          //
-          // In v2 this was informational: the pairing was already live, and the dialog's only button
-          // hid the code. Now the renderer must call `approveDevice` or `rejectDevice`, and doing
-          // neither leaves the device inert until the pending-approval TTL sweeps it.
-          sas: this.computeSasFor(outcome.device, outcome.pairingId),
+          // computes the same value from the same transcript and shows it; the USER TYPES what the
+          // phone shows and `approveDevice` compares it with this desktop's own derivation (review 3
+          // §3.6). The string itself never crosses to the renderer — the event says only whether a
+          // code could be derived — because a desktop that displays it turns a comparison into a
+          // one-click approval: whoever scanned the invitation first gets a code on screen and a
+          // button beside it, and nothing forces the user to look at the phone.
+          sasReady: this.computeSasFor(outcome.device, outcome.pairingId) !== null,
           pairingId: outcome.pairingId,
         });
       } else {
@@ -518,6 +526,7 @@ export class MobileManager extends EventEmitter {
     for (const [step, run] of [
       ["ticketStore.revokeForDevice", () => this.ticketStore?.revokeForDevice(deviceId)],
       ["revokeRemoteSessions", () => this.revokeRemoteSessions?.(deviceId)],
+      ["revokeRelayE2eSession", () => this.revokeRelayE2eSession?.(deviceId)],
     ] as const) {
       try {
         run();
@@ -1059,7 +1068,8 @@ export class MobileManager extends EventEmitter {
   }
 
   /**
-   * The human said the codes match. This is the ONLY path to a usable device (review 3 §P0.1).
+   * The human typed the code the phone shows, and it is the code this desktop derived. This is the ONLY
+   * path to a usable device (review 3 §P0.1, §3.6).
    *
    * WHAT THIS REPLACED. v2 sent an encrypted challenge to a freshly-claimed device, the device echoed
    * it back as an ordinary `notification.acknowledge` command, and `verifiedAt` was set automatically —
@@ -1070,13 +1080,39 @@ export class MobileManager extends EventEmitter {
    * method is exactly and only the human decision. The local record moves to `userApproved` FIRST, so a
    * crash between here and the cloud confirming leaves a record that is still inert but visibly
    * mid-approval — recoverable rather than either activated or lost.
+   *
+   * THE CODE IS TYPED, NOT CONFIRMED (review 3 §3.6). Showing the desktop's SAS beside a "they match"
+   * button made numeric comparison a one-click approval: an attacker who scanned the invitation first
+   * leaves the user's own phone with "already used" and the desktop with the attacker's label and a
+   * code, and approving is the obvious next click. `enteredSas` is what the user read off the phone;
+   * it is compared with the code derived from this desktop's transcript, whitespace aside. A mismatch
+   * changes nothing — no state, no cloud call — and is audited, because a typed code that is wrong
+   * means either a typo or that the phone in the user's hand is not the one that claimed. Only the
+   * desktop ever derives the expected value; the renderer is told whether one exists and no more.
    */
-  async approveDevice(deviceId: string): Promise<{ ok: boolean; reason?: string }> {
+  async approveDevice(deviceId: string, enteredSas: string): Promise<{ ok: boolean; reason?: string }> {
     const device = this.deviceStore.getDevice(deviceId);
     if (!device || device.revoked) return { ok: false, reason: "device-not-found" };
     if (device.state === "active") return { ok: true };
     if (device.state !== "keyProven" && device.state !== "userApproved") {
       return { ok: false, reason: "not-awaiting-approval" };
+    }
+
+    const derived = this.computeSasFor(device, device.pairingId);
+    if (derived === null) return { ok: false, reason: "unusable-key-material" };
+    // The code is grouped for reading ("1234 5678"); what is compared is the eight digits.
+    const expected = derived.replace(/\s+/g, "");
+    const typed = String(enteredSas ?? "").replace(/\s+/g, "");
+    if (typed === "") return { ok: false, reason: "sas-required" };
+    if (typed !== expected) {
+      this.auditLogStore.logEntry({
+        deviceId,
+        pairId: this.ownDeviceId,
+        actor: "desktop",
+        action: "pairing.sas-mismatch",
+        status: "failure",
+      });
+      return { ok: false, reason: "sas-mismatch" };
     }
 
     await this.deviceStore.markUserApproved(deviceId);
@@ -1164,7 +1200,7 @@ export class MobileManager extends EventEmitter {
     this.emit("mobile:device-revoked", { deviceId });
   }
 
-  /** Devices waiting for a human decision — so a restart can re-present the SAS rather than losing it. */
+  /** Devices waiting for a human decision — so a restart can re-present the prompt rather than losing it. */
   listDevicesAwaitingApproval(): MobileDeviceRecord[] {
     return this.deviceStore.listPendingApprovalDevices();
   }
@@ -1173,7 +1209,8 @@ export class MobileManager extends EventEmitter {
    * The pairing SAS for one device awaiting approval, recomputed on demand.
    *
    * Needed because the code is never persisted: it is derived from the transcript, and a desktop that
-   * restarted mid-approval has to be able to show the same value again without having stored it.
+   * restarted mid-approval has to be able to check a typed value again without having stored it. Stays
+   * inside the backend — the runtime hands the renderer only whether it is non-null.
    */
   sasForPendingDevice(deviceId: string): string | null {
     const device = this.deviceStore.getDevice(deviceId);

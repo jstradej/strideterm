@@ -71,6 +71,25 @@ function corruptPathFor(filePath: string): string {
 // that pre-recovery snapshot right away.
 const lastBackupAtByPath = new Map<string, number>();
 
+/**
+ * The file being backed up may be a legacy one that still carries the remote-access token (the
+ * first persist after an upgrade copies it before the new, blanked content replaces it). The token
+ * now lives in the credential store, so the backup must never hold it. Unparseable content is
+ * backed up as-is: a backup of a damaged file is still better than none.
+ */
+function blankRemoteAccessToken(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.settings?.remoteAccess?.token !== "string" || parsed.settings.remoteAccess.token === "") {
+      return raw;
+    }
+    parsed.settings.remoteAccess.token = "";
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 async function writeBackup(filePath: string): Promise<void> {
   const now = Date.now();
   if (now - (lastBackupAtByPath.get(filePath) ?? 0) < BACKUP_MIN_INTERVAL_MS) return;
@@ -81,7 +100,7 @@ async function writeBackup(filePath: string): Promise<void> {
     // read + writeFileDurable instead of copyFile: the handle is opened with
     // mode 0o600 so there is no umask window between copy and chmod, and the
     // backup bytes are fsynced like every other durable write.
-    const data = await fs.readFile(filePath, "utf8");
+    const data = blankRemoteAccessToken(await fs.readFile(filePath, "utf8"));
     await writeFileDurable(tmpBackupPath, data);
     await renameWithRetries(tmpBackupPath, backupPath);
     await fs.chmod(backupPath, 0o600).catch(() => {});
@@ -109,10 +128,10 @@ async function atomicWriteFile(
   options: { backupExisting?: boolean } = {},
 ): Promise<void> {
   const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  // mode 0o600 (set by writeFileDurable): the state file contains the
-  // remote-access token in plaintext (the LAN auth secret). Default umask
-  // 022 would leave it world-readable and any other user on the same host
-  // could connect. Windows ignores mode.
+  // mode 0o600 (set by writeFileDurable): the state file no longer carries
+  // the remote-access token (persist() blanks it; it lives in the credential
+  // store), but it still holds workspaces, paths and settings that other
+  // users on the same host have no business reading. Windows ignores mode.
   await writeFileDurable(tmpPath, data);
   // On final rename failure (renameWithRetries rethrows) the tmp file is
   // deliberately left in place: it holds the newest state, the target file
@@ -396,7 +415,15 @@ export async function createStore(statePath: string) {
 
   async function persist(operation = "state:persist"): Promise<void> {
     const startedAt = Date.now();
-    const serialized = JSON.stringify(state, null, 2);
+    // The remote-access master token is a secret and lives in the credential
+    // store. The in-memory state keeps it (the server and the payload read it
+    // from there); only the serialized copy is blanked — on every write, so a
+    // later backup never holds it either. The live state is not mutated.
+    const remoteAccess = state.settings?.remoteAccess;
+    const persisted = remoteAccess
+      ? { ...state, settings: { ...state.settings, remoteAccess: { ...remoteAccess, token: "" } } }
+      : state;
+    const serialized = JSON.stringify(persisted, null, 2);
     await fs.mkdir(path.dirname(statePath), { recursive: true });
     // If the file does not exist yet, there is nothing useful to lock or back up.
     if (!existsSync(statePath)) {

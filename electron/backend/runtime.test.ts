@@ -9,11 +9,16 @@ import { AgentTaskRunner } from "./agent-task-runner.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { normalizeCwd } from "./notify-url-registry.js";
+import { createStore } from "./store.js";
+import { createCredentialStore } from "./shared/credential-store.js";
+import { REMOTE_ACCESS_TOKEN_REF } from "./shared/connection-secret.js";
+import { readFileContent, withCallerProfile } from "./file-manager.js";
 import { createInMemoryMobileFirebaseTransport } from "./mobile/mobile-firebase-transport.js";
 import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
 import {
   computeGrantCommitment,
   computeKeyProof,
+  computePairingSas,
   decodeCanonicalPublicKey,
   deriveSessionKey,
   exportRawPublicKey,
@@ -989,6 +994,16 @@ const tempPaths: string[] = [];
 // after `runtime.stop()` often hits ENOTEMPTY / EBUSY. Node's `maxRetries`
 // + `retryDelay` is the canonical workaround.
 const RM_OPTS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
+
+/**
+ * An OS keychain that works. Mobile's keys are never stored as plaintext, so a runtime whose store has
+ * no secure storage cannot run Mobile at all (the tests for that build the fixture without this).
+ */
+const ENCRYPTING_SAFE_STORAGE = {
+  isEncryptionAvailable: () => true,
+  encryptString: (value: string) => Buffer.from(`encrypted:${value}`, "utf8"),
+  decryptString: (value: Buffer) => value.toString("utf8").replace(/^encrypted:/, ""),
+};
 
 function configureInMemoryMobileRuntime(): void {
   vi.stubEnv("STRIDETERM_ENV", "local");
@@ -8050,6 +8065,7 @@ describe("runtime integration", () => {
             ],
           },
           dependencies: {
+            safeStorage: ENCRYPTING_SAFE_STORAGE,
             createMobileFirebaseTransport: () => {
               capturedTransport = createInMemoryMobileFirebaseTransport();
               return capturedTransport;
@@ -8124,7 +8140,18 @@ describe("runtime integration", () => {
         // A claimed device receives nothing at all now (review 3 §P0.1), so a test about the QUOTA has
         // to get the device to `active` first — otherwise it would be asserting the approval gate by
         // accident and would still pass if the quota check were removed entirely.
-        expect((await fixture.runtime.approveMobileDevice("mobile-1")).ok).toBe(true);
+        // The code is typed from the phone (review 3 §3.6), so it is derived here from the phone's own
+        // side of the transcript — the desktop hands the renderer nothing to read it back from.
+        const phoneSas = computePairingSas({
+          protocolVersion: PROTOCOL_VERSION,
+          pairId: ownDeviceId,
+          pairingId: qr.pairingId,
+          desktopDeviceId: ownDeviceId,
+          desktopPublicKeyBase64: qr.desktopPublicKey,
+          mobileDeviceId: "mobile-1",
+          mobilePublicKeyBase64: devicePublicKeyBase64,
+        });
+        expect((await fixture.runtime.approveMobileDevice("mobile-1", phoneSas)).ok).toBe(true);
         await fixture.store.flush();
         capturedTransport.setQuotaExceeded(ownDeviceId, true);
 
@@ -8173,6 +8200,7 @@ describe("runtime integration", () => {
       const fixture = await createFixture({
         initialState,
         dependencies: {
+          safeStorage: ENCRYPTING_SAFE_STORAGE,
           createMobileFirebaseTransport: () =>
             createFirebaseMobileTransport({
               config: null,
@@ -8202,6 +8230,7 @@ describe("runtime integration", () => {
       let capturedTransport: ReturnType<typeof createInMemoryMobileFirebaseTransport> | null = null;
       const fixture = await createFixture({
         dependencies: {
+          safeStorage: ENCRYPTING_SAFE_STORAGE,
           createMobileFirebaseTransport: () => {
             capturedTransport = createInMemoryMobileFirebaseTransport();
             return capturedTransport;
@@ -8210,6 +8239,111 @@ describe("runtime integration", () => {
       });
       return { ...fixture, getTransport: () => capturedTransport! };
     }
+
+    describe("which phones are connected right now", () => {
+      type Sessions = { deviceId: string; profileId: string; startedAt: number }[];
+
+      async function createConnectedFixture() {
+        const initialState = normalizeState();
+        initialState.settings.integrations.mobile.devices = [
+          { deviceId: "dev-1", label: "Pixel 8" },
+          { deviceId: "dev-2", label: "  " },
+        ] as never;
+        const fixture = await createFixture({ initialState });
+        fixtures.push(fixture);
+        const profileId = fixture.store.getState().profiles[0].id as string;
+        const statuses: unknown[] = [];
+        const started: unknown[] = [];
+        fixture.runtime.on("mobile:status", (payload: unknown) => statuses.push(payload));
+        fixture.runtime.on("mobile:session-started", (payload: unknown) => started.push(payload));
+        const connectedDevices = () =>
+          (statuses.at(-1) as { connectedDevices: unknown[] } | undefined)?.connectedDevices;
+        return { fixture, profileId, statuses, started, connectedDevices };
+      }
+
+      test("mobile:status carries the connected devices with their resolved names, and the getter agrees", async () => {
+        const { fixture, profileId, connectedDevices } = await createConnectedFixture();
+        const sessions: Sessions = [
+          { deviceId: "dev-1", profileId, startedAt: 1000 },
+          { deviceId: "dev-2", profileId, startedAt: 2000 },
+        ];
+        fixture.runtime.onMobileSessionsChanged(sessions);
+
+        expect(connectedDevices()).toEqual([
+          { deviceId: "dev-1", name: "Pixel 8", profileId, startedAt: 1000 },
+          // A blank label falls back to a shortened id, never an empty name.
+          { deviceId: "dev-2", name: "Phone dev-2", profileId, startedAt: 2000 },
+        ]);
+        expect(fixture.runtime.getMobileRelayStatus().connectedDevices).toEqual(connectedDevices());
+
+        fixture.runtime.onMobileSessionsChanged([]);
+        expect(connectedDevices()).toEqual([]);
+        expect(fixture.runtime.getMobileRelayStatus().connectedDevices).toEqual([]);
+      });
+
+      test("an unknown device is still listed, under a shortened id", async () => {
+        const { fixture, profileId, connectedDevices } = await createConnectedFixture();
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "0123456789abcdef", profileId, startedAt: 5 }]);
+        expect(connectedDevices()).toEqual([
+          { deviceId: "0123456789abcdef", name: "Phone 01234567", profileId, startedAt: 5 },
+        ]);
+      });
+
+      test("mobile:session-started fires once per newly connected device, not on repeats", async () => {
+        const { fixture, profileId, started } = await createConnectedFixture();
+        const profileName = fixture.store.getState().profiles[0].name as string;
+
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1000 }]);
+        expect(started).toEqual([{ deviceId: "dev-1", name: "Pixel 8", profileId, profileName, startedAt: 1000 }]);
+
+        // The same device again (a second session), and an unrelated re-push: no new phone appeared.
+        fixture.runtime.onMobileSessionsChanged([
+          { deviceId: "dev-1", profileId, startedAt: 1000 },
+          { deviceId: "dev-1", profileId, startedAt: 1500 },
+        ]);
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1000 }]);
+        expect(started).toHaveLength(1);
+
+        // A second phone is news; so is the first one coming back after it had gone.
+        fixture.runtime.onMobileSessionsChanged([
+          { deviceId: "dev-1", profileId, startedAt: 1000 },
+          { deviceId: "dev-2", profileId, startedAt: 2000 },
+        ]);
+        expect(started).toHaveLength(2);
+        fixture.runtime.onMobileSessionsChanged([]);
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 3000 }]);
+        expect(started).toHaveLength(3);
+      });
+
+      test("the direct and relay-origin servers are merged, not overwritten, and a device on both is one phone", async () => {
+        const { fixture, profileId, started, connectedDevices } = await createConnectedFixture();
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1000 }], "direct");
+        fixture.runtime.onMobileSessionsChanged(
+          [
+            { deviceId: "dev-1", profileId, startedAt: 900 },
+            { deviceId: "dev-2", profileId, startedAt: 2000 },
+          ],
+          "relay",
+        );
+        expect(connectedDevices()).toEqual([
+          { deviceId: "dev-1", name: "Pixel 8", profileId, startedAt: 900 },
+          { deviceId: "dev-2", name: "Phone dev-2", profileId, startedAt: 2000 },
+        ]);
+        expect(started).toHaveLength(2);
+
+        // The relay going away leaves what the direct server still holds.
+        fixture.runtime.onMobileSessionsChanged([], "relay");
+        expect(connectedDevices()).toEqual([{ deviceId: "dev-1", name: "Pixel 8", profileId, startedAt: 1000 }]);
+      });
+
+      test("neither event carries a session id or pair id", async () => {
+        const { fixture, profileId, statuses, started } = await createConnectedFixture();
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1 }]);
+        const serialized = JSON.stringify([statuses, started]);
+        expect(serialized).not.toContain("sessionId");
+        expect(serialized).not.toContain("pairId");
+      });
+    });
 
     test("global remote pause stops mobile and preserves the enabled configuration for resume", async () => {
       const fixture = await createMobileFixture();
@@ -8243,6 +8377,51 @@ describe("runtime integration", () => {
       await fixture.runtime.setMobileEnabled(false);
       expect(manager.isRunning()).toBe(false);
       expect(fixture.store.getState().settings.integrations.mobile.enabled).toBe(false);
+    });
+
+    describe("without secure storage (E2E 3.11)", () => {
+      async function createKeyringlessFixture(initialState?: ReturnType<typeof normalizeState>) {
+        configureInMemoryMobileRuntime();
+        // No `safeStorage`: the credential store has no OS keychain, like a Linux box without libsecret.
+        return createFixture({
+          initialState,
+          dependencies: { createMobileFirebaseTransport: () => createInMemoryMobileFirebaseTransport() },
+        });
+      }
+
+      test("Mobile cannot be turned on, by the dedicated action or by a settings write", async () => {
+        const fixture = await createKeyringlessFixture();
+        fixtures.push(fixture);
+        const manager = fixture.runtime._mobileManagerForTest();
+
+        await expect(fixture.runtime.setMobileEnabled(true)).rejects.toThrow(/secure storage/);
+        await expect(
+          fixture.runtime.updateSettings({
+            integrations: { ...fixture.store.getState().settings.integrations, mobile: { enabled: true } },
+          }),
+        ).rejects.toThrow(/secure storage/);
+
+        expect(fixture.store.getState().settings.integrations.mobile.enabled).toBe(false);
+        expect(manager.isRunning()).toBe(false);
+      });
+
+      test("the runtime still starts, and never writes the desktop's X25519 key as plaintext", async () => {
+        const fixture = await createKeyringlessFixture();
+        fixtures.push(fixture);
+        const credentials = await fs.readFile(path.join(fixture.userDataPath, "credentials.json"), "utf8");
+        expect(credentials).not.toContain("desktop-device-private-key");
+        expect(credentials).not.toContain("relay-installation-private-key");
+        expect(credentials).not.toContain("firebase-refresh-token");
+      });
+
+      test("Mobile persisted as enabled by an earlier run does not start", async () => {
+        const initialState = normalizeState();
+        initialState.settings.integrations.mobile.enabled = true;
+        const fixture = await createKeyringlessFixture(initialState);
+        fixtures.push(fixture);
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+        expect(fixture.runtime._mobileManagerForTest().isRunning()).toBe(false);
+      });
     });
 
     test("runtime shutdown waits for the mobile offline write before disconnecting", async () => {
@@ -8403,8 +8582,21 @@ describe("runtime integration", () => {
       expect(devices[0].state).toBe("keyProven");
       const awaiting = fixture.runtime.listMobileDevicesAwaitingApproval();
       expect(awaiting.map((d: { deviceId: string }) => d.deviceId)).toEqual(["mobile-1"]);
-      expect(awaiting[0].sas).toMatch(/^\d{4} \d{4}$/);
-      const approved = await fixture.runtime.approveMobileDevice("mobile-1");
+      // The renderer learns THAT a code exists, never what it is (review 3 §3.6).
+      expect(awaiting[0].sasReady).toBe(true);
+      expect(awaiting[0]).not.toHaveProperty("sas");
+      const phoneSas = computePairingSas({
+        protocolVersion: PROTOCOL_VERSION,
+        pairId: ownDeviceId,
+        pairingId: qr.pairingId,
+        desktopDeviceId: ownDeviceId,
+        desktopPublicKeyBase64: qr.desktopPublicKey,
+        mobileDeviceId: "mobile-1",
+        mobilePublicKeyBase64: phonePublicKeyBase64,
+      });
+      expect(JSON.stringify(awaiting).replace(/\s+/g, "")).not.toContain(phoneSas.replace(/\s+/g, ""));
+      expect((await fixture.runtime.approveMobileDevice("mobile-1", "0000 0000")).reason).toBe("sas-mismatch");
+      const approved = await fixture.runtime.approveMobileDevice("mobile-1", phoneSas);
       expect(approved.ok).toBe(true);
       expect(manager.listDevices().find((d: { deviceId: string }) => d.deviceId === "mobile-1")?.state).toBe("active");
 
@@ -13261,7 +13453,10 @@ describe("desktop installation identity (review 2 §Multiwindow)", () => {
     configureInMemoryMobileRuntime();
     return createFixture({
       dataDir,
-      dependencies: { createMobileFirebaseTransport: () => createInMemoryMobileFirebaseTransport() },
+      dependencies: {
+        safeStorage: ENCRYPTING_SAFE_STORAGE,
+        createMobileFirebaseTransport: () => createInMemoryMobileFirebaseTransport(),
+      },
     });
   }
 
@@ -13506,26 +13701,34 @@ describe("the runtime's passwordless sign-in wiring", () => {
 
   test("with an explicit dev origin the broker exists and the manager can reach it", async () => {
     stubDemoFirebase();
-    // A port nothing is listening on: the assertion is that the attempt got as far as TRYING, which
-    // is only possible if the broker was built AND handed to the account manager.
+    // Keep both remote calls deterministically offline. Relying on an unused loopback port can be
+    // affected by local proxies or a service that later binds that port, which turns this wiring test
+    // into an environment-dependent integration test.
     vi.stubEnv("STRIDETERM_MOBILE_AUTHLINK_ORIGIN", "http://127.0.0.1:9");
-    const fixture = await createFixture();
-    fixtures.push(fixture);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+    try {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
 
-    expect(fixture.runtime.getAccountState().signInAvailable).toBe(true);
-    // The broker is unreachable, so the attempt falls back to manual-only; Firebase is unreachable
-    // too, so the send has an UNKNOWN result (F03) — and an unknown result keeps the attempt open, so
-    // this resolves rather than rejecting. What is being asserted is that the attempt EXISTS: the
-    // pinned address, `manualOnly` and `sendOutcome: "unknown"` are all only reachable if the broker
-    // was built AND handed to the account manager. `auth-unavailable`, or no attempt at all, would
-    // mean the wiring itself was missing.
-    await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth");
-    await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
-    const auth = fixture.runtime.getAccountState().auth;
-    expect(auth?.email).toBe("owner@example.test");
-    expect(auth?.manualOnly).toBe(true);
-    expect(auth?.sendOutcome).toBe("unknown");
-    expect(auth?.sendsUsed).toBe(1);
+      expect(fixture.runtime.getAccountState().signInAvailable).toBe(true);
+      // The broker is unreachable, so the attempt falls back to manual-only; Firebase is unreachable
+      // too, so the send has an UNKNOWN result (F03) — and an unknown result keeps the attempt open, so
+      // this resolves rather than rejecting. What is being asserted is that the attempt EXISTS: the
+      // pinned address, `manualOnly` and `sendOutcome: "unknown"` are all only reachable if the broker
+      // was built AND handed to the account manager. `auth-unavailable`, or no attempt at all, would
+      // mean the wiring itself was missing.
+      await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth");
+      await waitForAccount(fixture, () => fixture.runtime.getAccountState().auth?.email === "owner@example.test");
+      const auth = fixture.runtime.getAccountState().auth;
+      expect(auth?.email).toBe("owner@example.test");
+      expect(auth?.manualOnly).toBe(true);
+      expect(auth?.sendOutcome).toBe("unknown");
+      expect(auth?.sendsUsed).toBe(1);
+      expect(fetchMock).toHaveBeenCalled();
+      expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith("http://127.0.0.1:9/"))).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   test("a build with no Firebase configuration at all has the whole feature absent", async () => {
@@ -14242,5 +14445,159 @@ describe("the runtime's passwordless sign-in wiring", () => {
     await fixture.runtime.accountBeginSignIn("owner@example.test", "reauth").catch(() => {});
     await fixture.runtime.stop();
     expect(fixture.runtime.getAccountState().auth).toBeUndefined();
+  });
+});
+
+describe("file access follows the caller's profile (security review 2026-09-30, 2d)", () => {
+  test("the runtime's allowed roots, for a caller bound to a profile, are that profile's workspaces only", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-fm-profile-"));
+    tempPaths.push(dir);
+    const rootDefault = path.join(dir, "default-repo");
+    const rootOther = path.join(dir, "other-repo");
+    await fs.mkdir(rootDefault);
+    await fs.mkdir(rootOther);
+    await fs.writeFile(path.join(rootDefault, "note.txt"), "default note");
+    await fs.writeFile(path.join(rootOther, "secret.txt"), "other secret");
+    const pane = { id: "shell", title: "Shell", command: "", shell: true, startup: "default" };
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-default",
+        profiles: [
+          { id: "default", name: "Default", color: "#fff" },
+          { id: "other", name: "Other", color: "#000" },
+        ],
+        projects: [
+          {
+            id: "ws-default",
+            name: "D",
+            kind: "terminal",
+            profileId: "default",
+            cwd: rootDefault,
+            activePanelId: "shell",
+            panels: [pane],
+          },
+          {
+            id: "ws-other",
+            name: "O",
+            kind: "terminal",
+            profileId: "other",
+            cwd: rootOther,
+            activePanelId: "shell",
+            panels: [pane],
+          },
+        ],
+        windowSlots: [{ id: "win-1", profileId: "default", activeWorkspaceId: "ws-default" }],
+      },
+    });
+    fixtures.push(fixture);
+
+    const readAs = (profile: string | undefined, root: string, file: string) =>
+      withCallerProfile(profile, () => readFileContent(root, file));
+
+    expect((await readAs("default", rootDefault, "note.txt")).content).toBe("default note");
+    await expect(readAs("default", rootOther, "secret.txt")).rejects.toThrow(/Root path not allowed/);
+    expect((await readAs("other", rootOther, "secret.txt")).content).toBe("other secret");
+    await expect(readAs("other", rootDefault, "note.txt")).rejects.toThrow(/Root path not allowed/);
+    // A caller bound to no profile (the desktop's own IPC) keeps every workspace's roots.
+    expect((await readAs(undefined, rootOther, "secret.txt")).content).toBe("other secret");
+  });
+});
+
+// The remote-access master token lives in the credential store, never in strideterm-state.json.
+describe("remote-access token storage", () => {
+  async function tokenFixture({ stateToken, storedToken }: { stateToken?: string; storedToken?: string }) {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-runtime-token-"));
+    const statePath = path.join(dataDir, "strideterm-state.json");
+    const credentialsPath = path.join(dataDir, "credentials.json");
+    if (stateToken !== undefined) {
+      const seeded = normalizeState({});
+      seeded.settings.remoteAccess.token = stateToken;
+      await fs.writeFile(statePath, JSON.stringify(seeded, null, 2), "utf8");
+    }
+    if (storedToken !== undefined) {
+      const seededCredentials = await createCredentialStore(credentialsPath);
+      await seededCredentials.setSecret(REMOTE_ACCESS_TOKEN_REF, storedToken);
+    }
+    const fixture = await createFixture({
+      dataDir,
+      dependencies: { createStore: (target: string) => createStore(target) },
+    });
+    fixtures.push(fixture);
+    const onDisk = async () => JSON.parse(await fs.readFile(statePath, "utf8")).settings.remoteAccess.token;
+    const inCredentialStore = async () =>
+      (await createCredentialStore(credentialsPath)).getSecret(REMOTE_ACCESS_TOKEN_REF);
+    // The runtime's own state (the fixture's `store` is an unused in-memory one: this test needs the real file store).
+    const inMemory = () => fixture.runtime.getPayload().appState.settings.remoteAccess.token;
+    return { fixture, onDisk, inCredentialStore, inMemory, statePath };
+  }
+
+  test("legacy install: the state file's token is moved to the credential store and dropped from the file", async () => {
+    const { onDisk, inCredentialStore, inMemory } = await tokenFixture({ stateToken: "legacy-token" });
+    expect(inMemory()).toBe("legacy-token");
+    expect(await inCredentialStore()).toBe("legacy-token");
+    expect(await onDisk()).toBe("");
+  });
+
+  test("migrated install: the stored token is adopted, the file stays blank", async () => {
+    const { onDisk, inCredentialStore, inMemory } = await tokenFixture({ stateToken: "", storedToken: "stored-token" });
+    expect(inMemory()).toBe("stored-token");
+    expect(await inCredentialStore()).toBe("stored-token");
+    expect(await onDisk()).toBe("");
+  });
+
+  test("when the file and the credential store disagree, the credential store wins", async () => {
+    const { onDisk, inCredentialStore, inMemory } = await tokenFixture({
+      stateToken: "state-file-token",
+      storedToken: "stored-token",
+    });
+    expect(inMemory()).toBe("stored-token");
+    expect(await inCredentialStore()).toBe("stored-token");
+    expect(await onDisk()).toBe("");
+  });
+
+  test("blank file and empty credential store: a token is generated and stored", async () => {
+    const { onDisk, inCredentialStore, inMemory } = await tokenFixture({ stateToken: "" });
+    expect(inMemory().length).toBeGreaterThanOrEqual(43);
+    expect(await inCredentialStore()).toBe(inMemory());
+    expect(await onDisk()).toBe("");
+  });
+
+  test("brand-new install: the default token is stored, the file carries none", async () => {
+    const { onDisk, inCredentialStore, inMemory } = await tokenFixture({});
+    expect(inMemory().length).toBeGreaterThanOrEqual(43);
+    expect(await inCredentialStore()).toBe(inMemory());
+    expect(await onDisk()).toBe("");
+  });
+
+  test("regenerateRemoteToken changes memory and credential store, never the file", async () => {
+    const { fixture, onDisk, inCredentialStore, inMemory } = await tokenFixture({ stateToken: "legacy-token" });
+    await fixture.runtime.regenerateRemoteToken();
+    expect(inMemory()).not.toBe("legacy-token");
+    expect(inMemory().length).toBeGreaterThanOrEqual(43);
+    expect(await inCredentialStore()).toBe(inMemory());
+    expect(await onDisk()).toBe("");
+  });
+
+  test("a credential store that cannot take the token does not stop startup, and regenerate leaves the old token", async () => {
+    // Everything but the master token's ref behaves normally (startup writes other secrets too).
+    const failingForToken = async (filePath: string, options: Parameters<typeof createCredentialStore>[1]) => {
+      const real = await createCredentialStore(filePath, options);
+      return {
+        ...real,
+        setSecret: async (ref: string, secret: string) => {
+          if (ref === REMOTE_ACCESS_TOKEN_REF) throw new Error("disk full");
+          return real.setSecret(ref, secret);
+        },
+      };
+    };
+    const fixture = await createFixture({
+      initialState: { settings: { remoteAccess: { token: "in-memory-token" } } },
+      dependencies: { createCredentialStore: failingForToken },
+    });
+    fixtures.push(fixture);
+    const tokenNow = () => fixture.runtime.getPayload().appState.settings.remoteAccess.token;
+    expect(tokenNow()).toBe("in-memory-token");
+    await expect(fixture.runtime.regenerateRemoteToken()).rejects.toThrow("disk full");
+    expect(tokenNow()).toBe("in-memory-token");
   });
 });

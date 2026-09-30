@@ -262,13 +262,16 @@
            by the time it has a job the answer to "do I want this?" is already yes. -->
           <fieldset class="mobile-tab__mutation-group" :disabled="paused">
             <template v-if="!mobileEnabled && mobileDevices.length === 0">
-              <button type="button" class="button" :disabled="enableBusy" @click="enableMobile">
+              <button type="button" class="button" :disabled="enableBusy || secureStorageMissing" @click="enableMobile">
                 <span v-if="enableBusy" class="mobile-tab__spinner" aria-hidden="true"></span>
                 Turn on phone pairing
               </button>
               <p class="mobile-tab__intro mobile-tab__intro--muted">
                 This opens the connection to the account service so a phone can be paired and receive pushes. You can
                 turn it off again at any time, without unpairing anything.
+              </p>
+              <p v-if="secureStorageMissing" class="mobile-tab__error" role="alert">
+                {{ SECURE_STORAGE_REQUIRED_COPY }}
               </p>
               <p v-if="enableError" class="mobile-tab__error">{{ enableError }}</p>
             </template>
@@ -287,15 +290,21 @@
 
         Both ends derive this from the same transcript — both public keys, both device ids, the
         pair and the invitation — and neither takes it from the backend (review 2 §P0.4). The phone
-        shows the same code and tells the user to compare it here; a control plane that substituted
-        a key produces two codes that differ, which is the one part of the pinning story a person
-        rather than a rule enforces. Nothing is shown when the desktop could not derive a code:
-        inventing a placeholder would train the user to accept whatever appears.
+        shows the code; a control plane that substituted a key produces two codes that differ, which
+        is the one part of the pinning story a person rather than a rule enforces.
+
+        THE DESKTOP DOES NOT SHOW THE CODE (review 3 §3.6). It used to, beside a "Codes match"
+        button, and an attacker who scanned the invitation first left the user's own phone with
+        "already used" and this screen with a code and a button: comparing became a click. The user
+        now TYPES what the phone shows, the backend compares it with its own derivation and refuses
+        a mismatch, and this component never holds the expected value at all — only whether one
+        exists. The label is whatever the claiming device called itself, so it is rendered as plain
+        quoted text and never as emphasis.
 
         WHAT CHANGED. This block used to have one button, "I compared them", which hid the code and did
         nothing else: the device was already live by the time it appeared, and the remedy for a mismatch
         was the prose "revoke the device below and pair again" — i.e. after the fact. The two buttons
-        below are the actual gate. Until "Codes match" is pressed, the device receives no event, executes
+        below are the actual gate. Until the right code is typed and "Activate" pressed, the device receives no event, executes
         no command and gets no WebView session; "Mismatch" revokes it outright; and closing this dialog
         without choosing leaves it inert until the server's pending-approval TTL sweeps it.
       -->
@@ -305,22 +314,35 @@
             :disabled="paused"
           >
             <div v-if="pairingSas" ref="sasBlock" class="pairing-sas">
-              <p class="pairing-sas__title">Compare this code with the phone</p>
-              <p class="pairing-sas__code">{{ pairingSas.sas }}</p>
+              <p class="pairing-sas__title">Enter the code shown on the phone</p>
               <p class="pairing-sas__hint">
-                Compare this code with the one shown on <strong>{{ pairingSas.label || "the new device" }}</strong
-                >. Only activate if they match.
+                The phone calling itself “{{ pairingSas.label || "the new device" }}” is showing an 8-digit code. Type
+                it here. Only a phone in your hand can give you the right one.
               </p>
+              <input
+                v-model="typedSas"
+                class="settings-input pairing-sas__input"
+                data-testid="pairing-sas-input"
+                type="text"
+                inputmode="numeric"
+                autocomplete="off"
+                maxlength="16"
+                placeholder="0000 0000"
+                aria-label="Code shown on the phone"
+                :disabled="approvalBusy"
+                @input="onSasInput"
+                @keyup.enter="submitTypedSas"
+              />
               <p v-if="approvalError" class="pairing-sas__error">{{ approvalError }}</p>
               <div class="pairing-sas__actions">
                 <button
                   type="button"
                   class="button button--primary"
-                  :disabled="approvalBusy"
-                  title="Activate this device. Only press this if the code above matches the one on the phone."
-                  @click="approvePairing"
+                  :disabled="approvalBusy || sasDigitCount !== SAS_DIGITS"
+                  title="Activate this device. Enabled once you have typed all 8 digits of the code the phone shows."
+                  @click="submitTypedSas"
                 >
-                  Codes match — activate
+                  Activate
                 </button>
                 <button
                   type="button"
@@ -560,10 +582,16 @@
                   <summary>Security fingerprint</summary>
                   <code>{{ device.fingerprint }}</code>
                 </details>
-                <span :title="'Last seen: ' + formatTimestamp(device.lastSeenAt)"
+                <span
+                  v-if="connectedSince(device.deviceId) !== null"
+                  class="device-item__connected"
+                  :title="'Holds a live session since ' + formatTimestamp(connectedSince(device.deviceId) ?? 0)"
+                  >Connected</span
+                >
+                <span v-else :title="'Last seen: ' + formatTimestamp(device.lastSeenAt)"
                   >last seen {{ formatTimestamp(device.lastSeenAt) }}</span
                 >
-                <span :title="'New profiles are included automatically'">
+                <span :title="profileAccessTitle">
                   profiles: all, except {{ (device.excludedProfileIds || []).map(profileLabel).join(", ") || "none" }}
                 </span>
                 <span :title="'Capabilities granted to this device: ' + device.capabilities.join(', ')">
@@ -681,9 +709,17 @@
               class="form-label form-label--inline"
               title="Turns the whole Mobile feature on or off. Disabling stops the Firebase connection and any paired device stops receiving pushes/commands immediately (devices themselves stay paired)."
             >
-              <input type="checkbox" :checked="mobileEnabled" :disabled="enableBusy" @change="onToggleEnabled" />
+              <input
+                type="checkbox"
+                :checked="mobileEnabled"
+                :disabled="enableBusy || (secureStorageMissing && !mobileEnabled)"
+                @change="onToggleEnabled"
+              />
               <span>Enable Mobile</span>
             </label>
+            <p v-if="secureStorageMissing" class="mobile-tab__error" role="alert">
+              {{ SECURE_STORAGE_REQUIRED_COPY }}
+            </p>
             <p v-if="enableError" class="mobile-tab__error">{{ enableError }}</p>
 
             <template v-if="mobileEnabled">
@@ -747,9 +783,27 @@
                   internet.
                 </p>
                 <p class="mobile-tab__intro relay-block__hint">
-                  A relay session is encrypted in transit and readable by the relay while it is in flight; notifications
-                  and commands stay end-to-end encrypted.
+                  A relay session is end-to-end encrypted between this desktop and the phone; the relay forwards
+                  ciphertext it cannot read. Notifications and commands are end-to-end encrypted as well.
                 </p>
+                <label
+                  class="form-label form-label--inline"
+                  title="When on, this desktop refuses a relay session from a phone app that does not offer end-to-end encryption, instead of carrying that terminal in a form the relay could read."
+                >
+                  <input
+                    type="checkbox"
+                    data-testid="relay-require-e2e"
+                    :checked="mobileRelayRequireE2e"
+                    :disabled="requireE2eBusy"
+                    @change="onToggleRequireE2e"
+                  />
+                  <span>Require end-to-end encryption over the relay</span>
+                </label>
+                <p class="mobile-tab__intro relay-block__hint">
+                  A phone that cannot encrypt end-to-end gets no relay session. Turn this off only for an older phone
+                  app.
+                </p>
+                <p v-if="requireE2eError" class="mobile-tab__error" role="alert">{{ requireE2eError }}</p>
                 <p v-if="relayError" class="mobile-tab__error">{{ relayError }}</p>
                 <div v-if="mobileRelayEnabled" class="status-row">
                   <span class="status-badge" :class="relayBadgeClass" :title="relayTitle">{{ relayLabel }}</span>
@@ -824,6 +878,22 @@ const panelId = (view: MobileView) => `${tabsId}-${view}-panel`;
 const appStore = useAppStore();
 const accountStore = useAccountStore();
 const paused = computed(() => appStore.payload?.appState?.settings?.remoteAccess?.paused === true);
+
+// Mobile's keys are only ever stored encrypted, so without the OS keychain the desktop refuses to turn
+// Mobile on (and will not start it if an earlier run left it on). Shown as a reason, not left to a
+// failed click: the refusal itself reaches this panel only as a generic "could not update".
+const SECURE_STORAGE_REQUIRED_COPY =
+  "Phone pairing needs secure storage, and this computer has none available (on Linux, install libsecret / gnome-keyring). Mobile's keys are never stored as plain text.";
+const secureStorageMissing = computed(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  () => (appStore.payload as any)?.secureStorage?.available === false,
+);
+
+// What "profiles" on a device row promises. The profile is an application boundary: it keeps a phone out of
+// other profiles' workspaces, terminals and files in the app. It is not an operating-system boundary —
+// a terminal is a shell on this computer under your account.
+const profileAccessTitle =
+  "This phone can use every profile except the ones listed, and new profiles are included automatically. Inside a profile it has that profile's terminals — a shell on this computer under your account — and files, so excluding a profile keeps the phone out of it in the app, not at the operating-system level.";
 /** Whether this transport has the account surface at all — desktop-only, so absent on the web client. */
 const accountAvailable = computed(() => accountStore.available);
 /**
@@ -935,6 +1005,52 @@ function dismissSas() {
   appStore.dismissMobilePairingSas();
 }
 
+/** The short authentication string is always this many digits (mobile-crypto.ts `computePairingSas`). */
+const SAS_DIGITS = 8;
+/** What the user has typed from the phone. The expected code is never available in this component. */
+const typedSas = ref("");
+const sasDigitCount = computed(() => typedSas.value.replace(/\D/g, "").length);
+// A different pending device — or none, after a dismiss, a rejection or a successful activation —
+// starts from an empty field, so a code typed for one phone is never offered for the next.
+watch(
+  () => pairingSas.value?.deviceId ?? null,
+  () => {
+    typedSas.value = "";
+  },
+);
+/** Digits and spaces only: the phone shows the code grouped, and people type it the way they read it. */
+function onSasInput() {
+  typedSas.value = typedSas.value.replace(/[^\d ]/g, "");
+}
+
+const SAS_MISMATCH_COPY =
+  "That code does not match this desktop's. If the phone shows a different code, someone else may have used the invitation — choose Mismatch — revoke.";
+
+/**
+ * "Activate" with the code typed from the phone (review 3 §3.6).
+ *
+ * Same contract as `approvePairing` — the failure is shown in place, never swallowed — with one
+ * addition: a `sas-mismatch` gets its own copy rather than the generic one, because it is the one
+ * refusal that may mean the invitation is in other hands and the user needs to be told what to do.
+ */
+async function submitTypedSas() {
+  const pending = pairingSas.value;
+  if (!pending || approvalBusy.value || sasDigitCount.value !== SAS_DIGITS) return;
+  approvalBusy.value = true;
+  approvalError.value = "";
+  try {
+    const result = await appStore.approveMobileDevice(pending.deviceId, typedSas.value);
+    if (!result.ok) {
+      approvalError.value =
+        result.reason === "sas-mismatch" ? SAS_MISMATCH_COPY : mobileResultReasonCopy(result.reason, "approve");
+    }
+  } catch (error) {
+    approvalError.value = mobileErrorCopy(error, "approve");
+  } finally {
+    approvalBusy.value = false;
+  }
+}
+
 /**
  * "Codes match — activate" (review 3 §P0.1).
  *
@@ -1044,7 +1160,8 @@ const CAPABILITY_OPTIONS = [
   {
     id: "remote.webSession",
     label: "Open the remote UI",
-    title: "Open a live view of the whole remote web UI in a WebView.",
+    title:
+      "Open the remote web UI in a WebView for the profiles this device may use, including their terminals (a shell on this computer under your account) and files. It does not include this app's administration: tokens, tunnels, integrations and settings.",
   },
 ];
 function profileLabel(profileId: string): string {
@@ -1093,6 +1210,11 @@ async function enableMobile() {
   await setEnabled(true);
 }
 
+/** When [deviceId] started the live session it holds right now, or null when it holds none. */
+function connectedSince(deviceId: string): number | null {
+  return appStore.mobileConnectedDevices.find((device) => device.deviceId === deviceId)?.startedAt ?? null;
+}
+
 // --- Managed relay ---
 const mobileRelayEnabled = computed(() => appStore.mobileRelayEnabled);
 const mobileRelayStatus = computed(() => appStore.mobileRelayStatus);
@@ -1138,6 +1260,26 @@ async function setRelayEnabled(enabled: boolean) {
     relayError.value = (err as Error)?.message || "Failed to update.";
   } finally {
     relayBusy.value = false;
+  }
+}
+
+// --- Require end-to-end encryption over the relay ---
+const mobileRelayRequireE2e = computed(() => appStore.mobileRelayRequireE2e);
+const requireE2eBusy = ref(false);
+const requireE2eError = ref("");
+
+async function onToggleRequireE2e(event: Event) {
+  const checked = (event.target as HTMLInputElement).checked;
+  requireE2eBusy.value = true;
+  requireE2eError.value = "";
+  try {
+    await appStore.setMobileRelayRequireE2e(checked);
+  } catch (err) {
+    requireE2eError.value = mobileErrorCopy(err, "relay");
+    // The box shows the store's value, which did not change; put the native checkbox back with it.
+    (event.target as HTMLInputElement).checked = mobileRelayRequireE2e.value;
+  } finally {
+    requireE2eBusy.value = false;
   }
 }
 
@@ -2007,12 +2149,13 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
-/* Monospace and wide-tracked: this is read digit by digit against a phone held next to the screen. */
-.pairing-sas__code {
+/* Monospace and wide-tracked: this is typed digit by digit from a phone held next to the screen. */
+.pairing-sas__input {
   font-family: var(--font-mono, monospace);
-  font-size: 26px;
+  font-size: 22px;
   letter-spacing: 0.14em;
-  margin: 0;
+  width: 11ch;
+  max-width: 100%;
 }
 
 .pairing-sas__hint {
@@ -2304,6 +2447,11 @@ onBeforeUnmount(() => {
 .device-item__fingerprint {
   font-family: var(--font-mono, monospace);
   letter-spacing: 0.02em;
+}
+
+.device-item__connected {
+  color: var(--success-fg, var(--success));
+  font-weight: 600;
 }
 
 .device-item__actions {

@@ -206,7 +206,8 @@ export interface AuthSession {
 
 export interface MobileFirebaseRestClientDeps {
   config: MobileFirebaseConfig;
-  credentialStore: Pick<CredentialStore, "getSecret" | "setSecret" | "deleteSecret">;
+  credentialStore: Pick<CredentialStore, "getSecret" | "setSecret" | "deleteSecret"> &
+    Partial<Pick<CredentialStore, "isEncryptionAvailable">>;
   /** Credential-store key the Auth refresh token is persisted under. */
   refreshTokenRef: string;
   fetchImpl?: FetchLike;
@@ -323,6 +324,13 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
   const now = deps.now || (() => Date.now());
 
   let session: AuthSession | null = null;
+  /**
+   * The refresh token when the credential store REFUSED it (no secure storage: Mobile's keys are never
+   * written as plaintext). This client also serves the account's installation session, which must not
+   * fail outright on such a machine — it keeps the token for this run only, and the identity does not
+   * survive a restart, which is exactly the trade the refusal makes.
+   */
+  let memoryOnlyRefreshToken = "";
   let inFlight: Promise<AuthSession> | null = null;
   let forcedRefresh: Promise<AuthSession> | null = null;
   const openStreams = new Set<AbortController>();
@@ -388,6 +396,17 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
     return REFRESH_TOKEN_REJECTIONS.has(named) ? named : null;
   }
 
+  async function persistRefreshToken(token: string): Promise<void> {
+    try {
+      await credentialStore.setSecret(refreshTokenRef, token);
+      memoryOnlyRefreshToken = "";
+    } catch (err) {
+      if (credentialStore.isEncryptionAvailable?.() !== false) throw err;
+      memoryOnlyRefreshToken = token;
+      log.warn("mobile Firebase refresh token kept in memory only: secure storage is unavailable");
+    }
+  }
+
   async function exchangeRefreshToken(refreshToken: string): Promise<AuthSession> {
     const response = await timedFetch(secureTokenUrl(config), {
       method: "POST",
@@ -406,7 +425,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
     // Google rotates the refresh token on some exchanges; persist whatever came back so the
     // stored credential never goes stale.
     if (typeof body.refresh_token === "string" && body.refresh_token !== refreshToken) {
-      await credentialStore.setSecret(refreshTokenRef, body.refresh_token);
+      await persistRefreshToken(body.refresh_token);
     }
     return {
       idToken: body.id_token,
@@ -426,7 +445,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
       throw new Error(`Firebase anonymous sign-in failed (${response.status}): ${JSON.stringify(body)}`);
     }
     if (typeof body.refreshToken === "string") {
-      await credentialStore.setSecret(refreshTokenRef, body.refreshToken);
+      await persistRefreshToken(body.refreshToken);
     }
     return {
       idToken: body.idToken,
@@ -436,7 +455,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
   }
 
   async function establishSession(): Promise<AuthSession> {
-    const storedRefreshToken = credentialStore.getSecret(refreshTokenRef);
+    const storedRefreshToken = credentialStore.getSecret(refreshTokenRef) || memoryOnlyRefreshToken;
     if (!storedRefreshToken && deps.isPositivelyBound?.() === true) {
       // A durable bound marker with no token is identity loss, not a fresh install. Creating an
       // anonymous uid here would silently detach every account installation row and pairing.

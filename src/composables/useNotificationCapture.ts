@@ -1,6 +1,7 @@
 import { getCurrentScope, onScopeDispose, watch } from "vue";
 import { storeToRefs } from "pinia";
 import type { ApprovalRecorded } from "../../electron/shared/approval-events.js";
+import type { MobileSessionStarted } from "../../electron/shared/mobile-session-events.js";
 import type { Transport } from "../transport.js";
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
@@ -35,6 +36,8 @@ interface AttentionAlertBucket {
  * audit row is worded the same way for the same reason.
  */
 const APPROVAL_TITLE = "Approval sent";
+
+const MOBILE_SESSION_TITLE = "Phone connected";
 
 /** How far back one back-fill query reaches. */
 const BACKFILL_LIMIT = 50;
@@ -149,7 +152,10 @@ type AttentionByWs = Record<string, AttentionAlertBucket | any>;
  * reachable through the injection App.vue already holds.
  */
 export function useNotificationCapture(
-  api?: Pick<Transport, "onApprovalRecorded" | "queryApprovalAuditLog" | "onConnectionState"> | null,
+  api?: Pick<
+    Transport,
+    "onApprovalRecorded" | "queryApprovalAuditLog" | "onConnectionState" | "onMobileSessionStarted"
+  > | null,
 ) {
   const appStore = useAppStore();
   const notifStore = useNotificationStore();
@@ -256,6 +262,7 @@ export function useNotificationCapture(
   seedSeen();
   markStaleNotificationsRead();
   bindApprovalRecorded();
+  bindMobileSessionStarted();
 
   /**
    * How far each profile's history has already been rebuilt, keyed by profile
@@ -704,6 +711,35 @@ export function useNotificationCapture(
         meta: { profileId: event.profileId, requestId: event.requestId },
         sourceAlertId: approvalSourceId(event.requestId),
         occurredAt: event.at,
+      });
+    });
+  }
+
+  /**
+   * A paired phone opened a session: one informational, history-only entry (tier 3, like an approval —
+   * no sound, no OS popup, no toast, and nothing here reaches Telegram). The entry exists so a
+   * connection the user did not expect is something they can find later; the always-visible
+   * indicator covers "is one connected now". Nothing is added when the session ends.
+   *
+   * Not gated on the window's profile: the dock already filters by the `profileId` stamped in
+   * `meta`, so a window on another profile keeps the record for when the user switches to it.
+   */
+  function bindMobileSessionStarted(): void {
+    api?.onMobileSessionStarted?.((event: MobileSessionStarted) => {
+      notifStore.addAlertEvent({
+        title: MOBILE_SESSION_TITLE,
+        body: `${event.name} opened a session on profile ${event.profileName}`,
+        kind: "info",
+        tier: 3,
+        urgency: "normal",
+        workspaceName: "Mobile",
+        tabName: event.name,
+        // One thread per phone; the workspace id stays empty because a phone belongs to none.
+        viewId: `mobile:${event.deviceId}`,
+        category: "mobile",
+        meta: { profileId: event.profileId, deviceId: event.deviceId },
+        sourceAlertId: `mobile-session:${event.deviceId}:${event.startedAt}`,
+        occurredAt: new Date(event.startedAt).toISOString(),
       });
     });
   }

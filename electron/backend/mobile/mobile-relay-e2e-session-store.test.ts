@@ -56,4 +56,14 @@ describe("mobile-relay-e2e-session-store", () => {
     expect(store.get("stale-device")).toBeNull();
     expect(store.get("fresh-device")).toEqual(fakeKeys(2));
   });
+
+  test("delete forgets one device's keys immediately and leaves the others alone", () => {
+    const store = createRelayE2eSessionStore();
+    store.put("dev-a", fakeKeys(1), 60_000);
+    store.put("dev-b", fakeKeys(9), 60_000);
+    store.delete("dev-a");
+    expect(store.get("dev-a")).toBeNull();
+    expect(store.get("dev-b")).toEqual(fakeKeys(9));
+    expect(() => store.delete("never-seen")).not.toThrow();
+  });
 });

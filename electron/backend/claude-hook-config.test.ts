@@ -802,6 +802,16 @@ describe("notify.mjs PermissionRequest decisions", () => {
     expect(hookLog).not.toContain("conflict");
   }, 15_000);
 
+  test("an unparseable notify URL is logged without its secret", async () => {
+    const { stdout, hookLog } = await runNotifyForPermissionRequest([], undefined, {
+      STRIDETERM_NOTIFY_URL: "not a url?sid=ws%3Ap&secret=TOP-SECRET-VALUE",
+    });
+    expect(stdout.trim()).toBe("");
+    expect(hookLog).toContain("invalid notify url");
+    expect(hookLog).not.toContain("TOP-SECRET-VALUE");
+    expect(hookLog).not.toContain("not a url");
+  }, 15_000);
+
   test("an offer accepted but a commit that returns nothing prints nothing", async () => {
     // The audit write failed, or the offer expired. The prompt is shown, which
     // is the correct fallback.

@@ -158,6 +158,12 @@ export interface MobileCommandDispatcherDeps {
    */
   currentDevice?: (deviceId: string) => MobileDeviceRecord | null;
   /**
+   * Latches that this device completed a relay session with end-to-end encryption
+   * (`MobileDeviceRecord.relayE2eSeenAt`). Called once the session keys have been derived and stored,
+   * never for a ticket that carries no `e2e` block. Absent in a test that does not care.
+   */
+  markRelayE2eSeen?: (deviceId: string) => void | Promise<void>;
+  /**
    * Which alert each notification event was raised from, recorded when the event was sent
    * (mobile-notification-origin-store.ts). Lets `notification.acknowledge` clear the alert the
    * phone is acknowledging, given a payload that carries only the event id.
@@ -193,6 +199,16 @@ export interface MobileCommandDispatcherDeps {
 function isIdempotent(type: MobileCommandType): boolean {
   return policyFor(type).idempotent;
 }
+
+/**
+ * Commands whose RESULT is a credential: it reaches the phone once, in the answer, and is never
+ * written to disk. The idempotency ledger survives a restart and keeps rows for a day, so a
+ * `ticketSecret` in it would outlive the 60 s ticket it redeems by 24 h and sit beside the
+ * persisted state. For these the ledger keeps the outcome (status and error code) and nothing else;
+ * a replay of a completed one answers `failed` / `ticket-expired` — the ticket it once named is
+ * spent or expired by then, and the phone's answer to that is to issue a fresh one.
+ */
+const CREDENTIAL_RESULT_TYPES: ReadonlySet<MobileCommandType> = new Set<MobileCommandType>(["remote.webSession.issue"]);
 
 interface ExecResult {
   status: CommandTerminalState;
@@ -659,6 +675,27 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           if (!e2eOffer) return failed("relay-e2e-key-mismatch");
         }
 
+        // The other half of that sentence, and the half a CLIENT can still do. The relay cannot force a
+        // plaintext session (above, and the Worker has no code path that could), but a modified or
+        // unofficial phone app can simply leave the `e2e` block out, and before this check the desktop
+        // minted a relay ticket for it without encryption and remembered nothing. Now a relay request
+        // with no acceptance is refused when EITHER the desktop's own `relay.requireE2e` setting is on
+        // (the default, and what backfills for an install that predates it) OR this device has ever
+        // completed an encrypted relay session (`relayE2eSeenAt`) — a phone that has proven it can do
+        // end-to-end encryption cannot be downgraded even with the setting off, which exists only so an
+        // older phone app that never could keeps working. Legacy (tunnel) transport is untouched: it
+        // never had this encryption. Checked BEFORE `issueTicket`, so a refusal mints nothing.
+        //
+        // Fails CLOSED on a state that carries no setting at all: only an explicit `false` lets an
+        // unencrypted relay ticket through.
+        if (
+          relayOrigin &&
+          !e2eAcceptance &&
+          (state.settings.integrations?.mobile?.relay?.requireE2e !== false || typeof fresh.relayE2eSeenAt === "number")
+        ) {
+          return failed("relay-e2e-required");
+        }
+
         // Which server this ticket is for is decided here, from what the desktop is running — the
         // same decision that chose `expectedOrigin` above, recorded so the redeeming server can
         // refuse a ticket that was minted for the other one.
@@ -704,6 +741,14 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
             // correlation the connector will have for a newly opened, otherwise opaque stream. See
             // mobile-relay-e2e-session-store.ts's own doc comment.
             deps.e2eSessionStore?.put(fresh.deviceId, relayE2eKeys, RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS);
+            // Only after the keys exist: the latch says "this device DID an encrypted session", and a
+            // derivation that threw above must not set it. A failed write is logged, not fatal — the
+            // session is already encrypted, and the next one latches it.
+            try {
+              await deps.markRelayE2eSeen?.(fresh.deviceId);
+            } catch (latchErr) {
+              log.warn("relay e2e latch could not be written", { code: (latchErr as Error)?.message });
+            }
           } catch (err) {
             // A malformed phoneEphemeralPub (wrong length, not canonical base64) must not silently
             // fall back to handing out an unencrypted ticket — the whole command fails instead, and
@@ -787,6 +832,15 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         // Already completed (or terminally failed/expired) — safe replay: hand
         // back the ORIGINAL recorded result (including its real completedAt),
         // never re-execute.
+        if (existing.status === "succeeded" && CREDENTIAL_RESULT_TYPES.has(command.type)) {
+          return {
+            commandId: command.commandId,
+            status: "failed",
+            completedAt: existing.completedAt ? Date.parse(existing.completedAt) : now(),
+            data: null,
+            errorCode: "ticket-expired",
+          };
+        }
         return {
           commandId: command.commandId,
           status: existing.status as CommandTerminalState,
@@ -813,7 +867,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         deps.idempotencyStore.recordResult(
           command.commandId,
           result.status,
-          result.data,
+          CREDENTIAL_RESULT_TYPES.has(command.type) ? null : result.data,
           result.errorCode,
           new Date(completedAtMs).toISOString(),
         );

@@ -19,8 +19,9 @@ import { RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
 import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 
 const logWarn = vi.hoisted(() => vi.fn());
+const logError = vi.hoisted(() => vi.fn());
 vi.mock("../logger.js", () => ({
-  getLogger: () => ({ info: vi.fn(), warn: logWarn, error: vi.fn(), debug: vi.fn() }),
+  getLogger: () => ({ info: vi.fn(), warn: logWarn, error: logError, debug: vi.fn() }),
 }));
 
 const INSTALLATION_ID = "installation-under-test";
@@ -53,6 +54,8 @@ interface Harness {
   revokedDevices: string[];
   /** The snapshot callback the manager handed the connector — what a sync phase would replay. */
   relayRevocations(): Array<{ deviceId: string; revokedAt: number }>;
+  /** The `getGrant` the manager handed the connector, i.e. what every reconnect calls. */
+  connectorGetGrant(): () => Promise<string>;
   setEnabled(next: boolean): void;
 }
 
@@ -63,6 +66,8 @@ function makeHarness(
     definitiveRefusalRetryDelayMs?: () => number;
     /** What the persistent device store would report. Empty unless a test cares. */
     revocations?: () => Array<{ deviceId: string; revokedAt: number | null }>;
+    expectedRelayOrigin?: () => string | undefined;
+    environment?: "local" | "dev" | "qa" | "prod" | "unresolved";
   } = {},
 ): Harness {
   let enabled = false;
@@ -76,6 +81,7 @@ function makeHarness(
     revokedDevices: [] as string[],
     /** The snapshot callback the manager handed the connector — what the sync phase would replay. */
     listRelayRevocations: undefined as (() => Array<{ deviceId: string; revokedAt: number }>) | undefined,
+    getGrant: undefined as (() => Promise<string>) | undefined,
   };
 
   const manager = createMobileRelayManager({
@@ -108,8 +114,11 @@ function makeHarness(
     listRevocations: () => options.revocations?.() ?? [],
     retryDelayMs: options.retryDelayMs,
     definitiveRefusalRetryDelayMs: options.definitiveRefusalRetryDelayMs,
+    expectedRelayOrigin: options.expectedRelayOrigin,
+    environment: options.environment,
     createConnector: (connectorOptions) => {
       state.listRelayRevocations = connectorOptions.listRelayRevocations;
+      state.getGrant = connectorOptions.getGrant;
       const connector: RelayConnector = {
         start: () => {
           state.connectorsStarted += 1;
@@ -119,6 +128,7 @@ function makeHarness(
         },
         state: () => "ready",
         revokeDevice: (deviceId: string) => state.revokedDevices.push(`connector:${deviceId}`),
+        endDeviceStreams: (deviceId: string) => state.revokedDevices.push(`streams:${deviceId}`),
         stats: () => ({
           state: "ready",
           connects: 1,
@@ -163,10 +173,24 @@ function makeHarness(
       if (!state.listRelayRevocations) throw new Error("no connector was created");
       return state.listRelayRevocations();
     },
+    connectorGetGrant() {
+      if (!state.getGrant) throw new Error("no connector was created");
+      return state.getGrant;
+    },
     setEnabled(next: boolean) {
       enabled = next;
     },
   };
+}
+
+/** A grant answer naming `relayOrigin`, for the origin-validation tests. */
+function grantNaming(relayOrigin: string) {
+  return async () => ({
+    grant: "connector-grant",
+    relayOrigin,
+    desktopInstallationId: INSTALLATION_ID,
+    expiresAt: Date.now() + 900_000,
+  });
 }
 
 const tempDirs: string[] = [];
@@ -253,6 +277,14 @@ describe("the managed relay's lifecycle", () => {
     expect(harness.revokedDevices).toEqual(["connector:mobile-device-xyz", "origin:mobile-device-xyz"]);
   });
 
+  test("withdrawing a device's keys ends its live e2e streams on the connector", async () => {
+    const harness = makeHarness();
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+    harness.manager.endDeviceStreams("mobile-device-xyz");
+    expect(harness.revokedDevices).toEqual(["streams:mobile-device-xyz"]);
+  });
+
   test("the grant names this installation and the key it will have to prove it holds", async () => {
     const harness = makeHarness();
     harness.setEnabled(true);
@@ -326,6 +358,140 @@ describe("a start failure's lastError", () => {
     expect(harness.manager.status().lastError).toBe("issueRelayConnectorGrant failed (UNAUTHENTICATED)");
     harness.setEnabled(false);
     await harness.manager.reconfigure();
+  });
+});
+
+describe("the relay origin named by a grant is validated before it is dialled", () => {
+  async function startRejected(harness: Harness) {
+    logError.mockClear();
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+    expect(harness.originsStarted).toHaveLength(0);
+    expect(harness.connectorsStarted).toBe(0);
+    expect(harness.manager.status()).toMatchObject({
+      lastError: "relay-origin-rejected",
+      state: "off",
+      relayOrigin: "",
+    });
+  }
+
+  test("a grant whose origin equals the expected one is accepted (one trailing slash is ignored)", async () => {
+    const harness = makeHarness({
+      grant: grantNaming(`${RELAY_ORIGIN}/`),
+      expectedRelayOrigin: () => RELAY_ORIGIN,
+      environment: "prod",
+    });
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+
+    expect(harness.connectorsStarted).toBe(1);
+    expect(harness.originsStarted).toHaveLength(1);
+    expect(harness.manager.status().lastError).toBe("");
+  });
+
+  test("a mismatching origin starts nothing, sets a fixed lastError and schedules the definitive-refusal retry", async () => {
+    let attempts = 0;
+    const harness = makeHarness({
+      grant: async () => {
+        attempts += 1;
+        return grantNaming(attempts === 1 ? "https://evil.example.com" : RELAY_ORIGIN)();
+      },
+      expectedRelayOrigin: () => RELAY_ORIGIN,
+      environment: "prod",
+      // Huge ordinary delay: only the definitive-refusal path can produce the second attempt in time.
+      retryDelayMs: () => 60_000,
+      definitiveRefusalRetryDelayMs: () => 5,
+    });
+    await startRejected(harness);
+
+    // One error line, naming only the two hostnames — no full URL, no grant.
+    expect(logError).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(logError.mock.calls[0]);
+    expect(logged).toContain("evil.example.com");
+    expect(logged).toContain("relay.test.invalid");
+    expect(logged).not.toContain("https://");
+    expect(logged).not.toContain("connector-grant");
+
+    await vi.waitFor(() => expect(harness.connectorsStarted).toBe(1), { timeout: 5_000 });
+    expect(attempts).toBe(2);
+    expect(harness.manager.status().lastError).toBe("");
+  });
+
+  test("a grant fetched for a reconnect is validated too, and the connector gets a definitive refusal", async () => {
+    let origin = RELAY_ORIGIN;
+    const harness = makeHarness({
+      grant: async () => grantNaming(origin)(),
+      expectedRelayOrigin: () => RELAY_ORIGIN,
+      environment: "prod",
+    });
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+    const getGrant = harness.connectorGetGrant();
+    await expect(getGrant()).resolves.toBe("connector-grant"); // the cached first grant
+
+    origin = "https://relay.attacker.example";
+    const rejected = await getGrant().catch((error: unknown) => error);
+    expect(rejected).toBeInstanceOf(MobileRelayGrantDefinitiveRefusalError);
+    expect(harness.manager.status().lastError).toBe("relay-origin-rejected");
+    expect(harness.manager.relayOrigin()).toBe(RELAY_ORIGIN);
+
+    origin = RELAY_ORIGIN;
+    await expect(getGrant()).resolves.toBe("connector-grant");
+    expect(harness.manager.status().lastError).toBe("");
+    harness.setEnabled(false);
+    await harness.manager.reconfigure();
+  });
+
+  test.each([
+    ["http://relay.test.invalid"],
+    ["https://127.0.0.1:8443"],
+    ["https://localhost"],
+    ["https://10.0.0.5"],
+    ["https://192.168.1.10"],
+    ["https://172.16.0.1"],
+    ["https://169.254.169.254"],
+    ["https://[::1]"],
+    ["http://127.0.0.1:8787"],
+    ["not a url"],
+    [""],
+  ])("%s is refused outside the local environment even with no expected origin configured", async (bad) => {
+    for (const environment of ["prod", "dev", "unresolved", undefined] as const) {
+      const harness = makeHarness({ grant: grantNaming(bad), environment, retryDelayMs: () => 60_000 });
+      await startRejected(harness);
+      harness.setEnabled(false);
+      await harness.manager.reconfigure();
+    }
+  });
+
+  test("a loopback http origin is accepted in the local environment", async () => {
+    const harness = makeHarness({
+      grant: grantNaming("http://127.0.0.1:8787"),
+      expectedRelayOrigin: () => "http://127.0.0.1:8787",
+      environment: "local",
+    });
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+
+    expect(harness.connectorsStarted).toBe(1);
+    expect(harness.manager.status()).toMatchObject({ relayOrigin: "http://127.0.0.1:8787", lastError: "" });
+  });
+
+  test("the local environment does not make a public https origin acceptable", async () => {
+    const harness = makeHarness({ grant: grantNaming(RELAY_ORIGIN), environment: "local", retryDelayMs: () => 60_000 });
+    await startRejected(harness);
+    harness.setEnabled(false);
+    await harness.manager.reconfigure();
+  });
+
+  test("a public https origin is accepted when no expected origin is configured", async () => {
+    for (const expectedRelayOrigin of [undefined, () => undefined, () => ""]) {
+      const harness = makeHarness({ grant: grantNaming(RELAY_ORIGIN), expectedRelayOrigin, environment: "prod" });
+      harness.setEnabled(true);
+      await harness.manager.reconfigure();
+      expect(harness.connectorsStarted).toBe(1);
+      harness.setEnabled(false);
+      await harness.manager.reconfigure();
+    }
   });
 });
 

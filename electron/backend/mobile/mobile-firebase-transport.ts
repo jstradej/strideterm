@@ -41,7 +41,10 @@ export interface CreateInvitationRequest {
   desktopFingerprint: string;
   /** Canonical base64 of exactly 32 bytes; the callable rejects anything else. */
   desktopPublicKey: string;
-  /** Client-generated 256-bit secret (only its hash ever leaves this process) — see mobile-pairing.ts. */
+  /**
+   * Client-generated 256-bit secret (see mobile-pairing.ts). Sent as-is to the callable, which stores
+   * only its hash; the same value goes into the QR code for the phone to present at claim time.
+   */
   secret: string;
   /**
    * The grants the human ticked in the pairing dialog, frozen onto the invitation server-side.

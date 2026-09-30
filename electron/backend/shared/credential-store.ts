@@ -50,6 +50,25 @@ export interface CredentialStore {
   isEncryptionAvailable(): boolean;
 }
 
+/**
+ * `mobile:` refs that hold NO secret — a device id and two markers. Everything else under `mobile:`
+ * (the desktop's long-lived X25519 key, the Firebase refresh token, the relay's Ed25519 installation key)
+ * is key material for the end-to-end channel and is never written as base64 plaintext: a keyring-less
+ * Linux box would otherwise keep all three readable from credentials.json, and from every backup of
+ * it, which turns "captured today" into "decrypted from a disk image tomorrow". The markers are
+ * exempt because account sign-in writes them on machines whether or not Mobile is ever turned on.
+ */
+const MOBILE_PLAINTEXT_EXEMPT_REFS: ReadonlySet<string> = new Set([
+  "mobile:desktop-device-id",
+  "mobile:account-binding",
+  "mobile:relay-registration-configured",
+]);
+
+/** Whether `ref` holds mobile-integration secret material that must never be stored unencrypted. */
+export function refusesPlaintextStorage(ref: string): boolean {
+  return ref.startsWith("mobile:") && !MOBILE_PLAINTEXT_EXEMPT_REFS.has(ref);
+}
+
 function createDefaultState(): CredentialState {
   return {
     version: 1,
@@ -189,6 +208,16 @@ export async function createCredentialStore(
     return "";
   }
 
+  // A mobile secret stored as plaintext by an earlier build moves under encryption as soon as
+  // encryption is available, rather than staying readable on disk for ever.
+  if (canEncrypt(safeStorage)) {
+    for (const [ref, entry] of Object.entries(state.secrets)) {
+      if (refusesPlaintextStorage(ref) && String(entry?.value || "").startsWith("plain:")) {
+        entry.value = encodeEncrypted(decodePlaintext(entry.value.slice(6)), safeStorage);
+      }
+    }
+  }
+
   await persist();
 
   return {
@@ -204,6 +233,11 @@ export async function createCredentialStore(
         if (requireEncrypted && !opts.forcePlaintext) {
           throw new Error("Secure storage is not available. Refusing to store SSH credentials in plaintext.");
         }
+      }
+      if (!canEncrypt(safeStorage) && refusesPlaintextStorage(ref)) {
+        // No `forcePlaintext` escape, unlike SSH: nothing legitimate needs one, and Mobile cannot be
+        // turned on without secure storage (see runtime.ts `mobileSecureStorageAvailable`).
+        throw new Error("Secure storage is not available. Refusing to store Mobile integration keys in plaintext.");
       }
       return enqueue(async () => {
         state.secrets[ref] = {

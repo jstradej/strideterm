@@ -7,7 +7,12 @@ import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { rm as fsRm, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { execFileText, quotePosixArg, spawnTextStreaming } from "./process-utils.js";
-import { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
+import {
+  createGitConfigEnvProbe,
+  encodeAuthHeader,
+  gitAuthEnvironment,
+  sanitizeGitEnvironment,
+} from "./shared/git-auth-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
 import { createIntervalGate } from "./runtime-utils.js";
@@ -95,7 +100,11 @@ interface GitExecResult {
   stderr: string;
 }
 
-type ExecGitImpl = (cwd: string, args: string[]) => Promise<GitExecResult>;
+type GitEnv = Record<string, string | undefined>;
+
+// `options.env` is only passed when the call carries a token via GIT_CONFIG_*
+// (see GitManager.execAuthGit); plain calls keep the two-argument shape.
+type ExecGitImpl = (cwd: string, args: string[], options?: { env?: GitEnv }) => Promise<GitExecResult>;
 
 interface Connection {
   id?: string;
@@ -129,6 +138,8 @@ interface SnapshotCacheEntry {
 
 interface GitManagerOptions {
   execGitImpl?: ExecGitImpl | null;
+  // Returns the `git --version` text; lets tests pick the git version the auth path sees.
+  gitVersionImpl?: (() => Promise<string>) | null;
   now?: (() => Date) | null;
   snapshotCacheTtlMs?: number;
   credentialStore?: CredentialStore | null;
@@ -213,6 +224,8 @@ function omitHeavySnapshotFields(snapshot: Record<string, unknown>): Record<stri
 export class GitManager extends EventEmitter {
   snapshots: Map<string, Record<string, unknown>>;
   execGitImpl: ExecGitImpl | null;
+  // Memoized "git >= 2.31" (GIT_CONFIG_* support); see execAuthGit.
+  private supportsGitConfigEnv: () => Promise<boolean>;
   now: () => Date;
   worktreeDirtyCache: Map<string, WorktreeDirtyCacheEntry>;
   snapshotCache: Map<string, SnapshotCacheEntry>;
@@ -225,6 +238,7 @@ export class GitManager extends EventEmitter {
 
   constructor({
     execGitImpl = null,
+    gitVersionImpl = null,
     now = null,
     snapshotCacheTtlMs = SNAPSHOT_CACHE_TTL_MS,
     credentialStore = null,
@@ -234,6 +248,10 @@ export class GitManager extends EventEmitter {
     super();
     this.snapshots = new Map();
     this.execGitImpl = execGitImpl ?? null;
+    this.supportsGitConfigEnv = createGitConfigEnvProbe(
+      gitVersionImpl ??
+        (async () => (await execFileText("git", ["--version"], { env: sanitizeGitEnvironment() })).stdout),
+    );
     this.now = now || (() => new Date());
     this.worktreeDirtyCache = new Map();
     this.snapshotCache = new Map();
@@ -251,43 +269,67 @@ export class GitManager extends EventEmitter {
     return execFileText("git", args, { cwd, env });
   }
 
-  /**
-   * Run a git command with optional token-based authentication.
-   * When a connection provides login + tokenRef, the PAT is injected via
-   * `git -c http.extraheader=…` so the operation is audited under the
-   * correct Azure DevOps / provider identity.
-   */
-  // Build the `git -c …` prefix args that inject token-based auth. Returns an
-  // empty prefix when there's no usable token, so callers fall back to plain
-  // (unauthenticated) git. Shared by execAuthGit and execAuthGitStreaming so
-  // both produce identical argument vectors.
-  buildAuthArgs(connection: Connection | null): string[] {
-    if (!connection?.tokenRef || !this.credentialStore) return [];
+  // Login + token for a connection, or null when there is no usable token and
+  // callers fall back to plain (unauthenticated) git.
+  private resolveAuthCredentials(connection: Connection | null): { login: string; token: string } | null {
+    if (!connection?.tokenRef || !this.credentialStore) return null;
     const token = this.credentialStore.getSecret(connection.tokenRef);
-    if (!token) return [];
-    const extraArgs: string[] = [];
-    if (process.platform === "win32") {
-      extraArgs.push("-c", "core.longpaths=true");
-    }
-    const login = connection.login || connection.currentUserLogin || "x-access-token";
-    extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(String(login), token)}`);
-    return extraArgs;
+    if (!token) return null;
+    return { login: String(connection.login || connection.currentUserLogin || "x-access-token"), token };
   }
 
+  private authLongpathsArgs(): string[] {
+    return process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
+  }
+
+  // Build the `git -c …` prefix args that inject token-based auth on the
+  // command line (the pre-2.31 fallback). Returns an empty prefix when there's
+  // no usable token.
+  buildAuthArgs(connection: Connection | null): string[] {
+    const credentials = this.resolveAuthCredentials(connection);
+    if (!credentials) return [];
+    return [
+      ...this.authLongpathsArgs(),
+      "-c",
+      `http.extraheader=${encodeAuthHeader(credentials.login, credentials.token)}`,
+    ];
+  }
+
+  // The argv prefix and (git >= 2.31) env that carry the token, or null for
+  // plain git. Shared by execAuthGit and execAuthGitStreaming.
+  private async buildAuthInvocation(connection: Connection | null): Promise<{ args: string[]; env?: GitEnv } | null> {
+    const credentials = this.resolveAuthCredentials(connection);
+    if (!credentials) return null;
+    if (!(await this.supportsGitConfigEnv())) return { args: this.buildAuthArgs(connection) };
+    return {
+      args: this.authLongpathsArgs(),
+      env: gitAuthEnvironment(credentials.login, credentials.token, sanitizeGitEnvironment()),
+    };
+  }
+
+  /**
+   * Run a git command with optional token-based authentication.
+   * When a connection provides login + tokenRef, the PAT is injected as
+   * `http.extraheader` so the operation is audited under the correct Azure
+   * DevOps / provider identity. On git >= 2.31 the header travels in the child's
+   * environment (GIT_CONFIG_*), not on its command line where process listings
+   * would show it; older or unidentifiable gits keep `-c http.extraheader=…`.
+   */
   async execAuthGit(
     cwd: string,
     args: string[],
     { connection = null }: { connection?: Connection | null } = {},
   ): Promise<GitExecResult> {
-    const extraArgs = this.buildAuthArgs(connection);
-    if (!extraArgs.length) {
+    const auth = await this.buildAuthInvocation(connection);
+    if (!auth) {
       return this.execGit(cwd, args);
     }
 
+    const fullArgs = [...auth.args, ...args];
     if (this.execGitImpl) {
-      return this.execGitImpl(cwd, [...extraArgs, ...args]);
+      return auth.env ? this.execGitImpl(cwd, fullArgs, { env: auth.env }) : this.execGitImpl(cwd, fullArgs);
     }
-    return execFileText("git", [...extraArgs, ...args], { cwd, env: sanitizeGitEnvironment() });
+    return execFileText("git", fullArgs, { cwd, env: auth.env ?? sanitizeGitEnvironment() });
   }
 
   /**
@@ -302,10 +344,13 @@ export class GitManager extends EventEmitter {
     args: string[],
     { connection = null, onData }: { connection?: Connection | null; onData?: (chunk: string) => void } = {},
   ): Promise<GitExecResult> {
-    const fullArgs = [...this.buildAuthArgs(connection), ...args];
+    const auth = await this.buildAuthInvocation(connection);
+    const fullArgs = [...(auth?.args ?? []), ...args];
     if (this.execGitImpl) {
       try {
-        const result = await this.execGitImpl(cwd, fullArgs);
+        const result = auth?.env
+          ? await this.execGitImpl(cwd, fullArgs, { env: auth.env })
+          : await this.execGitImpl(cwd, fullArgs);
         if (result?.stdout) onData?.(result.stdout);
         if (result?.stderr) onData?.(result.stderr);
         return result;
@@ -316,7 +361,7 @@ export class GitManager extends EventEmitter {
         throw e;
       }
     }
-    return spawnTextStreaming("git", fullArgs, { cwd, env: sanitizeGitEnvironment(), onData });
+    return spawnTextStreaming("git", fullArgs, { cwd, env: auth?.env ?? sanitizeGitEnvironment(), onData });
   }
 
   // Map a rejected git-exec promise into a tagged error. Preserves BOTH stdout

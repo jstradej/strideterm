@@ -44,6 +44,12 @@ export interface RelayE2eSessionStore {
   put(deviceId: string, keys: RelayE2eKeys, ttlMs: number): void;
   /** The keys derived for `deviceId`, or null if unknown or expired. */
   get(deviceId: string): RelayE2eKeys | null;
+  /**
+   * Forgets `deviceId`'s keys NOW, rather than at their TTL. A revoked device's keys must not keep
+   * a stream openable for up to the session lifetime: the connector looks the keys up again on every
+   * frame, so once this has run the next frame of that device is refused.
+   */
+  delete(deviceId: string): void;
 }
 
 export function createRelayE2eSessionStore(now: () => number = () => Date.now()): RelayE2eSessionStore {
@@ -69,6 +75,9 @@ export function createRelayE2eSessionStore(now: () => number = () => Date.now())
         return null;
       }
       return session.keys;
+    },
+    delete(deviceId) {
+      sessions.delete(deviceId);
     },
   };
 }

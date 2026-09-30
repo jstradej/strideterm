@@ -209,6 +209,8 @@ export function registerIpc(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:pairing-progress", (payload: any) => emitToRenderer("mobile:pairing-progress", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("mobile:session-started", (payload: any) => emitToRenderer("mobile:session-started", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:device-revoked", (payload: any) => emitToRenderer("mobile:device-revoked", payload)),
     // One derived account state, broadcast to EVERY window. The renderer computes nothing from it —
     // see account-state.ts for what it carries and, more to the point, what it never does.
@@ -978,21 +980,30 @@ export function registerIpc(
     );
   });
 
-  handle("telegram:verify-connection", async (_event, connection) =>
-    withOperationPromise({ opId: "telegram:verify-connection" }, () =>
-      runtime.verifyTelegramConnection(validateIpc(telegramConnectionSchema, connection, "telegram:verify-connection")),
-    ),
-  );
-  handle("telegram:detect-chats", async (_event, connection) =>
-    withOperationPromise({ opId: "telegram:detect-chats" }, () =>
-      runtime.detectTelegramChats(validateIpc(telegramConnectionSchema, connection, "telegram:detect-chats")),
-    ),
-  );
-  handle("telegram:save-connection", async (_event, connection) =>
-    withOperationPromise({ opId: "telegram:save-connection" }, () =>
-      runtime.saveTelegramConnection(validateIpc(telegramConnectionSchema, connection, "telegram:save-connection")),
-    ),
-  );
+  handle("telegram:verify-connection", async (event, connection) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "telegram:verify-connection" }, () =>
+      runtime.verifyTelegramConnection(
+        validateIpc(telegramConnectionSchema, connection, "telegram:verify-connection"),
+        windowId,
+      ),
+    );
+  });
+  handle("telegram:detect-chats", async (event, connection) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "telegram:detect-chats" }, () =>
+      runtime.detectTelegramChats(validateIpc(telegramConnectionSchema, connection, "telegram:detect-chats"), windowId),
+    );
+  });
+  handle("telegram:save-connection", async (event, connection) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "telegram:save-connection" }, () =>
+      runtime.saveTelegramConnection(
+        validateIpc(telegramConnectionSchema, connection, "telegram:save-connection"),
+        windowId,
+      ),
+    );
+  });
   handle("telegram:delete-connection", async (_event, connectionId) =>
     withOperationPromise({ opId: "telegram:delete-connection" }, () =>
       runtime.deleteTelegramConnection(String(connectionId || "")),
@@ -1157,9 +1168,12 @@ export function registerIpc(
     withOperationPromise({ opId: "mobile:device:forget" }, () => runtime.forgetMobileDevice(String(deviceId || ""))),
   );
   // Review 3 §P0.1: the two halves of the human decision the SAS screen used to only pretend to ask
-  // for. "Approve" is the only path to a usable device; "reject" runs the full revocation.
-  handle("mobile:device:approve", async (_event, deviceId) =>
-    withOperationPromise({ opId: "mobile:device:approve" }, () => runtime.approveMobileDevice(String(deviceId || ""))),
+  // for. "Approve" is the only path to a usable device and carries the code the user TYPED from the
+  // phone (§3.6); "reject" runs the full revocation.
+  handle("mobile:device:approve", async (_event, deviceId, sas) =>
+    withOperationPromise({ opId: "mobile:device:approve" }, () =>
+      runtime.approveMobileDevice(String(deviceId || ""), String(sas ?? "")),
+    ),
   );
   handle("mobile:device:reject", async (_event, payload) => {
     const { deviceId, reason } = validateIpc(mobileRejectDeviceSchema, payload, "mobile:device:reject");
@@ -1188,6 +1202,11 @@ export function registerIpc(
   // of it.
   handle("mobile:relay:set-enabled", async (_event, enabled) =>
     withOperationPromise({ opId: "mobile:relay:set-enabled" }, () => runtime.setMobileRelayEnabled(Boolean(enabled))),
+  );
+  handle("mobile:relay:set-require-e2e", async (_event, requireE2e) =>
+    withOperationPromise({ opId: "mobile:relay:set-require-e2e" }, () =>
+      runtime.setMobileRelayRequireE2e(Boolean(requireE2e)),
+    ),
   );
   handle("mobile:relay:status", async () =>
     withOperationPromise({ opId: "mobile:relay:status" }, async () => runtime.getMobileRelayStatus()),

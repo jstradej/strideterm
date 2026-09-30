@@ -3,6 +3,9 @@ import { findWorkspace, markWorkspaceWorked } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { normalizeConnectionInput } from "./azure-devops-manager.js";
 import { insertWorkspace } from "./workspace-order.js";
+import { ClientRequestError } from "./shared/client-request-error.js";
+import { connectionSecretRef, findOwnedConnection } from "./shared/connection-secret.js";
+import { trimTrailingSlash } from "./shared/provider-utils.js";
 import {
   resolveRootPath as resolveRootPathShared,
   assertPrInViewerProfile as assertPrInViewerProfileShared,
@@ -146,19 +149,36 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async saveAzureConnection(connection: any, windowId?: string) {
       const normalizedInput = normalizeConnectionInput(connection);
-      const connectionId = normalizedInput.id || `ado-${randomUUID()}`;
-      const tokenRef = connection.tokenRef || `cred:${connectionId}`;
-      const pat = connection.pat || credentialStore.getSecret(tokenRef);
-      const verification = await azure.verifyConnection({
-        ...normalizedInput,
-        pat,
-      });
+      const connectionId = String(normalizedInput.id || `ado-${randomUUID()}`);
       // When the caller's viewer is known (IPC window / remote client), pin
       // the connection's profile to the viewer's profile. Works for remote
       // clients whose profile has no desktop window — the viewer id resolves
       // through the RemoteClientRegistry. No windowSlots[0] fallback: a
       // caller without a viewer context lands in "default" explicitly.
       const callerWindowProfileId = getViewerProfileId(windowId) || "";
+      // The secret ref is derived from the id, never taken from the request
+      // (shared/connection-secret.ts). An edit that sends no PAT may reuse the
+      // stored one only while the organization URL it is sent to is unchanged.
+      const existingConnection = findOwnedConnection(
+        getAzureConnections(getState()),
+        connectionId,
+        callerWindowProfileId,
+      );
+      const tokenRef = connectionSecretRef(connectionId);
+      const orgUnchanged =
+        Boolean(existingConnection) &&
+        trimTrailingSlash(String(existingConnection.orgUrl || "")) ===
+          trimTrailingSlash(String(normalizedInput.orgUrl || ""));
+      const pat = connection.pat || (orgUnchanged ? credentialStore.getSecret(tokenRef) : "");
+      if (!pat) {
+        throw new ClientRequestError(
+          "A PAT is required: the stored one is reused only while the organization URL is unchanged, so enter the PAT again.",
+        );
+      }
+      const verification = await azure.verifyConnection({
+        ...normalizedInput,
+        pat,
+      });
       if (callerWindowProfileId && connection.profileId && connection.profileId !== callerWindowProfileId) {
         throw new Error(
           `Cross-profile refused: saveAzureConnection payload targets profile ${connection.profileId}, window ${windowId} is bound to ${callerWindowProfileId}.`,

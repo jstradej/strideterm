@@ -15,6 +15,7 @@ import {
   approvalRecordedSchema,
   type ApprovalRecorded,
 } from "../electron/shared/approval-events.js";
+import { mobileSessionStartedSchema, type MobileSessionStarted } from "../electron/shared/mobile-session-events.js";
 import {
   NOTIFICATION_TARGET_REMOVED_CHANNEL,
   notificationTargetRemovedSchema,
@@ -182,6 +183,8 @@ export interface Transport extends Partial<
   /** strIDEterm approved a permission prompt on the user's behalf. Validated at
    *  this boundary too, so a handler only ever sees a well-formed payload. */
   onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => void;
+  /** A paired phone opened a session (desktop only). Validated at this boundary. */
+  onMobileSessionStarted?: (handler: Handler<MobileSessionStarted>) => void;
   attachmentList?: (payload: AttachmentWorkspaceRequest) => Promise<AttachmentRecord[]>;
   attachmentDelete?: (payload: AttachmentDeleteRequest) => Promise<AttachmentDeleteResult>;
 }
@@ -315,6 +318,16 @@ function bindElectronTransport(): Transport {
         const parsed = approvalRecordedSchema.safeParse(payload);
         if (!parsed.success) {
           rlog("warn", "approval:recorded ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
+    onMobileSessionStarted: (handler: Handler<MobileSessionStarted>) => {
+      window.strideterm.onMobileSessionStarted?.((payload: unknown) => {
+        const parsed = mobileSessionStartedSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "mobile:session-started ignored: malformed payload");
           return;
         }
         handler(parsed.data);

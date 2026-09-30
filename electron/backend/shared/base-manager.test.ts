@@ -21,13 +21,25 @@ function createReviewStore() {
   };
 }
 
+// The git token travels in the child's GIT_CONFIG_* environment (git >= 2.31) or, on older
+// gits, as `-c http.extraheader=…` argv. Returns the decoded "login:token" either way.
+function decodeGitAuth(call: unknown[]): string | null {
+  const [, args, options] = call as [string, string[], { env?: Record<string, string> }?];
+  const argHeader = args.find((a) => a.startsWith("http.extraheader="));
+  const header = argHeader?.slice("http.extraheader=".length) ?? options?.env?.GIT_CONFIG_VALUE_0;
+  if (!header) return null;
+  return Buffer.from(header.replace("AUTHORIZATION: Basic ", ""), "base64").toString("utf8");
+}
+
 function createManager({
   execFileTextImpl,
   secrets = {},
+  gitVersion = "git version 2.43.0",
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execFileTextImpl: any;
   secrets?: Record<string, string>;
+  gitVersion?: string;
 }) {
   return new BaseProviderManager({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -35,6 +47,7 @@ function createManager({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     reviewStore: createReviewStore() as any,
     execFileTextImpl,
+    gitVersionImpl: async () => gitVersion,
     createApi: () => ({}),
   });
 }
@@ -90,9 +103,42 @@ describe("BaseProviderManager.ensureCacheRepoAt", () => {
       expect.arrayContaining(["clone", "--no-checkout", "--filter=blob:none", "https://example.com/acme/repo-1.git"]),
     );
     // Login is threaded through as a git auth header, not a plain arg — confirm
-    // it reached runGit by checking the extraheader carries the login.
-    const headerArg = cloneCall![1].find((arg: string) => arg.startsWith("http.extraheader="));
-    expect(headerArg).toBeDefined();
+    // it reached runGit by checking the header carries the login.
+    expect(decodeGitAuth(cloneCall!)).toBe("me@example.com:tok-123");
+  });
+
+  test("hands the token to git through GIT_CONFIG_* env, not argv, on git >= 2.31", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = createManager({ execFileTextImpl });
+
+    await manager.runGit("/repo", ["fetch", "origin"], { login: "me", token: "tok-123" });
+
+    const [, args, options] = execFileTextImpl.mock.calls[0];
+    expect(JSON.stringify(args)).not.toMatch(/extraheader|Basic|tok-123/);
+    expect(options.env.GIT_CONFIG_COUNT).toBe("1");
+    expect(options.env.GIT_CONFIG_KEY_0).toBe("http.extraheader");
+    expect(decodeGitAuth(execFileTextImpl.mock.calls[0])).toBe("me:tok-123");
+  });
+
+  test("keeps the -c http.extraheader argv path on git 2.30", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = createManager({ execFileTextImpl, gitVersion: "git version 2.30.2" });
+
+    await manager.runGit("/repo", ["fetch", "origin"], { login: "me", token: "tok-123" });
+
+    const [, args, options] = execFileTextImpl.mock.calls[0];
+    expect(args.some((a: string) => a.startsWith("http.extraheader="))).toBe(true);
+    expect(options.env.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(decodeGitAuth(execFileTextImpl.mock.calls[0])).toBe("me:tok-123");
+  });
+
+  test("passes no auth at all when there is no token", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = createManager({ execFileTextImpl });
+
+    await manager.runGit("/repo", ["status"]);
+
+    expect(decodeGitAuth(execFileTextImpl.mock.calls[0])).toBeNull();
   });
 
   test("omits an explicit login when none is given (falls back to defaultGitLogin)", async () => {
@@ -110,12 +156,9 @@ describe("BaseProviderManager.ensureCacheRepoAt", () => {
     });
 
     const cloneCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("clone"));
-    const headerArg = cloneCall![1].find((arg: string) => arg.startsWith("http.extraheader="));
     // encodeAuthHeader base64s "login:token" — decode and confirm the default
     // login ("x-access-token") was used since none was passed explicitly.
-    const encoded = headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", "");
-    const decoded = Buffer.from(encoded, "base64").toString("utf8");
-    expect(decoded).toBe("x-access-token:tok-123");
+    expect(decodeGitAuth(cloneCall!)).toBe("x-access-token:tok-123");
   });
 
   test("falls back to a full clone when the partial (--filter=blob:none) clone fails", async () => {
@@ -327,11 +370,7 @@ describe("BaseProviderManager.fetchReviewWorkspace / rebaseReviewWorkspace / pus
       expect.arrayContaining(["fetch", "origin"]),
       expect.objectContaining({ cwd: "/repo" }),
     );
-    const headerArg = execFileTextImpl.mock.calls[0][1].find((a: string) => a.startsWith("http.extraheader="));
-    const decoded = Buffer.from(headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""), "base64").toString(
-      "utf8",
-    );
-    expect(decoded).toBe("me@example.com:tok-123");
+    expect(decodeGitAuth(execFileTextImpl.mock.calls[0])).toBe("me@example.com:tok-123");
   });
 
   test("fetchReviewWorkspace throws the provider-specific connection-not-found message", async () => {

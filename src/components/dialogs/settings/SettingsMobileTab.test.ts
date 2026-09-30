@@ -301,12 +301,12 @@ describe("SettingsMobileTab", () => {
     const payload = makePayload({ enabled: true, devices: [] });
     const transport = makeTransport(payload, {
       listMobileDevicesAwaitingApproval: vi.fn(async () => [
-        { deviceId: "phone-1", label: "Pixel", sas: "1234 5678", state: "keyProven" },
+        { deviceId: "phone-1", label: "Pixel", sasReady: true, state: "keyProven" },
       ]),
     });
     const appStore = useAppStore();
     appStore.init(transport as AnyApi);
-    appStore.mobilePairingSas = { deviceId: "phone-1", label: "Pixel", sas: "1234 5678" };
+    appStore.mobilePairingSas = { deviceId: "phone-1", label: "Pixel" };
 
     const wrapper = mount(SettingsMobileTab, {
       props: { profiles: [{ id: "default", name: "Default" }], initialView: "overview" },
@@ -314,7 +314,7 @@ describe("SettingsMobileTab", () => {
     await flushPromises();
 
     expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Phones");
-    expect(wrapper.text()).toContain("1234 5678");
+    expect(wrapper.text()).toContain("Enter the code shown on the phone");
   });
 
   test("keeps navigation and revoke available while paused but blocks pairing and device mutations", async () => {
@@ -364,6 +364,32 @@ describe("SettingsMobileTab", () => {
     // typed and two phones may share one; the fingerprint is the digest of the key the pairing
     // actually pinned, and is what a user compares against their phone before revoking a row.
     expect(wrapper.text()).toContain("AB:CD");
+  });
+
+  test("a device holding a live session shows Connected instead of last seen; the others keep last seen", async () => {
+    let statusHandler: ((payload: AnyApi) => void) | null = null;
+    const { wrapper } = await mountTab({
+      listMobileDevices: vi.fn(async () => [
+        SAMPLE_DEVICE,
+        { ...SAMPLE_DEVICE, deviceId: "mobile-2", label: "iPhone 15" },
+      ]),
+      onMobileStatus: (fn: (payload: AnyApi) => void) => {
+        statusHandler = fn;
+      },
+    });
+    expect(wrapper.find(".device-item__connected").exists()).toBe(false);
+    expect(wrapper.text()).toContain("last seen");
+
+    statusHandler!({
+      connectedDevices: [{ deviceId: "mobile-1", name: "Pixel 8", profileId: "default", startedAt: 5000 }],
+    });
+    await flushPromises();
+
+    const connected = wrapper.findAll(".device-item__connected");
+    expect(connected).toHaveLength(1);
+    expect(connected[0]!.text()).toBe("Connected");
+    // Only the other phone still reports last seen.
+    expect(wrapper.text().match(/last seen/g)).toHaveLength(1);
   });
 
   test("shows paired phones first and reveals the add-phone setup on request", async () => {
@@ -418,7 +444,7 @@ describe("SettingsMobileTab", () => {
     expect(awaiting.wrapper.text()).toContain("awaiting your confirmation");
   });
 
-  test("Review pairing opens the code for the selected pending phone", async () => {
+  test("Review pairing opens the code prompt for the selected pending phone", async () => {
     const pendingDevices = [
       { ...SAMPLE_DEVICE, deviceId: "phone-1", label: "First phone", state: "keyProven", activatedAt: null },
       { ...SAMPLE_DEVICE, deviceId: "phone-2", label: "Second phone", state: "keyProven", activatedAt: null },
@@ -427,8 +453,8 @@ describe("SettingsMobileTab", () => {
       .fn()
       .mockResolvedValueOnce([])
       .mockResolvedValue([
-        { deviceId: "phone-1", label: "First phone", sas: "1111 1111", state: "keyProven" },
-        { deviceId: "phone-2", label: "Second phone", sas: "2222 2222", state: "keyProven" },
+        { deviceId: "phone-1", label: "First phone", sasReady: true, state: "keyProven" },
+        { deviceId: "phone-2", label: "Second phone", sasReady: true, state: "keyProven" },
       ]);
     const { wrapper } = await mountTab({
       listMobileDevices: vi.fn(async () => pendingDevices),
@@ -439,8 +465,31 @@ describe("SettingsMobileTab", () => {
     await reviewButtons[1]!.trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("2222 2222");
-    expect(wrapper.text()).not.toContain("1111 1111");
+    const prompt = wrapper.find(".pairing-sas");
+    expect(prompt.text()).toContain("Second phone");
+    expect(prompt.text()).not.toContain("First phone");
+  });
+
+  test("Review pairing on a phone with no derivable code says so instead of opening a prompt", async () => {
+    const listPending = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ deviceId: "phone-1", label: "First phone", sasReady: false, state: "keyProven" }]);
+    const { wrapper } = await mountTab({
+      listMobileDevices: vi.fn(async () => [
+        { ...SAMPLE_DEVICE, deviceId: "phone-1", label: "First phone", state: "keyProven", activatedAt: null },
+      ]),
+      listMobileDevicesAwaitingApproval: listPending,
+    });
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Review pairing")!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".pairing-sas").exists()).toBe(false);
+    expect(wrapper.text()).toContain("The pairing code for this phone is no longer available");
   });
 
   test("an active device carries no pending badge, and a revoked one carries only ", async () => {
@@ -607,11 +656,10 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.findAll("button").some((b) => b.text().includes("Pair a phone"))).toBe(true);
   });
 
-  // Review 2 §P0.4: "pokud se kód potvrzuje na obou stranách, obě UI musí ukazovat hodnotu
-  // odvozenou z tohoto transcriptu". The phone's dialog tells the user "your desktop shows the same
-  // code" — if this desktop shows nothing, the comparison the key-pinning story leans on cannot
-  // happen, and a substituted key is invisible.
-  test("the pairing code is shown with the two decisions it gates", async () => {
+  // Review 2 §P0.4: the key-pinning story leans on a person comparing two values derived from the same
+  // transcript. Review 3 §3.6: a desktop that SHOWS its value beside an approve button turns that
+  // comparison into a click, so the user types the phone's code instead and the backend compares.
+  test("the pairing prompt asks for the phone's code and offers the two decisions it gates", async () => {
     // Review 3 §P0.1. This block used to have one button, "I compared them", which hid the code and did
     // nothing else — the device was already live by then, and a mismatch was answered by prose telling
     // the user to revoke afterwards. The two buttons ARE the gate now.
@@ -621,16 +669,143 @@ describe("SettingsMobileTab", () => {
       status: "awaiting-approval",
       deviceId: "mobile-1",
       label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Enter the code shown on the phone");
+    expect(wrapper.text()).toContain("Pixel 8");
+    const input = wrapper.find('[data-testid="pairing-sas-input"]');
+    expect(input.exists()).toBe(true);
+    expect(input.attributes("inputmode")).toBe("numeric");
+    expect(input.attributes("autocomplete")).toBe("off");
+    expect(wrapper.findAll("button").some((b) => b.text() === "Activate")).toBe(true);
+    expect(wrapper.findAll("button").some((b) => b.text().includes("Mismatch"))).toBe(true);
+  });
+
+  // The whole point of §3.6: nothing on this screen is a code to glance at. Even a backend that (wrongly)
+  // still sent one must not get it rendered — the store never keeps it.
+  test("the expected code is never rendered, even if the event carried one", async () => {
+    const { wrapper, transport } = await mountTab();
+
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
       sas: "1234 5678",
       pairingId: "pairing-1",
     });
     await flushPromises();
 
-    expect(wrapper.text()).toContain("1234 5678");
-    expect(wrapper.text()).toContain("Compare this code with the phone");
-    expect(wrapper.text()).toContain("Pixel 8");
-    expect(wrapper.findAll("button").some((b) => b.text().includes("Codes match"))).toBe(true);
-    expect(wrapper.findAll("button").some((b) => b.text().includes("Mismatch"))).toBe(true);
+    expect(wrapper.find(".pairing-sas").exists()).toBe(true);
+    expect(wrapper.html()).not.toContain("1234 5678");
+    expect(wrapper.html()).not.toContain("12345678");
+    expect(wrapper.find(".pairing-sas__code").exists()).toBe(false);
+    expect((wrapper.find('[data-testid="pairing-sas-input"]').element as HTMLInputElement).value).toBe("");
+    expect(useAppStore().mobilePairingSas).toEqual({
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      state: "awaiting-approval",
+    });
+  });
+
+  test("Activate stays disabled until all 8 digits are typed, and the field takes only digits and spaces", async () => {
+    const { wrapper, transport } = await mountTab();
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+    const input = wrapper.get('[data-testid="pairing-sas-input"]');
+    const activate = () => wrapper.findAll("button").find((b) => b.text() === "Activate")!;
+
+    expect(activate().attributes("disabled")).toBeDefined();
+    await input.setValue("1234 567");
+    expect(activate().attributes("disabled")).toBeDefined();
+    await input.setValue("1234 56a7-");
+    expect((input.element as HTMLInputElement).value).toBe("1234 567");
+    expect(activate().attributes("disabled")).toBeDefined();
+    await input.setValue("1234 5678");
+    expect(activate().attributes("disabled")).toBeUndefined();
+
+    // Spaces alone are not digits.
+    await input.setValue("         ");
+    expect(activate().attributes("disabled")).toBeDefined();
+    expect(transport.approveMobileDevice).not.toHaveBeenCalled();
+  });
+
+  test("the claiming phone's label is shown as plain quoted text, never as emphasis or markup", async () => {
+    // The label is whatever the device called itself, and a phone somebody else holds chooses it.
+    const { wrapper, transport } = await mountTab();
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "<b>Your phone</b>",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    const hint = wrapper.find(".pairing-sas__hint");
+    expect(hint.text()).toContain("“<b>Your phone</b>”");
+    expect(hint.text()).toContain("8-digit code");
+    expect(hint.find("strong").exists()).toBe(false);
+    expect(hint.find("b").exists()).toBe(false);
+  });
+
+  test("a code typed for one phone is not carried over to the next pending phone", async () => {
+    const { wrapper, transport } = await mountTab();
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+    await wrapper.get('[data-testid="pairing-sas-input"]').setValue("1234 5678");
+
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-2",
+      label: "Galaxy",
+      sasReady: true,
+      pairingId: "pairing-2",
+    });
+    await flushPromises();
+
+    expect((wrapper.get('[data-testid="pairing-sas-input"]').element as HTMLInputElement).value).toBe("");
+    expect(wrapper.find(".pairing-sas").text()).toContain("Galaxy");
+  });
+
+  test("Decide later clears the typed code", async () => {
+    const { wrapper, transport } = await mountTab();
+    const progress = {
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    };
+    transport._pairingProgress(progress);
+    await flushPromises();
+    await wrapper.get('[data-testid="pairing-sas-input"]').setValue("1234 5678");
+
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Decide later"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".pairing-sas").exists()).toBe(false);
+
+    transport._pairingProgress(progress);
+    await flushPromises();
+    expect((wrapper.get('[data-testid="pairing-sas-input"]').element as HTMLInputElement).value).toBe("");
   });
 
   // The code arrives while the user is looking at the QR they have just held a phone up to. It used
@@ -653,7 +828,7 @@ describe("SettingsMobileTab", () => {
       status: "awaiting-approval",
       deviceId: "mobile-1",
       label: "Pixel 8",
-      sas: "1234 5678",
+      sasReady: true,
       pairingId: "pairing-1",
     });
     await flushPromises();
@@ -692,25 +867,26 @@ describe("SettingsMobileTab", () => {
     expect(advanced.text()).not.toContain("Managed relay");
   });
 
-  test("Codes match activates the device through the desktop-only IPC call", async () => {
+  test("Activate sends the typed code through the desktop-only IPC call", async () => {
     const { wrapper, transport } = await mountTab();
     transport._pairingProgress({
       status: "awaiting-approval",
       deviceId: "mobile-1",
       label: "Pixel 8",
-      sas: "1234 5678",
+      sasReady: true,
       pairingId: "pairing-1",
     });
     await flushPromises();
+    await wrapper.get('[data-testid="pairing-sas-input"]').setValue("1234 5678");
 
     await wrapper
       .findAll("button")
-      .find((b) => b.text().includes("Codes match"))!
+      .find((b) => b.text() === "Activate")!
       .trigger("click");
     await flushPromises();
 
-    expect(transport.approveMobileDevice).toHaveBeenCalledWith("mobile-1");
-    expect(wrapper.text()).not.toContain("1234 5678");
+    expect(transport.approveMobileDevice).toHaveBeenCalledWith("mobile-1", "1234 5678");
+    expect(wrapper.find(".pairing-sas").exists()).toBe(false);
   });
 
   test("Mismatch revokes the device and names the reason", async () => {
@@ -719,7 +895,7 @@ describe("SettingsMobileTab", () => {
       status: "awaiting-approval",
       deviceId: "mobile-1",
       label: "Pixel 8",
-      sas: "1234 5678",
+      sasReady: true,
       pairingId: "pairing-1",
     });
     await flushPromises();
@@ -731,7 +907,7 @@ describe("SettingsMobileTab", () => {
     await flushPromises();
 
     expect(transport.rejectMobileDevice).toHaveBeenCalledWith({ deviceId: "mobile-1", reason: "sas-mismatch" });
-    expect(wrapper.text()).not.toContain("1234 5678");
+    expect(wrapper.find(".pairing-sas").exists()).toBe(false);
   });
 
   test("a failed activation is reported, not silently swallowed", async () => {
@@ -744,14 +920,15 @@ describe("SettingsMobileTab", () => {
       status: "awaiting-approval",
       deviceId: "mobile-1",
       label: "Pixel 8",
-      sas: "1234 5678",
+      sasReady: true,
       pairingId: "pairing-1",
     });
     await flushPromises();
+    await wrapper.get('[data-testid="pairing-sas-input"]').setValue("1234 5678");
 
     await wrapper
       .findAll("button")
-      .find((b) => b.text().includes("Codes match"))!
+      .find((b) => b.text() === "Activate")!
       .trigger("click");
     await flushPromises();
 
@@ -760,21 +937,53 @@ describe("SettingsMobileTab", () => {
   });
 
   test("a claim whose SAS could not be derived shows no code rather than a placeholder", async () => {
-    // MobileManager returns null when either public key is unusable. A code the user is asked to
-    // compare, that was not actually derived from both real keys, is worse than no code: it trains
-    // them to accept whatever appears.
+    // MobileManager reports `sasReady: false` when either public key is unusable. There is then no code
+    // to type a phone's value against, and a prompt that could never be satisfied — or worse, could be
+    // satisfied by anything — is worse than none.
     const { wrapper, transport } = await mountTab();
 
     transport._pairingProgress({
       status: "awaiting-approval",
       deviceId: "mobile-1",
       label: "Pixel 8",
-      sas: null,
+      sasReady: false,
       pairingId: "pairing-1",
     });
     await flushPromises();
 
-    expect(wrapper.text()).not.toContain("Compare this code with the phone");
+    expect(wrapper.text()).not.toContain("Enter the code shown on the phone");
+    expect(wrapper.find('[data-testid="pairing-sas-input"]').exists()).toBe(false);
+  });
+
+  test("a code that does not match this desktop's gets its own warning, not the generic failure copy", async () => {
+    const { wrapper, transport } = await mountTab({
+      approveMobileDevice: vi.fn(async () => ({ ok: false, reason: "sas-mismatch" })),
+    });
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+    await wrapper.get('[data-testid="pairing-sas-input"]').setValue("0000 0000");
+
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === "Activate")!
+      .trigger("click");
+    await flushPromises();
+
+    const error = wrapper.find(".pairing-sas__error");
+    expect(error.exists()).toBe(true);
+    expect(error.text()).toContain("does not match");
+    expect(error.text()).toContain("someone else may have used the invitation");
+    expect(error.text()).toContain("Mismatch — revoke");
+    expect(error.text()).not.toContain("It remains inactive");
+    // Nothing was cleared: the user can retype, or choose Mismatch.
+    expect(wrapper.find(".pairing-sas").exists()).toBe(true);
+    expect(wrapper.findAll("button").some((b) => b.text().includes("Mismatch"))).toBe(true);
   });
 
   test("revoke requires confirmation before calling the transport", async () => {
@@ -1018,7 +1227,7 @@ describe("SettingsMobileTab", () => {
     // actually consents, and a later edit tightening the wording must not drop the distinction.
     const { wrapper } = await mountTab({}, { enabled: true, devices: [], relay: { enabled: false } });
     const relayText = wrapper.find(".relay-block").text();
-    expect(relayText).toContain("readable by the relay while it is in flight");
+    expect(relayText).toContain("end-to-end encrypted between this desktop and the phone");
     // The other half of the sentence matters as much: without it the warning overstates the case
     // and implies push content is readable too.
     expect(relayText).toContain("end-to-end encrypted");
@@ -1124,6 +1333,31 @@ describe("SettingsMobileTab", () => {
     expect(transport.setMobileEnabled).toHaveBeenCalledWith(true);
   });
 
+  test("without secure storage phone pairing cannot be turned on, and the screen says why", async () => {
+    const withoutKeychain = { ...makePayload({ enabled: false, devices: [] }), secureStorage: { available: false } };
+    const { wrapper, transport } = await mountTab(
+      { getState: vi.fn(async () => withoutKeychain) },
+      {
+        enabled: false,
+        devices: [],
+      },
+    );
+
+    const turnOn = wrapper.findAll("button").find((b) => b.text().includes("Turn on phone pairing"))!;
+    expect(turnOn.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("needs secure storage");
+    await turnOn.trigger("click");
+    expect(transport.setMobileEnabled).not.toHaveBeenCalled();
+  });
+
+  test("a row's profile and capability copy states what the boundary is, and what it is not", async () => {
+    const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+    const profiles = wrapper.findAll("span").find((el) => el.text().startsWith("profiles:"))!;
+    const title = profiles.attributes("title") || "";
+    expect(title).toContain("shell on this computer under your account");
+    expect(title).toContain("not at the operating-system level");
+  });
+
   test("a user must turn on phone pairing before seeing the Pair a phone action", async () => {
     const { wrapper } = await mountTab({}, { enabled: false, devices: [] });
 
@@ -1182,5 +1416,36 @@ describe("SettingsMobileTab", () => {
   test("without a hosted account there is no dangling reference to a page that is not there", async () => {
     const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
     expect(wrapper.text()).not.toContain("Phones on this account");
+  });
+
+  // Security review 3.5: the relay cannot downgrade a session to plaintext, but a phone app can leave the
+  // `e2e` block out. This checkbox is the desktop's own switch for refusing that, and it is on by default.
+  test("the relay's end-to-end requirement is on by default and unticking it calls setMobileRelayRequireE2e", async () => {
+    const { wrapper, transport } = await mountTab(
+      { setMobileRelayRequireE2e: vi.fn(async () => null) },
+      { enabled: true, devices: [], relay: { enabled: true } },
+    );
+
+    const box = wrapper.find('[data-testid="relay-require-e2e"]');
+    expect(box.exists()).toBe(true);
+    expect((box.element as HTMLInputElement).checked).toBe(true);
+    await box.setValue(false);
+    await flushPromises();
+
+    expect(transport.setMobileRelayRequireE2e).toHaveBeenCalledWith(false);
+  });
+
+  test("an explicit requireE2e=false reads as unticked, and ticking it calls setMobileRelayRequireE2e(true)", async () => {
+    const { wrapper, transport } = await mountTab(
+      { setMobileRelayRequireE2e: vi.fn(async () => null) },
+      { enabled: true, devices: [], relay: { enabled: true, requireE2e: false } },
+    );
+
+    const box = wrapper.find('[data-testid="relay-require-e2e"]');
+    expect((box.element as HTMLInputElement).checked).toBe(false);
+    await box.setValue(true);
+    await flushPromises();
+
+    expect(transport.setMobileRelayRequireE2e).toHaveBeenCalledWith(true);
   });
 });

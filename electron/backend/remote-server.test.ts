@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { WebSocket } from "ws";
+import * as fm from "./file-manager.js";
 import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
   REMOTE_BLOCKED_TOP_LEVEL_FIELDS,
@@ -92,6 +93,23 @@ test("a paused desktop does not bind the browser remote server", async () => {
         appState: {
           settings: { remoteAccess: { enabled: true, paused: true, host: "127.0.0.1", port: 0, token: "test" } },
         },
+      }),
+      setRemoteInfo: (value: unknown) => {
+        info = value;
+      },
+    } as Parameters<typeof startRemoteServer>[0]["runtime"],
+    staticRoot: ".",
+  });
+  expect(info).toMatchObject({ enabled: false, urls: [] });
+  await server.close();
+});
+
+test("an enabled remote server with an empty token is not started", async () => {
+  let info: unknown;
+  const server = await startRemoteServer({
+    runtime: {
+      getPayload: () => ({
+        appState: { settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port: 0, token: "" } } },
       }),
       setRemoteInfo: (value: unknown) => {
         info = value;
@@ -318,7 +336,13 @@ describe("sanitizeSettingsFromRemote", () => {
     // paired-device list) is desktop-owned pairing state.
     const settings = {
       integrations: {
-        mobile: { enabled: true, devices: [{ deviceId: "dev-1", capabilities: ["remote.request"] }] },
+        mobile: {
+          enabled: true,
+          devices: [{ deviceId: "dev-1", capabilities: ["remote.request"] }],
+          // Desktop-only: a remote client that could untick this would re-open the plaintext relay
+          // downgrade the desktop setting exists to close (security review 3.5).
+          relay: { enabled: true, requireE2e: false },
+        },
         telegram: { enabled: true, defaultPollSeconds: 5, connections: [] },
         azureDevops: { enabled: false, reviewRoot: "", defaultPollSeconds: 60, connections: [] },
       },
@@ -327,6 +351,7 @@ describe("sanitizeSettingsFromRemote", () => {
     const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);
     expect(removed).toContain("integrations.mobile");
     expect(settings.integrations).not.toHaveProperty("mobile");
+    expect(JSON.stringify(settings)).not.toContain("requireE2e");
     // Sibling integrations survive untouched.
     expect(settings.integrations.telegram).toEqual({ enabled: true, defaultPollSeconds: 5, connections: [] });
     expect(settings.integrations.azureDevops).toEqual({
@@ -1190,7 +1215,7 @@ describe("API_ROUTES table — representative route coverage", () => {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/telegram/save-connection`, {
         method: "POST",
-        headers: headers(auth),
+        headers: { ...headers(auth), "X-Strideterm-Client-Id": "test-client" },
         body: JSON.stringify({ connection: { botToken: "t" } }),
       });
       expect(res.status).toBe(200);
@@ -4610,6 +4635,447 @@ describe("a mobile session is finite", () => {
   });
 });
 
+describe("a mobile session's activity is audited (metadata only)", () => {
+  type AuditRow = { deviceId: string; pairId: string; action: string; status: string; detail?: string };
+
+  /**
+   * A mobile-ticket runtime that also records what `recordMobileSessionAudit` is handed. The one
+   * workspace ("ws1", in the ticket's profile) gives terminal ids of the form `ws1:<n>` a profile to
+   * belong to, and `cwd` is the root the file routes are allowed to name.
+   */
+  function makeAuditedRuntime(
+    port: number,
+    cwd: string,
+    options: { auditThrows?: boolean; publishThrows?: boolean } = {},
+  ) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "unused-master-token" } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: ["ws1"] }],
+        workspaces: [{ id: "ws1", profileId: "default", cwd }],
+        windowSlots: [],
+      },
+    };
+    const rows: AuditRow[] = [];
+    const lists: { sessions: unknown[]; source?: string }[] = [];
+    const written: { sessionId: string; data: string }[] = [];
+    const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    return {
+      rows,
+      lists,
+      written,
+      seedTicket(ticketId: string, secret: string, deviceId: string) {
+        tickets.set(`${ticketId}:${secret}`, { deviceId, pairId: `pair-${deviceId}`, profileId: "default" });
+      },
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
+        on: () => () => undefined,
+        writeToSession: (sessionId: string, data: string) => {
+          written.push({ sessionId, data });
+        },
+        resizeSession: () => undefined,
+        setRemoteClientRegistry: () => undefined,
+        isMobileSessionStillAuthorized: () => true,
+        recordMobileSessionAudit: (entry: AuditRow) => {
+          if (options.auditThrows) throw new Error("audit store is down");
+          rows.push(entry);
+        },
+        onMobileSessionsChanged: (sessions: unknown[], source?: string) => {
+          lists.push({ sessions, source });
+          if (options.publishThrows) throw new Error("runtime is down");
+        },
+        consumeMobileWebSessionTicket: (
+          ticketId: string,
+          secret: string,
+          context: { transport: "relay" | "legacy"; origins: readonly string[] },
+        ) => {
+          const record = tickets.get(`${ticketId}:${secret}`);
+          if (!record) return null;
+          tickets.delete(`${ticketId}:${secret}`);
+          if (context.transport !== "legacy" || context.origins.length === 0) return null;
+          return {
+            ...record,
+            allowedOrigin: "https://example.trycloudflare.com",
+            transport: "legacy" as const,
+            requiredCapability: "remote.webSession" as const,
+            expiresAt: Date.now() + 60_000,
+          };
+        },
+      },
+    };
+  }
+
+  async function bootstrap(baseUrl: string, ticketId: string, secret: string): Promise<string> {
+    const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticketId, secret }),
+      redirect: "manual",
+    });
+    return (res.headers.get("set-cookie") || "").split(";")[0]!;
+  }
+
+  async function openSocket(url: string, headers: Record<string, string> = {}): Promise<WebSocket> {
+    const ws = new WebSocket(url, { headers });
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", reject);
+    });
+    return ws;
+  }
+
+  async function withAuditedServer(
+    options: {
+      auditThrows?: boolean;
+      publishThrows?: boolean;
+      server?: Partial<Parameters<typeof startRemoteServer>[0]>;
+    },
+    body: (ctx: {
+      baseUrl: string;
+      port: number;
+      dir: string;
+      rows: AuditRow[];
+      lists: { sessions: unknown[]; source?: string }[];
+      written: { sessionId: string; data: string }[];
+      seedTicket: (ticketId: string, secret: string, deviceId: string) => void;
+      server: Awaited<ReturnType<typeof startRemoteServer>>;
+    }) => Promise<void>,
+  ): Promise<void> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-"));
+    const port = await getFreePort();
+    const { runtime, rows, lists, written, seedTicket } = makeAuditedRuntime(port, dir, options);
+    fm.setAllowedRootsResolver(() => [dir]);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      ...options.server,
+    });
+    try {
+      await body({ baseUrl: `http://127.0.0.1:${port}`, port, dir, rows, lists, written, seedTicket, server });
+    } finally {
+      await server.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("bootstrap records session.started with the profile and transport", async () => {
+    await withAuditedServer({}, async ({ baseUrl, rows, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      expect(await bootstrap(baseUrl, "t1", "s1")).toContain("strideterm_session=");
+      expect(rows).toEqual([
+        {
+          deviceId: "dev-1",
+          pairId: "pair-dev-1",
+          action: "session.started",
+          status: "success",
+          detail: "profile=default transport=legacy",
+        },
+      ]);
+    });
+  });
+
+  describe("the live mobile session list is published to the runtime", () => {
+    test("bootstrap publishes the device with its profile and start time, and never the session or pair id", async () => {
+      await withAuditedServer({}, async ({ baseUrl, lists, seedTicket }) => {
+        seedTicket("t1", "s1", "dev-1");
+        const cookie = await bootstrap(baseUrl, "t1", "s1");
+        const sessionId = decodeURIComponent(cookie.split("=")[1]!);
+        expect(lists).toHaveLength(1);
+        expect(lists[0]!.source).toBe("direct");
+        expect(lists[0]!.sessions).toEqual([
+          { deviceId: "dev-1", profileId: "default", startedAt: expect.any(Number) },
+        ]);
+        const serialized = JSON.stringify(lists);
+        expect(serialized).not.toContain(sessionId);
+        expect(serialized).not.toContain("pair-dev-1");
+        expect(serialized).not.toContain("sessionId");
+        expect(serialized).not.toContain("pairId");
+      });
+    });
+
+    test("a second phone is added to the list; ending one leaves the other", async () => {
+      await withAuditedServer({}, async ({ baseUrl, lists, seedTicket, server }) => {
+        seedTicket("t1", "s1", "dev-1");
+        seedTicket("t2", "s2", "dev-2");
+        await bootstrap(baseUrl, "t1", "s1");
+        await bootstrap(baseUrl, "t2", "s2");
+        expect((lists.at(-1)!.sessions as { deviceId: string }[]).map((s) => s.deviceId)).toEqual(["dev-1", "dev-2"]);
+        server.revokeMobileSessionsForDevice!("dev-1");
+        expect((lists.at(-1)!.sessions as { deviceId: string }[]).map((s) => s.deviceId)).toEqual(["dev-2"]);
+      });
+    });
+
+    test("a revoke publishes an empty list, and revoking a device with no session publishes nothing", async () => {
+      await withAuditedServer({}, async ({ baseUrl, lists, seedTicket, server }) => {
+        seedTicket("t1", "s1", "dev-1");
+        await bootstrap(baseUrl, "t1", "s1");
+        server.revokeMobileSessionsForDevice!("someone-else");
+        expect(lists).toHaveLength(1);
+        server.revokeMobileSessionsForDevice!("dev-1");
+        expect(lists).toHaveLength(2);
+        expect(lists[1]!.sessions).toEqual([]);
+      });
+    });
+
+    test("an expired session publishes an empty list", async () => {
+      await withAuditedServer(
+        { server: { mobileSessionAbsoluteTtlMs: 300, mobileSessionIdleTtlMs: 60_000, mobileSessionSweepMs: 50 } },
+        async ({ baseUrl, lists, seedTicket }) => {
+          seedTicket("t1", "s1", "dev-1");
+          await bootstrap(baseUrl, "t1", "s1");
+          await vi.waitFor(() => expect(lists.at(-1)?.sessions).toEqual([]));
+          expect(lists).toHaveLength(2);
+        },
+      );
+    });
+
+    test("a master-token browser session never appears, and ending it publishes nothing", async () => {
+      await withAuditedServer({}, async ({ baseUrl, lists }) => {
+        const first = await fetch(`${baseUrl}/?token=unused-master-token`, { redirect: "manual" });
+        expect((first.headers.get("set-cookie") || "").split(";")[0]).toContain("strideterm_session=");
+        expect(lists).toEqual([]);
+      });
+    });
+
+    test("stopping the server publishes an empty list", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-"));
+      const port = await getFreePort();
+      const { runtime, lists, seedTicket } = makeAuditedRuntime(port, dir);
+      const server = await startRemoteServer({
+        runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+        staticRoot: process.cwd(),
+      });
+      try {
+        seedTicket("t1", "s1", "dev-1");
+        await bootstrap(`http://127.0.0.1:${port}`, "t1", "s1");
+        expect(lists.at(-1)!.sessions).toHaveLength(1);
+      } finally {
+        await server.close();
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+      expect(lists.at(-1)!.sessions).toEqual([]);
+    });
+
+    test("a publisher that throws does not break the bootstrap", async () => {
+      await withAuditedServer({ publishThrows: true }, async ({ baseUrl, seedTicket }) => {
+        seedTicket("t1", "s1", "dev-1");
+        expect(await bootstrap(baseUrl, "t1", "s1")).toContain("strideterm_session=");
+      });
+    });
+  });
+
+  test("a browser session with the master token records nothing", async () => {
+    await withAuditedServer({}, async ({ baseUrl, rows }) => {
+      const first = await fetch(`${baseUrl}/?token=unused-master-token`, { redirect: "manual" });
+      expect((first.headers.get("set-cookie") || "").split(";")[0]).toContain("strideterm_session=");
+      expect(rows).toEqual([]);
+    });
+  });
+
+  test("the absolute deadline records session.ended with its reason", async () => {
+    await withAuditedServer(
+      { server: { mobileSessionAbsoluteTtlMs: 300, mobileSessionIdleTtlMs: 60_000, mobileSessionSweepMs: 50 } },
+      async ({ baseUrl, rows, seedTicket }) => {
+        seedTicket("t1", "s1", "dev-1");
+        await bootstrap(baseUrl, "t1", "s1");
+        await vi.waitFor(() => expect(rows.map((r) => r.action)).toEqual(["session.started", "session.ended"]));
+        expect(rows[1]).toMatchObject({ deviceId: "dev-1", status: "success", detail: "reason=absolute-expired" });
+      },
+    );
+  });
+
+  test("the idle deadline records session.ended with reason=idle-expired", async () => {
+    await withAuditedServer(
+      { server: { mobileSessionAbsoluteTtlMs: 60_000, mobileSessionIdleTtlMs: 200, mobileSessionSweepMs: 50 } },
+      async ({ baseUrl, rows, seedTicket }) => {
+        seedTicket("t1", "s1", "dev-1");
+        await bootstrap(baseUrl, "t1", "s1");
+        await vi.waitFor(() => expect(rows.at(-1)?.detail).toBe("reason=idle-expired"));
+      },
+    );
+  });
+
+  test("a revoke records session.ended with reason=revoked, once, after flushing pending terminal input", async () => {
+    await withAuditedServer({}, async ({ baseUrl, port, rows, written, seedTicket, server }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const ws = await openSocket(`ws://127.0.0.1:${port}/ws`, { Cookie: cookie });
+      ws.send(JSON.stringify({ type: "terminal:input", sessionId: "ws1:1", data: "abc" }));
+      await vi.waitFor(() => expect(written).toHaveLength(1));
+      server.revokeMobileSessionsForDevice!("dev-1");
+      server.revokeMobileSessionsForDevice!("dev-1");
+      expect(rows.map((r) => `${r.action} ${r.detail}`)).toEqual([
+        "session.started profile=default transport=legacy",
+        "session.terminal-input terminal=ws1:1 bytes=3 lines=0",
+        "session.ended reason=revoked",
+      ]);
+    });
+  });
+
+  test("stopping the server records session.ended with reason=server-stopped for each live mobile session", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-"));
+    const port = await getFreePort();
+    const { runtime, rows, seedTicket } = makeAuditedRuntime(port, dir);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      seedTicket("t1", "s1", "dev-1");
+      await bootstrap(`http://127.0.0.1:${port}`, "t1", "s1");
+    } finally {
+      await server.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+    expect(rows.map((r) => `${r.action} ${r.detail}`)).toEqual([
+      "session.started profile=default transport=legacy",
+      "session.ended reason=server-stopped",
+    ]);
+  });
+
+  test("terminal input is aggregated into one row per submitted command, with counts and never the text", async () => {
+    await withAuditedServer({}, async ({ baseUrl, port, rows, written, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const ws = await openSocket(`ws://127.0.0.1:${port}/ws`, { Cookie: cookie });
+      const send = (data: string) => ws.send(JSON.stringify({ type: "terminal:input", sessionId: "ws1:1", data }));
+      send("hunter");
+      send("2-secret");
+      send("\r");
+      await vi.waitFor(() => expect(written).toHaveLength(3));
+      ws.close();
+
+      const inputRows = rows.filter((r) => r.action === "session.terminal-input");
+      expect(inputRows).toHaveLength(1);
+      expect(inputRows[0]).toMatchObject({
+        deviceId: "dev-1",
+        pairId: "pair-dev-1",
+        status: "success",
+        detail: "terminal=ws1:1 bytes=15 lines=1",
+      });
+      expect(JSON.stringify(rows)).not.toContain("hunter");
+      expect(JSON.stringify(rows)).not.toContain("secret");
+    });
+  });
+
+  test("input for two terminals is aggregated separately, and CRLF counts as one line", async () => {
+    await withAuditedServer({}, async ({ baseUrl, port, rows, written, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const ws = await openSocket(`ws://127.0.0.1:${port}/ws`, { Cookie: cookie });
+      const send = (sessionId: string, data: string) =>
+        ws.send(JSON.stringify({ type: "terminal:input", sessionId, data }));
+      send("ws1:1", "ls");
+      send("ws1:2", "pwd\r\n");
+      send("ws1:1", "\n");
+      await vi.waitFor(() => expect(written).toHaveLength(3));
+      ws.close();
+      expect(rows.filter((r) => r.action === "session.terminal-input").map((r) => r.detail)).toEqual([
+        "terminal=ws1:2 bytes=5 lines=1",
+        "terminal=ws1:1 bytes=3 lines=1",
+      ]);
+    });
+  });
+
+  test("input with no newline is flushed after the quiet period", async () => {
+    await withAuditedServer(
+      { server: { mobileTerminalInputFlushMs: 100 } },
+      async ({ baseUrl, port, rows, seedTicket }) => {
+        seedTicket("t1", "s1", "dev-1");
+        const cookie = await bootstrap(baseUrl, "t1", "s1");
+        const ws = await openSocket(`ws://127.0.0.1:${port}/ws`, { Cookie: cookie });
+        ws.send(JSON.stringify({ type: "terminal:input", sessionId: "ws1:1", data: "ab" }));
+        ws.send(JSON.stringify({ type: "terminal:input", sessionId: "ws1:1", data: "cd" }));
+        await vi.waitFor(() =>
+          expect(rows.filter((r) => r.action === "session.terminal-input").map((r) => r.detail)).toEqual([
+            "terminal=ws1:1 bytes=4 lines=0",
+          ]),
+        );
+        ws.close();
+      },
+    );
+  });
+
+  test("the same input from a master-token client (bound or unbound) records nothing", async () => {
+    await withAuditedServer({ server: { mobileTerminalInputFlushMs: 50 } }, async ({ port, rows, written }) => {
+      const unbound = await openSocket(`ws://127.0.0.1:${port}/ws?token=unused-master-token`);
+      const bound = await openSocket(`ws://127.0.0.1:${port}/ws?token=unused-master-token&clientId=client-abcdef12`);
+      for (const ws of [unbound, bound]) {
+        ws.send(JSON.stringify({ type: "terminal:input", sessionId: "ws1:1", data: "ls\r" }));
+        ws.send(JSON.stringify({ type: "terminal:input", sessionId: "ws1:1", data: "pw" }));
+      }
+      await vi.waitFor(() => expect(written).toHaveLength(4));
+      await new Promise((resolve) => setTimeout(resolve, 200)); // past the flush period
+      unbound.close();
+      bound.close();
+      expect(rows).toEqual([]);
+    });
+  });
+
+  test("file reads are recorded with the path and outcome, listings are not", async () => {
+    await withAuditedServer({}, async ({ baseUrl, dir, rows, seedTicket }) => {
+      await fs.writeFile(path.join(dir, "a.txt"), "file-body-must-not-be-logged");
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const post = (route: string, body: unknown) =>
+        fetch(`${baseUrl}${route}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: cookie },
+          body: JSON.stringify(body),
+        });
+
+      expect((await post("/api/file/list", { rootPath: dir, relativePath: "" })).status).toBe(200);
+      expect((await post("/api/file/read", { rootPath: dir, relativePath: "a.txt" })).status).toBe(200);
+      expect((await post("/api/file/read", { rootPath: dir, relativePath: "missing.txt" })).status).not.toBe(200);
+
+      const fileRows = rows.filter((r) => r.action === "session.file");
+      expect(fileRows.map((r) => ({ status: r.status, detail: r.detail }))).toEqual([
+        { status: "success", detail: `op=read root=${JSON.stringify(dir)} path="a.txt"` },
+        { status: "failure", detail: `op=read root=${JSON.stringify(dir)} path="missing.txt"` },
+      ]);
+      expect(fileRows[0]).toMatchObject({ deviceId: "dev-1", pairId: "pair-dev-1" });
+      expect(JSON.stringify(rows)).not.toContain("file-body-must-not-be-logged");
+    });
+  });
+
+  test("a file read with the master token records nothing", async () => {
+    await withAuditedServer({}, async ({ baseUrl, dir, rows }) => {
+      await fs.writeFile(path.join(dir, "a.txt"), "x");
+      const res = await fetch(`${baseUrl}/api/file/read?token=unused-master-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Strideterm-Client-Id": "client-abcdef12" },
+        body: JSON.stringify({ rootPath: dir, relativePath: "a.txt" }),
+      });
+      expect(res.status).toBe(200);
+      expect(rows).toEqual([]);
+    });
+  });
+
+  test("a failing audit sink never breaks the session or the request", async () => {
+    await withAuditedServer({ auditThrows: true }, async ({ baseUrl, port, dir, seedTicket }) => {
+      await fs.writeFile(path.join(dir, "a.txt"), "x");
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      expect(cookie).toContain("strideterm_session=");
+      const res = await fetch(`${baseUrl}/api/file/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ rootPath: dir, relativePath: "a.txt" }),
+      });
+      expect(res.status).toBe(200);
+      const ws = await openSocket(`ws://127.0.0.1:${port}/ws`, { Cookie: cookie });
+      ws.send(JSON.stringify({ type: "terminal:input", sessionId: "ws1:1", data: "x\r" }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    });
+  });
+});
+
 describe("the managed relay's loopback-only internal origin", () => {
   const MASTER_TOKEN = "the-users-own-remote-token";
   const GUARD = "guard-secret-for-this-test";
@@ -4982,5 +5448,89 @@ describe("the master token in payload.remoteAccess.urls, per transport", () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe("the relay's loopback origin requires the device the relay verified (E2E 3.1)", () => {
+  // The connector sets x-strideterm-relay-device on BOTH relay paths: from the Worker's own stamp on a
+  // plaintext stream, from the relay-stamped `d` on an e2e-wrapped one. A request that reaches this
+  // instance without it did not come through that path intact — it must not be treated as a caller
+  // with no identity, which would skip the ticket↔device binding and pool every phone into one
+  // rate-limit bucket.
+  const GUARD_TOKEN = "guard-secret-for-the-required-device-test";
+
+  function makeRuntime(port: number, consumed: string[]) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: false, host: "0.0.0.0", port, token: "unused-master-token" } },
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [] }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    return {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      addRemoteClientRegistry: () => () => undefined,
+      isMobileSessionStillAuthorized: () => true,
+      consumeMobileWebSessionTicket: (ticketId: string) => {
+        consumed.push(ticketId);
+        return {
+          deviceId: "phone-1",
+          pairId: "pair-1",
+          profileId: "default",
+          allowedOrigin: "https://relay.strideterm.test",
+          transport: "relay" as const,
+          requiredCapability: "remote.webSession" as const,
+          expiresAt: Date.now() + 60_000,
+        };
+      },
+    };
+  }
+
+  async function bootstrap(deviceHeader: string | undefined, consumed: string[]) {
+    const port = await getFreePort();
+    const server = await startRemoteServer({
+      runtime: makeRuntime(port, consumed) as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      loopbackOrigin: {
+        host: "127.0.0.1",
+        port: 0,
+        guardToken: GUARD_TOKEN,
+        publicOrigin: "https://relay.strideterm.test",
+      },
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address!.port}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Strideterm-Relay-Origin": GUARD_TOKEN,
+          ...(deviceHeader === undefined ? {} : { "X-Strideterm-Relay-Device": deviceHeader }),
+        },
+        body: JSON.stringify({ ticketId: "t", secret: "s" }),
+        redirect: "manual",
+      });
+      return response.status;
+    } finally {
+      await server.close();
+    }
+  }
+
+  test("a bootstrap with the guard but NO device header is refused before the ticket is even looked at", async () => {
+    const consumed: string[] = [];
+    expect(await bootstrap(undefined, consumed)).toBe(401);
+    expect(consumed).toEqual([]);
+  });
+
+  test("a bootstrap naming a device other than the ticket's is still refused, and one naming it succeeds", async () => {
+    const consumed: string[] = [];
+    expect(await bootstrap("some-other-phone", consumed)).toBe(401);
+    expect(await bootstrap("phone-1", consumed)).toBe(302);
   });
 });

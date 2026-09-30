@@ -1304,19 +1304,28 @@ describe("GitManager", () => {
 
   // ─── execAuthGit login resolution ────────────────────────────────
 
+  const GIT_NEW = async () => "git version 2.43.0.windows.1\n";
+
+  function decodeAuthHeader(header: string) {
+    return Buffer.from(header.split("Basic ")[1], "base64").toString("utf8");
+  }
+
+  // The token travels in GIT_CONFIG_* (git >= 2.31), never on the command line.
   function extractAuthCredentials(execMock: ReturnType<typeof vi.fn>) {
-    const args = execMock.mock.calls[0][1] as string[];
-    const headerArg = args.find((a) => typeof a === "string" && a.includes("http.extraheader="));
-    if (!headerArg) return null;
-    const base64 = headerArg.split("Basic ")[1];
-    return Buffer.from(base64, "base64").toString("utf8");
+    const [, args, options] = execMock.mock.calls[0] as [string, string[], { env?: Record<string, string> }?];
+    expect(args.some((a) => a.includes("http.extraheader"))).toBe(false);
+    const env = options?.env;
+    if (!env) return null;
+    expect(env.GIT_CONFIG_COUNT).toBe("1");
+    expect(env.GIT_CONFIG_KEY_0).toBe("http.extraheader");
+    return decodeAuthHeader(env.GIT_CONFIG_VALUE_0);
   }
 
   test("execAuthGit uses connection.login for Azure DevOps connections", async () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const credentialStore = { getSecret: () => "azure-pat-123" };
-    const manager = new GitManager({ execGitImpl, credentialStore });
+    const manager = new GitManager({ execGitImpl, credentialStore, gitVersionImpl: GIT_NEW });
 
     await manager.execAuthGit(root, ["push"], {
       connection: { login: "azure-user", tokenRef: "secret:azure" },
@@ -1329,7 +1338,7 @@ describe("GitManager", () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const credentialStore = { getSecret: () => "ghp_token123" };
-    const manager = new GitManager({ execGitImpl, credentialStore });
+    const manager = new GitManager({ execGitImpl, credentialStore, gitVersionImpl: GIT_NEW });
 
     await manager.execAuthGit(root, ["push", "origin", "refs/tags/v1.0.0"], {
       connection: { currentUserLogin: "jstradej", tokenRef: "secret:gh" },
@@ -1342,13 +1351,123 @@ describe("GitManager", () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const credentialStore = { getSecret: () => "some-token" };
-    const manager = new GitManager({ execGitImpl, credentialStore });
+    const manager = new GitManager({ execGitImpl, credentialStore, gitVersionImpl: GIT_NEW });
 
     await manager.execAuthGit(root, ["fetch"], {
       connection: { tokenRef: "secret:ref" },
     });
 
     expect(extractAuthCredentials(execGitImpl)).toBe("x-access-token:some-token");
+  });
+
+  test("execAuthGit on git >= 2.31 keeps the token out of argv and passes it via GIT_CONFIG_* env", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = new GitManager({
+      execGitImpl,
+      credentialStore: { getSecret: () => "pat-xyz" },
+      gitVersionImpl: GIT_NEW,
+    });
+
+    await manager.execAuthGit(root, ["fetch", "origin"], { connection: { login: "me", tokenRef: "secret:ref" } });
+
+    const [, args, options] = execGitImpl.mock.calls[0];
+    expect(JSON.stringify(args)).not.toMatch(/extraheader|Basic|pat-xyz/);
+    expect(args.slice(-2)).toEqual(["fetch", "origin"]);
+    expect(options.env.GIT_CONFIG_COUNT).toBe("1");
+    expect(options.env.GIT_CONFIG_KEY_0).toBe("http.extraheader");
+    expect(options.env.GIT_CONFIG_VALUE_0).toBe(`AUTHORIZATION: Basic ${Buffer.from("me:pat-xyz").toString("base64")}`);
+    // The rest of the sanitized git environment is still there.
+    expect(options.env.GIT_EDITOR).toBe("true");
+  });
+
+  test("execAuthGit on git 2.30 keeps the -c http.extraheader argv path", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = new GitManager({
+      execGitImpl,
+      credentialStore: { getSecret: () => "pat-xyz" },
+      gitVersionImpl: async () => "git version 2.30.2",
+    });
+
+    await manager.execAuthGit(root, ["fetch"], { connection: { login: "me", tokenRef: "secret:ref" } });
+
+    expect(execGitImpl.mock.calls[0]).toHaveLength(2);
+    const args = execGitImpl.mock.calls[0][1] as string[];
+    const headerArg = args.find((a) => a.startsWith("http.extraheader="));
+    expect(headerArg).toBeDefined();
+    expect(decodeAuthHeader(headerArg!)).toBe("me:pat-xyz");
+  });
+
+  test("execAuthGit keeps the argv path when git --version is unparseable or fails", async () => {
+    const { root } = await createGitFixture();
+    for (const gitVersionImpl of [async () => "not a version", async () => Promise.reject(new Error("no git"))]) {
+      const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+      const manager = new GitManager({ execGitImpl, credentialStore: { getSecret: () => "t" }, gitVersionImpl });
+
+      await manager.execAuthGit(root, ["fetch"], { connection: { login: "me", tokenRef: "secret:ref" } });
+
+      expect((execGitImpl.mock.calls[0][1] as string[]).some((a) => a.startsWith("http.extraheader="))).toBe(true);
+      expect(execGitImpl.mock.calls[0]).toHaveLength(2);
+    }
+  });
+
+  test("execAuthGit probes the git version once per manager", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const gitVersionImpl = vi.fn(GIT_NEW);
+    const manager = new GitManager({ execGitImpl, credentialStore: { getSecret: () => "t" }, gitVersionImpl });
+
+    await manager.execAuthGit(root, ["fetch"], { connection: { login: "me", tokenRef: "secret:ref" } });
+    await manager.execAuthGit(root, ["pull"], { connection: { login: "me", tokenRef: "secret:ref" } });
+
+    expect(gitVersionImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test("execAuthGit appends to an existing GIT_CONFIG_COUNT instead of overwriting it", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = new GitManager({
+      execGitImpl,
+      credentialStore: { getSecret: () => "pat-xyz" },
+      gitVersionImpl: GIT_NEW,
+    });
+    const names = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
+    const previous = names.map((name) => process.env[name]);
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = "core.autocrlf";
+    process.env.GIT_CONFIG_VALUE_0 = "false";
+    try {
+      await manager.execAuthGit(root, ["fetch"], { connection: { login: "me", tokenRef: "secret:ref" } });
+    } finally {
+      names.forEach((name, i) => {
+        if (previous[i] === undefined) delete process.env[name];
+        else process.env[name] = previous[i];
+      });
+    }
+
+    const env = execGitImpl.mock.calls[0][2].env;
+    expect(env.GIT_CONFIG_COUNT).toBe("2");
+    expect(env.GIT_CONFIG_KEY_0).toBe("core.autocrlf");
+    expect(env.GIT_CONFIG_VALUE_0).toBe("false");
+    expect(env.GIT_CONFIG_KEY_1).toBe("http.extraheader");
+    expect(decodeAuthHeader(env.GIT_CONFIG_VALUE_1)).toBe("me:pat-xyz");
+  });
+
+  test("execAuthGitStreaming passes the token through env on git >= 2.31", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "pushed\n", stderr: "" });
+    const manager = new GitManager({
+      execGitImpl,
+      credentialStore: { getSecret: () => "pat-xyz" },
+      gitVersionImpl: GIT_NEW,
+    });
+    const onData = vi.fn();
+
+    await manager.execAuthGitStreaming(root, ["push"], { connection: { login: "me", tokenRef: "secret:ref" }, onData });
+
+    expect(extractAuthCredentials(execGitImpl)).toBe("me:pat-xyz");
+    expect(onData).toHaveBeenCalledWith("pushed\n");
   });
 
   test("execAuthGit skips auth when no credentialStore", async () => {

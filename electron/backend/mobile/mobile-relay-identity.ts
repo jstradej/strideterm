@@ -38,6 +38,7 @@ export interface RelayInstallationIdentity {
 export interface RelayIdentityCredentialStore {
   getSecret(ref: string): string;
   setSecret(ref: string, secret: string): Promise<void>;
+  isEncryptionAvailable?(): boolean;
 }
 
 /**
@@ -60,10 +61,18 @@ export async function loadRelayInstallationIdentity(args: {
   } else {
     const generated = generateKeyPairSync("ed25519");
     privateKey = generated.privateKey;
-    await credentialStore.setSecret(
-      RELAY_INSTALLATION_KEY_REF,
-      privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-    );
+    try {
+      await credentialStore.setSecret(
+        RELAY_INSTALLATION_KEY_REF,
+        privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      );
+    } catch (err) {
+      // The store refuses this key as plaintext when the OS keychain is unavailable. The identity is
+      // also the account's installation key, so the runtime must still start: the key then lives for
+      // this run only (and Mobile, which needs it persisted, stays off). Anything else is a real
+      // storage failure and still surfaces.
+      if (credentialStore.isEncryptionAvailable?.() !== false) throw err;
+    }
   }
 
   const publicKey = createPublicKey(privateKey);

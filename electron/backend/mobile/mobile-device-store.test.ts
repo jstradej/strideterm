@@ -11,6 +11,7 @@ import {
   clearCloudRevokePending,
   listPendingCloudRevocations,
   markCloudRevokePending,
+  markRelayE2eSeen,
   recordCloudRevokeAttempt,
   removeRevokedDevice,
   listPendingApprovalDevices,
@@ -247,6 +248,60 @@ describe("createMobileDeviceStore (stateful factory)", () => {
     await store.revokeDevice("dev-1", 4242);
     expect(store.listActiveDevices()).toHaveLength(0);
     expect(store.getDevice("dev-1")?.revokedAt).toBe(4242);
+  });
+});
+
+describe("the relay end-to-end latch", () => {
+  // Security review 3.5: once a device has completed an encrypted relay session, a later relay ticket
+  // request from it without an `e2e` acceptance is a downgrade and is refused. This is the record of it.
+  function twoDevices() {
+    const first = addDevice([], newDeviceInput("dev-1"));
+    if (!first.ok) throw new Error("fixture");
+    const second = addDevice(first.devices, newDeviceInput("dev-2"));
+    if (!second.ok) throw new Error("fixture");
+    return second.devices;
+  }
+
+  test("sets the timestamp on the named device only", () => {
+    const devices = markRelayE2eSeen(twoDevices(), "dev-1", 1234);
+    expect(devices[0]?.relayE2eSeenAt).toBe(1234);
+    expect(devices[1]).not.toHaveProperty("relayE2eSeenAt");
+  });
+
+  test("the first timestamp wins: marking again never moves it", () => {
+    const once = markRelayE2eSeen(twoDevices(), "dev-1", 1234);
+    const twice = markRelayE2eSeen(once, "dev-1", 9999);
+    expect(twice[0]?.relayE2eSeenAt).toBe(1234);
+  });
+
+  test("an unknown device changes nothing, and the input is not mutated", () => {
+    const devices = twoDevices();
+    const result = markRelayE2eSeen(devices, "no-such-device", 1234);
+    expect(result).toEqual(devices);
+    markRelayE2eSeen(devices, "dev-1", 1234);
+    expect(devices[0]).not.toHaveProperty("relayE2eSeenAt");
+  });
+
+  test("the store method persists it once and does not write again for a latched device", async () => {
+    let devices: MobileDeviceRecord[] = [];
+    let writes = 0;
+    const store = createMobileDeviceStore({
+      getDevices: () => devices,
+      mutateDevices: async (fn) => {
+        writes += 1;
+        devices = fn(devices);
+        return devices;
+      },
+    });
+    await store.addDevice(newDeviceInput("dev-1"));
+    const writesAfterAdd = writes;
+
+    await store.markRelayE2eSeen("dev-1", 1234);
+    await store.markRelayE2eSeen("dev-1", 5678);
+    await store.markRelayE2eSeen("no-such-device", 5678);
+
+    expect(store.getDevice("dev-1")?.relayE2eSeenAt).toBe(1234);
+    expect(writes).toBe(writesAfterAdd + 1);
   });
 });
 

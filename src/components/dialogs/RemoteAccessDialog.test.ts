@@ -73,7 +73,7 @@ test("a new pairing confirmation brings the preserved Mobile panel back into vie
     .find((button) => button.text() === "LAN")!
     .trigger("click");
 
-  store.mobilePairingSas = { deviceId: "phone-1", label: "Phone", sas: "1234 5678" };
+  store.mobilePairingSas = { deviceId: "phone-1", label: "Phone" };
   await flushPromises();
 
   expect(wrapper.find(".remote-mode-tab--active").text()).toBe("Mobile");

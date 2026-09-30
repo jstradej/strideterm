@@ -116,7 +116,7 @@ export function addDevice(devices: MobileDeviceRecord[], input: NewDeviceInput):
     pairingId: input.pairingId,
     grantCommitment: input.grantCommitment,
     keyProof: input.keyProof,
-    // Claimed or keyProven — never active. Reaching `active` takes a human pressing "Codes match" and
+    // Claimed or keyProven — never active. Reaching `active` takes a human typing the phone's pairing code and
     // the cloud confirming it (review 3 §P0.1); until then this record authorizes nothing at all: no
     // event is sent to it, no command from it is dispatched, and no WebView ticket is issued.
     state: input.state,
@@ -151,6 +151,21 @@ export function revokeDevice(devices: MobileDeviceRecord[], deviceId: string, no
 
 export function touchLastSeen(devices: MobileDeviceRecord[], deviceId: string, now: number): MobileDeviceRecord[] {
   return devices.map((d) => (d.deviceId === deviceId ? { ...d, lastSeenAt: now } : d));
+}
+
+/**
+ * Latches that this device has completed a relay session WITH end-to-end encryption.
+ *
+ * SET ONCE, NEVER MOVED, NEVER CLEARED. The first timestamp wins, so the record says when the device
+ * first proved it could do this rather than when it last did. There is no inverse: a phone that has
+ * offered end-to-end encryption once has no honest reason to stop, so `remote.webSession.issue`
+ * refuses a later relay request from it that omits the acceptance (a downgrade), whatever the
+ * desktop's `relay.requireE2e` setting says. Forgetting the device and pairing again is the reset.
+ */
+export function markRelayE2eSeen(devices: MobileDeviceRecord[], deviceId: string, now: number): MobileDeviceRecord[] {
+  return devices.map((d) =>
+    d.deviceId === deviceId && typeof d.relayE2eSeenAt !== "number" ? { ...d, relayE2eSeenAt: now } : d,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +289,7 @@ export function listPendingCloudRevocations(devices: MobileDeviceRecord[]): Mobi
 }
 
 /**
- * Records that the human pressed "Codes match — activate" but the cloud has not confirmed yet.
+ * Records that the human typed the phone's pairing code ("Activate") but the cloud has not confirmed yet.
  *
  * This is what makes review 3 §P0.1's restart case answerable: a desktop killed between the click and
  * `approvePairing` returning finds the record in `userApproved`, which is NOT active — so the device
@@ -417,6 +432,12 @@ export function createMobileDeviceStore(deps: MobileDeviceStoreDeps) {
       if (!result.ok) return result;
       await deps.mutateDevices(() => result.devices);
       return result;
+    },
+    async markRelayE2eSeen(deviceId: string, now = Date.now()): Promise<void> {
+      // Set once, so every ticket after the first is a read and not a write of the whole state blob.
+      const existing = findDevice(deps.getDevices(), deviceId);
+      if (!existing || typeof existing.relayE2eSeenAt === "number") return;
+      await deps.mutateDevices((devices) => markRelayE2eSeen(devices, deviceId, now));
     },
     async touchLastSeen(deviceId: string, now = Date.now()): Promise<void> {
       await deps.mutateDevices((devices) => touchLastSeen(devices, deviceId, now));

@@ -30,6 +30,8 @@ import {
   type RelayConnectorState,
   type RelayRevocationRecord,
 } from "./mobile-relay-connector.js";
+import { isLocalBootstrapUrl } from "./bootstrap-client.js";
+import { isSecureBootstrapEndpoint, type BootstrapEnvironment } from "./control-plane-bootstrap.js";
 import { RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
 import { loadRelayInstallationIdentity, type RelayInstallationIdentity } from "./mobile-relay-identity.js";
 import {
@@ -41,6 +43,34 @@ import type { RelayIdentityCredentialStore } from "./mobile-relay-identity.js";
 import type { RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
 
 const log = getLogger("mobile-relay-manager");
+
+/** The fixed code shown in `status().lastError` when a grant names an origin this desktop refuses to dial. */
+export const RELAY_ORIGIN_REJECTED = "relay-origin-rejected";
+
+/**
+ * A grant named a relay origin that fails the endpoint rules or differs from the one the signed
+ * control-plane configuration states. A definitive refusal: asking the issuer again would get the
+ * same origin, so it takes the slow retry path rather than the network backoff.
+ */
+class RelayOriginRejectedError extends MobileRelayGrantDefinitiveRefusalError {
+  constructor() {
+    super(RELAY_ORIGIN_REJECTED);
+    this.message = RELAY_ORIGIN_REJECTED;
+  }
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+/** Hostname only, for logs: a full relay URL is not something to write down. */
+function hostnameForLog(value: string): string {
+  try {
+    return new URL(value).hostname || "(none)";
+  } catch {
+    return "(unparseable)";
+  }
+}
 
 /** What the manager needs from the remote server, without importing it (and its whole dependency set). */
 export interface RelayOriginServer {
@@ -92,6 +122,19 @@ export interface MobileRelayManagerOptions {
    * every `e2e.*` frame outright rather than treating a missing store as a reason to try plaintext.
    */
   e2eSessionStore?: RelayE2eSessionStore;
+  /**
+   * The relay origin the effective control-plane configuration (after the signed bootstrap) states,
+   * read on every grant. When it returns a non-empty value a grant naming any other origin is
+   * refused; when it returns nothing the grant is still held to the endpoint rules below.
+   */
+  expectedRelayOrigin?: () => string | undefined;
+  /**
+   * The declared bootstrap environment. Only `local` may dial a loopback `http://` origin
+   * (`isLocalBootstrapUrl`); every other value, `"unresolved"` and absent included, requires a
+   * public `https://` one (`isSecureBootstrapEndpoint`) — the same rule the bootstrap payload itself
+   * is held to.
+   */
+  environment?: BootstrapEnvironment | "unresolved";
   createConnector?: typeof createRelayConnector;
   /** Injectable so a test can drive the start-failure retry without waiting real seconds. */
   retryDelayMs?: (attempt: number) => number;
@@ -121,6 +164,8 @@ export interface MobileRelayManager {
   stats(): ReturnType<RelayConnector["stats"]> | null;
   /** Told by MobileManager when a device is revoked, so the relay closes its sessions too. */
   revokeDevice(deviceId: string): void;
+  /** Ends every live e2e stream of a device now (its keys were just withdrawn). */
+  endDeviceStreams(deviceId: string): void;
   /** The origin the WebView must be pointed at, or "" when the relay is not running. */
   relayOrigin(): string;
 }
@@ -176,8 +221,30 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
    */
   async function fetchGrant(fingerprint: string): Promise<RelayConnectorGrant> {
     const issued = await options.transport.issueRelayConnectorGrant(options.installationId, fingerprint);
+    assertGrantOriginAcceptable(issued.relayOrigin);
+    if (lastError === RELAY_ORIGIN_REJECTED) lastError = "";
     relayOrigin = issued.relayOrigin;
     return issued;
+  }
+
+  /**
+   * Refuses a grant whose origin the connector must not dial. The callable's answer is network input;
+   * without this the connector dials whatever it names, and the grant is a bearer credential. Throws
+   * a definitive refusal; nothing is bound or dialled for it.
+   */
+  function assertGrantOriginAcceptable(grantOrigin: string): void {
+    const normalized = trimTrailingSlash(String(grantOrigin ?? ""));
+    const expected = trimTrailingSlash((options.expectedRelayOrigin?.() ?? "").trim());
+    const wellFormed =
+      options.environment === "local" ? isLocalBootstrapUrl(normalized) : isSecureBootstrapEndpoint(normalized);
+    if (wellFormed && (!expected || normalized === expected)) return;
+    lastError = RELAY_ORIGIN_REJECTED;
+    log.error("relay grant names an origin this desktop refuses to dial", {
+      code: RELAY_ORIGIN_REJECTED,
+      grantHost: hostnameForLog(normalized),
+      expectedHost: expected ? hostnameForLog(expected) : "(none configured)",
+    });
+    throw new RelayOriginRejectedError();
   }
 
   async function start(): Promise<void> {
@@ -335,6 +402,9 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
     revokeDevice(deviceId: string) {
       connector?.revokeDevice(deviceId);
       origin?.revokeMobileSessionsForDevice?.(deviceId);
+    },
+    endDeviceStreams(deviceId: string) {
+      connector?.endDeviceStreams(deviceId);
     },
     relayOrigin: () => relayOrigin,
   };

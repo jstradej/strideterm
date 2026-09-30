@@ -271,6 +271,57 @@ describe("store", () => {
     expect(backupAfter.settings.sidebarWidth).not.toBe(311);
   });
 
+  describe("remote-access token is never written to disk", () => {
+    test("mutate keeps the token in memory and blanks it in the state file", async () => {
+      const statePath = await createTempStatePath();
+      const store = await createStore(statePath);
+      // The brand-new file is written with defaults, which carry a generated token in memory only.
+      expect(store.getState().settings.remoteAccess.token).not.toBe("");
+      expect(JSON.parse(await fs.readFile(statePath, "utf8")).settings.remoteAccess.token).toBe("");
+
+      await store.mutate((draft) => {
+        draft.settings.remoteAccess.token = "secret-token-1";
+      });
+
+      expect(store.getState().settings.remoteAccess.token).toBe("secret-token-1");
+      const raw = await fs.readFile(statePath, "utf8");
+      expect(JSON.parse(raw).settings.remoteAccess.token).toBe("");
+      expect(raw).not.toContain("secret-token-1");
+    });
+
+    test("a legacy file's token is not copied into the backup, and a later backup lacks it too", async () => {
+      const statePath = await createTempStatePath();
+      const legacy = makeState();
+      legacy.settings.remoteAccess.token = "legacy-token-xyz";
+      await writeJson(statePath, legacy);
+
+      const store = await createStore(statePath);
+      expect(store.getState().settings.remoteAccess.token).toBe("legacy-token-xyz");
+
+      await store.mutate((draft) => {
+        draft.settings.sidebarWidth = 333;
+      });
+
+      expect(await fs.readFile(statePath, "utf8")).not.toContain("legacy-token-xyz");
+      const backup = await fs.readFile(`${statePath}.bak`, "utf8");
+      expect(backup).not.toContain("legacy-token-xyz");
+      expect(JSON.parse(backup).settings.remoteAccess.token).toBe("");
+    });
+
+    test("replace and save blank it as well", async () => {
+      const statePath = await createTempStatePath();
+      const store = await createStore(statePath);
+      const next = structuredClone(store.getState());
+      next.settings.remoteAccess.token = "replaced-token";
+
+      await store.replace(next);
+      expect(await fs.readFile(statePath, "utf8")).not.toContain("replaced-token");
+      await store.save();
+      expect(await fs.readFile(statePath, "utf8")).not.toContain("replaced-token");
+      expect(store.getState().settings.remoteAccess.token).toBe("replaced-token");
+    });
+  });
+
   test("rejects mutate calls without a mutator", async () => {
     const store = await createStore(await createTempStatePath());
     const mutateUnchecked = store.mutate as unknown as (label: string) => Promise<unknown>;

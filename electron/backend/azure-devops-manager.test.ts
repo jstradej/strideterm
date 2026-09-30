@@ -238,6 +238,7 @@ function createManager({
     execFileTextImpl,
     now: () => new Date("2026-03-17T10:00:00.000Z").getTime(),
   });
+  manager.supportsGitConfigEnv = async () => true;
   return { manager, fetchImpl, reviewStore, execFileTextImpl, reviewBridgeStore };
 }
 
@@ -1126,10 +1127,10 @@ describe("AzureDevOpsManager fetchReviewWorkspace / rebaseReviewWorkspace / push
     );
     expect(fetchCall).toBeDefined();
     expect(fetchCall![2]).toMatchObject({ cwd: "/repo" });
-    const headerArg = fetchCall![1].find((a: string) => a.startsWith("http.extraheader="));
-    const decoded = Buffer.from(headerArg.replace("http.extraheader=AUTHORIZATION: Basic ", ""), "base64").toString(
-      "utf8",
-    );
+    // git >= 2.31: the header is in the child's environment, not on its command line.
+    expect(fetchCall![1].some((a: string) => a.includes("http.extraheader"))).toBe(false);
+    const header = fetchCall![2].env.GIT_CONFIG_VALUE_0;
+    const decoded = Buffer.from(header.replace("AUTHORIZATION: Basic ", ""), "base64").toString("utf8");
     expect(decoded).toBe("me@example.com:pat-123");
   });
 

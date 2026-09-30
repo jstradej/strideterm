@@ -546,7 +546,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           devices: [],
           // The managed relay is off until the user turns it on. Nothing about a fresh install, an
           // upgrade, or enabling the mobile integration turns it on by itself.
-          relay: { enabled: false },
+          relay: { enabled: false, requireE2e: true },
         },
       },
       git: {
@@ -1259,6 +1259,9 @@ export function normalizeState(
             ? device.verifiedAt
             : null,
       pendingCloudRevoke: normalizeMobilePendingCloudRevoke(device?.pendingCloudRevoke),
+      // Copied through or it is dropped: this function rebuilds the record on every normalize, and a
+      // latch that normalize erased would never hold. Absent stays absent.
+      ...(typeof device?.relayE2eSeenAt === "number" ? { relayE2eSeenAt: device.relayE2eSeenAt } : {}),
     };
   }
 
@@ -1365,7 +1368,11 @@ export function normalizeState(
         typeof rawRemoteAccess.networkAccess === "boolean"
           ? rawRemoteAccess.networkAccess
           : defaults.settings.remoteAccess.networkAccess,
-      token: rawRemoteAccess.token || defaults.settings.remoteAccess.token,
+      // A persisted string is kept as-is, including "": the state file carries a blank token once
+      // the secret lives in the credential store, and inventing a random one here on every load
+      // would make "stored elsewhere" indistinguishable from "legacy value" for the runtime.
+      // Only a missing / non-string value gets the generated default.
+      token: typeof rawRemoteAccess.token === "string" ? rawRemoteAccess.token : defaults.settings.remoteAccess.token,
     },
     integrations: {
       ...defaults.settings.integrations,
@@ -1429,6 +1436,12 @@ export function normalizeState(
         // silently acquire a new outbound connection.
         relay: {
           enabled: typeof rawMobile.relay?.enabled === "boolean" ? rawMobile.relay.enabled : false,
+          // Backfills to TRUE, the opposite direction from `enabled`, and deliberately: an install that
+          // predates this field gets the guarantee, not the downgrade. A missing value is not a choice
+          // anyone made, and the relay was always meant to be end-to-end encrypted — the only sessions
+          // this refuses are ones from a phone app that does not offer it. The user can untick it, and
+          // an explicit false survives every later normalize because only a NON-boolean is replaced.
+          requireE2e: typeof rawMobile.relay?.requireE2e === "boolean" ? rawMobile.relay.requireE2e : true,
         },
       },
     },

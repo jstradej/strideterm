@@ -243,8 +243,10 @@ export function createFirebaseMobileTransport(deps: FirebaseMobileTransportDeps)
         desktopLabel: request.desktopLabel,
         desktopFingerprint: request.desktopFingerprint,
         desktopPublicKey: request.desktopPublicKey,
-        // Only the hash ever leaves this process — mobile-pairing.ts owns that hashing; the
-        // `secret` field on the request is the plaintext for the QR code, not for the wire.
+        // The plaintext secret IS sent: it goes to the createPairingInvitation callable over the
+        // authenticated TLS channel, and the server hashes it and stores only `secretHash`. The
+        // same value is what the QR code carries, and the phone presents it at claim time to prove
+        // it saw the QR. Nothing here hashes it.
         secret: request.secret,
         // The grants the human ticked. These MUST travel: claimPairing copies them onto the device
         // record and the claim request carries no capability list of its own any more, so dropping

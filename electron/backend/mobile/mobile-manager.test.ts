@@ -183,6 +183,7 @@ async function createFixture(
   });
 
   const revokeRemoteSessions = vi.fn();
+  const revokeRelayE2eSession = vi.fn();
   const externalNotificationEvents = new EventEmitter();
   const notificationOrigins = createMobileNotificationOriginStore();
   const manager = new MobileManager({
@@ -197,6 +198,7 @@ async function createFixture(
     ticketStore,
     notificationOrigins,
     revokeRemoteSessions,
+    revokeRelayE2eSession,
     now: overrides.now,
     getProfileIds: overrides.getProfileIds,
     getCatalogSignature: overrides.getCatalogSignature,
@@ -221,6 +223,7 @@ async function createFixture(
     ticketStore,
     notificationOrigins,
     revokeRemoteSessions,
+    revokeRelayE2eSession,
   };
 }
 
@@ -1242,6 +1245,14 @@ describe("MobileManager.revokeDevice", () => {
     expect(revokeRemoteSessions).toHaveBeenCalledWith(deviceId);
   });
 
+  test("revoking a device withdraws its relay e2e keys and ends its e2e streams (E2E 3.8)", async () => {
+    const { manager, deviceStore, revokeRelayE2eSession } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    await manager.revokeDevice(deviceId);
+    expect(revokeRelayE2eSession).toHaveBeenCalledTimes(1);
+    expect(revokeRelayE2eSession).toHaveBeenCalledWith(deviceId);
+  });
+
   test("a revoke discovered by the authoritative re-read runs the WHOLE local cleanup", async () => {
     // Plan §3.9. The command path re-reads the cloud record immediately before it claims, because a
     // desktop that was offline when the phone unpaired has a stale local copy. That path used to stop
@@ -1592,7 +1603,7 @@ describe("mobile:* runtime events never carry secrets", () => {
       status: "awaiting-approval",
       deviceId: "mobile-x",
       label: "Pixel",
-      sas: expect.any(String),
+      sasReady: true,
       pairingId: qr.pairingId,
     });
     expect(qr.pairingId).toBeTruthy();

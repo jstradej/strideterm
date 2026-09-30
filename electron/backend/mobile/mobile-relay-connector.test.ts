@@ -107,6 +107,20 @@ async function startInternalOrigin(
           .end("cookies");
         return;
       }
+      const STATIC_TYPES: Record<string, string> = {
+        "/app.js": "application/javascript",
+        "/style.css": "text/css",
+        "/logo.svg": "image/svg+xml",
+        "/face.ttf": "font/ttf",
+        "/data.json": "application/json",
+        "/problem.json": "application/problem+json",
+        "/index.html": "text/html; charset=utf-8",
+        "/note.txt": "text/plain",
+      };
+      if (STATIC_TYPES[url.pathname]) {
+        response.writeHead(200, { "content-type": STATIC_TYPES[url.pathname] }).end("x".repeat(2048));
+        return;
+      }
       if (url.pathname === "/big") {
         const total = Number(url.searchParams.get("n") ?? "65536");
         response.writeHead(200, { "content-type": "application/octet-stream" });
@@ -1443,6 +1457,7 @@ describe("relay end-to-end encryption", () => {
     // tries to send the FIRST outbound frame (http.response.start).
     const vanishingStore: RelayE2eSessionStore = {
       put: (deviceId, k, ttlMs) => realStore.put(deviceId, k, ttlMs),
+      delete: (deviceId) => realStore.delete(deviceId),
       get: (deviceId) => {
         calls += 1;
         return calls <= 3 ? realStore.get(deviceId) : null;
@@ -1495,7 +1510,7 @@ describe("relay end-to-end encryption", () => {
   // it, so a viewer opening the (uncompressed, per `inboundHeaders`'s forced `identity`) internal
   // origin's response over an e2e session gets it back smaller, never larger.
   describe("response compression (plan decision 4)", () => {
-    test("a text/plain response is deflated, with content-length dropped rather than left stale", async () => {
+    test("a JavaScript response is deflated, with content-length dropped rather than left stale", async () => {
       const store = createRelayE2eSessionStore();
       const keys = makeE2eKeys();
       store.put(DEVICE_ID, keys, 60_000);
@@ -1524,7 +1539,7 @@ describe("relay end-to-end encryption", () => {
         s: "inner-session",
         id: "inner-compress",
         m: "GET",
-        u: "/hello",
+        u: "/app.js",
         h: [],
       });
       relay.send(start.header, start.payload);
@@ -1549,8 +1564,65 @@ describe("relay end-to-end encryption", () => {
         (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.response.body",
       );
       const openedBody = phone.open(sealedBody);
-      expect(zlib.inflateRawSync(openedBody.payload as Buffer).toString("utf8")).toBe("ok");
+      expect(zlib.inflateRawSync(openedBody.payload as Buffer).toString("utf8")).toBe("x".repeat(2048));
     });
+
+    /** Runs one GET for `path` through a fresh e2e stream and returns the sealed response's start header. */
+    async function responseHeadFor(path: string, label: string): Promise<RelayFrameHeader> {
+      const store = createRelayE2eSessionStore();
+      const keys = makeE2eKeys();
+      store.put(DEVICE_ID, keys, 60_000);
+      const created = startConnector({ e2eSessionStore: store });
+      await awaitConnectorReady(created);
+      const phone = fakePhone(keys);
+      const outerId = `outer-${label}`;
+      const s = "x";
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s,
+        id: outerId,
+        d: DEVICE_ID,
+      });
+      for (const header of [
+        {
+          t: "http.request.start" as const,
+          id: `inner-${label}`,
+          m: "GET" as const,
+          u: path,
+          h: [] as [string, string][],
+        },
+        { t: "http.request.end" as const, id: `inner-${label}` },
+      ]) {
+        const sealed = phone.sealToConnector(outerId, s, {
+          v: RELAY_PROTOCOL_VERSION,
+          src: "viewer",
+          dst: "connector",
+          s: "inner-session",
+          ...header,
+        });
+        relay.send(sealed.header, sealed.payload);
+      }
+      const sealedStart = await relay.waitFor(
+        (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.response.start",
+      );
+      return phone.open(sealedStart).header;
+    }
+
+    test.each(["/style.css", "/logo.svg", "/face.ttf"])("the static client asset %s is deflated", async (path) => {
+      const head = await responseHeadFor(path, path.replace(/[^a-z0-9]/g, ""));
+      expect(head.h).toContainEqual(["content-encoding", "deflate"]);
+    });
+
+    test.each(["/data.json", "/problem.json", "/index.html", "/note.txt"])(
+      "the dynamic response %s is NEVER compressed before encryption",
+      async (path) => {
+        const head = await responseHeadFor(path, path.replace(/[^a-z0-9]/g, ""));
+        expect((head.h ?? []).some(([name]) => name === "content-encoding")).toBe(false);
+      },
+    );
 
     test("an application/octet-stream response (e.g. an attachment) is never compressed", async () => {
       const store = createRelayE2eSessionStore();
@@ -1621,5 +1693,328 @@ describe("relay end-to-end encryption", () => {
       const openedBody = phone.open(sealedBody);
       expect((openedBody.payload as Buffer).toString("utf8")).toBe("binary-payload");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Device identity and stream continuity on the e2e path (security review 2026-09-30, 3.1 and 3.4).
+// ---------------------------------------------------------------------------
+
+describe("relay end-to-end encryption: identity and continuity", () => {
+  const DEVICE_ID = "mobile-device-continuity";
+  const OUTER = "outer-continuity";
+  const S = "x";
+
+  /** Seals one inner frame under an EXPLICIT outer counter, so a test can skip or repeat one. */
+  function sealAt(keys: RelayE2eKeys, counter: bigint, outerId: string, inner: RelayFrameHeader, payload?: Buffer) {
+    const outerHeader: RelayFrameHeader = {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.data",
+      src: "viewer",
+      dst: "connector",
+      s: S,
+      id: outerId,
+      q: 0,
+    };
+    const aad = Buffer.from(JSON.stringify(outerHeader), "utf8");
+    const sealed = sealRelayE2eFrame(Buffer.from(encodeRelayFrame(inner, payload)), keys.phoneToDesktop, counter, aad);
+    return { header: outerHeader, payload: sealed };
+  }
+
+  const inner = (t: RelayFrameHeader["t"], id: string, extra: Partial<RelayFrameHeader> = {}): RelayFrameHeader => ({
+    v: RELAY_PROTOCOL_VERSION,
+    t,
+    src: "viewer",
+    dst: "connector",
+    s: "inner-session",
+    id,
+    ...extra,
+  });
+
+  async function openE2e(outerId = OUTER) {
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    store.put(DEVICE_ID, keys, 60_000);
+    await awaitConnectorReady(startConnector({ e2eSessionStore: store }));
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s: S,
+      id: outerId,
+      d: DEVICE_ID,
+    });
+    return keys;
+  }
+
+  function sendAll(keys: RelayE2eKeys, outerId: string, frames: Array<[bigint, RelayFrameHeader, Buffer?]>): void {
+    for (const [counter, header, payload] of frames) {
+      const sealed = sealAt(keys, counter, outerId, header, payload);
+      relay.send(sealed.header, sealed.payload);
+    }
+  }
+
+  /** Whether a sealed connector frame opens (under this test's keys) to the http.cancel a failed stream sends. */
+  function openCancel(frame: RelayFrame, keys: RelayE2eKeys): boolean {
+    try {
+      const aad = Buffer.from(JSON.stringify(frame.header), "utf8");
+      const opened = decodeRelayFrame(openRelayE2eFrame(frame.payload, keys.desktopToPhone, aad));
+      return opened.header.t === "http.cancel" && opened.header.e === "protocol-error";
+    } catch {
+      return false;
+    }
+  }
+
+  describe("x-strideterm-relay-device (E2E 3.1)", () => {
+    test("an e2e-wrapped request carries the device the RELAY stamped as d", async () => {
+      const keys = await openE2e();
+      sendAll(keys, OUTER, [
+        [0n, inner("http.request.start", "in-1", { m: "GET", u: "/hello", h: [] })],
+        [1n, inner("http.request.end", "in-1")],
+      ]);
+      await waitFor(() => internal.requests.length > 0, 10_000, "the internal origin to see the request");
+      expect(internal.requests.at(-1)!.headers["x-strideterm-relay-device"]).toBe(DEVICE_ID);
+    });
+
+    test("a header the PHONE put inside the inner frame never reaches the desktop, whatever it says", async () => {
+      const keys = await openE2e();
+      sendAll(keys, OUTER, [
+        [
+          0n,
+          inner("http.request.start", "in-2", {
+            m: "GET",
+            u: "/hello",
+            h: [["x-strideterm-relay-device", "someone-elses-device"]],
+          }),
+        ],
+        [1n, inner("http.request.end", "in-2")],
+      ]);
+      await waitFor(() => internal.requests.length > 0, 10_000, "the internal origin to see the request");
+      expect(internal.requests.at(-1)!.headers["x-strideterm-relay-device"]).toBe(DEVICE_ID);
+    });
+
+    test("a plaintext stream still passes through the device the Worker stamped, and none is invented", async () => {
+      await awaitConnectorReady(startConnector());
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.start",
+        src: "viewer",
+        dst: "connector",
+        s: "x",
+        id: "plain-1",
+        m: "GET",
+        u: "/hello",
+        h: [["x-strideterm-relay-device", "device-the-worker-verified"]],
+      });
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.end",
+        src: "viewer",
+        dst: "connector",
+        s: "x",
+        id: "plain-1",
+      });
+      await relay.waitFor((frame) => frame.header.t === "http.response.end");
+      expect(internal.requests.at(-1)!.headers["x-strideterm-relay-device"]).toBe("device-the-worker-verified");
+
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.start",
+        src: "viewer",
+        dst: "connector",
+        s: "x",
+        id: "plain-2",
+        m: "GET",
+        u: "/hello",
+        h: [],
+      });
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.end",
+        src: "viewer",
+        dst: "connector",
+        s: "x",
+        id: "plain-2",
+      });
+      await waitFor(() => internal.requests.length >= 2, 10_000, "the second request");
+      expect(internal.requests.at(-1)!.headers["x-strideterm-relay-device"]).toBeUndefined();
+    });
+  });
+
+  describe("counter continuity (E2E 3.4)", () => {
+    test("a frame the relay dropped ends the session: the next counter is refused and never processed", async () => {
+      const keys = await openE2e();
+      // Counter 0 (the request start) is "lost" by the relay and never sent.
+      sendAll(keys, OUTER, [[1n, inner("http.request.end", "in-3")]]);
+      const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER);
+      expect(close.header.e).toBe("protocol-error");
+      expect(internal.requests.length).toBe(0);
+    });
+
+    test("once a gap has happened every later frame is refused too, on any stream", async () => {
+      const keys = await openE2e();
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s: S,
+        id: "outer-second",
+        d: DEVICE_ID,
+      });
+      sendAll(keys, OUTER, [[5n, inner("http.request.start", "in-4", { m: "GET", u: "/hello", h: [] })]]);
+      await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER);
+      sendAll(keys, "outer-second", [[6n, inner("http.request.start", "in-5", { m: "GET", u: "/hello", h: [] })]]);
+      const close = await relay.waitFor(
+        (frame) => frame.header.t === "e2e.close" && frame.header.id === "outer-second",
+      );
+      expect(close.header.e).toBe("protocol-error");
+      expect(internal.requests.length).toBe(0);
+    });
+
+    test("a gap in an inner http.request.body sequence ends that stream", async () => {
+      const keys = await openE2e();
+      sendAll(keys, OUTER, [
+        [0n, inner("http.request.start", "in-6", { m: "POST", u: "/echo", h: [] })],
+        [1n, inner("http.request.body", "in-6", { q: 0 }), Buffer.from("first")],
+        [2n, inner("http.request.body", "in-6", { q: 2 }), Buffer.from("third-skipped-second")],
+      ]);
+      const cancel = await relay.waitFor((frame) => frame.header.t === "e2e.data" && openCancel(frame, keys));
+      expect(cancel).toBeTruthy();
+    });
+
+    test("the inner sequence of a well-formed body is accepted from 0 without gaps", async () => {
+      const keys = await openE2e();
+      sendAll(keys, OUTER, [
+        [0n, inner("http.request.start", "in-7", { m: "POST", u: "/echo", h: [] })],
+        [1n, inner("http.request.body", "in-7", { q: 0 }), Buffer.from("a")],
+        [2n, inner("http.request.body", "in-7", { q: 1 }), Buffer.from("b")],
+        [3n, inner("http.request.end", "in-7")],
+      ]);
+      await waitFor(() => internal.requests.length > 0, 10_000, "the echo request");
+      expect(internal.requests.at(-1)!.body.toString("utf8")).toBe("ab");
+    });
+
+    test("frames still in flight for a stream this side already closed are counted, so the next stream is not a gap", async () => {
+      const keys = await openE2e();
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s: S,
+        id: "outer-next",
+        d: DEVICE_ID,
+      });
+      // The phone closes stream 1 from its side and keeps a body frame of it in flight.
+      sendAll(keys, OUTER, [[0n, inner("http.request.start", "in-8", { m: "POST", u: "/echo", h: [] })]]);
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.close",
+        src: "viewer",
+        dst: "connector",
+        s: S,
+        id: OUTER,
+        e: "normal",
+      });
+      sendAll(keys, OUTER, [[1n, inner("http.request.body", "in-8", { q: 0 }), Buffer.from("late")]]);
+      // ...and the very next frame, of another stream, carries counter 2.
+      sendAll(keys, "outer-next", [
+        [2n, inner("http.request.start", "in-9", { m: "GET", u: "/hello", h: [] })],
+        [3n, inner("http.request.end", "in-9")],
+      ]);
+      await waitFor(() => internal.requests.some((r) => r.url === "/hello"), 10_000, "the second stream's request");
+      expect(relay.frames.some((frame) => frame.header.t === "e2e.close" && frame.header.id === "outer-next")).toBe(
+        false,
+      );
+    });
+  });
+});
+
+describe("withdrawing a device's keys (E2E 3.8)", () => {
+  const DEVICE = "mobile-device-to-revoke";
+  const OTHER = "mobile-device-that-stays";
+
+  test("endDeviceStreams closes that device's open e2e streams with e2e.close, and only that device's", async () => {
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    const otherKeys = makeE2eKeys();
+    store.put(DEVICE, keys, 60_000);
+    store.put(OTHER, otherKeys, 60_000);
+    await awaitConnectorReady(startConnector({ e2eSessionStore: store }));
+    for (const [id, d] of [
+      ["outer-revoked-1", DEVICE],
+      ["outer-revoked-2", DEVICE],
+      ["outer-stays", OTHER],
+    ] as const) {
+      relay.send({ v: RELAY_PROTOCOL_VERSION, t: "e2e.open", src: "viewer", dst: "connector", s: "x", id, d });
+    }
+    // A request is in flight on one of the revoked device's streams, so there is an inner stream to end too.
+    const phone = fakePhone(keys);
+    const start = phone.sealToConnector("outer-revoked-1", "x", {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.start",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-revoked",
+      m: "POST",
+      u: "/echo",
+      h: [],
+    });
+    relay.send(start.header, start.payload);
+    await waitFor(() => connector!.stats().liveHttpStreams === 1, 10_000, "the inner stream to open");
+
+    connector!.endDeviceStreams(DEVICE);
+
+    const closed = new Set<string>();
+    await waitFor(
+      () => {
+        for (const frame of relay.frames) {
+          if (frame.header.t === "e2e.close" && frame.header.src === "connector") closed.add(frame.header.id as string);
+        }
+        return closed.has("outer-revoked-1") && closed.has("outer-revoked-2");
+      },
+      10_000,
+      "e2e.close for both revoked streams",
+    );
+    expect(closed.has("outer-stays")).toBe(false);
+    expect(connector!.stats().liveHttpStreams).toBe(0);
+  });
+
+  test("once the store no longer holds a device's keys, its next frame is refused, never decrypted", async () => {
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    store.put(DEVICE, keys, 60_000);
+    await awaitConnectorReady(startConnector({ e2eSessionStore: store }));
+    relay.send({
+      v: RELAY_PROTOCOL_VERSION,
+      t: "e2e.open",
+      src: "viewer",
+      dst: "connector",
+      s: "x",
+      id: "outer-after-delete",
+      d: DEVICE,
+    });
+    store.delete(DEVICE);
+    const phone = fakePhone(keys);
+    const start = phone.sealToConnector("outer-after-delete", "x", {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "http.request.start",
+      src: "viewer",
+      dst: "connector",
+      s: "inner-session",
+      id: "inner-after-delete",
+      m: "GET",
+      u: "/hello",
+      h: [],
+    });
+    relay.send(start.header, start.payload);
+    const close = await relay.waitFor(
+      (frame) => frame.header.t === "e2e.close" && frame.header.id === "outer-after-delete",
+    );
+    expect(close.header.e).toBe("unauthorized");
+    expect(internal.requests.length).toBe(0);
   });
 });

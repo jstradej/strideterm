@@ -323,6 +323,28 @@ describe("default state", () => {
     expect(state.settings.remoteAccess.cloudflaredPath).toBe("C:/Tools/cloudflared.exe");
   });
 
+  describe("remoteAccess.token", () => {
+    test("a persisted empty string stays empty (the secret lives in the credential store)", () => {
+      const state = normalizeState({ settings: { remoteAccess: { token: "" } } });
+      expect(state.settings.remoteAccess.token).toBe("");
+      // ...and stays empty across a second pass, as after every store mutation.
+      expect(normalizeState(state).settings.remoteAccess.token).toBe("");
+    });
+
+    test("a missing or non-string token gets a generated one", () => {
+      for (const remoteAccess of [{}, { token: null }, { token: 42 }]) {
+        const state = normalizeState({ settings: { remoteAccess } });
+        expect(typeof state.settings.remoteAccess.token).toBe("string");
+        expect(state.settings.remoteAccess.token.length).toBeGreaterThanOrEqual(43);
+      }
+    });
+
+    test("a brand-new default state gets a generated token", () => {
+      expect(createDefaultState().settings.remoteAccess.token.length).toBeGreaterThanOrEqual(43);
+      expect(normalizeState({}).settings.remoteAccess.token.length).toBeGreaterThanOrEqual(43);
+    });
+  });
+
   describe("remoteAccess.networkAccess", () => {
     test("a new install and an existing state without the key both get networkAccess: true", () => {
       expect(createDefaultState().settings.remoteAccess.networkAccess).toBe(true);
@@ -629,33 +651,107 @@ describe("default state", () => {
   describe("mobile integration settings", () => {
     test("createDefaultState ships mobile disabled, with no devices and no relay", () => {
       const state = createDefaultState();
-      expect(state.settings.integrations.mobile).toEqual({ enabled: false, devices: [], relay: { enabled: false } });
+      expect(state.settings.integrations.mobile).toEqual({
+        enabled: false,
+        devices: [],
+        relay: { enabled: false, requireE2e: true },
+      });
     });
 
     test("normalizeState backfills a missing mobile settings block for pre-mobile persisted state", () => {
       const state = normalizeState({ settings: { theme: "dark" } });
-      expect(state.settings.integrations.mobile).toEqual({ enabled: false, devices: [], relay: { enabled: false } });
+      expect(state.settings.integrations.mobile).toEqual({
+        enabled: false,
+        devices: [],
+        relay: { enabled: false, requireE2e: true },
+      });
     });
 
     test("a persisted state that predates the relay backfills to off, even with mobile already on", () => {
       // An upgrade must not acquire a new outbound connection on the user's behalf. The mobile
       // integration being on says nothing about whether they want a relay.
       const state = normalizeState({ settings: { integrations: { mobile: { enabled: true, devices: [] } } } });
-      expect(state.settings.integrations.mobile.relay).toEqual({ enabled: false });
+      expect(state.settings.integrations.mobile.relay).toEqual({ enabled: false, requireE2e: true });
     });
 
     test("an explicitly enabled relay survives normalization, and a malformed one does not enable itself", () => {
       const enabled = normalizeState({
         settings: { integrations: { mobile: { enabled: true, devices: [], relay: { enabled: true } } } },
       });
-      expect(enabled.settings.integrations.mobile.relay).toEqual({ enabled: true });
+      expect(enabled.settings.integrations.mobile.relay).toEqual({ enabled: true, requireE2e: true });
 
       for (const malformed of ["yes", 1, {}, null]) {
         const state = normalizeState({
           settings: { integrations: { mobile: { enabled: true, devices: [], relay: { enabled: malformed } } } },
         });
-        expect(state.settings.integrations.mobile.relay).toEqual({ enabled: false });
+        expect(state.settings.integrations.mobile.relay).toEqual({ enabled: false, requireE2e: true });
       }
+    });
+
+    // Security review 3.5. `normalizeState()` runs on load AND after every mutation, so this is not
+    // a one-shot migration: the assertion that matters is that an explicit `false` is never re-asserted
+    // back to `true`, i.e. the user's opt-out survives.
+    test("a persisted relay that predates requireE2e backfills it to true, and an explicit false survives", () => {
+      const legacy = normalizeState({
+        settings: { integrations: { mobile: { enabled: true, devices: [], relay: { enabled: true } } } },
+      });
+      expect(legacy.settings.integrations.mobile.relay.requireE2e).toBe(true);
+
+      const optedOut = normalizeState({
+        settings: {
+          integrations: { mobile: { enabled: true, devices: [], relay: { enabled: true, requireE2e: false } } },
+        },
+      });
+      expect(optedOut.settings.integrations.mobile.relay.requireE2e).toBe(false);
+      // And again, the way every mutation re-normalizes the state it just wrote.
+      expect(normalizeState(optedOut).settings.integrations.mobile.relay.requireE2e).toBe(false);
+
+      for (const malformed of ["no", 0, null, {}]) {
+        const state = normalizeState({
+          settings: {
+            integrations: { mobile: { enabled: true, devices: [], relay: { enabled: true, requireE2e: malformed } } },
+          },
+        });
+        expect(state.settings.integrations.mobile.relay.requireE2e).toBe(true);
+      }
+    });
+
+    test("normalizeState keeps a device's relayE2eSeenAt latch, and leaves the field absent when it was never set", () => {
+      const device = {
+        deviceId: "dev-1",
+        uid: "uid-1",
+        pairId: "pair-1",
+        platform: "android",
+        label: "Pixel 8",
+        fingerprint: "AB:CD",
+        publicKey: "pub",
+        sessionKeyVersion: 1,
+        capabilities: ["remote.webSession"],
+        profileAllowlist: ["default"],
+        createdAt: 1000,
+        lastSeenAt: 1000,
+        revoked: false,
+        revokedAt: null,
+        state: "active",
+      };
+      const state = normalizeState({
+        settings: {
+          integrations: {
+            mobile: {
+              enabled: true,
+              devices: [
+                { ...device, relayE2eSeenAt: 7777 },
+                { ...device, deviceId: "dev-2" },
+              ],
+            },
+          },
+        },
+      });
+      const [latched, plain] = state.settings.integrations.mobile.devices;
+      expect(latched?.relayE2eSeenAt).toBe(7777);
+      expect(plain).not.toHaveProperty("relayE2eSeenAt");
+      // Survives the re-normalize that follows every mutation.
+      expect(normalizeState(state).settings.integrations.mobile.devices[0]?.relayE2eSeenAt).toBe(7777);
     });
 
     test("normalizeState preserves an existing paired device record", () => {

@@ -107,4 +107,69 @@ describe("mobile audit log store", () => {
     expect(store.query({ action: "new" }).total).toBe(1);
     store.close();
   });
+
+  test("an optional file logger receives every row, with its action as the message", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-"));
+    tempDirs.push(dir);
+    const mirrored: { message: string; meta?: Record<string, unknown> }[] = [];
+    const store = createMobileAuditLogStore(path.join(dir, "mobile-audit-log.db"), {
+      fileLogger: { info: (message, meta) => mirrored.push({ message, meta }) },
+    });
+    store.logEntry({
+      deviceId: "dev-1",
+      pairId: "pair-1",
+      actor: "device",
+      action: "session.file",
+      status: "failure",
+      detail: 'op=read path="a.txt"',
+    });
+    store.logEntry({
+      deviceId: "dev-1",
+      pairId: "pair-1",
+      actor: "desktop",
+      action: "device.revoked",
+      status: "success",
+    });
+    expect(mirrored).toEqual([
+      {
+        message: "session.file",
+        meta: {
+          deviceId: "dev-1",
+          pairId: "pair-1",
+          actor: "device",
+          status: "failure",
+          detail: 'op=read path="a.txt"',
+        },
+      },
+      {
+        message: "device.revoked",
+        meta: { deviceId: "dev-1", pairId: "pair-1", actor: "desktop", status: "success", detail: "" },
+      },
+    ]);
+    expect(store.getEntryCount()).toBe(2);
+    store.close();
+  });
+
+  test("a throwing file logger never loses the SQLite row or the caller", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-"));
+    tempDirs.push(dir);
+    const store = createMobileAuditLogStore(path.join(dir, "mobile-audit-log.db"), {
+      fileLogger: {
+        info: () => {
+          throw new Error("disk full");
+        },
+      },
+    });
+    expect(() =>
+      store.logEntry({
+        deviceId: "dev-1",
+        pairId: "pair-1",
+        actor: "device",
+        action: "session.started",
+        status: "success",
+      }),
+    ).not.toThrow();
+    expect(store.getEntryCount()).toBe(1);
+    store.close();
+  });
 });

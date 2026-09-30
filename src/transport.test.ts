@@ -1572,11 +1572,13 @@ describe("remote transport API parity — no method silently missing its remote 
     "updateMobileDeviceAllowlist",
     "setMobileEnabled",
     "setMobileRelayEnabled",
+    "setMobileRelayRequireE2e",
     "getMobileRelayStatus",
     "refreshMobileConnectionHealth",
     "sendMobileTestPush",
     "queryMobileAuditLog",
     "onMobileStatus",
+    "onMobileSessionStarted",
     "onMobilePairingProgress",
     "onMobileDeviceRevoked",
     // Account (plan §8.2). Every one of these is desktop-only on purpose, and the reason is not

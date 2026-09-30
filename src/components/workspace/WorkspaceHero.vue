@@ -58,6 +58,7 @@
           <WorkspaceLayoutChip />
         </div>
         <AgentRunChip />
+        <MobileConnectedIndicator />
         <NotificationBell />
       </div>
     </template>
@@ -110,6 +111,7 @@
           <WorkspaceLayoutChip />
         </div>
         <AgentRunChip />
+        <MobileConnectedIndicator />
         <NotificationBell />
       </div>
     </template>
@@ -123,6 +125,7 @@ import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention } from "../../app/helpers.js";
 import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
 import NotificationBell from "../layout/NotificationBell.vue";
+import MobileConnectedIndicator from "../layout/MobileConnectedIndicator.vue";
 import AgentRunChip from "../layout/AgentRunChip.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

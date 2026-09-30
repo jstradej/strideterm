@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { findWorkspace, markWorkspaceWorked } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { insertWorkspace } from "./workspace-order.js";
+import { ClientRequestError } from "./shared/client-request-error.js";
+import { connectionSecretRef, findOwnedConnection } from "./shared/connection-secret.js";
+import { trimTrailingSlash } from "./shared/provider-utils.js";
 import {
   resolveRootPath as resolveRootPathShared,
   assertPrInViewerProfile as assertPrInViewerProfileShared,
@@ -132,13 +135,32 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     async saveGitHubConnection(connection: any, windowId?: string) {
       const { normalizeConnectionInput: normalizeGH, deriveApiBaseUrl } = await import("./github-utils.js");
       const normalizedInput = normalizeGH(connection);
-      const connectionId = normalizedInput.id || `gh-${randomUUID()}`;
-      const tokenRef = connection.tokenRef || `cred:${connectionId}`;
-      const pat = connection.pat || credentialStore.getSecret(tokenRef);
+      const connectionId = String(normalizedInput.id || `gh-${randomUUID()}`);
+      // The secret ref is derived from the id, never taken from the request
+      // (shared/connection-secret.ts). An edit that sends no PAT may reuse the
+      // stored one only while both hosts it is sent to are unchanged.
+      const callerWindowProfileId = getViewerProfileId(windowId) || "";
+      const existingConnection = findOwnedConnection(
+        getGitHubConnections(getState()),
+        connectionId,
+        callerWindowProfileId,
+      );
+      const tokenRef = connectionSecretRef(connectionId);
+      const hostsUnchanged =
+        Boolean(existingConnection) &&
+        trimTrailingSlash(String(existingConnection.hostUrl || "https://github.com")) ===
+          trimTrailingSlash(String(normalizedInput.hostUrl || "https://github.com")) &&
+        trimTrailingSlash(String(existingConnection.apiBaseUrl || deriveApiBaseUrl(existingConnection.hostUrl))) ===
+          trimTrailingSlash(String(normalizedInput.apiBaseUrl || deriveApiBaseUrl(normalizedInput.hostUrl)));
+      const pat = connection.pat || (hostsUnchanged ? credentialStore.getSecret(tokenRef) : "");
+      if (!pat) {
+        throw new ClientRequestError(
+          "A PAT is required: the stored one is reused only while the hosts are unchanged, so enter the PAT again.",
+        );
+      }
       const verification = await github.verifyConnection({ ...normalizedInput, pat });
       // See saveAzureConnection — same cross-profile guard, viewer-aware
       // (window slot ids and remote viewer ids), no windowSlots[0] fallback.
-      const callerWindowProfileId = getViewerProfileId(windowId) || "";
       if (callerWindowProfileId && connection.profileId && connection.profileId !== callerWindowProfileId) {
         throw new Error(
           `Cross-profile refused: saveGitHubConnection payload targets profile ${connection.profileId}, window ${windowId} is bound to ${callerWindowProfileId}.`,

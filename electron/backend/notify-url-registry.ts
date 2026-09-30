@@ -177,13 +177,29 @@ function fileMtime(file: string): number {
   }
 }
 
-/** Write one registry file atomically via tmp+rename to prevent torn reads. */
+/**
+ * Write one registry file atomically via tmp+rename to prevent torn reads.
+ *
+ * The registry names every panel's notify URL (which carries its secret), so the directory is
+ * owner-only (0700) and the files 0600. The chmods are best-effort: Windows ignores POSIX modes,
+ * and a directory this user does not own must not break registration.
+ */
 function writeFileAtomic(file: string, data: NotifyUrlRegistry | NotifyUrlShard): void {
   const dir = path.dirname(file);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    // Foreign-owned or unsupported: keep going with the permissions it has.
+  }
   const tmpPath = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
   fs.renameSync(tmpPath, file);
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // As above.
+  }
 }
 
 export interface NotifyUrlRegistryOptions {

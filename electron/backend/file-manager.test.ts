@@ -23,6 +23,7 @@ import {
   getCommitFiles,
   computeCommitFileDiff,
   setAllowedRootsResolver,
+  withCallerProfile,
 } from "./file-manager.js";
 
 function execGit(cwd: string, args: string[]) {
@@ -54,6 +55,36 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (tmpRoot) await fs.rm(tmpRoot, { recursive: true, force: true });
+});
+
+describe("file-manager roots follow the caller's profile", () => {
+  test("a call made for a profile sees only that profile's roots; a call for none keeps them all", async () => {
+    const rootA = path.join(tmpRoot, "profile-a-root");
+    const rootB = path.join(tmpRoot, "profile-b-root");
+    await fs.mkdir(rootA, { recursive: true });
+    await fs.mkdir(rootB, { recursive: true });
+    await fs.writeFile(path.join(rootB, "b.txt"), "b only\n");
+    const byProfile: Record<string, string[]> = { "profile-a": [rootA], "profile-b": [rootB] };
+    setAllowedRootsResolver((profile) => (profile ? (byProfile[profile] ?? []) : [rootA, rootB]));
+    try {
+      // The same path: allowed for its own profile, refused for another, allowed for an unbound caller.
+      expect((await withCallerProfile("profile-b", () => readFileContent(rootB, "b.txt"))).content).toBe("b only\n");
+      await expect(withCallerProfile("profile-a", () => readFileContent(rootB, "b.txt"))).rejects.toThrow(
+        /Root path not allowed/,
+      );
+      expect((await readFileContent(rootB, "b.txt")).content).toBe("b only\n");
+      // The profile rides through every await of one call, and does not leak into the next one.
+      await expect(
+        withCallerProfile("profile-a", async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return readFileContent(rootB, "b.txt");
+        }),
+      ).rejects.toThrow(/Root path not allowed/);
+      expect((await readFileContent(rootB, "b.txt")).content).toBe("b only\n");
+    } finally {
+      setAllowedRootsResolver(() => [tmpRoot]);
+    }
+  });
 });
 
 describe("file-manager root allowlist + denylist", () => {

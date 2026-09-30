@@ -20,6 +20,41 @@
   color: var(--text);
 }
 
+/* ── "A phone is connected" indicator, beside the bell ── */
+.mobile-connected-indicator {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 15px;
+  line-height: 1;
+  position: relative;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+
+.mobile-connected-indicator:hover {
+  color: var(--text);
+}
+
+.mobile-connected-indicator__count {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent, var(--muted));
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
 /* The count badge carries the unread state statically; the shared heartbeat
    adds a short finite scale pulse while unread items remain. */
 .notification-bell--has-unread {

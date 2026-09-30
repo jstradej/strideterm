@@ -285,10 +285,19 @@ async function claimDevice(fixture: Fixture, options: ClaimOptions = {}) {
   return { mobileKeyPair, sessionKey, qr, device };
 }
 
+/**
+ * Approves the way the human does since review 3 §3.6: by typing the code the phone shows. The phone's
+ * value is the one this desktop derives from the same transcript, so the test reads it from the same
+ * place a real phone's copy would come from.
+ */
+async function approveTyping(fixture: Fixture, deviceId = MOBILE_DEVICE_ID) {
+  return fixture.manager.approveDevice(deviceId, fixture.manager.sasForPendingDevice(deviceId)!);
+}
+
 /** Claims and then approves, i.e. a complete, human-confirmed pairing. */
 async function claimAndApprove(fixture: Fixture, options: ClaimOptions = {}) {
   const claimed = await claimDevice(fixture, options);
-  const result = await fixture.manager.approveDevice(options.deviceId ?? MOBILE_DEVICE_ID);
+  const result = await approveTyping(fixture, options.deviceId ?? MOBILE_DEVICE_ID);
   expect(result.ok).toBe(true);
   return claimed;
 }
@@ -399,7 +408,7 @@ describe("the pairing state machine", () => {
   test("approving activates the device, and only then do events flow", async () => {
     const fixture = await createFixture();
     await claimDevice(fixture);
-    expect((await fixture.manager.approveDevice(MOBILE_DEVICE_ID)).ok).toBe(true);
+    expect((await approveTyping(fixture)).ok).toBe(true);
 
     const device = fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)!;
     expect(device.state).toBe("active");
@@ -418,7 +427,7 @@ describe("the pairing state machine", () => {
   test("the approval names the transcript it approved, so it cannot be replayed onto another record", async () => {
     const fixture = await createFixture();
     const { device } = await claimDevice(fixture);
-    await fixture.manager.approveDevice(MOBILE_DEVICE_ID);
+    await approveTyping(fixture);
     const approve = fixture.transport.getPairingCalls().find((c) => c.call === "approvePairing")!;
     // The hash commits to both public keys and the grant commitment; a record whose key or grants moved
     // between the code being shown and the button being pressed produces a different value, and the
@@ -605,7 +614,7 @@ describe("mismatch, dismissal, timeout and restart", () => {
     expect((await fixture.transport.getDevice(OWN_DEVICE_ID, MOBILE_DEVICE_ID))?.state).toBe("claimed");
     expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)?.state).toBe("keyProven");
 
-    expect(await fixture.manager.approveDevice(MOBILE_DEVICE_ID)).toEqual({ ok: true });
+    expect(await approveTyping(fixture)).toEqual({ ok: true });
     expect(attest).toHaveBeenCalledTimes(2);
     expect((await fixture.transport.getDevice(OWN_DEVICE_ID, MOBILE_DEVICE_ID))?.state).toBe("active");
     fixture.manager.stop();
@@ -617,9 +626,91 @@ describe("mismatch, dismissal, timeout and restart", () => {
     const approve = vi.spyOn(fixture.transport, "approvePairing");
     await claimDevice(fixture);
 
-    expect((await fixture.manager.approveDevice(MOBILE_DEVICE_ID)).ok).toBe(false);
+    expect((await approveTyping(fixture)).ok).toBe(false);
     expect(approve).not.toHaveBeenCalled();
     expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)?.state).toBe("userApproved");
+    fixture.manager.stop();
+  });
+
+  test("a wrong typed code is refused without touching the record, the cloud, or the state — and is audited", async () => {
+    const fixture = await createFixture();
+    await claimDevice(fixture);
+    const approve = vi.spyOn(fixture.transport, "approvePairing");
+    const attest = vi.spyOn(fixture.transport, "attestPairingKeyProof");
+    const expected = fixture.manager.sasForPendingDevice(MOBILE_DEVICE_ID)!.replace(/\s+/g, "");
+    // Off by one digit: the closest a typo gets, and exactly what "looks about right" would wave through.
+    const wrong = `${expected.slice(0, 7)}${(Number(expected[7]) + 1) % 10}`;
+    expect(wrong).not.toBe(expected);
+
+    const result = await fixture.manager.approveDevice(MOBILE_DEVICE_ID, wrong);
+
+    expect(result).toEqual({ ok: false, reason: "sas-mismatch" });
+    expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)!.state).toBe("keyProven");
+    expect(approve).not.toHaveBeenCalled();
+    expect(attest).not.toHaveBeenCalled();
+    expect(fixture.transport.getPairingCalls().some((c) => c.call === "approvePairing")).toBe(false);
+    const { entries } = fixture.auditLogStore.query({ action: "pairing.sas-mismatch" });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ deviceId: MOBILE_DEVICE_ID, actor: "desktop", status: "failure" });
+    // The typed value is evidence, not something to keep: neither digits appear in the row.
+    expect(JSON.stringify(entries[0])).not.toContain(expected);
+    expect(JSON.stringify(entries[0])).not.toContain(wrong);
+    fixture.manager.stop();
+  });
+
+  test("an empty or whitespace-only code is 'sas-required', and changes nothing", async () => {
+    const fixture = await createFixture();
+    await claimDevice(fixture);
+    const approve = vi.spyOn(fixture.transport, "approvePairing");
+
+    for (const blank of ["", "   ", " \t "]) {
+      expect(await fixture.manager.approveDevice(MOBILE_DEVICE_ID, blank)).toEqual({
+        ok: false,
+        reason: "sas-required",
+      });
+    }
+    expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)!.state).toBe("keyProven");
+    expect(approve).not.toHaveBeenCalled();
+    fixture.manager.stop();
+  });
+
+  test.each([
+    ["digits only", (d: string) => d],
+    ["grouped as the phone shows it", (d: string) => `${d.slice(0, 4)} ${d.slice(4)}`],
+    ["padded and double-spaced", (d: string) => ` ${d.slice(0, 4)}  ${d.slice(4)} `],
+  ])("the typed code may be %s", async (_label, format) => {
+    const fixture = await createFixture();
+    await claimDevice(fixture);
+    const digits = fixture.manager.sasForPendingDevice(MOBILE_DEVICE_ID)!.replace(/\s+/g, "");
+    expect(digits).toMatch(/^\d{8}$/);
+
+    expect(await fixture.manager.approveDevice(MOBILE_DEVICE_ID, format(digits))).toEqual({ ok: true });
+    expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)!.state).toBe("active");
+    fixture.manager.stop();
+  });
+
+  test("a code with extra or missing digits is a mismatch, not a prefix match", async () => {
+    const fixture = await createFixture();
+    await claimDevice(fixture);
+    const digits = fixture.manager.sasForPendingDevice(MOBILE_DEVICE_ID)!.replace(/\s+/g, "");
+
+    expect((await fixture.manager.approveDevice(MOBILE_DEVICE_ID, digits.slice(0, 7))).reason).toBe("sas-mismatch");
+    expect((await fixture.manager.approveDevice(MOBILE_DEVICE_ID, `${digits}0`)).reason).toBe("sas-mismatch");
+    expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)!.state).toBe("keyProven");
+    fixture.manager.stop();
+  });
+
+  test("the pairing-progress event says whether a code exists and never carries one", async () => {
+    const fixture = await createFixture();
+    const progress: Array<Record<string, unknown>> = [];
+    fixture.manager.on("mobile:pairing-progress", (payload: Record<string, unknown>) => progress.push(payload));
+    await claimDevice(fixture);
+
+    const awaiting = progress.find((p) => p.status === "awaiting-approval")!;
+    expect(awaiting).toMatchObject({ deviceId: MOBILE_DEVICE_ID, sasReady: true });
+    expect(awaiting).not.toHaveProperty("sas");
+    const digits = fixture.manager.sasForPendingDevice(MOBILE_DEVICE_ID)!.replace(/\s+/g, "");
+    expect(JSON.stringify(progress).replace(/\s+/g, "")).not.toContain(digits);
     fixture.manager.stop();
   });
 
@@ -641,7 +732,8 @@ describe("mismatch, dismissal, timeout and restart", () => {
     const fixture = await createFixture();
     await claimDevice(fixture);
     await fixture.manager.rejectDevice(MOBILE_DEVICE_ID, "sas-mismatch");
-    const result = await fixture.manager.approveDevice(MOBILE_DEVICE_ID);
+    // A revoked record has no derivable code any more, so whatever is typed can only be refused.
+    const result = await fixture.manager.approveDevice(MOBILE_DEVICE_ID, "0000 0000");
     expect(result.ok).toBe(false);
     expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)!.state).toBe("revoked");
     fixture.manager.stop();
@@ -682,7 +774,7 @@ describe("mismatch, dismissal, timeout and restart", () => {
     // rather than remembered, which is what makes the prompt survivable at all.
     expect(fixture.manager.listDevicesAwaitingApproval().map((d) => d.deviceId)).toEqual([MOBILE_DEVICE_ID]);
     expect(fixture.manager.sasForPendingDevice(MOBILE_DEVICE_ID)).toMatch(/^\d{4} \d{4}$/);
-    expect((await fixture.manager.approveDevice(MOBILE_DEVICE_ID)).ok).toBe(true);
+    expect((await approveTyping(fixture)).ok).toBe(true);
     expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)!.state).toBe("active");
     fixture.manager.stop();
   });
@@ -702,7 +794,10 @@ describe("mismatch, dismissal, timeout and restart", () => {
       ownDeviceId: OWN_DEVICE_ID,
       ownPrivateKey: fixture.desktopKeyPair.privateKey,
     });
-    const result = await manager.approveDevice(MOBILE_DEVICE_ID);
+    const result = await manager.approveDevice(
+      MOBILE_DEVICE_ID,
+      fixture.manager.sasForPendingDevice(MOBILE_DEVICE_ID)!,
+    );
     expect(result.ok).toBe(false);
     expect(fixture.deviceStore.getDevice(MOBILE_DEVICE_ID)!.state).toBe("userApproved");
     fixture.manager.stop();

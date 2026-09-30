@@ -211,7 +211,7 @@ export type EncryptedEnvelope = z.infer<typeof EncryptedEnvelopeSchema>;
  * button hid the code. Nothing but `active` authorizes anything now — see mobile-pairing.ts for the
  * transitions and strideterm-mobile/cloud/functions/src/pairing-state.ts for the cloud half.
  *
- * `userApproved` is DESKTOP-LOCAL: the human pressed "Codes match — activate" and the cloud has not
+ * `userApproved` is DESKTOP-LOCAL: the human typed the phone's pairing code ("Activate") and the cloud has not
  * confirmed. Persisted so a crash in that window neither activates the device nor loses the ability
  * to reject it.
  */
@@ -1238,7 +1238,7 @@ export const MobileDeviceRecordSchema = z.object({
   state: DeviceStateSchema.default("active"),
   /** When this desktop verified the claim's key proof. Null while it has not. */
   verifiedAt: z.number().int().min(0).nullable(),
-  /** When the human pressed "Codes match" AND the cloud confirmed. Null means no human has approved. */
+  /** When the human typed the phone's pairing code AND the cloud confirmed. Null means no human has approved. */
   activatedAt: z.number().int().min(0).nullable().default(null),
   /**
    * THE CLOUD HALF OF A REVOCATION THIS DESKTOP HAS ALREADY APPLIED LOCALLY, still owed.
@@ -1268,17 +1268,33 @@ export const MobileDeviceRecordSchema = z.object({
       lastErrorCode: z.string().optional(),
     })
     .optional(),
+  /**
+   * When this device first completed a relay session WITH end-to-end encryption, or absent/null while
+   * it never has.
+   *
+   * A latch, not a log: once it is set, `remote.webSession.issue` refuses a relay ticket from this
+   * device that carries no `e2e` acceptance, whatever the desktop's `relay.requireE2e` setting says.
+   * A phone that has proven it can do end-to-end encryption has no honest reason to stop offering it,
+   * so the only thing a missing acceptance can now mean is a downgrade. Optional so a record written
+   * before this loads unchanged.
+   */
+  relayE2eSeenAt: z.number().int().min(0).nullable().optional(),
 });
 export type MobileDeviceRecord = z.infer<typeof MobileDeviceRecordSchema>;
 
 /** `state.settings.integrations.mobile` — mirrors the telegram/azure/github integration settings shape. */
 export const MobileRelaySettingsSchema = z.object({
   enabled: z.boolean().default(false),
+  /**
+   * Refuse a relay session whose phone does not offer end-to-end encryption. Defaults to true, and
+   * a persisted blob that predates the field gets true as well — see `normalizeState()`.
+   */
+  requireE2e: z.boolean().default(true),
 });
 
 export const MobileIntegrationSettingsSchema = z.object({
   enabled: z.boolean().default(false),
   devices: z.array(MobileDeviceRecordSchema).default([]),
-  relay: MobileRelaySettingsSchema.default({ enabled: false }),
+  relay: MobileRelaySettingsSchema.default({ enabled: false, requireE2e: true }),
 });
 export type MobileIntegrationSettings = z.infer<typeof MobileIntegrationSettingsSchema>;

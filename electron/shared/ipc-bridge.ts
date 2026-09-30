@@ -1,4 +1,5 @@
 import type { StatePayload, Settings, RecoveryResult } from "./types/state.js";
+import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type {
   Workspace,
   WorkspaceUIState,
@@ -389,16 +390,18 @@ export interface StridetermAPI {
   revokeMobileDevice: (deviceId: string) => Promise<unknown>;
   /** Removes an already-revoked device from the local list. Refuses an active one. */
   forgetMobileDevice: (deviceId: string) => Promise<unknown>;
-  /** Review 3 §P0.1: the human said the codes match. The only path to a usable device. */
-  approveMobileDevice: (deviceId: string) => Promise<unknown>;
+  /** Review 3 §P0.1, §3.6: the code the user typed from the phone. The only path to a usable device. */
+  approveMobileDevice: (deviceId: string, sas: string) => Promise<unknown>;
   /** Review 3 §P0.1: the human said they do not match, or dismissed the dialog. Revokes. */
   rejectMobileDevice: (payload: MobileRejectDevice) => Promise<unknown>;
-  /** Devices waiting for that decision, so a restart can re-present the code rather than lose it. */
+  /** Devices waiting for that decision, so a restart can re-present the prompt rather than lose it. */
   listMobileDevicesAwaitingApproval: () => Promise<unknown>;
   updateMobileDeviceAllowlist: (payload: MobileUpdateDeviceAllowlist) => Promise<unknown>;
   setMobileEnabled: (enabled: boolean) => Promise<unknown>;
   /** The managed relay's own flag — independent of `setMobileEnabled` (relay plan §10). */
   setMobileRelayEnabled: (enabled: boolean) => Promise<unknown>;
+  /** Whether a relay session may be issued to a phone that does not offer end-to-end encryption (false = it may). */
+  setMobileRelayRequireE2e: (requireE2e: boolean) => Promise<unknown>;
   /** Relay state, counters and origin — never a grant, a cookie or a payload. */
   getMobileRelayStatus: () => Promise<unknown>;
   refreshMobileConnectionHealth: () => Promise<unknown>;
@@ -775,9 +778,14 @@ export interface StridetermAPI {
   onApprovalRecorded: (handler: (payload: unknown) => void) => void;
   onMobileStatus: (
     handler: (
-      payload: { running: boolean } | { pushLimitReached: true; suppressedCount: number; resetAt: number },
+      payload:
+        | { running: boolean }
+        | { pushLimitReached: true; suppressedCount: number; resetAt: number }
+        | { connectedDevices: MobileConnectedDevice[] },
     ) => void,
   ) => void;
+  /** A paired phone opened a session. The payload is UNVALIDATED here; consumers parse it at the transport boundary. */
+  onMobileSessionStarted: (handler: (payload: unknown) => void) => void;
   onMobilePairingProgress: (handler: (payload: Record<string, unknown>) => void) => void;
   onMobileDeviceRevoked: (handler: (payload: { deviceId: string }) => void) => void;
 }

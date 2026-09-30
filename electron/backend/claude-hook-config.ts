@@ -424,7 +424,7 @@ process.stdin.on("end", () => {
   // fallback, while a duplicate could be counted as a second instance.
   function postJson(u, bodyObj, timeoutMs, allowRetry, callback) {
     let p;
-    try { p = new URL(u); } catch { log("ERROR", "invalid url: " + u); callback(new Error("invalid url"), null, false); return; }
+    try { p = new URL(u); } catch { log("ERROR", "invalid notify url (not parseable; not logged, it carries the secret)"); callback(new Error("invalid url"), null, false); return; }
     const outgoing = JSON.stringify(bodyObj);
     const options = {
       hostname: p.hostname,

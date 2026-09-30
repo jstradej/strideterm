@@ -2,8 +2,12 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { KeyObject } from "node:crypto";
-import { afterEach, describe, expect, test } from "vitest";
-import { createMobileCommandDispatcher, type MobileCommandRuntime } from "./mobile-command-dispatch.js";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import {
+  createMobileCommandDispatcher,
+  type MobileCommandDispatcherDeps,
+  type MobileCommandRuntime,
+} from "./mobile-command-dispatch.js";
 import { createMobileIdempotencyStore } from "./mobile-idempotency-store.js";
 import { createMobileAuditLogStore } from "./mobile-audit-log-store.js";
 import { createMobileWebSessionTicketStore } from "./mobile-web-session-ticket-store.js";
@@ -221,6 +225,10 @@ function createFakeRuntime(): MobileCommandRuntime & {
   };
 }
 
+function setRequireE2e(state: AppState, requireE2e: boolean) {
+  (state.settings.integrations.mobile.relay as { requireE2e: boolean }).requireE2e = requireE2e;
+}
+
 /** What the dispatcher is told about a managed relay. `null` means this build has none at all. */
 type RelayFixture = { enabled: boolean; state: string; relayOrigin: string } | null;
 
@@ -228,6 +236,7 @@ async function createFixture(
   stateOverrides: Partial<AppState> = {},
   relay: RelayFixture = null,
   e2e: { ownPrivateKey: KeyObject; offerStore: RelayE2eOfferStore; sessionStore: RelayE2eSessionStore } | null = null,
+  extraDeps: Partial<MobileCommandDispatcherDeps> = {},
 ) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-dispatch-"));
   tempDirs.push(dir);
@@ -235,6 +244,12 @@ async function createFixture(
   const auditLogStore = createMobileAuditLogStore(path.join(dir, "audit.db"));
   openStores.push(idempotencyStore, auditLogStore);
   const state = makeState(stateOverrides);
+  // The dispatcher now refuses a relay ticket without an `e2e` block unless `relay.requireE2e` is an
+  // explicit false (and treats a state with no setting at all as required). Most of this suite is not
+  // about that and mints relay tickets with no acceptance, so the fixture starts with the requirement
+  // OFF; the tests that are about it turn it on through `setRequireE2e`. The shipped default (true)
+  // is pinned in default-state.test.ts, not here.
+  state.settings.integrations ??= { mobile: { relay: { requireE2e: false } } } as never;
   const runtime = createFakeRuntime();
   const ticketStore = createMobileWebSessionTicketStore();
   const notificationOrigins = createMobileNotificationOriginStore();
@@ -249,8 +264,9 @@ async function createFixture(
     ownPrivateKey: e2e?.ownPrivateKey,
     e2eOfferStore: e2e?.offerStore,
     e2eSessionStore: e2e?.sessionStore,
+    ...extraDeps,
   });
-  return { dispatcher, runtime, idempotencyStore, auditLogStore, ticketStore, notificationOrigins, state };
+  return { dispatcher, runtime, idempotencyStore, auditLogStore, ticketStore, notificationOrigins, state, dir };
 }
 
 describe("authorization: membership / capability / profile", () => {
@@ -571,6 +587,47 @@ describe("remote.webSession.issue", () => {
       requiredCapability: "remote.webSession",
     });
     expect(ticketStore.consumeTicket(data.ticketId, data.ticketSecret, TICKET_CONTEXT)).toBeNull();
+  });
+
+  test("the ticketSecret reaches the phone and never the idempotency ledger (E2E 3.7)", async () => {
+    const { dispatcher, idempotencyStore, dir } = await createFixture();
+    const device = makeDevice({ capabilities: ["remote.webSession"] });
+    const command = makeCommand({
+      type: "remote.webSession.issue",
+      payload: { workspaceId: "ws-1", allowedOrigin: TUNNEL_ORIGIN },
+    });
+    const result = await dispatcher.dispatch(command, device);
+    const secret = (result.data as { ticketSecret: string }).ticketSecret;
+    expect(secret).toBeTruthy();
+
+    // The ledger keeps the outcome and nothing else.
+    const row = idempotencyStore.getByCommandId(command.commandId);
+    expect(row).toMatchObject({ status: "succeeded", resultData: null, errorCode: null });
+
+    // …and not one byte of it is in the database files either (the WAL included).
+    const files = (await fs.readdir(dir)).filter((name) => name.startsWith("idempotency.db"));
+    expect(files.length).toBeGreaterThan(0);
+    for (const name of files) {
+      const bytes = await fs.readFile(path.join(dir, name));
+      expect(bytes.includes(Buffer.from(secret)), name).toBe(false);
+    }
+  });
+
+  test("a replay of a completed issue answers ticket-expired, carries no secret and mints no second ticket", async () => {
+    const { dispatcher, ticketStore } = await createFixture();
+    const device = makeDevice({ capabilities: ["remote.webSession"] });
+    const command = makeCommand({
+      type: "remote.webSession.issue",
+      payload: { workspaceId: "ws-1", allowedOrigin: TUNNEL_ORIGIN },
+    });
+    const first = await dispatcher.dispatch(command, device);
+    const issued = first.data as { ticketId: string; ticketSecret: string };
+    const replay = await dispatcher.dispatch(command, device);
+
+    expect(replay).toMatchObject({ status: "failed", errorCode: "ticket-expired", data: null });
+    expect(JSON.stringify(replay)).not.toContain(issued.ticketSecret);
+    // Only the first dispatch's ticket exists, and it is still redeemable once.
+    expect(ticketStore.consumeTicket(issued.ticketId, issued.ticketSecret, TICKET_CONTEXT)).not.toBeNull();
   });
 
   test("a second dispatch (fresh idempotencyKey) mints a brand-new ticket, independent of the first", async () => {
@@ -1492,5 +1549,169 @@ describe("relay end-to-end encryption key exchange (plan 2026-09-23)", () => {
       expect(stateAfter.includes(key)).toBe(false);
       expect(credentialsAfter.includes(key)).toBe(false);
     }
+  });
+});
+
+// Security review 3.5. The relay cannot downgrade a session to plaintext (pinned above and in
+// relay-e2e-source-shape.test.mts), but a modified phone app can: it simply leaves the `e2e` block out,
+// and the desktop used to mint a relay ticket for it anyway and remember nothing.
+describe("relay end-to-end encryption is required, not merely offered", () => {
+  const RELAY_ORIGIN = "https://relay.test.invalid";
+  const TUNNEL_ORIGIN = "https://example.trycloudflare.com"; // createFakeRuntime's getPayload()
+  const READY_RELAY = { enabled: true, state: "ready", relayOrigin: RELAY_ORIGIN };
+
+  function makeE2eDeps() {
+    const ownPrivateKey = generateX25519KeyPair().privateKey;
+    return { ownPrivateKey, offerStore: createRelayE2eOfferStore(), sessionStore: createRelayE2eSessionStore() };
+  }
+
+  function makeRealPhoneDevice(overrides: Partial<MobileDeviceRecord> = {}) {
+    return makeDevice({
+      capabilities: ["remote.request", "remote.webSession"],
+      publicKey: exportRawPublicKey(generateX25519KeyPair().publicKey).toString("base64"),
+      ...overrides,
+    });
+  }
+
+  /** A ticket issuer that records what it was asked to mint, so "no ticket" is an observation. */
+  function makeSpyIssuer() {
+    const issueTicket = vi.fn(() => ({ ticketId: "t-1", secret: "s-1", expiresAt: Date.now() + 60_000 }));
+    return { issueTicket };
+  }
+
+  const noE2eCommand = () => makeCommand({ type: "remote.webSession.issue", payload: { allowedOrigin: RELAY_ORIGIN } });
+
+  /** The endpoint request (the desktop's offer) and then the ticket request carrying the phone's acceptance. */
+  async function issueWithAcceptance(
+    dispatcher: ReturnType<typeof createMobileCommandDispatcher>,
+    device: MobileDeviceRecord,
+    phoneEphemeralPub = exportRawPublicKey(generateX25519KeyPair().publicKey).toString("base64"),
+  ) {
+    const endpointResult = await dispatcher.dispatch(
+      makeCommand({ type: "remote.endpoint.request", payload: {} }),
+      device,
+    );
+    const keyId = (endpointResult.data as { e2e: RelayE2eDesktopOffer }).e2e.keyId;
+    return dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-2",
+        idempotencyKey: "idem-2",
+        type: "remote.webSession.issue",
+        payload: { allowedOrigin: RELAY_ORIGIN, e2e: { v: 1, keyId, phoneEphemeralPub } },
+      }),
+      device,
+    );
+  }
+
+  test("requireE2e on: a relay ticket request with no e2e block is refused and mints nothing", async () => {
+    const ticketIssuer = makeSpyIssuer();
+    const markRelayE2eSeen = vi.fn();
+    const { dispatcher, state } = await createFixture({}, READY_RELAY, makeE2eDeps(), {
+      ticketIssuer,
+      markRelayE2eSeen,
+    });
+    setRequireE2e(state, true);
+
+    const result = await dispatcher.dispatch(noE2eCommand(), makeRealPhoneDevice());
+
+    expect(result).toMatchObject({ status: "failed", errorCode: "relay-e2e-required" });
+    expect(ticketIssuer.issueTicket).not.toHaveBeenCalled();
+    expect(markRelayE2eSeen).not.toHaveBeenCalled();
+  });
+
+  test("a state with no requireE2e setting at all is treated as required", async () => {
+    const { dispatcher, state } = await createFixture({}, READY_RELAY, makeE2eDeps());
+    delete (state.settings.integrations.mobile.relay as { requireE2e?: boolean }).requireE2e;
+
+    const result = await dispatcher.dispatch(noE2eCommand(), makeRealPhoneDevice());
+
+    expect(result).toMatchObject({ status: "failed", errorCode: "relay-e2e-required" });
+  });
+
+  test("requireE2e off, but the device has done e2e before: still refused — the latch holds without the setting", async () => {
+    const ticketIssuer = makeSpyIssuer();
+    const { dispatcher, state } = await createFixture({}, READY_RELAY, makeE2eDeps(), { ticketIssuer });
+    setRequireE2e(state, false);
+
+    const result = await dispatcher.dispatch(noE2eCommand(), makeRealPhoneDevice({ relayE2eSeenAt: 5000 }));
+
+    expect(result).toMatchObject({ status: "failed", errorCode: "relay-e2e-required" });
+    expect(ticketIssuer.issueTicket).not.toHaveBeenCalled();
+  });
+
+  test("the latch is read from the re-read record, not the one the command was authorised against", async () => {
+    const { dispatcher, state } = await createFixture({}, READY_RELAY, makeE2eDeps(), {
+      currentDevice: (deviceId) => makeRealPhoneDevice({ deviceId, relayE2eSeenAt: 5000 }),
+    });
+    setRequireE2e(state, false);
+
+    const result = await dispatcher.dispatch(noE2eCommand(), makeRealPhoneDevice());
+
+    expect(result).toMatchObject({ status: "failed", errorCode: "relay-e2e-required" });
+  });
+
+  test("requireE2e off and the device never did e2e: the compatibility path still issues a plain relay ticket", async () => {
+    const markRelayE2eSeen = vi.fn();
+    const { dispatcher, state } = await createFixture({}, READY_RELAY, makeE2eDeps(), { markRelayE2eSeen });
+    setRequireE2e(state, false);
+
+    const result = await dispatcher.dispatch(noE2eCommand(), makeRealPhoneDevice());
+
+    expect(result.status).toBe("succeeded");
+    expect(result.data).toMatchObject({ transport: "relay" });
+    expect(result.data).not.toHaveProperty("e2e");
+    // Nothing was proven, so nothing is latched.
+    expect(markRelayE2eSeen).not.toHaveBeenCalled();
+  });
+
+  test("a valid e2e acceptance succeeds with the requirement on, and latches the device", async () => {
+    const e2e = makeE2eDeps();
+    const markRelayE2eSeen = vi.fn();
+    const { dispatcher, state } = await createFixture({}, READY_RELAY, e2e, { markRelayE2eSeen });
+    setRequireE2e(state, true);
+    const device = makeRealPhoneDevice();
+
+    const result = await issueWithAcceptance(dispatcher, device);
+
+    expect(result.status).toBe("succeeded");
+    expect(result.data).toMatchObject({ transport: "relay" });
+    expect(e2e.sessionStore.get(device.deviceId)).not.toBeNull();
+    expect(markRelayE2eSeen).toHaveBeenCalledTimes(1);
+    expect(markRelayE2eSeen).toHaveBeenCalledWith(device.deviceId);
+  });
+
+  test("an acceptance whose key derivation fails does not latch the device", async () => {
+    const markRelayE2eSeen = vi.fn();
+    const { dispatcher } = await createFixture({}, READY_RELAY, makeE2eDeps(), { markRelayE2eSeen });
+
+    const result = await issueWithAcceptance(dispatcher, makeRealPhoneDevice(), "not-a-valid-key");
+
+    expect(result).toMatchObject({ status: "failed", errorCode: "relay-e2e-key-mismatch" });
+    expect(markRelayE2eSeen).not.toHaveBeenCalled();
+  });
+
+  test("a failed latch write does not fail an already-encrypted session", async () => {
+    const { dispatcher } = await createFixture({}, READY_RELAY, makeE2eDeps(), {
+      markRelayE2eSeen: () => Promise.reject(new Error("disk full")),
+    });
+
+    const result = await issueWithAcceptance(dispatcher, makeRealPhoneDevice());
+
+    expect(result.status).toBe("succeeded");
+  });
+
+  test("legacy (tunnel) transport is untouched by the requirement, latched device or not", async () => {
+    const markRelayE2eSeen = vi.fn();
+    const { dispatcher, state } = await createFixture({}, null, null, { markRelayE2eSeen });
+    setRequireE2e(state, true);
+
+    const result = await dispatcher.dispatch(
+      makeCommand({ type: "remote.webSession.issue", payload: { allowedOrigin: TUNNEL_ORIGIN } }),
+      makeRealPhoneDevice({ relayE2eSeenAt: 5000 }),
+    );
+
+    expect(result.status).toBe("succeeded");
+    expect(result.data).toMatchObject({ transport: "legacy" });
+    expect(markRelayE2eSeen).not.toHaveBeenCalled();
   });
 });

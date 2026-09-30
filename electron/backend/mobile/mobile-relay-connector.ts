@@ -69,32 +69,56 @@ const BODY_CHUNK_BYTES = 256 * 1024;
 
 /**
  * Whether an HTTP response's body is worth deflating before it crosses the e2e boundary (plan
- * 2026-09-23, decision 4): text content the browser will otherwise receive uncompressed, since the
- * request into this connector's own internal origin already asks for `identity` (`inboundHeaders`)
- * and nothing upstream of it compresses on the connector's behalf. Never a `Content-Encoding` this
- * response already carries — this connector does not re-encode an encoding it does not understand,
- * and one should not exist here anyway, since the request that produced it asked for `identity`.
+ * 2026-09-23, decision 4): the static client bundle — JavaScript, CSS, SVG and fonts — which is where
+ * the bytes are and which the browser will otherwise receive uncompressed, since the request into this
+ * connector's own internal origin already asks for `identity` (`inboundHeaders`) and nothing upstream
+ * of it compresses on the connector's behalf.
+ *
+ * NOT dynamic responses (`application/json`, `text/html`, `text/plain`, `+json`): compressing before
+ * encrypting makes the ciphertext length depend on the content, which leaks it to anyone who can vary
+ * part of a response that sits next to a secret (CRIME/BREACH). `/api/state` carries names and paths
+ * a terminal user can choose. The gain on those is kilobytes against a megabyte bundle, so the trade
+ * is all risk. Never a `Content-Encoding` this response already carries — this connector does not
+ * re-encode an encoding it does not understand.
  */
+const COMPRESSIBLE_ESSENCES = new Set([
+  "application/javascript",
+  "text/javascript",
+  "application/x-javascript",
+  "text/css",
+  "image/svg+xml",
+  "application/vnd.ms-fontobject",
+  "application/x-font-ttf",
+  "application/x-font-opentype",
+  "application/x-font-truetype",
+  "application/font-sfnt",
+]);
+
 function isCompressibleResponse(response: IncomingMessage): boolean {
   if (response.headers["content-encoding"]) return false;
   const contentType = response.headers["content-type"];
   const essence = (Array.isArray(contentType) ? contentType[0] : contentType)?.split(";")[0]?.trim().toLowerCase();
   if (!essence) return false;
-  if (essence.startsWith("text/")) return true;
-  return (
-    essence === "application/javascript" ||
-    essence === "application/json" ||
-    essence === "image/svg+xml" ||
-    essence.endsWith("+json")
-  );
+  // Every `font/*` subtype: listing them one by one is how one gets missed.
+  return essence.startsWith("font/") || COMPRESSIBLE_ESSENCES.has(essence);
 }
+
+/**
+ * The header the desktop's loopback remote-server reads as the relay's statement of WHICH device is
+ * presenting a request (ticket binding, per-device bootstrap rate limit). Only the connector may set
+ * it: from `d` on an e2e-wrapped stream, from the Worker's own stamp on a plaintext one.
+ */
+const RELAY_DEVICE_HEADER = "x-strideterm-relay-device";
 
 /**
  * Request headers the connector never forwards inward.
  *
  * Hop-by-hop headers describe the browser↔relay hop and mean nothing on this one. `host` and
  * `origin` are replaced rather than dropped. `x-strideterm-relay-origin` is dropped so a viewer
- * cannot supply its own guard value — the connector sets the real one afterwards. `content-length`
+ * cannot supply its own guard value — the connector sets the real one afterwards. `x-strideterm-relay-device`
+ * is dropped for the same reason: on an e2e-wrapped stream the inner frame is composed by the phone, so
+ * whatever it carries is the phone's claim — the connector sets the relay's own (`d`) afterwards.
+ * `content-length`
  * is dropped because this connector re-frames the body and Node recomputes it.
  */
 const DROPPED_INBOUND_HEADERS = new Set([
@@ -111,6 +135,7 @@ const DROPPED_INBOUND_HEADERS = new Set([
   "content-length",
   "accept-encoding",
   "x-strideterm-relay-origin",
+  RELAY_DEVICE_HEADER,
   "x-forwarded-proto",
   "x-forwarded-for",
   "x-forwarded-host",
@@ -257,6 +282,13 @@ export interface RelayConnector {
   state(): RelayConnectorState;
   /** Tells the relay a device is revoked, so a grant minted seconds ago cannot still open a session. */
   revokeDevice(mobileDeviceId: string, revokedAt?: number): void;
+  /**
+   * Ends every e2e stream of `mobileDeviceId` now — each inner stream is torn down and the phone is
+   * told with an `e2e.close` — and forgets the connector's counters for the device. Used when the
+   * device's keys are withdrawn (revocation): without it a stream that is already open would keep
+   * running until its next frame happened to fail, which for an idle WebSocket can be never.
+   */
+  endDeviceStreams(mobileDeviceId: string): void;
   /** Diagnostics for the local harness and the debug UI — counts and states only, never payload. */
   stats(): {
     state: RelayConnectorState;
@@ -331,6 +363,16 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
   const e2eDeviceSessions = new Map<string, E2eDeviceSession>();
   /** The outer e2e stream id → the device it was opened for (from `e2e.open`'s relay-stamped `d`). */
   const e2eOuterDeviceId = new Map<string, string>();
+  /**
+   * Outer e2e streams that ended here, with the device they belonged to, most recent last. The phone's
+   * frames for a stream this side has already closed are still in flight when it closes (the phone
+   * cannot know yet). They carry a counter of the ONE per-device sequence, so they must still be
+   * authenticated and counted — skipping them would leave a gap that the next frame of any other
+   * stream then trips. Bounded: old entries fall out, and a frame for an id that was never seen here
+   * at all is still refused.
+   */
+  const e2eEndedOuterDevice = new Map<string, string>();
+  const MAX_ENDED_OUTER_STREAMS = 512;
   /** The outer e2e stream id → the INNER frame id it carries, learned from the first `e2e.data`. */
   const e2eOuterToInner = new Map<string, string>();
   const e2eExhaustedDevices = new Set<string>();
@@ -373,6 +415,14 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
   function endE2eOuterStream(outerId: string, reason: RelayReason): void {
     const innerId = e2eOuterToInner.get(outerId);
     e2eOuterToInner.delete(outerId);
+    const endedDeviceId = e2eOuterDeviceId.get(outerId);
+    if (endedDeviceId) {
+      e2eEndedOuterDevice.delete(outerId);
+      e2eEndedOuterDevice.set(outerId, endedDeviceId);
+      if (e2eEndedOuterDevice.size > MAX_ENDED_OUTER_STREAMS) {
+        e2eEndedOuterDevice.delete(e2eEndedOuterDevice.keys().next().value as string);
+      }
+    }
     e2eOuterDeviceId.delete(outerId);
     e2eOuterSeq.delete(outerId);
     if (innerId) {
@@ -441,7 +491,8 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
 
   function onE2eData(header: RelayFrameHeader, payload: Buffer): void {
     const outerId = header.id as string;
-    const deviceId = e2eOuterDeviceId.get(outerId);
+    const liveDeviceId = e2eOuterDeviceId.get(outerId);
+    const deviceId = liveDeviceId ?? e2eEndedOuterDevice.get(outerId);
     if (!deviceId) {
       endE2eBadFrame(outerId, "protocol-error");
       return;
@@ -462,10 +513,14 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       endE2eBadFrame(outerId);
       return;
     }
-    // Replay/reordering under this key is refused BEFORE decryption is even attempted — a repeated
-    // or reordered counter is refused whether or not the ciphertext happens to still authenticate.
-    if (counter <= session.inCounter) {
-      endE2eBadFrame(outerId);
+    // The counter must be EXACTLY the next one. The channel is FIFO end to end, so a gap is never
+    // legitimate: it means a frame was dropped (a relay that edits the stream, or a transport that
+    // lost one), and every later frame is then a gap too — the session is refused from here on and
+    // the phone re-issues. A repeated or reordered counter is refused the same way, BEFORE decryption
+    // is even attempted, whether or not the ciphertext happens to still authenticate.
+    if (counter !== session.inCounter + 1n) {
+      log.warn("relay e2e frame out of sequence", { code: "relay-e2e-counter-gap" });
+      endE2eBadFrame(outerId, "protocol-error");
       return;
     }
     // AAD = the canonical outer header bytes, exactly as received — never reconstructed, so this
@@ -481,6 +536,8 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       return;
     }
     session.inCounter = counter;
+    // A frame for a stream that already ended here is authentic and counted, and nothing else.
+    if (!liveDeviceId) return;
 
     let innerFrame: { header: RelayFrameHeader; payload: Buffer };
     try {
@@ -770,6 +827,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     // are tied to the ticket's own TTL, not to this socket, and must keep advancing rather than
     // resetting (a reset would let the same key seal two different frames under the same nonce).
     e2eOuterDeviceId.clear();
+    e2eEndedOuterDevice.clear();
     e2eOuterToInner.clear();
     e2eInnerToOuter.clear();
     e2eOuterSeq.clear();
@@ -1049,7 +1107,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       // `header.u` has already been proven origin-form by the frame decoder, and it is joined to
       // nothing: `host`/`port` come from `internalOrigin` alone.
       path: header.u,
-      headers: inboundHeaders(header.h ?? []),
+      headers: inboundHeaders(header.h ?? [], e2eInnerToOuter.get(streamId)?.deviceId),
     });
 
     const stream: HttpStream = {
@@ -1153,12 +1211,22 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     });
   }
 
+  /**
+   * Whether an INNER frame's `q` is the next one of its stream. Inside an e2e-wrapped stream the
+   * phone numbers its own frames from 0 and the relay cannot see them, so a gap is a frame that was
+   * dropped: refused, not tolerated. A plaintext stream is numbered by the Worker, which keeps its
+   * own (strictly increasing) contract — unchanged.
+   */
+  function isNextInnerSequence(streamId: string, sequence: number, lastSequence: number): boolean {
+    return e2eInnerToOuter.has(streamId) ? sequence === lastSequence + 1 : sequence > lastSequence;
+  }
+
   function writeHttpBody(header: RelayFrameHeader, payload: Buffer, onConsumed?: () => void): void {
     const streamId = header.id as string;
     const stream = httpStreams.get(streamId);
     if (!stream) return;
     const sequence = header.q ?? 0;
-    if (sequence <= stream.inSeq) {
+    if (!isNextInnerSequence(streamId, sequence, stream.inSeq)) {
       failStream(streamId, "protocol-error");
       return;
     }
@@ -1291,7 +1359,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       });
       return;
     }
-    const headers = inboundHeaders(header.h ?? []);
+    const headers = inboundHeaders(header.h ?? [], e2eInnerToOuter.get(streamId)?.deviceId);
     const target = `ws://${options.internalOrigin.host}:${options.internalOrigin.port}${header.u}`;
     const socketToLocal = new WebSocket(target, { headers });
     const stream: WsStream = {
@@ -1373,7 +1441,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     const stream = wsStreams.get(streamId);
     if (!stream) return;
     const sequence = header.q ?? 0;
-    if (sequence <= stream.inSeq) {
+    if (!isNextInnerSequence(streamId, sequence, stream.inSeq)) {
       endWsStream(streamId, 1011, "protocol-error");
       return;
     }
@@ -1505,9 +1573,20 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
   // Header rewriting
   // -------------------------------------------------------------------------
 
-  function inboundHeaders(list: RelayHeaderList): Record<string, string | string[]> {
+  /**
+   * `e2eDeviceId` is the device the relay stamped as `d` on the outer `e2e.open` of an e2e-wrapped
+   * stream; it is the ONLY source of `x-strideterm-relay-device` there, since the inner frame's headers
+   * are the phone's. A plaintext stream has no outer frame: the Worker composed that `h` list itself
+   * (and strips any such header a browser sent), so its value is the relay's and is passed through.
+   */
+  function inboundHeaders(list: RelayHeaderList, e2eDeviceId?: string): Record<string, string | string[]> {
     const out: Record<string, string | string[]> = {};
+    let plaintextRelayDevice = "";
     for (const [name, value] of list) {
+      if (name === RELAY_DEVICE_HEADER) {
+        plaintextRelayDevice = value;
+        continue;
+      }
       if (DROPPED_INBOUND_HEADERS.has(name)) continue;
       const existing = out[name];
       if (existing === undefined) out[name] = value;
@@ -1526,6 +1605,8 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     // byte-perfectly across two hops, and there is nothing to gain on a loopback hop.
     out["accept-encoding"] = "identity";
     out["x-strideterm-relay-origin"] = options.internalOrigin.guardToken;
+    const relayDevice = e2eDeviceId ?? plaintextRelayDevice;
+    if (relayDevice) out[RELAY_DEVICE_HEADER] = relayDevice;
     return out;
   }
 
@@ -1581,6 +1662,13 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       setState("closed");
     },
     state: () => state,
+    endDeviceStreams(mobileDeviceId: string) {
+      for (const [outerId, deviceId] of [...e2eOuterDeviceId]) {
+        if (deviceId === mobileDeviceId) endE2eOuterStreamAndNotify(outerId, "unauthorized");
+      }
+      e2eDeviceSessions.delete(mobileDeviceId);
+      e2eExhaustedDevices.delete(mobileDeviceId);
+    },
     revokeDevice(mobileDeviceId: string, revokedAt = Date.now()) {
       // The RESULT IS DELIBERATELY NOT REPORTED (plan §3.4). A live revoke goes out immediately
       // because it is the fastest path, but nothing here has to succeed for the revocation to hold:

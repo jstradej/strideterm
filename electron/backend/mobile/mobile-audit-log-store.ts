@@ -12,6 +12,14 @@
  * is no column here that could hold a command payload, notification body, or
  * envelope ciphertext; logEntry()'s input type has no such field, so a
  * caller cannot accidentally pass one through.
+ *
+ * Session activity (`session.*` actions, recorded by remote-server.ts for a
+ * session minted from a mobile ticket) follows the same rule: metadata only.
+ * Terminal input is aggregated to byte/line counts and the typed bytes are
+ * never stored; a file row carries the path the client named, never the content.
+ *
+ * Every row is also handed to an optional file logger (`fileLogger`) so a
+ * monitoring agent can tail `mobile-audit.log` without opening SQLite.
  */
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
@@ -30,7 +38,10 @@ export interface MobileAuditLogEntry {
   deviceId: string;
   pairId: string;
   actor: MobileAuditActor;
-  /** e.g. "pairing.claimed", "device.revoked", "command.task.pause", "event.sent" */
+  /**
+   * e.g. "pairing.claimed", "device.revoked", "command.task.pause", "event.sent", and the
+   * session-activity rows "session.started", "session.ended", "session.terminal-input", "session.file".
+   */
   action: string;
   status: "success" | "failure";
   /** Non-content detail only — e.g. an error code or "device-limit-reached". Never payload text. */
@@ -47,7 +58,17 @@ export interface MobileAuditLogFilters {
   offset?: number;
 }
 
-export function createMobileAuditLogStore(databasePath: string) {
+/** The slice of createAuditLogger()'s result the store needs — a plain text mirror of every row. */
+export interface MobileAuditFileLogger {
+  info: (message: string, meta?: Record<string, unknown>) => void;
+}
+
+export interface MobileAuditLogStoreOptions {
+  fileLogger?: MobileAuditFileLogger;
+}
+
+export function createMobileAuditLogStore(databasePath: string, options: MobileAuditLogStoreOptions = {}) {
+  const { fileLogger } = options;
   mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
 
@@ -89,6 +110,18 @@ export function createMobileAuditLogStore(databasePath: string) {
       );
     } catch (err) {
       log.warn("failed to write entry", { err: (err as Error)?.message || String(err) });
+    }
+    if (!fileLogger) return;
+    try {
+      fileLogger.info(entry.action, {
+        deviceId: entry.deviceId || "",
+        pairId: entry.pairId || "",
+        actor: entry.actor,
+        status: entry.status,
+        detail: entry.detail || "",
+      });
+    } catch (err) {
+      log.warn("failed to mirror entry to file log", { err: (err as Error)?.message || String(err) });
     }
   }
 

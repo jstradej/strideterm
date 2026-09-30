@@ -81,7 +81,9 @@ import {
   RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS,
   RELAY_MOBILE_SESSION_IDLE_TTL_MS,
 } from "./mobile/mobile-relay-protocol.js";
-import { remoteViewerId } from "./viewer-id.js";
+import { parseRemoteViewerId, remoteViewerId } from "./viewer-id.js";
+import { ClientRequestError } from "./shared/client-request-error.js";
+import { classifyMobileRoute, evaluateMobileRoute } from "./mobile-session-route-policy.js";
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import {
@@ -91,6 +93,7 @@ import {
   looksLikeStatePayload,
   resourceProfileAuthorized,
   resourceRevision,
+  REMOTE_STATE_PROTOCOL,
   selectCapabilities,
   servesRemoteCore,
 } from "./remote-core.js";
@@ -462,6 +465,30 @@ interface Runtime {
    * device store every other authorization reads.
    */
   isMobileSessionStillAuthorized?(deviceId: string, profileId: string): boolean;
+  /**
+   * Appends a `session.*` row to the local mobile audit log (and its `mobile-audit.log` mirror) for
+   * a session minted from a mobile ticket. Metadata only — callers never pass typed bytes or file
+   * contents. Sessions with no device (browser, master token, Telegram) are not recorded.
+   */
+  recordMobileSessionAudit?(entry: {
+    deviceId: string;
+    pairId: string;
+    action: string;
+    status: "success" | "failure";
+    detail?: string;
+  }): void;
+  /**
+   * The CURRENT set of live mobile sessions, pushed every time it changes (a session minted, ended,
+   * revoked, or the server stopping — then the list is empty). The desktop shows it as "a phone is
+   * connected now". Deliberately carries no `sessionId` (the bearer credential) and no `pairId`.
+   *
+   * `source` names which server reports, because the direct and the relay-origin servers each hold
+   * their own sessions: the receiver merges per source rather than letting one overwrite the other.
+   */
+  onMobileSessionsChanged?(
+    sessions: ReadonlyArray<{ deviceId: string; profileId: string; startedAt: number }>,
+    source?: string,
+  ): void;
   getMobileAttachmentContext?(deviceId: string): {
     desktopDeviceId: string;
     privateKey: import("node:crypto").KeyObject;
@@ -554,6 +581,33 @@ const MOBILE_SESSION_IDLE_TTL_MS = RELAY_MOBILE_SESSION_IDLE_TTL_MS;
  * reach.
  */
 const MOBILE_SESSION_SWEEP_MS = 60_000;
+/** A mobile session's pending terminal-input audit row is flushed after this long without further input. */
+const MOBILE_TERMINAL_INPUT_FLUSH_MS = 10_000;
+/** Longest client-named value (a file path) kept in a mobile session audit `detail`. */
+const MOBILE_AUDIT_VALUE_MAX = 1024;
+
+/**
+ * The file operations recorded as `session.file` for a mobile session, each with the `detail` tail it
+ * writes: the path(s) the client named (quoted), never content. fileRoute prefixes `root=<rootPath>` to every one. Anything not listed here is a pure
+ * metadata listing and leaves no row.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MobileFileAuditDescriber = (body: any, q: (value: unknown) => string) => string;
+const MOBILE_AUDITED_FILE_OPS: Record<string, MobileFileAuditDescriber> = {
+  preview: (b, q) => `path=${q(b.relativePath)}`,
+  read: (b, q) => `path=${q(b.relativePath)}`,
+  write: (b, q) => `path=${q(b.relativePath)}`,
+  "create-file": (b, q) => `path=${q(b.parentPath)} name=${q(b.name)}`,
+  "create-dir": (b, q) => `path=${q(b.parentPath)} name=${q(b.name)}`,
+  rename: (b, q) => `path=${q(b.relativePath)} target=${q(b.newName)}`,
+  delete: (b, q) => `path=${q(b.relativePath)}`,
+  move: (b, q) => `path=${q(b.fromPath)} target=${q(b.toPath)}`,
+  copy: (b, q) => `path=${q(b.fromPath)} target=${q(b.toPath)}`,
+  "git-ignore": (b, q) => `path=${q(b.relativePath)}`,
+  "git-diff": (b, q) => `path=${q(b.relativePath)}`,
+  "commit-diff": (b, q) => `path=${q(b.relativePath)} hash=${q(b.hash)}`,
+  "commit-files": (b, q) => `hash=${q(b.hash)}`,
+};
 
 function writeHead(response: ServerResponse, statusCode: number, headers: Record<string, string>): void {
   response.writeHead(statusCode, { ...SECURITY_HEADERS, ...headers });
@@ -1236,7 +1290,21 @@ function pickEncoding(acceptEncoding: string | undefined, byteLength: number): "
 
 const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5 MB
 
+// A request stream can be read once. The mobile route policy reads the body before the
+// route it is guarding does, so the parse is cached per request and every later caller
+// gets the same result instead of a stream that has already ended.
+const parsedRequestBodies = new WeakMap<IncomingMessage, Promise<Record<string, unknown>>>();
+
 function readRequestBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  let parsed = parsedRequestBodies.get(request);
+  if (!parsed) {
+    parsed = readRequestBodyOnce(request);
+    parsedRequestBodies.set(request, parsed);
+  }
+  return parsed;
+}
+
+function readRequestBodyOnce(request: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let raw = "";
     let size = 0;
@@ -1539,12 +1607,8 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   // /api/github/quickfix/create is handled in the outer dispatch (slot-aware).
 
   // --- Telegram ---
-  "/api/telegram/verify-connection": (runtime, body) => runtime.verifyTelegramConnection(body.connection || {}),
-  "/api/telegram/detect-chats": (runtime, body) => runtime.detectTelegramChats(body.connection || {}),
-  "/api/telegram/save-connection": async (runtime, body) => {
-    const result = await runtime.saveTelegramConnection(body.connection || {});
-    return result.payload;
-  },
+  // verify-connection, detect-chats and save-connection are handled in the outer
+  // dispatch (slotAwareRoute) so they resolve the caller's profile.
   "/api/telegram/delete-connection": (runtime, body) => runtime.deleteTelegramConnection(body.connectionId),
   "/api/telegram/refresh": (runtime) => runtime.refreshTelegramState(),
 
@@ -1725,25 +1789,9 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   "/api/profile/delete": (runtime, body) => runtime.deleteProfile(body.profileId),
 
   // --- File manager endpoints (read-only by default for remote) ---
-  "/api/file/list": (_runtime, body) => fm.listDirectory(body.rootPath as string, body.relativePath as string),
-  "/api/file/tree": (_runtime, body) => fm.getDirectoryTree(body.rootPath as string, body.relativePath as string),
-  "/api/file/preview": (_runtime, body) => fm.readFilePreview(body.rootPath as string, body.relativePath as string),
-  "/api/file/read": (_runtime, body) => fm.readFileContent(body.rootPath as string, body.relativePath as string),
-  "/api/file/write": (_runtime, body) =>
-    fm.writeFileContent(body.rootPath as string, body.relativePath as string, body.content as string),
-  "/api/file/create-file": (_runtime, body) =>
-    fm.createFile(body.rootPath as string, body.parentPath as string, body.name as string),
-  "/api/file/create-dir": (_runtime, body) =>
-    fm.createDirectory(body.rootPath as string, body.parentPath as string, body.name as string),
-  "/api/file/rename": (_runtime, body) =>
-    fm.renameEntry(body.rootPath as string, body.relativePath as string, body.newName as string),
-  "/api/file/delete": (_runtime, body) => fm.deleteEntry(body.rootPath as string, body.relativePath as string),
-  "/api/file/git-ignore": (_runtime, body) =>
-    fm.addToGitignore(body.rootPath as string, body.relativePath as string, body.isDirectory === true),
-  "/api/file/move": (_runtime, body) =>
-    fm.moveEntry(body.rootPath as string, body.fromPath as string, body.toPath as string),
-  "/api/file/copy": (_runtime, body) =>
-    fm.copyEntry(body.rootPath as string, body.fromPath as string, body.toPath as string),
+  // The fm-backed file routes (list/tree/preview/read/write/…/commit-diff) are NOT here:
+  // they run in the slot-aware dispatch (`slotAwareRoute`), which knows the caller's
+  // profile and scopes the roots a path may live under to it. Only the no-ops stay.
   // Open-in-explorer is an Electron-only feature; noop for remote.
   "/api/file/open-in-explorer": () => ({ ok: true }),
   // OS-clipboard "copy file" is an Electron-only feature; noop for remote.
@@ -1751,18 +1799,6 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   "/api/file/clipboard-copy": () => ({ ok: true }),
   // Open-in-editor is an Electron-only feature; noop for remote.
   "/api/file/open-in-editor": () => ({ ok: true }),
-  "/api/file/info": (_runtime, body) => fm.getFileInfo(body.rootPath as string, body.relativePath as string),
-  "/api/file/git-status": (_runtime, body) =>
-    fm.getGitFileStatus(body.rootPath as string, { includeIgnored: !!body.includeIgnored }),
-  "/api/file/git-refs": (_runtime, body) => fm.getGitRefs(body.rootPath as string, (body.relativePath as string) || ""),
-  "/api/file/git-diff": (_runtime, body) =>
-    fm.computeFileDiff(body.rootPath as string, body.relativePath as string, {
-      source: (body.source as string) || "head",
-      revisionRef: (body.revisionRef as string) || "",
-    }),
-  "/api/file/commit-files": (_runtime, body) => fm.getCommitFiles(body.rootPath as string, body.hash as string),
-  "/api/file/commit-diff": (_runtime, body) =>
-    fm.computeCommitFileDiff(body.rootPath as string, body.relativePath as string, body.hash as string),
 
   // --- SSH (remote is read-only per plan §14) ---
   "/api/ssh/hosts/list": (runtime) => runtime["ssh:hosts:list"](),
@@ -2005,6 +2041,12 @@ async function handleMobileAttachmentRequest(
     nonce: response.nonce.toString("base64url"),
     ciphertext: response.ciphertext.toString("base64url"),
   };
+}
+
+/** HTTP status for an error thrown out of a route handler: a refused request is the caller's (4xx), anything else is ours (500). */
+function refusalStatus(error: unknown, message: string): number {
+  if (error instanceof ClientRequestError) return error.status;
+  return message.startsWith("IPC validation failed") ? 400 : 500;
 }
 
 async function handleApiRequest(
@@ -2270,7 +2312,7 @@ async function handleApiRequest(
     json(response, 404, { error: "Not found" });
   } catch (error) {
     const msg = (error as Error).message || "Remote API failed";
-    const statusCode = msg.startsWith("IPC validation failed") ? 400 : 500;
+    const statusCode = refusalStatus(error, msg);
     json(response, statusCode, { error: msg });
   }
 }
@@ -2285,6 +2327,7 @@ export async function startRemoteServer({
   mobileSessionAbsoluteTtlMs = MOBILE_SESSION_ABSOLUTE_TTL_MS,
   mobileSessionIdleTtlMs = MOBILE_SESSION_IDLE_TTL_MS,
   mobileSessionSweepMs = MOBILE_SESSION_SWEEP_MS,
+  mobileTerminalInputFlushMs = MOBILE_TERMINAL_INPUT_FLUSH_MS,
   wsHeartbeatIntervalMs = WS_HEARTBEAT_INTERVAL_MS,
   wsHeartbeatMaxMissed = WS_HEARTBEAT_MAX_MISSED,
   loopbackOrigin,
@@ -2307,6 +2350,8 @@ export async function startRemoteServer({
   mobileSessionAbsoluteTtlMs?: number;
   mobileSessionIdleTtlMs?: number;
   mobileSessionSweepMs?: number;
+  /** Quiet period after which a mobile session's aggregated terminal-input audit row is written. */
+  mobileTerminalInputFlushMs?: number;
   /**
    * The keep-alive tick and how many of them a silent client survives, injectable for the same
    * reason: the shipped tolerance is a minute of unreachability and no test can wait for it. What
@@ -2413,6 +2458,13 @@ export async function startRemoteServer({
     runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
     return { close: async () => {} };
   }
+  if (!isLoopbackOrigin && !token) {
+    // The runtime adopts the token from the credential store at startup, so this is not expected.
+    // Never start a server whose bearer secret is empty: treat remote access as disabled instead.
+    log.error("remote access has no token; the remote server is not started");
+    runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
+    return { close: async () => {} };
+  }
 
   const audit = createAuditLogger(isLoopbackOrigin ? "relay-origin-api-audit" : "remote-api-audit");
 
@@ -2488,6 +2540,130 @@ export async function startRemoteServer({
     return id;
   }
 
+  /**
+   * Records one `session.*` row for a MOBILE session (a record with a device id); a no-op for every
+   * other kind of session. An audit failure must never break the request it describes.
+   */
+  function recordMobileSessionAudit(
+    record: { deviceId: string | null; pairId: string | null } | undefined,
+    action: string,
+    status: "success" | "failure",
+    detail?: string,
+  ): void {
+    if (!record?.deviceId) return;
+    try {
+      runtime.recordMobileSessionAudit?.({
+        deviceId: record.deviceId,
+        pairId: record.pairId ?? "",
+        action,
+        status,
+        detail,
+      });
+    } catch (err) {
+      log.warn("mobile session audit write failed", { err: (err as Error)?.message || String(err) });
+    }
+  }
+
+  /**
+   * Pushes the live mobile sessions (records with a device id) to the runtime. Metadata only: the
+   * session id and pair id never leave this function. A failure here must never break the request
+   * or shutdown that changed the set.
+   */
+  function publishMobileSessions(stopping = false): void {
+    try {
+      const sessions = stopping
+        ? []
+        : [...activeSessions.values()]
+            .filter((record) => record.deviceId)
+            .map((record) => ({
+              deviceId: record.deviceId as string,
+              profileId: record.profileId,
+              startedAt: record.createdAt,
+            }));
+      runtime.onMobileSessionsChanged?.(sessions, isLoopbackOrigin ? "relay" : "direct");
+    } catch (err) {
+      log.warn("mobile session list publish failed", { err: (err as Error)?.message || String(err) });
+    }
+  }
+
+  /** Quotes a client-named value (a path) for an audit `detail`: no control characters, bounded length. */
+  function auditDetailValue(value: unknown): string {
+    const text = typeof value === "string" ? value : "";
+    return JSON.stringify(text.length > MOBILE_AUDIT_VALUE_MAX ? text.slice(0, MOBILE_AUDIT_VALUE_MAX) : text);
+  }
+
+  /**
+   * Terminal input of a mobile session, aggregated per (mobile session, terminal). One row per
+   * submitted command or per quiet period — never one per keystroke, and never the typed bytes
+   * (they may be a password): only how many bytes and how many line breaks went through.
+   */
+  interface MobileTerminalInputAccumulator {
+    deviceId: string;
+    pairId: string | null;
+    sessionId: string;
+    terminalSessionId: string;
+    bytes: number;
+    lines: number;
+    timer: NodeJS.Timeout | null;
+  }
+  const mobileTerminalInput = new Map<string, MobileTerminalInputAccumulator>();
+
+  function flushMobileTerminalInput(key: string): void {
+    const acc = mobileTerminalInput.get(key);
+    if (!acc) return;
+    mobileTerminalInput.delete(key);
+    if (acc.timer) clearTimeout(acc.timer);
+    recordMobileSessionAudit(
+      acc,
+      "session.terminal-input",
+      "success",
+      `terminal=${acc.terminalSessionId} bytes=${acc.bytes} lines=${acc.lines}`,
+    );
+  }
+
+  function flushMobileTerminalInputForSession(sessionId: string): void {
+    for (const [key, acc] of [...mobileTerminalInput]) {
+      if (acc.sessionId === sessionId) flushMobileTerminalInput(key);
+    }
+  }
+
+  function recordMobileTerminalInput(sessionId: string, terminalSessionId: string, data: string): void {
+    const record = activeSessions.get(sessionId);
+    if (!record?.deviceId) return;
+    const key = `${sessionId}\u0000${terminalSessionId}`;
+    let acc = mobileTerminalInput.get(key);
+    if (!acc) {
+      acc = {
+        deviceId: record.deviceId,
+        pairId: record.pairId,
+        sessionId,
+        terminalSessionId,
+        bytes: 0,
+        lines: 0,
+        timer: null,
+      };
+      mobileTerminalInput.set(key, acc);
+    }
+    acc.bytes += Buffer.byteLength(data, "utf8");
+    // A CRLF pair is one submitted line, not two.
+    const lineBreaks = data.match(/\r\n|\r|\n/g)?.length ?? 0;
+    acc.lines += lineBreaks;
+    if (acc.timer) clearTimeout(acc.timer);
+    if (lineBreaks > 0) {
+      flushMobileTerminalInput(key);
+      return;
+    }
+    acc.timer = setTimeout(() => flushMobileTerminalInput(key), mobileTerminalInputFlushMs);
+    acc.timer.unref?.();
+  }
+
+  /** Audit side of a mobile session going away: pending input first, then the `session.ended` row. */
+  function auditMobileSessionEnded(record: MobileSessionRecord | undefined, reason: string): void {
+    if (!record?.deviceId) return;
+    flushMobileTerminalInputForSession(record.sessionId);
+    recordMobileSessionAudit(record, "session.ended", "success", `reason=${reason}`);
+  }
+
   /** Mints a session bound to a mobile device, from an already-consumed WebView ticket record (never from client-supplied fields). */
   function mintMobileSession(ticket: { deviceId: string; pairId: string; profileId: string }): string {
     const id = randomBytes(32).toString("base64url");
@@ -2504,6 +2680,7 @@ export async function startRemoteServer({
       expiresAt: now + mobileSessionAbsoluteTtlMs,
       idleExpiresAt: now + mobileSessionIdleTtlMs,
     });
+    publishMobileSessions();
     return id;
   }
 
@@ -2538,9 +2715,12 @@ export async function startRemoteServer({
    * per-viewer operations and makes a dead session look like a live viewer to the runtime.
    */
   function endMobileSession(sessionId: string, reason: string): void {
+    const record = activeSessions.get(sessionId);
     activeSessions.delete(sessionId);
+    auditMobileSessionEnded(record, reason);
     closeSessionSockets(sessionId, reason);
     registry.remove(sessionId);
+    if (record?.deviceId) publishMobileSessions();
     audit.info("mobile session ended", { sessionRef: remoteSessionRef(sessionId), reason });
   }
 
@@ -2648,6 +2828,49 @@ export async function startRemoteServer({
   // handleApiRequest doesn't have apiSessionId in scope, so we intercept
   // here. See runtime-azure-handlers.openAzurePullRequest for the flicker
   // this prevents.
+  // File-manager routes run under the caller's profile: the roots a `rootPath` may name are
+  // those of the profile's own workspaces (fm.withCallerProfile). The dispatch below refuses
+  // a caller with no bound session before any handler runs, so a profile is always known here.
+  //
+  // `op` names the operation for the mobile audit trail: a mobile session's content-touching
+  // operations (MOBILE_AUDITED_FILE_OPS) are recorded as `session.file` rows — the path the client
+  // named, never a byte of content. Pure listings (list, tree, info, git-status, git-refs) are not.
+  const fileRoute =
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (op: string, run: (body: any) => Promise<unknown>) => (body: any, windowId: string) => {
+      const clientSessionId = parseRemoteViewerId(windowId);
+      const profileId = clientSessionId ? registry.get(clientSessionId)?.profileId : undefined;
+      if (!profileId) throw new ClientRequestError("File access requires a session bound to a profile.");
+      const auditedSession = clientSessionId ? activeSessions.get(clientSessionId) : undefined;
+      const describe = auditedSession?.deviceId ? MOBILE_AUDITED_FILE_OPS[op] : undefined;
+      const auditFile = (status: "success" | "failure"): void => {
+        if (!describe) return;
+        let detail: string;
+        try {
+          detail = `op=${op} root=${auditDetailValue(body?.rootPath)} ${describe(body ?? {}, auditDetailValue)}`;
+        } catch {
+          detail = `op=${op}`;
+        }
+        recordMobileSessionAudit(auditedSession, "session.file", status, detail);
+      };
+      return fm
+        .withCallerProfile(profileId, () => run(body))
+        .then(
+          (result) => {
+            auditFile("success");
+            return result;
+          },
+          (error: unknown) => {
+            auditFile("failure");
+            // A root outside the caller's profile is a refusal (403), not a server fault.
+            if (error instanceof Error && error.message.startsWith("Root path not allowed")) {
+              throw new ClientRequestError(error.message, 403);
+            }
+            throw error;
+          },
+        );
+    };
+
   const slotAwareRoute: Record<
     string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2693,6 +2916,65 @@ export async function startRemoteServer({
     // Sync publishes queued draft comments to the PR provider — an
     // externally visible side effect that must refuse cross-profile prKeys.
     "/api/review-bridge/pull-request/sync": (body, windowId) => runtime.syncReviewBridgePullRequest(body, windowId),
+    // File manager. Routed here so the call knows WHO is asking: the roots a path may
+    // live under are narrowed to the caller's profile (see fileRoute), where the flat
+    // API_ROUTES table gave every bound session every workspace's roots. The writes are
+    // refused for a mobile session by the route gate before they get here.
+    "/api/file/list": fileRoute("list", (body) =>
+      fm.listDirectory(body.rootPath as string, body.relativePath as string),
+    ),
+    "/api/file/tree": fileRoute("tree", (body) =>
+      fm.getDirectoryTree(body.rootPath as string, body.relativePath as string),
+    ),
+    "/api/file/preview": fileRoute("preview", (body) =>
+      fm.readFilePreview(body.rootPath as string, body.relativePath as string),
+    ),
+    "/api/file/read": fileRoute("read", (body) =>
+      fm.readFileContent(body.rootPath as string, body.relativePath as string),
+    ),
+    "/api/file/write": fileRoute("write", (body) =>
+      fm.writeFileContent(body.rootPath as string, body.relativePath as string, body.content as string),
+    ),
+    "/api/file/create-file": fileRoute("create-file", (body) =>
+      fm.createFile(body.rootPath as string, body.parentPath as string, body.name as string),
+    ),
+    "/api/file/create-dir": fileRoute("create-dir", (body) =>
+      fm.createDirectory(body.rootPath as string, body.parentPath as string, body.name as string),
+    ),
+    "/api/file/rename": fileRoute("rename", (body) =>
+      fm.renameEntry(body.rootPath as string, body.relativePath as string, body.newName as string),
+    ),
+    "/api/file/delete": fileRoute("delete", (body) =>
+      fm.deleteEntry(body.rootPath as string, body.relativePath as string),
+    ),
+    "/api/file/git-ignore": fileRoute("git-ignore", (body) =>
+      fm.addToGitignore(body.rootPath as string, body.relativePath as string, body.isDirectory === true),
+    ),
+    "/api/file/move": fileRoute("move", (body) =>
+      fm.moveEntry(body.rootPath as string, body.fromPath as string, body.toPath as string),
+    ),
+    "/api/file/copy": fileRoute("copy", (body) =>
+      fm.copyEntry(body.rootPath as string, body.fromPath as string, body.toPath as string),
+    ),
+    "/api/file/info": fileRoute("info", (body) => fm.getFileInfo(body.rootPath as string, body.relativePath as string)),
+    "/api/file/git-status": fileRoute("git-status", (body) =>
+      fm.getGitFileStatus(body.rootPath as string, { includeIgnored: !!body.includeIgnored }),
+    ),
+    "/api/file/git-refs": fileRoute("git-refs", (body) =>
+      fm.getGitRefs(body.rootPath as string, (body.relativePath as string) || ""),
+    ),
+    "/api/file/git-diff": fileRoute("git-diff", (body) =>
+      fm.computeFileDiff(body.rootPath as string, body.relativePath as string, {
+        source: (body.source as string) || "head",
+        revisionRef: (body.revisionRef as string) || "",
+      }),
+    ),
+    "/api/file/commit-files": fileRoute("commit-files", (body) =>
+      fm.getCommitFiles(body.rootPath as string, body.hash as string),
+    ),
+    "/api/file/commit-diff": fileRoute("commit-diff", (body) =>
+      fm.computeCommitFileDiff(body.rootPath as string, body.relativePath as string, body.hash as string),
+    ),
     // A recovery decision resumes or resets a supervised task and, when it
     // succeeds, stamps `lastWorkedAt`. Both need the caller's viewer id: the
     // dialog can list candidates from more than one profile, so the target is
@@ -2774,6 +3056,13 @@ export async function startRemoteServer({
     "/api/azure/save-connection": (body, windowId) => runtime.saveAzureConnection(body.connection || body, windowId),
     "/api/azure/delete-connection": (body, windowId) =>
       runtime.deleteAzureConnection(body.connectionId || body.id || "", windowId),
+    "/api/telegram/verify-connection": (body, windowId) =>
+      runtime.verifyTelegramConnection(body.connection || {}, windowId),
+    "/api/telegram/detect-chats": (body, windowId) => runtime.detectTelegramChats(body.connection || {}, windowId),
+    "/api/telegram/save-connection": async (body, windowId) => {
+      const result = await runtime.saveTelegramConnection(body.connection || {}, windowId);
+      return result.payload;
+    },
     "/api/github/save-connection": (body, windowId) => runtime.saveGitHubConnection(body.connection || body, windowId),
     "/api/github/delete-connection": (body, windowId) =>
       runtime.deleteGitHubConnection(body.connectionId || body.id || "", windowId),
@@ -2961,6 +3250,49 @@ export async function startRemoteServer({
   // unhandled rejection with the client left hanging). Named + wrapped in
   // try/catch here instead, matching how every route handler further down
   // (handleApiRequest, the slot-aware dispatch) already guards its own body.
+  /**
+   * Judge one POST from a mobile session. Returns null when it may proceed, or
+   * the refusal to answer with. The body is read through the per-request cache,
+   * so the route that runs afterwards still sees it.
+   */
+  async function evaluateMobileSessionRequest(
+    request: IncomingMessage,
+    sessionId: string,
+    pathname: string,
+  ): Promise<{ status: number; error: string; reason: string; detail?: string } | null> {
+    if (classifyMobileRoute(pathname) === "own-check") return null;
+    let body: Record<string, unknown>;
+    try {
+      body = await readRequestBody(request);
+    } catch (err) {
+      return { status: 400, error: (err as Error).message || "invalid request body", reason: "invalid-body" };
+    }
+    const profileId = registry.get(sessionId)?.profileId || activeSessions.get(sessionId)?.profileId || "";
+    if (!profileId) {
+      return { status: 403, error: "Not available to a mobile session", reason: "session-has-no-profile" };
+    }
+    const decision = evaluateMobileRoute({
+      pathname,
+      body,
+      profileId,
+      workspaceProfile: (workspaceId) => cachedWorkspaceProfiles.get(workspaceId),
+      connectionProfile: (connectionId) => {
+        const integrations = ((runtime.getPayload() as { appState?: { settings?: { integrations?: unknown } } })
+          ?.appState?.settings?.integrations || {}) as Record<string, { connections?: Array<Record<string, unknown>> }>;
+        const all = [...(integrations.azureDevops?.connections || []), ...(integrations.github?.connections || [])];
+        const found = all.find((c) => c.id === connectionId);
+        return found ? String(found.profileId || "default") : undefined;
+      },
+    });
+    if (decision.allow) return null;
+    return {
+      status: 403,
+      error: "Not available to a mobile session",
+      reason: decision.reason,
+      ...(decision.detail ? { detail: decision.detail } : {}),
+    };
+  }
+
   async function handleHttpRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
       // The relay origin answers only its own connector. This runs before routing, before the
@@ -3033,7 +3365,13 @@ export async function startRemoteServer({
         // The old /api/state, azure|github/refresh and pull-request/seen intercepts
         // existed only to compose those payloads; the adapter now does it uniformly,
         // so they are gone.
-        const httpProtocol = requestProtocol(requestUrl, request.headers);
+        // A mobile session is ALWAYS served the profile-scoped v2 core with the full
+        // capability set, whatever the client advertised: protocol 1 answers with the
+        // whole composed appState (every profile's workspaces), and a capability list
+        // without `remote-core-v2` falls back to it. Only the profile scoping in
+        // buildRemoteCore keeps another profile's state off the phone.
+        const apiIsMobile = Boolean(apiSessionId && activeSessions.get(apiSessionId)?.deviceId);
+        const httpProtocol = apiIsMobile ? REMOTE_STATE_PROTOCOL : requestProtocol(requestUrl, request.headers);
         // Response contract for a v2 client (see adaptRemoteResponse):
         //  - A route whose renderer handler ADOPTS the response (bootstrap,
         //    navigation: save / activate / reorder / settings / create-worktree /
@@ -3050,7 +3388,10 @@ export async function startRemoteServer({
         const deliversCore = !(request.method === "POST" && ACK_MUTATION_ROUTES.has(url.pathname));
         (response as ResponseWithCtx).__remoteCtx = {
           protocol: httpProtocol,
-          capabilities: selectCapabilities(requestCapabilities(requestUrl, request.headers), httpProtocol),
+          capabilities: selectCapabilities(
+            apiIsMobile ? [] : requestCapabilities(requestUrl, request.headers),
+            httpProtocol,
+          ),
           coreRevision,
           deliverCore: deliversCore,
           sessionId: apiSessionId,
@@ -3063,8 +3404,8 @@ export async function startRemoteServer({
           ifNoneMatch: Array.isArray(request.headers["if-none-match"])
             ? request.headers["if-none-match"][0]
             : request.headers["if-none-match"],
-          stripShareUrls: isLoopbackOrigin || Boolean(apiSessionId && activeSessions.get(apiSessionId)?.deviceId),
-          noStore: isLoopbackOrigin || Boolean(apiSessionId && activeSessions.get(apiSessionId)?.deviceId),
+          stripShareUrls: isLoopbackOrigin || apiIsMobile,
+          noStore: isLoopbackOrigin || apiIsMobile,
         };
 
         if (request.method === "POST" && url.pathname === "/api/mobile/attachments") {
@@ -3124,6 +3465,23 @@ export async function startRemoteServer({
             json(response, 400, { error: (error as Error).message || "Attachment request refused" });
           }
           return;
+        }
+
+        // THE MOBILE ROUTE GATE — the one place a mobile session's HTTP call is
+        // judged, before the slot-aware dispatch and before API_ROUTES. See
+        // mobile-session-route-policy.ts for what it refuses and why.
+        if (request.method === "POST" && apiSessionId && activeSessions.get(apiSessionId)?.deviceId) {
+          const refusal = await evaluateMobileSessionRequest(request, apiSessionId, url.pathname);
+          if (refusal) {
+            audit.warn("mobile route denied", {
+              sessionRef: remoteSessionRef(apiSessionId),
+              path: url.pathname,
+              reason: refusal.reason,
+              detail: refusal.detail,
+            });
+            json(response, refusal.status, { error: refusal.error, reason: refusal.reason });
+            return;
+          }
         }
 
         const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
@@ -3248,7 +3606,7 @@ export async function startRemoteServer({
             json(response, 200, await slotAwareHandler(body, viewerId));
           } catch (err) {
             const msg = (err as Error).message || "Slot operation failed";
-            const statusCode = msg.startsWith("IPC validation failed") ? 400 : 500;
+            const statusCode = refusalStatus(err, msg);
             json(response, statusCode, { error: msg });
           }
           return;
@@ -3340,13 +3698,17 @@ export async function startRemoteServer({
    * unauthenticated, and closes any of its open WebSocket(s).
    */
   function revokeMobileSessionsForDevice(deviceId: string): void {
+    let ended = false;
     for (const [sessionId, record] of activeSessions) {
       if (record.deviceId === deviceId) {
         activeSessions.delete(sessionId);
+        auditMobileSessionEnded(record, "revoked");
         closeSessionSockets(sessionId);
         audit.info("mobile device revoked: session closed", { sessionRef: remoteSessionRef(sessionId) });
+        ended = true;
       }
     }
+    if (ended) publishMobileSessions();
   }
   if (!isLoopbackOrigin) runtime.setMobileRemoteSessionRevoker?.(revokeMobileSessionsForDevice);
 
@@ -3418,8 +3780,10 @@ export async function startRemoteServer({
    *
    * Only ever read on a loopback-origin instance, and only because every request to that instance has
    * already passed the connector guard — so the header is the relay's statement rather than a client's
-   * claim. On the legacy instance it is ignored entirely: nothing upstream there verifies a device, so
-   * believing the header would be believing the caller.
+   * claim. The connector is what makes that true on BOTH paths: it passes through the Worker's own stamp
+   * on a plaintext stream and sets it from the relay-stamped `d` on an e2e-wrapped one, dropping
+   * whatever the inner frame (the phone's) carried. On the legacy instance it is ignored entirely:
+   * nothing upstream there verifies a device, so believing the header would be believing the caller.
    */
   function relayVerifiedDeviceId(headers: IncomingMessage["headers"]): string {
     if (!isLoopbackOrigin) return "";
@@ -3462,6 +3826,16 @@ export async function startRemoteServer({
   async function handleMobileSessionBootstrap(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const remoteAddress = request.socket?.remoteAddress || "";
     const relayDeviceId = relayVerifiedDeviceId(request.headers);
+    // A ticket redeemed on the relay instance was presented by SOME device the relay verified, and the
+    // connector says which. A request with no device header did not come through that path intact, so
+    // it is refused rather than treated as a caller with no identity: skipping the ticket↔device
+    // binding and pooling every phone into one rate-limit bucket is the failure this closes.
+    if (isLoopbackOrigin && !relayDeviceId) {
+      audit.warn("mobile session bootstrap rejected: relay did not name the presenting device", { remoteAddress });
+      writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Unauthorized");
+      return;
+    }
     // On the relay instance the principal is the device the relay verified; on the legacy one it is
     // the network address, which is all there is.
     if (mobileBootstrapRateLimited(relayDeviceId ? `device:${relayDeviceId}` : `addr:${remoteAddress}`)) {
@@ -3512,6 +3886,12 @@ export async function startRemoteServer({
     }
 
     const sessionId = mintMobileSession(ticket);
+    recordMobileSessionAudit(
+      activeSessions.get(sessionId),
+      "session.started",
+      "success",
+      `profile=${ticket.profileId} transport=${ticket.transport}`,
+    );
     audit.info("mobile session bootstrap succeeded", { remoteAddress, sessionRef: remoteSessionRef(sessionId) });
     writeHead(response, 302, {
       "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
@@ -3859,6 +4239,20 @@ export async function startRemoteServer({
   }
 
   /**
+   * Whether a WS client may WRITE to a terminal session: the same profile binding
+   * a subscribe is held to, applied to keystrokes and resizes. A socket that is
+   * bound (cookie session, or a token client that sent a client id) may only reach
+   * sessions of its own profile; an unbound socket (master token, no client id, so
+   * no registry record) keeps reaching every session, exactly as it does for reads.
+   * Reading the session from the registry per message is a map lookup — the
+   * workspace→profile map is the cached one, never a getPayload() per keystroke.
+   */
+  function viewerMayTouchTerminal(clientSessionId: string, terminalSessionId: string): boolean {
+    const client = clientSessionId ? registry.get(clientSessionId) : undefined;
+    return canAccessTerminalSession(client, cachedWorkspaceProfiles, terminalSessionId);
+  }
+
+  /**
    * Handle a terminal:subscribe. The client sends its COMPLETE desired set.
    *
    * Ordering invariant (see plan v2): after validation there is NO `await`
@@ -4188,12 +4582,18 @@ export async function startRemoteServer({
       // Record the state-protocol the client advertised (?sp=2). Absent → 1
       // (legacy tab): it keeps receiving the full composed payload and never
       // gets slimmed, so an old open page never silently consumes the v2 shape.
-      const wsAdvertisedProtocol = requestProtocol(request.url || "/", request.headers);
+      // A mobile session is always v2 with the full capability set — see the HTTP
+      // equivalent (apiIsMobile) for why a client-chosen protocol 1 must not apply.
+      const wsSessionId = sessionIdForRequest(request.url || "/", request.headers);
+      const wsIsMobile = Boolean(wsSessionId && activeSessions.get(wsSessionId)?.deviceId);
+      const wsAdvertisedProtocol = wsIsMobile
+        ? REMOTE_STATE_PROTOCOL
+        : requestProtocol(request.url || "/", request.headers);
       socketProtocol.set(ws, wsAdvertisedProtocol);
       // Negotiate + record capabilities (?caps=). The intersection with what the
       // server supports selects the response contract and is echoed to the client.
       const wsCapabilities = selectCapabilities(
-        requestCapabilities(request.url || "/", request.headers),
+        wsIsMobile ? [] : requestCapabilities(request.url || "/", request.headers),
         wsAdvertisedProtocol,
       );
       socketCapabilities.set(ws, wsCapabilities);
@@ -4206,7 +4606,6 @@ export async function startRemoteServer({
         (ws as any).missedPongs = 0;
       });
       // Tag the socket with its session so per-client state can be composed on broadcast.
-      const wsSessionId = sessionIdForRequest(request.url || "/", request.headers);
       const wsComposed = Boolean(wsSessionId && activeSessions.has(wsSessionId));
       if (wsComposed) {
         socketSession.set(ws, wsSessionId);
@@ -4262,12 +4661,19 @@ export async function startRemoteServer({
           }
           if (message.type === "terminal:input") {
             const parsed = wsTerminalInputSchema.safeParse(message);
-            if (parsed.success) {
+            if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
+              log.warn("WebSocket terminal input rejected: session outside caller profile", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            } else if (parsed.success) {
               log.debug("WebSocket terminal input", {
                 sessionRef: remoteSessionRef(wsSessionId),
                 terminalSessionId: parsed.data.sessionId,
                 bytes: Buffer.byteLength(parsed.data.data || "", "utf8"),
               });
+              // A mobile session's typing is audited as counts only (never the bytes). Nothing is
+              // recorded for a master-token or browser session — it has no device id.
+              if (wsSessionId) recordMobileTerminalInput(wsSessionId, parsed.data.sessionId, parsed.data.data || "");
               // The remote client is a viewer — its typing participates in
               // the per-session input lease like a desktop window's.
               const viewerId = wsSessionId ? remoteViewerId(wsSessionId) : undefined;
@@ -4295,7 +4701,11 @@ export async function startRemoteServer({
             }
           } else if (message.type === "terminal:resize") {
             const parsed = wsTerminalResizeSchema.safeParse(message);
-            if (parsed.success) {
+            if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
+              log.warn("WebSocket terminal resize rejected: session outside caller profile", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            } else if (parsed.success) {
               log.debug("WebSocket terminal resize", {
                 sessionRef: remoteSessionRef(wsSessionId),
                 terminalSessionId: parsed.data.sessionId,
@@ -4310,7 +4720,13 @@ export async function startRemoteServer({
             }
           } else if (message.type === "docker:shell:write") {
             const parsed = wsDockerShellWriteSchema.safeParse(message);
-            if (parsed.success) {
+            if (parsed.success && wsIsMobile) {
+              // A docker shell is not bound to a workspace, so there is no profile to
+              // compare — and it is a shell on the host. Refused for a mobile session.
+              log.warn("WebSocket docker shell write rejected: mobile session", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            } else if (parsed.success) {
               runtime.dockerShellWrite(parsed.data.sessionId, parsed.data.data);
             } else {
               log.warn("WebSocket docker shell write rejected: invalid payload", {
@@ -4319,7 +4735,11 @@ export async function startRemoteServer({
             }
           } else if (message.type === "docker:shell:resize") {
             const parsed = wsDockerShellResizeSchema.safeParse(message);
-            if (parsed.success) {
+            if (parsed.success && wsIsMobile) {
+              log.warn("WebSocket docker shell resize rejected: mobile session", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            } else if (parsed.success) {
               runtime.dockerShellResize(parsed.data.sessionId, parsed.data.cols, parsed.data.rows);
             } else {
               log.warn("WebSocket docker shell resize rejected: invalid payload", {
@@ -4621,6 +5041,10 @@ export async function startRemoteServer({
       if (telemetry.hasActivity()) log.debug("remote state delivery telemetry (final)", telemetry.snapshot());
       registry.stopCleanupSweep();
       releaseRegistry();
+      // Sessions live only in this process: stopping the server drops every one of them.
+      for (const record of [...activeSessions.values()]) auditMobileSessionEnded(record, "server-stopped");
+      // Sessions die with the process; the desktop's "connected" indicator must not outlive them.
+      publishMobileSessions(true);
       audit.close();
       unsubscribe.forEach((dispose) => dispose());
       for (const socket of sockets) {

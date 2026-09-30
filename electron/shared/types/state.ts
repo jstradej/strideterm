@@ -185,7 +185,7 @@ export interface MobileDeviceRecord {
    * Verification is NOT authorization: a `keyProven` device still does nothing until `activatedAt`.
    */
   verifiedAt: number | null;
-  /** When a human pressed "Codes match" AND the cloud confirmed. Null means nobody has approved this. */
+  /** When a human typed the phone's pairing code AND the cloud confirmed. Null means nobody has approved this. */
   activatedAt: number | null;
   /**
    * The cloud half of a revocation this desktop has already applied locally, still owed.
@@ -205,6 +205,13 @@ export interface MobileDeviceRecord {
     /** A stable `mobileErrorCode`, never a transport message — this crosses into the renderer. */
     lastErrorCode?: string;
   };
+  /**
+   * When this device first completed a relay session WITH end-to-end encryption; absent or null while
+   * it never has. A latch (`markRelayE2eSeen`, mobile-device-store.ts): once set, a relay ticket
+   * request from this device without an `e2e` acceptance is refused regardless of
+   * `MobileRelaySettings.requireE2e`. Optional so a record written before this loads unchanged.
+   */
+  relayE2eSeenAt?: number | null;
 }
 
 /**
@@ -216,6 +223,12 @@ export interface MobileDeviceRecord {
  */
 export interface MobileRelaySettings {
   enabled: boolean;
+  /**
+   * Refuse a relay session whose phone does not offer end-to-end encryption. Default true. Desktop
+   * only: `sanitizeSettingsFromRemote` drops the whole `integrations.mobile` subtree. Turn off only
+   * for a phone app that predates relay end-to-end encryption.
+   */
+  requireE2e: boolean;
 }
 
 export interface MobileIntegrationSettings {

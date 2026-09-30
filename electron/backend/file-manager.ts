@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import fs from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { execFileText } from "./process-utils.js";
@@ -156,10 +157,30 @@ interface PorcelainEntry {
 // Electron process can see by simply choosing rootPath = "/" or "C:\".
 // Wired up by the runtime once workspaces are loaded; until then the
 // allowlist is empty and every fs call rejects.
-let allowedRootsResolver: (() => string[]) | null = null;
+//
+// The resolver is told which profile the CALLER is bound to (see
+// `withCallerProfile`), so a bound remote client is offered the roots of its own
+// profile's workspaces instead of every workspace's. It is `undefined` for a caller
+// that is not bound to a profile — the desktop's own IPC, or a master-token client
+// with no client id — which keeps the whole list, as before.
+let allowedRootsResolver: ((callerProfileId?: string) => string[]) | null = null;
 
-export function setAllowedRootsResolver(resolver: () => string[]): void {
+export function setAllowedRootsResolver(resolver: (callerProfileId?: string) => string[]): void {
   allowedRootsResolver = resolver;
+}
+
+// The profile of whoever the running fs call is for. Carried through the awaits of one
+// call with AsyncLocalStorage rather than threaded through every exported function:
+// the path guards (`isRootAllowed`, the symlink-escape fallback) are several calls deep.
+const callerProfile = new AsyncLocalStorage<string>();
+
+/** Run `fn` (an fs call) on behalf of a caller bound to `profileId`. */
+export function withCallerProfile<T>(profileId: string | undefined, fn: () => T): T {
+  return profileId ? callerProfile.run(profileId, fn) : fn();
+}
+
+function allowedRootsForCaller(): string[] {
+  return allowedRootsResolver ? allowedRootsResolver(callerProfile.getStore()) : [];
 }
 
 // Strip Windows extended-length / namespace prefixes so the rest of the
@@ -258,7 +279,7 @@ function isRootAllowed(root: string): boolean {
   }
   const requested = normalizePathForCompare(root);
   if (!requested) return false;
-  for (const allowed of allowedRootsResolver()) {
+  for (const allowed of allowedRootsForCaller()) {
     if (!allowed) continue;
     // Skip allowed entries that are themselves sensitive — an absent-minded
     // workspace at `/` shouldn't open up the whole filesystem.
@@ -379,7 +400,7 @@ async function assertRealPathInside(rootPath: string, absoluteTarget: string): P
   // into arbitrary filesystem.
   if (allowedRootsResolver) {
     const realTargetCmp = normalizePathForCompare(realTarget);
-    for (const allowed of allowedRootsResolver()) {
+    for (const allowed of allowedRootsForCaller()) {
       if (!allowed) continue;
       if (isSensitivePath(allowed)) continue;
       let realAllowed: string;

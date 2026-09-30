@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -260,5 +260,33 @@ describe("notify URL registry", () => {
     expect(aggregate[KEY].map((entry: { url: string }) => entry.url).sort()).toEqual(
       [urlFor(1111, "ws:p1"), urlFor(1111, "ws:p2"), urlFor(2222, "ws:p1")].sort(),
     );
+  });
+
+  // POSIX modes only: Windows has no equivalent, and the registry's chmods are best-effort there.
+  describe.skipIf(process.platform === "win32")("file permissions", () => {
+    const mode = (target: string) => statSync(target).mode & 0o777;
+
+    test("directories are owner-only and files are 0600", () => {
+      const registry = makeRegistry("aaaaaaaaaaaa");
+      registry.register(REPO, urlFor(1111, "ws:p1"));
+
+      expect(mode(sharedDir)).toBe(0o700);
+      expect(mode(path.join(sharedDir, "instances"))).toBe(0o700);
+      expect(mode(path.join(sharedDir, "instances", "aaaaaaaaaaaa.json"))).toBe(0o600);
+      expect(mode(path.join(sharedDir, "notify-urls.json"))).toBe(0o600);
+      expect(mode(path.join(tempDir, "aaaaaaaaaaaa", "hooks"))).toBe(0o700);
+      expect(mode(path.join(tempDir, "aaaaaaaaaaaa", "hooks", "notify-urls.json"))).toBe(0o600);
+    });
+
+    test("a directory that already exists with looser modes is tightened", () => {
+      mkdirSync(path.join(sharedDir, "instances"), { recursive: true, mode: 0o755 });
+      chmodSync(sharedDir, 0o755);
+      chmodSync(path.join(sharedDir, "instances"), 0o755);
+
+      makeRegistry("aaaaaaaaaaaa").register(REPO, urlFor(1111, "ws:p1"));
+
+      expect(mode(sharedDir)).toBe(0o700);
+      expect(mode(path.join(sharedDir, "instances"))).toBe(0o700);
+    });
   });
 });

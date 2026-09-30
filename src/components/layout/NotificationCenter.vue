@@ -1003,6 +1003,7 @@ function sessionIcon(s: NotificationSession): string {
   if (s.events?.[0]?.kind === "question") return "❓";
   if (s.urgency === "urgent") return "🚨";
   if (s.category === "error") return "❌";
+  if (s.category === "mobile") return "📱";
   // Rate-limit hits surface with the heavy-exclamation glyph so they read as
   // "stop and look" in the history list (the toast already shows 🚨 for the
   // matching urgent urgency).
@@ -1020,6 +1021,8 @@ function sessionIcon(s: NotificationSession): string {
 }
 
 function sessionTitle(s: NotificationSession): string {
+  // A phone session belongs to no workspace or tab; the event title ("Phone connected") says it all.
+  if (s.category === "mobile") return s.events?.[0]?.title || "Phone connected";
   if (s.category === "review") {
     // The latest event title already reads "New comment on repo #123" etc.,
     // so prefer it over the workspace › tab composition used for terminal

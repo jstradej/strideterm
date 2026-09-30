@@ -2,6 +2,11 @@ import http from "node:http";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock("./logger.js", () => ({
+  getLogger: () => ({ info: vi.fn(), warn: logWarn, error: vi.fn(), debug: vi.fn(), trace: vi.fn() }),
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function postJson(url: string, body: any = {}): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -278,6 +283,29 @@ describe("authentication", () => {
       notification_type: "idle_prompt",
     });
     expect(res.status).toBe(403);
+  });
+
+  test("a rejection is logged without any part of either secret", async () => {
+    logWarn.mockClear();
+    const { handle, secret } = await createServer();
+    const provided = "wrong-secret-value";
+    const res = await postJson(`http://127.0.0.1:${handle.port}/notify?sid=ws1:p1&secret=${provided}`, {});
+    expect(res.status).toBe(403);
+
+    expect(logWarn).toHaveBeenCalledTimes(1);
+    const [message, fields] = logWarn.mock.calls[0];
+    expect(message).toBe("rejected request: invalid secret");
+    expect(fields).toEqual({ hadSecret: true, sid: "ws1:p1" });
+    const logged = JSON.stringify(logWarn.mock.calls[0]);
+    expect(logged).not.toContain(secret.slice(0, 4));
+    expect(logged).not.toContain(provided.slice(0, 4));
+  });
+
+  test("a rejection for a request with no secret says so", async () => {
+    logWarn.mockClear();
+    const { handle } = await createServer();
+    await postJson(`http://127.0.0.1:${handle.port}/notify?sid=ws1:p1`, {});
+    expect(logWarn.mock.calls[0][1]).toEqual({ hadSecret: false, sid: "ws1:p1" });
   });
 
   test("rejects request with missing secret", async () => {

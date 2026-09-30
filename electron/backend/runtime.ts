@@ -27,7 +27,19 @@ import {
   type NotificationTargetRemoved,
 } from "../shared/notification-lifecycle.js";
 import { APPROVAL_RECORDED_CHANNEL, type ApprovalRecorded } from "../shared/approval-events.js";
+import {
+  MOBILE_SESSION_STARTED_CHANNEL,
+  type MobileConnectedDevice,
+  type MobileSessionStarted,
+} from "../shared/mobile-session-events.js";
 import { filterConnectionsByOpenProfiles } from "./shared/runtime-provider-guards.js";
+import { ClientRequestError } from "./shared/client-request-error.js";
+import {
+  REMOTE_ACCESS_TOKEN_REF,
+  connectionSecretRef,
+  findOwnedConnection,
+  storedSecretOfSavedConnection,
+} from "./shared/connection-secret.js";
 import { execFileText } from "./process-utils.js";
 import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
@@ -204,7 +216,7 @@ import {
 import { APP_CONFIG, resolveRemoteAccessPort, resolveRemoteBindHost } from "../../config/app-config.js";
 // @ts-ignore — version-checker.js will be migrated in a later phase
 import { createVersionChecker } from "./version-checker.js";
-import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.js";
+import { initLogger, getLogger, setLogLevel, reconfigureLogger, createAuditLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
@@ -670,6 +682,45 @@ export async function createRuntime({
     createAzureReviewStoreImpl(azureReviewPath),
     createReviewBridgeStoreImpl(reviewBridgeRoot),
   ]);
+
+  // The remote-access master token lives in the credential store; the state file carries "". Adopt it
+  // into the in-memory settings (what the remote server and the payload read) — or, for an install
+  // that still has it in the state file, move it across — before anything else reads the settings.
+  await adoptRemoteAccessToken();
+
+  async function adoptRemoteAccessToken(): Promise<void> {
+    const stored = credentialStore.getSecret(REMOTE_ACCESS_TOKEN_REF);
+    const inMemory = store.getState().settings.remoteAccess.token;
+    const setInMemory = (token: string) =>
+      store.mutate("remote-access:adopt-token", (draft: AppState) => {
+        draft.settings.remoteAccess.token = token;
+      });
+    try {
+      if (stored) {
+        if (inMemory && inMemory !== stored) {
+          log.warn("remote-access token in the state file differs from the credential store; the stored one wins");
+        }
+        // Also the persist that rewrites a state file still holding a superseded token.
+        await setInMemory(stored);
+      } else if (inMemory) {
+        await credentialStore.setSecret(REMOTE_ACCESS_TOKEN_REF, inMemory);
+        // Re-persist so strideterm-state.json drops the token now, not at the next unrelated write.
+        await setInMemory(inMemory);
+        log.info("remote-access token migrated to the credential store");
+      } else {
+        const token = createAccessToken();
+        await credentialStore.setSecret(REMOTE_ACCESS_TOKEN_REF, token);
+        await setInMemory(token);
+        log.info("remote-access token generated and stored in the credential store");
+      }
+    } catch (error) {
+      // Remote access must still work this run with whatever token is in memory; the next start
+      // retries the adoption.
+      log.error("could not store the remote-access token in the credential store", {
+        err: (error as Error).message,
+      });
+    }
+  }
 
   // Apply persisted log level from stored user config — unless an explicit
   // STRIDETERM_LOG_LEVEL env var is set (explicit ENV > user setting > default
@@ -1221,6 +1272,15 @@ export async function createRuntime({
   // plan §5.1/§10.4). Generated once on first run, then reused every start.
   const MOBILE_DEVICE_ID_REF = "mobile:desktop-device-id";
   const MOBILE_PRIVATE_KEY_REF = "mobile:desktop-device-private-key";
+  /**
+   * Mobile's keys (the desktop's X25519 key, the Firebase refresh token, the relay installation key)
+   * are only ever stored encrypted — the credential store refuses them as base64 plaintext — so the
+   * integration cannot run, and cannot be turned on, on a machine whose OS keychain is unavailable.
+   */
+  const mobileSecureStorageAvailable = (): boolean =>
+    typeof credentialStore.isEncryptionAvailable === "function" ? credentialStore.isEncryptionAvailable() : true;
+  const MOBILE_SECURE_STORAGE_REQUIRED_MESSAGE =
+    "Mobile needs secure storage: the OS keychain is not available, and Mobile's keys are never stored as plaintext.";
   let mobileDeviceId = credentialStore.getSecret(MOBILE_DEVICE_ID_REF);
   if (!mobileDeviceId) {
     mobileDeviceId = randomUUID();
@@ -1231,14 +1291,22 @@ export async function createRuntime({
     ? importPrivateKeyPem(existingMobilePrivateKeyPem)
     : generateX25519KeyPair();
   if (!existingMobilePrivateKeyPem) {
-    await credentialStore.setSecret(MOBILE_PRIVATE_KEY_REF, exportPrivateKeyPem(mobileOwnKeyPair.privateKey));
+    if (mobileSecureStorageAvailable()) {
+      await credentialStore.setSecret(MOBILE_PRIVATE_KEY_REF, exportPrivateKeyPem(mobileOwnKeyPair.privateKey));
+    } else {
+      // Kept in memory for this run only and never written: Mobile stays off until secure storage
+      // exists (the key is regenerated then, which is harmless for an integration never paired).
+      log.warn("mobile identity key not persisted: secure storage is unavailable");
+    }
   }
   const mobileOwnPublicKeyBase64 = exportRawPublicKey(mobileOwnKeyPair.publicKey).toString("base64");
 
   const mobileIdempotencyDbPath = path.join(reviewBridgeRoot, "mobile-idempotency.db");
   const mobileIdempotencyStore = createMobileIdempotencyStore(mobileIdempotencyDbPath);
   const mobileAuditLogDbPath = path.join(reviewBridgeRoot, "mobile-audit-log.db");
-  const mobileAuditLogStore = createMobileAuditLogStore(mobileAuditLogDbPath);
+  // Every row is mirrored to <logs dir>/mobile-audit.log so a monitoring agent can tail it.
+  const mobileAuditFileLogger = createAuditLogger("mobile-audit");
+  const mobileAuditLogStore = createMobileAuditLogStore(mobileAuditLogDbPath, { fileLogger: mobileAuditFileLogger });
 
   const mobileDeviceStore = createMobileDeviceStore({
     getDevices: () => getState().settings.integrations.mobile.devices,
@@ -1300,6 +1368,57 @@ export async function createRuntime({
     lastError: "",
   };
 
+  // --- Which phones hold a live session right now ---
+  //
+  // remote-server.ts pushes the live mobile sessions every time that set changes. There can be two
+  // servers (direct and relay-origin), each reporting only its own sessions, so they are kept per
+  // source and merged here. The merged list is what the desktop shows as "a phone is connected".
+  type LiveMobileSession = { deviceId: string; profileId: string; startedAt: number };
+  const liveMobileSessionsBySource = new Map<string, LiveMobileSession[]>();
+  let mobileConnectedDevices: MobileConnectedDevice[] = [];
+
+  function mobileDeviceDisplayName(deviceId: string): string {
+    const label = mobileDeviceStore.getDevice(deviceId)?.label?.trim();
+    return label || `Phone ${deviceId.slice(0, 8)}`;
+  }
+
+  function mergeLiveMobileSessions(): MobileConnectedDevice[] {
+    // One entry per device, however many sessions it holds; the oldest session is when it "connected".
+    const byDevice = new Map<string, LiveMobileSession>();
+    for (const sessions of liveMobileSessionsBySource.values()) {
+      for (const session of sessions) {
+        const known = byDevice.get(session.deviceId);
+        if (!known || session.startedAt < known.startedAt) byDevice.set(session.deviceId, session);
+      }
+    }
+    return [...byDevice.values()]
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .map((session) => ({
+        deviceId: session.deviceId,
+        name: mobileDeviceDisplayName(session.deviceId),
+        profileId: session.profileId,
+        startedAt: session.startedAt,
+      }));
+  }
+
+  function setLiveMobileSessions(source: string, sessions: ReadonlyArray<LiveMobileSession>): void {
+    liveMobileSessionsBySource.set(
+      source,
+      sessions.map(({ deviceId, profileId, startedAt }) => ({ deviceId, profileId, startedAt })),
+    );
+    const previousIds = new Set(mobileConnectedDevices.map((device) => device.deviceId));
+    mobileConnectedDevices = mergeLiveMobileSessions();
+    events.emit("mobile:status", { connectedDevices: mobileConnectedDevices });
+    // The edge, not the level: a device already connected (a second session, a reconnect through the
+    // other server) is not a new phone appearing.
+    for (const device of mobileConnectedDevices) {
+      if (previousIds.has(device.deviceId)) continue;
+      const profileName = getState().profiles?.find((profile) => profile.id === device.profileId)?.name;
+      const started: MobileSessionStarted = { ...device, profileName: profileName || device.profileId };
+      events.emit(MOBILE_SESSION_STARTED_CHANNEL, started);
+    }
+  }
+
   const mobileCommandDispatcher = createMobileCommandDispatcher({
     getState,
     runtime: mobileRuntimeAdapter,
@@ -1315,6 +1434,9 @@ export async function createRuntime({
     // by a minute, so the record is re-read immediately before it is issued (production hardening §5
     // "Ticket" 5).
     currentDevice: (deviceId: string) => mobileDeviceStore.getDevice(deviceId),
+    // The relay end-to-end latch (`MobileDeviceRecord.relayE2eSeenAt`), written once a device has
+    // completed an encrypted relay session.
+    markRelayE2eSeen: (deviceId: string) => mobileDeviceStore.markRelayE2eSeen(deviceId),
   });
 
   // The real, Firebase-backed transport (mobile-firebase-transport-rest.ts). Its configuration
@@ -1366,6 +1488,10 @@ export async function createRuntime({
     writeMarker: (value) => credentialStore.setSecret(MOBILE_REGISTRATION_ONBOARDING_REF, value),
     clearMarker: () => credentialStore.deleteSecret(MOBILE_REGISTRATION_ONBOARDING_REF),
     enable: async () => {
+      if (!mobileSecureStorageAvailable()) {
+        log.warn("mobile not enabled after account registration: secure storage is unavailable");
+        return;
+      }
       await store.mutate("mobile:registration-onboarding", (draft: AppState) => {
         draft.settings.integrations.mobile.enabled = true;
         draft.settings.integrations.mobile.relay.enabled = true;
@@ -1625,6 +1751,12 @@ export async function createRuntime({
       // loopback origin, and the relay's record of the device. Both end here.
       mobileRelayManager?.revokeDevice(deviceId);
     },
+    // The derived relay keys and the connector's open e2e streams for this device end with its
+    // revocation, rather than at the keys' TTL.
+    revokeRelayE2eSession: (deviceId: string) => {
+      mobileRelayE2eSessionStore.delete(deviceId);
+      mobileRelayManager?.endDeviceStreams(deviceId);
+    },
   });
 
   // THE ACCOUNT MANAGER (plan §8.1). Built once, like MobileManager, and for the same reason: one
@@ -1863,7 +1995,11 @@ export async function createRuntime({
       // the half-fix that looks like it worked, so the manager's streams are torn down and re-opened.
       restartStreams: async () => {
         await mobileManager.stop();
-        if (getState().settings.integrations.mobile.enabled && !getState().settings.remoteAccess.paused)
+        if (
+          getState().settings.integrations.mobile.enabled &&
+          !getState().settings.remoteAccess.paused &&
+          mobileSecureStorageAvailable()
+        )
           mobileManager.start();
       },
       refreshAccount: () => accountManager.onClaimsChanged(),
@@ -2175,12 +2311,18 @@ export async function createRuntime({
         credentialStore,
         transport: mobileTransport,
         startOrigin: dependencies.startRelayOrigin,
+        // A grant's origin is the issuer's answer; it must match the EFFECTIVE configuration (the
+        // signed bootstrap's `relayOrigin` once one is adopted, hence the live read of the `let`)
+        // and pass the same endpoint rules as the bootstrap payload for the declared environment.
+        expectedRelayOrigin: () => mobileFirebase.config?.relayOrigin,
+        environment: declaredEnvironment,
         // Both flags: a relay without the mobile integration has no control plane to ask for a
         // grant, and a relay the user did not switch on must not exist at all.
         isEnabled: () =>
           getState().settings.integrations.mobile.enabled &&
           getState().settings.integrations.mobile.relay.enabled &&
-          !getState().settings.remoteAccess.paused,
+          !getState().settings.remoteAccess.paused &&
+          mobileSecureStorageAvailable(),
         // The relay's revocation sync reads the PERSISTENT device list, not anything the relay
         // accumulated while it happened to be running (plan §3.3). This closure is that wiring: the
         // same atomically-written state file the rest of the mobile integration reads, so a revoke
@@ -2201,7 +2343,10 @@ export async function createRuntime({
     const generation = ++mobileReconfigureGeneration;
     await mobileManager.stop();
     if (generation !== mobileReconfigureGeneration) return;
-    const wantsMobile = state.settings.integrations.mobile.enabled && !state.settings.remoteAccess.paused;
+    const wantsMobile =
+      state.settings.integrations.mobile.enabled &&
+      !state.settings.remoteAccess.paused &&
+      mobileSecureStorageAvailable();
     const ready = wantsMobile ? await ensureOnlineServicesReady({ purpose: "refresh" }) : false;
     if (generation !== mobileReconfigureGeneration) return;
     const current = getState().settings;
@@ -2247,9 +2392,13 @@ export async function createRuntime({
   // default — but here we expose the set of paths the user has actually
   // opened (workspace cwds + any git/review/quickfix roots tied to those
   // workspaces). Anything outside is refused even with a valid token.
-  fm.setAllowedRootsResolver(() => {
+  //
+  // A caller bound to a profile (a remote / mobile client) gets only the roots of
+  // that profile's workspaces; an unbound caller keeps every workspace's.
+  fm.setAllowedRootsResolver((callerProfileId?: string) => {
     const roots: string[] = [];
     for (const ws of getState().workspaces || []) {
+      if (callerProfileId && (ws.profileId || "default") !== callerProfileId) continue;
       if (ws.cwd) roots.push(ws.cwd);
       if (Array.isArray(ws.gitRoots)) roots.push(...ws.gitRoots.filter(Boolean));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3309,6 +3458,16 @@ export async function createRuntime({
   function getTelegramConnections(state = getState()) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (getTelegramSettings(state).connections || []) as any[];
+  }
+
+  function storedTelegramBotToken(connection: { id?: string }, windowId?: string): string {
+    return storedSecretOfSavedConnection(
+      getTelegramConnections(),
+      connection.id,
+      credentialStore,
+      getWindowProfileId(windowId) || "",
+      true,
+    );
   }
 
   function reconfigureTelegram(state = getState()) {
@@ -7359,6 +7518,28 @@ export async function createRuntime({
       return mobileDeviceAllowsProfile(device, profileId);
     },
 
+    /**
+     * Records what a mobile session did once it exists (`session.*` rows) — called by remote-server.ts,
+     * which decides what is worth a row. Metadata only; the store has no column for content.
+     */
+    recordMobileSessionAudit(entry: {
+      deviceId: string;
+      pairId: string;
+      action: string;
+      status: "success" | "failure";
+      detail?: string;
+    }): void {
+      mobileAuditLogStore.logEntry({ ...entry, actor: "device" });
+    },
+
+    /**
+     * The live mobile sessions changed (remote-server.ts pushes the whole current list). Drives the
+     * desktop's "a phone is connected" indicator and its one Notification Center entry per start.
+     */
+    onMobileSessionsChanged(sessions: ReadonlyArray<LiveMobileSession>, source = "direct"): void {
+      setLiveMobileSessions(source, sessions);
+    },
+
     getMobileAttachmentContext(deviceId: string) {
       return {
         desktopDeviceId: mobileDeviceId,
@@ -7609,6 +7790,7 @@ export async function createRuntime({
       return {
         ...(mobileRelayManager?.status() ?? RELAY_OFF),
         stats: mobileRelayManager?.stats() ?? null,
+        connectedDevices: mobileConnectedDevices,
       };
     },
 
@@ -7660,14 +7842,15 @@ export async function createRuntime({
     },
 
     /**
-     * The human compared the pairing codes and they match (review 3 §P0.1).
+     * The human typed the code the phone shows (review 3 §P0.1, §3.6); the manager compares it with its
+     * own derivation and refuses a mismatch.
      *
      * Returns the outcome AND the fresh payload, because both matter to the caller: the dialog has to
      * know whether the activation actually landed (the cloud can refuse, or be unreachable, and the
      * device then stays inert in `userApproved`), and the device list has to re-render.
      */
-    async approveMobileDevice(deviceId: string) {
-      const outcome = await mobileManager.approveDevice(deviceId);
+    async approveMobileDevice(deviceId: string, sas: string) {
+      const outcome = await mobileManager.approveDevice(deviceId, sas);
       broadcastState();
       return { ...outcome, payload: getPayload() };
     },
@@ -7680,12 +7863,13 @@ export async function createRuntime({
     },
 
     /**
-     * Devices waiting for that decision, each with the pairing code recomputed from the transcript.
+     * Devices waiting for that decision, each with whether a pairing code could be derived (`sasReady`).
      *
      * Recomputed rather than remembered: the code is never persisted (it is derived from both public
      * keys, both device ids, the pair and the invitation), so a desktop that restarted mid-approval can
-     * still show the same value — which is what makes review 3 §P0.1's restart case recoverable instead
-     * of a pairing nobody can finish or reject.
+     * still check a typed value — which is what makes review 3 §P0.1's restart case recoverable instead
+     * of a pairing nobody can finish or reject. The string itself is not returned (review 3 §3.6): the
+     * user types it from the phone, and a renderer that never holds it cannot display it.
      */
     listMobileDevicesAwaitingApproval() {
       return mobileManager.listDevicesAwaitingApproval().map((device: MobileDeviceRecord) => ({
@@ -7693,7 +7877,7 @@ export async function createRuntime({
         label: device.label,
         fingerprint: device.fingerprint,
         state: device.state,
-        sas: mobileManager.sasForPendingDevice(device.deviceId),
+        sasReady: mobileManager.sasForPendingDevice(device.deviceId) !== null,
       }));
     },
 
@@ -7708,6 +7892,9 @@ export async function createRuntime({
 
     /** Toggles the whole mobile feature — mirrors reconfigureMobile()'s existing settings:update reactivity, exposed as its own dedicated action (plan §10.5) rather than requiring a full settings payload. */
     async setMobileEnabled(enabled: boolean) {
+      if (enabled && !mobileSecureStorageAvailable()) {
+        throw new Error(MOBILE_SECURE_STORAGE_REQUIRED_MESSAGE);
+      }
       if (readInstallationBinding() === "bound") await registrationOnboarding.explicitlyConfigured();
       await store.mutate("mobile:enabled", (draft: AppState) => {
         draft.settings.integrations.mobile.enabled = enabled;
@@ -7736,6 +7923,20 @@ export async function createRuntime({
         draft.settings.integrations.mobile.relay.enabled = enabled;
       });
       await reconfigureMobile(getState());
+      broadcastState();
+      return getPayload();
+    },
+
+    /**
+     * The relay's end-to-end requirement (`relay.requireE2e`): whether a phone that does not offer
+     * end-to-end encryption may still get a relay session. Desktop-only (ipc.ts registers it;
+     * remote-server.ts does not). Read at ticket-mint time by `remote.webSession.issue`, so there is
+     * nothing to reconfigure — the next ticket sees it.
+     */
+    async setMobileRelayRequireE2e(requireE2e: boolean) {
+      await store.mutate("mobile:relay:require-e2e", (draft: AppState) => {
+        draft.settings.integrations.mobile.relay.requireE2e = requireE2e;
+      });
       broadcastState();
       return getPayload();
     },
@@ -8762,6 +8963,15 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async updateSettings(settings: any) {
+      // The settings write is another way to switch Mobile on, and it must not be a way round the
+      // secure-storage requirement that `setMobileEnabled` enforces.
+      if (
+        settings?.integrations?.mobile?.enabled === true &&
+        getState().settings.integrations.mobile.enabled !== true &&
+        !mobileSecureStorageAvailable()
+      ) {
+        throw new Error(MOBILE_SECURE_STORAGE_REQUIRED_MESSAGE);
+      }
       const previousConfig = getState().settings.remoteAccess;
       let autoApproveDisarmed = false;
       await store.mutate((draft: AppState) => {
@@ -8866,21 +9076,15 @@ export async function createRuntime({
     // --- Telegram integration handlers ---
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async verifyTelegramConnection(connection: any) {
+    async verifyTelegramConnection(connection: any, windowId?: string) {
       const chatId = String(connection.chatId || "").trim();
       if (!chatId) {
         throw new Error("Chat ID is required.");
       }
-      // Edit mode: an empty botToken means "keep the existing one". Fall back
-      // to the stored credential keyed by either the explicit botTokenRef or
-      // the conventional `cred:<id>` reference.
-      let botToken = String(connection.botToken || "").trim();
-      if (!botToken) {
-        const ref = connection.botTokenRef || (connection.id ? `cred:${connection.id}` : "");
-        if (ref) {
-          botToken = credentialStore.getSecret(ref) || "";
-        }
-      }
+      // Edit mode: an empty botToken means "keep the existing one" — the stored
+      // credential of a connection that already exists, under the reference
+      // derived from its id. A reference named by the request is never read.
+      const botToken = String(connection.botToken || "").trim() || storedTelegramBotToken(connection, windowId);
       if (!botToken) {
         throw new Error("Bot token is required.");
       }
@@ -8888,15 +9092,9 @@ export async function createRuntime({
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async detectTelegramChats(connection: any) {
+    async detectTelegramChats(connection: any, windowId?: string) {
       // Same edit-mode token fallback as verify.
-      let botToken = String(connection.botToken || "").trim();
-      if (!botToken) {
-        const ref = connection.botTokenRef || (connection.id ? `cred:${connection.id}` : "");
-        if (ref) {
-          botToken = credentialStore.getSecret(ref) || "";
-        }
-      }
+      const botToken = String(connection.botToken || "").trim() || storedTelegramBotToken(connection, windowId);
       if (!botToken) {
         throw new Error("Bot token is required.");
       }
@@ -8904,7 +9102,7 @@ export async function createRuntime({
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async saveTelegramConnection(connection: any) {
+    async saveTelegramConnection(connection: any, windowId?: string) {
       log.info("telegram saveTelegramConnection called", {
         id: connection?.id,
         chatId: connection?.chatId,
@@ -8912,20 +9110,20 @@ export async function createRuntime({
         forwardKindsType: Object.prototype.toString.call(connection?.forwardKinds),
       });
       const connectionId = connection.id || `tg-${randomUUID()}`;
-      const botTokenRef = connection.botTokenRef || `cred:${connectionId}`;
-      const botToken = connection.botToken || credentialStore.getSecret(botTokenRef);
+      const botTokenRef = connectionSecretRef(connectionId);
+      // Refuses (400) a saved connection of another profile, with or without a token.
+      const callerProfileId = getWindowProfileId(windowId) || "";
+      findOwnedConnection(getTelegramConnections(), connectionId, callerProfileId, true);
+      const botToken = connection.botToken || storedTelegramBotToken({ ...connection, id: connectionId }, windowId);
       const chatId = String(connection.chatId || "").trim();
 
       if (!chatId) throw new Error("Chat ID is required.");
-      if (!botToken && !credentialStore.hasSecret(botTokenRef)) {
-        throw new Error("Bot token is required.");
+      if (!botToken) {
+        throw new ClientRequestError("Bot token is required.");
       }
 
       // Verify the connection works
-      const verification = await telegramManager.verifyConnection({
-        botToken: botToken || credentialStore.getSecret(botTokenRef),
-        chatId,
-      });
+      const verification = await telegramManager.verifyConnection({ botToken, chatId });
 
       if (botToken) {
         await credentialStore.setSecret(botTokenRef, botToken);
@@ -9004,8 +9202,12 @@ export async function createRuntime({
     // Azure, GitHub, and Review Bridge handlers provided by providerHandlers (spread above)
 
     async regenerateRemoteToken() {
+      // Credential store first: if it cannot take the new token, the old one stays valid in memory
+      // and on disk instead of the two disagreeing across a restart.
+      const token = createAccessToken();
+      await credentialStore.setSecret(REMOTE_ACCESS_TOKEN_REF, token);
       await store.mutate((draft: AppState) => {
-        draft.settings.remoteAccess.token = createAccessToken();
+        draft.settings.remoteAccess.token = token;
       });
 
       events.emit("remote:config-changed", clone(getState().settings.remoteAccess));
@@ -9862,6 +10064,7 @@ export async function createRuntime({
       telegramAuditLogStore.close?.();
       approvalAuditLogStore.close?.();
       mobileAuditLogStore.close?.();
+      mobileAuditFileLogger.close();
       mobileIdempotencyStore.close?.();
       // State is already persisted on each mutate/replace operation.
       // Avoid rewriting the file on shutdown, which can overwrite newer
