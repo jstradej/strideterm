@@ -157,7 +157,7 @@
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "^6.0.0",
-    "effect": "4.0.0-rc.113",
+    "effect": "4.0.0",
     "monaco-editor": "^0.56.0",
     "node-pty": "^1.1.0",
     "pinia": "^4.0.3",
@@ -174,15 +174,15 @@
     "zod": "^4.6.2"
   },
   "devDependencies": {
-    "@effect/language-service": "0.87.2",
+    "@effect/language-service": "0.87.3",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.63.0",
-    "@types/node": "26.6.2",
+    "@types/node": "26.6.3",
     "@types/proper-lockfile": "4.1.4",
     "@types/qrcode": "1.5.6",
     "@types/ssh2": "1.15.6",
     "@types/sshpk": "1.17.5",
-    "@types/ws": "8.18.1",
+    "@types/ws": "8.18.2",
     "@types/yauzl": "3.4.0",
     "@vitejs/plugin-vue": "^6",
     "@vue/eslint-config-typescript": "14.9.0",
@@ -192,7 +192,7 @@
     "electron-builder": "^26.15.3",
     "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-security": "4.0.1",
+    "eslint-plugin-security": "4.1.0",
     "eslint-plugin-vue": "^10.10.0",
     "globals": "^17.12.0",
     "husky": "^9.1.7",
@@ -202,13 +202,13 @@
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.70.0",
-    "vite": "^8.3.0",
+    "vite": "8.3.1",
     "vitest": "^5.0.0",
     "vue-tsc": "3.3.11",
     "wait-on": "^9.1.0"
   },
   "overrides": {
-    "dompurify": "3.4.13",
+    "dompurify": "3.4.16",
     "uuid": "^14.0.0",
     "fast-uri": "^3.1.5",
     "hono": "4.13.9",
@@ -223,9 +223,9 @@
     "nanoid": "3.3.18",
     "shell-quote": "^1.10.0",
     "js-yaml": "^4.3.2",
-    "brace-expansion@1": "1.1.18",
-    "brace-expansion@2": "2.1.4",
-    "brace-expansion@5": "5.0.9"
+    "brace-expansion@1": "1.1.21",
+    "brace-expansion@2": "2.1.7",
+    "brace-expansion@5": "5.0.12"
   },
   "lint-staged": {
     "*.{js,ts,vue,mts}": [
