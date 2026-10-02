@@ -1,16 +1,5 @@
 # Development Guide
 
-## QA sandbox checkout
-
-Before signed bootstrap activation, the desktop pins billing hosts for the declared `qa`
-environment and `strideterm-mobile-qa` project to `strideterm.com` and
-`sandbox-customer-portal.paddle.com`. An accepted bootstrap replaces this list, including
-an explicitly empty list; other environments and projects receive no fallback.
-The QA backend must use `https://sandbox-api.paddle.com`. After changing backend code,
-restart through the QA launcher if its watcher has not restarted the desktop. Verify
-that **Account → Subscribe** opens a checkout marked **Test Mode**, then use a Paddle
-test card. A successful backend configuration check alone does not verify this UI flow.
-
 This document is for contributors building strIDEterm from source. **Most users should use the [pre-built binaries](https://github.com/jstradej/strideterm/releases/latest)** — they are signed, ready to run, and auto-update.
 
 ## Requirements
@@ -45,227 +34,151 @@ npm run dev
 
 ## Starting the dev environment
 
-The preferred way to start the dev environment on Windows is `dev.ps1` in the project root:
+The preferred way on Windows is `dev.ps1` in the project root, from an interactive PowerShell:
 
 ```powershell
 .\dev.ps1
 ```
 
-What it does:
+It:
 
-- Forces an isolated data directory at `~/.strideterm-dev` (via `STRIDETERM_DATA_DIR`) so a dev build can run side-by-side with a production install without clobbering state, credentials, logs, or the single-instance lock.
-- Kills stale Electron/Node processes, clears the Electron disk cache, and frees port 1420.
-- Starts four watchers in parallel — Vite dev server, backend `tsc --watch`, preload `tsc --watch`, and a `vite build --watch` for `dist/` so the bundle served to remote/mobile clients stays fresh — and launches Electron once `dist-electron/electron/main.js` is on disk.
-- **Auto-restarts Electron when the backend recompiles** (debounced) so new IPC handlers, runtime methods, and manager changes take effect without a manual restart. Disable with `-NoAutoRestart`.
-- Restarts Vite if it crashes, and cleans up everything on `Ctrl+C`.
-- Sets the remote-access port to `43124` to avoid colliding with a running production instance on `43123`, and sets `STRIDETERM_LOG_LEVEL=trace` for verbose logs. `STRIDETERM_REMOTE_PORT` overrides whatever the settings file holds (it used to seed only a _new_ settings file, so on a dev build that had already run it silently did nothing and both instances fought over 43123).
+- uses an isolated data directory, `~/.strideterm-dev` (`-DataDir` overrides it), so a dev build runs beside a production install without sharing state, credentials, logs or the single-instance lock;
+- frees port 1420, clears the Electron disk cache, and starts the Vite dev server, the backend and preload `tsc --watch`, and a `vite build --watch` that keeps `dist/` (served to remote/mobile clients) fresh;
+- restarts Electron when the backend recompiles (`-NoAutoRestart` turns that off) and restarts Vite if it crashes;
+- uses remote-access port `43124` (production uses `43123`) and `STRIDETERM_LOG_LEVEL=trace`.
 
-Requires an interactive PowerShell session.
-
-If `dev.ps1` is not an option (non-Windows, or you prefer manual control):
+Without `dev.ps1` (non-Windows, or manual control):
 
 ```bash
 # Free port 1420 if a previous session left something behind:
 #   macOS / Linux: lsof -ti:1420 | xargs -r kill -9
 #   Windows:       taskkill //F //IM electron.exe; taskkill //F //IM node.exe
 
-# Start Vite (background), wait until it prints "ready in ..."
-npm run dev:web &
-
-# Then start the backend + preload tsc watchers and Electron
+npm run dev:web &        # wait until it prints "ready in ..."
 npm run dev:backend &
 npm run dev:preload &
 sleep 3 && npm run dev:electron &
 ```
 
-Avoid `npm run dev` from a non-interactive shell — `concurrently -k` kills all four processes when any one exits, which fights with backgrounded shells.
+Avoid `npm run dev` from a non-interactive shell — `concurrently -k` kills all four processes when any one exits.
 
 ### Which remote environment a desktop launch talks to
 
-`STRIDETERM_ENV` — `local`, `dev`, `qa` or `prod` — is the **one** declaration of which backend this
-desktop uses. It is read by the Firebase configuration, the bootstrap trust set and the sign-in
-broker, so those three cannot disagree. `dev.ps1` explicitly sets it to `local` when nothing else
-names one, so the normal development loop does not use a real server. Other Electron launches,
-including source launches such as `npm start`, default to `prod` only when the variable is absent.
-The environment default itself does not fetch configuration or contact online services. On a fresh
-installation, online setup begins when the user submits a valid sign-in form; an existing registered
-installation can restore online services it previously enabled.
+`STRIDETERM_ENV` — `local`, `dev`, `qa` or `prod` — is the **one** declaration of which backend a
+desktop uses. The Firebase configuration, the bootstrap trust set and the sign-in broker all read
+it, so they cannot disagree.
 
-It exists because the answer used to be inferred from `STRIDETERM_DATA_DIR`, which is a statement
-about where an installation keeps its **files**. Two different questions:
+- `dev.ps1` sets `local` unless something else is declared, so the normal development loop uses no
+  real server.
+- Any other launch, packaged or from source, is `prod` when the variable is absent. A value already
+  set by the user or a launcher is kept.
+- It is never inferred from the data directory, a project id or a Git branch. The data directory says
+  where an installation keeps its files, nothing more — which is also why a second production
+  instance with `--data-dir` signs in normally.
+- An unrecognised value (including the retired `staging` / `production`) blocks a **new** sign-in
+  with `environment-unresolved`. It never falls back to `prod` and never disconnects a working
+  installation.
 
-- `dev.ps1` sets the data directory to keep a developer's state out of the way, and that used to
-  silently declare the remote backend to be `dev` — so a desktop pointed at the qa Firebase project
-  still chose the dev broker and still announced itself as environment `local`, which the qa Worker
-  refuses.
-- `--data-dir`, which exists so a **second production** instance can keep separate state, made that
-  instance's sign-in unavailable for the same reason.
-
-A value this build does not recognise — including the retired `staging`/`production` spellings —
-blocks a **new** sign-in and says so (the refusal is `environment-unresolved`); it never falls back to
-`prod`, and it never disconnects a working installation. When the variable is absent, Electron's
-launch entry point sets `STRIDETERM_ENV=prod` for both packaged and source launches. A declaration
-already supplied by the user or launcher is preserved. This default is never inferred from a project
-id, a data directory or a Git branch.
+Declaring the environment does not contact anything by itself. On a fresh installation online setup
+starts when the user submits a valid sign-in form.
 
 #### Running against dev, qa or prod
 
-On the test workstation, use the wrappers in `C:\work\strideterm-ops\dev\` for an interactive
-desktop dev run against QA or production. `run-prod-desktop.ps1` selects the production Firebase
-config, `STRIDETERM_ENV=prod`, an isolated `~/.strideterm-prod-dev` data directory and remote port 43126. It verifies the named config belongs to `strideterm-mobile-prod` before launching:
+`STRIDETERM_ENV` alone is not a complete configuration for a deployed tier. It picks the broker and
+the bootstrap trust set; the Firebase **project id, Web API key and database URL** are three more
+values, and they must come from that tier's own project. `dev.ps1` auto-imports only the committed
+synthetic `local` demo `google-services.json` from the sibling `strideterm-mobile` repository; for
+any other tier it imports only what it is told to and stops before Electron starts if the three
+values are missing. Private ops wrappers for interactive QA/prod desktop runs live outside this
+repository.
+
+Start from a **fresh console** (nothing from the local configuration below may still be set) and
+name the tier's `google-services.json`, downloaded from that project's Firebase console:
 
 ```powershell
-& C:\work\strideterm-ops\dev\run-prod-desktop.ps1
-```
-
-This launcher exercises the desktop client only. The production Firebase Functions and operator
-identity must be deployed and verified separately before production sign-in or pairing can succeed.
-
-`STRIDETERM_ENV=dev` (or `qa`, or `prod`) on its own is **not** a complete configuration for that
-tier, and the launcher refuses it. The declaration chooses the broker (`https://auth-dev.strideterm.com`,
-`https://auth-qa.strideterm.com` or `https://auth.strideterm.com`) and the bootstrap trust set; the
-Firebase **project, Web API key and database** are three more values, and `dev.ps1`'s auto-import —
-the sibling `strideterm-mobile/app/android/app/src/local/google-services.json` — is for `local` alone,
-and it is a committed synthetic `demo-` fixture with no real project or secret in it. Outside `local`
-the launcher imports nothing it was not told to, and stops before Electron starts if the three values
-are not supplied.
-
-This paragraph describes the **development launcher**. A packaged production desktop is expected to
-obtain those public client values from a signed bootstrap before pairing; see
-[Production mobile bootstrap](production-bootstrap.md). The release gate refuses a build while the
-production bootstrap URL, public trust keys, or hosted envelope are missing.
-
-The complete procedure, in a **fresh console** (nothing from configuration A below may still be set):
-
-```powershell
-# The target tier's own google-services.json, downloaded from the Firebase console for that project.
-# It is NOT checked in for dev/qa/prod — app/android/app/src/{dev,qa}/ carry none — so name it.
 $env:STRIDETERM_ENV = "qa"
-.\dev.ps1 -DataDir "$env:USERPROFILE\.strideterm-qa" -MobileFirebaseConfigPath "C:\secrets\strideterm-qa\google-services.json"
+.\dev.ps1 -DataDir "$env:USERPROFILE\.strideterm-qa" -MobileFirebaseConfigPath "<path to the qa project's google-services.json>"
 ```
 
-The downloaded Android file may omit `project_info.firebase_url`. In that case the desktop derives
-the default Realtime Database URL from the project ID, as the mobile app does. A non-default database
-instance still needs an explicit `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL`.
+Or set the three variables yourself instead of naming the file:
+`STRIDETERM_MOBILE_FIREBASE_PROJECT_ID`, `STRIDETERM_MOBILE_FIREBASE_API_KEY`,
+`STRIDETERM_MOBILE_FIREBASE_DATABASE_URL`. If the file has no `project_info.firebase_url`, the default
+Realtime Database URL is derived from the project id; a non-default instance needs the URL set
+explicitly.
 
-Or set the three variables yourself instead of naming the file (`STRIDETERM_MOBILE_FIREBASE_PROJECT_ID`,
-`STRIDETERM_MOBILE_FIREBASE_API_KEY`, `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL`, all three, all from
-the target project). Either way:
+Rules for a deployed tier:
 
-- **They have to be that tier's project's values.** `GET /c` no longer compares the link's `apiKey`
-  against anything (security review 2026-09-13, I2) — a client key never proved which project minted
-  a code, and the Worker no longer reads `AUTHLINK_FIREBASE_PROJECT_ID`/`AUTHLINK_FIREBASE_API_KEY` at
-  all. What actually establishes project identity is the desktop's own allowlisted action-handler
-  check (`parseSignInLink`, `authlink-config.ts`) plus Firebase's own redemption of the `oobCode`
-  against the pinned project: a desktop configured for the wrong tier's project has its code refused
-  by Firebase when it tries to redeem it, not by the broker comparing keys. Configure the three
-  values from the target project's own `google-services.json` regardless — a mismatch still fails,
-  just later and from Firebase rather than from a broker-side key comparison.
-- **No emulator variable, no plain-HTTP database URL.** `FIREBASE_AUTH_EMULATOR_HOST`,
-  `FIREBASE_DATABASE_EMULATOR_HOST`, `FIREBASE_FUNCTIONS_EMULATOR_HOST` and an
-  `http://` `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL` are honoured **only** in a `local` build. Outside
-  one they are not ignored — they are a **contradiction**, and the whole Firebase configuration is
-  refused: Settings → Account says `environment-contradiction`, no sign-in can start, and the
-  process talks to no backend at all rather than to a mixture (the old behaviour dropped the
-  emulator hosts and kept the emulator's database URL, so a "qa" desktop wrote to a loopback
-  database while its identity calls went to the cloud). The fix is one line: unset them, or declare
-  `local`.
-- **Nothing is inferred from the project's name.** A recovery can restore a tier into a project called
-  anything; the declaration and the explicit values are the only inputs, which is why the launcher asks
-  for them rather than guessing from `-qa` in an id.
+- **The values must be that tier's project.** A desktop configured with another project's values
+  fails when Firebase refuses to redeem the sign-in code.
+- **No emulator variable and no `http://` database URL.** `FIREBASE_AUTH_EMULATOR_HOST`,
+  `FIREBASE_DATABASE_EMULATOR_HOST`, `FIREBASE_FUNCTIONS_EMULATOR_HOST` and a plain-HTTP database URL
+  are honoured only in `local`. Elsewhere they are a contradiction: the whole Firebase configuration
+  is refused (`environment-contradiction`) and the process talks to no backend rather than to a
+  mixture. Unset them, or declare `local`.
+- **A `demo-` project id outside `local`** is the same contradiction — a demo project exists in no
+  cloud.
+- **The dev, qa and prod broker origins are fixed in the build** (`authlink-config.ts`). Nothing in
+  the environment points a deployed tier at another broker.
 
-`electron/backend/mobile/dev-script-firebase-import.test.ts` runs the launcher's import function
-against these documented commands — a clean qa console, the named file, and the two contradictions —
-and fails if the document and the launcher drift apart.
+A packaged production desktop gets its public client values from a signed bootstrap instead; see
+[Production desktop bootstrap](production-bootstrap.md).
 
-The dev, qa and prod **broker origins are fixed in the build** (`authlink-config.ts`) and cannot be
-pointed elsewhere by anything in the environment.
+`electron/backend/mobile/dev-script-firebase-import.test.ts` runs the launcher against the command
+above, so the document and the launcher cannot drift apart.
+
+#### QA checkout (Paddle sandbox)
+
+Until a signed bootstrap provides them, a `qa` desktop on the `strideterm-mobile-qa` project allows
+the checkout hosts `strideterm.com` and `sandbox-customer-portal.paddle.com`; an accepted bootstrap
+replaces that list. The QA backend must use `https://sandbox-api.paddle.com`. To verify, **Account →
+Subscribe** must open a checkout marked **Test Mode**; pay with a Paddle test card. A passing backend
+configuration check alone does not prove this flow.
 
 ### Exercising passwordless sign-in in a local build
 
-A `local` build has **no sign-in broker until you name one**, and that is deliberate rather than an
-oversight: defaulting it to `https://auth.strideterm.com` is how a test address ends up in a real
-account. Without a broker origin, Settings → Account reports that sign-in is unavailable, says which
-of the reasons it is, and nothing else is affected — an already-enrolled desktop keeps its
-installation credential, its pairings and its device list.
+A `local` build has **no sign-in broker until you name one**. Defaulting it to the production broker
+is how a test address ends up in a real account. Without one, Settings → Account says sign-in is
+unavailable and why; an enrolled desktop keeps its credential, pairings and device list.
 
-**There is one configuration exercisable from this desktop today.** Its exact steps live in the cloud
-repository, beside the Worker whose configuration they pin, and a CI check keeps them honest:
-
-> **`docs/PASSWORDLESS-LOCAL-TESTING.md`** in `C:/work/strideterm-mobile`, verified by
-> `npm run check:authlink-local-config` there.
-
-**A — emulator only.** The Auth, database and Functions emulators, all on `127.0.0.1`, plus the
-Worker's own `wrangler dev --local` defaults. Nothing leaves the machine and no message is delivered
-anywhere: the emulator prints the link. The origin is **`http://127.0.0.1:8788`**, because `POST /c`
-compares the browser's `Origin` against the Worker's `AUTHLINK_ORIGIN` byte for byte and that file's
-default says `127.0.0.1`. **All three `STRIDETERM_MOBILE_FIREBASE_*` variables have to be assigned**,
-and that is what the procedure there does: `dev.ps1` imports every one it finds unset from the
-committed `local` demo `google-services.json` fixture, so an omission is not a default but the demo
-project's own value — a fake project id and key with no live quota behind them. The launcher refuses
-to import a _different_ project's key or database URL at all, and warns; the assignments are what
-make the configuration complete.
+The one local configuration is **emulator only**: the Auth, Database and Functions emulators on
+`127.0.0.1`, plus the broker Worker's `wrangler dev --local` defaults. Nothing leaves the machine and
+no message is delivered — the emulator prints the link. Its setup steps live beside the Worker in the
+sibling `strideterm-mobile` repository (`docs/PASSWORDLESS-LOCAL-TESTING.md`, checked there by
+`npm run check:authlink-local-config`).
 
 ```powershell
-# STRIDETERM_ENV defaults to "local"; the broker origin still has to be named explicitly (F11 — a
-# local build is not defaulted to a broker either, only the ONE loopback address a real one may be).
+# STRIDETERM_ENV defaults to "local" in dev.ps1; the broker origin must still be named.
 $env:STRIDETERM_MOBILE_AUTHLINK_ORIGIN = "http://127.0.0.1:8788"
 .\dev.ps1
 ```
 
-**A local build is the whole Emulator Suite on this machine, or no Firebase configuration at all**
-(follow-up 2026-09-11, item 1; `electron/backend/mobile/mobile-firebase-config.ts`):
+The origin is `127.0.0.1`, not `localhost`, because the Worker compares the browser's `Origin`
+byte for byte against its configured one.
 
-- **All three emulator variables are required** — `FIREBASE_AUTH_EMULATOR_HOST`,
-  `FIREBASE_DATABASE_EMULATOR_HOST` and `FIREBASE_FUNCTIONS_EMULATOR_HOST`. A `local` build with two of
-  them set used to send the third service's calls to Google (`identitytoolkit.googleapis.com` for a
-  missing Auth host, `cloudfunctions.net` for a missing Functions host). Now a missing one is reported
-  as _not configured_, naming exactly that variable, and nothing is built: there is no cloud fallback
-  for `local`.
-- **Every host is validated as a loopback `host:port`.** `127.0.0.1`, `localhost` and `[::1]` with a
-  port in 1–65535, an optional `http://` and trailing slash tolerated. A LAN address is not this
-  machine; `127.0.0.1.evil.example` and `localhost.example` are lookalikes, not loopback; `https://`,
-  credentials, a path or a query in the value are refused. The refusal is
-  `local-endpoint-invalid` (Settings → Account says so), and it names the variable, never its value.
-- **An explicit `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL` may only be the database emulator's own URL
-  for the declared demo project** — `http://<FIREBASE_DATABASE_EMULATOR_HOST>?ns=<project>-default-rtdb`
-  — or unset, in which case it is derived. A cloud `firebasedatabase.app` URL inherited from a
-  `google-services.json`, a different host or port, or another project's namespace is the same
-  `local-endpoint-invalid` refusal.
-- **A `demo-` project id outside `local` is an `environment-contradiction`**, for the mirror-image
-  reason: a demo project exists in no cloud, so a `dev`/`qa`/`prod` declaration naming one has no
-  endpoint that could answer, and deriving cloud URLs for it — which the old resolver did — could only
-  send requests off the machine for a project that lives only on one.
+A local build is **the whole Emulator Suite on this machine, or no Firebase configuration at all**:
 
-**There is no configuration B against a real project any more, and that is deliberate rather than a
-gap.** The real dev Firebase project reached through a LOCALLY run authlink Worker — what this section
-used to call configuration B — is exactly the combination plan §2.1 rules out: `dev` now means a
-personal test against `https://auth-dev.strideterm.com`, a REMOTE broker, and pointing a
-`local`-declared desktop at the real dev project's data through a locally-run Worker would need its
-own, separately-described diagnostic mode and its own HTTP policy — v2 does not introduce one. Until
-`dev` is activated (plan §7 — the Worker deployed, the project provisioned, the Authorized domain set),
-there is no way to exercise a real e-mail end to end from this desktop: `STRIDETERM_ENV=dev` with no
-reachable `https://auth-dev.strideterm.com` fails at `/start` rather than falling back to anything
-local.
+- All three emulator variables are required. A missing one is reported as not configured, naming
+  the variable; there is no cloud fallback for a single service.
+- Every host must be a loopback `host:port` (`127.0.0.1`, `localhost`, `[::1]`). LAN addresses,
+  lookalikes such as `localhost.example`, `https://`, credentials, paths and queries are refused as
+  `local-endpoint-invalid`, which names the variable, never its value.
+- An explicit `STRIDETERM_MOBILE_FIREBASE_DATABASE_URL` may only be the database emulator's own URL
+  for the demo project (`http://<FIREBASE_DATABASE_EMULATOR_HOST>?ns=<project>-default-rtdb`), or
+  unset so it is derived.
+- `dev.ps1` fills unset `STRIDETERM_MOBILE_FIREBASE_*` values from the committed `local` demo
+  fixture and refuses to import a different project's key or database URL.
 
-Configuration A does not need the broker running at all: with nothing listening the attempt falls back
-to **manual-only**, the emulator's line still carries the link, and "Paste the link from the email"
-finishes it. **Copy the link's address, not the words.** The message's plain-text part carries the
-anchor's text and no URL at all (measured — `docs/PASSWORDLESS-PHASE0.md` row 31), so selecting what
-you can see and pasting it gets you `invalid-code`; right-click the "Sign in to …" link and copy the
-address.
+The broker does not have to run: with nothing listening the attempt falls back to manual-only and
+"Paste the link from the email" finishes it. **Copy the link's address, not its text** — the
+plain-text part of the message carries the anchor's words and no URL, so pasting what you see gives
+`invalid-code`.
 
-**The manual pass itself — the concrete steps and the result each should produce — is
-[`docs/PASSWORDLESS-MANUAL-TESTS.md`](PASSWORDLESS-MANUAL-TESTS.md).**
+Finishing the sign-in on a phone does not work locally: `127.0.0.1` on a phone is the phone. It needs
+a reachable HTTPS origin listed in Firebase's Authorized domains, i.e. a deployed tier.
+Do not point a local build at the prod broker to get an HTTPS origin. A deployed tier ignores
+`STRIDETERM_MOBILE_AUTHLINK_ORIGIN` entirely.
 
-**Configuration A does not support finishing the sign-in from a phone**, and not because of a missing
-feature: `127.0.0.1`/`localhost` on a phone is _the phone_. That route needs a reachable HTTPS origin,
-the same origin on both sides, and that origin's host in Firebase's Authorized domains — so it waits
-for a deployment rather than being approximated locally. Do not point a local build at the prod broker
-to get an HTTPS origin.
-
-A dev, qa or prod build ignores `STRIDETERM_MOBILE_AUTHLINK_ORIGIN` entirely; it is not a way to point
-a real build at another broker.
+The manual test pass is [`PASSWORDLESS-MANUAL-TESTS.md`](PASSWORDLESS-MANUAL-TESTS.md).
 
 ## Commands
 
@@ -317,11 +230,11 @@ E2E tests use fixture JSON files in `test/fixtures/` and a mock server that serv
 
 The app has three layers:
 
-- **Headless runtime** (`electron/backend/`) — pure TypeScript, no Electron dependency. Owns PTYs, state, Git/Docker/Azure DevOps/GitHub managers, and exposes the same API to both the Electron IPC layer and a remote HTTP/WS server.
-- **Electron adapter** (`electron/main.ts`, `electron/preload.ts`) — thin shell: a window registry of one or more `BrowserWindow` instances (each pinned to a profile via a `WindowSlot`), native attention (taskbar flash, badge), per-window IPC routing, cross-instance data-directory lock.
-- **Vue renderer** (`src/`) — Vue 3 + Pinia SPA. The `transport.ts` module abstracts Electron IPC vs remote HTTP/WS so stores work identically in both modes.
+- **Headless runtime** (`electron/backend/`) — pure TypeScript, no Electron dependency. Owns PTYs, state and the Git/Docker/Azure DevOps/GitHub managers, and serves the same API to the Electron IPC layer and the remote HTTP/WS server.
+- **Electron adapter** (`electron/main.ts`, `electron/preload.cts`) — thin shell: windows, native attention, per-window IPC routing, the data-directory lock.
+- **Vue renderer** (`src/`) — Vue 3 + Pinia. `transport.ts` hides whether it talks over Electron IPC or remote HTTP/WS.
 
-See [architecture.md](architecture.md) for the full breakdown and key patterns.
+See [architecture.md](architecture.md) for the principles behind it.
 
 ## Plugin development
 

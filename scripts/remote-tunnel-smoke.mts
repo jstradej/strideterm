@@ -601,7 +601,7 @@ async function main(): Promise<void> {
     // interval so a mounted pane's on-demand PR/review detail resolves.
     reseedTimer = setInterval(() => void seedProviders(), 300);
     browser = await chromium.launch();
-    const artDir = path.join(REPO_ROOT, "docs", "remote-smoke-artifacts");
+    const artDir = path.join(REPO_ROOT, "test-results", "remote-smoke");
     await mkdir(artDir, { recursive: true });
     const profiles: Array<[string, Record<string, unknown>, boolean]> = [
       ["phone", { ...devices["iPhone 13"] }, false],

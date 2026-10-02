@@ -1,16 +1,14 @@
 # Plugin Development Guide
 
-This guide explains how to create plugins for strIDEterm. **Plugins are currently manifest-only** — they declare a workspace template and optional metadata. Runtime hooks (an `activate(...)` entry point) are not yet wired into the loader; see [Future Ideas](#future-ideas).
+This guide explains how to create plugins for strIDEterm. **Plugins are currently manifest-only**: a plugin declares a workspace template and metadata, and the loader executes no plugin code. A runtime entry point (`activate(...)`) is reserved in the manifest but not wired into the loader.
 
 ## Quick Start
 
-Create a plugin in 3 steps:
-
 ```bash
-# 1. Create plugin directory
+# 1. Create the plugin directory
 mkdir -p ~/.strideterm/plugins/my-plugin
 
-# 2. Create manifest
+# 2. Create the manifest
 cat > ~/.strideterm/plugins/my-plugin/plugin.json << 'EOF'
 {
   "id": "my-plugin",
@@ -45,20 +43,16 @@ EOF
 # 3. Restart strIDEterm
 ```
 
-Your plugin will appear in the plugin list if the manifest validates successfully.
+The plugin appears in the plugin list if its manifest validates; a manifest that fails validation is not loaded.
 
 ## Plugin Locations
-
-Plugins are discovered from:
 
 | Location                         | Type           | Priority      |
 | -------------------------------- | -------------- | ------------- |
 | `plugins/` inside the app bundle | Built-in       | Loaded first  |
 | `~/.strideterm/plugins/`         | User-installed | Loaded second |
 
-If a user plugin has the same `id` as a built-in plugin, the built-in plugin wins.
-
-## Directory Structure
+Every direct subdirectory containing a `plugin.json` is a plugin; discovery is not recursive. If a user plugin has the same `id` as a built-in one, the built-in wins.
 
 ```text
 ~/.strideterm/plugins/my-plugin/
@@ -67,7 +61,7 @@ If a user plugin has the same `id` as a built-in plugin, the built-in plugin win
 `- assets/
 ```
 
-Only `plugin.json` is required. The plugin loader does not currently import or execute any code from the plugin directory (see [Future Ideas](#future-ideas)). Platform scripts referenced from `panels[].platforms[].script` are an exception — they're invoked as part of a panel's startup command.
+Only `plugin.json` is required. See `plugins/system-monitor/` for a real example.
 
 ## Manifest Reference
 
@@ -81,22 +75,22 @@ Only `plugin.json` is required. The plugin loader does not currently import or e
 
 ### Optional Fields
 
-| Field                 | Type       | Default      | Description                                                                                                                                                                                            |
-| --------------------- | ---------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `description`         | `string`   | `""`         | Short description shown in the UI                                                                                                                                                                      |
-| `author`              | `string`   | `""`         | Plugin author name                                                                                                                                                                                     |
-| `license`             | `string`   | `""`         | License identifier such as `"MIT"`                                                                                                                                                                     |
-| `icon`                | `string`   | `"PL"`       | 1-4 character badge shown on the workspace card                                                                                                                                                        |
-| `color`               | `string`   | `"#888"`     | Hex color for the workspace accent                                                                                                                                                                     |
-| `kind`                | `string`   | `"terminal"` | Workspace type. Built-ins use `"terminal"`, `"docker"`, `"azure"`, `"github"`. The loader does not validate this field, so any string is accepted, but renderer code only knows the four values above. |
-| `capabilities`        | `string[]` | `[]`         | Declared capabilities (validated against a whitelist)                                                                                                                                                  |
-| `workspaceDefaults`   | `object`   | `null`       | Default workspace template                                                                                                                                                                             |
-| `entryPoint`          | `string`   | —            | Reserved for future runtime hooks. The loader validates the path stays inside the plugin directory but **does not import or execute the file** today.                                                  |
-| `recommendedPackages` | `object[]` | `[]`         | Free-form list of suggested packages. Informational only — not surfaced anywhere by the runtime currently.                                                                                             |
+| Field                 | Type       | Default      | Description                                                                                                                      |
+| --------------------- | ---------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `description`         | `string`   | `""`         | Short description shown in the UI                                                                                                |
+| `author`              | `string`   | `""`         | Plugin author name                                                                                                               |
+| `license`             | `string`   | `""`         | License identifier such as `"MIT"`                                                                                               |
+| `icon`                | `string`   | `"PL"`       | 1-4 character badge shown on the workspace card                                                                                  |
+| `color`               | `string`   | `"#888"`     | Hex color for the workspace accent                                                                                               |
+| `kind`                | `string`   | `"terminal"` | Workspace type. The renderer knows `"terminal"`, `"docker"`, `"azure"` and `"github"`; other strings are accepted but not useful |
+| `capabilities`        | `string[]` | `[]`         | Declared capabilities, validated against the list below                                                                          |
+| `workspaceDefaults`   | `object`   | `null`       | Default workspace template                                                                                                       |
+| `entryPoint`          | `string`   | —            | Reserved. Must stay inside the plugin directory; the file is **not imported or executed** today                                  |
+| `recommendedPackages` | `object[]` | `[]`         | Informational list of suggested packages; not used by the runtime                                                                |
 
 ## Workspace Template
 
-`workspaceDefaults` defines the template users can add from the plugin list.
+`workspaceDefaults` is the template a user adds from the **+ Add Workspace** picker.
 
 ```json
 {
@@ -139,7 +133,7 @@ Only `plugin.json` is required. The plugin loader does not currently import or e
 
 ## Cross-Platform Panels
 
-Panels can declare per-platform behavior:
+A panel can override its startup per platform. Keys: `win32`, `linux`, `darwin`, and `posix`, used when the current platform has no entry of its own.
 
 ```json
 {
@@ -150,103 +144,49 @@ Panels can declare per-platform behavior:
   "startup": "default",
   "platforms": {
     "win32": { "script": "monitor.ps1" },
-    "linux": { "command": "btop 2>/dev/null || htop" },
-    "darwin": { "command": "btop 2>/dev/null || htop" }
+    "posix": { "script": "monitor.sh" }
   }
 }
 ```
 
-Platform keys: `win32`, `linux`, `darwin`.
+| Field     | Description                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------------- |
+| `script`  | Filename inside the plugin directory, with one of `.ps1`, `.sh`, `.bash`, `.py`, `.js`, `.mjs`                   |
+| `command` | A plain shell command for that platform. **Honoured only for built-in plugins**; a user plugin must use `script` |
 
-| Field     | Description                                                                                               |
-| --------- | --------------------------------------------------------------------------------------------------------- |
-| `script`  | Filename inside the plugin directory. Allowed extensions are `.ps1`, `.sh`, `.bash`, `.py`, `.js`, `.mjs` |
-| `command` | Plain shell command for that platform                                                                     |
-
-The loader chooses the runner for `script` automatically. For example, `.ps1` becomes `powershell -ExecutionPolicy Bypass -File ...`.
+The loader, not the plugin, chooses how a script runs (e.g. `.ps1` becomes `powershell -ExecutionPolicy Bypass -File …`), and refuses a script whose extension is not allowed or whose path leaves the plugin directory. A refused panel shows the reason in its terminal.
 
 ## Capabilities
 
-The loader validates declared capabilities against a whitelist.
+`capabilities` must name only these; an unknown one fails validation and the plugin does not load:
 
-Available capabilities:
-
-- `docker:list-containers`
-- `docker:container-actions`
-- `docker:attach-shell`
-- `docker:stream-logs`
-- `docker:lazydocker`
-- `terminal:create-panel`
-- `terminal:read-output`
-- `workspace:create`
-- `workspace:modify-own`
+- `docker:list-containers`, `docker:container-actions`, `docker:attach-shell`, `docker:stream-logs`, `docker:lazydocker`
+- `terminal:create-panel`, `terminal:read-output`
+- `workspace:create`, `workspace:modify-own`
 - `system:read-metrics`
 
-Unknown capabilities fail validation and the plugin will not load.
-
-Minimal static plugin example:
-
-```json
-{
-  "id": "my-static-plugin",
-  "name": "My Static Plugin",
-  "version": "1.0.0",
-  "capabilities": [],
-  "workspaceDefaults": {}
-}
-```
+Declare only what you need. Capabilities are metadata, not a permission system (see below).
 
 ## Plugin Lifecycle (today)
 
-The loader is intentionally minimal:
+1. **Discovery** — built-in plugins, then user plugins, as above.
+2. **Manifest validation** — `id` format, required fields, capability list, `entryPoint` containment.
+3. **Template surfacing** — `workspaceDefaults` appears in the **+ Add Workspace** picker; choosing it creates the workspace with platform panels resolved for the current OS.
 
-1. Discovery — every direct subdirectory of `plugins/` (built-in) and `~/.strideterm/plugins/` (user) that contains a `plugin.json` is picked up. Discovery is **not recursive** — nested plugin directories are ignored.
-2. Manifest validation — `id` regex, required fields, capability whitelist, and `entryPoint` path containment.
-3. Workspace-template surfacing — the renderer reads `workspaceDefaults` so the plugin appears in the **+ Add Workspace** picker. Selecting it materialises the template with platform panels resolved (`win32` / `linux` / `darwin`, falling back to `posix` if defined).
-
-There is no module import, no `activate()` invocation, and no `deactivate()` callback. If you need plugin-driven runtime behaviour today, fork the relevant manager in `electron/backend/` rather than depending on the entry point.
+There is no module import, no `activate()` and no `deactivate()`. Runtime behaviour that a plugin cannot express as a template belongs in `electron/backend/` today.
 
 ## Security Model
 
-Be explicit about what is and is not enforced:
+What is enforced:
 
-- Manifest validation is enforced.
-- Capability names are validated.
-- `entryPoint` path containment is validated.
-- Platform script filenames are validated and constrained to the plugin directory.
+- manifest validation, including the capability list;
+- `entryPoint` and platform scripts must stay inside the plugin directory, and scripts must have an allowed extension;
+- a user plugin cannot supply a per-platform inline `command`.
 
-Important limitation:
+What is not:
 
-- Plugins run in the same Node.js process as the backend.
-- There is no OS sandbox or capability sandbox around arbitrary plugin code.
-- Declared capabilities are metadata and validation hints, not a hardened permission system.
+- **The loader executes no plugin code today.** A plugin's panels and scripts run as ordinary terminal sessions under your user account, with the same access as anything you type in a shell — so a plugin's commands and scripts are code you are choosing to run.
+- **There is no sandbox.** If entry points are wired up later, they would run unsandboxed in the backend's Node.js process.
+- **Capabilities are not permissions.** They are validated names, not an enforced boundary.
 
-That means plugin authors should be treated as trusted code authors.
-
-## Best Practices
-
-1. Keep plugin scope small and obvious.
-2. Declare only capabilities you actually need.
-3. Prefer `workspaceDefaults` if you only need a template — that's the supported path today.
-4. Look at `plugins/system-monitor/` for a real example of `platforms` + `recommendedPackages`.
-5. Include a `README.md` that explains prerequisites and commands.
-6. Use semantic versioning.
-
-## Common Errors
-
-| Error                                                 | Cause               | Fix                                      |
-| ----------------------------------------------------- | ------------------- | ---------------------------------------- |
-| `Plugin 'id' must be a lowercase alphanumeric string` | Invalid `id` format | Use only `a-z`, `0-9`, `-`, `_`          |
-| `Plugin 'name' is required`                           | Missing `name`      | Add `"name"`                             |
-| `Plugin 'version' is required`                        | Missing `version`   | Add `"version"`                          |
-| `Unknown capability: 'xxx'`                           | Invalid capability  | Remove or replace it                     |
-| `Failed to parse plugin.json`                         | Invalid JSON        | Fix syntax                               |
-| `entryPoint must not escape the plugin directory`     | `../` traversal     | Keep it relative to the plugin directory |
-
-## Future Ideas
-
-- **Entry-point activation** — wire `activate({ runtime })` / `deactivate()` into the loader so plugins can register listeners, timers, and IPC handlers. The manifest already validates `entryPoint` for path containment, but the loader doesn't import it yet.
-- Plugin settings UI
-- Hot reload
-- Shared plugin schema module
-- Custom renderer surfaces for trusted plugins
+Treat plugin authors as trusted code authors, and read a plugin's manifest and scripts before installing it.

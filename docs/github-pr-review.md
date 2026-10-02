@@ -1,6 +1,6 @@
 # GitHub Pull Request Review
 
-strIDEterm turns your GitHub pull request inbox into a local review workspace where AI agents help you review and fix code. Same architecture as the [Azure DevOps integration](azure-devops-review.md).
+strIDEterm turns your GitHub pull request inbox into a local review workspace where AI agents help you review and fix code. It works like the [Azure DevOps integration](azure-devops-review.md); this page covers what is specific to GitHub.
 
 ---
 
@@ -10,192 +10,77 @@ strIDEterm turns your GitHub pull request inbox into a local review workspace wh
 
 Open the GitHub workspace and click **Add connection**. You need:
 
-- **Host URL** — `https://github.com` for GitHub.com, or your GitHub Enterprise Server URL
+- **Host URL** — `https://github.com`, or your GitHub Enterprise Server URL
 - **PAT** — Personal Access Token (fine-grained or classic, with `repo` scope)
 - **Review root** — local directory where PR worktrees are created
-- **Owner filters** — optional, limit to specific organizations or users
-- **Repository filters** — optional, limit to specific `owner/repo` names
+- **Owner / repository filters** — optional, limit the inbox to specific organizations, users or `owner/repo` names
 
-If you paste a full repository URL (e.g. `https://github.com/myorg/myrepo`), the app automatically extracts the host and adds the owner/repo as filters.
+Pasting a full repository URL (e.g. `https://github.com/myorg/myrepo`) fills in the host and adds the repo as a filter. Your GitHub login is detected from the token. The PAT is stored encrypted, separately from the main state file.
 
-PAT is stored encrypted, separately from the main state file. Your GitHub login is detected automatically from the token.
+For GitHub Enterprise Server the API base is derived from the host (`https://{host}/api/v3`; `github.com` uses `https://api.github.com`).
 
 ### The Inbox
 
-The inbox shows all active pull requests across your connections, grouped by repository. Filter tabs:
+All active pull requests across your connections, grouped by repository. Tabs: **All**, **Needs attention** (new comments, review state changes, check failures), **Needs review** (your review is requested), **My PRs**, **Connections** and **Activity Log**.
 
-- **All** — every PR sorted by recent activity
-- **Needs attention** — PRs with new comments, review state changes, or check failures
-- **Needs review** — PRs where your review is requested
-- **My PRs** — PRs you authored
-- **Connections** — manage GitHub connections
-- **Activity Log** — see every GitHub API call strIDEterm made on your behalf
+Each card offers **Review** (opens the review workspace) and **Browser** (opens it on GitHub). The **▸** caret expands a row in place — description, mergeable state (clean / dirty / blocked / behind / unstable), comment counts, check runs and reviewers — for triage without opening a workspace.
 
-When you have multiple repositories, filter buttons appear at the top to show only PRs from a specific repo.
-
-Each PR card shows: number, title, author, branches, role (author/reviewer), approval status, and attention reason. Actions: **Review** (opens review workspace), **Browser** (opens on GitHub).
-
-Click the **▸** caret on the left of the title to expand a PR row in place. The expanded view shows the PR body (description), created/updated dates, state, mergeable state (clean / dirty / blocked / behind / unstable), comment counts (total + new since you last looked), check run pass/fail/pending breakdown, reviewer roll-up (approved / changes-requested / still requested), and the head commit short SHA — useful for scanning the inbox without opening every review workspace.
+Connections poll every 120 seconds by default (configurable per connection).
 
 ### Open a Review Workspace
 
-Clicking **Review** on a PR creates a local workspace:
-
-1. Clones the repository (cached, shared across PRs from the same repo)
-2. Creates a git worktree at `{reviewRoot}/reviews/{connection}/pr-{number}/`
-3. Checks out the PR source branch
-4. Opens the workspace with terminal tabs (Claude Code, Codex, GitHub Copilot, Shell) and review pane
-
-For PRs you authored, strIDEterm can attach to your existing workspace instead of creating a duplicate.
+**Review** clones the repository (cached per repo), creates a worktree at `{reviewRoot}/reviews/{connection}/pr-{number}/`, checks out the PR source branch and opens the workspace with agent and shell tabs and the review pane. For a PR you authored, strIDEterm can attach to your existing checkout instead of creating a duplicate (see **Work here** in the Azure DevOps guide).
 
 ### New Branch (Quick Fix)
 
-Click **New Branch** in the inbox toolbar or the sidebar icon to create a fresh branch for a new PR:
-
-1. Select a repository from your GitHub account
-2. Pick a base branch (main/develop/master auto-suggested)
-3. Enter a branch name with optional prefix (e.g. `fix/my-change`)
-4. A worktree workspace is created, ready for coding
-
-After committing and pushing, use the Review tab to create a pull request directly from the workspace. The workspace then promotes to a full review workspace automatically.
+**New Branch** (inbox toolbar or sidebar) starts a fresh branch for a new PR: pick a repository, a base branch and a branch name, and a worktree workspace is created. After committing and pushing, create the pull request from the workspace's Review tab; the workspace then becomes a full review workspace.
 
 ---
 
 ## The Review Pane
 
-The review pane has five tabs (identical to Azure DevOps):
+The same five tabs as Azure DevOps — Summary, Files, Comments, Conflicts, Agent — with these differences:
 
-### Summary
-
-- PR metadata: title, author, branches, merge status, draft indicator
-- **Review actions**: Approve, Request Changes, Comment
-- **Git operations**: Push branch directly; Rebase on target and Force push live behind a **More git actions** menu (see [Refresh & Staying Up to Date](#refresh--staying-up-to-date) — there is no separate "Fetch" button)
-- **Checks**: CI status with pass/fail/pending indicators
-- **Reviewers**: who reviewed and their state
-
-### Files
-
-Split view: changed files tree on the left, diff preview on the right. Click a file to see its diff.
-
-### Comments
-
-All conversations — both general issue comments and code review threads. Each thread shows:
-
-- Thread number (`#N`), status chip, file path (for code comments), relative time
-- All published replies with author avatars
-- Draft replies (queued for publishing) with edit/delete actions
-
-Human-authored comments show as **"You"**, agent-authored comments show the agent name.
-
-### Conflicts
-
-Merge conflict detection with file tree and diff preview.
-
-### Agent
-
-Ready-to-use prompt templates for AI agents. Copy a prompt and paste it into Claude Code, Codex, or GitHub Copilot. Templates are editable and stored locally.
-
-Also shows the MCP server command line for connecting custom agents.
+- **Review actions** are Approve, Request Changes and Comment.
+- **Comments** shows both general (issue) comments and code review threads. Your comments show as **"You"**, agent-written ones show the agent's name.
+- **Threads cannot be resolved or reactivated** from strIDEterm on GitHub; there is no thread status chip to set.
 
 ---
 
 ## Refresh & Staying Up to Date
 
-Works exactly like the [Azure DevOps integration](azure-devops-review.md#refresh--staying-up-to-date): the toolbar's **Refresh** button fetches the PR's exact source branch and fast-forwards your checkout onto it when that's safe (never `reset --hard`, rebase, or merge), refreshes the git snapshot and PR metadata, reloads any open diff, and reports the outcome — updated, already up to date, or a clear reason it couldn't (dirty worktree, local commits ahead, or a diverged history). It works the same in a read-only reviewer checkout — no "Enable editing" needed. Background refresh (activating the pane, polling) only ever touches PR metadata, never the checkout.
+Works exactly like the [Azure DevOps integration](azure-devops-review.md#refresh--staying-up-to-date): **Refresh** fetches the PR's exact source branch and fast-forwards your checkout only when that is safe (never `reset --hard`, rebase or merge), refreshes the PR metadata, reloads any open diff and reports the outcome. Background refresh only ever touches PR metadata, never the checkout.
 
 ---
 
 ## Push & Publish
 
-The **Push & publish** button in the toolbar sends your work to GitHub. It shows dynamic counts:
+**Push & publish** shows its counts — **Push (3) & publish (2)** — and:
 
-> **Push (3) & publish (2)**
+1. Skips the push when there is nothing ahead of the remote (then only comments are published, and a dirty worktree does not block it)
+2. Pushes commits to the PR branch
+3. Publishes every queued draft
 
-What it does:
+**Limitation:** drafts are published as top-level PR (issue) comments. A reply you queue against an inline review-comment thread is also posted top-level — strIDEterm does not yet reply inside the original code thread.
 
-1. **Skips push** if there are no commits ahead of remote (only publishes comments)
-2. **Pushes commits** to the remote PR branch (with PAT authentication, using `HEAD:refs/heads/{branch}` refspec)
-3. **Publishes all queued draft comments** as GitHub issue comments via the `/issues/{number}/comments` endpoint. Note: replies that you queue against a specific inline review-comment thread are still published as top-level issue comments — strIDEterm does not currently post inline review-comment replies into the original code thread.
-
-If there are no commits to push, only comments are published — no dirty worktree check needed.
-
-After publishing, draft comments are removed from the local database and re-imported as normal remote comments on the next refresh.
+After publishing, the drafts are removed locally and come back as normal GitHub comments on the next refresh.
 
 ---
 
 ## Working with AI Agents
 
-Same workflow as Azure DevOps:
-
-1. Open a Claude Code, Codex, or GitHub Copilot tab in the review workspace
-2. The agent automatically gets MCP tools for the review bridge (Copilot uses `--additional-mcp-config` with inline JSON; Claude uses `--mcp-config`; Codex uses `-c mcp_servers.review.*`) — no prompt is submitted for you, so the agent waits for your first turn
-3. The agent reads comments, analyzes code, writes draft replies
-4. Drafts appear in the Comments tab
-5. Click **Push & publish** to send to GitHub
-
-Agents cannot publish directly to GitHub. All publishing goes through user-controlled actions.
+The same workflow as Azure DevOps: agent tabs in a review workspace get the review bridge (list and read comments, write drafts), wait for your first instruction, and **can never publish** — every push and comment goes through your **Push & publish**.
 
 ---
 
 ## Authentication and Security
 
-### PAT Storage
-
-PAT values are stored encrypted in `credentials.json`, not in the main state. On Electron, `safeStorage` is used when available.
-
-### Git Authentication
-
-Git commands authenticate via `http.extraheader` (Basic auth with `x-access-token:{PAT}`), not by embedding tokens in remote URLs.
-
-### Agent Isolation
-
-MCP agents interact only with the local SQLite database. They cannot call the GitHub API directly.
-
-### GitHub Enterprise Server
-
-Connections support custom host URLs. The API base URL is derived automatically:
-
-- `github.com` -> `https://api.github.com`
-- Custom host -> `https://{host}/api/v3`
+- **PAT storage** — encrypted in `credentials.json` (Electron `safeStorage`), never in the main state file.
+- **Git authentication** — the token is never embedded in a remote URL or written to `.git/config`. It reaches git as an `http.extraheader` (Basic auth with `x-access-token`) through `GIT_CONFIG_*` environment variables, so it stays off the command line; only a git older than 2.31 (or one whose version cannot be read) gets it as a `-c` argument.
+- **Agent isolation** — agents talk only to the local review database and cannot call the GitHub API.
 
 ---
 
 ## Activity Log
 
-The **Activity Log** tab shows every GitHub API call strIDEterm made — fetching PRs, loading comments, posting your replies. Useful for:
-
-- Confirming a comment was published
-- Investigating sync failures
-- Checking polling frequency and response times
-- Distinguishing user-triggered vs. automatic background operations
-
-Supports filtering by category (read/write), status, source, date range, and free-text search. Entries are kept for 30 days.
-
----
-
-## Technical Details
-
-### Data Storage
-
-- **Main state** (`~/.strideterm/strideterm-state.json`) — workspaces, connections (without PAT), settings
-- **Review bridge** (SQLite, shared with Azure DevOps) — imported threads, draft comments, sync queue, agent prompts
-- **Audit log** (`github-audit-log.db`) — every GitHub API call with timing, status, and classification (30-day retention)
-- **Review cache** — PR tracking state, seen timestamps, workspace mapping
-- **Exports** — markdown/JSON context files for agent consumption
-
-### Polling
-
-Default: 120 seconds per connection. Configurable per connection (minimum 1 second, maximum 1 hour, enforced by the IPC schema). The active review workspace polls more frequently through manual refresh.
-
-### Differences from Azure DevOps Integration
-
-| Feature          | Azure DevOps                  | GitHub                                   |
-| ---------------- | ----------------------------- | ---------------------------------------- |
-| Auth             | Basic (login:PAT)             | Bearer (PAT)                             |
-| Login            | User provides login           | Auto-detected from token                 |
-| Projects         | Yes (project → repo)          | No (repos directly)                      |
-| Review actions   | Vote (10/5/0/-5/-10)          | APPROVE / REQUEST_CHANGES / COMMENT      |
-| Thread status    | Active/Fixed/Closed/etc.      | No thread resolution (GitHub limitation) |
-| Inline comments  | Via Azure threads             | Via review comments (code-level)         |
-| General comments | Via Azure threads             | Via issue comments (separate API)        |
-| Checks           | Policy evaluations + statuses | Check runs + combined status             |
+The **Activity Log** tab records every GitHub API call strIDEterm made — fetching PRs, loading comments, posting your replies — so you can confirm a comment was published, investigate a failed sync and tell your actions from background polling. Filter by category, status, source, date range and free text. Entries are kept for 30 days.

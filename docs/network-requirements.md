@@ -2,8 +2,9 @@
 
 What the strIDEterm desktop app connects to, what it listens on, what is encrypted, and how it
 behaves behind TLS inspection (EDR / security proxy). Hosts below are the ones found in the code
-(`electron/backend/mobile/mobile-firebase-config.ts`, `electron/backend/account/authlink-config.ts`,
-`electron/backend/version-checker.ts`, `electron/backend/telegram-manager.ts`, the tunnel manager).
+(`electron/backend/mobile/mobile-firebase-config.ts`, `electron/backend/mobile/bootstrap-trust.ts`,
+`electron/backend/account/authlink-config.ts`, `electron/backend/version-checker.ts`,
+`electron/backend/telegram-manager.ts`, the tunnel manager).
 
 ## Outbound connections
 
@@ -13,6 +14,7 @@ behaves behind TLS inspection (EDR / security proxy). Hosts below are the ones f
 | strIDEterm  | `securetoken.googleapis.com`              | 443 / HTTPS                | token refresh                       | mobile integration on   |
 | strIDEterm  | `*.firebasedatabase.app`                  | 443 / HTTPS (SSE)          | pairing, commands, presence         | mobile integration on   |
 | strIDEterm  | `*.cloudfunctions.net`                    | 443 / HTTPS                | pairing, account, push              | mobile integration on   |
+| strIDEterm  | `bootstrap.strideterm.com`                | 443 / HTTPS                | signed public client configuration  | first online sign-in    |
 | strIDEterm  | `auth.strideterm.com`                     | 443 / HTTPS                | email sign-in                       | while signing in        |
 | strIDEterm  | `relay.strideterm.com`                    | 443 / WSS                  | terminal and WebView from the phone | managed relay on        |
 | strIDEterm  | `api.github.com`                          | 443 / HTTPS                | version check (once per 24 h)       | always                  |
@@ -37,15 +39,13 @@ outside the app and not listed here.
 
 - **Firebase channel** (notifications, commands): end-to-end encrypted between the desktop and the
   paired phone (X25519 + AES-256-GCM). Google only sees ciphertext.
-- **Managed relay:** end to end, between a desktop and app that both support it — TLS to the
-  Cloudflare Worker either way, but the session key never travels over that TLS hop at all: it is
-  agreed over the already end-to-end-encrypted Firebase channel above, and every HTTP/WebSocket
-  frame between the WebView and this desktop is sealed under it (AES-256-GCM). The relay Worker
-  sees only routing metadata — session/stream ids, frame order, ciphertext length for flow control
-  and budget — never plaintext, and has no code path that could decrypt one. Falls back to
-  encrypted-in-transit-only (TLS to the Worker; the relay can read the terminal/WebView traffic
-  while it is in flight) whenever either end has not adopted the key exchange — see
-  `docs/architecture.md`'s managed-relay section for the compatibility table.
+- **Managed relay:** end to end between the desktop and the phone app. TLS reaches the Cloudflare
+  Worker, but the session key never travels over that hop: it is agreed over the end-to-end-encrypted
+  Firebase channel above, and every HTTP/WebSocket frame between the phone's WebView and this desktop
+  is sealed under it (AES-256-GCM). The relay Worker sees only routing metadata — session and stream
+  ids, frame order, ciphertext length for flow control — and has no code path that decrypts a frame.
+  The desktop refuses a relay session without end-to-end encryption, unless the user explicitly
+  turned that requirement off (Settings → Mobile) and the phone has never used it.
 - **Network access on 43123:** not encrypted.
 
 ## TLS inspection

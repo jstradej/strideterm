@@ -1,6 +1,6 @@
 # SSH
 
-strIDEterm has a first-class SSH client: open a terminal tab that connects straight to a remote machine, with a host book, built-in key manager, and proper host-key verification. You can run SSH sessions inside the same workspaces, splits, and notifications as your local shells.
+strIDEterm has a first-class SSH client: a terminal tab can connect straight to a remote machine, with a host book, a built-in key manager and host-key verification. SSH sessions live in the same workspaces, splits and notifications as local shells.
 
 ---
 
@@ -8,118 +8,69 @@ strIDEterm has a first-class SSH client: open a terminal tab that connects strai
 
 ### The Host Book
 
-Open **Settings → SSH** (or the host picker from an SSH tab) to manage saved hosts. Each entry stores:
-
-- Display name and optional tags for searching
-- Hostname, port, and username
-- Authentication setup (key, password / MFA, SSH agent — any combination)
-- Advanced options: post-login command, keepalive, agent forwarding, compression, jump hosts
-- Last-connected timestamp
-
-The dialog supports add, edit, delete, and a **Test Connection** button that validates the host configuration without opening a tab.
+**Settings → SSH** (or the host picker in an SSH tab) manages saved hosts. Each entry holds a display name and tags, hostname / port / user, its authentication setup (key, password / MFA, SSH agent — any combination), and advanced options: post-login command, keepalive, agent forwarding, compression and jump hosts. **Test Connection** checks a host without opening a tab.
 
 ### Opening an SSH Tab
 
-You have two ways to start an SSH session:
+1. **Saved host** — pick it when creating or editing a tab; reconnects always use the saved configuration.
+2. **Ad-hoc** — type host / user / port into the tab editor for a one-off connection.
 
-1. **Saved host** — pick a host from the host book when creating or editing a tab. Reconnects always use the same saved configuration.
-2. **Ad-hoc** — type host / user / port directly into the tab editor for one-off connections that don't need to be saved.
-
-Once the tab is running, it behaves exactly like a local terminal tab: splits, resize, shell integration, finish notifications, copy/paste, and so on.
+A running SSH tab behaves like a local terminal tab: splits, resize, shell integration, finish notifications, copy/paste.
 
 ### Authentication
 
-A host can advertise multiple auth methods; strIDEterm tries them in order until one succeeds:
+strIDEterm tries the methods a host allows, in order, until one succeeds:
 
-- **Public key / certificate** — pick a key from the key manager; passphrases are handled transparently if stored, otherwise you're prompted once per session.
-- **Password / keyboard-interactive (MFA)** — the server drives the prompts. strIDEterm opens an inline dialog for each challenge; nothing is cached beyond the connect attempt.
-- **SSH Agent** — auto-detects the Windows OpenSSH named pipe on Windows, and `$SSH_AUTH_SOCK` on macOS / Linux. You can also pin a specific agent mode (e.g. Pageant, a named pipe, or a Unix socket) or a custom path per host.
-
-If only interactive auth is configured and no password is stored, you're asked once up front and the same answer satisfies both legacy `password` and keyboard-interactive prompts — so mixed-auth servers don't double-prompt.
+- **Public key / certificate** — a key from the key manager. A stored passphrase is used automatically; otherwise you are asked once per session.
+- **Password / keyboard-interactive (MFA)** — the server drives the prompts and strIDEterm shows each one inline. Answers are not kept beyond the connect attempt. With no stored password you are asked once, and that answer satisfies both password and keyboard-interactive prompts, so mixed-auth servers do not ask twice.
+- **SSH agent** — auto-detects the Windows OpenSSH named pipe on Windows and `$SSH_AUTH_SOCK` on macOS / Linux. A host can pin an agent mode (Pageant, a named pipe, a Unix socket) or a custom path.
 
 ### Key Manager
 
-The **Key Manager** dialog (available for the built-in SSH mode) lets you:
+Available for the built-in launch mode:
 
-- **Generate** a new key — ed25519, ECDSA, or RSA, with an optional passphrase and comment
-- **Import** an existing private key by pasting it in any common format (PEM, OpenSSH, PKCS#8)
-- **Import certificates** and see their principals, validity window, and key ID parsed out
-- **Inspect** which hosts reference a key before deleting it, with cascade-delete for dependents
-
-Private key material is stored in `~/.strideterm/credentials.json`, encrypted via Electron's `safeStorage` (which is backed by DPAPI on Windows, the macOS Keychain, and libsecret/kwallet on Linux). Passphrases are stored under a separate record so you can rotate one without touching the other. Files on disk (e.g. `~/.ssh/id_ed25519`) are never modified by the import. If the OS keychain isn't available, see the **Settings** option below to refuse plaintext fallback rather than store credentials unprotected.
+- **Generate** an ed25519, ECDSA or RSA key, with optional passphrase and comment
+- **Import** a private key by pasting it (PEM, OpenSSH, PKCS#8); files such as `~/.ssh/id_ed25519` are never modified
+- **Import certificates** and see their principals, validity and key ID
+- **Inspect** which hosts use a key before deleting it, with cascade delete for dependents
 
 ### Host Key Verification
 
-strIDEterm uses a TOFU ("trust on first use") model: the first successful connection records the server's public-key fingerprint, and every later connection checks that it hasn't changed.
+Trust on first use: the first successful connection records the server's key fingerprint, and every later connection checks it.
 
-When a host's key **does** change from what was recorded, strIDEterm shows a warning dialog with:
-
-- The server's new fingerprint (SHA-256, the same format `ssh-keygen` prints)
-- The key type (ed25519, RSA, …)
-- The previously trusted fingerprint, highlighted so you can spot the change
-
-You can cancel the connection, accept the new key for this session only, or replace the stored fingerprint and trust it from now on.
+When a known host's key changes, a warning shows the new SHA-256 fingerprint (the format `ssh-keygen` prints), the key type and the previously trusted fingerprint. You can cancel, accept the new key for this session only, or replace the stored fingerprint.
 
 ### Importing ~/.ssh/config
 
-From the SSH settings you can import your existing OpenSSH client config. strIDEterm reads the standard config file, creates host book entries for the non-wildcard `Host` blocks, and maps `Hostname`, `Port`, `User`, and `IdentityFile` onto the equivalent fields.
+The SSH settings can import your OpenSSH client config: each non-wildcard `Host` block becomes a host-book entry, with `Hostname`, `Port`, `User` and `IdentityFile` mapped to the matching fields.
 
 ### Launch Modes
 
-Each host chooses how it actually connects:
-
-- **Built-in (default)** — strIDEterm opens the SSH connection itself. This is the mode that uses the internal key manager, TOFU prompts, and jump chains.
-- **System `ssh`** — strIDEterm shells out to your OS's `ssh` binary. Your `~/.ssh/config`, keys, and agent are used exactly as they would be from a shell, with no import step. The key manager is hidden for these hosts.
-- **WSL** — on Windows, runs the SSH client inside a chosen WSL distribution. Useful when the remote end expects Unix line endings, forwarded agents, or tooling that only exists in your WSL environment.
-
-Jump hosts (bastions) are supported as a chain of saved hosts in the built-in mode.
+- **Built-in (default)** — strIDEterm opens the connection itself. Only this mode uses the key manager, the host-key prompts and jump-host chains (a chain of saved hosts).
+- **System `ssh`** — runs your OS's `ssh` binary, so your `~/.ssh/config`, keys and agent apply exactly as in a shell, with no import. The key manager is hidden for these hosts.
+- **WSL** — on Windows, runs the SSH client inside a chosen WSL distribution, for setups that only exist there.
 
 ### Settings
 
-**Settings → SSH** collects global preferences:
-
-- Default launch mode for new hosts
-- SSH agent preference (auto / prefer / off) and an optional custom agent path
-- Whether to refuse saving credentials if the OS keychain isn't available
-- Certificate expiry warning threshold
-
-Per-host knobs like keepalive timing and post-login commands live in the host's advanced options, not in global settings.
+**Settings → SSH** holds the global preferences: default launch mode, SSH agent preference (auto / prefer / off) and custom agent path, **Require encrypted storage** (on by default), and the certificate-expiry warning threshold. Per-host options such as keepalive and post-login commands live in the host's advanced options.
 
 ---
 
-## Technical Overview
+## How It Fits Together
 
-Under the hood, SSH is treated as a different kind of session rather than a bolt-on. A tab's `launch.kind` can be `ssh`, alongside the usual shell/agent kinds, and the backend routes accordingly.
+**One session contract.** A local PTY and an SSH session implement the same contract — write, resize, stop, data and exit events — and the session manager picks the backend from the tab's launch kind. Everything above it (terminal store, split layout, shell integration, notifications) sees only bytes and lifecycle events, so SSH inherits what local shells already do. The built-in client is built on the `ssh2` library; a jump chain is a sequence of nested clients, each carried over its parent's forwarded channel.
 
-### Session Model
+**Works remotely unchanged.** Because SSH uses the same session and transport abstractions, a remote browser or phone session can open an SSH host from the host book. The credentials stay on the machine running strIDEterm.
 
-Local PTYs and SSH sessions implement the same session contract — write, resize, stop, plus event streams for data and exit. The session manager routes to the right backend based on the tab's launch kind, but everything above it (terminal store, split layout, shell-integration hooks, finish-notification heuristics) just sees a stream of bytes and lifecycle events. That means the feature inherits everything workspaces already do: profiles, split layouts, OSC 133 command boundaries, and per-session notifications.
+**What is persisted where.** Host definitions, key and certificate metadata, and trusted host-key fingerprints (keyed by `host:port`) live in the regular state file. Secret material does not — see below. Live clients, pending prompts and open streams are never persisted.
 
-The built-in client is layered on top of the `ssh2` Node library, with a thin session abstraction that owns the client lifecycle, shell request, stream multiplexing, keepalive, and cleanup. Jump chains are modelled as a sequence of nested clients, each using its parent's forwarded channel as a transport.
+---
 
-### Persistence and State
+## Security Model
 
-Host definitions, key metadata, certificate metadata, and trusted host-key fingerprints live in the regular workspace state file, so they're backed up and synced along with everything else. Runtime-only state — active SSH clients, pending auth prompts, open streams — is never persisted.
-
-Sensitive material is stored separately from that state file:
-
-- Private key bytes are written to `~/.strideterm/credentials.json` under an opaque key ID, encrypted via Electron's `safeStorage` (DPAPI / macOS Keychain / libsecret-kwallet under the hood).
-- Passphrases are stored as their own credential records, so rotating one doesn't require re-importing the key.
-- Host-key fingerprints are kept in a TOFU-style map keyed by `host:port`.
-
-### Security Model
-
-- Private keys don't leave the device. They are encrypted with Electron's `safeStorage` master key (which is itself protected by the OS keychain) and stored in `credentials.json` rather than handed to the keychain directly.
-- Passphrases are held separately; users can opt not to save them at all and be prompted per connect.
-- Host-key verification is explicit on first connect (when policy requires) and always on mismatch, with the previously trusted fingerprint surfaced in the UI.
-- Keyboard-interactive answers are scoped to a single connect attempt.
-- Agent forwarding is off by default and requires explicit per-host opt-in.
-- If `safeStorage` is unavailable (e.g. headless Linux without `gnome-keyring`/`kwallet`), the credential store falls back to base64-on-disk and emits a logged warning. The **Settings → SSH** option _Refuse to save credentials without OS keychain_ turns that fallback into a hard refusal.
-
-### IPC Surface
-
-The renderer talks to the backend through a small set of validated IPC calls that cover: host-book CRUD and test, key/certificate CRUD and generation, `~/.ssh/config` preview and import, auth-prompt answers, and host-key accept/reject decisions. Every payload goes through the same Zod-schema validation layer used for the rest of the app.
-
-### Transport-Agnostic
-
-Because SSH plugs into the same session and transport abstractions as local shells, the feature works in both the Electron UI and the remote HTTP/WS client unchanged. A remote browser session can connect to an SSH host configured in the host book, using credentials that live only on the machine running strIDEterm.
+- **Private keys and passphrases** are stored in `credentials.json` under the data directory, encrypted with Electron `safeStorage` (DPAPI on Windows, the macOS Keychain, libsecret / kwallet on Linux), never handed to the keychain directly and never in the state file. A passphrase is its own record, so it can be rotated — or not saved at all and asked per connect — without re-importing the key.
+- **Without an OS keychain** (e.g. headless Linux without `gnome-keyring` / `kwallet`), saving SSH credentials is refused while **Require encrypted storage** is on, which is the default. Turned off, they fall back to base64 on disk with a logged warning and a warning in Settings → SSH.
+- **Host keys** are checked on every connection, and a changed key is always shown to you with the previous fingerprint before anything proceeds.
+- **Keyboard-interactive answers** live only for one connect attempt.
+- **Agent forwarding** is off by default and must be enabled per host.
+- **Private keys never leave the machine**, including when an SSH tab is used from a remote client.
