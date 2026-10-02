@@ -216,10 +216,14 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
         await refreshAzure();
       }
       broadcastState();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = getPayload() as any;
-      result.pushAndPublishResult = { commitCount, publishedCount, pushOk, publishError };
-      return result;
+      // The result rides BESIDE the payload, never on it: a protocol-2 remote
+      // client gets this route as a mutation ack, which drops the payload — a
+      // result bolted onto it would vanish and the phone would report "no new
+      // commits" while hiding a publish error.
+      return {
+        payload: getPayload(),
+        pushAndPublishResult: { commitCount, publishedCount, pushOk, publishError },
+      };
     },
   };
 }

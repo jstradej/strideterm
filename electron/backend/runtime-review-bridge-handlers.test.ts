@@ -182,6 +182,9 @@ describe("syncReviewBridgePullRequest — cross-profile viewer guard", () => {
         expect(
           (result as { pushAndPublishResult: { publishedCount: number; publishError: string } }).pushAndPublishResult,
         ).toMatchObject({ publishedCount: 1, publishError: "" });
+        // Beside the payload, not on it — a remote ack drops the payload.
+        expect(result).toHaveProperty("payload");
+        expect(result).not.toHaveProperty("appState");
       }
     },
   );

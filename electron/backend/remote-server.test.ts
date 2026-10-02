@@ -1638,6 +1638,11 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       resetAgentPrompts: async () => payload,
       // Docker refresh — a full-payload result a v2 client must receive as an ack.
       refreshDockerState: async () => payload,
+      // Push & publish: an ack route whose result rides beside the payload.
+      pushAndPublishReview: async () => ({
+        payload,
+        pushAndPublishResult: { commitCount: 2, publishedCount: 0, pushOk: true, publishError: "403 Forbidden" },
+      }),
       // Docker interactive shell — mirrors the real runtime's dockerShellOpen/
       // Write/Resize/Close (electron/backend/runtime.ts): open records the
       // onData/onClose callbacks the caller wired up (broadcast over the WS in
@@ -2889,6 +2894,32 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         expect(body.ok).toBe(true);
         expect(body.payload).toBeUndefined(); // ack, not a core
         expect(body.changedResources).toEqual(["agent-prompts"]);
+      });
+    });
+
+    test("push-and-publish ack keeps the result that rides beside the payload", async () => {
+      await withServer("tok-pap", async ({ port }) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/review-bridge/pull-request/push-and-publish`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-pap",
+            "X-Strideterm-Client-Id": "pap-aaaa",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ workspaceId: "ws1" }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { ok: boolean; payload?: unknown; pushAndPublishResult?: unknown };
+        expect(body.ok).toBe(true);
+        expect(body.payload).toBeUndefined(); // ack, not a core
+        // The phone must still learn that publishing failed.
+        expect(body.pushAndPublishResult).toEqual({
+          commitCount: 2,
+          publishedCount: 0,
+          pushOk: true,
+          publishError: "403 Forbidden",
+        });
       });
     });
 

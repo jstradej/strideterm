@@ -704,6 +704,40 @@ export function looksLikeStatePayload(body: unknown): boolean {
   return Boolean((body as AnyRecord).appState);
 }
 
+/**
+ * Every top-level key a `getPayload()` state payload carries, plus the
+ * registry's `remoteClient`. A protocol-2 response rebuilds a state payload as
+ * the allowlisted core (or replaces it with a mutation ack), so any OTHER key a
+ * runtime method bolts onto the payload — an operation result like
+ * `pushAndPublishResult` — never reaches the client. Results belong beside the
+ * payload in an envelope (`{ payload, result }`), which the adapter keeps.
+ * runtime.test.ts pins this list to getPayload() so it cannot drift.
+ */
+export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
+  "meta",
+  "appState",
+  "workspace",
+  "attention",
+  "docker",
+  "git",
+  "azureDevops",
+  "github",
+  "telegram",
+  "reviewBridge",
+  "plugins",
+  "environment",
+  "remoteAccess",
+  "taskRunner",
+  "secureStorage",
+  "remoteClient",
+]);
+
+/** Top-level keys of a state payload that a protocol-2 core or ack would silently drop. */
+export function strayStatePayloadKeys(body: unknown): string[] {
+  if (!looksLikeStatePayload(body)) return [];
+  return Object.keys(body as AnyRecord).filter((key) => !STATE_PAYLOAD_KEYS.has(key));
+}
+
 // ---------------------------------------------------------------------------
 // Resource keys
 // ---------------------------------------------------------------------------

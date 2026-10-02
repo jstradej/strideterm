@@ -13,6 +13,7 @@ import {
   selectCapabilities,
   servesRemoteCore,
   slimRemoteSettings,
+  strayStatePayloadKeys,
   summarizeGit,
 } from "./remote-core.js";
 
@@ -785,5 +786,21 @@ describe("looksLikeStatePayload", () => {
     expect(looksLikeStatePayload({ ok: true })).toBe(false);
     expect(looksLikeStatePayload({ ok: true, result: 1 })).toBe(false);
     expect(looksLikeStatePayload(null)).toBe(false);
+  });
+});
+
+describe("strayStatePayloadKeys", () => {
+  test("names a result bolted onto a state payload, which a v2 core/ack would drop", () => {
+    expect(strayStatePayloadKeys({ ...fullPayload(), pushAndPublishResult: { publishedCount: 1 } })).toEqual([
+      "pushAndPublishResult",
+    ]);
+  });
+
+  test("is empty for a plain state payload, an envelope and a small result", () => {
+    expect(strayStatePayloadKeys({ ...fullPayload(), remoteClient: { profileId: "p1" } })).toEqual([]);
+    // An envelope keeps its result beside the payload — the adapter preserves it.
+    expect(strayStatePayloadKeys({ payload: fullPayload(), result: { ok: true } })).toEqual([]);
+    expect(strayStatePayloadKeys({ ok: true })).toEqual([]);
+    expect(strayStatePayloadKeys(null)).toEqual([]);
   });
 });

@@ -55,6 +55,40 @@ describe("createApiActions.getRemoteShareUrl", () => {
   });
 });
 
+describe("createApiActions.pushAndPublishReview", () => {
+  const summary = { commitCount: 2, publishedCount: 0, pushOk: true, publishError: "403 Forbidden" };
+
+  it("returns the summary from a remote ack and leaves the state alone", async () => {
+    const state = { appState: { workspaces: [{ id: "ws1" }] } };
+    const ctx = makeCtx(state);
+    // What a protocol-2 client receives: the ack keeps the envelope's result.
+    const pushAndPublishReview = vi.fn(async () => ({
+      ok: true,
+      changedResources: [],
+      pushAndPublishResult: summary,
+      revision: 3,
+    }));
+    ctx.getApi = () => ({ isRemote: true, pushAndPublishReview });
+    const actions = createApiActions(ctx);
+
+    expect(await actions.pushAndPublishReview("ws1")).toEqual(summary);
+    expect(ctx.payload.value).toBe(state);
+  });
+
+  it("adopts the nested payload on desktop", async () => {
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    const nextPayload = { appState: { workspaces: [{ id: "ws1" }] } };
+    ctx.getApi = () => ({
+      isRemote: false,
+      pushAndPublishReview: vi.fn(async () => ({ payload: nextPayload, pushAndPublishResult: summary })),
+    });
+    const actions = createApiActions(ctx);
+
+    expect(await actions.pushAndPublishReview("ws1")).toEqual(summary);
+    expect(ctx.payload.value).toBe(nextPayload);
+  });
+});
+
 // makeProviderApiActions is the factory behind refreshAzure/refreshGitHub,
 // markAzurePrSeen/markGitHubPrSeen, openAzurePullRequest/openGitHubPullRequest,
 // azureSyncReviewWorkspace/githubSyncReviewWorkspace,

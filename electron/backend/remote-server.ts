@@ -96,6 +96,7 @@ import {
   REMOTE_STATE_PROTOCOL,
   selectCapabilities,
   servesRemoteCore,
+  strayStatePayloadKeys,
 } from "./remote-core.js";
 
 /**
@@ -1135,6 +1136,27 @@ function changedResourcesForRoute(route: string, body: Record<string, unknown> |
   }
 }
 
+const warnedStrayStateKeys = new Set<string>();
+
+/**
+ * A runtime method that bolts its result onto the state payload
+ * (`payload.someResult = …`) works over desktop IPC but loses that result for
+ * every protocol-2 client: the core is an allowlist and an ack carries no
+ * payload at all. Name it once per route so the defect shows up in the log
+ * instead of as a silently missing result on the phone.
+ */
+function warnStrayStateKeys(payload: unknown, route: string | undefined): void {
+  const keys = strayStatePayloadKeys(payload);
+  if (!keys.length) return;
+  const signature = `${route || ""}|${keys.join(",")}`;
+  if (warnedStrayStateKeys.has(signature)) return;
+  warnedStrayStateKeys.add(signature);
+  log.warn("remote response drops fields bolted onto the state payload — return them beside it as { payload, … }", {
+    route,
+    keys,
+  });
+}
+
 /**
  * The one remote response adapter. Given any runtime result, it:
  *  - strips the master token (stripSecretsForRemote);
@@ -1151,6 +1173,10 @@ function changedResourcesForRoute(route: string, body: Record<string, unknown> |
 function adaptRemoteResponse(body: unknown, ctx: RemoteAdaptContext): unknown {
   const stripped = stripSecretsForRemote(body, { stripShareUrls: ctx.stripShareUrls });
   const v2 = servesRemoteCore(ctx.capabilities);
+  if (v2) {
+    warnStrayStateKeys(stripped, ctx.route);
+    warnStrayStateKeys((stripped as Record<string, unknown> | null)?.payload, ctx.route);
+  }
   // A v2 client receives a full slim core ONLY on the core-delivery paths
   // (bootstrap / activation / WS state). Every other state-bearing response is a
   // mutation/refresh result: it must NOT serialize+transfer a whole core after a

@@ -8,6 +8,7 @@ import { isValidNativeDirectoryName } from "./runtime.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
+import { strayStatePayloadKeys } from "./remote-core.js";
 import { normalizeCwd } from "./notify-url-registry.js";
 import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
@@ -1201,6 +1202,16 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     expect(fixture.runtime.getPayload().environment).toMatchObject(detectTerminalEnvironment());
+  });
+
+  // The remote adapter warns about any top-level payload key outside
+  // STATE_PAYLOAD_KEYS (a result bolted onto the payload, lost for v2 clients).
+  // A new getPayload() section must be added there, or every response warns.
+  test("every top-level getPayload() key is a known state payload key", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    expect(strayStatePayloadKeys(fixture.runtime.getPayload())).toEqual([]);
   });
 
   test("keeps a bounded terminal replay tail for renderer startup attach", async () => {

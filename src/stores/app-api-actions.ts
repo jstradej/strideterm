@@ -387,9 +387,11 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function pushAndPublishReview(workspaceId: string): Promise<unknown> {
     if (!workspaceId) return null;
+    // `{ payload, pushAndPublishResult }` — the result rides beside the payload
+    // so the remote ack keeps it (the ack drops only the nested payload).
     const result = (await (ctx.getApi() as AnyApi).pushAndPublishReview({ workspaceId })) as AnyApi;
     const summary = result?.pushAndPublishResult || null;
-    setPayload(result as StatePayload);
+    if (result?.payload) setPayload(result.payload as StatePayload);
     return summary;
   }
 
