@@ -203,10 +203,12 @@
             <h3 id="mobile-tab-phone-pairing" class="mobile-tab__section-title">
               {{ mobileDevices.length ? "Your phones" : "Connect your first phone" }}
             </h3>
+            <!-- The empty page's main action is the one to see; with phones listed it steps back. -->
             <button
               v-if="mobileDevices.length > 0 && !addPhoneSetupOpen"
               type="button"
-              class="button button--ghost"
+              class="button"
+              :class="activePhoneCount === 0 ? 'button--primary' : 'button--ghost'"
               :disabled="paused"
               @click="addPhoneSetupOpen = true"
             >
@@ -634,6 +636,9 @@
               <p v-if="forgetError[device.deviceId]" class="device-item__test-result">
                 {{ forgetError[device.deviceId] }}
               </p>
+              <p v-if="revokeError[device.deviceId]" class="device-item__test-result" role="alert">
+                {{ revokeError[device.deviceId] }}
+              </p>
               <p v-if="reviewError.get(device.deviceId)" class="mobile-tab__error" role="alert">
                 {{ reviewError.get(device.deviceId) }}
               </p>
@@ -841,6 +846,7 @@ import { useAccountStore } from "../../../stores/account.js";
 import RemoteAccessPauseControl from "../../layout/RemoteAccessPauseControl.vue";
 import SettingsAccountTab from "./SettingsAccountTab.vue";
 import { describeNetworkErrorCode } from "../../../lib/network-error-copy.js";
+import { mobileErrorCopy, mobileResultReasonCopy } from "./mobile-error-copy.js";
 import { QR_COLORS_FOR_SCANNING, useQrCode } from "../../../composables/useQrCode.js";
 
 interface ProfileOption {
@@ -991,6 +997,11 @@ watch(
     activeView.value = "phones";
     await nextTick();
     sasBlock.value?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    // The code is typed from the phone, so the field is ready to type into immediately.
+    const input = sasBlock.value?.querySelector<HTMLInputElement>(".pairing-sas__input");
+    if (!input?.disabled) {
+      input?.focus({ preventScroll: true });
+    }
   },
   { immediate: true },
 );
@@ -1067,10 +1078,10 @@ async function approvePairing() {
   try {
     const result = await appStore.approveMobileDevice(pending.deviceId);
     if (!result.ok) {
-      approvalError.value = `Could not activate this device (${result.reason || "unknown"}). It stays inactive — try again, or choose Mismatch to revoke it.`;
+      approvalError.value = mobileResultReasonCopy(result.reason, "approve");
     }
   } catch (error) {
-    approvalError.value = error instanceof Error ? error.message : "Could not activate this device.";
+    approvalError.value = mobileErrorCopy(error, "approve");
   } finally {
     approvalBusy.value = false;
   }
@@ -1085,7 +1096,7 @@ async function rejectPairing(reason: string) {
   try {
     await appStore.rejectMobileDevice(pending.deviceId, reason);
   } catch (error) {
-    approvalError.value = error instanceof Error ? error.message : "Could not revoke this device.";
+    approvalError.value = mobileErrorCopy(error, "reject");
   } finally {
     approvalBusy.value = false;
   }
@@ -1194,7 +1205,7 @@ async function setEnabled(checked: boolean): Promise<boolean> {
     await appStore.setMobileEnabled(checked);
     return true;
   } catch (err) {
-    enableError.value = (err as Error)?.message || "Failed to update.";
+    enableError.value = mobileErrorCopy(err, "enable");
     return false;
   } finally {
     enableBusy.value = false;
@@ -1257,7 +1268,7 @@ async function setRelayEnabled(enabled: boolean) {
   try {
     await appStore.setMobileRelayEnabled(enabled);
   } catch (err) {
-    relayError.value = (err as Error)?.message || "Failed to update.";
+    relayError.value = mobileErrorCopy(err, "relay");
   } finally {
     relayBusy.value = false;
   }
@@ -1487,7 +1498,7 @@ async function startPairing() {
     });
     nowTick.value = Date.now();
   } catch (err) {
-    pairingError.value = (err as Error)?.message || "Failed to create pairing invitation.";
+    pairingError.value = mobileErrorCopy(err, "pair");
   } finally {
     pairingBusy.value = false;
   }
@@ -1524,7 +1535,7 @@ async function reviewPendingPairing(deviceId: string) {
       reviewError.set(deviceId, "The pairing code for this phone is no longer available. Start pairing again.");
     }
   } catch (error) {
-    reviewError.set(deviceId, error instanceof Error ? error.message : "Could not load this pairing code.");
+    reviewError.set(deviceId, mobileErrorCopy(error, "review"));
   }
 }
 
@@ -1591,8 +1602,15 @@ async function confirmRevoke(device: { deviceId: string; label: string }) {
     danger: true,
   });
   if (!confirmed) return;
-  await appStore.revokeMobileDevice(device.deviceId);
+  try {
+    await appStore.revokeMobileDevice(device.deviceId);
+    delete revokeError[device.deviceId];
+  } catch (error) {
+    revokeError[device.deviceId] = mobileErrorCopy(error, "revoke");
+  }
 }
+
+const revokeError = reactive<Record<string, string>>({});
 
 // --- Forget (clear a revoked row) ---
 //
@@ -1610,13 +1628,10 @@ async function forgetDevice(device: { deviceId: string }) {
     // The backend refuses an active device and one whose cloud revocation is still owed. Neither is
     // reachable from this button today, so if one arrives it is a real answer and is shown as one.
     if (!result.ok) {
-      forgetError[device.deviceId] =
-        result.reason === "cloud-revoke-pending"
-          ? "Still telling the service about this revoke — it will disappear once that is sent."
-          : `Could not remove it (${result.reason || "unknown reason"}).`;
+      forgetError[device.deviceId] = mobileResultReasonCopy(result.reason, "forget");
     }
   } catch (err) {
-    forgetError[device.deviceId] = (err as Error)?.message || "Could not remove it.";
+    forgetError[device.deviceId] = mobileErrorCopy(err, "forget");
   } finally {
     forgetBusyId.value = null;
   }
@@ -1629,9 +1644,11 @@ async function sendTestPush(device: { deviceId: string }) {
   testPushBusyId.value = device.deviceId;
   try {
     const result = await appStore.sendMobileTestPush(device.deviceId);
-    testPushResult[device.deviceId] = result?.ok ? "Test push sent." : `Failed: ${result?.reason || "unknown reason"}`;
+    testPushResult[device.deviceId] = result?.ok
+      ? "Test push sent."
+      : mobileResultReasonCopy(result?.reason, "test-push");
   } catch (err) {
-    testPushResult[device.deviceId] = (err as Error)?.message || "Failed to send test push.";
+    testPushResult[device.deviceId] = mobileErrorCopy(err, "test-push");
   } finally {
     testPushBusyId.value = null;
   }
@@ -2149,13 +2166,14 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
-/* Monospace and wide-tracked: this is typed digit by digit from a phone held next to the screen. */
+/* Monospace and wide-tracked: this is typed digit by digit from a phone held next to the screen. Fits "0000 0000" with its tracking and padding. */
 .pairing-sas__input {
   font-family: var(--font-mono, monospace);
   font-size: 22px;
   letter-spacing: 0.14em;
-  width: 11ch;
+  width: calc(9ch + 9 * 0.14em + 32px);
   max-width: 100%;
+  box-sizing: border-box;
 }
 
 .pairing-sas__hint {

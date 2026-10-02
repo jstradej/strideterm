@@ -559,6 +559,7 @@ describe("RTDB stream lifecycle", () => {
     });
 
     let stop = () => {};
+    const errors: string[] = [];
     const delivered = new Promise<void>((resolve) => {
       stop = client.stream("v2/pairs/pair-1/commands", {
         onEvent: (event) => {
@@ -566,12 +567,115 @@ describe("RTDB stream lifecycle", () => {
           stop();
           resolve();
         },
+        onError: (error) => errors.push(error.message),
       });
     });
 
     await delivered;
     expect(streamTokens).toEqual(["id-expired", "id-refreshed"]);
     expect(refreshCalls).toBe(1);
+    // auth_revoked is the routine hourly token expiry, not a failure to report.
+    expect(errors).toEqual([]);
+  });
+
+  /**
+   * A client whose stream requests answer from `scripts` in order (one SSE body each); once they
+   * run out the stream stays open and silent. Sign-in and token refresh always succeed.
+   */
+  function scriptedStreamClient(scripts: string[]) {
+    let streamRequests = 0;
+    const streamTokens: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      if (input.includes("accounts:signUp")) {
+        return json({ idToken: "id-1", refreshToken: "refresh-1", localId: "uid-1", expiresIn: "3600" });
+      }
+      if (input.includes("securetoken")) {
+        return json({ id_token: "id-refreshed", refresh_token: "refresh-1", user_id: "uid-1", expires_in: "3600" });
+      }
+      streamTokens.push(new URL(input).searchParams.get("auth") ?? "");
+      const script = scripts[streamRequests++];
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (script !== undefined) controller.enqueue(new TextEncoder().encode(script));
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const client = createMobileFirebaseRestClient({
+      config: CONFIG,
+      credentialStore: makeCredentialStore(),
+      refreshTokenRef: REFRESH_REF,
+      fetchImpl,
+    });
+    return { client, requests: () => streamRequests, streamTokens };
+  }
+
+  const REVOKED = "event: auth_revoked\ndata: credential is no longer valid\n\n";
+  const PUT = 'event: put\ndata: {"path":"/","data":{"ok":true}}\n\n';
+
+  test("three consecutive auth_revoked with no data in between report a rejected credential once", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, requests } = scriptedStreamClient([REVOKED, REVOKED, REVOKED, REVOKED]);
+      const errors: string[] = [];
+      const stop = client.stream("v2/pairs/pair-1/commands", {
+        onEvent: () => {},
+        onError: (error) => errors.push(error.message),
+      });
+
+      // Each revoked stream is followed by the fixed 500ms reconnect backoff.
+      await vi.advanceTimersByTimeAsync(500 + 100);
+      expect(requests()).toBe(2);
+      expect(errors).toEqual([]);
+      await vi.advanceTimersByTimeAsync(500);
+      // Reported as the third revocation lands, once per streak — not again for the fourth.
+      expect(requests()).toBe(3);
+      expect(errors).toEqual(["RTDB stream v2/pairs/pair-1/commands: credential rejected after 3 refreshes"]);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(requests()).toBe(4);
+      expect(errors).toEqual(["RTDB stream v2/pairs/pair-1/commands: credential rejected after 3 refreshes"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a delivered data event resets the consecutive auth_revoked count", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, requests } = scriptedStreamClient([REVOKED, PUT + REVOKED, REVOKED, PUT + REVOKED, REVOKED]);
+      const errors: string[] = [];
+      const stop = client.stream("v2/pairs/pair-1/commands", {
+        onEvent: () => {},
+        onError: (error) => errors.push(error.message),
+      });
+
+      await vi.advanceTimersByTimeAsync(500 * 5);
+      expect(requests()).toBe(6);
+      expect(errors).toEqual([]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("cancel still reports an error and reconnects", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, requests } = scriptedStreamClient(["event: cancel\ndata: null\n\n"]);
+      const errors: string[] = [];
+      const stop = client.stream("v2/pairs/pair-1/commands", {
+        onEvent: () => {},
+        onError: (error) => errors.push(error.message),
+      });
+
+      await vi.advanceTimersByTimeAsync(600);
+      expect(requests()).toBe(2);
+      expect(errors).toEqual(["RTDB stream cancel"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("reconnects with a fresh authParams() call after the stream goes idle for 90s", async () => {
@@ -871,9 +975,21 @@ describe("server-sent event framing", () => {
     expect(errors).toEqual([]);
   });
 
-  test("surfaces cancel/auth_revoked as errors so the reconnect loop re-authenticates", async () => {
-    const { errors } = await collect(["event: auth_revoked\ndata: credential is no longer valid\n\n"]);
-    expect(errors).toEqual(["RTDB stream auth_revoked"]);
+  test("surfaces cancel as an error so the reconnect loop re-authenticates", async () => {
+    const { errors } = await collect(["event: cancel\ndata: null\n\n"]);
+    expect(errors).toEqual(["RTDB stream cancel"]);
+  });
+
+  test("auth_revoked ends the stream for a re-auth restart without reporting an error", async () => {
+    const events: RtdbStreamEvent[] = [];
+    const errors: string[] = [];
+    const reason = await consumeEventStream(
+      streamOf(["event: auth_revoked\ndata: credential is no longer valid\n\n"]),
+      { onEvent: (e) => events.push(e), onError: (e) => errors.push(e.message) },
+      () => false,
+    );
+    expect(reason).toBe("restart-auth");
+    expect(errors).toEqual([]);
   });
 
   test("reports an unparseable frame instead of throwing out of the loop", async () => {

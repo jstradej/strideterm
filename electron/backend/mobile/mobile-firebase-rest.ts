@@ -264,6 +264,9 @@ export interface RtdbStreamHandlers {
   onError?(error: Error): void;
 }
 
+/** Consecutive `auth_revoked` restarts (no data in between) after which the stream reports an error. */
+const MAX_CONSECUTIVE_AUTH_RESTARTS = 3;
+
 type RtdbStreamEndReason = "ended" | "restart-auth" | "restart-cancelled" | "idle";
 
 export interface MobileFirebaseRestClient {
@@ -646,6 +649,17 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
         // fresh `put` at `/`, which is exactly the resync behaviour a reconnecting listener
         // needs — the caller does not have to track what it missed.
         let backoffMs = 500;
+        // `auth_revoked` is routine (the ID token on the open stream expires about hourly), so it
+        // is not reported as an error. A stream that keeps being revoked right after reconnecting
+        // with a fresh token, without ever delivering data, is a real rejection and is reported.
+        let consecutiveAuthRestarts = 0;
+        const streamHandlers: RtdbStreamHandlers = {
+          onEvent: (event) => {
+            consecutiveAuthRestarts = 0;
+            handlers.onEvent(event);
+          },
+          onError: (error) => handlers.onError?.(error),
+        };
         while (!closed) {
           try {
             const url = rtdbUrl(config, path, await authParams());
@@ -657,14 +671,26 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
               throw new Error(`RTDB stream ${path} failed (${response.status})`);
             }
             backoffMs = 500;
-            const endReason = await consumeEventStream(response.body, handlers, () => closed);
+            const endReason = await consumeEventStream(response.body, streamHandlers, () => closed);
+            if (endReason === "ended") consecutiveAuthRestarts = 0;
             if (endReason !== "ended") {
               // Firebase sends `auth_revoked` when the credential attached to an already-open SSE
               // request expires. The response is allowed to stay open after that terminal frame,
               // so merely reporting it leaves the desktop listening to a dead stream forever. End
               // this iteration explicitly and forget the cached ID token: the next `authParams()`
               // call exchanges the durable refresh token and opens a fresh authenticated stream.
-              if (endReason === "restart-auth") session = null;
+              if (endReason === "restart-auth") {
+                session = null;
+                consecutiveAuthRestarts += 1;
+                log.info("RTDB stream credential expired; reconnecting with a fresh token", { path });
+                if (consecutiveAuthRestarts === MAX_CONSECUTIVE_AUTH_RESTARTS) {
+                  handlers.onError?.(
+                    new Error(
+                      `RTDB stream ${path}: credential rejected after ${MAX_CONSECUTIVE_AUTH_RESTARTS} refreshes`,
+                    ),
+                  );
+                }
+              }
               if (endReason === "idle") {
                 log.warn("RTDB stream went idle; reconnecting", { code: "rtdb-stream-idle", path });
               }
@@ -801,12 +827,13 @@ function handleFrame(frame: string, handlers: RtdbStreamHandlers): Exclude<RtdbS
     else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
   }
   if (eventName !== "put" && eventName !== "patch") {
-    // `keep-alive` carries no data. `cancel`/`auth_revoked` mean the listener lost permission
-    // (revocation, expired token) — surfaced as an error so the reconnect loop re-authenticates
-    // rather than sitting on a dead stream.
-    if (eventName === "cancel" || eventName === "auth_revoked") {
+    // `keep-alive` carries no data. `auth_revoked` is the routine expiry of the ID token on an
+    // open stream: not an error, the reconnect loop just re-authenticates. `cancel` means the
+    // listener lost permission — surfaced as an error.
+    if (eventName === "auth_revoked") return "restart-auth";
+    if (eventName === "cancel") {
       handlers.onError?.(new Error(`RTDB stream ${eventName}`));
-      return eventName === "auth_revoked" ? "restart-auth" : "restart-cancelled";
+      return "restart-cancelled";
     }
     return null;
   }

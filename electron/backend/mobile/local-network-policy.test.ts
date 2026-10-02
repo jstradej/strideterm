@@ -10,11 +10,13 @@ import { createMobileFirebaseRestClient } from "./mobile-firebase-rest.js";
 
 test("Firebase and bootstrap requests do not follow a redirect even to another loopback path", async () => {
   let targetCalls = 0;
+  const redirected: string[] = [];
   const server = createServer((request, response) => {
     if (request.url === "/target") {
       targetCalls++;
       response.end("{}");
     } else {
+      redirected.push(request.url ?? "");
       response.writeHead(307, { location: "/target" });
       response.end();
     }
@@ -27,8 +29,12 @@ test("Firebase and bootstrap requests do not follow a redirect even to another l
       stateDir,
       environment: "local",
       url: `http://${host}/bootstrap`,
+      // A trust key, or `refresh()` answers `not-configured` without fetching anything and this test
+      // proves nothing about redirects. The envelope is never verified: the redirect is the answer.
+      trust: { keys: new Map([["test-key", new Uint8Array(32)]]) },
     });
     expect((await bootstrap.refresh()).refusal).toBe("network");
+    expect(redirected).toEqual(["/bootstrap"]);
     const config = resolveMobileFirebaseConfig(
       {
         STRIDETERM_ENV: "local",

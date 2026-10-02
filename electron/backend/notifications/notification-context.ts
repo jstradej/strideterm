@@ -1,4 +1,4 @@
-import { stripAnsi } from "../runtime-utils.js";
+import { sanitizeTerminalText } from "./terminal-text.js";
 
 export const NOTIFICATION_BODY_MAX_BYTES = 1500;
 export const NOTIFICATION_EXCERPT_MAX_BYTES = 1100;
@@ -26,15 +26,7 @@ export function truncateUtf8End(value: string, maxBytes: number): string {
 }
 
 export function recentTerminalExcerpt(raw: string, maxLines = 8): string {
-  const clean = stripAnsi(raw)
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n");
-  const lines = clean
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-maxLines);
+  const lines = sanitizeTerminalText(raw).split("\n").slice(-maxLines);
   return truncateUtf8End(lines.join("\n"), NOTIFICATION_EXCERPT_MAX_BYTES);
 }
 
@@ -61,12 +53,7 @@ export function buildNotificationBody(input: {
   exitCode?: number;
   recentOutput?: string;
 }): string {
-  const message = truncateUtf8Head(
-    stripAnsi(String(input.message || ""))
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
-      .trim(),
-    500,
-  );
+  const message = truncateUtf8Head(sanitizeTerminalText(input.message), 500);
   const lead = truncateUtf8Head(
     message || notificationSummary(input.kind, String(input.detail || ""), input.exitCode),
     500,

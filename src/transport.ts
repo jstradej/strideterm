@@ -502,12 +502,19 @@ export function createRemoteTransport(): Transport {
   const reconnectMaxDelayMs = 10_000;
   const webSocketConnectTimeoutMs = 10_000;
   const maxConsecutiveConnectTimeouts = 3;
+  // An upgrade the server refuses can still look like a socket that OPENED: behind the phone's e2e
+  // proxy the upgrade is accepted locally and closed afterwards ("unauthorized"). So "open" is not
+  // evidence of a healthy connection. A socket counts as healthy once the server has said something
+  // or it has stayed up this long; only then is the reconnect backoff / auth-close count forgiven.
+  const webSocketStableMs = 5_000;
+  const maxConsecutiveAuthCloses = 3;
   const pendingWsMessages: WsMessage[] = [];
   let ws: WebSocket | null = null;
   let reconnectTimer = 0;
   let webSocketConnectTimer = 0;
   let reconnectAttempt = 0;
   let consecutiveConnectTimeouts = 0;
+  let consecutiveAuthCloses = 0;
   let openedOnce = false;
   const WAKE_PROBE_ATTEMPTS = 3;
   const WAKE_PROBE_TIMEOUT_MS = 2_500;
@@ -667,6 +674,16 @@ export function createRemoteTransport(): Transport {
     while (pendingWsMessages.length > 0 && current.readyState === WebSocket.OPEN) {
       current.send(JSON.stringify(pendingWsMessages.shift()));
     }
+  }
+
+  /** The server explicitly ended this session (`closeSessionSockets`/idle expiry send 1008). */
+  function isExplicitAuthClose(event: CloseEvent): boolean {
+    return event.code === 1008;
+  }
+
+  /** The upgrade was refused for lack of a session; the relay proxy reports it as a close reason. */
+  function isUnauthorizedClose(event: CloseEvent): boolean {
+    return /unauthori[sz]ed/i.test(event.reason || "");
   }
 
   function scheduleReconnect(error: RemoteError, code = 0): void {
@@ -866,14 +883,29 @@ export function createRemoteTransport(): Transport {
       if (webSocketConnectTimer === connectTimeout) webSocketConnectTimer = 0;
     };
 
+    let stableTimer = 0;
+    const clearStableTimer = () => {
+      if (stableTimer) window.clearTimeout(stableTimer);
+      stableTimer = 0;
+    };
+    // The connection proved itself: forgive the backoff and the auth-close count.
+    const markHealthy = () => {
+      if (ws !== nextWs) return;
+      clearStableTimer();
+      reconnectAttempt = 0;
+      consecutiveAuthCloses = 0;
+    };
+
     nextWs.addEventListener("open", () => {
       if (ws !== nextWs) return;
       clearConnectTimeout();
       cancelWakeProbe();
       const reconnected = openedOnce;
       openedOnce = true;
-      reconnectAttempt = 0;
+      // reconnectAttempt is deliberately NOT reset here — see `webSocketStableMs`.
       consecutiveConnectTimeouts = 0;
+      clearStableTimer();
+      stableTimer = window.setTimeout(markHealthy, webSocketStableMs);
       emitConnectionState({ connected: true, message: "", reconnected });
       flushPendingWsMessages();
       // Re-send the full terminal subscription so the server rebuilds this
@@ -905,12 +937,32 @@ export function createRemoteTransport(): Transport {
 
     nextWs.addEventListener("message", (event) => {
       if (ws !== nextWs) return;
+      markHealthy();
       handleWsMessage(event);
     });
 
     nextWs.addEventListener("close", (event: CloseEvent) => {
       if (ws !== nextWs) return;
       clearConnectTimeout();
+      clearStableTimer();
+      // A refused session is not a flaky network: the same verdict as an HTTP 401. The explicit
+      // server close (1008) is decisive; the "unauthorized" reason is repeatable-by-accident so it
+      // takes several in a row, with no healthy connection in between.
+      if (isExplicitAuthClose(event)) {
+        rlog("warn", "WebSocket closed by the server as a lost session", { code: event.code });
+        reportSessionLost();
+        return;
+      }
+      if (isUnauthorizedClose(event)) {
+        consecutiveAuthCloses += 1;
+        if (consecutiveAuthCloses >= maxConsecutiveAuthCloses) {
+          rlog("warn", "WebSocket repeatedly refused as unauthorized; treating the session as lost", {
+            closes: consecutiveAuthCloses,
+          });
+          reportSessionLost();
+          return;
+        }
+      }
       const error = createRemoteIssue({
         kind: "ws-closed",
         rawMessage: event.reason || "",
@@ -1098,6 +1150,7 @@ export function createRemoteTransport(): Transport {
     // whether this page has a session, so the latch must not survive one.
     sessionLost = false;
     reconnectAttempt = 0;
+    consecutiveAuthCloses = 0;
     consecutiveConnectTimeouts = 0;
     // The fresh socket's URL carries `?rev=` (see `buildWsUrl`), so the server sends ONE catch-up
     // core if state moved while we were away, and the re-sent `terminal:subscribe` produces the

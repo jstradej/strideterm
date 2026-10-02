@@ -290,7 +290,7 @@ describe("SettingsMobileTab", () => {
     const { wrapper } = await mountTab();
 
     expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Phones");
-    expect(wrapper.text()).toContain("Sign this computer in as owner@example.test?");
+    expect(wrapper.text()).toContain("Email confirmed — finish on this computer");
     expect(wrapper.find(".account-auth").isVisible()).toBe(true);
   });
 
@@ -411,6 +411,26 @@ describe("SettingsMobileTab", () => {
       .trigger("click");
     await flushPromises();
     expect(transport.createMobilePairingInvitation).toHaveBeenCalledOnce();
+  });
+
+  test("Add phone button is primary with no active phones, ghost with active phones", async () => {
+    // With a revoked device, mobileDevices.length > 0 so the button shows, but activePhoneCount === 0
+    const { wrapper: noActiveWrapper } = await mountTab({
+      listMobileDevices: vi.fn(async () => [{ ...SAMPLE_DEVICE, revoked: true }]),
+    });
+    const noActiveButton = noActiveWrapper.findAll("button").find((b) => b.text() === "Add phone");
+    expect(noActiveButton).toBeTruthy();
+    expect(noActiveButton!.classes()).toContain("button--primary");
+    expect(noActiveButton!.classes()).not.toContain("button--ghost");
+
+    // With one active device, activePhoneCount === 1
+    const { wrapper: activeWrapper } = await mountTab({
+      listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]),
+    });
+    const activeButton = activeWrapper.findAll("button").find((b) => b.text() === "Add phone");
+    expect(activeButton).toBeTruthy();
+    expect(activeButton!.classes()).toContain("button--ghost");
+    expect(activeButton!.classes()).not.toContain("button--primary");
   });
 
   test("the device row renders an iOS device as ios", async () => {
@@ -567,7 +587,7 @@ describe("SettingsMobileTab", () => {
 
     await wrapper.find(".device-item__forget").trigger("click");
     await flushPromises();
-    expect(wrapper.text()).toContain("Still telling the service about this revoke");
+    expect(wrapper.text()).toContain("The service is still processing this revoke");
   });
 
   // Twelve ticked checkboxes in two unlabeled rows — profiles and capabilities in identical boxes —
@@ -603,6 +623,28 @@ describe("SettingsMobileTab", () => {
       "remote.request",
       "remote.webSession",
     ]);
+  });
+
+  test("shows useful copy for the Electron-wrapped active-plan pairing refusal", async () => {
+    const { wrapper } = await mountTab({
+      createMobilePairingInvitation: vi.fn(async () => {
+        throw new Error(
+          "Error invoking remote method 'mobile:pairing:create': MobileFirebaseCallableError: createPairingInvitation failed (PERMISSION_DENIED: entitlement-required)",
+        );
+      }),
+    });
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Pair a phone"))!
+      .trigger("click");
+    await flushPromises();
+
+    const error = wrapper.find(".mobile-tab__error");
+    expect(error.text()).toContain("Pairing a phone requires an active mobile plan");
+    expect(error.text()).toContain("Account settings");
+    expect(error.text()).toContain("if you are eligible");
+    expect(error.text()).not.toContain("PERMISSION_DENIED");
   });
 
   // The sentence is derived, not hardcoded: somebody who opens the disclosure and unticks must not
@@ -838,6 +880,30 @@ describe("SettingsMobileTab", () => {
     expect(scrollIntoView).toHaveBeenCalled();
   });
 
+  test("when the SAS block appears, the input gets keyboard focus", async () => {
+    const payload = makePayload({ enabled: true, devices: [] });
+    const transport = makeTransport(payload);
+    useAppStore().init(transport as AnyApi);
+    const wrapper = mount(SettingsMobileTab, {
+      props: { profiles: [{ id: "default", name: "Default" }] },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+
+    const input = wrapper.find('[data-testid="pairing-sas-input"]').element as HTMLInputElement;
+    expect(input).toBe(document.activeElement);
+    wrapper.unmount();
+  });
+
   // The advanced switches remain available for settings; the overview also exposes the relay's
   // automatic registration state and an immediate manual override.
   test("the settings switches live in Advanced, at the end", async () => {
@@ -932,8 +998,8 @@ describe("SettingsMobileTab", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("Could not activate this device");
-    expect(wrapper.text()).toContain("key-proof-not-attested");
+    expect(wrapper.text()).toContain("Could not activate this phone. It remains inactive.");
+    expect(wrapper.text()).not.toContain("key-proof-not-attested");
   });
 
   test("a claim whose SAS could not be derived shows no code rather than a placeholder", async () => {
@@ -1086,7 +1152,9 @@ describe("SettingsMobileTab", () => {
 
     await wrapper.find(".mobile-tab__overview-grid").find("button").trigger("click");
     await flushPromises();
-    expect(wrapper.find('.mobile-tab__overview-grid [role="alert"]').text()).toBe("Relay could not start");
+    expect(wrapper.find('.mobile-tab__overview-grid [role="alert"]').text()).toBe(
+      "Could not update the remote connection. Please try again.",
+    );
   });
 
   test("a connected transport whose pair no longer recognises this desktop does not read as 'Connected'", async () => {

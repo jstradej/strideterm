@@ -1145,6 +1145,122 @@ describe("remote transport endpoint routing", () => {
     expect(MockWebSocket.instances.at(-1)!.readyState).toBe(MockWebSocket.CLOSED);
   });
 
+  describe("a WebSocket the server keeps refusing", () => {
+    function startTransport() {
+      vi.useFakeTimers();
+      const posted: string[] = [];
+      (window as unknown as Record<string, unknown>).StridetermHost = {
+        postMessage: (message: string) => posted.push(message),
+      };
+      const connections: Array<{ connected: boolean; reconnecting?: boolean; attempt?: number; message?: string }> = [];
+      const transport = createRemoteTransport();
+      transport.onConnectionState((state) => connections.push(state));
+      const sessionLost = () =>
+        posted.map((message) => JSON.parse(message)).filter((message) => message.type === "session-lost");
+      return { connections, sessionLost };
+    }
+
+    it("stops after three open-then-close('unauthorized') cycles and reports the session as lost", async () => {
+      // Behind the phone's e2e proxy every upgrade is accepted locally and closed afterwards, so the
+      // page sees OPEN then CLOSE(1011, "unauthorized") forever.
+      const { connections, sessionLost } = startTransport();
+      const bridge = (window as unknown as Record<string, { isSessionLost(): boolean }>).__stridetermRemote;
+
+      for (let i = 0; i < 3; i += 1) {
+        const socket = MockWebSocket.instances.at(-1)!;
+        socket.open();
+        socket.close(1011, "unauthorized");
+        if (i < 2) {
+          expect(bridge.isSessionLost()).toBe(false);
+          await vi.advanceTimersByTimeAsync(10_000);
+        }
+      }
+
+      expect(bridge.isSessionLost()).toBe(true);
+      expect(sessionLost()).toEqual([{ type: "session-lost" }]);
+      expect(connections.at(-1)).toEqual(expect.objectContaining({ connected: false, reconnecting: false }));
+      const sockets = MockWebSocket.instances.length;
+      expect(sockets).toBe(3);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(MockWebSocket.instances.length).toBe(sockets);
+    });
+
+    it("treats a server-initiated 1008 close as the session ending, immediately", async () => {
+      const { sessionLost } = startTransport();
+      const socket = MockWebSocket.instances[0];
+      socket.open();
+      socket.close(1008, "session expired");
+
+      expect(sessionLost()).toEqual([{ type: "session-lost" }]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(MockWebSocket.instances.length).toBe(1);
+    });
+
+    it("does not count unauthorized closes that were separated by a healthy connection", async () => {
+      const { sessionLost } = startTransport();
+      for (let i = 0; i < 2; i += 1) {
+        const socket = MockWebSocket.instances.at(-1)!;
+        socket.open();
+        socket.close(1011, "unauthorized");
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
+      const healthy = MockWebSocket.instances.at(-1)!;
+      healthy.open();
+      healthy.message({ type: "state:updated", payload: { coreRevision: 1 } });
+      healthy.close(1006);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const next = MockWebSocket.instances.at(-1)!;
+      next.open();
+      next.close(1011, "unauthorized");
+
+      expect(sessionLost()).toEqual([]);
+    });
+
+    it("grows the backoff across open-then-immediate-close cycles instead of resetting it on every open", async () => {
+      const { connections } = startTransport();
+      const delays: number[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        const socket = MockWebSocket.instances.at(-1)!;
+        socket.open();
+        socket.close(1006);
+        const state = connections.at(-1)! as { reconnectAt?: number; attempt?: number };
+        expect(state.attempt).toBe(i + 1);
+        delays.push(Number(state.reconnectAt) - Date.now());
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
+      expect(delays).toEqual([500, 1_000, 2_000, 4_000]);
+    });
+
+    it("resets the backoff once the connection proved healthy", async () => {
+      const { connections } = startTransport();
+      for (let i = 0; i < 2; i += 1) {
+        const socket = MockWebSocket.instances.at(-1)!;
+        socket.open();
+        socket.close(1006);
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
+      // Stays up past the stability window with no message at all.
+      const stable = MockWebSocket.instances.at(-1)!;
+      stable.open();
+      await vi.advanceTimersByTimeAsync(5_000);
+      stable.close(1006);
+      expect(connections.at(-1)).toEqual(expect.objectContaining({ reconnecting: true, attempt: 1 }));
+    });
+
+    it("still reconnects after an ordinary 1006 drop, however many times", async () => {
+      const { connections, sessionLost } = startTransport();
+      for (let i = 0; i < 6; i += 1) {
+        const socket = MockWebSocket.instances.at(-1)!;
+        socket.open();
+        socket.close(1006);
+        expect(connections.at(-1)).toEqual(expect.objectContaining({ connected: false, reconnecting: true }));
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
+      expect(MockWebSocket.instances.length).toBe(7);
+      expect(sessionLost()).toEqual([]);
+    });
+  });
+
   it("reports deduplicated redacted connection-state diagnostics to the native host", () => {
     const posted: string[] = [];
     (window as unknown as Record<string, unknown>).StridetermHost = {
@@ -1604,6 +1720,8 @@ describe("remote transport API parity — no method silently missing its remote 
     "accountSubmitSignInLink",
     "accountChangeLoginEmail",
     "accountClearPendingEmailChange",
+    "accountDismissOwnerEmailNotice",
+    "accountDismissRecoveryRefused",
     "accountEnrolInstallation",
     "accountStartTrial",
     "accountRefreshOverview",

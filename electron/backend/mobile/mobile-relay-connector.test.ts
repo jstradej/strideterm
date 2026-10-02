@@ -20,7 +20,13 @@ import {
   defaultReconnectDelay,
   type RelayConnector,
 } from "./mobile-relay-connector.js";
-import { sealRelayE2eFrame, openRelayE2eFrame, type RelayE2eKeys } from "./mobile-crypto.js";
+import {
+  RELAY_E2E_NONCE_BYTES,
+  relayE2eCounterOf,
+  sealRelayE2eFrame,
+  openRelayE2eFrame,
+  type RelayE2eKeys,
+} from "./mobile-crypto.js";
 import { createRelayE2eSessionStore, type RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
 import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 import type { RelayInstallationIdentity } from "./mobile-relay-identity.js";
@@ -29,6 +35,7 @@ import {
   encodeRelayFrame,
   rawEd25519PublicKey,
   RELAY_CONNECTOR_SUBPROTOCOL,
+  RELAY_FLOW_CREDIT_BYTES,
   RELAY_PROTOCOL_VERSION,
   RELAY_RECONNECT_MAX_DELAY_MS,
   relayConnectorChallengeTranscript,
@@ -2017,4 +2024,205 @@ describe("withdrawing a device's keys (E2E 3.8)", () => {
     expect(close.header.e).toBe("unauthorized");
     expect(internal.requests.length).toBe(0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Flow control on the e2e path: the relay Worker charges a stream's connector->viewer window on the
+// WHOLE `e2e.data` payload (sealed inner frame: length prefix + JSON header + body + nonce + tag) and
+// the viewer credits back exactly that many bytes. A connector that charged its own window on the
+// plaintext chunk could send a full window of frames before the first credit and overshoot what the
+// Worker had left; the Worker then dropped the frame and the session's single outer counter had a
+// hole in it, which the phone answers by ending the whole session.
+// ---------------------------------------------------------------------------
+
+describe("relay end-to-end encryption: flow control accounting", () => {
+  const E2E_DEVICE_ID = "mobile-device-e2e-flow";
+  const SESSION = "phone-flow-session";
+  const WINDOW = RELAY_FLOW_CREDIT_BYTES;
+
+  interface ViewerStream {
+    outerId: string;
+    innerId: string;
+    window: number;
+    nextOuterSeq: number;
+    nextInnerSeq: number;
+    unreturned: number;
+    chunks: Buffer[];
+    ended: boolean;
+  }
+
+  /**
+   * The Worker's rule, enforced from the viewer side of the fake relay: each e2e stream has a window of
+   * `RELAY_FLOW_CREDIT_BYTES` charged on the outer payload length, replenished only by credits the
+   * "viewer" sends back (equal to the payload length it accepted, never more than the window). A frame
+   * that does not fit is a violation; so is any gap in the session's outer counter or a stream's `q`.
+   */
+  function startWorkerRulesViewer(phone: FakePhone, streams: ViewerStream[]) {
+    const violations: string[] = [];
+    let cursor = 0;
+    let expectedCounter = 0n;
+    const byOuter = new Map(streams.map((stream) => [stream.outerId, stream]));
+    const drain = (): void => {
+      while (cursor < relay.frames.length) {
+        const frame = relay.frames[cursor++] as RelayFrame;
+        if (frame.header.t !== "e2e.data") continue;
+        const stream = byOuter.get(frame.header.id as string);
+        if (!stream) continue;
+        const counter = relayE2eCounterOf(frame.payload.subarray(0, RELAY_E2E_NONCE_BYTES));
+        if (counter !== expectedCounter) violations.push(`outer counter ${counter} where ${expectedCounter} was due`);
+        expectedCounter = counter + 1n;
+        if (frame.header.q !== stream.nextOuterSeq) {
+          violations.push(`${stream.outerId}: outer q ${frame.header.q} where ${stream.nextOuterSeq} was due`);
+        }
+        stream.nextOuterSeq += 1;
+        if (frame.payload.length > stream.window) {
+          violations.push(
+            `${stream.outerId}: frame of ${frame.payload.length} bytes against a window of ${stream.window}`,
+          );
+          continue;
+        }
+        stream.window -= frame.payload.length;
+        stream.unreturned += frame.payload.length;
+        const inner = phone.open(frame);
+        if (inner.header.t === "http.response.body") {
+          if (inner.header.q !== stream.nextInnerSeq) {
+            violations.push(`${stream.outerId}: inner q ${inner.header.q} where ${stream.nextInnerSeq} was due`);
+          }
+          stream.nextInnerSeq += 1;
+          stream.chunks.push(inner.payload);
+        } else if (inner.header.t === "http.response.end") {
+          stream.ended = true;
+        }
+      }
+    };
+    // Credits go out on a slower clock than frames are read, so a stream can burn through its whole
+    // window before the first one returns - the case that exposed the overshoot.
+    const reader = setInterval(drain, 1);
+    const credits = setInterval(() => {
+      for (const stream of streams) {
+        if (stream.unreturned <= 0) continue;
+        const w = Math.min(stream.unreturned, WINDOW);
+        stream.unreturned -= w;
+        stream.window = Math.min(WINDOW, stream.window + w);
+        relay.send({
+          v: RELAY_PROTOCOL_VERSION,
+          t: "flow.credit",
+          src: "viewer",
+          dst: "connector",
+          s: SESSION,
+          id: stream.outerId,
+          w,
+        });
+      }
+    }, 10);
+    return {
+      violations,
+      get nextCounter() {
+        return expectedCounter;
+      },
+      stop() {
+        clearInterval(reader);
+        clearInterval(credits);
+        drain();
+      },
+    };
+  }
+
+  function patternBytes(total: number): Buffer {
+    const out = Buffer.allocUnsafe(total);
+    for (let i = 0; i < total; i++) out[i] = (i * 7 + (i >>> 8)) & 0xff;
+    return out;
+  }
+
+  async function streamLargeResponses(sizes: number[]): Promise<void> {
+    const origin = await startInternalOrigin((request, response) => {
+      const total = Number(new URL(request.url ?? "/", "http://internal").searchParams.get("n"));
+      response.writeHead(200, { "content-type": "application/octet-stream" });
+      response.end(patternBytes(total));
+    });
+    try {
+      const store = createRelayE2eSessionStore();
+      const keys = makeE2eKeys();
+      store.put(E2E_DEVICE_ID, keys, 120_000);
+      await awaitConnectorReady(
+        startConnector({
+          e2eSessionStore: store,
+          internalOrigin: { host: origin.host, port: origin.port, guardToken: origin.guardToken },
+        }),
+      );
+      const phone = fakePhone(keys);
+      const streams: ViewerStream[] = sizes.map((_, index) => ({
+        outerId: `outer-flow-${index}`,
+        innerId: `inner-flow-${index}`,
+        window: WINDOW,
+        nextOuterSeq: 0,
+        nextInnerSeq: 0,
+        unreturned: 0,
+        chunks: [],
+        ended: false,
+      }));
+      const viewer = startWorkerRulesViewer(phone, streams);
+      try {
+        streams.forEach((stream, index) => {
+          relay.send({
+            v: RELAY_PROTOCOL_VERSION,
+            t: "e2e.open",
+            src: "viewer",
+            dst: "connector",
+            s: SESSION,
+            id: stream.outerId,
+            d: E2E_DEVICE_ID,
+          });
+          for (const inner of [
+            {
+              v: RELAY_PROTOCOL_VERSION,
+              t: "http.request.start",
+              src: "viewer",
+              dst: "connector",
+              s: "inner-session",
+              id: stream.innerId,
+              m: "GET",
+              u: `/pattern?n=${sizes[index]}`,
+              h: [],
+            },
+            {
+              v: RELAY_PROTOCOL_VERSION,
+              t: "http.request.end",
+              src: "viewer",
+              dst: "connector",
+              s: "inner-session",
+              id: stream.innerId,
+            },
+          ] as RelayFrameHeader[]) {
+            const sealed = phone.sealToConnector(stream.outerId, SESSION, inner);
+            relay.send(sealed.header, sealed.payload);
+          }
+        });
+        await waitFor(
+          () => streams.every((stream) => stream.ended) || viewer.violations.length > 0,
+          60_000,
+          "every large response to finish or the relay window rule to be broken",
+        );
+      } finally {
+        viewer.stop();
+      }
+      expect(viewer.violations).toEqual([]);
+      streams.forEach((stream, index) => {
+        expect(Buffer.concat(stream.chunks).equals(patternBytes(sizes[index] as number))).toBe(true);
+      });
+      // Every e2e.data the connector sent was counted, and none was skipped.
+      const sent = relay.frames.filter((frame) => frame.header.t === "e2e.data").length;
+      expect(viewer.nextCounter).toBe(BigInt(sent));
+    } finally {
+      await origin.close();
+    }
+  }
+
+  test("a 7 MB e2e response never sends a frame that exceeds the relay's remaining window", async () => {
+    await streamLargeResponses([7 * 1024 * 1024]);
+  }, 90_000);
+
+  test("several concurrent large e2e responses each stay inside their own window", async () => {
+    await streamLargeResponses([3 * 1024 * 1024 + 123, 2 * 1024 * 1024 + 1, 4 * 1024 * 1024 - 77, 1024 * 1024]);
+  }, 90_000);
 });
