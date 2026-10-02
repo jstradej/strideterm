@@ -8,29 +8,6 @@
     </div>
 
     <form class="form edit-tab-dialog__form" @submit.prevent="handleSubmit">
-      <div v-if="mode === 'new'" class="segmented" role="tablist" aria-label="Tab type">
-        <button
-          type="button"
-          role="tab"
-          :aria-selected="tabType === 'local'"
-          :class="['segmented__btn', { 'segmented__btn--active': tabType === 'local' }]"
-          title="Create a local shell tab — runs an interactive PTY session in the workspace's working directory using your default shell."
-          @click="tabType = 'local'"
-        >
-          💻 Local shell
-        </button>
-        <button
-          type="button"
-          role="tab"
-          :aria-selected="tabType === 'ssh'"
-          :class="['segmented__btn', { 'segmented__btn--active': tabType === 'ssh' }]"
-          title="Create an SSH tab — connects to a remote host via the strIDEterm SSH client. Pick a saved host below or use Quick connect to type host details by hand."
-          @click="tabType = 'ssh'"
-        >
-          🔐 SSH
-        </button>
-      </div>
-
       <label class="field">
         <span>Title</span>
         <div class="title-row">
@@ -53,6 +30,7 @@
             maxlength="60"
             title="Tab title shown in the tab bar. Edit freely — leading emoji is treated as the icon and is editable via the icon picker."
             required
+            data-validation-required="Enter a tab name, for example Claude Code or Server logs."
           />
         </div>
         <div v-if="showIconPicker" class="icon-picker">
@@ -69,110 +47,210 @@
         </div>
       </label>
 
-      <template v-if="tabType === 'ssh'">
-        <div class="segmented" role="tablist" aria-label="SSH mode">
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="sshMode === 'saved'"
-            :class="['segmented__btn', { 'segmented__btn--active': sshMode === 'saved' }]"
-            :disabled="sshHosts.length === 0"
-            :title="
-              sshHosts.length === 0
-                ? 'Disabled — no saved hosts yet. Switch to Quick connect to type host details by hand, or add a host in Settings → SSH first.'
-                : 'Pick a host from your strIDEterm host book below — saved hosts carry their auth, jump chain, and post-login command.'
-            "
-            @click="sshMode = 'saved'"
-          >
-            Saved host
-          </button>
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="sshMode === 'quick'"
-            :class="['segmented__btn', { 'segmented__btn--active': sshMode === 'quick' }]"
-            title="Type host / user / port / auth in-place — useful for one-off connections. Optionally save the result to the host book before connecting."
-            @click="sshMode = 'quick'"
-          >
-            Quick connect
-          </button>
-        </div>
+      <label v-if="tabType !== 'ssh'" class="field">
+        <span>Command</span>
+        <input v-model="commandInput" placeholder="optional boot command" maxlength="500" />
+      </label>
 
-        <template v-if="sshMode === 'saved'">
-          <div class="field saved-host-field">
-            <div class="saved-host-field__label">SSH Host</div>
-            <div class="saved-host-row">
-              <CustomSelect
-                v-model="selectedSshHostId"
-                class="saved-host-row__select"
-                placeholder="Select a host…"
-                :options="hostOptions"
-                @change="onHostSelected"
-              />
+      <details class="advanced-options" :open="advancedOpen" @toggle="onAdvancedToggle">
+        <summary>
+          <span>Advanced</span>
+          <span v-if="advancedSummary" class="advanced-options__summary">{{ advancedSummary }}</span>
+        </summary>
+        <div class="advanced-content">
+          <div v-if="mode === 'new'" class="segmented advanced-options__control" role="tablist" aria-label="Tab type">
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="tabType === 'local'"
+              :class="['segmented__btn', { 'segmented__btn--active': tabType === 'local' }]"
+              title="Create a local shell tab — runs an interactive PTY session in the workspace's working directory using your default shell."
+              @click="tabType = 'local'"
+            >
+              {{ runInWsl ? "🐧 Local · WSL" : "💻 Local shell" }}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="tabType === 'ssh'"
+              :class="['segmented__btn', { 'segmented__btn--active': tabType === 'ssh' }]"
+              title="Create an SSH tab — connects to a remote host via the strIDEterm SSH client. Pick a saved host below or use Quick connect to type host details by hand."
+              @click="tabType = 'ssh'"
+            >
+              🔐 SSH
+            </button>
+          </div>
+
+          <template v-if="tabType === 'ssh'">
+            <div class="segmented advanced-options__control" role="tablist" aria-label="SSH mode">
               <button
                 type="button"
-                class="button button--ghost saved-host-row__edit"
-                :disabled="!selectedSshHostId"
-                title="Open the full SSH host editor for the currently selected host — change auth, port, jump chain, post-login command, etc. Returns to this dialog when saved."
-                @click="editSelectedHost"
+                role="tab"
+                :aria-selected="sshMode === 'saved'"
+                :class="['segmented__btn', { 'segmented__btn--active': sshMode === 'saved' }]"
+                :disabled="sshHosts.length === 0"
+                :title="
+                  sshHosts.length === 0
+                    ? 'Disabled — no saved hosts yet. Switch to Quick connect to type host details by hand, or add a host in Settings → SSH first.'
+                    : 'Pick a host from your strIDEterm host book below — saved hosts carry their auth, jump chain, and post-login command.'
+                "
+                @click="sshMode = 'saved'"
               >
-                Edit…
+                Saved host
+              </button>
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="sshMode === 'quick'"
+                :class="['segmented__btn', { 'segmented__btn--active': sshMode === 'quick' }]"
+                title="Type host / user / port / auth in-place — useful for one-off connections. Optionally save the result to the host book before connecting."
+                @click="sshMode = 'quick'"
+              >
+                Quick connect
               </button>
             </div>
-          </div>
-        </template>
 
-        <template v-else>
-          <div class="quick-grid">
+            <template v-if="sshMode === 'saved'">
+              <div class="field saved-host-field">
+                <div class="saved-host-field__label">SSH Host</div>
+                <div class="saved-host-row">
+                  <CustomSelect
+                    v-model="selectedSshHostId"
+                    class="saved-host-row__select"
+                    placeholder="Select a host…"
+                    :options="hostOptions"
+                    @change="onHostSelected"
+                  />
+                  <button
+                    type="button"
+                    class="button button--ghost saved-host-row__edit"
+                    :disabled="!selectedSshHostId"
+                    title="Open the full SSH host editor for the currently selected host — change auth, port, jump chain, post-login command, etc. Returns to this dialog when saved."
+                    @click="editSelectedHost"
+                  >
+                    Edit…
+                  </button>
+                </div>
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="quick-grid">
+                <label class="field">
+                  <span>User</span>
+                  <input
+                    v-model="quick.username"
+                    placeholder="alice"
+                    required
+                    data-validation-required="Enter the SSH login user on the remote server, for example alice or root."
+                  />
+                </label>
+                <label class="field">
+                  <span>Host</span>
+                  <input
+                    v-model="quick.host"
+                    placeholder="bastion.example.com"
+                    required
+                    data-validation-required="Enter the server hostname or IP address, for example bastion.example.com or 192.168.1.10."
+                    @input="autofillTitle"
+                  />
+                </label>
+                <label class="field">
+                  <span>Port</span>
+                  <input v-model.number="quick.port" type="number" min="1" max="65535" />
+                </label>
+              </div>
+
+              <div class="field auth-field" @mouseleave="authHelpOpen = false">
+                <div class="auth-field__heading">
+                  <span class="auth-field__label">Authentication</span>
+                  <button
+                    type="button"
+                    class="auth-help"
+                    aria-label="Authentication options help"
+                    aria-describedby="auth-help-tooltip"
+                    :aria-expanded="authHelpOpen"
+                    @mouseenter="authHelpOpen = true"
+                    @focus="authHelpOpen = true"
+                    @blur="authHelpOpen = false"
+                    @click="authHelpOpen = true"
+                    @keydown.esc="authHelpOpen = false"
+                  >
+                    ?
+                  </button>
+                  <div
+                    v-show="authHelpOpen"
+                    id="auth-help-tooltip"
+                    class="auth-help__content"
+                    role="tooltip"
+                    @mouseenter="authHelpOpen = true"
+                  >
+                    <p>
+                      <strong>SSH Agent:</strong> Recommended if your key is already loaded in an SSH agent on this
+                      computer.
+                    </p>
+                    <p>
+                      <strong>Saved key:</strong> Choose this when you imported a private key in Settings → SSH and know
+                      the server accepts its matching public key.
+                    </p>
+                    <p>
+                      <strong>Password / prompt (MFA):</strong> Choose this when the server requires a password or
+                      interactive verification. Answer the app's prompt during connection; credentials are not saved.
+                    </p>
+                  </div>
+                </div>
+                <CustomSelect v-model="quick.authMethod" :options="authMethodOptions" />
+              </div>
+
+              <label v-if="quick.authMethod === 'publickey'" class="field">
+                <span>Key</span>
+                <CustomSelect v-model="quick.keyRef" placeholder="Select a key…" :options="keyOptions" />
+              </label>
+
+              <div class="save-row">
+                <label class="save-row__toggle">
+                  <input v-model="saveToBook" type="checkbox" />
+                  <span>Save to host book</span>
+                </label>
+                <input
+                  v-model="savedHostName"
+                  class="save-row__input"
+                  placeholder="e.g. prod-bastion"
+                  :disabled="!saveToBook"
+                  maxlength="60"
+                />
+              </div>
+              <p v-if="quick.error" class="error-msg">{{ quick.error }}</p>
+            </template>
+
             <label class="field">
-              <span>User</span>
-              <input v-model="quick.username" placeholder="alice" required />
+              <span>Initial command (optional)</span>
+              <input v-model="commandInput" placeholder="e.g. tmux attach" maxlength="500" />
             </label>
-            <label class="field">
-              <span>Host</span>
-              <input v-model="quick.host" placeholder="bastion.example.com" required @input="autofillTitle" />
+          </template>
+
+          <template v-else>
+            <label class="run-wsl-toggle">
+              <input v-model="runInWsl" type="checkbox" />
+              <span>Run in WSL</span>
             </label>
-            <label class="field">
-              <span>Port</span>
-              <input v-model.number="quick.port" type="number" min="1" max="65535" />
-            </label>
-          </div>
-
-          <label class="field">
-            <span>Authentication</span>
-            <CustomSelect v-model="quick.authMethod" :options="authMethodOptions" />
-          </label>
-
-          <label v-if="quick.authMethod === 'publickey'" class="field">
-            <span>Key</span>
-            <CustomSelect v-model="quick.keyRef" placeholder="Select a key…" :options="keyOptions" />
-          </label>
-
-          <div class="save-row">
-            <label class="save-row__toggle">
-              <input v-model="saveToBook" type="checkbox" />
-              <span>Save to host book</span>
-            </label>
-            <input
-              v-model="savedHostName"
-              class="save-row__input"
-              placeholder="e.g. prod-bastion"
-              :disabled="!saveToBook"
-              maxlength="60"
-            />
-          </div>
-          <p v-if="quick.error" class="error-msg">{{ quick.error }}</p>
-        </template>
-
-        <label class="field">
-          <span>Initial command (optional)</span>
-          <input v-model="commandInput" placeholder="e.g. tmux attach" maxlength="500" />
-        </label>
-      </template>
-
-      <template v-else>
-        <WslCommandFields v-model:command="commandInput" />
-      </template>
+            <div v-if="runInWsl && !isRawWslCommand" class="advanced-fields">
+              <label class="field">
+                <span>Distro (optional)</span>
+                <input v-model="wsl.distro" placeholder="e.g. Ubuntu-22.04 — leave blank for default" maxlength="60" />
+              </label>
+              <label class="field">
+                <span>Working directory (optional)</span>
+                <input v-model="wsl.cwd" placeholder="/home/you" maxlength="500" />
+              </label>
+              <label class="wsl-keep-open">
+                <input v-model="wsl.keepOpen" type="checkbox" />
+                <span>Keep shell open after the command exits</span>
+              </label>
+            </div>
+          </template>
+        </div>
+      </details>
 
       <footer class="dialog__footer edit-tab-dialog__footer">
         <button type="button" class="button button--ghost" :disabled="submitting" @click="emit('cancel')">
@@ -191,8 +269,8 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
-import WslCommandFields from "./WslCommandFields.vue";
 import { BADGE_ICONS, getTitleIcon, setTitleIcon } from "../../lib/badge-icons.js";
+import { buildWslCommand, parseWslCommand, type WslState } from "./wsl-launcher.js";
 
 interface SshHostState {
   title: string;
@@ -273,10 +351,24 @@ const titleInput = ref(props.title);
 const commandInput = ref(props.command);
 const showIconPicker = ref(false);
 const submitting = ref(false);
-
 const tabType = ref(props.presetTabType === "ssh" ? "ssh" : "local");
+const advancedOpen = ref(props.mode !== "new" || props.presetTabType === "ssh");
+const parsedWslPreset = props.presetTabType !== "ssh" ? parseWslCommand(props.command) : null;
+const rawWslPreset = props.presetTabType !== "ssh" && !parsedWslPreset && /^wsl(?:\s|$)/i.test(props.command.trim());
+const runInWsl = ref(props.presetTabType !== "ssh" && Boolean(parsedWslPreset || rawWslPreset));
+const wsl = reactive<WslState>(parsedWslPreset ?? { distro: "", cwd: "", command: "", keepOpen: true });
+if (parsedWslPreset) commandInput.value = parsedWslPreset.command;
+const isRawWslCommand = computed(() => /^wsl(?:\s|$)/i.test(commandInput.value.trim()));
+function onAdvancedToggle(event: Event) {
+  advancedOpen.value = (event.currentTarget as HTMLDetailsElement).open;
+}
+
 const sshMode = ref(props.presetSshMode === "quick" ? "quick" : "saved");
 const selectedSshHostId = ref(props.presetSshHostId || "");
+const advancedSummary = computed(() => {
+  if (tabType.value === "ssh") return "SSH";
+  return runInWsl.value ? "WSL" : "";
+});
 
 const quick = reactive({
   host: "",
@@ -286,6 +378,7 @@ const quick = reactive({
   keyRef: "",
   error: "",
 });
+const authHelpOpen = ref(false);
 
 const saveToBook = ref(false);
 const savedHostName = ref("");
@@ -370,12 +463,16 @@ async function handleSubmit() {
     // CustomSelect has no native `required`, so guard the saved-host path
     // explicitly — we don't want to submit a saved-host tab with no host id.
     if (tabType.value === "ssh" && sshMode.value === "saved" && !selectedSshHostId.value) return;
-    // For local tabs, WslCommandFields keeps commandInput in sync with the
-    // effective command at all times (shell text, or the generated/overridden
-    // wsl wrapper) — no separate WSL-mode branching needed here anymore.
+    const plainCommand = commandInput.value.trim();
+    const effectiveCommand =
+      tabType.value === "local" && runInWsl.value
+        ? isRawWslCommand.value
+          ? plainCommand
+          : buildWslCommand({ ...wsl, command: plainCommand }) || 'wsl -- bash -lic "exec bash"'
+        : plainCommand;
     emit("submit", {
       title: nextTitle,
-      command: commandInput.value.trim(),
+      command: effectiveCommand,
       kind: tabType.value === "ssh" ? "ssh" : undefined,
       sshHostId: tabType.value === "ssh" ? selectedSshHostId.value : undefined,
     });
@@ -453,6 +550,50 @@ async function handleSubmit() {
   gap: 14px;
 }
 
+.advanced-options {
+  border-top: 1px solid var(--border);
+}
+.advanced-options > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.advanced-options > summary::-webkit-details-marker {
+  display: none;
+}
+.advanced-options > summary::after {
+  content: "▸";
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.advanced-options[open] > summary::after {
+  transform: rotate(90deg);
+}
+.advanced-options__summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.advanced-options__control {
+  margin-bottom: 0;
+}
+.advanced-content {
+  display: grid;
+  gap: 16px;
+  padding-bottom: 14px;
+}
+.advanced-fields {
+  display: grid;
+  gap: 16px;
+}
+
 /* Segmented control — replaces ugly radio rows for binary toggles.
    Overrides the global `label { display: grid }` by using plain <button>s. */
 .segmented {
@@ -495,6 +636,96 @@ async function handleSubmit() {
 /* Fields — standard label + input pair (overlay.css already grids them). */
 .field {
   margin: 0;
+}
+.auth-field {
+  display: grid;
+  gap: 4px;
+  position: relative;
+}
+.auth-field__heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.auth-field__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+.auth-help {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.auth-help:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.auth-help__content {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.auth-help__content::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+.auth-help__content p {
+  margin: 0;
+}
+.auth-help__content p + p {
+  margin-top: 12px;
+}
+.run-wsl-toggle,
+.wsl-keep-open {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  cursor: pointer;
+}
+.run-wsl-toggle input[type="checkbox"],
+.wsl-keep-open input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.run-wsl-toggle span,
+.wsl-keep-open span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.auth-help__content strong {
+  color: var(--text);
 }
 
 .title-row {
@@ -584,11 +815,8 @@ async function handleSubmit() {
 .save-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.02);
+  gap: 12px;
+  margin: 6px 0 14px;
 }
 .save-row__toggle {
   display: flex !important;
@@ -633,6 +861,35 @@ async function handleSubmit() {
   margin-top: 8px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
+}
+
+@media (max-width: 480px) {
+  .edit-tab-dialog__form {
+    gap: 12px;
+  }
+  .segmented__btn {
+    padding: 10px 8px;
+    white-space: normal;
+  }
+  .quick-grid {
+    grid-template-columns: minmax(0, 1fr) 76px;
+  }
+  .quick-grid .field:nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+  .save-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .save-row__input {
+    width: 100%;
+  }
+  .advanced-options > summary {
+    min-height: 48px;
+  }
 }
 
 /* The global `input { width: 100% }` from overlay.css is way too broad —

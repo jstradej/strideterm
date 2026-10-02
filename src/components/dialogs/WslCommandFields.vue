@@ -4,7 +4,13 @@
        fields so users don't have to remember the quoting. Shared by
        EditTabDialog (new/edit tab) and PanelEditor (per-panel command) —
        extracted so the two editors can't drift (code review 2026-07 §3.5). -->
-  <div class="segmented" :class="{ 'segmented--compact': compact }" role="tablist" aria-label="Launch mode">
+  <div
+    v-if="showLaunchMode"
+    class="segmented"
+    :class="{ 'segmented--compact': compact }"
+    role="tablist"
+    aria-label="Launch mode"
+  >
     <button
       type="button"
       role="tab"
@@ -92,6 +98,8 @@ import { buildWslCommand, parseWslCommand, type WslState } from "./wsl-launcher.
 
 interface Props {
   command: string;
+  /** Hide the mode buttons when a parent provides its own environment selector. */
+  showLaunchMode?: boolean;
   /** Tighter padding/font-size for the segmented control — used by PanelEditor
    *  where several panel cards stack vertically and the roomier default
    *  (EditTabDialog's) sizing looks oversized. */
@@ -100,6 +108,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   compact: false,
+  showLaunchMode: true,
 });
 
 const emit = defineEmits<{
