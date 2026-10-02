@@ -102,8 +102,6 @@ describe("sanitizeTerminalText on a real Claude Code TUI capture", () => {
 
       it("agent-finished alert: excerpt and body are clean text with the answer in it", () => {
         const { excerpt, body } = agentFinishedBody(atStop(stream));
-        console.log(`--- ${name}: excerpt at Stop ---\n${excerpt}\n--- ${name}: body ---\n${body}\n---`);
-
         expectCleanText(excerpt);
         expectCleanText(body);
         expect(body.startsWith("Agent finished\n\nRecent terminal output:\n")).toBe(true);
@@ -112,8 +110,6 @@ describe("sanitizeTerminalText on a real Claude Code TUI capture", () => {
 
       it("the same buffer after /exit (screen teardown) is still clean text", () => {
         const { excerpt, body } = agentFinishedBody(stream);
-        console.log(`--- ${name}: excerpt after exit ---\n${excerpt}\n---`);
-
         expectCleanText(excerpt);
         expectCleanText(body);
       });

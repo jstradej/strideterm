@@ -112,25 +112,13 @@ onUnmounted(() => {
 
 const phase = computed(() => account.state.phase);
 const busy = computed(() => account.state.busy);
-const signOutNeedsReauth = computed(
+/** The refusals that a fresh owner sign-in answers. Sign-out and account deletion share them. */
+const REAUTH_ERRORS = ["requires-recent-login", "invalid-credentials", "installation-identity-lost"];
+const needsReauth = computed(
   () =>
     account.state.needsRecentAuth ||
-    ["requires-recent-login", "invalid-credentials", "installation-identity-lost"].includes(
-      account.actionError ?? "",
-    ) ||
-    ["requires-recent-login", "invalid-credentials", "installation-identity-lost"].includes(
-      account.state.lastError ?? "",
-    ),
-);
-const deleteNeedsReauth = computed(
-  () =>
-    account.state.needsRecentAuth ||
-    ["requires-recent-login", "invalid-credentials", "installation-identity-lost"].includes(
-      account.actionError ?? "",
-    ) ||
-    ["requires-recent-login", "invalid-credentials", "installation-identity-lost"].includes(
-      account.state.lastError ?? "",
-    ),
+    REAUTH_ERRORS.includes(account.actionError ?? "") ||
+    REAUTH_ERRORS.includes(account.state.lastError ?? ""),
 );
 
 /**
@@ -451,8 +439,6 @@ const errorMessage = computed(() => {
   if (code === "checkout-pending" && account.checkoutPendingOfferId !== null) return "";
   return code ? (ERROR_COPY[code] ?? ERROR_COPY.unknown) : "";
 });
-const signOutInlineError = computed(() => errorMessage.value);
-const deleteInlineError = computed(() => errorMessage.value);
 
 /** Why no sign-in can be started, in the user's language. Four operator problems, four sentences. */
 const SIGN_IN_UNAVAILABLE_COPY: Record<string, string> = {
@@ -1826,7 +1812,7 @@ function focusAuthPanel(): void {
                 This removes hosted access from this desktop. Your account, subscription and other devices stay as they
                 are. Local terminals keep working.
               </p>
-              <div v-if="signOutNeedsReauth" class="account-reauth account-reauth--inline">
+              <div v-if="needsReauth" class="account-reauth account-reauth--inline">
                 <p class="account-note account-note--warn">
                   Confirm it is you to sign out. The email link only verifies you; it will not sign out automatically.
                 </p>
@@ -1851,8 +1837,8 @@ function focusAuthPanel(): void {
                   Send sign-in link to confirm identity
                 </button>
               </div>
-              <p v-if="signOutInlineError" class="account-error account-error--inline" role="alert">
-                {{ signOutInlineError }}
+              <p v-if="errorMessage" class="account-error account-error--inline" role="alert">
+                {{ errorMessage }}
               </p>
               <p v-if="pendingAction === 'signout'" class="account-note" role="status">Signing out of this desktop…</p>
               <div class="account-actions">
@@ -1860,7 +1846,7 @@ function focusAuthPanel(): void {
                   type="button"
                   class="button button--danger"
                   title="Signs out this desktop and removes its hosted access."
-                  :disabled="busy || pendingAction !== null || signOutNeedsReauth"
+                  :disabled="busy || pendingAction !== null || needsReauth"
                   @click="act('signout', submitSignOut)"
                 >
                   <span v-if="pendingAction === 'signout'" class="button-spinner" aria-hidden="true"></span>
@@ -1883,7 +1869,7 @@ function focusAuthPanel(): void {
                 This closes the account for every device, cancels the subscription and deletes the personal data. It
                 cannot be undone. Type <code>DELETE MY ACCOUNT</code> to confirm.
               </p>
-              <div v-if="deleteNeedsReauth" class="account-reauth account-reauth--inline">
+              <div v-if="needsReauth" class="account-reauth account-reauth--inline">
                 <p class="account-note account-note--warn">
                   Confirm your identity here first. Opening the email link only verifies you; it will not delete
                   anything by itself.
@@ -1913,8 +1899,8 @@ function focusAuthPanel(): void {
                 <span>Type DELETE MY ACCOUNT to confirm</span>
                 <input v-model="confirmationPhrase" type="text" :disabled="busy" />
               </label>
-              <p v-if="deleteInlineError" class="account-error account-error--inline" role="alert">
-                {{ deleteInlineError }}
+              <p v-if="errorMessage" class="account-error account-error--inline" role="alert">
+                {{ errorMessage }}
               </p>
               <p v-if="pendingAction === 'delete-account'" class="account-note" role="status">Deleting account…</p>
               <div class="account-actions">
@@ -1922,7 +1908,7 @@ function focusAuthPanel(): void {
                   type="button"
                   class="button button--danger"
                   :disabled="
-                    busy || pendingAction !== null || confirmationPhrase !== 'DELETE MY ACCOUNT' || deleteNeedsReauth
+                    busy || pendingAction !== null || confirmationPhrase !== 'DELETE MY ACCOUNT' || needsReauth
                   "
                   @click="act('delete-account', submitDelete)"
                 >

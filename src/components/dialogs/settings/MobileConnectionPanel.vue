@@ -1008,7 +1008,7 @@ watch(
 
 /** True while an approve/reject call is in flight, so the three buttons cannot be double-fired. */
 const approvalBusy = ref(false);
-/** A failure from the approval call, shown in place rather than swallowed — see `approvePairing`. */
+/** A failure from the approval call, shown in place rather than swallowed — see `submitTypedSas`. */
 const approvalError = ref("");
 
 function dismissSas() {
@@ -1040,9 +1040,11 @@ const SAS_MISMATCH_COPY =
 /**
  * "Activate" with the code typed from the phone (review 3 §3.6).
  *
- * Same contract as `approvePairing` — the failure is shown in place, never swallowed — with one
- * addition: a `sas-mismatch` gets its own copy rather than the generic one, because it is the one
- * refusal that may mean the invitation is in other hands and the user needs to be told what to do.
+ * The error is SHOWN, not logged and forgotten. An activation can fail — the cloud refuses a record it
+ * still considers merely claimed, or cannot be reached — and the device then stays inert; a user who
+ * pressed the button and saw nothing would reasonably assume pairing had completed. A `sas-mismatch`
+ * gets its own copy rather than the generic one, because it is the one refusal that may mean the
+ * invitation is in other hands and the user needs to be told what to do.
  */
 async function submitTypedSas() {
   const pending = pairingSas.value;
@@ -1054,31 +1056,6 @@ async function submitTypedSas() {
     if (!result.ok) {
       approvalError.value =
         result.reason === "sas-mismatch" ? SAS_MISMATCH_COPY : mobileResultReasonCopy(result.reason, "approve");
-    }
-  } catch (error) {
-    approvalError.value = mobileErrorCopy(error, "approve");
-  } finally {
-    approvalBusy.value = false;
-  }
-}
-
-/**
- * "Codes match — activate" (review 3 §P0.1).
- *
- * The error is SHOWN, not logged and forgotten. An activation can fail — the cloud refuses a record it
- * still considers merely claimed, or cannot be reached — and in that case the device stays inert. A user
- * who pressed the button and saw nothing happen would reasonably assume pairing had completed, which is
- * precisely the fail-open reading this whole change exists to remove.
- */
-async function approvePairing() {
-  const pending = pairingSas.value;
-  if (!pending || approvalBusy.value) return;
-  approvalBusy.value = true;
-  approvalError.value = "";
-  try {
-    const result = await appStore.approveMobileDevice(pending.deviceId);
-    if (!result.ok) {
-      approvalError.value = mobileResultReasonCopy(result.reason, "approve");
     }
   } catch (error) {
     approvalError.value = mobileErrorCopy(error, "approve");

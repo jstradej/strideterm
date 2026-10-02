@@ -10087,16 +10087,18 @@ export async function createRuntime({
       // DO wait for any in-flight persist though — exiting between its
       // tmp-write and rename leaves a full-content orphan .tmp file and a
       // stale state file (observed on quit in production). Time-capped so
-      // a stuck persist queue can't hold the quit hostage.
+      // a stuck persist queue can't hold the quit hostage. The remembered
+      // login email goes to credentials.json the same tmp + rename way, so
+      // its pending write is waited for under the same cap.
       let flushed = false;
       await Promise.race([
-        store.flush().then(() => {
+        Promise.all([store.flush(), accountManager.flushRememberedOwnerEmail()]).then(() => {
           flushed = true;
         }),
         new Promise<void>((resolve) => setTimeout(resolve, 5000)),
       ]);
       if (!flushed) {
-        log.warn("state flush did not settle within 5s on shutdown — persist queue stuck?");
+        log.warn("state / credential flush did not settle within 5s on shutdown — persist queue stuck?");
       }
       return undefined;
     },

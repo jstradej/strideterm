@@ -2115,7 +2115,7 @@ export const useAppStore = defineStore("app", () => {
    * claimed cannot be activated by anyone) or be unreachable, and in both cases the device stays inert
    * and the user needs to be told.
    */
-  async function approveMobileDevice(deviceId: string, sas = ""): Promise<{ ok: boolean; reason?: string }> {
+  async function approveMobileDevice(deviceId: string, sas: string): Promise<{ ok: boolean; reason?: string }> {
     const api = getApi() as AnyApi;
     if (typeof api?.approveMobileDevice !== "function") {
       throw new Error("Managing mobile devices is only available in the desktop app.");
