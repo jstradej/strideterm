@@ -128,6 +128,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   accountSubmitSignInLink: (payload) => ipcRenderer.invoke("account:sign-in:link", payload),
   accountChangeLoginEmail: (payload) => ipcRenderer.invoke("account:change-email", payload),
   accountClearPendingEmailChange: () => ipcRenderer.invoke("account:change-email:clear"),
+  accountDismissOwnerEmailNotice: () => ipcRenderer.invoke("account:owner-email-notice:dismiss"),
+  accountDismissRecoveryRefused: (payload) => ipcRenderer.invoke("account:recovery-refused:dismiss", payload),
   accountEnrolInstallation: (payload) => ipcRenderer.invoke("account:enrol", payload),
   accountStartTrial: () => ipcRenderer.invoke("account:start-trial"),
   accountRefreshOverview: () => ipcRenderer.invoke("account:refresh"),

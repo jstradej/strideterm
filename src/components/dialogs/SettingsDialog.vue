@@ -351,9 +351,11 @@ function handleSave() {
 </script>
 
 <style scoped>
+/* Tracks the window like the Remote Access dialog (90e01240): 620px was a postage stamp on a wide
+   screen. The clamp keeps the old size in a small window, and the overlay still caps it. */
 .settings-dialog {
-  width: min(620px, 100%);
-  height: min(680px, 85vh);
+  width: min(100%, clamp(620px, 60vw, 1100px));
+  height: min(900px, calc(100dvh - 40px));
   display: flex;
   flex-direction: column;
 }

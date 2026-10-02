@@ -1611,6 +1611,10 @@ export const accountEnrolSchema = z.object({
 });
 export type AccountEnrol = z.infer<typeof accountEnrolSchema>;
 
+/** `account:recovery-refused:dismiss` — what the owner chose after a restore was refused. */
+export const accountRecoveryAnswerSchema = z.object({ answer: z.enum(["register", "back"]) }).strict();
+export type AccountRecoveryAnswer = z.infer<typeof accountRecoveryAnswerSchema>;
+
 /** `account:checkout` — an opaque catalog offer id, never a provider price. */
 export const accountCheckoutSchema = z.object({ offerId: nonEmptyString });
 export type AccountCheckout = z.infer<typeof accountCheckoutSchema>;

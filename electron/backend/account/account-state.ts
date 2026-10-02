@@ -88,6 +88,27 @@ export interface AccountAuthState {
   readonly sendOutcome: "sent" | "unknown";
 }
 
+/**
+ * What happened to the remembered login address that the owner should know about.
+ *
+ *   - `changed`: a sign-in proved a DIFFERENT address than the one remembered — a login-address
+ *     change, or another account altogether (`sameAccount: false`). The new one is remembered.
+ *   - `mismatch`: the server's masked `accountDisplay` contradicts the remembered address, so it was
+ *     changed somewhere else. The remembered one is forgotten; signing in again remembers the new one.
+ *   - `storage-failed`: it could not be read or saved on this machine, so the page falls back to the
+ *     masked address.
+ */
+export type OwnerEmailNotice =
+  | {
+      readonly kind: "changed";
+      readonly previous: string;
+      readonly current: string;
+      readonly sameAccount: boolean;
+      readonly at: number;
+    }
+  | { readonly kind: "mismatch"; readonly remembered: string; readonly accountDisplay: string; readonly at: number }
+  | { readonly kind: "storage-failed"; readonly operation: "read" | "write"; readonly at: number };
+
 export interface AccountUiState {
   readonly phase: AccountPhase;
   /** Preparation of online services, separate from the Firebase email-send phase. */
@@ -100,6 +121,26 @@ export interface AccountUiState {
    * the wrong one.
    */
   readonly ownerEmail?: string;
+  /**
+   * The last verified login address this desktop signed in with, when no owner session is held.
+   *
+   * Remembered on this machine (see `remembered-owner-email.ts`) so an enrolled desktop can tell its
+   * owner which address they use after the transient owner session is gone. It is a reminder, not a
+   * proof: it is never a sign-in destination by itself, and every server overview is checked against
+   * it. Absent while `ownerEmail` is present — that one is live.
+   */
+  readonly rememberedOwnerEmail?: string;
+  /**
+   * Something about the remembered login address the owner has to be TOLD, until they dismiss it.
+   *
+   * Each kind is also logged (without the address). See {@link OwnerEmailNotice}.
+   */
+  readonly ownerEmailNotice?: OwnerEmailNotice;
+  /**
+   * A refused restore the owner has to answer: register this computer to that address instead, or go
+   * back. Nothing is registered until they choose, and it stays until they do.
+   */
+  readonly recoveryRefused?: { readonly email: string; readonly at: number };
   /**
    * Whether THIS machine is enrolled on an account.
    *
@@ -237,6 +278,9 @@ export interface AccountStateInput {
   readonly lastDiagnosticsReportId?: string | null;
   readonly auth?: AccountAuthState | null;
   readonly pendingEmailChange?: { readonly email: string; readonly requestedAt: number } | null;
+  readonly rememberedOwnerEmail?: string | null;
+  readonly ownerEmailNotice?: OwnerEmailNotice | null;
+  readonly recoveryRefused?: { readonly email: string; readonly at: number } | null;
   readonly signInAvailable?: boolean;
   /** Which backend a sign-in would reach; absent when none can be started. */
   readonly authEnvironment?: "local" | "dev" | "qa" | "prod" | null;
@@ -269,8 +313,16 @@ export function deriveAccountState(input: AccountStateInput): AccountUiState {
     ...(input.lastDiagnosticsReportId ? { lastDiagnosticsReportId: input.lastDiagnosticsReportId } : {}),
     ...(input.auth ? { auth: input.auth } : {}),
     ...(input.pendingEmailChange ? { pendingEmailChange: input.pendingEmailChange } : {}),
+    ...(input.ownerEmailNotice ? { ownerEmailNotice: input.ownerEmailNotice } : {}),
+    ...(input.recoveryRefused ? { recoveryRefused: input.recoveryRefused } : {}),
   };
-  const withOwner = input.owner === null ? base : { ...base, ownerEmail: input.owner.email };
+  // The live address wins; the remembered one stands in only while no owner session is held.
+  const withOwner =
+    input.owner !== null
+      ? { ...base, ownerEmail: input.owner.email }
+      : input.rememberedOwnerEmail
+        ? { ...base, rememberedOwnerEmail: input.rememberedOwnerEmail }
+        : base;
 
   // ENROLMENT COMES FIRST, and this is the ordering the transient owner session required. The owner
   // credential is dropped as soon as the operation that needed it finishes (plan §2), so an enrolled
@@ -397,6 +449,7 @@ export const ACCOUNT_ERROR_CODES = [
   "mobile-device-limit",
   "pairing-device-limit",
   "account-mismatch",
+  "nothing-to-recover",
   "billing-unconfigured",
   "no-subscription",
   "already-subscribed",

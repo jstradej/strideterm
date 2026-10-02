@@ -131,6 +131,7 @@ import {
   accountDiagnosticsSchema,
   accountEmailSchema,
   accountEnrolSchema,
+  accountRecoveryAnswerSchema,
   accountNoticeAckSchema,
   accountRevokeSchema,
   accountSignInLinkSchema,
@@ -1080,6 +1081,15 @@ export function registerIpc(
   });
   handle("account:change-email:clear", async () => {
     runtime.accountClearPendingEmailChange();
+    return { ok: true };
+  });
+  handle("account:owner-email-notice:dismiss", async () => {
+    runtime.accountDismissOwnerEmailNotice();
+    return { ok: true };
+  });
+  handle("account:recovery-refused:dismiss", async (_event, payload) => {
+    const { answer } = validateIpc(accountRecoveryAnswerSchema, payload, "account:recovery-refused:dismiss");
+    runtime.accountDismissRecoveryRefused(answer);
     return { ok: true };
   });
   handle("account:enrol", async (_event, payload) => {

@@ -87,6 +87,7 @@ import {
   type InstallationBindingMarker,
   type InstallationBindingState,
 } from "./account/account-binding.js";
+import { REMEMBERED_OWNER_EMAIL_REF } from "./account/remembered-owner-email.js";
 import { applyEpochTransition } from "./mobile/epoch-transition.js";
 import { signedOutState, type AccountUiState } from "./account/account-state.js";
 import { createAccountClient } from "./account/account-client.js";
@@ -1881,6 +1882,14 @@ export async function createRuntime({
     // owns the ORDERING and must not own the store.
     readInstallationBinding,
     writeInstallationBinding,
+    // The last verified login address, so the account page can show it after the owner session is
+    // gone. Encrypted where secure storage exists; not `mobile:`, so a keyring-less machine falls back
+    // to `plain:` like `cred:*` rather than refusing. Read failures surface as a notice in the manager.
+    readRememberedOwnerEmail: () => credentialStore.getSecret(REMEMBERED_OWNER_EMAIL_REF),
+    writeRememberedOwnerEmail: (raw) =>
+      raw === null
+        ? credentialStore.deleteSecret(REMEMBERED_OWNER_EMAIL_REF)
+        : credentialStore.setSecret(REMEMBERED_OWNER_EMAIL_REF, raw),
     installationLabel: os.hostname() || "strIDEterm Desktop",
     // The mobile subsystem's own bounded rows, so a report about "my phone will not pair" carries
     // the pairing attempts and not only the account calls. Read through a seam rather than imported,
@@ -7712,6 +7721,12 @@ export async function createRuntime({
     },
     accountClearPendingEmailChange() {
       accountManager.clearPendingEmailChange();
+    },
+    accountDismissOwnerEmailNotice() {
+      accountManager.dismissOwnerEmailNotice();
+    },
+    accountDismissRecoveryRefused(answer: "register" | "back") {
+      accountManager.dismissRecoveryRefused(answer);
     },
     accountEnrolInstallation(mode: "register" | "recover-uid", pairHints: string[]) {
       return accountManager.enrolThisInstallation(mode, pairHints);

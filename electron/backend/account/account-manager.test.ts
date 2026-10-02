@@ -82,6 +82,8 @@ function fakes(
      * the manager; `failWrites` makes the store refuse, and `writes` records every marker asked for.
      */
     binding?: { value: InstallationBindingState; failWrites?: boolean; writes?: InstallationBindingMarker[] };
+    /** The remembered login address, raw as stored. `failRead`/`failWrites` make the store refuse. */
+    remembered?: { value: string; failRead?: boolean; failWrites?: boolean; writes?: (string | null)[] };
     /**
      * Whether the SERVER already lists this installation, before anything in the test runs.
      *
@@ -195,6 +197,19 @@ function fakes(
             options.binding!.value = marker;
           },
         }),
+    ...(options.remembered === undefined
+      ? {}
+      : {
+          readRememberedOwnerEmail: () => {
+            if (options.remembered!.failRead) throw new Error("the keychain is locked");
+            return options.remembered!.value;
+          },
+          writeRememberedOwnerEmail: async (raw: string | null) => {
+            options.remembered!.writes?.push(raw);
+            if (options.remembered!.failWrites) throw new Error("the keychain is locked");
+            options.remembered!.value = raw ?? "";
+          },
+        }),
     ...(options.collectExtraDiagnostics === undefined
       ? {}
       : { collectExtraDiagnostics: options.collectExtraDiagnostics }),
@@ -260,13 +275,15 @@ function makeBroker(client: AccountClient, now: () => number = () => NOW) {
 async function signIn(
   manager: AccountManager,
   purpose: SignInPurpose = "reauth",
-  options: { email?: string; oobCode?: string; offerId?: string } = {},
+  options: { email?: string; oobCode?: string; offerId?: string; attemptId?: string } = {},
 ): Promise<void> {
   const email = options.email ?? "owner@example.test";
   await manager.beginEmailSignIn(email, purpose, options.offerId);
   // Every fixture's broker issues the same FIRST attempt id, so the link a person would have received
   // is reconstructible here without reaching into the broker's private state.
-  manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${FIRST_ATTEMPT_ID}&oobCode=${options.oobCode ?? "OOB-CODE"}`);
+  manager.submitSignInLink(
+    `${AUTHLINK.origin}/c?attempt=${options.attemptId ?? FIRST_ATTEMPT_ID}&oobCode=${options.oobCode ?? "OOB-CODE"}`,
+  );
   await manager.confirmEmailSignIn();
 }
 
@@ -792,6 +809,21 @@ describe("billing", () => {
 });
 
 describe("signing out", () => {
+  test("a registered installation asks for fresh owner auth before attempting remote revocation", async () => {
+    const forgotten: string[] = [];
+    const { manager, transport } = fakes({
+      session: ownerSession({ authenticatedAt: NOW - 60 * 60 * 1000 }),
+      forgetInstallationCredential: async () => void forgotten.push("forgotten"),
+    });
+    await signIn(manager);
+
+    await expect(manager.signOutInstallation({ disconnect: true })).rejects.toMatchObject({
+      code: "requires-recent-login",
+    });
+    expect(transport.revokeAccountDevice).not.toHaveBeenCalled();
+    expect(forgotten).toEqual([]);
+  });
+
   test("a machine with a phone attached refuses a plain sign-out and names what is in the way", async () => {
     const withPhone = overview({
       usage: {
@@ -811,14 +843,15 @@ describe("signing out", () => {
     // Reversing the two leaves a machine that cannot revoke its own pairings and a server that still
     // believes they are live.
     const order: string[] = [];
-    const { manager, transport } = fakes();
+    const { manager, transport } = fakes({
+      forgetInstallationCredential: async () => void order.push("local-drop"),
+    });
     (transport.revokeAccountDevice as ReturnType<typeof vi.fn>).mockImplementation(async () => {
       order.push("server-revoke");
       return { status: "revoked", revokedPairDeviceIds: [], relayCommandsQueued: 1 };
     });
     await signIn(manager);
     await manager.signOutInstallation({ disconnect: true });
-    order.push("local-drop");
     expect(order).toEqual(["server-revoke", "local-drop"]);
     expect(manager.state().phase).toBe("signed-out");
   });
@@ -994,7 +1027,7 @@ describe("the durable local binding (F12, and G13)", () => {
     expect(binding.value).toBe("none");
   });
 
-  test("a successful enrolment writes the INTENT before the server is asked, `bound` after it confirms, and a sign-out writes `none`", async () => {
+  test("a successful enrolment writes the INTENT before the server is asked and retains `bound` after an unauthenticated sign-out refusal", async () => {
     const writes: InstallationBindingMarker[] = [];
     const binding = { value: "none" as InstallationBindingState, writes };
     const { manager, transport } = fakes({ binding, forgetInstallationCredential: async () => {} });
@@ -1015,9 +1048,14 @@ describe("the durable local binding (F12, and G13)", () => {
     expect(writes[intent + 1]).toBe("bound");
     expect(binding.value).toBe("bound");
 
+    await expect(manager.signOutInstallation({ disconnect: true })).rejects.toMatchObject({
+      code: "requires-recent-login",
+    });
+    // A refused remote revocation must leave the durable binding in place with the credential.
+    expect(binding.value).toBe("bound");
+
+    await signIn(manager, "reauth", { attemptId: "b".repeat(43) });
     await manager.signOutInstallation({ disconnect: true });
-    // Deliberately unbound: a fresh anonymous identity IS the right answer for this machine now — and
-    // `none` is a value, not a deletion, so it cannot be mistaken for a marker nobody ever wrote.
     expect(binding.value).toBe("none");
   });
 
@@ -1925,6 +1963,7 @@ describe("every step of a completion is checked against the flow that started it
   test("an overview answer that lands after a sign-out does not resurrect the account", async () => {
     const fixture = fakes({ binding: { value: "bound", writes: [] } });
     await fixture.manager.restoreFromInstallation();
+    await signIn(fixture.manager, "reauth");
     const read = fixture.transport.getAccountOverview as ReturnType<typeof vi.fn>;
     const late = held<AccountOverview>();
     read.mockImplementationOnce(() => late.promise);
@@ -3294,5 +3333,194 @@ describe("a mutation's answer releases only the record it was sent for (S04)", (
     await expect(fixture.manager.openCheckout("offer-a")).resolves.toBe("opened");
     const keys = create.mock.calls.map((call) => (call[0] as { idempotencyKey: string }).idempotencyKey);
     expect(keys).toEqual(["idem-1", "idem-1"]);
+  });
+});
+
+describe("the login email remembered on this computer", () => {
+  const stored = (email: string, uid = "owner-uid") => JSON.stringify({ v: 1, email, uid, savedAt: NOW - 1000 });
+
+  function loggedText(): string {
+    return JSON.stringify([logSpy.warn.mock.calls, logSpy.error.mock.calls, logSpy.info.mock.calls]);
+  }
+
+  test("a verified sign-in is remembered, and shown once the owner session is gone", async () => {
+    const remembered = { value: "", writes: [] as (string | null)[] };
+    const { manager } = fakes({ remembered });
+    await signIn(manager);
+    manager.releaseOwnerSession();
+    await manager.flushRememberedOwnerEmail();
+
+    const state = manager.state();
+    expect(state.ownerEmail).toBeUndefined();
+    expect(state.rememberedOwnerEmail).toBe("owner@example.test");
+    expect(state.ownerEmailNotice).toBeUndefined();
+    expect(JSON.parse(remembered.value)).toMatchObject({ v: 1, email: "owner@example.test", uid: "owner-uid" });
+  });
+
+  test("after a restart the remembered address is shown when the server's mask agrees", async () => {
+    const { manager } = fakes({
+      remembered: { value: stored("owner@example.test") },
+      binding: { value: "bound" },
+      overview: overview({ accountDisplay: "o••••@example.test" }),
+    });
+    await manager.restoreFromInstallation();
+
+    const state = manager.state();
+    expect(state.phase).toBe("ready");
+    expect(state.rememberedOwnerEmail).toBe("owner@example.test");
+    expect(state.ownerEmailNotice).toBeUndefined();
+  });
+
+  test("a remembered address the server's mask contradicts is forgotten, told and logged without the address", async () => {
+    logSpy.warn.mockClear();
+    const remembered = { value: stored("someone@other.test"), writes: [] as (string | null)[] };
+    const { manager } = fakes({
+      remembered,
+      binding: { value: "bound" },
+      overview: overview({ accountDisplay: "o••••@example.test" }),
+    });
+    await manager.restoreFromInstallation();
+    await manager.flushRememberedOwnerEmail();
+
+    const state = manager.state();
+    expect(state.rememberedOwnerEmail).toBeUndefined();
+    expect(state.ownerEmailNotice).toMatchObject({
+      kind: "mismatch",
+      remembered: "someone@other.test",
+      accountDisplay: "o••••@example.test",
+    });
+    expect(remembered.writes).toEqual([null]);
+    expect(logSpy.warn).toHaveBeenCalledWith(expect.stringContaining("does not match"));
+    expect(loggedText()).not.toContain("someone@other.test");
+    expect(manager.exportDiagnostics().content).toContain("account.remembered-email");
+
+    manager.dismissOwnerEmailNotice();
+    expect(manager.state().ownerEmailNotice).toBeUndefined();
+  });
+
+  test("a sign-in with a different address than the remembered one tells the owner", async () => {
+    const { manager } = fakes({ remembered: { value: stored("previous@example.test") } });
+    await signIn(manager);
+
+    expect(manager.state().ownerEmailNotice).toMatchObject({
+      kind: "changed",
+      previous: "previous@example.test",
+      current: "owner@example.test",
+      sameAccount: true,
+    });
+    expect(loggedText()).not.toContain("previous@example.test");
+  });
+
+  test("a sign-in as a different account says so", async () => {
+    const { manager } = fakes({ remembered: { value: stored("owner@example.test", "another-uid") } });
+    await signIn(manager);
+
+    expect(manager.state().ownerEmailNotice).toMatchObject({ kind: "changed", sameAccount: false });
+  });
+
+  test("the same address signing in again changes nothing and tells nobody", async () => {
+    const remembered = { value: stored("OWNER@example.test"), writes: [] as (string | null)[] };
+    const { manager } = fakes({ remembered });
+    await signIn(manager);
+    await manager.flushRememberedOwnerEmail();
+
+    expect(manager.state().ownerEmailNotice).toBeUndefined();
+    expect(remembered.writes).toEqual([]);
+  });
+
+  test("a store that cannot be read is told and logged, and the page falls back to the mask", async () => {
+    logSpy.error.mockClear();
+    const { manager } = fakes({
+      remembered: { value: "", failRead: true },
+      binding: { value: "bound" },
+      overview: overview({ accountDisplay: "o••••@example.test" }),
+    });
+    await manager.restoreFromInstallation();
+
+    expect(manager.state().rememberedOwnerEmail).toBeUndefined();
+    expect(manager.state().ownerEmailNotice).toMatchObject({ kind: "storage-failed", operation: "read" });
+    expect(logSpy.error).toHaveBeenCalledWith(expect.stringContaining("could not be read"), expect.anything());
+  });
+
+  test("an unreadable record is told, logged and removed", async () => {
+    const remembered = { value: "{not json", writes: [] as (string | null)[] };
+    const { manager } = fakes({ remembered, binding: { value: "bound" } });
+    await manager.restoreFromInstallation();
+    await manager.flushRememberedOwnerEmail();
+
+    expect(manager.state().ownerEmailNotice).toMatchObject({ kind: "storage-failed", operation: "read" });
+    expect(remembered.writes).toEqual([null]);
+  });
+
+  test("a save that fails is told and logged", async () => {
+    logSpy.error.mockClear();
+    const { manager } = fakes({ remembered: { value: "", failWrites: true } });
+    await signIn(manager);
+    await manager.flushRememberedOwnerEmail();
+
+    expect(manager.state().ownerEmailNotice).toMatchObject({ kind: "storage-failed", operation: "write" });
+    expect(logSpy.error).toHaveBeenCalledWith(expect.stringContaining("could not be saved"), expect.anything());
+  });
+
+  test("signing this computer out forgets it, without a notice", async () => {
+    const remembered = { value: "", writes: [] as (string | null)[] };
+    const { manager } = fakes({ remembered, binding: { value: "absent" } });
+    await signIn(manager);
+    await manager.signOutInstallation({ disconnect: true });
+    await manager.flushRememberedOwnerEmail();
+
+    expect(remembered.writes.at(-1)).toBeNull();
+    expect(remembered.value).toBe("");
+    expect(manager.state().rememberedOwnerEmail).toBeUndefined();
+    expect(manager.state().ownerEmailNotice).toBeUndefined();
+  });
+});
+
+describe("a refused restore asks before anything else happens", () => {
+  const refuse = (transport: AccountTransport): void => {
+    (transport.completeInstallationRegistration as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: "refused" as const,
+      claimsChanged: false,
+      errorReason: { reason: "account-mismatch" },
+    });
+  };
+
+  test("the code says there is nothing to restore, the prompt is held, and no registration follows", async () => {
+    logSpy.warn.mockClear();
+    const { manager, transport } = fakes({ enrolled: false });
+    refuse(transport);
+
+    await expect(signIn(manager, "recover-uid")).rejects.toMatchObject({ code: "nothing-to-recover" });
+
+    expect(manager.state().lastError).toBe("nothing-to-recover");
+    expect(manager.state().recoveryRefused?.email).toBe("owner@example.test");
+    expect(transport.completeInstallationRegistration).toHaveBeenCalledOnce();
+    expect(transport.startTrial).not.toHaveBeenCalled();
+    expect(JSON.stringify(logSpy.warn.mock.calls)).not.toContain("owner@example.test");
+
+    manager.dismissRecoveryRefused("back");
+    expect(manager.state().recoveryRefused).toBeUndefined();
+    expect(manager.state().lastError).toBeUndefined();
+    expect(transport.completeInstallationRegistration).toHaveBeenCalledOnce();
+  });
+
+  test("a refused registration keeps `account-mismatch` and asks nothing", async () => {
+    const { manager, transport } = fakes({ enrolled: false });
+    refuse(transport);
+
+    await expect(signIn(manager, "enrol")).rejects.toMatchObject({ code: "account-mismatch" });
+
+    expect(manager.state().recoveryRefused).toBeUndefined();
+  });
+
+  test("a new sign-in clears a prompt nobody answered", async () => {
+    const { manager, transport } = fakes({ enrolled: false });
+    refuse(transport);
+    await expect(signIn(manager, "recover-uid")).rejects.toMatchObject({ code: "nothing-to-recover" });
+    expect(manager.state().recoveryRefused).toBeDefined();
+
+    await manager.beginEmailSignIn("owner@example.test", "enrol");
+
+    expect(manager.state().recoveryRefused).toBeUndefined();
   });
 });

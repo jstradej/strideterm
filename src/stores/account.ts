@@ -38,6 +38,8 @@ type AccountApi = Partial<
     | "accountSubmitSignInLink"
     | "accountChangeLoginEmail"
     | "accountClearPendingEmailChange"
+    | "accountDismissOwnerEmailNotice"
+    | "accountDismissRecoveryRefused"
     | "accountEnrolInstallation"
     | "accountStartTrial"
     | "accountRefreshOverview"
@@ -191,6 +193,9 @@ export const useAccountStore = defineStore("account", () => {
   const submitSignInLink = (link: string) => run(() => api!.accountSubmitSignInLink!({ link }), undefined);
   const changeLoginEmail = (email: string) => run(() => api!.accountChangeLoginEmail!({ email }), undefined);
   const clearPendingEmailChange = () => run(() => api!.accountClearPendingEmailChange!(), undefined);
+  const dismissOwnerEmailNotice = () => run(() => api!.accountDismissOwnerEmailNotice!(), undefined);
+  const dismissRecoveryRefused = (answer: "register" | "back") =>
+    run(() => api!.accountDismissRecoveryRefused!({ answer }), undefined);
   const enrol = (mode: "register" | "recover-uid" = "register") =>
     run(() => api!.accountEnrolInstallation!({ mode }), undefined);
   const startTrial = () => run(() => api!.accountStartTrial!(), undefined);
@@ -317,6 +322,8 @@ export const useAccountStore = defineStore("account", () => {
     submitSignInLink,
     changeLoginEmail,
     clearPendingEmailChange,
+    dismissOwnerEmailNotice,
+    dismissRecoveryRefused,
     enrol,
     startTrial,
     refreshOverview,

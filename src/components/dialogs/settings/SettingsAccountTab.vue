@@ -26,6 +26,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import { useAccountStore } from "../../../stores/account.js";
+import CustomSelect from "../../common/CustomSelect.vue";
 import { NETWORK_TLS_UNTRUSTED_COPY } from "../../../lib/network-error-copy.js";
 
 type AccountView = "overview" | "account" | "hidden";
@@ -48,6 +49,11 @@ const email = ref("");
  * "Continue" that silently started a trial would be neither.
  */
 const intent = ref<"enrol-with-trial" | "enrol" | "recover-uid">("enrol-with-trial");
+const intentOptions = [
+  { value: "enrol-with-trial", label: "Add this computer and start the free trial" },
+  { value: "enrol", label: "Add this computer to an account I already have" },
+  { value: "recover-uid", label: "Restore a previous enrolment on this computer" },
+];
 const pastedLink = ref("");
 const newEmail = ref("");
 const confirmationPhrase = ref("");
@@ -106,6 +112,26 @@ onUnmounted(() => {
 
 const phase = computed(() => account.state.phase);
 const busy = computed(() => account.state.busy);
+const signOutNeedsReauth = computed(
+  () =>
+    account.state.needsRecentAuth ||
+    ["requires-recent-login", "invalid-credentials", "installation-identity-lost"].includes(
+      account.actionError ?? "",
+    ) ||
+    ["requires-recent-login", "invalid-credentials", "installation-identity-lost"].includes(
+      account.state.lastError ?? "",
+    ),
+);
+const deleteNeedsReauth = computed(
+  () =>
+    account.state.needsRecentAuth ||
+    ["requires-recent-login", "invalid-credentials", "installation-identity-lost"].includes(
+      account.actionError ?? "",
+    ) ||
+    ["requires-recent-login", "invalid-credentials", "installation-identity-lost"].includes(
+      account.state.lastError ?? "",
+    ),
+);
 
 /**
  * Which button the person is currently waiting on, or null.
@@ -121,6 +147,7 @@ const pendingAction = ref<string | null>(null);
 
 /** Runs one button's action and keeps its spinner up for exactly as long as it takes. */
 async function act(name: string, action: () => Promise<unknown> | unknown): Promise<void> {
+  if (pendingAction.value !== null) return;
   pendingAction.value = name;
   try {
     await action();
@@ -145,7 +172,12 @@ const busyLabel = computed(() => {
   // ONE LABEL FOR REDEEMING AND ENROLLING, because they are one wait: confirming runs the redemption
   // and then registers the machine under the same phase, and splitting the sentence would promise a
   // progress bar this has no way to keep.
-  if (attempt?.phase === "verifying") return "Signing in and registering this computer…";
+  if (attempt?.phase === "verifying") {
+    // A restore registers nothing new; naming it so keeps a failed one from reading as an automatic registration.
+    return attempt.purpose === "recover-uid"
+      ? "Signing in and restoring this computer…"
+      : "Signing in and registering this computer…";
+  }
   if (account.state.phase === "enrolling") return "Registering this computer…";
   if (account.state.phase === "ready" && !account.entitlement && !account.overview?.entitlement) {
     return "Loading account…";
@@ -155,6 +187,32 @@ const busyLabel = computed(() => {
 const overview = computed(() => account.overview);
 const entitlement = computed(() => account.entitlement ?? account.overview?.entitlement);
 const auth = computed(() => account.auth);
+// A sent link is not the follow-up action the person chose; say what opening it will (and will not) do.
+const signInNextStepCopy = computed(() => {
+  switch (auth.value?.purpose) {
+    case "recover-uid":
+      return "The link only confirms the address is yours. After you open it, strIDEterm checks whether this computer was enrolled on that account. If it was not, you will be asked what to do — nothing is registered automatically.";
+    case "enrol":
+      return "After you open it, this computer is added to that account. No trial is started.";
+    case "enrol-with-trial":
+      return "After you open it, this computer is added to that account and the 14-day free trial starts.";
+    default:
+      return "";
+  }
+});
+// The last-step button names what pressing it will do, before it is pressed.
+const confirmNextStepCopy = computed(() => {
+  switch (auth.value?.purpose) {
+    case "recover-uid":
+      return '"Sign in on this computer" checks whether this computer was enrolled on that account and restores it. If it was not, you will be asked what to do — nothing is registered automatically.';
+    case "enrol":
+      return '"Sign in on this computer" signs this computer in and adds it to that account. No trial is started.';
+    case "enrol-with-trial":
+      return '"Sign in on this computer" signs this computer in, adds it to that account and starts the 14-day free trial.';
+    default:
+      return `"Sign in on this computer" signs this computer in as ${auth.value?.email ?? ""}.`;
+  }
+});
 const onlineBootstrap = computed(() => account.onlineBootstrap);
 const bootstrapError = computed(() =>
   onlineBootstrap.value.phase === "failed" || onlineBootstrap.value.phase === "cache-warning"
@@ -237,9 +295,44 @@ const completionMessage = computed(() => {
     return "We are verifying your email, registering this computer and activating your free trial.";
   }
   if (completingPurpose.value === "enrol") return "We are verifying your email and registering this computer.";
+  if (completingPurpose.value === "recover-uid") {
+    return "We are verifying your email and restoring this computer's enrolment.";
+  }
   return "We are verifying your email and completing your request.";
 });
 const pendingEmailChange = computed(() => account.pendingEmailChange);
+/** The remembered login address, prefilled where one is asked for — prefilled, never sent unasked. */
+const rememberedOwnerEmail = computed(() => account.state.rememberedOwnerEmail ?? "");
+watch(
+  rememberedOwnerEmail,
+  (remembered) => {
+    if (remembered && !email.value) email.value = remembered;
+  },
+  { immediate: true },
+);
+/**
+ * An address a button may send a link to WITHOUT showing a form: the live one, or one the person
+ * typed. The untouched remembered prefill is not one — it may be stale, so it is confirmed in the form.
+ */
+function addressForImmediateLink(): string {
+  if (account.state.ownerEmail) return account.state.ownerEmail;
+  return email.value && email.value !== rememberedOwnerEmail.value ? email.value : "";
+}
+const ownerEmailNoticeCopy = computed(() => {
+  const notice = account.state.ownerEmailNotice;
+  if (!notice) return null;
+  if (notice.kind === "changed") {
+    return notice.sameAccount
+      ? `Your login email changed from ${notice.previous} to ${notice.current}. This computer now remembers the new one.`
+      : `This computer was signed in as ${notice.previous} and is now signed in as ${notice.current}, a different account.`;
+  }
+  if (notice.kind === "mismatch") {
+    return `The login email remembered on this computer (${notice.remembered}) no longer matches this account (${notice.accountDisplay}). It was probably changed on another device, so it has been forgotten. Sign in again to remember the current one.`;
+  }
+  return notice.operation === "read"
+    ? "The login email saved on this computer could not be read, so only a partly hidden address can be shown."
+    : "The login email could not be saved on this computer. It will be shown only while you are signed in.";
+});
 const trialDaysLeft = computed(() => {
   if (entitlement.value?.state !== "trial" || !entitlement.value.notAfter) return null;
   return Math.max(0, Math.ceil((entitlement.value.notAfter - nowMs.value) / 86_400_000));
@@ -314,6 +407,7 @@ const ERROR_COPY: Record<string, string> = {
   "mobile-device-limit": "This account already has the maximum number of phones.",
   "pairing-device-limit": "This desktop already has the maximum number of paired phones.",
   "account-mismatch": "That is a different account. Disconnect this installation first, or use the right address.",
+  "nothing-to-recover": "This computer is not enrolled on that account, so there is nothing to restore.",
   "billing-unconfigured": "Subscriptions are not available in this build.",
   "no-subscription": "There is no subscription to manage yet.",
   "already-subscribed": "This account already has a subscription.",
@@ -321,7 +415,8 @@ const ERROR_COPY: Record<string, string> = {
   "checkout-pending": "A checkout is already being prepared. Try again in a moment.",
   "checkout-link-unavailable": "The checkout link is no longer available. Start checkout again.",
   "provider-unavailable": "The payment service could not prepare the payment page. Try again later.",
-  "entitlement-required": "This needs an active subscription.",
+  "entitlement-required":
+    "You need an active mobile plan to use this feature. In Account settings, sign in with an account that has an active plan, or start a free 14-day trial if you are eligible.",
   "daily-limit": "You have sent the most diagnostics reports allowed today. Save the file instead.",
   "not-bound-to-an-account": "This desktop is not enrolled yet. Save the diagnostics to a file instead.",
   "diagnostics-empty": "There is nothing to report yet — this desktop has not done anything hosted.",
@@ -356,6 +451,8 @@ const errorMessage = computed(() => {
   if (code === "checkout-pending" && account.checkoutPendingOfferId !== null) return "";
   return code ? (ERROR_COPY[code] ?? ERROR_COPY.unknown) : "";
 });
+const signOutInlineError = computed(() => errorMessage.value);
+const deleteInlineError = computed(() => errorMessage.value);
 
 /** Why no sign-in can be started, in the user's language. Four operator problems, four sentences. */
 const SIGN_IN_UNAVAILABLE_COPY: Record<string, string> = {
@@ -510,6 +607,23 @@ async function submitContinue(): Promise<void> {
   await account.beginSignIn(email.value, intent.value);
 }
 
+/** "Yes" to the refused-restore prompt: ask for a fresh enrolment link. Nothing is registered until it is opened. */
+async function registerAfterRefusedRestore(): Promise<void> {
+  const captured = account.state.recoveryRefused?.email ?? "";
+  if (!captured) return;
+  await account.dismissRecoveryRefused("register");
+  email.value = captured;
+  await account.beginSignIn(captured, "enrol");
+}
+
+/** "No": leave the prompt with the address kept and the form no longer on restore. */
+async function backFromRefusedRestore(): Promise<void> {
+  const captured = account.state.recoveryRefused?.email ?? "";
+  await account.dismissRecoveryRefused("back");
+  if (captured) email.value = captured;
+  intent.value = "enrol";
+}
+
 async function retryOnlineBootstrap(): Promise<void> {
   bootstrapDetailsCopied.value = false;
   bootstrapCopyFailed.value = false;
@@ -586,7 +700,7 @@ async function startTrialFlow(): Promise<void> {
     return;
   }
   pendingPurpose.value = "trial";
-  const address = account.state.ownerEmail || email.value;
+  const address = addressForImmediateLink();
   if (address) {
     await account.beginSignIn(address, "trial");
     return;
@@ -614,7 +728,7 @@ async function revokeOrReauth(
     await account.revoke(kind, targetId);
     return;
   }
-  const address = account.state.ownerEmail || email.value;
+  const address = addressForImmediateLink();
   const offerId = JSON.stringify([kind, targetId ?? null]);
   if (!address) {
     requestedAuth.value = {
@@ -670,8 +784,45 @@ async function submitChangeEmail(): Promise<void> {
 
 async function submitDelete(): Promise<void> {
   await account.deleteAccount(confirmationPhrase.value);
+  if (account.actionError) return;
   confirmationPhrase.value = "";
   showDelete.value = false;
+}
+
+async function submitSignOut(): Promise<void> {
+  await account.signOut(true);
+}
+
+async function requestSignOutReauth(): Promise<void> {
+  await act("signout-reauth", async () => {
+    pendingPurpose.value = "reauth";
+    await startReauth("reauth");
+  });
+}
+
+async function requestDeleteReauth(): Promise<void> {
+  await act("delete-reauth", async () => {
+    pendingPurpose.value = "delete-account";
+    await startReauth("delete-account");
+  });
+}
+
+function openSignOut(): void {
+  showSignOut.value = !showSignOut.value;
+  account.actionError = null;
+  if (showSignOut.value) showDelete.value = false;
+}
+
+function openDelete(): void {
+  showDelete.value = !showDelete.value;
+  account.actionError = null;
+  if (showDelete.value) showSignOut.value = false;
+}
+
+function focusAuthPanel(): void {
+  const panel = document.querySelector<HTMLElement>(".account-auth");
+  panel?.scrollIntoView({ behavior: "smooth", block: "center" });
+  panel?.focus({ preventScroll: true });
 }
 </script>
 
@@ -682,7 +833,60 @@ async function submitDelete(): Promise<void> {
          never saw — which is indistinguishable from the app saying nothing at all, and is exactly
          what happened to a registration that died on a missing installation session. An alert
          belongs above the thing it is about. -->
-    <p v-if="errorMessage" class="account-error" role="alert">{{ errorMessage }}</p>
+    <p
+      v-if="errorMessage && !(showSignOut || showDelete) && !account.state.recoveryRefused"
+      class="account-error"
+      role="alert"
+    >
+      {{ errorMessage }}
+    </p>
+
+    <p
+      v-if="ownerEmailNoticeCopy && props.view !== 'hidden'"
+      class="account-note account-note--warn account-owner-email-notice"
+      role="status"
+    >
+      {{ ownerEmailNoticeCopy }}
+      <button type="button" class="link" @click="account.dismissOwnerEmailNotice()">Dismiss</button>
+    </p>
+
+    <!-- A REFUSED RESTORE IS ASKED ABOUT, NEVER ANSWERED FOR THE PERSON. The server cannot say why it
+         refused, so the only honest reading is "this computer was never enrolled here"; registering
+         instead is a different intention and starts with a new link, not with this click's success. -->
+    <div
+      v-if="account.state.recoveryRefused && props.view !== 'hidden'"
+      class="account-confirm account-recovery-refused"
+      role="alert"
+    >
+      <h4>Nothing to restore for {{ account.state.recoveryRefused.email }}</h4>
+      <p class="account-note">
+        This computer was never enrolled on the account for <strong>{{ account.state.recoveryRefused.email }}</strong
+        >. Maybe the address is different, or the registration never happened.
+      </p>
+      <p class="account-note">
+        Do you want to register this computer to <strong>{{ account.state.recoveryRefused.email }}</strong
+        >? We will send a new sign-in link; nothing is registered until you open it. No trial is started.
+      </p>
+      <div class="account-actions">
+        <button
+          type="button"
+          class="button"
+          :disabled="busy || pendingAction !== null"
+          @click="act('register-after-restore', registerAfterRefusedRestore)"
+        >
+          <span v-if="pendingAction === 'register-after-restore'" class="button-spinner" aria-hidden="true"></span>
+          Yes, send a link
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
+          :disabled="pendingAction !== null"
+          @click="backFromRefusedRestore"
+        >
+          No
+        </button>
+      </div>
+    </div>
 
     <div
       v-if="completingPurpose"
@@ -1028,17 +1232,21 @@ async function submitDelete(): Promise<void> {
            Rendered in EVERY phase that can have one, and deliberately not as a phase of its own for
            an enrolled desktop: reauthenticating must not hide the device list and the entitlement
            this page exists to show (plan §8, Fáze 3). -->
-        <div v-if="auth" class="account-confirm account-auth">
+        <div v-if="auth" class="account-confirm account-auth" tabindex="-1">
           <template v-if="auth.phase === 'sending'">
             <h4>Sending a sign-in link…</h4>
             <p class="account-note">To {{ auth.email }}.</p>
           </template>
 
           <template v-else-if="auth.phase === 'awaiting-confirmation'">
-            <h4>Sign this computer in as {{ auth.email }}?</h4>
+            <h4>Email confirmed — finish on this computer</h4>
             <p class="account-note">
-              The link was opened and confirmed. Nothing has been signed in yet — this last step happens on this
-              computer.
+              You opened the link sent to <strong>{{ auth.email }}</strong
+              >, so that address is confirmed. Nothing has happened on this computer yet.
+            </p>
+            <p class="account-note">{{ confirmNextStepCopy }}</p>
+            <p class="account-note account-note--muted">
+              Not your address, or you did not ask for this link? Choose Cancel — nothing on this computer changes.
             </p>
             <div class="account-actions">
               <button
@@ -1080,6 +1288,7 @@ async function submitDelete(): Promise<void> {
               >. Open it on this computer or on your phone — either finishes the sign-in here. If it is not there, check
               the spam folder.
             </p>
+            <p v-if="signInNextStepCopy" class="account-note">{{ signInNextStepCopy }}</p>
             <p class="account-note account-note--muted">
               The link works for about {{ expiresInMinutes }} more minute{{ expiresInMinutes === 1 ? "" : "s" }}. If you
               ask for another one, only the newest message works.
@@ -1172,11 +1381,12 @@ async function submitDelete(): Promise<void> {
           </label>
           <label class="account-field">
             <span>What should this do?</span>
-            <select v-model="intent" :disabled="busy">
-              <option value="enrol-with-trial">Add this computer and start the free trial</option>
-              <option value="enrol">Add this computer to an account I already have</option>
-              <option value="recover-uid">Restore a previous enrolment on this computer</option>
-            </select>
+            <CustomSelect
+              :model-value="intent"
+              :options="intentOptions"
+              :disabled="busy"
+              @update:model-value="intent = $event as typeof intent"
+            />
           </label>
           <div class="account-actions">
             <button
@@ -1230,9 +1440,18 @@ async function submitDelete(): Promise<void> {
               <div>
                 <p class="account-section__eyebrow">Plan and billing</p>
                 <h4 :class="`account-state account-state--${stateCopy.tone}`">{{ stateCopy.title }}</h4>
-                <p class="account-note">
-                  {{ account.state.ownerEmail ?? overview?.supportReference }} ·
-                  {{ entitlement?.planLabel ?? "strIDEterm" }}
+                <p class="account-note account-owner-identity">
+                  <strong v-if="account.state.ownerEmail">Signed in as {{ account.state.ownerEmail }}</strong>
+                  <strong v-else-if="rememberedOwnerEmail">Signed in as {{ rememberedOwnerEmail }}</strong>
+                  <strong v-else-if="overview?.accountDisplay">Account {{ overview.accountDisplay }}</strong>
+                  <span v-else>Account email unavailable</span>
+                  <small v-if="!account.state.ownerEmail && rememberedOwnerEmail"
+                    >Login email remembered on this computer</small
+                  >
+                  <small v-else-if="!account.state.ownerEmail && overview?.accountDisplay"
+                    >Email partly hidden for privacy</small
+                  >
+                  <span>{{ entitlement?.planLabel ?? "strIDEterm" }}</span>
                 </p>
               </div>
               <button
@@ -1564,49 +1783,160 @@ async function submitDelete(): Promise<void> {
                 ><small>Actions that disconnect devices or remove data</small></span
               >
             </summary>
+            <p class="account-owner-identity">
+              <strong v-if="account.state.ownerEmail">Signed in as {{ account.state.ownerEmail }}</strong>
+              <strong v-else-if="rememberedOwnerEmail">Signed in as {{ rememberedOwnerEmail }}</strong>
+              <strong v-else-if="overview?.accountDisplay">Account {{ overview.accountDisplay }}</strong>
+              <span v-else>The account email is unavailable. Enter it when asked to sign in again.</span>
+              <small v-if="!account.state.ownerEmail && rememberedOwnerEmail"
+                >Login email remembered on this computer</small
+              >
+              <small v-else-if="!account.state.ownerEmail && overview?.accountDisplay"
+                >Email partly hidden for privacy</small
+              >
+            </p>
             <div class="account-danger">
-              <button type="button" class="button button--ghost" :disabled="busy" @click="showSignOut = !showSignOut">
-                Sign this desktop out
+              <button
+                type="button"
+                class="button button--ghost"
+                :disabled="busy || pendingAction !== null"
+                title="Removes hosted access from this desktop. Your account remains open."
+                @click="openSignOut"
+              >
+                Sign out of this desktop
               </button>
-              <button type="button" class="button button--danger" :disabled="busy" @click="showDelete = !showDelete">
+              <button
+                type="button"
+                class="button button--danger"
+                :disabled="busy || pendingAction !== null"
+                title="Permanently closes the account and removes its data."
+                @click="openDelete"
+              >
                 Delete account
               </button>
             </div>
 
             <div v-if="showSignOut" class="account-confirm">
+              <h5>Sign out of this desktop?</h5>
               <p v-if="(overview?.mobileDevices ?? []).some((device) => device.state === 'active')">
-                This desktop still has phones paired to it. Signing out disconnects them — they will need to be paired
-                again.
+                This removes this desktop from the account. Any phones paired to this desktop will disconnect and need
+                to be paired again if you sign it back in. Local terminals keep working.
               </p>
-              <p v-else>This desktop will lose its hosted access. Your account and other machines are unaffected.</p>
-              <div class="account-actions">
-                <button type="button" class="button button--danger" :disabled="busy" @click="account.signOut(true)">
-                  Disconnect this installation
+              <p v-else>
+                This removes hosted access from this desktop. Your account, subscription and other devices stay as they
+                are. Local terminals keep working.
+              </p>
+              <div v-if="signOutNeedsReauth" class="account-reauth account-reauth--inline">
+                <p class="account-note account-note--warn">
+                  Confirm it is you to sign out. The email link only verifies you; it will not sign out automatically.
+                </p>
+                <p v-if="auth" class="account-note" role="status">
+                  Your sign-in confirmation is above. After confirming the email link, return to this Settings panel.
+                </p>
+                <button v-if="auth" type="button" class="link" @click="focusAuthPanel">
+                  Go to sign-in confirmation
                 </button>
-                <button type="button" class="button button--ghost" @click="showSignOut = false">Cancel</button>
+                <label v-if="!auth && !account.state.ownerEmail" class="account-field">
+                  <span>Your account email</span>
+                  <input v-model="email" type="email" autocomplete="username" :disabled="busy" />
+                </label>
+                <button
+                  v-if="!auth"
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="busy || pendingAction !== null || (!account.state.ownerEmail && !email)"
+                  @click="requestSignOutReauth"
+                >
+                  <span v-if="pendingAction === 'signout-reauth'" class="button-spinner" aria-hidden="true"></span>
+                  Send sign-in link to confirm identity
+                </button>
               </div>
-            </div>
-
-            <div v-if="showDelete" class="account-confirm account-confirm--danger">
-              <p>
-                This closes the account for every device, cancels the subscription and deletes the personal data. It
-                cannot be undone. Type <code>DELETE MY ACCOUNT</code> to confirm.
+              <p v-if="signOutInlineError" class="account-error account-error--inline" role="alert">
+                {{ signOutInlineError }}
               </p>
-              <p v-if="account.state.needsRecentAuth" class="account-note account-note--warn">
-                Confirm it is you first — use the button above. Clicking a link in an email never deletes anything on
-                its own.
-              </p>
-              <input v-model="confirmationPhrase" type="text" :disabled="busy" />
+              <p v-if="pendingAction === 'signout'" class="account-note" role="status">Signing out of this desktop…</p>
               <div class="account-actions">
                 <button
                   type="button"
                   class="button button--danger"
-                  :disabled="busy || confirmationPhrase !== 'DELETE MY ACCOUNT' || account.state.needsRecentAuth"
-                  @click="submitDelete"
+                  title="Signs out this desktop and removes its hosted access."
+                  :disabled="busy || pendingAction !== null || signOutNeedsReauth"
+                  @click="act('signout', submitSignOut)"
                 >
+                  <span v-if="pendingAction === 'signout'" class="button-spinner" aria-hidden="true"></span>
+                  Sign out of this desktop
+                </button>
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="pendingAction !== null"
+                  @click="showSignOut = false"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+
+            <div v-if="showDelete" class="account-confirm account-confirm--danger">
+              <h5>Delete this account permanently?</h5>
+              <p>
+                This closes the account for every device, cancels the subscription and deletes the personal data. It
+                cannot be undone. Type <code>DELETE MY ACCOUNT</code> to confirm.
+              </p>
+              <div v-if="deleteNeedsReauth" class="account-reauth account-reauth--inline">
+                <p class="account-note account-note--warn">
+                  Confirm your identity here first. Opening the email link only verifies you; it will not delete
+                  anything by itself.
+                </p>
+                <p v-if="auth" class="account-note" role="status">
+                  Your sign-in confirmation is above. After confirming the email link, return to this Settings panel.
+                </p>
+                <button v-if="auth" type="button" class="link" @click="focusAuthPanel">
+                  Go to sign-in confirmation
+                </button>
+                <label v-if="!auth && !account.state.ownerEmail" class="account-field">
+                  <span>Your account email</span>
+                  <input v-model="email" type="email" autocomplete="username" :disabled="busy" />
+                </label>
+                <button
+                  v-if="!auth"
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="busy || pendingAction !== null || (!account.state.ownerEmail && !email)"
+                  @click="requestDeleteReauth"
+                >
+                  <span v-if="pendingAction === 'delete-reauth'" class="button-spinner" aria-hidden="true"></span>
+                  Send sign-in link to confirm identity
+                </button>
+              </div>
+              <label class="account-field">
+                <span>Type DELETE MY ACCOUNT to confirm</span>
+                <input v-model="confirmationPhrase" type="text" :disabled="busy" />
+              </label>
+              <p v-if="deleteInlineError" class="account-error account-error--inline" role="alert">
+                {{ deleteInlineError }}
+              </p>
+              <p v-if="pendingAction === 'delete-account'" class="account-note" role="status">Deleting account…</p>
+              <div class="account-actions">
+                <button
+                  type="button"
+                  class="button button--danger"
+                  :disabled="
+                    busy || pendingAction !== null || confirmationPhrase !== 'DELETE MY ACCOUNT' || deleteNeedsReauth
+                  "
+                  @click="act('delete-account', submitDelete)"
+                >
+                  <span v-if="pendingAction === 'delete-account'" class="button-spinner" aria-hidden="true"></span>
                   Delete account
                 </button>
-                <button type="button" class="button button--ghost" @click="showDelete = false">Cancel</button>
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="pendingAction !== null"
+                  @click="showDelete = false"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           </details>
@@ -1925,6 +2255,18 @@ async function submitDelete(): Promise<void> {
 .account-disclosure > .account-danger {
   margin-top: 0;
 }
+.account-owner-identity {
+  display: grid;
+  gap: 3px;
+  margin: 8px 0 12px;
+}
+.account-owner-identity strong {
+  color: var(--text, inherit);
+  font-size: 13px;
+}
+.account-owner-identity small {
+  color: var(--muted);
+}
 .account-note {
   color: var(--muted);
   font-size: 12px;
@@ -2028,6 +2370,13 @@ async function submitDelete(): Promise<void> {
   border-radius: 8px;
   padding: 12px;
   font-size: 12px;
+}
+.account-confirm h5 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.account-reauth--inline {
+  margin: 12px 0;
 }
 .account-auth--requested {
   border-color: color-mix(in srgb, var(--accent, #f2a63b) 42%, var(--border, #333));

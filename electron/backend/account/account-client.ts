@@ -182,6 +182,11 @@ const REFRESH_SKEW_MS = 60 * 1000;
  */
 export const REQUEST_TIMEOUT_MS = 10_000;
 
+/** The production-only sender; its name and region are fixed by the deployment. */
+const PRODUCTION_SIGN_IN_EMAIL_URL =
+  "https://europe-west1-strideterm-mobile-prod.cloudfunctions.net/requestSignInEmail";
+const PRODUCTION_ATTEMPT_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
 /**
  * The largest response body this client will read.
  *
@@ -234,10 +239,11 @@ export interface OwnerLookup {
 
 export interface AccountClient {
   /**
-   * Asks Firebase to email a one-time sign-in link.
+   * Asks the configured sender to email a one-time sign-in link.
    *
-   * `continueUrl` is built by this backend from its own configuration (`authlink-config.ts`) and is
-   * never taken from a renderer: it decides which host the person's browser hands the code to.
+   * In production this is brokered by the fixed sign-in sender using the pinned attempt id; other
+   * environments use Firebase directly. `continueUrl` is built by this backend from its own
+   * configuration (`authlink-config.ts`) and is never taken from a renderer.
    */
   startEmailSignIn(email: string, continueUrl: string, options?: AccountCallOptions): Promise<void>;
   /**
@@ -297,6 +303,89 @@ export function createAccountClient(deps: AccountClientDeps): AccountClient {
     } finally {
       deadline.dispose();
     }
+  }
+
+  async function requestProductionSignInEmail(
+    email: string,
+    continueUrl: string,
+    options?: AccountCallOptions,
+  ): Promise<void> {
+    const attemptId = productionAttemptId(continueUrl);
+    if (attemptId === null) {
+      throw new AccountAuthError("not-configured", "the sign-in attempt could not be verified.");
+    }
+
+    const deadline = requestDeadline(REQUEST_TIMEOUT_MS, options?.signal);
+    try {
+      let response: Response;
+      try {
+        response = await doFetch(PRODUCTION_SIGN_IN_EMAIL_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email, attemptId }),
+          redirect: "error",
+          signal: deadline.signal,
+        });
+      } catch (error) {
+        throw transportError(deadline, options?.signal, error);
+      }
+
+      if (response.status === 429) {
+        void response.body?.cancel().catch(() => {});
+        throw new AccountAuthError("too-many-attempts", "the sign-in sender refused the request.");
+      }
+      const body = await readBoundedJsonBody(response, MAX_RESPONSE_BYTES);
+      if (body.kind === "unreadable") throw transportError(deadline, options?.signal);
+      if (response.status === 503) {
+        if (body.kind === "ok" && exactlyStatus(body.value, "unknown")) {
+          throw new AccountAuthError("auth-unavailable", "the sign-in sender is unavailable.");
+        }
+        throw new AccountAuthError("malformed-response", "the sign-in sender returned an unreadable result.");
+      }
+      if (response.status !== 202 || body.kind !== "ok") {
+        throw new AccountAuthError("malformed-response", "the sign-in sender returned an unreadable result.");
+      }
+      if (exactlyStatus(body.value, "accepted")) return;
+      // The sender cannot prove whether an upstream mail provider accepted the message. The broker
+      // treats this existing code as an uncertain result and keeps this exact attempt open.
+      if (exactlyStatus(body.value, "unknown")) {
+        throw new AccountAuthError("malformed-response", "the sign-in send result is unknown.");
+      }
+      throw new AccountAuthError("malformed-response", "the sign-in sender returned an unrecognized result.");
+    } finally {
+      deadline.dispose();
+    }
+  }
+
+  function exactlyStatus(body: Record<string, unknown>, status: string): boolean {
+    return Object.keys(body).length === 1 && body["status"] === status;
+  }
+
+  function productionAttemptId(continueUrl: string): string | null {
+    let url: URL;
+    try {
+      url = new URL(continueUrl);
+    } catch {
+      return null;
+    }
+    const attemptIds = url.searchParams.getAll("attempt");
+    if (
+      url.href !== continueUrl ||
+      url.origin !== "https://auth.strideterm.com" ||
+      url.pathname !== "/c" ||
+      url.search !== `?attempt=${attemptIds[0] ?? ""}` ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.hash !== "" ||
+      [...url.searchParams.keys()].length !== 1 ||
+      attemptIds.length !== 1
+    ) {
+      return null;
+    }
+    const attemptId = attemptIds[0]!;
+    if (!PRODUCTION_ATTEMPT_ID_PATTERN.test(attemptId)) return null;
+    const bytes = Buffer.from(attemptId, "base64url");
+    return bytes.byteLength === 32 && bytes.toString("base64url") === attemptId ? attemptId : null;
   }
 
   /**
@@ -386,6 +475,10 @@ export function createAccountClient(deps: AccountClientDeps): AccountClient {
 
   return {
     async startEmailSignIn(email, continueUrl, options) {
+      if (deps.config.projectId === "strideterm-mobile-prod" && deps.config.emulators === null) {
+        await requestProductionSignInEmail(email, continueUrl, options);
+        return;
+      }
       await post(
         "sendOobCode",
         {

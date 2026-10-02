@@ -1,74 +1,111 @@
 # Authentication email delivery
 
-Firebase Authentication generates sign-in emails. Production uses Resend as its custom SMTP relay.
-The desktop requests the email with `accounts:sendOobCode`; it does not hold SMTP credentials.
+Two paths send sign-in mail, and the desktop holds no SMTP credentials on either:
+
+- **The production desktop sign-in** (project `strideterm-mobile-prod`, no emulators) calls a
+  dedicated Cloud Function, `requestSignInEmail`. It generates the Firebase sign-in link itself and
+  sends it through the Resend Email API.
+- **Everything else** — the `local`, `dev` and `qa` tiers, and every email-change message — uses
+  Firebase Authentication's `accounts:sendOobCode`, which sends through Resend as its custom SMTP relay.
 
 ## Production configuration
 
-Project: `strideterm-mobile-prod`.
+These settings live in consoles, not in this repository.
 
-| Setting                                | Location                                                   | Value                                                                   |
-| -------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------- |
-| SMTP relay                             | Firebase Authentication → Templates → SMTP settings        | `smtp.resend.com`, port `465`, SSL, username `resend`                   |
-| SMTP sender                            | Same page                                                  | `signin@mail.strideterm.com`                                            |
-| Sending domain                         | Resend → Domains                                           | `mail.strideterm.com`; SPF and DKIM must be verified                    |
-| Custom action domain                   | Firebase Hosting → `strideterm-mobile-prod` → Domains      | `mail.strideterm.com`                                                   |
-| Authorized domain                      | Firebase Authentication → Settings → Authorized domains    | `mail.strideterm.com` added alongside the existing domains              |
-| Hosting DNS                            | Cloudflare → `strideterm.com` → DNS → Records              | DNS-only CNAME `mail` → `strideterm-mobile-prod.web.app`, automatic TTL |
-| Current action URL                     | Firebase Authentication → Templates → Customize action URL | `https://strideterm-mobile-prod.firebaseapp.com/__/auth/action`         |
-| Intended action URL after verification | Same page                                                  | `https://mail.strideterm.com/__/auth/action`                            |
-| Sign-in continuation                   | Desktop's fixed production broker                          | `https://auth.strideterm.com/c?attempt=…`                               |
+| Setting                    | Location                                                   | Value                                                           |
+| -------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------- |
+| SMTP relay                 | Firebase Authentication → Templates → SMTP settings        | `smtp.resend.com`, port `465`, SSL, username `resend`           |
+| Firebase SMTP sender       | Same page                                                  | `signin@mail.strideterm.com`                                    |
+| Sign-in API sender         | Resend Email API (Cloud Function)                          | `strIDEterm <signin@mail.strideterm.com>`                       |
+| Sending domain             | Resend → Domains                                           | `mail.strideterm.com`; SPF and DKIM verified                    |
+| DMARC                      | DNS                                                        | `p=quarantine` on `mail.strideterm.com`, `p=none` on the apex   |
+| Custom action domain       | Firebase Hosting → `strideterm-mobile-prod` → Domains      | `mail.strideterm.com`                                           |
+| Authorized domain          | Firebase Authentication → Settings → Authorized domains    | `mail.strideterm.com`, beside the default ones                  |
+| Hosting DNS                | Cloudflare → `strideterm.com` → DNS                        | DNS-only CNAME `mail` → `strideterm-mobile-prod.web.app`        |
+| Action URL (Firebase mail) | Firebase Authentication → Templates → Customize action URL | `https://strideterm-mobile-prod.firebaseapp.com/__/auth/action` |
+| Action URL (sign-in API)   | Pinned by the Cloud Function                               | `https://mail.strideterm.com/__/auth/action`                    |
+| Sign-in continuation       | The desktop's fixed production broker                      | `https://auth.strideterm.com/c?attempt=…`                       |
 
-Status as of 2026-09-28: the sender change is active. The Hosting domain and DNS record are created,
-and Firebase has verified ownership. Certificate validation is pending. The original action URL remains active.
-Update this status and the current URL when the rollout is completed. QA settings are separate.
+The CNAME connects only the `mail` subdomain to Firebase Hosting. It does not move the domain, its
+nameservers or the apex website, and Hosting does not replace the Resend SPF, DKIM and return-path
+records.
 
-The CNAME connects only the `mail` subdomain to Firebase Hosting. It does not transfer the domain,
-change its registrar or nameservers, or move the apex website. Keep the existing Resend SPF, DKIM,
-and return-path records; Hosting does not replace email authentication.
+SMTP keys belong in the provider's secret storage, never in Git. To change only the SMTP sender,
+update `notification.sendEmail.smtp.senderEmail` with a narrow API update mask: a response object
+omits the password, so writing one back would wipe the credentials.
 
-## Activate the custom action URL
+## The custom action URL for Firebase mail
 
-1. Verify that Firebase Hosting reports the domain connected and that
-   `https://mail.strideterm.com/__/auth/action` serves the Firebase handler with a valid certificate.
-   DNS visibility alone is not sufficient. Certificate provisioning can take up to 24 hours.
-2. Verify that `mail.strideterm.com` is in Authentication's authorized domains; add it if absent.
-3. Release the desktop handler allowlist change before switching the email link domain. Older
-   desktop builds accept only the default Firebase domains in the manual paste fallback.
-4. Set the action URL to `https://mail.strideterm.com/__/auth/action`. Through the Identity Platform
-   API, update only `notification.sendEmail.callbackUri` using an explicit update mask.
-5. Check the generated `EMAIL_SIGNIN` link, its continuation to the broker, and both the browser and
-   manual paste sign-in paths. Never put complete sign-in links, codes, or credentials in logs or docs.
-6. Request a test email to an address owned by the tester, inspect the final Resend delivery event,
-   and confirm whether it reached the inbox or spam folder.
+Firebase-generated messages (email changes, non-production sign-ins) still link to the default
+`firebaseapp.com` handler. Changing `notification.sendEmail.callbackUri` is refused with
+`EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED` even though Hosting, the certificate and the authorized domain are
+in place. The production sign-in API does not depend on this setting.
 
-The desktop's custom handler is pinned to the production environment, production project, HTTPS
-origin, and `/__/auth/action` path. It does not accept arbitrary domains or environment overrides in
-production. The default Firebase domains remain accepted for existing links.
+To switch it once Firebase allows the change:
 
-To roll back the action URL, restore
-`https://strideterm-mobile-prod.firebaseapp.com/__/auth/action`. Keep the custom domain serving old
-links until they have expired. The original SMTP sender was `no-reply@mail.strideterm.com`.
+1. Confirm `https://mail.strideterm.com/__/auth/action` serves the Firebase handler with a valid
+   certificate, and that the domain is in Authentication's authorized domains.
+2. Ask Firebase Support to review or escalate the `EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED` refusal, with
+   the Hosting, certificate and authorized-domain evidence. Try this before any backend rewrite.
+3. Update only `notification.sendEmail.callbackUri`, with an explicit update mask.
+4. Check a generated link end to end — the broker continuation, the browser path and the manual paste
+   path — then send a test message to a mailbox the tester owns and read the final Resend event.
 
-## Diagnose rejection
+To roll back, restore the `firebaseapp.com` URL and keep the custom domain serving until old links
+have expired. The desktop accepts the custom handler only for the `prod` environment and the
+production project, over HTTPS on `/__/auth/action`; the default Firebase domains stay accepted.
 
-In Resend → Emails, open the message and inspect the bounce details. `Sent` confirms handoff to the
-sending service; it does not prove delivery. Even `Delivered` does not prove inbox placement.
+Never put a complete sign-in link, code or credential in a log or a document.
 
-The 2026-09-28 failure was `550 Message discarded as high-probability spam`, classified as transient
-`ContentRejected`. SPF and DKIM were verified. A single authorized test after changing the sender
-was also rejected with that response. This does not identify the receiver's exact spam rule, and the
-sender change alone has not fixed delivery. The custom link domain has not yet been tested live.
+## The sign-in API
 
-If rejection continues after the domain rollout, use the receiver's spam-filter logs or ask its mail
-administrator for the matched rules. Do not repeatedly resend the same rejected message. Check the
-Resend suppression list before a fresh user-requested attempt if the provider reports suppression.
+The Cloud Function lives in the `strideterm-mobile` repository (`docs/signin-email-fallback.md`
+there), in its own `signin-email` Functions codebase, deployed separately from the rest.
 
-SMTP keys belong in the provider's secret storage and local credential files outside Git. The
-Firebase console may require the SMTP password again for edits; a narrow API update to
-`notification.sendEmail.smtp.senderEmail` preserves existing credentials. Avoid replacing the whole
-SMTP configuration with a response object, because responses omit the password.
+- **It is unauthenticated.** Anyone who can reach it can ask for mail to an address they do not own.
+  Completing a sign-in still needs that mailbox, and the broker's attempt, confirmation and
+  code-redemption checks are what make an unsolicited link harmless. Keep them.
+- **Quotas** apply to this endpoint only: 80 requests a day, 2,400 a month, 5 per address a day, 20 per
+  network a day (IPv6 bucketed by `/64`), and one per address per 60 seconds. They do not limit
+  Firebase's public `accounts:sendOobCode` API. There is no CAPTCHA; Turnstile is an open question.
+- **Addresses** are trimmed and only the domain is lowercased; the local part is sent as typed. Quota
+  keys hash the fully lowercased address, so case variants share one limit.
+- **`202 {"status":"unknown"}` is uncertain, not failed.** The first request may already have produced a
+  usable link, so the desktop never retries through Firebase.
+- **The message carries the sign-in link and nothing else** — no promotion, no second destination,
+  because both read as spam signals in a transactional mail. The plain-text part keeps the full URL
+  for copying, and replies go to `support@strideterm.com`.
+
+## When a message is rejected
+
+Resend's `Sent` means it was handed off, not delivered, and `Delivered` does not mean it reached the
+inbox. Read the bounce details in Resend → Emails. A `550 … spam` answer does not name the receiver's
+rule: ask its mail administrator, do not resend the same rejected message, and check Resend's
+suppression list before a new attempt.
+
+## Cost boundary
+
+The sign-in API can incur Cloud Functions, Realtime Database, Authentication, Secret Manager, Cloud
+Build, Artifact Registry and Resend charges; its quotas do not cap anything else in the project.
+Resend's free tier allows 100 emails a day and 3,000 a month across all tiers, including test sends
+([Resend quotas](https://resend.com/docs/knowledge-base/account-quotas-and-limits)). Any fallback stays
+on Firebase and Cloudflare; a VPS is not an approved fallback.
+
+## Which address the desktop shows
+
+An enrolled desktop keeps its installation after the short-lived owner session ends. The account
+page shows, in this order: the live owner address, the last verified address remembered on this
+computer (credential store, `account:owner-email`), or the server's masked `accountDisplay`.
+
+- The masked address is never a sign-in destination.
+- The remembered one is only prefilled; no link goes to it until the person confirms it in the form.
+  Every overview is checked against it: a mask that contradicts it forgets it, and a sign-in with a
+  different address replaces it. Both show a notice, and the log line never carries the address.
+- Signing a registered desktop out needs a recent owner sign-in. It revokes the installation before
+  the local credential is cleared, so a failed revocation can be retried. It does not delete the
+  account or cancel the subscription; account deletion is a separate confirmation.
 
 References: [Firebase custom domains](https://firebase.google.com/docs/hosting/custom-domain),
 [Firebase email action handlers](https://firebase.google.com/docs/auth/custom-email-handler),
-[Identity Platform configuration](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/Config).
+[Identity Platform configuration](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/Config),
+[Firebase Support](https://firebase.google.com/support/troubleshooter/contact).

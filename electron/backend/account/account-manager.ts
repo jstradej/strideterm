@@ -73,8 +73,16 @@ import {
   unconfiguredState,
   type AccountErrorCode,
   type AccountUiState,
+  type OwnerEmailNotice,
   type SignOutAssessment,
 } from "./account-state.js";
+import {
+  matchesAccountDisplay,
+  parseRememberedOwnerEmail,
+  sameEmail,
+  serializeRememberedOwnerEmail,
+  type RememberedOwnerEmail,
+} from "./remembered-owner-email.js";
 import { AccountCallableError, type AccountTransport } from "./account-transport.js";
 import {
   bindingSaysEnrolled,
@@ -184,6 +192,13 @@ export interface AccountManagerDeps {
    * the server says this machine is not bound or the user signs it out.
    */
   readonly writeInstallationBinding?: (marker: InstallationBindingMarker) => Promise<void>;
+  /**
+   * The remembered login address, raw as stored ("" for nothing). May throw. See
+   * `remembered-owner-email.ts`; a seam for the same reason the binding marker is one.
+   */
+  readonly readRememberedOwnerEmail?: () => string;
+  /** Stores the remembered login address, or forgets it with `null`. */
+  readonly writeRememberedOwnerEmail?: (raw: string | null) => Promise<void>;
 }
 
 /**
@@ -400,6 +415,19 @@ export class AccountManager extends EventEmitter {
    */
   private emailChangeRequests = 0;
   private emailChangeSettled = 0;
+  /**
+   * The last verified login address, remembered on this machine — see `remembered-owner-email.ts`.
+   *
+   * Read once, lazily, because the store is read at start-up and nothing else writes the ref.
+   */
+  private rememberedOwner: RememberedOwnerEmail | null = null;
+  private rememberedOwnerLoaded = false;
+  /** Writes in the order they were decided, so a forget cannot be overtaken by an older save. */
+  private rememberedOwnerWrite: Promise<void> = Promise.resolve();
+  /** What the owner has to be told about the remembered address. In memory until dismissed. */
+  private ownerEmailNotice: OwnerEmailNotice | null = null;
+  /** A restore the server refused, until the owner answers whether to register instead. */
+  private recoveryRefused: { readonly email: string; readonly at: number } | null = null;
   /** What to do once the identity is proved, for the purposes that carry an operand. */
   private pendingOfferId: string | null = null;
   /** Greater than zero while a purpose chain is running. See {@link releaseAfterOperation}. */
@@ -553,6 +581,9 @@ export class AccountManager extends EventEmitter {
         this.pendingEmailChange !== null && (this.owner === null || this.owner.uid === this.pendingEmailChange.uid)
           ? { email: this.pendingEmailChange.email, requestedAt: this.pendingEmailChange.requestedAt }
           : null,
+      rememberedOwnerEmail: this.rememberedOwner?.email ?? null,
+      ownerEmailNotice: this.ownerEmailNotice,
+      recoveryRefused: this.recoveryRefused,
       signInAvailable: this.signInAvailable,
       // WHICH backend, or WHY none — exactly one of the two, and never both (F11). `authLinkRefusal`
       // was previously accepted as a dependency and never read, so the page could say "sign-in is not
@@ -591,6 +622,7 @@ export class AccountManager extends EventEmitter {
     // (F01): its late answer must not set a session, run a mutation or end this new attempt — and so
     // does every other operation in flight (R01), for the same reason.
     this.abandonOperations();
+    this.recoveryRefused = null;
     this.releaseOwnerSession();
     this.pendingOfferId = purpose === "checkout" || purpose === "revoke-device" ? (offerId ?? null) : null;
     await this.run("email-sign-in-start", async () => {
@@ -1273,6 +1305,22 @@ export class AccountManager extends EventEmitter {
     this.publish();
   }
 
+  /** Dismisses the note about the remembered login address. Purely local; the log line stays. */
+  dismissOwnerEmailNotice(): void {
+    this.ownerEmailNotice = null;
+    this.publish();
+  }
+
+  /** Answers the refused-restore prompt. Purely local: registering is a new sign-in the caller starts. */
+  dismissRecoveryRefused(answer: "register" | "back"): void {
+    if (this.recoveryRefused === null) return;
+    this.recoveryRefused = null;
+    // The prompt WAS the error; once answered it is not shown again as a red line.
+    if (this.lastError === "nothing-to-recover") this.lastError = null;
+    log.info("account: the refused-restore prompt was answered", { answer });
+    this.publish();
+  }
+
   /** Ends the retention a sign-in opened. The runtime calls it once the action is done. */
   releaseOwnerSession(): void {
     if (this.ownerRetentionTimer !== null) {
@@ -1496,8 +1544,19 @@ export class AccountManager extends EventEmitter {
     if (result.status === "refused") {
       // The server did NOT enrol this machine: the intent is withdrawn, and the identity is free.
       await this.applyBinding("none", "operation");
-      throw new AccountManagerError(toAccountErrorCode({ details: result.errorReason }));
+      const code = toAccountErrorCode({ details: result.errorReason });
+      // The server collapses every non-cap refusal into `account-mismatch`, so for a restore it
+      // means "this computer was never enrolled here". Ask before anything else happens.
+      if (mode === "recover-uid" && code === "account-mismatch") {
+        // Only for the operation the page is still waiting on — the same rule `lastError` follows.
+        if (scope.alive) this.recoveryRefused = { email: owner.email, at: this.now() };
+        log.warn("account: the server refused a restore; nothing to recover for this account", { mode });
+        throw new AccountManagerError("nothing-to-recover");
+      }
+      log.warn("account: the server refused the registration", { mode, code });
+      throw new AccountManagerError(code);
     }
+    this.recoveryRefused = null;
     // The durable marker, written as soon as the server says the enrolment stands — BEFORE the
     // overview read below, which can fail. A write that fails here leaves `enrolling`, which the
     // guard treats as bound: the machine keeps its identity, and the next server answer settles it.
@@ -1536,6 +1595,8 @@ export class AccountManager extends EventEmitter {
     // second of two in-order answers would be thrown away for having been issued beside the first.
     if (source === "operation") this.bindingWrittenByOperationAt = this.bindingRevision;
     this.installationRegistered = marker === "bound";
+    // A machine no longer bound to an account has no owner address to remind anybody of.
+    if (marker === "none") this.forgetRememberedOwnerEmail();
     return this.recordBinding(marker);
   }
 
@@ -1558,6 +1619,9 @@ export class AccountManager extends EventEmitter {
     // identity for `enrolling`, `absent` and `unknown` too. Those are different questions: what to
     // display while the server has not answered, and what may be destroyed meanwhile.
     this.installationRegistered = bindingSaysEnrolled(this.deps.readInstallationBinding?.() ?? "absent");
+    // Local too, and before the network for the same reason: an offline start still shows the address.
+    this.loadRememberedOwnerEmail();
+    this.publish();
     try {
       await this.refreshOverviewInternal(this.deps.transport!);
     } catch (error) {
@@ -1671,6 +1735,8 @@ export class AccountManager extends EventEmitter {
     if (this.owner === null) throw new AccountManagerError("invalid-credentials");
     if (this.ownerGeneration !== generation) throw new AccountManagerError("sign-in-superseded");
     this.owner = refreshed;
+    // A confirmed login-address change arrives here: the refreshed token names the new address.
+    this.rememberOwnerEmail(refreshed);
     return refreshed;
   }
 
@@ -1841,6 +1907,11 @@ export class AccountManager extends EventEmitter {
    */
   async signOutInstallation(args: { readonly disconnect: boolean }): Promise<void> {
     await this.run("sign-out-installation", async (_client, transport, identity, scope) => {
+      // Match the server's recent-owner requirement before requesting a token. Unregistered
+      // installations have no remote registration to revoke and can still clear locally.
+      if (this.installationRegistered && (this.owner === null || !hasRecentAuth(this.owner, this.now()))) {
+        throw new AccountManagerError("requires-recent-login");
+      }
       const assessment = assessSignOut(this.overview);
       if (assessment.blockers.length > 0 && !args.disconnect) {
         // The UI offers "cancel" or "disconnect this installation"; it never silently disconnects
@@ -1887,6 +1958,7 @@ export class AccountManager extends EventEmitter {
       // write the address back beside nobody once it answers. The same rule `clearPendingEmailChange`
       // follows, for the most explicit clear there is.
       this.pendingEmailChange = null;
+      this.recoveryRefused = null;
       this.emailChangeSettled = this.emailChangeRequests;
     });
   }
@@ -2010,6 +2082,7 @@ export class AccountManager extends EventEmitter {
     this.owner = session;
     this.ownerGeneration += 1;
     this.ownerAbort = new AbortController();
+    this.rememberOwnerEmail(session);
   }
 
   /**
@@ -2095,6 +2168,7 @@ export class AccountManager extends EventEmitter {
     }
     this.overviewApplied = request;
     this.overview = overview;
+    this.checkRememberedOwnerEmail(overview);
     // The SERVER has answered, so the durable marker follows it — in both directions. An installation
     // the account no longer lists has genuinely been revoked, and holding the marker for it would
     // leave the machine unable to sign in as anything at all. Authoritative (S01).
@@ -2230,6 +2304,129 @@ export class AccountManager extends EventEmitter {
     const pending = this.pendingMutations.get(name);
     if (pending === undefined || pending.principal !== principal) return null;
     return pending.request as R;
+  }
+
+  // --- the remembered login address (see `remembered-owner-email.ts`) ----------------------------------
+  //
+  // Every disagreement is TOLD and LOGGED: the owner sees an `ownerEmailNotice` until they dismiss it,
+  // and the desktop log and the diagnostics ring get a fixed line. Neither of those carries the
+  // address — the module header's rule for the log holds here too.
+
+  private loadRememberedOwnerEmail(): void {
+    if (this.rememberedOwnerLoaded || !this.deps.readRememberedOwnerEmail) return;
+    this.rememberedOwnerLoaded = true;
+    let parsed: RememberedOwnerEmail | null | "corrupt";
+    try {
+      parsed = parseRememberedOwnerEmail(this.deps.readRememberedOwnerEmail());
+    } catch (error) {
+      this.reportRememberedOwnerEmailFailure("read", error);
+      return;
+    }
+    if (parsed === "corrupt") {
+      this.reportRememberedOwnerEmailFailure("read", new Error("unreadable record"));
+      this.enqueueRememberedOwnerEmailWrite(null);
+      return;
+    }
+    this.rememberedOwner = parsed;
+  }
+
+  /** Remembers a PROVED owner's address, and tells the owner when it is not the one remembered. */
+  private rememberOwnerEmail(session: OwnerSession): void {
+    if (!session.emailVerified || !this.deps.writeRememberedOwnerEmail) return;
+    this.loadRememberedOwnerEmail();
+    const previous = this.rememberedOwner;
+    if (previous !== null && previous.uid === session.uid && sameEmail(previous.email, session.email)) return;
+    if (previous !== null) {
+      const sameAccount = previous.uid === session.uid;
+      this.ownerEmailNotice = {
+        kind: "changed",
+        previous: previous.email,
+        current: session.email,
+        sameAccount,
+        at: this.now(),
+      };
+      log.warn("account: signed in with a different login email than the one remembered on this computer", {
+        sameAccount,
+      });
+      this.diagnostics.record({
+        at: this.now(),
+        event: "account.remembered-email",
+        status: sameAccount ? "changed" : "changed-account",
+        level: "warn",
+      });
+    }
+    // No publish of its own: both callers are inside an operation that publishes when it settles.
+    this.rememberedOwner = { email: session.email, uid: session.uid, savedAt: this.now() };
+    this.enqueueRememberedOwnerEmailWrite(this.rememberedOwner);
+  }
+
+  /**
+   * Compares the remembered address with the server's masked one, and forgets it when they disagree.
+   *
+   * A live owner session is the stronger evidence — its address was proved minutes ago and remembered
+   * then — so the check is for the ordinary case, a desktop running on its installation session.
+   */
+  private checkRememberedOwnerEmail(overview: AccountOverview): void {
+    this.loadRememberedOwnerEmail();
+    const remembered = this.rememberedOwner;
+    if (remembered === null || this.owner !== null) return;
+    if (matchesAccountDisplay(remembered.email, overview.accountDisplay) !== "mismatch") return;
+    this.ownerEmailNotice = {
+      kind: "mismatch",
+      remembered: remembered.email,
+      accountDisplay: overview.accountDisplay ?? "",
+      at: this.now(),
+    };
+    log.warn("account: the login email remembered on this computer does not match the account; forgotten");
+    this.diagnostics.record({
+      at: this.now(),
+      event: "account.remembered-email",
+      status: "mismatch",
+      level: "warn",
+    });
+    this.rememberedOwner = null;
+    this.enqueueRememberedOwnerEmailWrite(null);
+    this.publish();
+  }
+
+  /** A deliberate forget — the machine is no longer bound. Nothing disagreed, so nobody is told. */
+  private forgetRememberedOwnerEmail(): void {
+    this.loadRememberedOwnerEmail();
+    if (this.rememberedOwner === null) return;
+    this.rememberedOwner = null;
+    this.enqueueRememberedOwnerEmailWrite(null);
+    log.info("account: the remembered login email was forgotten with the installation binding");
+  }
+
+  private enqueueRememberedOwnerEmailWrite(value: RememberedOwnerEmail | null): void {
+    const write = this.deps.writeRememberedOwnerEmail;
+    if (!write) return;
+    this.rememberedOwnerWrite = this.rememberedOwnerWrite.then(async () => {
+      try {
+        await write(value === null ? null : serializeRememberedOwnerEmail(value));
+      } catch (error) {
+        this.reportRememberedOwnerEmailFailure("write", error);
+      }
+    });
+  }
+
+  private reportRememberedOwnerEmailFailure(operation: "read" | "write", error: unknown): void {
+    this.ownerEmailNotice = { kind: "storage-failed", operation, at: this.now() };
+    log.error(`account: the remembered login email could not be ${operation === "read" ? "read" : "saved"}`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    this.diagnostics.record({
+      at: this.now(),
+      event: "account.remembered-email",
+      status: `${operation}-failed`,
+      level: "error",
+    });
+    this.publish();
+  }
+
+  /** Settles every pending write of the remembered address. For tests and an orderly shutdown. */
+  async flushRememberedOwnerEmail(): Promise<void> {
+    await this.rememberedOwnerWrite;
   }
 
   /**

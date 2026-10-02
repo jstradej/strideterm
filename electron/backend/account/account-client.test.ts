@@ -36,7 +36,9 @@ const CONFIG = resolveMobileFirebaseConfig(
 
 const NOW = 1_760_000_000_000;
 const OOB_CODE = "OOB-CODE-VALUE";
-const CONTINUE_URL = "https://auth.strideterm.com/c?attempt=abc";
+const ATTEMPT_ID = Buffer.alloc(32, 7).toString("base64url");
+const CONTINUE_URL = `https://auth.strideterm.com/c?attempt=${ATTEMPT_ID}`;
+const PRODUCTION_CONFIG = { ...CONFIG, projectId: "strideterm-mobile-prod", emulators: null };
 
 interface Call {
   url: string;
@@ -159,6 +161,100 @@ describe("asking for a sign-in link", () => {
       code: "network",
       detail: null,
     });
+  });
+});
+
+describe("the production sign-in sender", () => {
+  test("posts only the pinned attempt and email to the fixed HTTPS endpoint", async () => {
+    const { fetchImpl, calls } = recordingFetch([{ status: 202, body: { status: "accepted" } }]);
+    const account = createAccountClient({ config: PRODUCTION_CONFIG, fetchImpl, now: () => NOW });
+
+    await account.startEmailSignIn("owner@example.test", CONTINUE_URL);
+
+    expect(calls[0]!.url).toBe("https://europe-west1-strideterm-mobile-prod.cloudfunctions.net/requestSignInEmail");
+    expect(JSON.parse(calls[0]!.body)).toEqual({ email: "owner@example.test", attemptId: ATTEMPT_ID });
+    expect(calls[0]!.init?.redirect).toBe("error");
+  });
+
+  test("accepts only the canonical production continuation and never sends an arbitrary redirect", async () => {
+    const { fetchImpl, calls } = recordingFetch([{ status: 202, body: { status: "accepted" } }]);
+    const account = createAccountClient({ config: PRODUCTION_CONFIG, fetchImpl, now: () => NOW });
+    const invalidUrls = [
+      "https://attacker.example/c?attempt=" + ATTEMPT_ID,
+      `https://auth.strideterm.com/c?attempt=${ATTEMPT_ID}&next=https://attacker.example`,
+      `https://auth.strideterm.com/c?attempt=${ATTEMPT_ID}&attempt=${ATTEMPT_ID}`,
+      `https://auth.strideterm.com/c?attempt=${"B".repeat(43)}`,
+      `https://auth.strideterm.com/c?attempt=${ATTEMPT_ID}=`,
+      `https://auth.strideterm.com/c?attempt=${ATTEMPT_ID}#fragment`,
+    ];
+
+    for (const url of invalidUrls) {
+      await expect(account.startEmailSignIn("owner@example.test", url)).rejects.toMatchObject({
+        code: "not-configured",
+      });
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  test("202 unknown and malformed 202 results remain uncertain, while sender refusals map to stable codes", async () => {
+    for (const [status, body, code] of [
+      [202, { status: "unknown" }, "malformed-response"],
+      [202, { status: "unexpected" }, "malformed-response"],
+      [429, {}, "too-many-attempts"],
+      [503, { status: "unknown" }, "auth-unavailable"],
+      [503, { error: "upstream unavailable" }, "malformed-response"],
+    ] as const) {
+      const { fetchImpl } = recordingFetch([{ status, body }]);
+      const account = createAccountClient({ config: PRODUCTION_CONFIG, fetchImpl, now: () => NOW });
+      await expect(account.startEmailSignIn("owner@example.test", CONTINUE_URL)).rejects.toMatchObject({ code });
+    }
+  });
+
+  test("network failures and a stalled request stay bounded and do not trigger Firebase fallback", async () => {
+    let aborted = false;
+    const fetchImpl = vi.fn((url: string, init?: RequestInit) => {
+      expect(url).toBe("https://europe-west1-strideterm-mobile-prod.cloudfunctions.net/requestSignInEmail");
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new Error("aborted"));
+        });
+      });
+    });
+    const account = createAccountClient({
+      config: PRODUCTION_CONFIG,
+      now: () => NOW,
+      fetchImpl,
+    });
+    const pending = account.startEmailSignIn("owner@example.test", CONTINUE_URL);
+    const assertion = expect(pending).rejects.toMatchObject({ code: "network" });
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+    await assertion;
+    expect(aborted).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  test("other projects keep the Firebase REST route even when no emulator is configured", async () => {
+    const { fetchImpl, calls } = recordingFetch([{ status: 200, body: {} }]);
+    const account = createAccountClient({
+      config: { ...PRODUCTION_CONFIG, projectId: "strideterm-mobile-qa" },
+      fetchImpl,
+      now: () => NOW,
+    });
+
+    await account.startEmailSignIn("owner@example.test", CONTINUE_URL);
+
+    expect(calls[0]!.url).toContain("accounts:sendOobCode");
+    expect(JSON.parse(calls[0]!.body)).toMatchObject({ requestType: "EMAIL_SIGNIN", continueUrl: CONTINUE_URL });
+  });
+
+  test("link redemption continues to use Firebase in production", async () => {
+    const { fetchImpl, calls } = recordingFetch([{ status: 200, body: SIGN_IN_BODY }]);
+    const account = createAccountClient({ config: PRODUCTION_CONFIG, fetchImpl, now: () => NOW });
+
+    await account.completeEmailSignIn("owner@example.test", OOB_CODE);
+
+    expect(calls[0]!.url).toContain("accounts:signInWithEmailLink");
   });
 });
 

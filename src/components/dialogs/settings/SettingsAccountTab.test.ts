@@ -117,6 +117,8 @@ function makeApi(state: AnyState, overrides: AnyState = {}) {
       accountSubmitSignInLink: record("accountSubmitSignInLink"),
       accountChangeLoginEmail: record("accountChangeLoginEmail"),
       accountClearPendingEmailChange: record("accountClearPendingEmailChange"),
+      accountDismissOwnerEmailNotice: record("accountDismissOwnerEmailNotice"),
+      accountDismissRecoveryRefused: record("accountDismissRecoveryRefused"),
       accountEnrolInstallation: record("accountEnrolInstallation"),
       accountStartTrial: record("accountStartTrial"),
       accountRefreshOverview: record("accountRefreshOverview"),
@@ -210,6 +212,77 @@ describe("the account page", () => {
     },
   );
 
+  test("verifying a restore says restoring, not registering", async () => {
+    const { wrapper } = await render(
+      stateFor({
+        phase: "signing-in",
+        busy: true,
+        auth: authState({ phase: "verifying", purpose: "recover-uid" }),
+      }),
+      {},
+      { view: "overview" },
+    );
+    expect(wrapper.text()).toContain("restoring this computer's enrolment");
+    expect(wrapper.text()).not.toContain("registering");
+    wrapper.unmount();
+  });
+
+  describe("a refused restore", () => {
+    const refused = () =>
+      stateFor({
+        phase: "signed-out",
+        ownerEmail: undefined,
+        installationRegistered: false,
+        needsRecentAuth: true,
+        overview: null,
+        entitlement: undefined,
+        recoveryRefused: { email: "t-test@example.test", at: NOW },
+        lastError: "nothing-to-recover",
+      });
+
+    test("asks instead of showing the generic alert, and Yes sends an enrol link", async () => {
+      const { wrapper, calls } = await render(refused(), {}, { view: "overview" });
+      const prompt = wrapper.find(".account-recovery-refused");
+      expect(prompt.text()).toContain("Nothing to restore for t-test@example.test");
+      expect(prompt.text()).toContain("No trial is started.");
+      expect(wrapper.text()).not.toContain("so there is nothing to restore");
+      expect(wrapper.findAll('[role="alert"]')).toHaveLength(1);
+
+      await prompt
+        .findAll("button")
+        .find((button) => button.text() === "Yes, send a link")!
+        .trigger("click");
+      await flushPromises();
+      const methods = calls.map((call) => call.method);
+      expect(methods.indexOf("accountDismissRecoveryRefused")).toBeGreaterThanOrEqual(0);
+      expect(methods.indexOf("accountDismissRecoveryRefused")).toBeLessThan(methods.indexOf("accountBeginSignIn"));
+      expect(calls.find((call) => call.method === "accountDismissRecoveryRefused")?.payload).toEqual({
+        answer: "register",
+      });
+      expect(calls.find((call) => call.method === "accountBeginSignIn")?.payload).toEqual({
+        email: "t-test@example.test",
+        purpose: "enrol",
+      });
+      wrapper.unmount();
+    });
+
+    test("No goes back to the form with the address kept and sends nothing", async () => {
+      const { wrapper, calls } = await render(refused(), {}, { view: "overview" });
+      await wrapper
+        .find(".account-recovery-refused")
+        .findAll("button")
+        .find((button) => button.text() === "No")!
+        .trigger("click");
+      await flushPromises();
+      expect(calls.find((call) => call.method === "accountDismissRecoveryRefused")?.payload).toEqual({
+        answer: "back",
+      });
+      expect(calls.some((call) => call.method === "accountBeginSignIn")).toBe(false);
+      expect((wrapper.find('input[type="email"]').element as HTMLInputElement).value).toBe("t-test@example.test");
+      wrapper.unmount();
+    });
+  });
+
   test("failed registration exits progress and shows the error", async () => {
     const { wrapper, store } = await render(
       stateFor({ phase: "signing-in", busy: true, auth: authState({ phase: "verifying", purpose: "enrol" }) }),
@@ -256,7 +329,9 @@ describe("the account page", () => {
       needsRecentAuth: true,
       signInAvailable: true,
     });
-    expect(wrapper.find("select").findAll("option")).toHaveLength(3);
+    await wrapper.find(".custom-select__button").trigger("click");
+    expect(document.body.querySelectorAll(".custom-select__option")).toHaveLength(3);
+    await wrapper.find(".custom-select__button").trigger("click");
     await wrapper.find("input[type='email']").setValue("owner@example.test");
     await wrapper
       .findAll("button")
@@ -385,8 +460,8 @@ describe("the account page", () => {
       signInAvailable: true,
       auth: authState({ phase: "awaiting-confirmation" }),
     });
-    expect(wrapper.text()).toContain("Sign this computer in as owner@example.test?");
-    expect(wrapper.text()).toContain("Nothing has been signed in yet");
+    expect(wrapper.text()).toContain("Email confirmed — finish on this computer");
+    expect(wrapper.text()).toContain("Nothing has happened on this computer yet");
     await wrapper
       .findAll("button")
       .find((button) => button.text() === "Sign in on this computer")!
@@ -906,9 +981,210 @@ describe("the account page", () => {
     const { wrapper } = await render(stateFor());
     await wrapper
       .findAll("button")
-      .find((button) => button.text() === "Sign this desktop out")!
+      .find((button) => button.text() === "Sign out of this desktop")!
       .trigger("click");
-    expect(wrapper.text()).toContain("still has phones paired to it");
+    expect(wrapper.text()).toContain("Any phones paired to this desktop will disconnect");
+    expect(wrapper.text()).toContain("Local terminals keep working");
+  });
+
+  test("the account email stays visible and masked email is never used to reauthenticate", async () => {
+    const { wrapper, calls } = await render(
+      stateFor({
+        ownerEmail: undefined,
+        needsRecentAuth: true,
+        overview: overview({ accountDisplay: "o***@example.test" }),
+      }),
+    );
+    expect(wrapper.text()).toContain("Account o***@example.test");
+    expect(wrapper.text()).toContain("Email partly hidden for privacy");
+    expect((wrapper.find('input[autocomplete="username"]').element as HTMLInputElement).value).toBe("");
+    await wrapper.find('input[autocomplete="username"]').setValue("owner@example.test");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Confirm it is you")!
+      .trigger("click");
+    await flushPromises();
+    expect(calls.find((call) => call.method === "accountBeginSignIn")?.payload).toEqual({
+      email: "owner@example.test",
+      purpose: "reauth",
+    });
+  });
+
+  test("the login email remembered on this computer is shown in full and prefilled", async () => {
+    const { wrapper } = await render(
+      stateFor({
+        ownerEmail: undefined,
+        rememberedOwnerEmail: "owner@example.test",
+        needsRecentAuth: true,
+        overview: overview({ accountDisplay: "o***@example.test" }),
+      }),
+    );
+    expect(wrapper.text()).toContain("Signed in as owner@example.test");
+    expect(wrapper.text()).toContain("Login email remembered on this computer");
+    expect(wrapper.text()).not.toContain("Email partly hidden for privacy");
+    expect((wrapper.find('input[autocomplete="username"]').element as HTMLInputElement).value).toBe(
+      "owner@example.test",
+    );
+  });
+
+  test("a remembered address is confirmed in the form, never sent a link unasked", async () => {
+    const { wrapper, calls } = await render(
+      stateFor({
+        ownerEmail: undefined,
+        rememberedOwnerEmail: "owner@example.test",
+        needsRecentAuth: true,
+        overview: overview({ entitlement: { state: "unbound", source: "trial" }, accountDisplay: "o***@example.test" }),
+        entitlement: { state: "unbound", source: "trial" },
+      }),
+    );
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Start 14-day trial")!
+      .trigger("click");
+    await flushPromises();
+    expect(calls.some((call) => call.method === "accountBeginSignIn")).toBe(false);
+    expect(wrapper.text()).toContain("Confirm your email to start the trial");
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Send confirmation link")!
+      .trigger("click");
+    await flushPromises();
+    expect(calls.find((call) => call.method === "accountBeginSignIn")?.payload).toEqual({
+      email: "owner@example.test",
+      purpose: "trial",
+    });
+  });
+
+  test("a notice about the remembered address is shown and can be dismissed", async () => {
+    const { wrapper, calls } = await render(
+      stateFor({
+        ownerEmail: undefined,
+        ownerEmailNotice: {
+          kind: "mismatch",
+          remembered: "someone@other.test",
+          accountDisplay: "o***@example.test",
+          at: NOW,
+        },
+        overview: overview({ accountDisplay: "o***@example.test" }),
+      }),
+    );
+    const notice = wrapper.find(".account-owner-email-notice");
+    expect(notice.text()).toContain("someone@other.test");
+    expect(notice.text()).toContain("no longer matches this account (o***@example.test)");
+    await notice.find("button").trigger("click");
+    await flushPromises();
+    expect(calls.some((call) => call.method === "accountDismissOwnerEmailNotice")).toBe(true);
+  });
+
+  test("only one destructive confirmation can be open at a time", async () => {
+    const { wrapper } = await render(stateFor());
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Sign out of this desktop")!
+      .trigger("click");
+    expect(wrapper.find(".account-confirm h5").text()).toBe("Sign out of this desktop?");
+    await wrapper
+      .findAll("button")
+      .filter((button) => button.text() === "Delete account")[0]
+      .trigger("click");
+    expect(wrapper.findAll(".account-confirm h5")).toHaveLength(1);
+    expect(wrapper.find(".account-confirm h5").text()).toBe("Delete this account permanently?");
+  });
+
+  test("sign-out reauthentication returns to the explicit final action", async () => {
+    const { wrapper, calls, store } = await render(stateFor({ needsRecentAuth: true }));
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Sign out of this desktop")!
+      .trigger("click");
+    const confirm = wrapper
+      .findAll(".account-confirm")
+      .find((node) => node.text().includes("Sign out of this desktop?"))!;
+    await confirm
+      .findAll("button")
+      .find((button) => button.text() === "Send sign-in link to confirm identity")!
+      .trigger("click");
+    await flushPromises();
+    expect(calls.find((call) => call.method === "accountBeginSignIn")?.payload).toEqual({
+      email: "owner@example.test",
+      purpose: "reauth",
+    });
+    expect(calls.some((call) => call.method === "accountSignOut")).toBe(false);
+
+    store.state = { ...store.state, needsRecentAuth: false };
+    await wrapper.vm.$nextTick();
+    await confirm
+      .findAll("button")
+      .find((button) => button.text().includes("Sign out of this desktop"))!
+      .trigger("click");
+    await flushPromises();
+    expect(calls.find((call) => call.method === "accountSignOut")?.payload).toEqual({ disconnect: true });
+  });
+
+  test("sign-out has an inline spinner and ignores a second press while pending", async () => {
+    let release: (() => void) | undefined;
+    let submits = 0;
+    const { wrapper } = await render(stateFor(), {
+      accountSignOut: () => {
+        submits += 1;
+        return new Promise<void>((resolve) => (release = resolve));
+      },
+    });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Sign out of this desktop")!
+      .trigger("click");
+    const confirm = wrapper
+      .findAll(".account-confirm")
+      .find((node) => node.text().includes("Sign out of this desktop?"))!;
+    const submit = confirm.findAll("button").find((button) => button.text().includes("Sign out of this desktop"))!;
+    await submit.trigger("click");
+    expect(submit.find(".button-spinner").exists()).toBe(true);
+    await submit.trigger("click");
+    expect(submits).toBe(1);
+    release!();
+    await flushPromises();
+    expect(submit.find(".button-spinner").exists()).toBe(false);
+  });
+
+  test("a stale sign-out proof keeps its refusal inline and offers reauthentication", async () => {
+    const { wrapper } = await render(stateFor(), {
+      accountSignOut: async () => {
+        throw new Error("account callable refused: requires-recent-login");
+      },
+    });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Sign out of this desktop")!
+      .trigger("click");
+    const confirm = wrapper
+      .findAll(".account-confirm")
+      .find((node) => node.text().includes("Sign out of this desktop?"))!;
+    await confirm
+      .findAll("button")
+      .find((button) => button.text().includes("Sign out of this desktop"))!
+      .trigger("click");
+    await flushPromises();
+    expect(confirm.find(".account-error--inline").text()).toContain("Confirm it is you again");
+    expect(confirm.text()).toContain("Send sign-in link to confirm identity");
+    expect(wrapper.find(".account-tab > .account-error").exists()).toBe(false);
+  });
+
+  test("a backend sign-in refusal arriving later appears inside the open confirmation", async () => {
+    const { wrapper, store } = await render(stateFor());
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Sign out of this desktop")!
+      .trigger("click");
+    store.state = { ...store.state, lastError: "requires-recent-login" };
+    await wrapper.vm.$nextTick();
+    const confirm = wrapper
+      .findAll(".account-confirm")
+      .find((node) => node.text().includes("Sign out of this desktop?"))!;
+    expect(confirm.find(".account-error--inline").text()).toContain("Confirm it is you again");
+    expect(confirm.text()).toContain("Send sign-in link to confirm identity");
+    expect(wrapper.find(".account-tab > .account-error").exists()).toBe(false);
   });
 
   test("deleting needs a fresh proof of identity as well as the phrase", async () => {
@@ -918,8 +1194,8 @@ describe("the account page", () => {
       .find((button) => button.text() === "Delete account")!
       .trigger("click");
     const confirm = wrapper.find(".account-confirm--danger");
-    expect(confirm.text()).toContain("Confirm it is you first");
-    expect(confirm.text()).toContain("Clicking a link in an email never deletes anything");
+    expect(confirm.text()).toContain("Confirm your identity here first");
+    expect(confirm.text()).toContain("it will not delete anything by itself");
     await confirm.find("input").setValue("DELETE MY ACCOUNT");
     const stillDisabled = confirm.findAll("button").find((entry) => entry.text() === "Delete account")!;
     expect(stillDisabled.attributes("disabled")).toBeDefined();
@@ -1121,6 +1397,43 @@ describe("what the page is allowed to claim about a send (F03)", () => {
     expect(wrapper.text()).toContain("A sign-in link was sent to");
     expect(wrapper.text()).not.toContain("did not confirm whether the link");
   });
+
+  test.each([
+    ["recover-uid", "nothing is registered automatically"],
+    ["enrol", "No trial is started"],
+    ["enrol-with-trial", "14-day free trial starts"],
+  ])("a `%s` attempt says what opening the link will do", async (purpose, sentence) => {
+    const { wrapper } = await render(
+      stateFor({ phase: "ready", auth: authState({ phase: "awaiting-link", purpose }) }),
+    );
+    expect(wrapper.text()).toContain(sentence);
+  });
+
+  test.each([
+    ["recover-uid", "restores it"],
+    ["enrol", "No trial is started"],
+    ["enrol-with-trial", "starts the 14-day free trial"],
+    ["reauth", "signs this computer in as owner@example.test"],
+  ])("a confirmed `%s` link names what the button will do", async (purpose, sentence) => {
+    const { wrapper } = await render(
+      stateFor({ phase: "ready", auth: authState({ phase: "awaiting-confirmation", purpose }) }),
+    );
+    const text = wrapper.text();
+    expect(text).toContain("Email confirmed — finish on this computer");
+    expect(text).toContain(sentence);
+    expect(text).toContain("Not your address");
+  });
+
+  test("a `reauth` attempt has no next-step sentence", async () => {
+    const { wrapper } = await render(
+      stateFor({ phase: "ready", auth: authState({ phase: "awaiting-link", purpose: "reauth" }) }),
+    );
+    const text = wrapper.text();
+    expect(text).toContain("A sign-in link was sent to");
+    expect(text).not.toContain("nothing is registered automatically");
+    expect(text).not.toContain("No trial is started");
+    expect(text).not.toContain("14-day free trial starts");
+  });
 });
 
 describe("the trial button asks for the authentication it needs (F06)", () => {
@@ -1177,7 +1490,7 @@ describe("who owns the flow, and which errors are visible (F09)", () => {
     await wrapper.setProps({ visible: false });
     expect(store.signInPanelMounted).toBe(false);
     expect(calls.some((call) => call.method === "accountReleaseSignInFlow")).toBe(false);
-    expect(wrapper.text()).toContain("Sign this computer in as owner@example.test?");
+    expect(wrapper.text()).toContain("Email confirmed — finish on this computer");
 
     await wrapper.setProps({ visible: true });
     expect(store.signInPanelMounted).toBe(true);

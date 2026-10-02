@@ -364,6 +364,10 @@ export interface StridetermAPI {
   /** Starts a LOGIN-address change. The old address keeps working until the new one is confirmed. */
   accountChangeLoginEmail: (payload: AccountEmail) => Promise<unknown>;
   accountClearPendingEmailChange: () => Promise<unknown>;
+  /** Dismisses the note about the login address remembered on this computer. */
+  accountDismissOwnerEmailNotice: () => Promise<unknown>;
+  /** Answers the refused-restore prompt: register this computer instead, or go back. */
+  accountDismissRecoveryRefused: (payload: { answer: "register" | "back" }) => Promise<unknown>;
   accountEnrolInstallation: (payload: AccountEnrol) => Promise<unknown>;
   accountStartTrial: () => Promise<unknown>;
   accountRefreshOverview: () => Promise<unknown>;

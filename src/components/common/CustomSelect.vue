@@ -320,12 +320,18 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* Both spans undo the global `label span` field-caption style (overlay.css): forms wrap this
+   component in a <label>, and without the reset the chosen value rendered as a small caps caption. */
 .custom-select__value {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  color: inherit;
 }
 .custom-select__value--placeholder {
   color: var(--muted);
@@ -334,6 +340,8 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   flex-shrink: 0;
   color: var(--muted);
   font-size: 10px;
+  text-transform: none;
+  letter-spacing: normal;
 }
 .custom-select__list {
   position: absolute;
