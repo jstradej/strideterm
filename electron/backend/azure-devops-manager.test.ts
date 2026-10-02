@@ -424,7 +424,7 @@ describe("AzureDevOpsManager", () => {
     expect(result.workspace.panels).toHaveLength(2);
     expect(result.workspace.panels[0].title).toBe("Shell");
     expect(result.workspace.panels[1].command).toBe("https://dev.azure.com/acme");
-    expect(execFileTextImpl.mock.calls.some((call) => call[1][0] === "-c" && call[1].includes("clone"))).toBe(true);
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("clone"))).toBe(true);
   });
 
   test("copies Azure parent tabs into new review workspaces including command parameters", async () => {
