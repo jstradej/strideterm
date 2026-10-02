@@ -138,7 +138,7 @@ test.describe("Git Stashes tab — mutations", () => {
       await openStashesTab(page, mock);
       const first = page.locator(".stash-item").first();
       // Open the kebab menu and trigger the export → browser blob download.
-      await first.locator('button[title="More actions"]').click();
+      await first.locator('button[title="Show actions for this stash"]').click();
       const downloadPromise = page.waitForEvent("download");
       await first.locator(".stash-item__menu button", { hasText: "Export .patch" }).click();
       const download = await downloadPromise;

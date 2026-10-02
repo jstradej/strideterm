@@ -32,7 +32,11 @@ test.describe("Review pane — Files tab diff layout", () => {
       }
       await page.locator(".review-subtabs .azure-tab", { hasText: /^Files/ }).click();
 
-      const firstFile = page.locator(".review-tree-file").first();
+      // The Files tab renders GitChangeTree; file rows are the leaf rows.
+      const firstFile = page
+        .locator(".review-file-tree .gct-node__row")
+        .filter({ has: page.locator(".gct-node__chevron--leaf") })
+        .first();
       await firstFile.waitFor({ state: "visible", timeout: 5_000 });
       await firstFile.click();
 

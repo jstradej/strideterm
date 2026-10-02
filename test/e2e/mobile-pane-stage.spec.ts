@@ -2,6 +2,12 @@ import { test, expect, type Page } from "@playwright/test";
 import { startMockServer } from "../mock-server.js";
 import { openApp, assertNoErrors } from "./helpers.js";
 
+// Remote clients attach xterm's WebGL renderer too, which draws text onto a
+// canvas. The live-terminal assertions read text from the DOM renderer's
+// `.xterm-rows`, so force the DOM fallback (the path WebglAddon's capability
+// probe takes on a device without WebGL).
+test.use({ launchOptions: { args: ["--disable-webgl"] } });
+
 /**
  * Mobile PaneStage layout — regression tests for commit 9079ca9
  * ("fix(mobile): initialize isMobileViewport synchronously to fix blank

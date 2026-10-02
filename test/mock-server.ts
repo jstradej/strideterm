@@ -319,6 +319,16 @@ export async function startMockServer({
       return;
     }
 
+    // Approval audit-log backfill (useNotificationCapture) reads this on every
+    // bootstrap. Answer with an empty trail — falling through to the Vite proxy
+    // returns index.html, which the transport reports as an invalid JSON
+    // response and the workspace hero turns into a remote-error banner.
+    if (url.pathname === "/api/approvals/audit-log" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ entries: [], total: 0 }));
+      return;
+    }
+
     // Slim-core detail resources — on-demand, profile-authorized. Mirrors the
     // DETAIL_ROUTES table in remote-server.ts so a mounted pane's fetch resolves
     // against the real builders instead of falling through to the Vite proxy.

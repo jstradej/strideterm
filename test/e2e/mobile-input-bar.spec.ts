@@ -2,6 +2,12 @@ import { test, expect } from "@playwright/test";
 import { startMockServer } from "../mock-server.js";
 import { openApp, assertNoErrors } from "./helpers.js";
 
+// Remote clients attach xterm's WebGL renderer too, which draws text onto a
+// canvas. The xterm assertion reads text from the DOM renderer's
+// `.xterm-rows`, so force the DOM fallback (the path WebglAddon's capability
+// probe takes on a device without WebGL).
+test.use({ launchOptions: { args: ["--disable-webgl"] } });
+
 /**
  * Mobile composer input bar (MobileInputBar.vue) — the workaround for the
  * upstream xterm.js Android IME bug (xtermjs/xterm.js#3600). On mobile
@@ -196,8 +202,9 @@ test.describe("Mobile composer input bar", () => {
 
     await page.locator(".mobile-input-bar__expand").click();
     await expect(page.locator(INPUT)).toBeVisible();
-    // Expanding focuses the composer so the on-screen keyboard opens.
-    await expect(page.locator(INPUT)).toBeFocused();
+    // Expanding is a layout action, not an intent to type: the composer stays
+    // unfocused so the on-screen keyboard opens only on a direct tap.
+    await expect(page.locator(INPUT)).not.toBeFocused();
 
     assertNoErrors(page);
   });
