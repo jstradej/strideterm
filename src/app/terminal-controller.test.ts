@@ -692,6 +692,38 @@ describe("the existing touch gestures survive the long-press arbitration", () =>
     expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b[A");
   });
 
+  // Claude Code / Codex run full-screen (alternate buffer, no xterm scrollback)
+  // and track the mouse. Arrow keys only walked their prompt history, so the
+  // earlier transcript was unreachable from the phone; a desktop scrolls it
+  // with the wheel, which xterm encodes in the protocol the app requested.
+  test("a swipe over a mouse-tracking TUI scrolls it with the wheel, not arrow keys", () => {
+    const { mount, term, writeTerminal } = setup();
+    term.buffer.active.type = "alternate";
+    term.modes = { mouseTrackingMode: "any" };
+    term.element = document.createElement("div");
+    mount.append(term.element);
+    const wheels: WheelEvent[] = [];
+    term.element.addEventListener("wheel", (e: WheelEvent) => wheels.push(e));
+
+    // Finger moves DOWN → toward older output → wheel up.
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(wheels.length).toBe(Math.floor(60 / 13));
+    for (const wheel of wheels) {
+      expect(wheel.deltaY).toBeLessThan(0);
+      expect(wheel.deltaMode).toBe(WheelEvent.DOM_DELTA_LINE);
+      expect(wheel.clientX).toBe(100);
+    }
+
+    // And back up → toward newer output → wheel down.
+    wheels.length = 0;
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 100]]));
+    expect(wheels.length).toBeGreaterThan(0);
+    expect(wheels.every((wheel) => wheel.deltaY > 0)).toBe(true);
+  });
+
   test("two fingers still pinch-zoom", () => {
     const { mount, term } = setup();
 

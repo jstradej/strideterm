@@ -1451,8 +1451,31 @@ export function createTerminalController({
             const dir = touch.scrollAccum > 0 ? 1 : -1;
             touch.scrollAccum -= dir * lines * lineHeight;
             if (term.buffer.active.type === "alternate") {
+              // A full-screen TUI that tracks the mouse (Claude Code, Codex)
+              // scrolls its own transcript on the wheel; the alternate buffer
+              // has no scrollback for xterm to move through, and arrow keys
+              // only walk the TUI's prompt history. Hand it what a desktop
+              // mouse wheel sends: a wheel through xterm's own listener, which
+              // encodes it in the protocol the app asked for, at the finger.
+              const mouseMode = term.modes?.mouseTrackingMode;
+              const wheelTarget = mouseMode && mouseMode !== "none" ? term.element : undefined;
               const seq = dir > 0 ? "\x1b[B" : "\x1b[A";
-              for (let i = 0; i < lines; i++) api.writeTerminal(sessionId, seq);
+              for (let i = 0; i < lines; i++) {
+                if (wheelTarget) {
+                  wheelTarget.dispatchEvent(
+                    new WheelEvent("wheel", {
+                      deltaY: dir,
+                      deltaMode: WheelEvent.DOM_DELTA_LINE,
+                      clientX: e.touches[0].clientX,
+                      clientY: currentY,
+                      bubbles: true,
+                      cancelable: true,
+                    }),
+                  );
+                } else {
+                  api.writeTerminal(sessionId, seq);
+                }
+              }
             } else {
               const oldViewportY = term.buffer.active.viewportY;
               term.scrollLines(dir * lines);
