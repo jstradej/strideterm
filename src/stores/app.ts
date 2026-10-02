@@ -664,6 +664,20 @@ export const useAppStore = defineStore("app", () => {
    * the already-scoped `workspace` and can assign `payload.value` directly.
    */
   function adoptPayload(nextPayload: StatePayload): void {
+    // A remote v2 client gets a small `{ ok, changedResources, revision }` ack
+    // from the ACK_MUTATION_ROUTES (git/provider refreshes, …) instead of a core;
+    // the new core rides the WS broadcast. Adopting the ack as the whole state
+    // would drop `appState` — every workspace and profile vanishes and the
+    // welcome screen replaces the open workspace. `appState` is the same
+    // discriminator the server uses (looksLikeStatePayload). Act on the ack the
+    // way setPayload does: refetch the resources it names.
+    if (!(nextPayload as AnyApi)?.appState) {
+      const changed = (nextPayload as AnyApi)?.changedResources;
+      if (isRemoteTransport.value && Array.isArray(changed) && changed.length) {
+        useRemoteDetailsStore().invalidateResources(changed.filter((r: unknown): r is string => typeof r === "string"));
+      }
+      return;
+    }
     payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
     _cacheCurrentWorkspace();
     reconcileNotificationHistory(nextPayload);

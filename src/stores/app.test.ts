@@ -867,6 +867,57 @@ describe("useAppStore — Git tab activation surfaces a failed refreshGit", () =
   });
 });
 
+// `/api/git/refresh` is an ACK_MUTATION_ROUTE: a remote v2 client gets
+// `{ ok, changedResources, revision }` back, not a core. Opening the Git tab on
+// the phone adopted that ack as the whole state — no appState, so every
+// workspace vanished and the welcome screen replaced the open workspace.
+describe("useAppStore — a remote mutation ack is never adopted as state", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "" } };
+  });
+
+  const ack = { ok: true, changedResources: ["git:ws-panels"], revision: 7 };
+
+  it("activating the Git tab keeps the workspace list", async () => {
+    const payload = makeRemotePanelPayload();
+    const transport = makeRemoteTransport(payload);
+    (transport as AnyApi).refreshGit = vi.fn(() => Promise.resolve(ack));
+    (transport as AnyApi).setWorkspaceUIState = vi.fn(() => Promise.resolve());
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.filteredWorkspaces).toHaveLength(1);
+
+    await store.activateView("git:ws-panels");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((transport as AnyApi).refreshGit).toHaveBeenCalledWith("ws-panels");
+    expect((store as AnyApi).payload.appState.workspaces).toHaveLength(1);
+    expect(store.filteredWorkspaces).toHaveLength(1);
+    expect(store.activeWorkspace?.id).toBe("ws-panels");
+  });
+
+  it("adoptPayload ignores an ack and keeps the current state", async () => {
+    const payload = makeRemotePanelPayload();
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    const before = (store as AnyApi).payload;
+
+    store.adoptPayload(ack as AnyApi);
+
+    expect((store as AnyApi).payload).toBe(before);
+    expect(store.filteredWorkspaces).toHaveLength(1);
+  });
+});
+
 describe("handleBroadcastPayload — optimistic-delete suppression", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
