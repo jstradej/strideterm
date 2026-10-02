@@ -189,6 +189,9 @@ const signInNextStepCopy = computed(() => {
   }
 });
 // The last-step button names what pressing it will do, before it is pressed.
+const confirmButtonLabel = computed(() =>
+  auth.value?.purpose === "enrol-with-trial" ? "Sign in and start 14-day free trial" : "Sign in on this computer",
+);
 const confirmNextStepCopy = computed(() => {
   switch (auth.value?.purpose) {
     case "recover-uid":
@@ -196,7 +199,7 @@ const confirmNextStepCopy = computed(() => {
     case "enrol":
       return '"Sign in on this computer" signs this computer in and adds it to that account. No trial is started.';
     case "enrol-with-trial":
-      return '"Sign in on this computer" signs this computer in, adds it to that account and starts the 14-day free trial.';
+      return '"Sign in and start 14-day free trial" signs this computer in, adds it to that account and starts the 14-day free trial.';
     default:
       return `"Sign in on this computer" signs this computer in as ${auth.value?.email ?? ""}.`;
   }
@@ -1242,7 +1245,7 @@ function focusAuthPanel(): void {
                 @click="act('confirm', () => account.confirmSignIn())"
               >
                 <span v-if="pendingAction === 'confirm'" class="button-spinner" aria-hidden="true"></span>
-                Sign in on this computer
+                {{ confirmButtonLabel }}
               </button>
               <button type="button" class="button button--ghost" :disabled="busy" @click="account.cancelSignIn()">
                 Cancel
@@ -1941,7 +1944,7 @@ function focusAuthPanel(): void {
             {{ showDiagnostics ? "Hide diagnostics" : "Send diagnostics to support" }}
           </button>
         </div>
-        <div v-if="showDiagnostics" class="account-confirm">
+        <div v-if="showDiagnostics" class="account-confirm account-diagnostics">
           <p class="account-note">
             This sends a short record of what this desktop's account and pairing operations did — the operation, whether
             it worked, and the refusal code if it did not. No terminal output, no file paths, no workspace names, no
@@ -2356,6 +2359,17 @@ function focusAuthPanel(): void {
   border-radius: 8px;
   padding: 12px;
   font-size: 12px;
+}
+.account-diagnostics {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+.account-diagnostics .account-note {
+  line-height: 1.5;
+}
+.account-diagnostics .account-field {
+  gap: 6px;
 }
 .account-confirm h5 {
   margin: 0 0 8px;

@@ -321,20 +321,25 @@
                 The phone calling itself “{{ pairingSas.label || "the new device" }}” is showing an 8-digit code. Type
                 it here. Only a phone in your hand can give you the right one.
               </p>
-              <input
-                v-model="typedSas"
-                class="settings-input pairing-sas__input"
-                data-testid="pairing-sas-input"
-                type="text"
-                inputmode="numeric"
-                autocomplete="off"
-                maxlength="16"
-                placeholder="0000 0000"
-                aria-label="Code shown on the phone"
-                :disabled="approvalBusy"
-                @input="onSasInput"
-                @keyup.enter="submitTypedSas"
-              />
+              <div class="pairing-sas__field">
+                <input
+                  :value="typedSas"
+                  class="settings-input pairing-sas__input"
+                  data-testid="pairing-sas-input"
+                  type="text"
+                  inputmode="numeric"
+                  pattern="[0-9]{4} [0-9]{4}"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label="8-digit code shown on the phone"
+                  :disabled="approvalBusy"
+                  @input="onSasInput"
+                  @keyup.enter="submitTypedSas"
+                />
+                <span class="pairing-sas__slots" data-testid="pairing-sas-slots" aria-hidden="true">{{
+                  sasSlotGuide
+                }}</span>
+              </div>
               <p v-if="approvalError" class="pairing-sas__error">{{ approvalError }}</p>
               <div class="pairing-sas__actions">
                 <button
@@ -1021,6 +1026,10 @@ const SAS_DIGITS = 8;
 /** What the user has typed from the phone. The expected code is never available in this component. */
 const typedSas = ref("");
 const sasDigitCount = computed(() => typedSas.value.replace(/\D/g, "").length);
+const sasSlotGuide = computed(() => {
+  const slots = " ".repeat(sasDigitCount.value).padEnd(SAS_DIGITS, "_");
+  return `${slots.slice(0, 4)} ${slots.slice(4)}`;
+});
 // A different pending device — or none, after a dismiss, a rejection or a successful activation —
 // starts from an empty field, so a code typed for one phone is never offered for the next.
 watch(
@@ -1029,9 +1038,22 @@ watch(
     typedSas.value = "";
   },
 );
-/** Digits and spaces only: the phone shows the code grouped, and people type it the way they read it. */
-function onSasInput() {
-  typedSas.value = typedSas.value.replace(/[^\d ]/g, "");
+function onSasInput(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const raw = input.value;
+  const digits = raw.replace(/\D/g, "").slice(0, SAS_DIGITS);
+  const formatted = digits.length > 4 ? `${digits.slice(0, 4)} ${digits.slice(4)}` : digits;
+  const cursorPosition = (position: number) => {
+    const prefix = raw.slice(0, position);
+    const before = Math.min(prefix.replace(/\D/g, "").length, digits.length);
+    return before + (formatted.length > 4 && (before > 4 || (before === 4 && /\s$/.test(prefix))) ? 1 : 0);
+  };
+  const start = cursorPosition(input.selectionStart ?? raw.length);
+  const end = cursorPosition(input.selectionEnd ?? raw.length);
+  const direction = input.selectionDirection ?? undefined;
+  typedSas.value = formatted;
+  input.value = formatted;
+  input.setSelectionRange(start, end, direction);
 }
 
 const SAS_MISMATCH_COPY =
@@ -2143,14 +2165,33 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
-/* Monospace and wide-tracked: this is typed digit by digit from a phone held next to the screen. Fits "0000 0000" with its tracking and padding. */
-.pairing-sas__input {
+.pairing-sas__field {
+  position: relative;
   font-family: var(--font-mono, monospace);
   font-size: 22px;
+  line-height: 1.4;
   letter-spacing: 0.14em;
-  width: calc(9ch + 9 * 0.14em + 32px);
+  width: calc(9ch + 9 * 0.14em + 26px);
   max-width: 100%;
+}
+
+.pairing-sas__input {
+  font: inherit;
+  letter-spacing: inherit;
+  width: 100%;
+  padding: 8px 10px;
   box-sizing: border-box;
+}
+
+.pairing-sas__slots {
+  position: absolute;
+  inset-inline-start: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  white-space: pre;
+  pointer-events: none;
+  user-select: none;
 }
 
 .pairing-sas__hint {

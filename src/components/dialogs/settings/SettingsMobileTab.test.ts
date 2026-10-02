@@ -781,6 +781,96 @@ describe("SettingsMobileTab", () => {
     expect(transport.approveMobileDevice).not.toHaveBeenCalled();
   });
 
+  test("the single code input keeps eight grouped positions visible without submitting while typing", async () => {
+    const { wrapper, transport } = await mountTab();
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+    const input = wrapper.get('[data-testid="pairing-sas-input"]');
+    const slots = wrapper.get('[data-testid="pairing-sas-slots"]');
+
+    expect(wrapper.findAll(".pairing-sas input")).toHaveLength(1);
+    expect(input.attributes("inputmode")).toBe("numeric");
+    expect(input.attributes("pattern")).toBe("[0-9]{4} [0-9]{4}");
+    expect(input.attributes("aria-label")).toContain("8-digit");
+    expect(slots.attributes("aria-hidden")).toBe("true");
+    expect(slots.element.textContent).toBe("____ ____");
+    await input.setValue("82");
+    expect((input.element as HTMLInputElement).value).toBe("82");
+    expect(slots.element.textContent).toBe("  __ ____");
+    await input.setValue("82654321");
+    expect((input.element as HTMLInputElement).value).toBe("8265 4321");
+    expect(slots.element.textContent).toBe("         ");
+    expect(transport.approveMobileDevice).not.toHaveBeenCalled();
+    await input.setValue("");
+    expect(slots.element.textContent).toBe("____ ____");
+  });
+
+  test("pasted code accepts only the first eight digits and normalizes the grouping", async () => {
+    const { wrapper, transport } = await mountTab();
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+    const input = wrapper.get('[data-testid="pairing-sas-input"]');
+    await input.setValue("a1 b2\n34—5678 90!");
+    expect((input.element as HTMLInputElement).value).toBe("1234 5678");
+    expect(transport.approveMobileDevice).not.toHaveBeenCalled();
+    await input.setValue("letters — !");
+    expect((input.element as HTMLInputElement).value).toBe("");
+  });
+
+  test("code normalization preserves the native caret while editing and deleting near the group separator", async () => {
+    const { wrapper, transport } = await mountTab();
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+    const field = wrapper.get('[data-testid="pairing-sas-input"]');
+    const input = field.element as HTMLInputElement;
+    await field.setValue("1234 5678");
+
+    input.value = "12a34 5678";
+    input.setSelectionRange(3, 3);
+    await field.trigger("input");
+    expect(input.value).toBe("1234 5678");
+    expect(input.selectionStart).toBe(2);
+
+    input.value = "12a34 5678";
+    input.setSelectionRange(2, 5, "backward");
+    await field.trigger("input");
+    expect(input.value).toBe("1234 5678");
+    expect(input.selectionStart).toBe(2);
+    expect(input.selectionEnd).toBe(4);
+    expect(input.selectionDirection).toBe("backward");
+
+    input.value = "12345678";
+    input.setSelectionRange(4, 4);
+    await field.trigger("input");
+    expect(input.value).toBe("1234 5678");
+    expect(input.selectionStart).toBe(4);
+
+    input.value = "123 5678";
+    input.setSelectionRange(3, 3);
+    await field.trigger("input");
+    expect(input.value).toBe("1235 678");
+    expect(input.selectionStart).toBe(3);
+    expect(wrapper.get('[data-testid="pairing-sas-slots"]').element.textContent).toBe("        _");
+  });
+
   test("the claiming phone's label is shown as plain quoted text, never as emphasis or markup", async () => {
     // The label is whatever the device called itself, and a phone somebody else holds chooses it.
     const { wrapper, transport } = await mountTab();

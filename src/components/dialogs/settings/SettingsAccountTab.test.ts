@@ -1634,7 +1634,7 @@ describe("progress and refusals are where the person is looking", () => {
       { accountConfirmSignIn: () => new Promise<void>((resolve) => (release = resolve)) },
     );
 
-    const confirm = wrapper.findAll("button").find((b) => b.text().includes("Sign in on this computer"))!;
+    const confirm = wrapper.findAll("button").find((b) => b.text().includes("Sign in and start 14-day free trial"))!;
     expect(confirm.find(".button-spinner").exists()).toBe(false);
 
     await confirm.trigger("click");
