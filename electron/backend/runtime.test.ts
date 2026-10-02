@@ -14450,7 +14450,8 @@ describe("the runtime's passwordless sign-in wiring", () => {
 
 describe("file access follows the caller's profile (security review 2026-09-30, 2d)", () => {
   test("the runtime's allowed roots, for a caller bound to a profile, are that profile's workspaces only", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-fm-profile-"));
+    // realpath: on macOS os.tmpdir() is under /var, which the file manager refuses as a system path.
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-fm-profile-")));
     tempPaths.push(dir);
     const rootDefault = path.join(dir, "default-repo");
     const rootOther = path.join(dir, "other-repo");

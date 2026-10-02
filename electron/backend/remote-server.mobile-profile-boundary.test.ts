@@ -305,7 +305,8 @@ describe("routes a mobile session may not call", () => {
 
 describe("file roots follow the caller's profile", () => {
   async function withRoots() {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "boundary-files-"));
+    // realpath: on macOS os.tmpdir() is under /var, which the file manager refuses as a system path.
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "boundary-files-")));
     const homeRoot = path.join(dir, "home");
     const workRoot = path.join(dir, "work");
     await fs.mkdir(homeRoot);

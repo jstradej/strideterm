@@ -4745,7 +4745,8 @@ describe("a mobile session's activity is audited (metadata only)", () => {
       server: Awaited<ReturnType<typeof startRemoteServer>>;
     }) => Promise<void>,
   ): Promise<void> {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-"));
+    // realpath: on macOS os.tmpdir() is under /var, which the file manager refuses as a system path.
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-")));
     const port = await getFreePort();
     const { runtime, rows, lists, written, seedTicket } = makeAuditedRuntime(port, dir, options);
     fm.setAllowedRootsResolver(() => [dir]);
@@ -4842,7 +4843,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
     });
 
     test("stopping the server publishes an empty list", async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-"));
+      const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-")));
       const port = await getFreePort();
       const { runtime, lists, seedTicket } = makeAuditedRuntime(port, dir);
       const server = await startRemoteServer({
@@ -4917,7 +4918,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
   });
 
   test("stopping the server records session.ended with reason=server-stopped for each live mobile session", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-"));
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-")));
     const port = await getFreePort();
     const { runtime, rows, seedTicket } = makeAuditedRuntime(port, dir);
     const server = await startRemoteServer({
