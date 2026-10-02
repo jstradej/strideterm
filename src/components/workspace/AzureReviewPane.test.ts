@@ -489,7 +489,10 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     const filesTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Files"))!;
     await filesTabBtn.trigger("click");
     await flushPromises();
-    await wrapper.find(".review-tree-file").trigger("click");
+    await wrapper
+      .findAll(".gct-node__row")
+      .find((row) => row.text().includes("foo.ts"))!
+      .trigger("click");
     await flushPromises();
     expect(fileGitDiff).toHaveBeenCalledTimes(1);
 
@@ -552,7 +555,10 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     const filesTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Files"))!;
     await filesTabBtn.trigger("click");
     await flushPromises();
-    await wrapper.find(".review-tree-file").trigger("click");
+    await wrapper
+      .findAll(".gct-node__row")
+      .find((row) => row.text().includes("foo.ts"))!
+      .trigger("click");
     await flushPromises();
     expect(fileGitDiff).toHaveBeenCalledTimes(1);
 
@@ -766,7 +772,7 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
     await filesTabBtn.trigger("click");
     await flushPromises();
 
-    const fileBtn = wrapper.find(".review-tree-file");
+    const fileBtn = wrapper.findAll(".gct-node__row").find((row) => row.text().includes("foo.ts"))!;
     expect(fileBtn.exists()).toBe(true);
     await fileBtn.trigger("click");
     await flushPromises();
@@ -800,13 +806,50 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
     await filesTabBtn.trigger("click");
     await flushPromises();
 
-    await wrapper.find(".review-tree-file").trigger("click");
+    await wrapper
+      .findAll(".gct-node__row")
+      .find((row) => row.text().includes("foo.ts"))!
+      .trigger("click");
     await flushPromises();
 
     const preview = wrapper.findComponent({ name: "ReviewFileDiffPreview" });
     expect(preview.props("monacoPayload")).toEqual(
       expect.objectContaining({ ok: false, leftError: "git show failed", leftMissing: true, rightMissing: true }),
     );
+  });
+
+  test("keeps Monaco visible while its structured diff is pending instead of showing the unified fallback", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithFileDiff();
+    await flushPromises();
+
+    const appStore = useAppStore();
+    let resolveDiff!: (value: { ok: true; leftContent: string; rightContent: string }) => void;
+    const pendingDiff = new Promise<{ ok: true; leftContent: string; rightContent: string }>((resolve) => {
+      resolveDiff = resolve;
+    });
+    const fileGitDiff = vi.fn().mockReturnValue(pendingDiff);
+    vi.spyOn(appStore, "getApi").mockReturnValue({ fileGitDiff } as unknown as ReturnType<typeof appStore.getApi>);
+
+    await wrapper
+      .findAll(".azure-tab")
+      .find((b) => b.text().startsWith("Files"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper
+      .findAll(".gct-node__row")
+      .find((row) => row.text().includes("foo.ts"))!
+      .trigger("click");
+    await flushPromises();
+
+    const preview = wrapper.findComponent({ name: "ReviewFileDiffPreview" });
+    expect(preview.props("monacoLoading")).toBe(true);
+    expect(wrapper.findComponent({ name: "DiffViewer" }).exists()).toBe(false);
+
+    resolveDiff({ ok: true, leftContent: "old", rightContent: "new" });
+    await flushPromises();
+    expect(preview.props("monacoPayload")).toEqual({ ok: true, leftContent: "old", rightContent: "new" });
   });
 });
 

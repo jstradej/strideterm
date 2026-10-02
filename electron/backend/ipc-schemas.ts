@@ -154,6 +154,7 @@ export const reviewBridgeDraftCommentSchema = z.object({
   title: z.string().optional(),
   filePath: z.string().optional(),
   lineNumber: z.number().int().positive().nullable().optional(),
+  lineSide: z.enum(["old", "new"]).optional(),
   priority: z.string().optional(),
   authorAgent: z.string().optional(),
   threadId: z.number().int().nullable().optional(),
@@ -161,13 +162,21 @@ export const reviewBridgeDraftCommentSchema = z.object({
 });
 export type ReviewBridgeDraftComment = z.infer<typeof reviewBridgeDraftCommentSchema>;
 
-export const reviewBridgeQueueSchema = z.object({
+export const reviewBridgeQueueSchema = z
+  .object({
+    prKey: nonEmptyString,
+    draftId: nonEmptyString.optional(),
+    commentKey: nonEmptyString.optional(),
+  })
+  .refine(({ draftId, commentKey }) => Boolean(draftId) !== Boolean(commentKey), {
+    message: "Provide exactly one of draftId or commentKey.",
+  });
+export type ReviewBridgeQueue = z.infer<typeof reviewBridgeQueueSchema>;
+
+export const reviewBridgeDeleteDraftSchema = z.object({
   prKey: nonEmptyString,
   draftId: nonEmptyString,
 });
-export type ReviewBridgeQueue = z.infer<typeof reviewBridgeQueueSchema>;
-
-export const reviewBridgeDeleteDraftSchema = reviewBridgeQueueSchema;
 export type ReviewBridgeDeleteDraft = z.infer<typeof reviewBridgeDeleteDraftSchema>;
 
 export const reviewBridgeDeleteCommentSchema = z.object({

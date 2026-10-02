@@ -103,10 +103,25 @@
                   style="font-size: 10px"
                   >Fixed</span
                 >
-                <span v-if="thread.filePath" class="review-comment-file">
+                <button
+                  v-if="thread.filePath"
+                  type="button"
+                  class="review-comment-file review-comment-file--link"
+                  :title="`Open ${thread.filePath}${thread.lineStart ? ` at line ${thread.lineStart}` : ''} in Files`"
+                  @click="
+                    $emit('open-location', {
+                      filePath: thread.filePath,
+                      line: thread.lineStart == null ? null : Number(thread.lineStart),
+                      side: thread.lineSide || 'new',
+                      stale: !!thread.lineIsStale,
+                      annotationId: `thread:${thread.id}`,
+                    })
+                  "
+                >
                   {{ shortFilePath(thread.filePath)
-                  }}<span v-if="thread.lineStart" class="review-comment-line">:{{ thread.lineStart }}</span>
-                </span>
+                  }}<span v-if="thread.lineStart != null" class="review-comment-line">:{{ thread.lineStart }}</span>
+                </button>
+                <span v-if="thread.lineIsStale" class="review-comment-stale">older context</span>
                 <span class="review-comment__date">{{ formatRelativeTime(threadDate(thread)) }}</span>
               </div>
             </div>
@@ -114,7 +129,7 @@
             <!-- Code snippet context -->
             <div v-if="thread.filePath" class="review-comment-context" style="margin: 0 10px 4px">
               <code class="review-comment-context__path"
-                >{{ thread.filePath }}{{ thread.lineStart ? `:${thread.lineStart}` : "" }}</code
+                >{{ thread.filePath }}{{ thread.lineStart != null ? `:${thread.lineStart}` : "" }}</code
               >
               <pre v-if="thread.codeSnippet" class="review-code-snippet">{{ thread.codeSnippet }}</pre>
             </div>
@@ -255,6 +270,27 @@
                 <span class="workspace-chip workspace-chip--local" style="font-size: 10px">{{
                   comment.status || "draft"
                 }}</span>
+                <button
+                  v-if="comment.payload?.filePath"
+                  type="button"
+                  class="review-comment-file review-comment-file--link"
+                  :title="`Open ${comment.payload.filePath}${comment.payload.lineNumber ? ` at line ${comment.payload.lineNumber}` : ''} in Files`"
+                  @click="
+                    $emit('open-location', {
+                      filePath: comment.payload.filePath,
+                      line: comment.payload.lineNumber == null ? null : Number(comment.payload.lineNumber),
+                      side: 'new',
+                      stale: false,
+                      annotationId: `draft:${comment.commentKey}`,
+                    })
+                  "
+                >
+                  {{ shortFilePath(comment.payload.filePath)
+                  }}<span v-if="comment.payload.lineNumber != null" class="review-comment-line"
+                    >:{{ comment.payload.lineNumber }}</span
+                  >
+                </button>
+                <span v-else class="review-comment-stale">PR-level comment · no file location</span>
               </div>
             </div>
 
@@ -395,6 +431,18 @@ const props = defineProps<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sortOptions: Array<Record<string, any>>;
   totalCommentCount: number;
+}>();
+defineEmits<{
+  (
+    event: "open-location",
+    location: {
+      filePath: string;
+      line: number | null;
+      side: "old" | "new";
+      stale: boolean;
+      annotationId: string;
+    },
+  ): void;
 }>();
 
 const appStore = useAppStore();
@@ -584,9 +632,11 @@ function editDraft(thread: Record<string, any>): void {
     onCancel: () => appStore.closeDialog(),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     onSubmit: async (content: any) => {
-      await appStore.saveReviewBridgeDraft({ prKey: props.prKey, commentKey, body: content, authorAgent: "human" });
-      await appStore.queueReviewBridgeDraft(props.prKey, null as unknown as string, commentKey);
-      appStore.closeDialog();
+      const saved = await notifications.runWithToast("Save draft failed", async () => {
+        await appStore.saveReviewBridgeDraft({ prKey: props.prKey, commentKey, body: content, authorAgent: "human" });
+        await appStore.queueReviewBridgeDraft(props.prKey, undefined, commentKey);
+      });
+      if (saved) appStore.closeDialog();
     },
   });
 }
@@ -605,14 +655,16 @@ function editLocalDraft(comment: Record<string, any>): void {
     onCancel: () => appStore.closeDialog(),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     onSubmit: async (content: any) => {
-      await appStore.saveReviewBridgeDraft({
-        prKey: props.prKey,
-        commentKey: comment.commentKey,
-        body: content,
-        authorAgent: "human",
+      const saved = await notifications.runWithToast("Save draft failed", async () => {
+        await appStore.saveReviewBridgeDraft({
+          prKey: props.prKey,
+          commentKey: comment.commentKey,
+          body: content,
+          authorAgent: "human",
+        });
+        await appStore.queueReviewBridgeDraft(props.prKey, undefined, comment.commentKey);
       });
-      await appStore.queueReviewBridgeDraft(props.prKey, null as unknown as string, comment.commentKey);
-      appStore.closeDialog();
+      if (saved) appStore.closeDialog();
     },
   });
 }

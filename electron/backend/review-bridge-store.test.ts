@@ -377,11 +377,13 @@ describe("review bridge store", () => {
       body: "Typo: this leeks a handle.",
       filePath: "src/b.js",
       lineNumber: 12,
+      lineSide: "old",
       authorAgent: "claude",
       autoQueue: true,
     });
     const comment = created?.comments.find((entry) => entry.commentKind === "draft");
     expect(comment).toBeTruthy();
+    expect(comment?.payload).toMatchObject({ filePath: "src/b.js", lineNumber: 12, lineSide: "old" });
     const commentKey = comment!.commentKey as string;
     const queuedBefore = created?.syncQueue.filter((entry) => entry.status === "pending") || [];
     expect(queuedBefore).toHaveLength(1);
@@ -404,6 +406,7 @@ describe("review bridge store", () => {
       "This leaks a file handle when the parse throws.",
     );
     expect(editedComment?.displayIndex).toBe(comment!.displayIndex);
+    expect(editedComment?.payload).toMatchObject({ filePath: "src/b.js", lineNumber: 12, lineSide: "old" });
     expect(updated?.syncQueue.filter((entry) => entry.status === "pending")).toHaveLength(1);
 
     // The reviewer's own thread is not ours to rewrite.

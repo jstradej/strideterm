@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   validateIpc,
   workspaceSchema,
+  reviewBridgeQueueSchema,
   workspaceIdSchema,
   workspaceDeleteOptionsSchema,
   azureCommentSchema,
@@ -32,6 +33,28 @@ import {
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
+  describe("reviewBridgeQueueSchema", () => {
+    test("accepts exactly one queue identifier for direct draft and latest-by-comment operations", () => {
+      expect(
+        validateIpc(reviewBridgeQueueSchema, { prKey: "pr-1", draftId: "draft-1" }, "review-bridge:draft:queue"),
+      ).toEqual({ prKey: "pr-1", draftId: "draft-1" });
+      expect(
+        validateIpc(reviewBridgeQueueSchema, { prKey: "pr-1", commentKey: "comment-1" }, "review-bridge:draft:queue"),
+      ).toEqual({ prKey: "pr-1", commentKey: "comment-1" });
+    });
+
+    test("rejects missing, empty, or ambiguous queue identifiers", () => {
+      for (const value of [
+        { prKey: "pr-1" },
+        { prKey: "pr-1", draftId: "" },
+        { prKey: "pr-1", commentKey: "" },
+        { prKey: "pr-1", draftId: "draft-1", commentKey: "comment-1" },
+      ]) {
+        expect(() => validateIpc(reviewBridgeQueueSchema, value, "review-bridge:draft:queue")).toThrow();
+      }
+    });
+  });
+
   describe("validateIpc", () => {
     test("returns validated data on success", () => {
       const result = validateIpc(gitPayloadSchema, { workspaceId: "ws-1" }, "test");

@@ -861,7 +861,13 @@ describe("AzureDevOpsManager", () => {
     });
 
     const prKey = createPullRequestKey("ado-main", "repo-1", 123);
-    await manager.addPullRequestComment({ prKey, content: "LGTM" });
+    await manager.addPullRequestComment({
+      prKey,
+      content: "LGTM",
+      filePath: "src/example.ts",
+      lineNumber: 8,
+      lineSide: "old",
+    });
     await manager.setPullRequestVote({ prKey, vote: 10 });
 
     expect(
@@ -869,6 +875,18 @@ describe("AzureDevOpsManager", () => {
         ([url, options]) => String(url).includes("/threads?api-version=7.1") && options.method === "POST",
       ),
     ).toBe(true);
+    const createdThread = JSON.parse(
+      String(
+        fetchImpl.mock.calls.find(
+          ([url, options]) => String(url).includes("/threads?api-version=7.1") && options.method === "POST",
+        )?.[1].body,
+      ),
+    ) as { threadContext?: unknown };
+    expect(createdThread.threadContext).toMatchObject({
+      filePath: "src/example.ts",
+      leftFileStart: { line: 8, offset: 1 },
+      leftFileEnd: { line: 8, offset: 1 },
+    });
     expect(
       fetchImpl.mock.calls.some(
         ([url, options]) => String(url).includes("/reviewers/reviewer-1") && options.method === "PUT",

@@ -123,6 +123,9 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
             content: entry.body,
             threadId: entry.remoteThreadId,
             parentCommentId: entry.parentCommentId || 0,
+            filePath: entry.comment?.filePath,
+            lineNumber: entry.comment?.lineNumber,
+            lineSide: entry.comment?.lineSide,
           });
         }
         return {
@@ -192,6 +195,9 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
               content: entry.body,
               threadId: entry.remoteThreadId,
               parentCommentId: entry.parentCommentId || 0,
+              filePath: entry.comment?.filePath,
+              lineNumber: entry.comment?.lineNumber,
+              lineSide: entry.comment?.lineSide,
             });
           }
           publishedCount += 1;

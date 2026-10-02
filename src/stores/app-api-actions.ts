@@ -291,13 +291,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
     setPayload((await (ctx.getApi() as AnyApi).deleteReviewBridgeDraft({ prKey, draftId })) as StatePayload);
   }
 
-  async function queueReviewBridgeDraft(prKey: string, draftId: string, commentKey: string): Promise<void> {
+  async function queueReviewBridgeDraft(prKey: string, draftId?: string, commentKey?: string): Promise<void> {
     if (!prKey || (!draftId && !commentKey)) return;
+    const queueIdentifier = draftId ? { draftId } : { commentKey };
     setPayload(
       (await (ctx.getApi() as AnyApi).queueReviewBridgeDraft({
         prKey,
-        draftId,
-        commentKey,
+        ...queueIdentifier,
       })) as StatePayload,
     );
   }

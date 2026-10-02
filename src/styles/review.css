@@ -948,6 +948,170 @@
   font-weight: 600;
 }
 
+.review-comment-file--link {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-comment-file--link:hover,
+.review-comment-file--link:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.review-comment-stale {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.review-diff-stale-hint {
+  padding: 5px 8px;
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Review notes are rendered inside Monaco view zones with DOM text nodes, so
+   these styles live globally rather than in MonacoDiffPanel's scoped block. */
+.mdp__file-annotations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 30%;
+  overflow-y: auto;
+  flex: 0 0 auto;
+  padding-bottom: 6px;
+}
+
+.mdp__review-card {
+  box-sizing: border-box;
+  color: var(--text);
+  background: var(--panel, #1c1c1c);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 6px 9px;
+  font: 11px/1.35 var(--font-ui, inherit);
+}
+
+.mdp__review-zone-host {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 4px 4px;
+  overflow: visible;
+  pointer-events: auto;
+}
+
+/* Monaco inserts view-zones before its code-line layer. Keep review cards
+   above that transparent layer so their native buttons receive mouse input. */
+.mdp__monaco--review-interactive .monaco-editor .lines-content > .view-zones {
+  z-index: 1;
+}
+
+.mdp__review-card--zone {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  overflow-wrap: anywhere;
+  background: color-mix(in srgb, var(--panel, #1c1c1c), var(--accent) 4%);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.mdp__review-card--zone::before,
+.mdp__review-card--zone::after {
+  content: "";
+  position: absolute;
+  left: 16px;
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+}
+
+.mdp__review-card--zone::before {
+  top: -8px;
+  border-bottom: 8px solid var(--accent);
+}
+
+.mdp__review-card--zone.mdp__review-card--line-zero::before {
+  display: none;
+}
+
+.mdp__review-card--zone.mdp__review-card--line-zero::after {
+  bottom: -8px;
+  border-top: 8px solid var(--accent);
+}
+
+.mdp__review-card--selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--panel, #1c1c1c), var(--accent) 12%);
+}
+
+.mdp__review-card-head,
+.mdp__review-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mdp__review-card-head {
+  justify-content: space-between;
+}
+
+.mdp__review-entry {
+  padding-top: 5px;
+}
+
+.mdp__review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.mdp__review-actions .button {
+  min-height: 20px;
+  padding: 1px 7px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.mdp__review-actions .button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mdp__review-entry + .mdp__review-entry {
+  margin-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.mdp__review-entry-head strong,
+.mdp__review-card-head strong {
+  overflow-wrap: anywhere;
+}
+
+.mdp__review-status {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.mdp__review-body {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
 .review-comment-line {
   color: var(--accent);
 }
@@ -1139,22 +1303,48 @@
 
 /* Files tab — split layout like Git Changes */
 .review-files-split {
-  display: grid;
-  grid-template-columns: minmax(260px, 0.38fr) minmax(0, 1fr);
-  gap: 0;
+  display: flex;
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 
+.review-files-split__panes {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: transparent !important;
+}
+
+.default-theme.review-files-split__panes.splitpanes > .splitpanes__pane {
+  min-width: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+.default-theme.review-files-split__panes.splitpanes > .splitpanes__splitter {
+  min-width: 3px;
+  min-height: 3px;
+  background: var(--border) !important;
+}
+
+.default-theme.review-files-split__panes.splitpanes > .splitpanes__splitter:hover {
+  background: var(--accent) !important;
+}
+
 .review-files-split__left {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
   padding: 10px;
   overflow-y: auto;
-  border-right: 1px solid var(--border);
   min-height: 0;
 }
 
 .review-files-split__right {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
   padding: 10px;
   overflow-y: auto;
   min-height: 0;
@@ -1825,20 +2015,6 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
     padding: 8px;
   }
 
-  /* Files split (file tree + Monaco diff): in portrait the diff barely
-     gets any width. Stack them: tree on top with a fixed cap, diff
-     fills the rest. In landscape phones we keep them side-by-side via
-     the (max-height: 500px) rule below. */
-  .review-files-split {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(120px, 30vh) minmax(0, 1fr);
-  }
-  .review-files-split__left {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    max-height: 30vh;
-  }
-
   /* Summary cards stack instead of trying for two columns. */
   .review-grid--summary,
   .review-grid--drafts,
@@ -1849,20 +2025,5 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
   /* Pre-PR ("New branch") form layout — ditto. */
   .review-shell .nb-step {
     flex-wrap: wrap;
-  }
-}
-
-/* Landscape phones: keep the file-tree + diff side-by-side because the
-   width is just enough, and the height is too short to tolerate a
-   stacked layout (the diff would only get ~150px of vertical room). */
-@media (max-width: 768px) and (min-aspect-ratio: 13/10), (max-height: 500px) and (min-width: 480px) {
-  .review-files-split {
-    grid-template-columns: minmax(160px, 0.4fr) minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
-  }
-  .review-files-split__left {
-    border-right: 1px solid var(--border);
-    border-bottom: none;
-    max-height: none;
   }
 }

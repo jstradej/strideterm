@@ -247,6 +247,7 @@ export function buildPullRequestSummary({
           isDeleted: Boolean(thread.isDeleted),
           filePath: tc.filePath || "",
           lineStart: tc.rightFileStart?.line ?? tc.leftFileStart?.line ?? null,
+          lineSide: tc.rightFileStart?.line != null ? "new" : tc.leftFileStart?.line != null ? "old" : null,
           lineEnd: tc.rightFileEnd?.line ?? tc.leftFileEnd?.line ?? null,
           publishedDate: thread.publishedDate || null,
           lastUpdatedDate: thread.lastUpdatedDate || null,

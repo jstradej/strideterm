@@ -8,11 +8,24 @@
 -->
 <template>
   <template v-if="diffPreview">
+    <p v-if="targetStale" class="git-card__hint review-diff-stale-hint">
+      This comment points to an older version. The current diff may have shifted; use the snippet in Comments to confirm
+      context.
+    </p>
     <MonacoDiffPanel
-      v-if="monacoPayload"
+      v-if="monacoPayload || monacoLoading"
       :payload="monacoPayload"
       :loading="monacoLoading"
+      :target-line="targetLine"
+      :target-side="targetSide"
+      :target-stale="targetStale"
+      :line-annotations="lineAnnotations"
+      :file-annotations="fileAnnotations"
+      :selected-annotation-id="selectedAnnotationId"
+      :annotation-actions-enabled="annotationActionsEnabled"
+      :allow-inline-comments="allowInlineComments"
       class="review-diff-monaco"
+      @request-comment="emit('request-comment', $event)"
     />
     <DiffViewer v-else-if="diffPreview.diff" :diff="diffPreview.diff" />
     <p v-else class="git-card__hint" style="padding: 6px">{{ diffPreview.summary || "No diff available." }}</p>
@@ -28,6 +41,24 @@ import { defineAsyncComponent } from "vue";
 import DiffViewer from "../DiffViewer.vue";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
+const emit = defineEmits<{ "request-comment": [location: { line: number; side: "old" | "new" }] }>();
+
+interface ReviewInlineAnnotation {
+  id: string;
+  line: number | null;
+  side: "old" | "new";
+  title: string;
+  stale?: boolean;
+  fallbackLabel?: string;
+  actions?: Array<{ label: string; title: string; disabled?: boolean; run: () => void | Promise<void> }>;
+  entries: Array<{
+    author: string;
+    body: string;
+    draft?: boolean;
+    status?: string;
+    actions?: Array<{ label: string; title: string; disabled?: boolean; run: () => void | Promise<void> }>;
+  }>;
+}
 
 defineProps<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -35,6 +66,14 @@ defineProps<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   monacoPayload?: Record<string, any> | null;
   monacoLoading?: boolean;
+  targetLine?: number;
+  targetSide?: "old" | "new";
+  targetStale?: boolean;
+  lineAnnotations?: ReviewInlineAnnotation[];
+  fileAnnotations?: ReviewInlineAnnotation[];
+  selectedAnnotationId?: string;
+  annotationActionsEnabled?: boolean;
+  allowInlineComments?: boolean;
   emptyHint: string;
 }>();
 </script>

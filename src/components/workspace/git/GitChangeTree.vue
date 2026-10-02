@@ -11,6 +11,7 @@
         :selected-scope="selectedScope"
         :expanded-set="expandedSet"
         :selectable="selectable"
+        :context-menu-enabled="contextMenuEnabled"
         :selected-set="selectedSet"
         @toggle="toggle"
         @select="(file) => $emit('select', file.path, file.scope)"
@@ -33,9 +34,17 @@ const props = withDefaults(
     selectedPath?: string;
     selectedScope?: string;
     selectable?: boolean;
+    contextMenuEnabled?: boolean;
     selectedSet?: Set<string>;
   }>(),
-  { files: () => [], selectedPath: "", selectedScope: "", selectable: false, selectedSet: () => new Set<string>() },
+  {
+    files: () => [],
+    selectedPath: "",
+    selectedScope: "",
+    selectable: false,
+    contextMenuEnabled: true,
+    selectedSet: () => new Set<string>(),
+  },
 );
 
 defineEmits<{
@@ -98,6 +107,8 @@ function buildTree(files: any[]) {
       status: file.status || normaliseCode(file.code || file.stagedStatus || file.unstagedStatus),
       scope: file.scope,
       code: file.code || file.stagedStatus || file.unstagedStatus || "",
+      statusTitle: file.statusTitle || "",
+      codeColor: file.codeColor || "",
     });
   }
   collapseSingleChildDirs(root);

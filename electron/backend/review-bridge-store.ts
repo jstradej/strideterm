@@ -977,6 +977,7 @@ export async function createReviewBridgeStore(rootPath: string) {
       title = "",
       filePath = "",
       lineNumber = null,
+      lineSide,
       priority = "medium",
       authorAgent = "",
       threadId = null,
@@ -987,6 +988,7 @@ export async function createReviewBridgeStore(rootPath: string) {
       title?: string;
       filePath?: string;
       lineNumber?: number | null;
+      lineSide?: "old" | "new";
       priority?: string;
       authorAgent?: string;
       threadId?: number | null;
@@ -1067,6 +1069,7 @@ export async function createReviewBridgeStore(rootPath: string) {
           questionBody: normalizedBody,
           ...(normalizedFilePath ? { filePath: normalizedFilePath } : {}),
           ...(normalizedLine ? { lineNumber: normalizedLine } : {}),
+          ...(lineSide === "old" || lineSide === "new" ? { lineSide } : {}),
         };
 
         const locationPrefix = normalizedFilePath

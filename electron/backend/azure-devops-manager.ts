@@ -1874,11 +1874,17 @@ export class AzureDevOpsManager extends BaseProviderManager {
     content,
     threadId = null as string | number | null,
     parentCommentId = 0,
+    filePath,
+    lineNumber,
+    lineSide = "new",
   }: {
     prKey: string;
     content: string;
     threadId?: string | number | null;
     parentCommentId?: number;
+    filePath?: string;
+    lineNumber?: number;
+    lineSide?: "old" | "new";
   }): Promise<void> {
     const summary = await this.ensurePullRequestDetail(prKey);
     this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
@@ -1905,6 +1911,22 @@ export class AzureDevOpsManager extends BaseProviderManager {
             },
           ],
           status: "active",
+          ...(filePath && Number.isInteger(lineNumber) && Number(lineNumber) > 0
+            ? {
+                threadContext: {
+                  filePath,
+                  ...(lineSide === "old"
+                    ? {
+                        leftFileStart: { line: lineNumber, offset: 1 },
+                        leftFileEnd: { line: lineNumber, offset: 1 },
+                      }
+                    : {
+                        rightFileStart: { line: lineNumber, offset: 1 },
+                        rightFileEnd: { line: lineNumber, offset: 1 },
+                      }),
+                },
+              }
+            : {}),
         };
     const url = threadId
       ? this.azureApi.buildCreateCommentUrl(

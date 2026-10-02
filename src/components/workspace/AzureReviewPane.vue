@@ -263,44 +263,58 @@
         <!-- Files panel -->
         <template v-else-if="activeTab === 'files'">
           <div class="review-files-split">
-            <div class="review-files-split__left">
-              <div class="section-head" style="padding: 0 6px">
-                <div>
-                  <p class="eyebrow">Changed files</p>
-                  <h3>{{ changedFiles.length }} files</h3>
+            <Splitpanes :horizontal="isNarrow" class="default-theme review-files-split__panes">
+              <Pane :size="32" :min-size="16" :max-size="60">
+                <div class="review-files-split__left">
+                  <div class="section-head" style="padding: 0 6px">
+                    <div>
+                      <p class="eyebrow">Changed files</p>
+                      <h3>{{ changedFiles.length }} files</h3>
+                    </div>
+                  </div>
+                  <div v-if="changedFiles.length" class="review-file-tree" style="margin-top: 8px">
+                    <GitChangeTree
+                      :files="reviewTreeFiles"
+                      :selected-path="reviewUi.reviewSelectedFile"
+                      selected-scope="review"
+                      :context-menu-enabled="false"
+                      @select="onSelectFile"
+                    />
+                  </div>
+                  <p v-else class="git-card__hint" style="padding: 6px">No changed files found.</p>
                 </div>
-              </div>
-              <div v-if="changedFiles.length" class="review-file-tree" style="margin-top: 8px">
-                <ReviewFileTree
-                  :files="changedFiles"
-                  :selected-file="reviewUi.reviewSelectedFile"
-                  @select-file="onSelectFile"
-                />
-              </div>
-              <p v-else class="git-card__hint" style="padding: 6px">No changed files found.</p>
-            </div>
-            <div class="review-files-split__right">
-              <div v-if="reviewUi.reviewFileDiffPreview" class="review-diff-toolbar">
-                <div class="review-diff-toolbar__title" :title="reviewUi.reviewFileDiffPreview.path">
-                  <p class="eyebrow review-diff-toolbar__path">{{ diffFileDir || "Diff" }}</p>
-                  <h3 class="review-diff-toolbar__name">{{ diffFileName }}</h3>
+              </Pane>
+              <Pane :size="68" :min-size="40">
+                <div class="review-files-split__right">
+                  <div v-if="reviewUi.reviewFileDiffPreview" class="review-diff-toolbar">
+                    <div class="review-diff-toolbar__title" :title="reviewUi.reviewFileDiffPreview.path">
+                      <p class="eyebrow review-diff-toolbar__path">{{ diffFileDir || "Diff" }}</p>
+                      <h3 class="review-diff-toolbar__name">{{ diffFileName }}</h3>
+                    </div>
+                    <CustomSelect
+                      v-model="reviewCommitFilter"
+                      :options="commitFilterOptions"
+                      class="review-diff-toolbar__commit-select"
+                    />
+                  </div>
+                  <ReviewFileDiffPreview
+                    :diff-preview="reviewUi.reviewFileDiffPreview"
+                    :monaco-payload="monacoDiffPayload"
+                    :monaco-loading="monacoDiffLoading"
+                    :target-line="reviewCommentTarget?.line ?? -1"
+                    :target-side="reviewCommentTarget?.side"
+                    :target-stale="reviewCommentTarget?.stale"
+                    :line-annotations="inlineReviewAnnotations.lines"
+                    :file-annotations="inlineReviewAnnotations.fileLevel"
+                    :selected-annotation-id="reviewCommentTarget?.annotationId"
+                    annotation-actions-enabled
+                    :allow-inline-comments="!isGitHub"
+                    empty-hint="Click on a file in the list to view its diff."
+                    @request-comment="createInlineReviewDraft"
+                  />
                 </div>
-                <!-- 6.1: per-commit selector. The empty value is the
-                     roll-up branch diff ("Final"); each commit option
-                     scopes the Monaco view to that commit's changes only. -->
-                <CustomSelect
-                  v-model="reviewCommitFilter"
-                  :options="commitFilterOptions"
-                  class="review-diff-toolbar__commit-select"
-                />
-              </div>
-              <ReviewFileDiffPreview
-                :diff-preview="reviewUi.reviewFileDiffPreview"
-                :monaco-payload="monacoDiffPayload"
-                :monaco-loading="monacoDiffLoading"
-                empty-hint="Click on a file in the list to view its diff."
-              />
-            </div>
+              </Pane>
+            </Splitpanes>
           </div>
         </template>
 
@@ -325,6 +339,7 @@
           :has-clearable="hasClearable"
           :sort-options="sortOptions"
           :total-comment-count="totalCommentCount"
+          @open-location="openReviewCommentLocation"
         />
 
         <!-- Conflicts panel -->
@@ -430,11 +445,14 @@
 
 <script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
+import { Splitpanes, Pane } from "splitpanes";
+import "splitpanes/dist/splitpanes.css";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { useMonacoDiffLoader } from "../../composables/useMonacoDiffLoader.js";
 import { useReviewComments } from "../../composables/useReviewComments.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
@@ -445,6 +463,7 @@ import ReviewAgentTab from "./azure/ReviewAgentTab.vue";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 import ReviewFileTree from "./azure/ReviewFileTree.vue";
 import ReviewFileDiffPreview from "./azure/ReviewFileDiffPreview.vue";
+import GitChangeTree from "./git/GitChangeTree.vue";
 import PrePrWorkspaceView from "./azure/PrePrWorkspaceView.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
@@ -453,6 +472,8 @@ const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boole
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 const notifications = useNotificationStore();
+const inlineCommentBusy = ref(false);
+const { isNarrow } = useIsNarrow();
 const {
   isMobile,
   menuOpen,
@@ -551,6 +572,26 @@ const changedFiles = computed(() => {
   const files = detail.value?.changedFiles || [];
   return files.length ? files : detail.value?.localChangedFiles || [];
 });
+const reviewTreeFiles = computed(() =>
+  changedFiles.value.map((file: Record<string, unknown>) => {
+    const changeType = String(file.changeType || file.status || "edit").toLowerCase();
+    const code = ["add", "added", "create", "created"].includes(changeType)
+      ? "A"
+      : ["delete", "deleted", "remove", "removed"].includes(changeType)
+        ? "D"
+        : "M";
+    return {
+      ...file,
+      path: String(file.path || "").replace(/^\/+/, ""),
+      scope: "review",
+      status: code === "A" ? "staged" : "modified",
+      statusTitle:
+        code === "A" ? "Added in pull request" : code === "D" ? "Deleted in pull request" : "Modified in pull request",
+      codeColor: code === "D" ? "var(--danger, #e26b6b)" : "",
+      code,
+    };
+  }),
+);
 // agentPrompts are NOT in the slim core (Phase 2) — on remote they arrive with
 // the review-bridge detail resource; on desktop from the full payload. The store
 // accessor reads whichever applies for this transport.
@@ -596,6 +637,8 @@ const newCommentsCount = computed(() => detail.value?.newCommentsCount || 0);
 
 // Comments (extracted to composable)
 const {
+  allThreads,
+  draftComments,
   filteredThreads,
   filteredDraftComments,
   draftsByThread,
@@ -614,6 +657,334 @@ const {
   hasClearable,
   sortOptions,
 } = useReviewComments(detail, reviewBridge, reviewUi, pullRequest);
+
+function normalizeReviewPath(value: unknown): string {
+  return String(value || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+}
+
+type ReviewBridgeDraft = {
+  draftId?: string;
+  commentKey?: string;
+  authorAgent?: string;
+  body?: string;
+  status?: string;
+  [key: string]: unknown;
+};
+
+type ReviewThread = {
+  id: string | number;
+  filePath?: string;
+  lineStart?: number | null;
+  lineSide?: string;
+  side?: string;
+  lineIsStale?: boolean;
+  status?: string;
+  comments?: Array<{
+    author?: { displayName?: string; login?: string };
+    content?: string;
+    body?: string;
+  }>;
+};
+
+function latestReviewBridgeDraft(commentKey: string): ReviewBridgeDraft | null {
+  return (
+    ((reviewBridge.value.drafts || []) as ReviewBridgeDraft[]).find((draft) => draft.commentKey === commentKey) || null
+  );
+}
+
+const inlineReviewAnnotations = computed(() => {
+  const selectedPath = normalizeReviewPath(reviewUi.value?.reviewSelectedFile);
+  if (!selectedPath) return { lines: [], fileLevel: [] };
+  const annotations: Array<{
+    id: string;
+    line: number | null;
+    side: "old" | "new";
+    title: string;
+    stale: boolean;
+    fallbackLabel?: string;
+    actions?: Array<{
+      label: string;
+      title: string;
+      disabled?: boolean;
+      placement?: "entry";
+      destructive?: boolean;
+      run: () => void | Promise<void>;
+    }>;
+    entries: Array<{
+      author: string;
+      body: string;
+      draft?: boolean;
+      status?: string;
+      actions?: Array<{ label: string; title: string; disabled?: boolean; run: () => void | Promise<void> }>;
+    }>;
+  }> = [];
+  const diffPath = normalizeReviewPath(reviewUi.value?.reviewFileDiffPreview?.path);
+  const payload = diffPath === selectedPath && !monacoDiffLoading.value ? monacoDiffPayload.value : null;
+
+  for (const thread of (allThreads.value || []) as ReviewThread[]) {
+    if (normalizeReviewPath(thread.filePath) !== selectedPath) continue;
+    const line = thread.lineStart == null ? null : Number(thread.lineStart);
+    const side = thread.lineSide === "old" || thread.side === "LEFT" ? "old" : "new";
+    const entries: Array<{
+      author: string;
+      body: string;
+      draft?: boolean;
+      status?: string;
+      actions?: Array<{ label: string; title: string; run: () => void | Promise<void> }>;
+    }> = (thread.comments || []).map((comment) => ({
+      author: String(comment.author?.displayName || comment.author?.login || "Unknown author"),
+      body: String(comment.content || comment.body || ""),
+    }));
+    const threadDrafts = draftsByThread(thread) || [];
+    const threadCommentKey = threadToCommentKey.value.get(String(thread.id)) || "";
+    const latestThreadDraft = latestReviewBridgeDraft(threadCommentKey);
+    const editableThreadDraft =
+      threadDrafts[0] && threadDrafts[0].draftId === latestThreadDraft?.draftId ? threadDrafts[0] : null;
+    for (const draft of threadDrafts) {
+      const actions: Array<{ label: string; title: string; disabled?: boolean; run: () => void | Promise<void> }> = [];
+      if (draft === editableThreadDraft && draft.status !== "synced") {
+        actions.push({
+          label: "Edit",
+          title: "Edit this draft reply",
+          disabled: inlineCommentBusy.value,
+          run: () => editReviewDraft(threadCommentKey, editableThreadDraft, "Edit draft reply"),
+        });
+      }
+      actions.push({
+        label: "Delete",
+        title: "Permanently delete this draft reply",
+        disabled: inlineCommentBusy.value,
+        run: () => deleteReviewDraft(String(draft.draftId || "")),
+      });
+      entries.push({
+        author: String(draft.authorAgent || ""),
+        body: String(draft.body || ""),
+        draft: true,
+        status: String(draft.status || "Draft"),
+        actions,
+      });
+    }
+    if (!entries.length) continue;
+    const lineCountText = side === "old" ? payload?.leftContent : payload?.rightContent;
+    const lineCount = typeof lineCountText === "string" ? lineCountText.split(/\r?\n/).length : null;
+    const outOfRange = line != null && lineCount != null && line > lineCount;
+    const stale = !!thread.lineIsStale || outOfRange;
+    const index = threadIndex(thread);
+    annotations.push({
+      id: `thread:${thread.id}`,
+      line: Number.isInteger(line) && line! >= 0 ? line : null,
+      side,
+      title: `${index ? `#${index}` : `Thread #${thread.id}`} · ${String(thread.status || "comment")}`,
+      stale,
+      actions: [
+        {
+          label: "Reply",
+          title: "Write a reply saved as a local draft",
+          disabled: inlineCommentBusy.value,
+          run: () => openReviewReply(thread),
+        },
+      ],
+      entries,
+    });
+  }
+
+  for (const comment of draftComments.value || []) {
+    const payloadData = comment.payload || {};
+    if (normalizeReviewPath(payloadData.filePath) !== selectedPath || comment.remoteThreadId != null) continue;
+    const line = payloadData.lineNumber == null ? null : Number(payloadData.lineNumber);
+    const drafts = draftsByComment(comment) || [];
+    const latestLocalDraft = latestReviewBridgeDraft(comment.commentKey);
+    const editableLocalDraft = drafts[0] && drafts[0].draftId === latestLocalDraft?.draftId ? drafts[0] : null;
+    const entries: Array<{
+      author: string;
+      body: string;
+      draft?: boolean;
+      status?: string;
+      actions?: Array<{ label: string; title: string; disabled?: boolean; run: () => void | Promise<void> }>;
+    }> = drafts.map((draft: ReviewBridgeDraft) => ({
+      author: String(draft.authorAgent || comment.authorAgent || "Unknown author"),
+      body: String(draft.body || ""),
+      draft: true,
+      status: String(draft.status || comment.status || "Draft"),
+      actions: [
+        ...(draft === editableLocalDraft && draft.status !== "synced"
+          ? [
+              {
+                label: "Edit",
+                title: "Edit this draft",
+                disabled: inlineCommentBusy.value,
+                run: () => editReviewDraft(comment.commentKey, editableLocalDraft, "Edit draft"),
+              },
+            ]
+          : []),
+      ],
+    }));
+    if (!entries.length && comment.summary) {
+      entries.push({
+        author: String(comment.authorAgent || "Unknown author"),
+        body: String(comment.summary),
+        actions: latestLocalDraft
+          ? []
+          : [
+              {
+                label: "Add draft",
+                title: "Write a draft reply",
+                disabled: inlineCommentBusy.value,
+                run: () => editReviewDraft(comment.commentKey, null, "Add draft"),
+              },
+            ],
+      });
+    }
+    if (!entries.length) continue;
+    annotations.push({
+      id: `draft:${comment.commentKey}`,
+      line: Number.isInteger(line) && line! >= 0 ? line : null,
+      side: payloadData.lineSide === "old" ? "old" : "new",
+      title: `#${comment.displayIndex || "Draft"} · ${String(comment.status || "draft")}`,
+      stale: false,
+      actions: [
+        {
+          label: "Delete comment",
+          title: "Permanently delete this comment and its drafts",
+          disabled: inlineCommentBusy.value,
+          placement: "entry",
+          destructive: true,
+          run: () => deleteReviewComment(comment.commentKey),
+        },
+      ],
+      entries,
+    });
+  }
+
+  return {
+    lines: annotations.filter((annotation) => annotation.line != null && !annotation.stale),
+    fileLevel: annotations.filter((annotation) => annotation.line == null || annotation.stale),
+  };
+});
+
+function editReviewDraft(commentKey: string, draft: ReviewBridgeDraft | null, title: string) {
+  appStore.openDialog("TextAreaDialog", {
+    eyebrow: "Review Bridge",
+    title,
+    label: "Draft reply",
+    value: draft?.body || "",
+    placeholder: "Write the draft...",
+    submitLabel: draft ? "Save draft" : "Create draft",
+    onCancel: () => appStore.closeDialog(),
+    onSubmit: async (content: string) => {
+      const saved = await notifications.runWithToast("Save draft failed", async () => {
+        await appStore.saveReviewBridgeDraft({
+          prKey: prKey.value,
+          commentKey,
+          body: content,
+          authorAgent: "human",
+        });
+        await appStore.queueReviewBridgeDraft(prKey.value, undefined, commentKey);
+      });
+      if (saved) appStore.closeDialog();
+    },
+  });
+}
+
+function createInlineReviewDraft(location: { line: number; side: "old" | "new" }) {
+  if (isGitHub.value || inlineCommentBusy.value || !Number.isInteger(location.line) || location.line < 1) return;
+  const filePath = normalizeReviewPath(reviewUi.value?.reviewSelectedFile);
+  const payload = monacoDiffPayload.value;
+  if (
+    !filePath ||
+    monacoDiffLoading.value ||
+    !payload ||
+    normalizeReviewPath(reviewUi.value?.reviewFileDiffPreview?.path) !== filePath
+  ) {
+    return;
+  }
+  const content = location.side === "old" ? payload.leftContent : payload.rightContent;
+  if (typeof content !== "string" || location.line > content.split(/\r?\n/).length) return;
+  appStore.openDialog("TextAreaDialog", {
+    eyebrow: "Review Bridge",
+    title: "Add draft comment",
+    label: `Comment on ${filePath} · line ${location.line} (${location.side === "old" ? "original" : "modified"})`,
+    placeholder: "Write your review comment...",
+    submitLabel: "Create draft",
+    onCancel: () => appStore.closeDialog(),
+    onSubmit: async (body: string) => {
+      if (inlineCommentBusy.value) return;
+      inlineCommentBusy.value = true;
+      try {
+        const result = await notifications.runWithToast("Create draft failed", () =>
+          appStore.createReviewBridgeDraftComment({
+            prKey: prKey.value,
+            body,
+            filePath,
+            lineNumber: location.line,
+            lineSide: location.side,
+            authorAgent: "human",
+            autoQueue: true,
+          }),
+        );
+        if (result) appStore.closeDialog();
+      } finally {
+        inlineCommentBusy.value = false;
+      }
+    },
+  });
+}
+
+function openReviewReply(thread: ReviewThread) {
+  appStore.openDialog("TextAreaDialog", {
+    eyebrow: "Review Bridge",
+    title: "Reply to thread",
+    label: "Reply",
+    placeholder: "Write your reply...",
+    submitLabel: "Create & queue",
+    onCancel: () => appStore.closeDialog(),
+    onSubmit: async (content: string) => {
+      if (inlineCommentBusy.value) return;
+      inlineCommentBusy.value = true;
+      try {
+        const result = await notifications.runWithToast("Create draft failed", () =>
+          appStore.createReviewBridgeDraftComment({
+            prKey: prKey.value,
+            body: content,
+            threadId: thread.id,
+            authorAgent: "human",
+            autoQueue: true,
+          }),
+        );
+        if (result) appStore.closeDialog();
+      } finally {
+        inlineCommentBusy.value = false;
+      }
+    },
+  });
+}
+
+async function deleteReviewDraft(draftId: string) {
+  if (!draftId) return;
+  if (inlineCommentBusy.value) return;
+  inlineCommentBusy.value = true;
+  try {
+    await notifications.runWithToast("Delete draft failed", () =>
+      appStore.deleteReviewBridgeDraft(prKey.value, draftId),
+    );
+  } finally {
+    inlineCommentBusy.value = false;
+  }
+}
+
+async function deleteReviewComment(commentKey: string) {
+  if (inlineCommentBusy.value) return;
+  inlineCommentBusy.value = true;
+  try {
+    await notifications.runWithToast("Delete comment failed", () =>
+      appStore.deleteReviewBridgeComment(prKey.value, commentKey),
+    );
+  } finally {
+    inlineCommentBusy.value = false;
+  }
+}
 
 // Conflict info
 const conflictInfo = computed(() => {
@@ -835,6 +1206,12 @@ const diffLoader = useMonacoDiffLoader((filePath: string) => {
 });
 const monacoDiffPayload = diffLoader.payload;
 const monacoDiffLoading = diffLoader.loading;
+const reviewCommentTarget = ref<{
+  line: number | null;
+  side: "old" | "new";
+  stale: boolean;
+  annotationId: string;
+} | null>(null);
 
 // When set, we render the per-commit diff for the selected commit instead of
 // the rolled-up branch diff. The user requested both views (final state +
@@ -913,6 +1290,7 @@ function loadMonacoReviewDiff(filePath: string) {
 }
 
 function onSelectFile(filePath: string) {
+  reviewCommentTarget.value = null;
   // Strip leading / for git operations
   const normalized = String(filePath || "").replace(/^\//, "");
   // Pass the PR target branch so the legacy unified-diff fallback uses the
@@ -920,6 +1298,23 @@ function onSelectFile(filePath: string) {
   const targetBranch = stripRef(pullRequest.value.targetRefName || "");
   gitUiStore.reviewSelectFileDiff(props.workspaceId, normalized, targetBranch);
   loadMonacoReviewDiff(normalized);
+}
+
+function openReviewCommentLocation(location: {
+  filePath: string;
+  line: number | null;
+  side: "old" | "new";
+  stale: boolean;
+  annotationId: string;
+}) {
+  gitUiStore.reviewSwitchTab(props.workspaceId, "files");
+  onSelectFile(location.filePath);
+  reviewCommentTarget.value = {
+    line: location.line != null && Number.isInteger(location.line) && location.line >= 0 ? location.line : null,
+    side: location.side === "old" ? "old" : "new",
+    stale: location.stale,
+    annotationId: location.annotationId,
+  };
 }
 
 watch(reviewCommitFilter, () => {

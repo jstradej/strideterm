@@ -5,11 +5,12 @@
         'gct-node__row',
         node.kind === 'file' && isSelected && 'gct-node__row--selected',
         node.kind === 'file' && `gct-node__row--git-${node.status}`,
+        node.kind === 'file' && node.scope === 'review' && node.code === 'D' && 'gct-node__row--review-deleted',
       ]"
       :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
-      :title="node.kind === 'file' ? `${statusTitle(node.status)}: ${node.path}` : node.path"
+      :title="node.kind === 'file' ? `${node.statusTitle || statusTitle(node.status)}: ${node.path}` : node.path"
       @click="onClick"
-      @contextmenu="onContextMenu"
+      @contextmenu="contextMenuEnabled && onContextMenu($event)"
     >
       <span v-if="isDir" class="gct-node__chevron">{{ expanded ? "▾" : "▸" }}</span>
       <span v-else class="gct-node__chevron gct-node__chevron--leaf"></span>
@@ -27,8 +28,8 @@
       <span
         v-if="node.kind === 'file' && node.code"
         class="gct-node__code"
-        :style="{ color: statusColor(node.status) }"
-        :title="statusTitle(node.status)"
+        :style="{ color: node.codeColor || statusColor(node.status) }"
+        :title="node.statusTitle || statusTitle(node.status)"
       >
         {{ node.code }}
       </span>
@@ -43,6 +44,7 @@
         :selected-scope="selectedScope"
         :expanded-set="expandedSet"
         :selectable="selectable"
+        :context-menu-enabled="contextMenuEnabled"
         :selected-set="selectedSet"
         @toggle="(p) => $emit('toggle', p)"
         @select="(file) => $emit('select', file)"
@@ -66,9 +68,17 @@ const props = withDefaults(
     selectedScope?: string;
     expandedSet: Set<string>;
     selectable?: boolean;
+    contextMenuEnabled?: boolean;
     selectedSet?: Set<string>;
   }>(),
-  { depth: 0, selectedPath: "", selectedScope: "", selectable: false, selectedSet: () => new Set<string>() },
+  {
+    depth: 0,
+    selectedPath: "",
+    selectedScope: "",
+    selectable: false,
+    contextMenuEnabled: true,
+    selectedSet: () => new Set<string>(),
+  },
 );
 
 const emit = defineEmits<{
@@ -152,6 +162,10 @@ function onContextMenu(e: MouseEvent) {
 }
 .gct-node__row--git-ignored {
   opacity: 0.55;
+}
+.gct-node__row--review-deleted {
+  border-left: 3px solid var(--danger, #e26b6b);
+  padding-left: 3px;
 }
 
 .gct-node__chevron {

@@ -261,9 +261,16 @@ function groupReviewCommentThreads(
     threads.push({
       id: rootId,
       filePath: rootComment.path || "",
-      lineStart: rootComment.original_line || rootComment.line || null,
-      lineEnd: rootComment.original_line || rootComment.line || null,
+      lineStart: rootComment.line ?? rootComment.original_line ?? null,
+      lineEnd: rootComment.line ?? rootComment.original_line ?? null,
       side: rootComment.side || "RIGHT",
+      lineSide:
+        rootComment.line == null && rootComment.original_line != null
+          ? "old"
+          : rootComment.side === "LEFT"
+            ? "old"
+            : "new",
+      lineIsStale: rootComment.line == null && rootComment.original_line != null,
       diffHunk: rootComment.diff_hunk || "",
       publishedDate: rootComment.created_at || null,
       lastUpdatedDate: allComments.at(-1)?.updated_at || allComments.at(-1)?.created_at || null,

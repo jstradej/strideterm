@@ -14,6 +14,10 @@ const deleteReviewBridgeDraft = vi.fn();
 const azureResolveThread = vi.fn();
 const azureReactivateThread = vi.fn();
 const deleteReviewBridgeComment = vi.fn();
+const saveReviewBridgeDraft = vi.fn();
+const queueReviewBridgeDraft = vi.fn();
+const openDialog = vi.fn();
+const closeDialog = vi.fn();
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
@@ -22,8 +26,10 @@ vi.mock("../../../stores/app.js", () => ({
     azureResolveThread,
     azureReactivateThread,
     deleteReviewBridgeComment,
-    openDialog: vi.fn(),
-    closeDialog: vi.fn(),
+    saveReviewBridgeDraft,
+    queueReviewBridgeDraft,
+    openDialog,
+    closeDialog,
     createReviewBridgeDraftComment: vi.fn(),
   }),
 }));
@@ -70,9 +76,62 @@ beforeEach(() => {
   azureResolveThread.mockClear();
   azureReactivateThread.mockClear();
   deleteReviewBridgeComment.mockClear();
+  saveReviewBridgeDraft.mockReset();
+  queueReviewBridgeDraft.mockReset();
+  openDialog.mockReset();
+  closeDialog.mockReset();
 });
 
 describe("ReviewCommentsTab — draft/thread/comment mutations surface failures instead of silently succeeding", () => {
+  test("editing a draft queues by commentKey and closes only after both save and queue succeed", async () => {
+    saveReviewBridgeDraft.mockResolvedValue(undefined);
+    queueReviewBridgeDraft.mockResolvedValue(undefined);
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        filteredDraftComments: [{ commentKey: "local-1", displayIndex: 1, status: "draft" }],
+        draftsByComment: () => [{ draftId: "draft-1", status: "draft", body: "before" }],
+      }),
+    });
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Edit")!
+      .trigger("click");
+    const dialogOptions = openDialog.mock.calls.at(-1)?.[1] as { onSubmit: (body: string) => Promise<void> };
+    await dialogOptions.onSubmit("after");
+
+    expect(saveReviewBridgeDraft).toHaveBeenCalledWith({
+      prKey: "pr-1",
+      commentKey: "local-1",
+      body: "after",
+      authorAgent: "human",
+    });
+    expect(queueReviewBridgeDraft).toHaveBeenCalledWith("pr-1", undefined, "local-1");
+    expect(closeDialog).toHaveBeenCalledOnce();
+  });
+
+  test("keeps the editor open and reports queue failure after a successful save", async () => {
+    saveReviewBridgeDraft.mockResolvedValue(undefined);
+    queueReviewBridgeDraft.mockRejectedValueOnce(new Error("IPC queue validation failed"));
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        filteredDraftComments: [{ commentKey: "local-1", displayIndex: 1, status: "draft" }],
+        draftsByComment: () => [{ draftId: "draft-1", status: "draft", body: "before" }],
+      }),
+    });
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Edit")!
+      .trigger("click");
+    const dialogOptions = openDialog.mock.calls.at(-1)?.[1] as { onSubmit: (body: string) => Promise<void> };
+    await dialogOptions.onSubmit("after");
+
+    expect(queueReviewBridgeDraft).toHaveBeenCalledWith("pr-1", undefined, "local-1");
+    expect(closeDialog).not.toHaveBeenCalled();
+    expect(useNotificationStore().sessions[0]?.events[0]?.title).toBe("Save draft failed");
+  });
+
   test("handleDeleteAllDrafts: rejection is caught and surfaced as a toast, busy resets", async () => {
     reviewBridgeDeleteAllDrafts.mockRejectedValueOnce(new Error("locked"));
     const wrapper = mount(ReviewCommentsTab, { props: baseProps() });
@@ -208,5 +267,75 @@ describe("ReviewCommentsTab — formatRelativeTime relative/fallback rendering",
     const dates = wrapper.findAll(".review-comment__date");
     expect(dates.length).toBeGreaterThan(0);
     for (const d of dates) expect(d.text()).toBe("2w ago");
+  });
+});
+
+describe("ReviewCommentsTab — comment location navigation", () => {
+  test("emits the file, line, and side when its location link is activated", async () => {
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        filteredThreads: [
+          {
+            id: "t-location",
+            status: "active",
+            filePath: "src/example.ts",
+            lineStart: 24,
+            lineSide: "old",
+            comments: [],
+          },
+        ],
+      }),
+    });
+
+    await wrapper.get(".review-comment-file--link").trigger("click");
+
+    expect(wrapper.emitted("open-location")?.[0]).toEqual([
+      { filePath: "src/example.ts", line: 24, side: "old", stale: false, annotationId: "thread:t-location" },
+    ]);
+  });
+
+  test("shows and opens the stored location for a queued standalone draft comment", async () => {
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        filteredDraftComments: [
+          {
+            commentKey: "local-location",
+            displayIndex: 9,
+            status: "ready-to-sync",
+            payload: { filePath: "src/components/example.ts", lineNumber: 37 },
+          },
+        ],
+        draftsByComment: () => [
+          {
+            draftId: "draft-location",
+            status: "ready-to-sync",
+            body: "Check this changed line",
+            authorAgent: "claude",
+          },
+        ],
+      }),
+    });
+
+    const locationLink = wrapper.get(".review-comment-file--link");
+    expect(locationLink.text()).toBe("src/components/example.ts:37");
+    await locationLink.trigger("click");
+
+    expect(wrapper.emitted("open-location")?.[0]).toEqual([
+      {
+        filePath: "src/components/example.ts",
+        line: 37,
+        side: "new",
+        stale: false,
+        annotationId: "draft:local-location",
+      },
+    ]);
+  });
+
+  test("labels a standalone draft with no stored file path as a PR-level comment", () => {
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({ filteredDraftComments: [{ commentKey: "general", displayIndex: 3, payload: {} }] }),
+    });
+
+    expect(wrapper.text()).toContain("PR-level comment · no file location");
   });
 });
