@@ -9,7 +9,14 @@
     <form class="form" @submit.prevent="handleSubmit">
       <label>
         <span>{{ label }}</span>
-        <input ref="inputRef" v-model="inputValue" name="value" :placeholder="placeholder" required />
+        <input
+          ref="inputRef"
+          v-model="inputValue"
+          name="value"
+          :placeholder="placeholder"
+          required
+          :data-validation-required="`Enter a value for ${label.toLowerCase()}.`"
+        />
       </label>
       <footer class="dialog__footer">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>

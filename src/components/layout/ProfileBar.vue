@@ -8,7 +8,9 @@
       @click="$emit('click')"
     >
       {{ profile.name }}
-      <span v-if="isRemote" class="profile-bar__remote-badge" title="Viewing in remote browser client">Remote</span>
+      <span v-if="isRemote" class="profile-bar__remote-badge" title="This profile is open from a remote browser client"
+        >Remote</span
+      >
       <span
         v-if="otherProfileCount > 0"
         class="profile-bar__other-attention"

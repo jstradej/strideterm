@@ -14,6 +14,7 @@
             ref="labelRef"
             v-model="draft.label"
             required
+            data-validation-required="Enter a name for this connection."
             maxlength="60"
             :title="
               isGitHub
@@ -39,7 +40,13 @@
       </div>
       <label v-if="isGitHub">
         <span>Host URL</span>
-        <input v-model="draft.hostUrl" placeholder="https://github.com" required maxlength="300" />
+        <input
+          v-model="draft.hostUrl"
+          placeholder="https://github.com"
+          required
+          data-validation-required="Enter your GitHub or GitHub Enterprise URL."
+          maxlength="300"
+        />
         <small style="color: var(--muted); font-size: 12px"
           >Use https://github.com for GitHub.com or your GitHub Enterprise Server URL.</small
         >
@@ -50,6 +57,7 @@
           v-model="draft.orgUrl"
           placeholder="https://dev.azure.com/your-org"
           required
+          data-validation-required="Enter your Azure DevOps organization URL."
           maxlength="300"
           title="Your Azure DevOps organization root URL. Pasting a project or repository page URL also works — strIDEterm will normalize it down to the org root."
         />
@@ -71,6 +79,7 @@
             v-model="draft.login"
             placeholder="me@company.com"
             required
+            data-validation-required="Enter the Azure DevOps account email or user name used for Git authentication."
             maxlength="200"
             title="Your Azure DevOps account email / UPN. Used for git authentication when checking out PRs and pushing branches."
           />

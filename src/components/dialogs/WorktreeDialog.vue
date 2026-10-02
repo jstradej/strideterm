@@ -16,7 +16,14 @@
       </label>
       <label>
         <span>Branch name</span>
-        <input ref="inputRef" v-model="branchName" name="name" placeholder="feature/my-branch" required />
+        <input
+          ref="inputRef"
+          v-model="branchName"
+          name="name"
+          placeholder="feature/my-branch"
+          required
+          data-validation-required="Enter a name for the new branch."
+        />
       </label>
       <footer class="dialog__footer">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>

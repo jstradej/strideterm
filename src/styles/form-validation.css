@@ -1,0 +1,14 @@
+.app-form-validation-error {
+  margin: 5px 0 0;
+  color: var(--danger-fg, var(--danger));
+  font-size: 0.82em;
+  line-height: 1.4;
+}
+
+.quick-grid > .app-form-validation-error {
+  grid-column: 1 / -1;
+}
+
+[aria-invalid="true"] {
+  border-color: var(--danger, #ff6f8d) !important;
+}

@@ -12,7 +12,12 @@
     </button>
 
     <!-- Clear -->
-    <button type="button" class="log-toolbar__btn" title="Clear xterm buffer" @click="emit('clear')">
+    <button
+      type="button"
+      class="log-toolbar__btn"
+      title="Clear the log text currently loaded in this view"
+      @click="emit('clear')"
+    >
       <span class="log-toolbar__icon">∅</span>
       <span class="log-toolbar__label">Clear</span>
     </button>

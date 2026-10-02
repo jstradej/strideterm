@@ -31,7 +31,7 @@
           type="button"
           class="workspace-attachments__refresh"
           :disabled="loading"
-          title="Refresh attachments"
+          title="Reload the attachment list for this workspace"
           aria-label="Refresh attachments"
           @click="load(true)"
         >

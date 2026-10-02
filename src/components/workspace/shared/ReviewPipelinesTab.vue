@@ -16,6 +16,7 @@
         type="button"
         class="button button--ghost button--xs"
         :disabled="refreshing"
+        title="Refresh the pull request's pipeline and check statuses now"
         @click="$emit('refresh')"
       >
         {{ refreshing ? "Refreshing…" : "↻ Refresh" }}
@@ -66,7 +67,7 @@
           <div class="pipeline-item__badges">
             <span v-if="item.optional === true" class="pipeline-item__opt-badge">optional</span>
             <span v-else-if="item.optional === false" class="pipeline-item__opt-badge pipeline-item__opt-badge--req">
-              required
+              <span title="This check must pass before the pull request can be completed.">required</span>
             </span>
             <button
               v-if="canRerun(item)"

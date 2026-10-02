@@ -11,7 +11,9 @@
     >
       <span class="detail-tab__icon">{{ iconFor(tab.kind) }}</span>
       <span class="detail-tab__label">{{ tab.label }}</span>
-      <span class="detail-tab__close" title="Close tab" @click.stop="emit('close', tab.tabId)">×</span>
+      <span class="detail-tab__close" title="Close this container detail tab" @click.stop="emit('close', tab.tabId)"
+        >×</span
+      >
     </button>
     <div v-if="tabs.length === 0" class="detail-tabs__empty">Click a container in the tree to open it</div>
   </div>

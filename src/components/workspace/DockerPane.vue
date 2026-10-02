@@ -111,7 +111,7 @@
             v-if="filterInput"
             type="button"
             class="docker-tree-filter__clear"
-            title="Clear filter"
+            title="Clear the filter and show all Docker resources"
             @click="
               filterInput = '';
               treeStore.setFilter('');
@@ -152,7 +152,7 @@
             v-if="filterInput"
             type="button"
             class="docker-tree-filter__clear"
-            title="Clear filter"
+            title="Clear the filter and show all Docker resources"
             @click="
               filterInput = '';
               treeStore.setFilter('');

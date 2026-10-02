@@ -12,6 +12,11 @@ import { rlog } from "./lib/renderer-log.js";
 import { apiKey } from "./types/keys.js";
 import { useAccountStore } from "./stores/account.js";
 import { bootstrapMobileSessionFromFragment } from "./mobile-session-bootstrap.js";
+import { installFormValidationFeedback } from "./lib/form-validation.js";
+
+// Use consistent, field-specific feedback for native form constraints across
+// the main app and dynamically mounted dialogs.
+installFormValidationFeedback();
 
 // crypto.randomUUID is gated to secure contexts (HTTPS / localhost / file://).
 // The remote web client served over LAN HTTP is not a secure context, so it

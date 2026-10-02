@@ -28,7 +28,7 @@
       <button
         type="button"
         class="azure-pl-detail__close"
-        title="Close detail"
+        title="Close the selected pipeline details panel"
         aria-label="Close detail"
         @click="$emit('close')"
       >

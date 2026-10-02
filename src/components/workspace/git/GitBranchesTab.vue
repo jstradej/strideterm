@@ -241,9 +241,19 @@
                 class="git-branches__cselect git-branches__cselect--date"
               />
               <template v-if="dateFilter === 'custom'">
-                <input v-model="customSince" type="date" class="git-branches__filter-date" title="Since (inclusive)" />
+                <input
+                  v-model="customSince"
+                  type="date"
+                  class="git-branches__filter-date"
+                  title="Show commits on or after this date"
+                />
                 <span class="git-branches__filter-sep">→</span>
-                <input v-model="customUntil" type="date" class="git-branches__filter-date" title="Until (inclusive)" />
+                <input
+                  v-model="customUntil"
+                  type="date"
+                  class="git-branches__filter-date"
+                  title="Show commits on or before this date"
+                />
               </template>
               <div class="git-branches__filter-paths">
                 <span v-for="p in pathsFilter" :key="p" class="git-branches__path-chip" :title="`Filtering on ${p}`">

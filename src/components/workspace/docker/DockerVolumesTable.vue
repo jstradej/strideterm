@@ -60,7 +60,7 @@
         <button
           type="button"
           class="button button--ghost button--icon-only"
-          title="Open detail / browse"
+          title="Open volume details and browse its files"
           @click="onRowClick(row)"
         >
           ⤢
@@ -124,7 +124,6 @@ interface PendingAction {
 const pendingConfirm = ref<PendingAction | null>(null);
 
 const volumes = computed<DockerVolume[]>(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.volumes) return [];
   return (docker.volumes as DockerVolume[]).filter(
@@ -133,7 +132,6 @@ const volumes = computed<DockerVolume[]>(() => {
 });
 
 const containers = computed<DockerContainer[]>(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.containers) return [];
   return (docker.containers as DockerContainer[]).filter(

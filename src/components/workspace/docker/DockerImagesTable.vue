@@ -84,7 +84,7 @@
         <button
           type="button"
           class="button button--ghost button--icon-only"
-          title="Open detail"
+          title="Open image details"
           @click="onRowClick(row)"
         >
           ⤢
@@ -157,7 +157,6 @@ interface PendingAction {
 const pendingConfirm = ref<PendingAction | null>(null);
 
 const images = computed<DockerImage[]>(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.images) return [];
   return (docker.images as DockerImage[]).filter(
@@ -166,7 +165,6 @@ const images = computed<DockerImage[]>(() => {
 });
 
 const containers = computed<DockerContainer[]>(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.containers) return [];
   return (docker.containers as DockerContainer[]).filter(

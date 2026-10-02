@@ -20,7 +20,7 @@
       type="button"
       class="term-search__toggle"
       :class="{ 'term-search__toggle--on': caseSensitive }"
-      title="Match case"
+      title="Match uppercase and lowercase exactly (case-sensitive search)"
       :aria-pressed="caseSensitive"
       @click="toggleCase"
     >
@@ -30,7 +30,7 @@
       type="button"
       class="term-search__toggle"
       :class="{ 'term-search__toggle--on': wholeWord }"
-      title="Match whole word"
+      title="Match complete words only, not matches inside longer words"
       :aria-pressed="wholeWord"
       @click="toggleWholeWord"
     >
@@ -40,7 +40,7 @@
       type="button"
       class="term-search__toggle"
       :class="{ 'term-search__toggle--on': regex }"
-      title="Use regular expression"
+      title="Treat the search text as a regular expression"
       :aria-pressed="regex"
       @click="toggleRegex"
     >

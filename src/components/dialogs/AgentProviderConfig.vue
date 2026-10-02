@@ -32,7 +32,7 @@
         <span>Skip permission prompts (dangerous)</span>
       </label>
     </template>
-    <label v-else title="Full CLI command including flags">
+    <label v-else title="Enter the full command to launch this CLI, including any flags or arguments.">
       <span>{{ commandLabel }}</span>
       <input v-model="panelCommandModel" :placeholder="commandPlaceholder" maxlength="500" />
     </label>

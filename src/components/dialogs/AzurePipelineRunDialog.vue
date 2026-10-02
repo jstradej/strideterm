@@ -132,7 +132,12 @@
             <template v-else>
               <input v-model="row.key" class="apr-row__key" placeholder="name" />
               <input v-model="row.value" class="apr-row__value" placeholder="value" />
-              <button type="button" class="button button--ghost button--xs" title="Remove" @click="params.splice(i, 1)">
+              <button
+                type="button"
+                class="button button--ghost button--xs"
+                title="Remove this custom parameter row"
+                @click="params.splice(i, 1)"
+              >
                 ✕
               </button>
             </template>

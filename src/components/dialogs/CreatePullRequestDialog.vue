@@ -41,6 +41,7 @@
           class="create-pr__input"
           type="text"
           required
+          data-validation-required="Enter a title for the pull request."
           maxlength="400"
           placeholder="Pull request title"
         />

@@ -76,7 +76,7 @@
         <button
           type="button"
           class="button button--ghost button--icon-only"
-          title="Open detail"
+          title="Open network details"
           @click="onRowClick(row)"
         >
           ⤢
@@ -150,7 +150,6 @@ function isProtected(n: DockerNetwork): boolean {
 }
 
 const networks = computed<DockerNetwork[]>(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.networks) return [];
   return (docker.networks as DockerNetwork[]).filter(
@@ -159,7 +158,6 @@ const networks = computed<DockerNetwork[]>(() => {
 });
 
 const containers = computed<DockerContainer[]>(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.containers) return [];
   return (docker.containers as DockerContainer[]).filter(

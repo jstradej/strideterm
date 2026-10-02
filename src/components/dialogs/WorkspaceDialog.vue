@@ -26,6 +26,7 @@
             name="cwd"
             :placeholder="isCreatingTask && draft.useWorktree ? 'Path to git repository root' : cwdPlaceholder"
             :required="isCreatingTask"
+            data-validation-required="Choose the base repository directory for this task workspace."
             maxlength="500"
             @change="onCwdChange"
           />
@@ -41,7 +42,13 @@
       </label>
       <label>
         <span>Name</span>
-        <input v-model="draft.name" name="name" required maxlength="60" />
+        <input
+          v-model="draft.name"
+          name="name"
+          required
+          data-validation-required="Enter a name for this workspace."
+          maxlength="60"
+        />
       </label>
       <!-- Badge / accent / notes rarely need editing during creation, so
            they're tucked behind a collapsed disclosure to keep the primary
@@ -115,6 +122,7 @@
             name="worktreeBranch"
             placeholder="e.g. task/add-pagination"
             :required="draft.useWorktree"
+            data-validation-required="Enter a branch name for the task worktree."
             maxlength="200"
             pattern="[\-a-zA-Z0-9._\/]+"
             title="Only letters, numbers, dots, hyphens, slashes, or underscores"
