@@ -126,7 +126,34 @@ export async function launchApp(fixture: FixtureName = "empty", options: LaunchO
 
   await page.waitForLoadState("load");
   await page.waitForSelector("h1, h2", { timeout: 30_000 }).catch(() => undefined);
+  await waitForRuntimeIpc(page);
   return { app, page, dataDir, errors };
+}
+
+/**
+ * The first window renders from the bootstrap payload while createRuntime()
+ * is still starting; the full IPC surface is registered only once it finishes
+ * (see registerBootstrapIpcHandlers in electron/main.ts). A spec that invokes
+ * a mutation before then gets "No handler registered" — slow Windows runners
+ * hit that routinely. Wait until a runtime-only, read-only channel answers.
+ */
+async function waitForRuntimeIpc(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          (
+            window as unknown as { strideterm: { getApprovalAuditStats: (filters: object) => Promise<unknown> } }
+          ).strideterm
+            .getApprovalAuditStats({})
+            .then(
+              () => true,
+              (error: unknown) => !String((error as Error)?.message ?? error).includes("No handler registered"),
+            ),
+        ),
+      { timeout: 60_000 },
+    )
+    .toBe(true);
 }
 
 /**
@@ -173,6 +200,7 @@ export async function relaunchApp(dataDir: string, options: LaunchOptions = {}):
 
   await page.waitForLoadState("load");
   await page.waitForSelector("h1, h2", { timeout: 30_000 }).catch(() => undefined);
+  await waitForRuntimeIpc(page);
   return { app, page, dataDir, errors };
 }
 

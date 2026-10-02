@@ -708,7 +708,12 @@ export async function startMockServer({
       method: req.method,
       headers: { ...req.headers, host: viteUrl.host },
     });
+    // Node stops watching an upgraded socket for errors, and a closing page
+    // resets the HMR socket. Without these listeners that ECONNRESET is an
+    // uncaught exception that fails whichever test happens to be running.
+    socket.on("error", () => socket.destroy());
     proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
+      proxySocket.on("error", () => socket.destroy());
       socket.write(
         `HTTP/1.1 101 Switching Protocols\r\n` +
           Object.entries(proxyRes.headers)
