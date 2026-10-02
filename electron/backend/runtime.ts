@@ -77,6 +77,7 @@ import { createRelayE2eSessionStore } from "./mobile/mobile-relay-e2e-session-st
 import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
 import { createMobileFirebaseRestClient } from "./mobile/mobile-firebase-rest.js";
 import { createInstallationTokenRefreshListener } from "./account/installation-token-refresh.js";
+import { withPairingEntitlementCatchUp } from "./mobile/pairing-entitlement-catch-up.js";
 import { loadRelayInstallationIdentity } from "./mobile/mobile-relay-identity.js";
 import { AccountManager, AccountManagerError } from "./account/account-manager.js";
 import type { AccountManagerDeps } from "./account/account-manager.js";
@@ -1876,6 +1877,9 @@ export async function createRuntime({
     // credential store.
     forgetInstallationCredential: async () => {
       await installationRestClient?.forgetSession();
+    },
+    refreshInstallationToken: async () => {
+      await installationRestClient?.refreshSession();
     },
     // The durable local binding marker — see `MOBILE_ACCOUNT_BINDING_REF`. A seam rather than a
     // credential-store import for the same reason `forgetInstallationCredential` is one: the manager
@@ -7820,7 +7824,17 @@ export async function createRuntime({
 
     /** Creates a pairing invitation (QR payload) — plan §5.2. Returned directly (not via getPayload): the invitation/secret is ephemeral and never persisted to state.json. */
     async createMobilePairingInvitation(options: { profileAllowlist: string[]; capabilities: string[] }) {
-      return mobileManager.createInvitation(options);
+      // Right after a trial starts the overview already says "trial" while the installation token
+      // still carries the old claims; see `pairing-entitlement-catch-up.ts`.
+      return withPairingEntitlementCatchUp(() => mobileManager.createInvitation(options), {
+        ledgerState: () => accountManager.state().entitlement?.state,
+        refreshToken: async () => installationRestClient?.refreshSession(),
+        onRetry: (attempt) => {
+          log.info("pairing refused for entitlement while the account is entitled; retrying with a fresh token", {
+            attempt,
+          });
+        },
+      });
     },
 
     async cancelMobilePairingInvitation() {

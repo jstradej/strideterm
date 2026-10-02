@@ -77,6 +77,7 @@ function fakes(
     billingHosts?: readonly string[];
     knownPairIds?: readonly string[];
     forgetInstallationCredential?: () => Promise<void>;
+    refreshInstallationToken?: () => Promise<void>;
     /**
      * The durable local binding marker — F12, and a STATE since G13. Seeded here, written through by
      * the manager; `failWrites` makes the store refuse, and `writes` records every marker asked for.
@@ -187,6 +188,9 @@ function fakes(
     ...(options.forgetInstallationCredential === undefined
       ? {}
       : { forgetInstallationCredential: options.forgetInstallationCredential }),
+    ...(options.refreshInstallationToken === undefined
+      ? {}
+      : { refreshInstallationToken: options.refreshInstallationToken }),
     ...(options.binding === undefined
       ? {}
       : {
@@ -623,6 +627,50 @@ describe("enrolment", () => {
     const { manager } = fakes({ overview: withPhone });
     await signIn(manager);
     await expect(manager.enrolThisInstallation()).rejects.toMatchObject({ code: "account-mismatch" });
+  });
+});
+
+describe("a started trial is on the installation token before the page says so", () => {
+  // "Start trial", then straight to "Pair a phone": the page already said `trial`, the installation
+  // token still carried the old claims, and `createPairingInvitation` refused the click with
+  // `entitlement-required`. The answer's `claimsChanged` is the cue to mint a new token, and it has
+  // to be minted BEFORE the overview re-read that makes the page offer the button.
+  test("`claimsChanged` refreshes the installation token before the overview is re-read", async () => {
+    let overviewReadsAtRefresh = -1;
+    const fixture = fakes({
+      refreshInstallationToken: async () => {
+        overviewReadsAtRefresh = (fixture.transport.getAccountOverview as ReturnType<typeof vi.fn>).mock.calls.length;
+      },
+    });
+    await signIn(fixture.manager, "reauth");
+    await fixture.manager.startTrial();
+    const overviewReads = (fixture.transport.getAccountOverview as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(overviewReadsAtRefresh).toBeGreaterThanOrEqual(0);
+    expect(overviewReads).toBeGreaterThan(overviewReadsAtRefresh);
+  });
+
+  test("an answer that changed no claims mints no token", async () => {
+    const refreshInstallationToken = vi.fn(async () => {});
+    const fixture = fakes({ refreshInstallationToken });
+    (fixture.transport.startTrial as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      status: "already-started",
+      notAfter: NOW + 86_400_000,
+      claimsChanged: false,
+    });
+    await signIn(fixture.manager, "reauth");
+    await fixture.manager.startTrial();
+    expect(refreshInstallationToken).not.toHaveBeenCalled();
+  });
+
+  test("a refresh that fails does not undo a trial the server granted", async () => {
+    const fixture = fakes({
+      refreshInstallationToken: async () => {
+        throw new Error("fetch failed");
+      },
+    });
+    await signIn(fixture.manager, "reauth");
+    await expect(fixture.manager.startTrial()).resolves.toBeUndefined();
+    expect(fixture.manager.state().entitlement?.state).toBe("trial");
   });
 });
 

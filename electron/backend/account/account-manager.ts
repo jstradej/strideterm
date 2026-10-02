@@ -170,6 +170,15 @@ export interface AccountManagerDeps {
    */
   readonly forgetInstallationCredential?: () => Promise<void>;
   /**
+   * Mints a new INSTALLATION ID token now, whatever the cached one's expiry says.
+   *
+   * For an answer that says `claimsChanged: true`. A custom claim is baked in when the token is
+   * minted, and every entitlement-gated door (`createPairingInvitation` first among them) checks the
+   * installation's token — not the overview this page renders. A seam for the same reason
+   * `forgetInstallationCredential` is one: the manager must not own the installation session.
+   */
+  readonly refreshInstallationToken?: () => Promise<void>;
+  /**
    * The DURABLE, LOCAL record of whether this machine is enrolled — read at start-up, before any
    * network call.
    *
@@ -1676,6 +1685,20 @@ export class AccountManager extends EventEmitter {
     // `not-eligible` carries WHY — the trial tombstone for this key, an account that has already
     // paid, a key that belongs elsewhere — and the page needs the reason, not just a refusal.
     if (result.status === "not-eligible") throw new AccountManagerError(toAccountErrorCode({ code: result.reason }));
+    // THE TOKEN BEFORE THE PAGE. The overview below is what makes the page say "trial" and offer
+    // "Pair a phone"; the old token would have that click refused with `entitlement-required` until
+    // the token-refresh marker happened to arrive. The server answers only once the claims are issued,
+    // so one refresh here is enough. A failed refresh does not undo a trial that was granted — the
+    // marker listener and the next expiry still pick the claims up.
+    if (result.claimsChanged) {
+      try {
+        await this.deps.refreshInstallationToken?.();
+      } catch (error) {
+        log.warn("account: the installation token could not be refreshed after the trial started", {
+          code: codeOf(error),
+        });
+      }
+    }
     this.requireScope(scope);
     await this.refreshOverviewInternal(transport);
   }
