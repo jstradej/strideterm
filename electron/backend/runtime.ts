@@ -8044,6 +8044,22 @@ export async function createRuntime({
     async activateSessionForRemoteClient(clientId: string, workspaceId: any, sessionId: any): Promise<unknown> {
       const registry = requireRemoteClientRegistry(clientId);
       registry.activateSession(clientId, workspaceId, sessionId, getState());
+      // Remember the tab on the workspace, as the desktop paths do: switching
+      // back restores the view from activeViewId / activePanelId, and without
+      // this a phone's terminal-tab switch was never stored, so it returned to
+      // a stale view. Only the workspace's own memory — never the desktop's
+      // global activeWorkspaceId or a window slot.
+      const descriptor = parseSessionId(String(sessionId || ""));
+      if (descriptor) {
+        await store.mutate((draft: AppState) => {
+          const workspace = findWorkspace(draft, descriptor.workspaceId);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (workspace && (workspace as any).panels?.some((panel: any) => panel.id === descriptor.panelId)) {
+            workspace.activePanelId = descriptor.panelId;
+            workspace.activeViewId = String(sessionId);
+          }
+        });
+      }
       if (sessionId) {
         // No `lastWorkedAt` stamp: opening a tab is navigation, not work.
         ensureSessionSafe(String(sessionId));

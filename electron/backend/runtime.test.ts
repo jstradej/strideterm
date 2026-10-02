@@ -12387,6 +12387,35 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     expect(fixture.store.getState().windowSlots!.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
   });
 
+  // The renderer restores a workspace's tab from its stored activeViewId /
+  // activePanelId. The phone's terminal-tab switches never wrote them (only its
+  // non-terminal views did), so switching away and back landed on a stale view.
+  test("remote tab switch is remembered per workspace — and still stamps nothing", async () => {
+    const state = makeProfileSwitchState();
+    state.projects[0].panels.push({ id: "logs", title: "Logs", command: "", shell: true, startup: "default" });
+    (state.projects[0] as Record<string, unknown>).activeViewId = "git:ws-a1";
+    state.projects.push({ ...state.projects[0], id: "ws-a2", name: "A2", activePanelId: "shell" });
+    const fixture = await createFixture({ initialState: state });
+    fixtures.push(fixture);
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-a1");
+    await fixture.runtime.activateSessionForRemoteClient("mobile-1", "ws-a1", "ws-a1:logs");
+    await fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-a2");
+    await fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-a1");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ws = fixture.store.getState().workspaces.find((w: any) => w.id === "ws-a1") as Record<string, unknown>;
+    expect(ws.activeViewId).toBe("ws-a1:logs");
+    expect(ws.activePanelId).toBe("logs");
+    expect(workedAt(fixture, "ws-a1")).toBeUndefined();
+    // Remembering the phone's tab never moves the desktop's own selection.
+    expect(fixture.store.getState().activeWorkspaceId).toBe("ws-a1");
+    expect(fixture.store.getState().windowSlots!.find((s) => s.id === "win-1")?.activeSessionId).toBe("ws-a1:shell");
+  });
+
   test("putting a workspace in the grid and focusing it stamps nothing", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
