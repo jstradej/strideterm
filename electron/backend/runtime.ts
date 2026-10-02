@@ -284,6 +284,24 @@ export function createTunnelOriginUrl(
 // Re-export for consumers that import from runtime.js
 export { detectTerminalEnvironmentImpl as detectTerminalEnvironment };
 
+/**
+ * Profiles open in a desktop window, the profile of the most recently focused window first, each
+ * once. `focusedAt` is the runtime's live focus record; a window it has not seen take focus falls
+ * back to its slot's `lastFocusedAt` (the slot's creation time).
+ */
+export function orderProfilesByWindowFocus(
+  slots: ReadonlyArray<{ id: string; profileId?: string; lastFocusedAt?: number }>,
+  focusedAt: ReadonlyMap<string, number>,
+): string[] {
+  const at = (slot: { id: string; lastFocusedAt?: number }) => focusedAt.get(slot.id) ?? slot.lastFocusedAt ?? 0;
+  const order: string[] = [];
+  for (const slot of [...slots].sort((a, b) => at(b) - at(a))) {
+    const profileId = String(slot.profileId || "");
+    if (profileId && !order.includes(profileId)) order.push(profileId);
+  }
+  return order;
+}
+
 function probeRemoteOrigin(originUrl: string, timeoutMs = 1200): Promise<number> {
   const target = new URL(originUrl);
   return new Promise((resolve, reject) => {
@@ -523,6 +541,15 @@ export async function createRuntime({
   // registry, or — with no LAN listener enabled, which is the ordinary case for a relay user — to
   // nothing at all, and `getWindowProfileId` then answered "unknown viewer", which every
   // `assertWorkspaceInViewerProfile` reads as "no guard to apply".
+  // When each desktop window last took focus. In memory only: focus changes on every alt-tab,
+  // `store.mutate` is a durable write, and the order means nothing after a restart — while the
+  // persisted `windowSlots[].lastFocusedAt` is only the slot's creation time (nothing updates it).
+  const windowFocusedAt = new Map<string, number>();
+
+  function desktopProfileFocusOrder(): string[] {
+    return orderProfilesByWindowFocus(getState().windowSlots || [], windowFocusedAt);
+  }
+
   const _remoteClientRegistries = new Set<RemoteClientRegistry>();
   /** The primary (LAN/tunnel) server's registry, replaced rather than accumulated when it restarts. */
   let _primaryRemoteClientRegistry: RemoteClientRegistry | null = null;
@@ -1439,6 +1466,7 @@ export async function createRuntime({
     // The relay end-to-end latch (`MobileDeviceRecord.relayE2eSeenAt`), written once a device has
     // completed an encrypted relay session.
     markRelayE2eSeen: (deviceId: string) => mobileDeviceStore.markRelayE2eSeen(deviceId),
+    desktopProfileFocusOrder,
   });
 
   // The real, Firebase-backed transport (mobile-firebase-transport-rest.ts). Its configuration
@@ -8492,7 +8520,13 @@ export async function createRuntime({
       return { id: newId, profileId, bounds: defaultBounds };
     },
 
+    /** Called by main.ts whenever a desktop window takes focus — see `windowFocusedAt`. */
+    noteWindowFocused(windowId: string): void {
+      if (windowId) windowFocusedAt.set(windowId, Date.now());
+    },
+
     async removeWindowSlot(windowId: string) {
+      windowFocusedAt.delete(windowId);
       // The window that started the sign-in is closing, so the person who started it is gone. Any
       // OTHER window closing leaves the attempt alone — the link may be open on a phone right now.
       if (signInOwnerWindowId !== null && signInOwnerWindowId === windowId) {

@@ -185,6 +185,12 @@ export interface MobileCommandDispatcherDeps {
   e2eOfferStore?: RelayE2eOfferStore;
   /** Where the derived session keys land, keyed by the ticket that was issued alongside them. */
   e2eSessionStore?: RelayE2eSessionStore;
+  /**
+   * Profiles open in a desktop window, the most recently focused window's profile first. Lets the
+   * phone's profile picker lead with what the person is working on at the desk. Absent in a test
+   * that does not care — the catalog then carries no desktop order.
+   */
+  desktopProfileFocusOrder?: () => string[];
   now?: () => number;
 }
 
@@ -526,20 +532,32 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         // enumerate profiles the phone was never granted. Workspace counts let the picker explain
         // why an otherwise-authorized empty profile cannot open a useful remote session.
         const allowed = new Set(device.profileAllowlist);
+        // Which allowed profiles are open on the desktop, most recently focused window first. The
+        // rank is counted among ALLOWED profiles only, so a gap cannot hint at a window of a
+        // profile this phone may not see; `desktopActive` marks the profile of the focused window
+        // itself, and is simply absent when that window belongs to a profile outside the allowlist.
+        const focusOrder = deps.desktopProfileFocusOrder?.() ?? [];
+        const openAllowed = focusOrder.filter((profileId) => allowed.has(profileId));
         return succeeded({
           profiles: state.profiles
             .filter((profile) => allowed.has(profile.id))
-            .map((profile) => ({
-              id: profile.id,
-              name: profile.name,
-              workspaceCount: state.workspaces.filter((workspace) => (workspace.profileId || "default") === profile.id)
-                .length,
-              workspaceNames: state.workspaces
-                .filter((workspace) => (workspace.profileId || "default") === profile.id)
-                .map((workspace) => formatWorkspaceDisplayName(workspace))
-                .filter((name): name is string => typeof name === "string" && name.length > 0)
-                .slice(0, 5),
-            })),
+            .map((profile) => {
+              const desktopRank = openAllowed.indexOf(profile.id);
+              return {
+                id: profile.id,
+                name: profile.name,
+                workspaceCount: state.workspaces.filter(
+                  (workspace) => (workspace.profileId || "default") === profile.id,
+                ).length,
+                workspaceNames: state.workspaces
+                  .filter((workspace) => (workspace.profileId || "default") === profile.id)
+                  .map((workspace) => formatWorkspaceDisplayName(workspace))
+                  .filter((name): name is string => typeof name === "string" && name.length > 0)
+                  .slice(0, 5),
+                ...(desktopRank >= 0 ? { desktopRank } : {}),
+                ...(focusOrder[0] === profile.id ? { desktopActive: true } : {}),
+              };
+            }),
         });
       }
 

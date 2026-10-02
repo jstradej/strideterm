@@ -837,6 +837,9 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
 
   win.on("focus", () => {
     windowFocusedAt.set(id, Date.now());
+    // The runtime keeps its own copy: the phone's profile picker puts the profile of the most
+    // recently focused window first.
+    runtimeState.runtime?.noteWindowFocused?.(id);
     win.flashFrame(false);
   });
 

@@ -3,7 +3,12 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createRuntime, detectTerminalEnvironment, hasMeaningfulUserInput } from "./runtime.js";
+import {
+  createRuntime,
+  detectTerminalEnvironment,
+  hasMeaningfulUserInput,
+  orderProfilesByWindowFocus,
+} from "./runtime.js";
 import { isValidNativeDirectoryName } from "./runtime.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { createSessionId, normalizeState } from "./default-state.js";
@@ -1193,6 +1198,27 @@ describe("hasMeaningfulUserInput", () => {
 
   test("returns true when mouse event is followed by typed text", () => {
     expect(hasMeaningfulUserInput("\x1b[<0;40;12Mabc")).toBe(true);
+  });
+});
+
+describe("orderProfilesByWindowFocus", () => {
+  const slots = [
+    { id: "w1", profileId: "a", lastFocusedAt: 100 },
+    { id: "w2", profileId: "b", lastFocusedAt: 200 },
+    { id: "w3", profileId: "a", lastFocusedAt: 300 },
+    { id: "w4", profileId: "c", lastFocusedAt: 50 },
+  ];
+
+  test("falls back to the slots' own timestamps before any window took focus", () => {
+    expect(orderProfilesByWindowFocus(slots, new Map())).toEqual(["a", "b", "c"]);
+  });
+
+  test("the live focus record wins, and a profile with two windows appears once", () => {
+    const focusedAt = new Map([
+      ["w4", 1000],
+      ["w2", 900],
+    ]);
+    expect(orderProfilesByWindowFocus(slots, focusedAt)).toEqual(["c", "b", "a"]);
   });
 });
 

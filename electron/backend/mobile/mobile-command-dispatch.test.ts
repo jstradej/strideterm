@@ -356,6 +356,52 @@ describe("profile catalog", () => {
       ],
     });
   });
+
+  describe("desktop window order", () => {
+    const profiles = [
+      { id: "default", name: "Default", color: "#111", workspaceIds: [] },
+      { id: "other", name: "Other", color: "#222", workspaceIds: [] },
+      { id: "third", name: "Third", color: "#333", workspaceIds: [] },
+      { id: "secret", name: "Secret", color: "#444", workspaceIds: [] },
+    ];
+    const device = () => makeDevice({ capabilities: ["status.read"], profileAllowlist: ["default", "other", "third"] });
+    const desktopFields = (data: unknown) =>
+      (data as { profiles: Array<Record<string, unknown>> }).profiles.map(({ id, desktopRank, desktopActive }) => ({
+        id,
+        desktopRank,
+        desktopActive,
+      }));
+
+    test("ranks open profiles by window focus and marks the focused window's profile", async () => {
+      const { dispatcher } = await createFixture({ profiles }, null, null, {
+        desktopProfileFocusOrder: () => ["third", "secret", "default"],
+      });
+
+      const result = await dispatcher.dispatch(makeCommand({ type: "profile.catalog.get", payload: {} }), device());
+
+      expect(desktopFields(result.data)).toEqual([
+        // Dense among ALLOWED profiles: the secret window between them leaves no gap.
+        { id: "default", desktopRank: 1, desktopActive: undefined },
+        { id: "other", desktopRank: undefined, desktopActive: undefined },
+        { id: "third", desktopRank: 0, desktopActive: true },
+      ]);
+    });
+
+    test("marks nothing active when the focused window belongs to a profile the phone may not see", async () => {
+      const { dispatcher } = await createFixture({ profiles }, null, null, {
+        desktopProfileFocusOrder: () => ["secret", "other"],
+      });
+
+      const result = await dispatcher.dispatch(makeCommand({ type: "profile.catalog.get", payload: {} }), device());
+
+      expect(desktopFields(result.data)).toEqual([
+        { id: "default", desktopRank: undefined, desktopActive: undefined },
+        { id: "other", desktopRank: 0, desktopActive: undefined },
+        { id: "third", desktopRank: undefined, desktopActive: undefined },
+      ]);
+      expect(JSON.stringify(result.data)).not.toContain("secret");
+    });
+  });
 });
 
 describe("cross-profile workspace rejection", () => {
