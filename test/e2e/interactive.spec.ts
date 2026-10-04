@@ -147,13 +147,13 @@ test.describe("Settings dialog", () => {
     await expect(overlay).toBeVisible({ timeout: 3_000 });
     await expect(overlay.locator("h2")).toHaveText("Settings");
 
-    // General tab should be active with theme buttons. The buttons render
-    // the lowercase theme id ("dark"/"light"/"system"); pair lowercase
-    // with `exact: true` so we don't also match "System default" in the
+    // General tab should be active with theme buttons. Scope to the theme
+    // group so "System" does not also match "System default" in the
     // path-opener-mode group.
-    await expect(overlay.getByText("dark", { exact: true })).toBeVisible();
-    await expect(overlay.getByText("light", { exact: true })).toBeVisible();
-    await expect(overlay.getByText("system", { exact: true })).toBeVisible();
+    const themes = overlay.getByRole("group", { name: "Color theme" });
+    await expect(themes.getByRole("button", { name: "Dark", exact: true })).toBeVisible();
+    await expect(themes.getByRole("button", { name: "Light", exact: true })).toBeVisible();
+    await expect(themes.getByRole("button", { name: "System", exact: true })).toBeVisible();
     assertNoErrors(page);
   });
 

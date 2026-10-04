@@ -120,8 +120,18 @@ async function inspectPrivateKeyPermissions(file: string): Promise<void> {
   const identity = whoami.match(/"([^"]+)","(S-1-[0-9-]+)"/);
   expect(identity, `Could not read current Windows user SID: ${whoami}`).not.toBeNull();
   const [account, sid] = identity!.slice(1);
-  const keyAcl = icacls.split(/\r?\n/).find((line) => line.toLowerCase().startsWith(file.toLowerCase()));
-  expect(keyAcl?.toLowerCase()).toContain(`${account.toLowerCase()}:(f)`);
+  const lines = icacls.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.toLowerCase().startsWith(file.toLowerCase()));
+  expect(start, `icacls did not list ${file}: ${icacls}`).toBeGreaterThanOrEqual(0);
+  // icacls prints the first ACE after the path and every further ACE on its own
+  // indented line; the user's ACE is not necessarily first (e.g. after SYSTEM).
+  const aces = [lines[start]!.slice(file.length).trim()];
+  for (const line of lines.slice(start + 1)) {
+    if (!/^\s+\S/.test(line)) break;
+    aces.push(line.trim());
+  }
+  const keyAcl = aces.join("\n");
+  expect(keyAcl.toLowerCase()).toContain(`${account.toLowerCase()}:(f)`);
   expect(sid).toMatch(/^S-1-/);
   expect(keyAcl).not.toMatch(/(?:Everyone|Users|Authenticated Users|S-1-1-0|S-1-5-32-545|S-1-5-11)\s*:/i);
 }
