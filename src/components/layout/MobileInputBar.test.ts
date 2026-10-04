@@ -21,6 +21,41 @@ const SESSION_ID = "ws-a:panel-shell";
 const ORIGIN_WS = "ws-a";
 const COLLAPSED_KEY = "strideterm-mobile-input-collapsed";
 
+function mockScreenOrientation(initialType: string) {
+  let type = initialType;
+  const orientation = new EventTarget() as unknown as ScreenOrientation;
+  Object.defineProperty(orientation, "type", { configurable: true, get: () => type });
+  const descriptor = Object.getOwnPropertyDescriptor(window.screen, "orientation");
+  Object.defineProperty(window.screen, "orientation", { configurable: true, value: orientation });
+  return {
+    setType(nextType: string) {
+      type = nextType;
+      orientation.dispatchEvent(new Event("change"));
+    },
+    restore() {
+      if (descriptor) Object.defineProperty(window.screen, "orientation", descriptor);
+      else Reflect.deleteProperty(window.screen, "orientation");
+    },
+  };
+}
+
+function mockPhysicalScreenSize(width: number, height: number) {
+  const descriptors = new Map(
+    ["orientation", "width", "height"].map((key) => [key, Object.getOwnPropertyDescriptor(window.screen, key)]),
+  );
+  Object.defineProperty(window.screen, "orientation", { configurable: true, value: undefined });
+  Object.defineProperty(window.screen, "width", { configurable: true, value: width });
+  Object.defineProperty(window.screen, "height", { configurable: true, value: height });
+  return {
+    restore() {
+      for (const [key, descriptor] of descriptors) {
+        if (descriptor) Object.defineProperty(window.screen, key, descriptor);
+        else Reflect.deleteProperty(window.screen, key);
+      }
+    },
+  };
+}
+
 function mountBar({
   isRemote = true,
   sessionId = SESSION_ID as string | null,
@@ -74,6 +109,7 @@ describe("MobileInputBar", () => {
 
   it("landscape types into the draft without sending, supports selection, and restores the system keyboard in portrait", async () => {
     let portrait = false;
+    const screenOrientation = mockScreenOrientation("landscape-primary");
     const listeners: Array<() => void> = [];
     const media = vi.spyOn(window, "matchMedia").mockImplementation(
       (query) =>
@@ -112,6 +148,7 @@ describe("MobileInputBar", () => {
       expect(input.attributes("inputmode")).toBe("text");
       expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
       portrait = true;
+      screenOrientation.setType("portrait-primary");
       listeners.forEach((fn) => fn());
       await nextTick();
       expect(wrapper.classes()).not.toContain("mobile-input-bar--landscape");
@@ -120,6 +157,74 @@ describe("MobileInputBar", () => {
     } finally {
       wrapper.unmount();
       media.mockRestore();
+      screenOrientation.restore();
+    }
+  });
+
+  it.each(["Screen Orientation API", "physical screen dimensions fallback"] as const)(
+    "keeps the composer focused when the keyboard makes a portrait viewport look landscape (%s)",
+    async (orientationSource) => {
+      let viewportPortrait = true;
+      const listeners: Array<() => void> = [];
+      const media = vi.spyOn(window, "matchMedia").mockImplementation(
+        (query) =>
+          ({
+            get matches() {
+              return query === "(orientation: portrait)" ? viewportPortrait : true;
+            },
+            addEventListener: (_event: string, fn: () => void) => listeners.push(fn),
+            removeEventListener: vi.fn(),
+          }) as unknown as MediaQueryList,
+      );
+      const physicalScreen =
+        orientationSource === "Screen Orientation API"
+          ? mockScreenOrientation("portrait-primary")
+          : mockPhysicalScreenSize(393, 852);
+      const { wrapper } = mountBar();
+      try {
+        await nextTick();
+        document.body.appendChild(wrapper.element);
+        const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input").element;
+        input.focus();
+        expect(document.activeElement).toBe(input);
+
+        // Android Chrome can resize the CSS viewport below its width while the
+        // physical phone stays portrait and its text input still owns focus.
+        viewportPortrait = false;
+        listeners.forEach((fn) => fn());
+        await nextTick();
+
+        expect(wrapper.find(".mobile-input-bar--landscape").exists()).toBe(false);
+        expect(wrapper.find(".mobile-input-bar__input").exists()).toBe(true);
+        expect(document.activeElement).toBe(input);
+      } finally {
+        viewportPortrait = true;
+        listeners.forEach((fn) => fn());
+        wrapper.unmount();
+        media.mockRestore();
+        physicalScreen.restore();
+      }
+    },
+  );
+
+  it("keeps viewport orientation behavior for fine-pointer desktop layouts", async () => {
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query !== "(any-pointer: coarse)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const screenOrientation = mockScreenOrientation("landscape-primary");
+    const { wrapper } = mountBar();
+    try {
+      await nextTick();
+      expect(wrapper.find(".mobile-input-bar--landscape").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+      media.mockRestore();
+      screenOrientation.restore();
     }
   });
 

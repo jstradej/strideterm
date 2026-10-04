@@ -261,8 +261,26 @@ const targetSessionId = computed<string | null>(() => {
 const draft = ref("");
 const collapsed = ref(readMobileInputBarCollapsed());
 const inputRef = ref<HTMLInputElement | null>(null);
-const { isMobile, isPortrait } = useIsNarrow();
-const landscape = computed(() => isMobile.value && !isPortrait.value);
+const { isMobile, isPortrait, hasCoarsePointer } = useIsNarrow();
+const devicePortrait = ref(readDevicePortrait());
+const orientationPortrait = computed(() =>
+  hasCoarsePointer.value && devicePortrait.value !== null ? devicePortrait.value : isPortrait.value,
+);
+const landscape = computed(() => isMobile.value && !orientationPortrait.value);
+
+function readDevicePortrait(): boolean | null {
+  const orientationType = window.screen.orientation?.type;
+  if (orientationType?.startsWith("portrait")) return true;
+  if (orientationType?.startsWith("landscape")) return false;
+
+  const { width, height } = window.screen;
+  if (width > 0 && height > 0 && width !== height) return height > width;
+  return null;
+}
+
+function updateDeviceOrientation(): void {
+  devicePortrait.value = readDevicePortrait();
+}
 const landscapeExpanded = ref(false);
 const panelCollapsed = computed(() => (landscape.value ? !landscapeExpanded.value : collapsed.value));
 const systemKeyboard = ref(true);
@@ -383,6 +401,8 @@ async function focusComposer() {
   inputRef.value?.focus({ preventScroll: true });
 }
 onUnmounted(() => {
+  window.screen.orientation?.removeEventListener("change", updateDeviceOrientation);
+  window.removeEventListener("orientationchange", updateDeviceOrientation);
   postKeyboardAvailability(false);
   window.removeEventListener("strideterm:focus-composer", focusComposer);
   window.removeEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
@@ -390,6 +410,8 @@ onUnmounted(() => {
   window.removeEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
 });
 onMounted(() => {
+  window.screen.orientation?.addEventListener("change", updateDeviceOrientation);
+  window.addEventListener("orientationchange", updateDeviceOrientation);
   postKeyboardAvailability(!!api?.isRemote && !!targetSessionId.value);
   window.addEventListener("strideterm:focus-composer", focusComposer);
   window.addEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
