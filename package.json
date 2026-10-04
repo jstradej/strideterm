@@ -185,7 +185,6 @@
     "@types/ws": "8.18.2",
     "@types/yauzl": "3.4.0",
     "@vitejs/plugin-vue": "^6",
-    "@vue/eslint-config-typescript": "14.9.0",
     "@vue/test-utils": "^2.5",
     "concurrently": "^10.0.5",
     "electron": "^44.4.3",
