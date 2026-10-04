@@ -34,6 +34,8 @@ async function getFreePort(): Promise<number> {
   });
 }
 
+// The audit logger writes through winston's async file stream and closing it does not wait for the
+// flush, so callers read it inside `vi.waitFor` instead of once.
 async function readAuditLog(name: string): Promise<string> {
   try {
     return await fs.readFile(path.join(getLogDir(), `${name}.log`), "utf8");
@@ -3896,11 +3898,13 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
     } finally {
       await server.close();
     }
-    const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
-    expect(audit).toContain('"routeCategory":"mobile-session-bootstrap"');
-    expect(audit).toContain('"statusCode":400');
-    expect(audit).toContain('"reason":"invalid-schema"');
-    expect(audit).not.toContain("do-not-log-schema-marker");
+    await vi.waitFor(async () => {
+      const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
+      expect(audit).toContain('"routeCategory":"mobile-session-bootstrap"');
+      expect(audit).toContain('"statusCode":400');
+      expect(audit).toContain('"reason":"invalid-schema"');
+      expect(audit).not.toContain("do-not-log-schema-marker");
+    });
   });
 
   test("logs a body parse failure without including request content", async () => {
@@ -3922,11 +3926,13 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
     } finally {
       await server.close();
     }
-    const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
-    expect(audit).toContain('"routeCategory":"mobile-session-bootstrap"');
-    expect(audit).toContain('"statusCode":400');
-    expect(audit).toContain('"reason":"body-read"');
-    expect(audit).not.toContain("do-not-log-body-marker");
+    await vi.waitFor(async () => {
+      const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
+      expect(audit).toContain('"routeCategory":"mobile-session-bootstrap"');
+      expect(audit).toContain('"statusCode":400');
+      expect(audit).toContain('"reason":"body-read"');
+      expect(audit).not.toContain("do-not-log-body-marker");
+    });
   });
 
   test("this route requires no master token or existing session — it is reachable with no Authorization/cookie at all", async () => {
@@ -5056,20 +5062,22 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         expect(
           rows.filter((row) => row.action === "session.ended").every((row) => row.detail === "reason=idle-expired"),
         ).toBe(true);
-        const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
-        const sessionRefs = (message: string) =>
-          audit
-            .split("\n")
-            .filter((line) => line.includes(message))
-            .map((line) => line.match(/"sessionRef":"(cookie:[a-f0-9]{12})"/)?.[1]);
-        const started = sessionRefs("mobile session bootstrap succeeded");
-        const ended = sessionRefs("mobile session ended");
-        expect(started).toHaveLength(2);
-        expect(new Set(started).size).toBe(2);
-        expect(started.every((ref) => ref !== undefined)).toBe(true);
-        expect(ended.sort()).toEqual(started.sort());
-        expect(audit).not.toContain(firstCookie.split("=")[1]);
-        expect(audit).not.toContain(secondCookie.split("=")[1]);
+        await vi.waitFor(async () => {
+          const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
+          const sessionRefs = (message: string) =>
+            audit
+              .split("\n")
+              .filter((line) => line.includes(message))
+              .map((line) => line.match(/"sessionRef":"(cookie:[a-f0-9]{12})"/)?.[1]);
+          const started = sessionRefs("mobile session bootstrap succeeded");
+          const ended = sessionRefs("mobile session ended");
+          expect(started).toHaveLength(2);
+          expect(new Set(started).size).toBe(2);
+          expect(started.every((ref) => ref !== undefined)).toBe(true);
+          expect(ended.sort()).toEqual(started.sort());
+          expect(audit).not.toContain(firstCookie.split("=")[1]);
+          expect(audit).not.toContain(secondCookie.split("=")[1]);
+        });
       },
     );
   });
@@ -5387,14 +5395,16 @@ describe("the managed relay's loopback-only internal origin", () => {
     } finally {
       await server.close();
     }
-    const audit = (await readAuditLog("relay-origin-api-audit")).slice(previousAudit.length);
-    expect(audit).toContain('"surface":"http"');
-    expect(audit).toContain('"surface":"websocket"');
-    expect(audit).toContain('"routeCategory":"pre-routing"');
-    expect(audit).toContain('"statusCode":403');
-    expect(audit).toContain('"reason":"loopback-guard"');
-    expect(audit).not.toContain(GUARD);
-    expect(audit).not.toContain(MASTER_TOKEN);
+    await vi.waitFor(async () => {
+      const audit = (await readAuditLog("relay-origin-api-audit")).slice(previousAudit.length);
+      expect(audit).toContain('"surface":"http"');
+      expect(audit).toContain('"surface":"websocket"');
+      expect(audit).toContain('"routeCategory":"pre-routing"');
+      expect(audit).toContain('"statusCode":403');
+      expect(audit).toContain('"reason":"loopback-guard"');
+      expect(audit).not.toContain(GUARD);
+      expect(audit).not.toContain(MASTER_TOKEN);
+    });
   });
 
   test("refuses to bind anything that is not loopback", async () => {
