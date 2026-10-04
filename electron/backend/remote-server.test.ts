@@ -5044,12 +5044,32 @@ describe("a mobile session's activity is audited (metadata only)", () => {
   });
 
   test("the idle deadline records session.ended with reason=idle-expired", async () => {
+    const previousAudit = await readAuditLog("remote-api-audit");
     await withAuditedServer(
       { server: { mobileSessionAbsoluteTtlMs: 60_000, mobileSessionIdleTtlMs: 200, mobileSessionSweepMs: 50 } },
       async ({ baseUrl, rows, seedTicket }) => {
         seedTicket("t1", "s1", "dev-1");
-        await bootstrap(baseUrl, "t1", "s1");
-        await vi.waitFor(() => expect(rows.at(-1)?.detail).toBe("reason=idle-expired"));
+        seedTicket("t2", "s2", "dev-1");
+        const firstCookie = await bootstrap(baseUrl, "t1", "s1");
+        const secondCookie = await bootstrap(baseUrl, "t2", "s2");
+        await vi.waitFor(() => expect(rows.filter((row) => row.action === "session.ended")).toHaveLength(2));
+        expect(
+          rows.filter((row) => row.action === "session.ended").every((row) => row.detail === "reason=idle-expired"),
+        ).toBe(true);
+        const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
+        const sessionRefs = (message: string) =>
+          audit
+            .split("\n")
+            .filter((line) => line.includes(message))
+            .map((line) => line.match(/"sessionRef":"(cookie:[a-f0-9]{12})"/)?.[1]);
+        const started = sessionRefs("mobile session bootstrap succeeded");
+        const ended = sessionRefs("mobile session ended");
+        expect(started).toHaveLength(2);
+        expect(new Set(started).size).toBe(2);
+        expect(started.every((ref) => ref !== undefined)).toBe(true);
+        expect(ended.sort()).toEqual(started.sort());
+        expect(audit).not.toContain(firstCookie.split("=")[1]);
+        expect(audit).not.toContain(secondCookie.split("=")[1]);
       },
     );
   });
