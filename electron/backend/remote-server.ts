@@ -3369,6 +3369,12 @@ export async function startRemoteServer({
       // session lookup and before the unauthenticated bootstrap route, so no part of this server is
       // reachable from another local process that merely learned the port.
       if (isLoopbackOrigin && !relayGuardPassed(request.headers)) {
+        audit.warn("relay origin request rejected", {
+          surface: "http",
+          routeCategory: "pre-routing",
+          statusCode: 403,
+          reason: "loopback-guard",
+        });
         writeHead(response, 403, { "Content-Type": "text/plain; charset=utf-8" });
         response.end("Forbidden");
         return;
@@ -3919,6 +3925,11 @@ export async function startRemoteServer({
     try {
       body = await readRequestBody(request);
     } catch {
+      audit.warn("mobile session bootstrap rejected", {
+        routeCategory: "mobile-session-bootstrap",
+        statusCode: 400,
+        reason: "body-read",
+      });
       writeHead(response, 400, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Bad Request");
       return;
@@ -3928,6 +3939,11 @@ export async function startRemoteServer({
     try {
       parsed = validateIpc(mobileSessionBootstrapSchema, body, "POST /api/mobile/session/bootstrap");
     } catch {
+      audit.warn("mobile session bootstrap rejected", {
+        routeCategory: "mobile-session-bootstrap",
+        statusCode: 400,
+        reason: "invalid-schema",
+      });
       writeHead(response, 400, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Bad Request");
       return;
@@ -4599,6 +4615,12 @@ export async function startRemoteServer({
 
   server.on("upgrade", (request, socket, head) => {
     if (isLoopbackOrigin && !relayGuardPassed(request.headers)) {
+      audit.warn("relay origin request rejected", {
+        surface: "websocket",
+        routeCategory: "pre-routing",
+        statusCode: 403,
+        reason: "loopback-guard",
+      });
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();
       return;

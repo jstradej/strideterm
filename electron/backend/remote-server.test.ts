@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { WebSocket } from "ws";
+import { getLogDir } from "./logger.js";
 import * as fm from "./file-manager.js";
 import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
@@ -31,6 +32,14 @@ async function getFreePort(): Promise<number> {
       server.close(() => resolve(port));
     });
   });
+}
+
+async function readAuditLog(name: string): Promise<string> {
+  try {
+    return await fs.readFile(path.join(getLogDir(), `${name}.log`), "utf8");
+  } catch {
+    return "";
+  }
 }
 
 describe("static asset HTTP caching", () => {
@@ -3869,6 +3878,7 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
   });
 
   test("rejects a malformed body with 400 (missing ticketId/secret)", async () => {
+    const previousAudit = await readAuditLog("remote-api-audit");
     const port = await getFreePort();
     const runtime = makeMobileRuntime(port, () => null);
     const server = await startRemoteServer({
@@ -3880,12 +3890,43 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
       const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ fixtureSecret: "do-not-log-schema-marker" }),
       });
       expect(res.status).toBe(400);
     } finally {
       await server.close();
     }
+    const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
+    expect(audit).toContain('"routeCategory":"mobile-session-bootstrap"');
+    expect(audit).toContain('"statusCode":400');
+    expect(audit).toContain('"reason":"invalid-schema"');
+    expect(audit).not.toContain("do-not-log-schema-marker");
+  });
+
+  test("logs a body parse failure without including request content", async () => {
+    const previousAudit = await readAuditLog("remote-api-audit");
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, () => null);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: '{"fixtureSecret":"do-not-log-body-marker"',
+      });
+      expect(res.status).toBe(400);
+    } finally {
+      await server.close();
+    }
+    const audit = (await readAuditLog("remote-api-audit")).slice(previousAudit.length);
+    expect(audit).toContain('"routeCategory":"mobile-session-bootstrap"');
+    expect(audit).toContain('"statusCode":400');
+    expect(audit).toContain('"reason":"body-read"');
+    expect(audit).not.toContain("do-not-log-body-marker");
   });
 
   test("this route requires no master token or existing session — it is reachable with no Authorization/cookie at all", async () => {
@@ -5281,6 +5322,7 @@ describe("the managed relay's loopback-only internal origin", () => {
   });
 
   test("answers only a caller presenting the guard, on HTTP and on the WebSocket upgrade alike", async () => {
+    const previousAudit = await readAuditLog("relay-origin-api-audit");
     const { runtime } = makeRuntime(makePayload());
     const server = await startRemoteServer({
       runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
@@ -5325,6 +5367,14 @@ describe("the managed relay's loopback-only internal origin", () => {
     } finally {
       await server.close();
     }
+    const audit = (await readAuditLog("relay-origin-api-audit")).slice(previousAudit.length);
+    expect(audit).toContain('"surface":"http"');
+    expect(audit).toContain('"surface":"websocket"');
+    expect(audit).toContain('"routeCategory":"pre-routing"');
+    expect(audit).toContain('"statusCode":403');
+    expect(audit).toContain('"reason":"loopback-guard"');
+    expect(audit).not.toContain(GUARD);
+    expect(audit).not.toContain(MASTER_TOKEN);
   });
 
   test("refuses to bind anything that is not loopback", async () => {
