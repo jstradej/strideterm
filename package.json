@@ -1,6 +1,6 @@
 {
   "name": "strideterm",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Multi-workspace terminal app for developers with Docker, Git, remote access, and plugin support",
   "author": "strIDEterm Contributors <support@strideterm.com>",
   "license": "MIT",
