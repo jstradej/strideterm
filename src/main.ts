@@ -161,11 +161,11 @@ if (popoutView === "diff-popout") {
   });
 } else {
   // A mobile WebView open carries a one-time session ticket in the URL fragment (plan §9.2);
-  // exchange it for the session cookie before mounting. If that exchange succeeds it reloads the
-  // page itself, so skip mounting this now-stale load entirely. A page with no such fragment
-  // (the normal browser/Telegram `?token=` path) resolves this immediately with `false`.
-  void bootstrapMobileSessionFromFragment().then((reloading) => {
-    if (reloading) return;
+  // exchange it for the session cookie before mounting. A ticketed page is never mounted unless
+  // the exchange succeeds; failures are handled by the native session recovery bridge. A page
+  // with no ticket (the normal browser/Telegram `?token=` path) proceeds immediately.
+  void bootstrapMobileSessionFromFragment().then((handled) => {
+    if (handled) return;
 
     const api = createTransport();
 
