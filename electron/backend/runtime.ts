@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createStore } from "./store.js";
 import * as fm from "./file-manager.js";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, type SshTestPtySpawn } from "./session-manager.js";
 import { TerminalReplayStore } from "./terminal-replay-buffer.js";
 import {
   createAccessToken,
@@ -52,7 +52,12 @@ import { createAzureReviewStore } from "./azure-review-store.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
 import { createGitAuditLogStore } from "./git-audit-log-store.js";
-import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agent-launch.js";
+import {
+  buildAgentSshMcpLaunch,
+  buildAgentSshMcpServerSpec,
+  buildReviewAgentLaunch,
+  buildMcpServerSpec,
+} from "./review-bridge-agent-launch.js";
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
@@ -185,6 +190,9 @@ import { createProviderLifecycle } from "./runtime-provider-lifecycle.js";
 import { insertWorkspace } from "./workspace-order.js";
 import { createSshHandlers } from "./ssh/runtime-ssh-handlers.js";
 import { SshManager } from "./ssh/ssh-manager.js";
+import { createSshCommandService } from "./ssh/ssh-command-service.js";
+import { createSshMcpBroker } from "./ssh/ssh-mcp-broker.js";
+import { isVerifiedSshTestExit, SshTestMarkerCapture } from "./ssh/ssh-test-marker.js";
 import {
   clone,
   findWorkspace,
@@ -227,6 +235,23 @@ import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
 import { sessionIdFor } from "../shared/task-states.js";
 import { hasMeaningfulUserInput } from "../shared/terminal-input.js";
 import type { NotifyServerHandle } from "./notify-server.js";
+import {
+  sshKeyTransferStartSchema,
+  sshKeyTransferStopSchema,
+  sshTestStartSchema,
+  sshTestStopSchema,
+} from "./ipc-schemas.js";
+import { resolveSshLaunchVia } from "../shared/ssh-connection.js";
+import {
+  getAgentSshMcpEligibility,
+  parseAgentCommand,
+  SSH_MCP_CAPABILITY_ENV,
+  SSH_MCP_URL_ENV,
+} from "../shared/agent-ssh.js";
+import type { SshConnectionTestState, SshKeyTransferState } from "../shared/types/ssh.js";
+import { derivePublicKeyLine, installPublicKey } from "./ssh/ssh-key-install.js";
+import type { Client as Ssh2Client, SFTPWrapper } from "ssh2";
+import type { AuthConfig } from "./ssh/ssh-auth.js";
 
 const log = getLogger("runtime");
 
@@ -450,6 +475,9 @@ interface RuntimeDependencies {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   SessionManager?: new (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  SshManager?: new (...args: any[]) => any;
+  sshTestPtySpawn?: SshTestPtySpawn;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   DockerManager?: new (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   GitManager?: new (...args: any[]) => any;
@@ -481,6 +509,10 @@ interface RuntimeDependencies {
   getTerminalEnvironment?: (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   safeStorage?: any;
+
+  /** Enables local desktop-only, per-panel Built-in SSH MCP launches. */
+  enableAgentSshMcp?: boolean;
+  createSshMcpBroker?: typeof createSshMcpBroker;
 
   fetchImpl?: typeof fetch;
 
@@ -701,6 +733,7 @@ export async function createRuntime({
     execPath: process.execPath,
     argv: process.argv,
     defaultApp: (process as NodeJS.Process & { defaultApp?: boolean }).defaultApp,
+    isElectron: Boolean(process.versions.electron),
   };
   const pluginsDir = path.join(userDataPath, "plugins");
   const [store, credentialStore, azureReviewStore, reviewBridgeStore] = await Promise.all([
@@ -884,6 +917,8 @@ export async function createRuntime({
    * and answering a permission prompt for the wrong panel is not.
    */
   const sessionOwnershipTokens = new Map<string, string>();
+  let sshMcpBroker: ReturnType<typeof createSshMcpBroker> | null = null;
+  let sshMcpCommandService: ReturnType<typeof createSshCommandService> | null = null;
 
   function getSessionOwnershipToken(sessionId: string): string {
     let token = sessionOwnershipTokens.get(sessionId);
@@ -904,15 +939,59 @@ export async function createRuntime({
   function retireSession(sessionId: string): void {
     deleteSessionSignal(sessionId);
     sessionOwnershipTokens.delete(sessionId);
+    sshMcpBroker?.revokeSession(sessionId);
     unregisterNotifyUrl(sessionId);
     // An offer this panel made is void the moment the panel stops existing.
     discardPermissionOffers((record) => record.sessionId === sessionId, "session-retired");
   }
 
-  const sshManager = new SshManager({ store, credentialStore, logger: log });
+  const SshManagerImpl = dependencies.SshManager || SshManager;
+  const sshManager = new SshManagerImpl({ store, credentialStore, logger: log });
+  const enableAgentSshMcp = dependencies.enableAgentSshMcp === true;
+  let sessionsForSshMcp: {
+    sessions: Map<string, { status: string; workspaceId?: string; panelId?: string; kind?: string }>;
+  } | null = null;
+  if (enableAgentSshMcp) {
+    sshMcpCommandService = createSshCommandService({
+      sshManager,
+      getEffectiveLaunchMode: (host) =>
+        resolveSshLaunchVia(
+          host.advanced?.launchVia,
+          getState().settings?.ssh?.defaultLaunchVia,
+          APP_CONFIG.ssh.defaultLaunchVia as "ssh2" | "system-ssh" | "wsl",
+        ),
+    });
+    const createBroker = dependencies.createSshMcpBroker || createSshMcpBroker;
+    sshMcpBroker = createBroker({
+      service: sshMcpCommandService,
+      isGrantLive: (grant) => {
+        const state = getState();
+        const workspace = state.workspaces.find((item) => item.id === grant.workspaceId);
+        const profileId = String(workspace?.profileId || "default");
+        const profileExists = state.profiles.some((profile) => profile.id === grant.profileId);
+        const panel = workspace?.panels.find((item) => item.id === grant.panelId);
+        const session = sessionsForSshMcp?.sessions.get(grant.sessionId);
+        return Boolean(
+          profileExists &&
+          profileId === grant.profileId &&
+          workspace &&
+          panel?.sshMcpEnabled === true &&
+          !panel.launch &&
+          panel.command === grant.command &&
+          getAgentSshMcpEligibility(panel.command).supported &&
+          session?.status === "running" &&
+          session.workspaceId === grant.workspaceId &&
+          session.panelId === grant.panelId &&
+          session.kind !== "ssh",
+        );
+      },
+    });
+    await sshMcpBroker.start();
+  }
 
   const sessions = new SessionManagerImpl({
     sshManager,
+    spawnPty: dependencies.sshTestPtySpawn,
     getSessionEnv: ({
       workspace,
       sessionId,
@@ -996,31 +1075,84 @@ export async function createRuntime({
         STRIDETERM_REVIEW_WORKSPACE_ID: workspace.id,
       };
     },
-    getSessionLaunch: ({ workspace, panel }: { workspace: WorkspaceState | null | undefined; panel: unknown }) => {
+    getSessionLaunch: ({
+      workspace,
+      panel,
+      sessionId,
+    }: {
+      workspace: WorkspaceState | null | undefined;
+      panel: unknown;
+      sessionId: string;
+    }) => {
+      const panelState = panel as import("../shared/types/state.js").PanelState;
+      sshMcpBroker?.revokeSession(sessionId);
+      const sshMcpEnabled = panelState.sshMcpEnabled === true;
+      let sshMcpSpec;
+      let sshMcpEnv: Record<string, string> | undefined;
+      if (sshMcpEnabled) {
+        const eligibility = getAgentSshMcpEligibility(panelState.command);
+        if (!enableAgentSshMcp || !eligibility.supported || panelState.launch) {
+          throw new Error(
+            eligibility.reason ||
+              "Built-in SSH tools are available only for local Claude Code or Codex tabs without a custom launcher.",
+          );
+        }
+        const profileId = String(workspace?.profileId || "default");
+        const profileExists = getState().profiles.some((profile) => profile.id === profileId);
+        if (!workspace || !profileExists) throw new Error("The tab profile is no longer available for SSH tools.");
+        sshMcpSpec = buildAgentSshMcpServerSpec(processInfo);
+        const grant = sshMcpBroker!.mintGrant({
+          sessionId,
+          profileId,
+          workspaceId: workspace.id,
+          panelId: panelState.id,
+          command: panelState.command,
+        });
+        sshMcpEnv = { [SSH_MCP_URL_ENV]: grant.url, [SSH_MCP_CAPABILITY_ENV]: grant.capability };
+      }
+
       // --- Review workspace: inject MCP bridge ---
-      if (!["azure-devops", "github"].includes(workspace?.review?.provider ?? "")) {
-        return null;
+      let reviewLaunch = null;
+      if (["azure-devops", "github"].includes(workspace?.review?.provider ?? "")) {
+        const storedContext = workspace!.review!.prKey
+          ? reviewBridgeStore.getPullRequestContext?.(workspace!.review!.prKey)
+          : null;
+        const context =
+          storedContext ||
+          (() => {
+            const rootPath = reviewBridgeStore.getRootPath?.() || "";
+            return rootPath ? { rootPath, workspaceId: workspace!.id, prKey: "" } : null;
+          })();
+        if (context) {
+          reviewLaunch = buildReviewAgentLaunch({
+            workspace: workspace as WorkspaceState,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            panel: panel as any,
+            context,
+            processInfo,
+            sshMcp: sshMcpSpec,
+          });
+        }
       }
 
-      let context = workspace!.review!.prKey
-        ? reviewBridgeStore.getPullRequestContext?.(workspace!.review!.prKey)
-        : null;
-
-      if (!context) {
-        const rootPath = reviewBridgeStore.getRootPath?.() || "";
-        if (!rootPath) return null;
-        context = { rootPath, workspaceId: workspace!.id, prKey: "" };
+      if (reviewLaunch) {
+        return sshMcpEnv ? { ...reviewLaunch, env: { ...(reviewLaunch.env || {}), ...sshMcpEnv } } : reviewLaunch;
       }
-
-      return buildReviewAgentLaunch({
-        workspace: workspace as WorkspaceState,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        panel: panel as any,
-        context,
-        processInfo,
-      });
+      if (sshMcpSpec) {
+        const launch = buildAgentSshMcpLaunch({
+          workspace: workspace || undefined,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          panel: panel as any,
+          processInfo,
+          sshMcp: sshMcpSpec,
+        });
+        if (!launch) throw new Error("SSH tools could not be enabled for this tab's agent command.");
+        return { ...launch, env: { ...(launch.env || {}), ...sshMcpEnv } };
+      }
+      return null;
     },
   });
+  sessionsForSshMcp = sessions;
 
   // sessions.ensureSession(...) is fire-and-forget at several call sites
   // (activating a session/workspace, opening a lazydocker/lazygit/docker-shell
@@ -1064,6 +1196,132 @@ export async function createRuntime({
     execFileTextImpl,
   });
   const events = new EventEmitter();
+  type SshTestRecord = {
+    ownerWindowId: string;
+    profileId: string;
+    mode: "ssh2" | "system-ssh" | "wsl";
+    status: SshConnectionTestState["status"];
+    probeMarker?: string;
+    probeCapture?: SshTestMarkerCapture;
+  };
+  const sshTestSessions = new Map<string, SshTestRecord>();
+  type SshKeyTransferRecord = {
+    ownerWindowId: string;
+    profileId: string;
+    hostId: string;
+    keyId: string;
+    status: SshKeyTransferState["status"];
+    resultStatus?: "installed" | "already-installed";
+    installed?: boolean;
+    remoteMayHaveChanged?: boolean;
+    cancelled: boolean;
+    sessionIds: Set<string>;
+  };
+  const sshKeyTransfers = new Map<string, SshKeyTransferRecord>();
+  const sshTransferSessionOwners = new Map<string, string>();
+  const sshKeyTransferLocks = new Map<string, Promise<void>>();
+  let sshTestShuttingDown = false;
+  const isSshTestSessionId = (sessionId: unknown): sessionId is string =>
+    typeof sessionId === "string" && sessionId.startsWith("ssh-test:");
+  const isSshKeyTransferSessionId = (sessionId: unknown): sessionId is string =>
+    typeof sessionId === "string" && sessionId.startsWith("ssh-transfer:");
+  const isSshMcpSessionId = (sessionId: unknown): sessionId is string =>
+    typeof sessionId === "string" && sessionId.startsWith("ssh-mcp:");
+  const isPrivateSshOperationSessionId = (sessionId: unknown): sessionId is string =>
+    isSshTestSessionId(sessionId) || isSshKeyTransferSessionId(sessionId) || isSshMcpSessionId(sessionId);
+  const isSshTestSession = (sessionId: unknown): sessionId is string =>
+    isSshTestSessionId(sessionId) && sshTestSessions.has(sessionId);
+  const isPrivateSshOperationSession = (sessionId: unknown): boolean =>
+    isSshTestSession(sessionId) ||
+    (isSshKeyTransferSessionId(sessionId) && sshTransferSessionOwners.has(sessionId)) ||
+    (typeof sessionId === "string" && sessionId.startsWith("ssh-mcp:"));
+  const emitSshTestState = (sessionId: string, status: SshTestRecord["status"], error?: string) => {
+    const record = sshTestSessions.get(sessionId);
+    if (!record || record.status === "cancelled") return;
+    record.status = status;
+    events.emit("ssh:test:state", {
+      sessionId,
+      mode: record.mode,
+      status,
+      ...(error ? { error } : {}),
+    } satisfies SshConnectionTestState);
+  };
+  const emitSshKeyTransferState = (operationId: string, status: SshKeyTransferState["status"], error?: string) => {
+    const record = sshKeyTransfers.get(operationId);
+    if (!record || (record.cancelled && status !== "cancelled")) return;
+    record.status = status;
+    events.emit("ssh:key-transfer:state", {
+      operationId,
+      hostId: record.hostId,
+      keyId: record.keyId,
+      status,
+      ...(record.installed === undefined ? {} : { installed: record.installed }),
+      ...(record.remoteMayHaveChanged ? { remoteMayHaveChanged: true } : {}),
+      ...(error ? { error } : {}),
+    } satisfies SshKeyTransferState);
+  };
+  const sshTransferOwnerForSession = (sessionId: string): string | undefined => {
+    const operationId = sshTransferSessionOwners.get(sessionId);
+    return operationId ? sshKeyTransfers.get(operationId)?.ownerWindowId : undefined;
+  };
+  const sshKeyTransferShouldContinue = (operationId: string, record: SshKeyTransferRecord): boolean =>
+    sshKeyTransfers.get(operationId) === record && !record.cancelled && !sshTestShuttingDown;
+  async function withSshKeyTransferLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = sshKeyTransferLocks.get(key) || Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => (release = resolve));
+    const tail = previous.catch(() => {}).then(() => current);
+    sshKeyTransferLocks.set(key, tail);
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (sshKeyTransferLocks.get(key) === tail) sshKeyTransferLocks.delete(key);
+    }
+  }
+  function openSftp(client: Ssh2Client): Promise<SFTPWrapper> {
+    return new Promise((resolve, reject) => {
+      client.sftp((error, sftp) => (error ? reject(error) : resolve(sftp)));
+    });
+  }
+  async function stopOwnedSshKeyTransfer(operationId: string, ownerWindowId: string): Promise<void> {
+    const record = sshKeyTransfers.get(operationId);
+    if (!record || record.ownerWindowId !== ownerWindowId) return;
+    const terminal = ["installed", "already-installed", "verification-failed", "error"].includes(record.status);
+    if (!terminal) emitSshKeyTransferState(operationId, "cancelled");
+    record.cancelled = true;
+    try {
+      await Promise.all([...record.sessionIds].map((sessionId) => sshManager.stop(sessionId).catch(() => {})));
+    } finally {
+      sshKeyTransfers.delete(operationId);
+      for (const sessionId of record.sessionIds) sshTransferSessionOwners.delete(sessionId);
+    }
+  }
+  async function stopOwnedSshTest(sessionId: string, ownerWindowId: string): Promise<void> {
+    const record = sshTestSessions.get(sessionId);
+    if (!record || record.ownerWindowId !== ownerWindowId) return;
+    if (record.status !== "authenticated" && record.status !== "error" && record.status !== "disconnected") {
+      emitSshTestState(sessionId, "cancelled");
+    }
+    try {
+      if (record.mode === "ssh2") await sshManager.stop(sessionId).catch(() => {});
+      else sessions.removeSession(sessionId);
+    } finally {
+      sshTestSessions.delete(sessionId);
+    }
+  }
+  async function stopAllSshTests(): Promise<void> {
+    sshTestShuttingDown = true;
+    await Promise.all(
+      [...sshTestSessions.entries()].map(([sessionId, record]) => stopOwnedSshTest(sessionId, record.ownerWindowId)),
+    );
+    await Promise.all(
+      [...sshKeyTransfers.entries()].map(([operationId, record]) =>
+        stopOwnedSshKeyTransfer(operationId, record.ownerWindowId),
+      ),
+    );
+  }
   // Transport-neutral notification source (plan §10.1) — raiseAlert() and the
   // PR/pipeline forwarders below emit ExternalNotificationEvent here, once,
   // alongside their existing (unchanged) direct telegramManager.forwardAlert()
@@ -1081,8 +1339,83 @@ export async function createRuntime({
     "ssh:connection-state",
     "ssh:state",
   ]) {
-    sshManager.on(channel, (payload) => events.emit(channel, payload));
+    sshManager.on(channel, (payload: unknown) => {
+      const event =
+        payload && typeof payload === "object"
+          ? (payload as { sessionId?: string; status?: string; error?: string })
+          : {};
+      const sessionId = event.sessionId;
+      if (isSshMcpSessionId(sessionId)) return;
+      const testRecord = sessionId ? sshTestSessions.get(sessionId) : undefined;
+      if (testRecord && sessionId && channel === "ssh:connection-state") {
+        if (event.status === "connected") emitSshTestState(sessionId, "authenticated");
+        else if (event.status === "error") emitSshTestState(sessionId, "error", event.error);
+        else if (event.status === "disconnected" && testRecord.status !== "authenticated") {
+          emitSshTestState(sessionId, "disconnected");
+        }
+      }
+      events.emit(channel, payload);
+      if (
+        isSshTestSession(sessionId) &&
+        channel === "ssh:connection-state" &&
+        (event.status === "error" || event.status === "disconnected")
+      ) {
+        sshTestSessions.delete(sessionId!);
+      }
+    });
   }
+  sessions.on("ssh:connection-state", (payload: unknown) => {
+    const event = payload as { sessionId?: string; status?: string; error?: string };
+    if (isSshTestSession(event.sessionId)) {
+      if (event.status === "process-running") emitSshTestState(event.sessionId, "process-running");
+      else if (event.status === "error") emitSshTestState(event.sessionId, "error", event.error);
+      else if (event.status === "disconnected") emitSshTestState(event.sessionId, "disconnected");
+    }
+    events.emit("ssh:connection-state", payload);
+  });
+  events.on("state:updated", () => {
+    void sshMcpBroker?.revokeInvalid();
+    const state = getState();
+    for (const [sessionId, record] of sshTestSessions) {
+      const slot = (state.windowSlots || []).find((item) => item.id === record.ownerWindowId);
+      if (slot?.profileId !== record.profileId) void stopOwnedSshTest(sessionId, record.ownerWindowId);
+    }
+    for (const [operationId, record] of sshKeyTransfers) {
+      const slot = (state.windowSlots || []).find((item) => item.id === record.ownerWindowId);
+      if (slot?.profileId !== record.profileId) void stopOwnedSshKeyTransfer(operationId, record.ownerWindowId);
+    }
+  });
+  sessions.on("terminal:exit", (payload: { sessionId?: string; exitCode?: number }) => {
+    if (!payload.sessionId || !isSshTestSession(payload.sessionId)) return;
+    const record = sshTestSessions.get(payload.sessionId);
+    if (!record || ["cancelled", "authenticated", "error", "disconnected"].includes(record.status)) return;
+    if (record.probeMarker) {
+      if (isVerifiedSshTestExit(record.probeCapture?.matched === true, payload.exitCode)) {
+        emitSshTestState(payload.sessionId, "authenticated");
+      } else if (record.probeCapture?.matched) {
+        emitSshTestState(
+          payload.sessionId,
+          "error",
+          `OpenSSH returned the verification marker but exited with code ${payload.exitCode ?? "unknown"}.`,
+        );
+      } else if (payload.exitCode === 0) {
+        emitSshTestState(
+          payload.sessionId,
+          "error",
+          "OpenSSH exited without returning the verification marker; authentication was not verified.",
+        );
+      } else {
+        emitSshTestState(
+          payload.sessionId,
+          "error",
+          `OpenSSH exited with code ${payload.exitCode ?? "unknown"} before the verification command completed.`,
+        );
+      }
+    } else {
+      emitSshTestState(payload.sessionId, "disconnected");
+    }
+    queueMicrotask(() => sessions.removeSession(payload.sessionId!));
+  });
   const terminalEnvironment = getTerminalEnvironmentImpl();
   let remoteInfo: Record<string, unknown> | null = null;
   // One-shot guard so the startup auto-tunnel restoration only triggers
@@ -4278,6 +4611,7 @@ export async function createRuntime({
     },
     async restartSession(sessionId) {
       clearTerminalReplay(String(sessionId || ""));
+      sshMcpBroker?.revokeSession(String(sessionId || ""));
       await sessions.restartSession(getState(), sessionId);
       resetSessionSignal(sessionId);
     },
@@ -4656,6 +4990,7 @@ export async function createRuntime({
   // dispatch async after the spawn).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:spawned", (payload: any) => {
+    if (isSshMcpSessionId(payload.sessionId)) return;
     codexTerminalNotifications.delete(String(payload.sessionId || ""));
     clearTerminalReplay(String(payload.sessionId || ""));
   });
@@ -4668,6 +5003,8 @@ export async function createRuntime({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:removed", (payload: any) => {
     const sessionId = String(payload.sessionId || "");
+    if (isSshMcpSessionId(sessionId)) return;
+    retireSession(sessionId);
     codexTerminalNotifications.delete(sessionId);
     destroyTerminalReplay(sessionId);
     // A removed panel's attention alert has nothing left to point at. Workspace
@@ -4684,6 +5021,19 @@ export async function createRuntime({
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:data", (payload: any) => {
+    if (isSshMcpSessionId(payload.sessionId)) return;
+    if (isSshTestSessionId(payload.sessionId)) {
+      const record = sshTestSessions.get(payload.sessionId);
+      if (record?.probeCapture && !record.probeCapture.matched && typeof payload.data === "string") {
+        record.probeCapture.append(stripAnsi(payload.data));
+      }
+      events.emit("terminal:data", payload);
+      return;
+    }
+    if (isSshKeyTransferSessionId(payload.sessionId)) {
+      events.emit("terminal:data", payload);
+      return;
+    }
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
     const project = descriptor ? (findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null) : null;
@@ -5219,6 +5569,16 @@ export async function createRuntime({
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:exit", (payload: any) => {
+    if (isSshMcpSessionId(payload.sessionId)) return;
+    if (isSshTestSessionId(payload.sessionId)) {
+      events.emit("terminal:exit", payload);
+      sshTestSessions.delete(payload.sessionId);
+      return;
+    }
+    if (isSshKeyTransferSessionId(payload.sessionId)) {
+      events.emit("terminal:exit", payload);
+      return;
+    }
     log.debug("terminal:exit", {
       sessionId: payload.sessionId,
       exitCode: payload.exitCode,
@@ -7076,6 +7436,362 @@ export async function createRuntime({
     ...gridHandlers,
     ...taskHandlers,
     ...typedHookProviderHandlers,
+    sshTestSessionOwner(sessionId: unknown): string | undefined {
+      if (typeof sessionId !== "string") return undefined;
+      return sshTestSessions.get(sessionId)?.ownerWindowId || sshTransferOwnerForSession(sessionId);
+    },
+    isPrivateSshOperationSessionId,
+    isPrivateSshOperationSession,
+    isSshTestSession,
+    isSshTestSessionId,
+    async sshTestStart(payload: unknown, ownerWindowId: string) {
+      if (sshTestShuttingDown) throw new Error("Runtime is shutting down");
+      const parsed = sshTestStartSchema.parse(payload);
+      const state = getState();
+      const slot = (state.windowSlots || []).find((item) => item.id === ownerWindowId);
+      if (!slot || slot.profileId !== parsed.profileId) {
+        throw new Error("The active window profile changed. Reopen the SSH test and try again.");
+      }
+      if (!(state.profiles || []).some((profile) => profile.id === parsed.profileId)) {
+        throw new Error("Profile not found");
+      }
+
+      const mode = resolveSshLaunchVia(
+        parsed.draft.advanced?.launchVia,
+        state.settings?.ssh?.defaultLaunchVia,
+        APP_CONFIG.ssh.defaultLaunchVia,
+      );
+      const sessionId = `ssh-test:${randomUUID()}`;
+      const probeMarker = mode === "ssh2" ? undefined : `STRIDETERM_SSH_TEST_${randomUUID().replaceAll("-", "")}`;
+      const draft = {
+        ...parsed.draft,
+        name: parsed.draft.name || parsed.draft.host,
+        advanced: { ...parsed.draft.advanced, launchVia: mode, command: undefined },
+        jump: parsed.draft.jump || [],
+      };
+      const panel = { id: "test", title: `SSH test: ${draft.name}`, command: "", launch: null };
+      const workspace = {
+        id: sessionId,
+        name: `SSH test: ${draft.name}`,
+        icon: "terminal",
+        color: "",
+        kind: "terminal",
+        source: "manual",
+        pluginId: "",
+        cwd: os.homedir(),
+        gitRoots: [],
+        activeRootPath: "",
+        notes: "",
+        profileId: parsed.profileId,
+        connectionId: "",
+        activePanelId: panel.id,
+        activeViewId: null,
+        splitLayout: null,
+        splitViewIds: [],
+        panels: [panel],
+        review: null,
+        quickfix: null,
+        starred: false,
+        task: null,
+      } as unknown as WorkspaceState;
+      const record: SshTestRecord = {
+        ownerWindowId,
+        profileId: parsed.profileId,
+        mode,
+        status: "connecting",
+        ...(probeMarker ? { probeMarker, probeCapture: new SshTestMarkerCapture(probeMarker) } : {}),
+      };
+      sshTestSessions.set(sessionId, record);
+      emitSshTestState(sessionId, "connecting");
+
+      if (mode === "ssh2") {
+        void sshManager
+          .createSession({
+            sessionId,
+            inlineHost: draft,
+            cols: 80,
+            rows: 24,
+            authOnly: true,
+          })
+          .catch((error: unknown) => {
+            const current = sshTestSessions.get(sessionId);
+            if (!current || current.status === "cancelled") return;
+            emitSshTestState(sessionId, "error", (error as Error)?.message || String(error));
+          });
+      } else {
+        const launchState = {
+          ...state,
+          settings: { ...state.settings, ssh: state.settings?.ssh },
+        };
+        const host = { ...draft, hostKeyPolicy: draft.hostKeyPolicy || "warn" };
+        void (async () => {
+          try {
+            const shouldContinue = () => sshTestSessions.get(sessionId) === record && record.status !== "cancelled";
+            const started =
+              mode === "system-ssh"
+                ? await sessions.ensureSystemSshSession(
+                    launchState,
+                    workspace,
+                    panel,
+                    sessionId,
+                    host,
+                    shouldContinue,
+                    probeMarker,
+                  )
+                : await sessions.ensureWslSshSession(
+                    launchState,
+                    workspace,
+                    panel,
+                    sessionId,
+                    host,
+                    shouldContinue,
+                    probeMarker,
+                  );
+            if (!shouldContinue()) {
+              if (started) sessions.removeSession(sessionId);
+              return;
+            }
+            if (!started && record.status === "connecting") {
+              emitSshTestState(sessionId, "error", "Could not start the SSH process");
+            }
+            if (!started) {
+              sessions.failedSpawns.delete(sessionId);
+              sshTestSessions.delete(sessionId);
+            }
+          } catch (error) {
+            if (sshTestSessions.get(sessionId) === record) {
+              emitSshTestState(sessionId, "error", (error as Error)?.message || String(error));
+              sshTestSessions.delete(sessionId);
+            }
+          }
+        })();
+      }
+      return { sessionId, mode, status: record.status };
+    },
+    async sshTestStop(payload: unknown, ownerWindowId: string) {
+      const { sessionId } = sshTestStopSchema.parse(payload);
+      const record = sshTestSessions.get(sessionId);
+      if (!record) {
+        if (isSshTestSessionId(sessionId)) return { ok: true };
+        throw new Error("SSH test session not found");
+      }
+      if (record.ownerWindowId !== ownerWindowId) throw new Error("SSH test belongs to another window");
+      await stopOwnedSshTest(sessionId, ownerWindowId);
+      return { ok: true };
+    },
+    sshTestWrite(sessionId: string, data: string, ownerWindowId: string) {
+      const record = sshTestSessions.get(sessionId);
+      if (!record || record.ownerWindowId !== ownerWindowId || record.mode === "ssh2") return false;
+      sessions.writeToSession(sessionId, data);
+      return true;
+    },
+    sshTestResize(sessionId: string, cols: number, rows: number, ownerWindowId: string) {
+      const record = sshTestSessions.get(sessionId);
+      if (!record || record.ownerWindowId !== ownerWindowId || record.mode === "ssh2") return false;
+      sessions.resizeSession(sessionId, cols, rows);
+      return true;
+    },
+    async sshTestStopOwner(ownerWindowId: string) {
+      const pending: Promise<void>[] = [];
+      for (const [sessionId, record] of sshTestSessions) {
+        if (record.ownerWindowId === ownerWindowId) pending.push(stopOwnedSshTest(sessionId, ownerWindowId));
+      }
+      for (const [operationId, record] of sshKeyTransfers) {
+        if (record.ownerWindowId === ownerWindowId) {
+          pending.push(stopOwnedSshKeyTransfer(operationId, ownerWindowId));
+        }
+      }
+      await Promise.all(pending);
+    },
+    async sshKeysTransferStart(payload: unknown, ownerWindowId: string) {
+      if (sshTestShuttingDown) throw new Error("Runtime is shutting down");
+      const parsed = sshKeyTransferStartSchema.parse(payload);
+      const state = getState();
+      const slot = (state.windowSlots || []).find((item) => item.id === ownerWindowId);
+      if (!slot || slot.profileId !== parsed.profileId) {
+        throw new Error("The active window profile changed. Reopen the key transfer and try again.");
+      }
+      if (!(state.profiles || []).some((profile) => profile.id === parsed.profileId))
+        throw new Error("Profile not found");
+      let host: ReturnType<typeof sshManager.getHost>;
+      if (parsed.draft) {
+        const draft = clone(parsed.draft);
+        const hostAddress = draft.host.trim();
+        const username = draft.username?.trim();
+        if (!hostAddress) throw new Error("Enter a host name or SSH alias before transferring a key.");
+        if (!username) throw new Error("Enter the remote username before transferring a key.");
+        host = {
+          ...draft,
+          name: draft.name?.trim() || hostAddress,
+          host: hostAddress,
+          username,
+          id: `ssh-transfer-draft:${randomUUID()}`,
+        } as NonNullable<typeof host>;
+      } else {
+        host = parsed.hostId ? sshManager.getHost(parsed.hostId) : undefined;
+        if (!host) throw new Error("SSH host not found");
+        if (!host.username?.trim()) throw new Error("Set a username on the saved SSH host before transferring a key.");
+      }
+      const mode = resolveSshLaunchVia(
+        host.advanced?.launchVia,
+        state.settings?.ssh?.defaultLaunchVia,
+        APP_CONFIG.ssh.defaultLaunchVia,
+      );
+      if (mode !== "ssh2") {
+        throw new Error("Public-key transfer requires Built-in SSH. System SSH and WSL hosts are not supported.");
+      }
+      const key = (state.ssh?.keys || []).find((entry) => entry.id === parsed.keyId);
+      if (!key || !credentialStore.hasSecret(parsed.keyId)) throw new Error("Managed private key not found");
+      const jumpHostOverrides = Object.fromEntries(
+        (host.jump || []).map((jumpId: string) => {
+          const jumpHost = sshManager.getHost(jumpId);
+          if (!jumpHost) throw new Error(`Jump host not found: ${jumpId}`);
+          return [jumpId, clone(jumpHost)];
+        }),
+      );
+
+      const operationId = `ssh-transfer:${randomUUID()}`;
+      const record: SshKeyTransferRecord = {
+        ownerWindowId,
+        profileId: parsed.profileId,
+        hostId: host.id,
+        keyId: key.id,
+        status: "connecting",
+        cancelled: false,
+        sessionIds: new Set([operationId]),
+      };
+      sshKeyTransfers.set(operationId, record);
+      sshTransferSessionOwners.set(operationId, operationId);
+      events.emit("ssh:key-transfer:state", {
+        operationId,
+        hostId: record.hostId,
+        keyId: record.keyId,
+        status: "connecting",
+      } satisfies SshKeyTransferState);
+
+      const shouldContinue = () => sshKeyTransferShouldContinue(operationId, record);
+      const configuredMethods = host.auth?.methods || ["publickey"];
+      const bootstrapAuth = {
+        ...host.auth,
+        methods: [...new Set([...configuredMethods, "publickey", "password", "keyboard-interactive"])],
+        keyRef: key.id,
+        passphraseRef: `ssh:passphrase:${key.id}`,
+        passwordRef: undefined,
+      };
+      void (async () => {
+        try {
+          let uploadedPublicKey: string | undefined;
+          await sshManager.createSession({
+            sessionId: operationId,
+            inlineHost: {
+              ...host,
+              advanced: { ...host.advanced, agentForward: false },
+              auth: bootstrapAuth,
+            },
+            cols: 80,
+            rows: 24,
+            authOnly: true,
+            forceOneTimePasswordForJumps: true,
+            jumpHostOverrides,
+            skipLastConnectedAt: true,
+            validatePrivateKeyBeforeConnect: true,
+            onAuthenticated: async (client: Ssh2Client, auth: AuthConfig) => {
+              if (!shouldContinue()) throw new Error("Public-key transfer was cancelled.");
+              const privateKey = credentialStore.getSecret(key.id);
+              if (!privateKey) throw new Error("Managed private key is no longer available.");
+              const publicLine = derivePublicKeyLine(privateKey, auth.passphrase).line;
+              uploadedPublicKey = publicLine;
+              emitSshKeyTransferState(operationId, "uploading");
+              const targetLock = `${host.host.toLocaleLowerCase()}\0${host.port || 22}\0${host.username}`;
+              const installResult = await withSshKeyTransferLock(targetLock, async () => {
+                if (!shouldContinue()) throw new Error("Public-key transfer was cancelled before upload.");
+                const sftp = await openSftp(client);
+                try {
+                  return await installPublicKey(sftp, publicLine, {
+                    shouldContinue,
+                    onWriteAttempt: () => {
+                      record.remoteMayHaveChanged = true;
+                    },
+                    onPublicKeyPresent: (alreadyInstalled: boolean) => {
+                      record.remoteMayHaveChanged = false;
+                      record.installed = true;
+                      record.resultStatus = alreadyInstalled ? "already-installed" : "installed";
+                    },
+                  });
+                } finally {
+                  sftp.end();
+                }
+              });
+              record.remoteMayHaveChanged = false;
+              record.installed = true;
+              record.resultStatus = installResult.alreadyInstalled ? "already-installed" : "installed";
+              emitSshKeyTransferState(operationId, "verifying");
+            },
+          });
+          await sshManager.stop(operationId).catch(() => {});
+          if (!shouldContinue()) return;
+          if (!uploadedPublicKey || !record.installed) throw new Error("The public key was not installed.");
+
+          const verificationSessionId = `${operationId}:verify`;
+          record.sessionIds.add(verificationSessionId);
+          sshTransferSessionOwners.set(verificationSessionId, operationId);
+          await sshManager.createSession({
+            sessionId: verificationSessionId,
+            inlineHost: {
+              ...host,
+              advanced: { ...host.advanced, agentForward: false },
+              auth: {
+                methods: ["publickey"],
+                keyRef: key.id,
+                passphraseRef: `ssh:passphrase:${key.id}`,
+                agent: "off",
+              },
+            },
+            cols: 80,
+            rows: 24,
+            authOnly: true,
+            forceOneTimePasswordForJumps: true,
+            jumpHostOverrides,
+            skipLastConnectedAt: true,
+            validatePrivateKeyBeforeConnect: true,
+          });
+          await sshManager.stop(verificationSessionId).catch(() => {});
+          if (!shouldContinue()) return;
+          emitSshKeyTransferState(operationId, record.resultStatus!);
+        } catch (error) {
+          await Promise.all([...record.sessionIds].map((sessionId) => sshManager.stop(sessionId).catch(() => {})));
+          if (!shouldContinue()) return;
+          const message = (error as Error)?.message || String(error);
+          if (record.installed && record.status === "verifying") {
+            emitSshKeyTransferState(
+              operationId,
+              "verification-failed",
+              `The public key was installed, but authentication with that key was not verified: ${message}`,
+            );
+          } else if (record.installed) {
+            emitSshKeyTransferState(
+              operationId,
+              "error",
+              `The public key is present, but transfer did not complete: ${message}`,
+            );
+          } else {
+            emitSshKeyTransferState(operationId, "error", message);
+          }
+        }
+      })();
+      return { operationId, status: "connecting" as const };
+    },
+    async sshKeysTransferStop(payload: unknown, ownerWindowId: string) {
+      const { operationId } = sshKeyTransferStopSchema.parse(payload);
+      const record = sshKeyTransfers.get(operationId);
+      if (!record) {
+        if (isSshKeyTransferSessionId(operationId)) return { ok: true };
+        throw new Error("SSH key transfer not found");
+      }
+      if (record.ownerWindowId !== ownerWindowId) throw new Error("SSH key transfer belongs to another window");
+      await stopOwnedSshKeyTransfer(operationId, ownerWindowId);
+      return { ok: true };
+    },
     async listWorkspaceDirectories(
       profileId: string,
       requestedPath?: string,
@@ -8657,6 +9373,18 @@ export async function createRuntime({
 
       await store.mutate((draft: AppState) => {
         const normalized = normalizeWorkspace(workspace);
+        if (parseRemoteViewerId(windowId)) {
+          const savedOptIns = new Map(
+            ((priorWorkspace?.panels || []) as Array<{ id: string; sshMcpEnabled?: boolean }>).map((panel) => [
+              panel.id,
+              panel.sshMcpEnabled === true,
+            ]),
+          );
+          normalized.panels = normalized.panels.map((panel) => ({
+            ...panel,
+            sshMcpEnabled: savedOptIns.get(panel.id) === true,
+          }));
+        }
         log.debug("saveWorkspace: normalized", {
           workspaceId: normalized.id,
           normalizedProfileId: normalized.profileId,
@@ -8685,6 +9413,7 @@ export async function createRuntime({
           draft.activeWorkspaceId = normalized.id;
         }
       });
+      await sshMcpBroker?.revokeInvalid();
 
       if (priorPanelIds.length > 0) {
         const committed = findWorkspace(getState(), savedWorkspaceId) as WorkspaceState | null;
@@ -9076,6 +9805,11 @@ export async function createRuntime({
               ...(settings.git?.ui || {}),
             },
           },
+          ssh: {
+            ...draft.settings.ssh,
+            ...(settings.ssh || {}),
+            storagePolicyMigrationNotice: settings.ssh ? false : draft.settings.ssh.storagePolicyMigrationNotice,
+          },
         };
         // Keep tabTemplates out of the settings object
         delete (draft.settings as any).tabTemplates; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: immer draft index signature
@@ -9192,7 +9926,9 @@ export async function createRuntime({
       const botTokenRef = connectionSecretRef(connectionId);
       // Refuses (400) a saved connection of another profile, with or without a token.
       const callerProfileId = getWindowProfileId(windowId) || "";
-      findOwnedConnection(getTelegramConnections(), connectionId, callerProfileId, true);
+      const existingConnections = getTelegramConnections();
+      const existingConnection = existingConnections.find((saved) => saved.id === connectionId);
+      findOwnedConnection(existingConnections, connectionId, callerProfileId, true);
       const botToken = connection.botToken || storedTelegramBotToken({ ...connection, id: connectionId }, windowId);
       const chatId = String(connection.chatId || "").trim();
 
@@ -9214,6 +9950,10 @@ export async function createRuntime({
         botTokenRef,
         chatId,
         enabled: connection.enabled !== false,
+        notificationsEnabled:
+          typeof connection.notificationsEnabled === "boolean"
+            ? connection.notificationsEnabled
+            : existingConnection?.notificationsEnabled !== false,
         pollSeconds: Number(connection.pollSeconds) || getTelegramSettings().defaultPollSeconds || 5,
         profileId: typeof connection.profileId === "string" ? connection.profileId.trim() : "",
         forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
@@ -9714,6 +10454,7 @@ export async function createRuntime({
     async restartSession(sessionId: any) {
       const descriptor = parseSessionId(sessionId);
       clearTerminalReplay(String(sessionId || ""));
+      sshMcpBroker?.revokeSession(String(sessionId || ""));
       await store.mutate((draft: AppState) => {
         if (!descriptor) {
           return;
@@ -9958,6 +10699,7 @@ export async function createRuntime({
           (project as any).panels?.map((p: any) => ({
             ...p,
             id: `panel-${randomUUID()}`,
+            sshMcpEnabled: false,
           })) || [],
       });
 
@@ -10061,6 +10803,7 @@ export async function createRuntime({
           draft.profiles.push({ id: "default", name: "Default", color: "#6366f1", workspaceIds: [] });
         }
       });
+      await sshMcpBroker?.revokeInvalid();
       // Fallback any remote clients that were on the deleted profile — in EVERY registry, because a
       // browser viewer and a mobile relay viewer can both be sitting on the profile being deleted.
       for (const registry of _remoteClientRegistries) registry.fallbackDeletedProfile(profileId, getState());
@@ -10082,6 +10825,8 @@ export async function createRuntime({
       // Stop the notify server first so no new callbacks arrive
       // while we clear session signals below.
       await stopAgentNotifyServer();
+      await sshMcpBroker?.close();
+      sshMcpCommandService?.close();
       for (const signal of sessionSignals.values()) {
         cancelPromptTimer(signal);
       }
@@ -10135,6 +10880,7 @@ export async function createRuntime({
       await mobileRelayManager?.stop().catch(() => undefined);
       await tunnel.stop({ preserveAvailability: true, quiet: true });
       await pluginManager.stopAll();
+      await stopAllSshTests();
       sessions.stopAll();
       await reviewBridgeStore.close?.();
       auditLogStore.close?.();

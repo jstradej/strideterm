@@ -67,7 +67,59 @@ describe("SettingsTelegramTab", () => {
       expect.objectContaining({
         id: "tg-1",
         profileId: "work",
+        notificationsEnabled: true,
       }),
+    );
+  });
+
+  test("turns off automatic forwarding without changing polling and saves the choice", async () => {
+    const saveTelegramConnection = vi.fn(async () => ({
+      payload: { appState: { settings: { integrations: { telegram: { connections: [] } } } } },
+    }));
+    const wrapper = mount(SettingsTelegramTab, {
+      props: {
+        profiles: [],
+        telegramSettings: {
+          defaultPollSeconds: 5,
+          connections: [
+            {
+              id: "tg-1",
+              label: "Bot",
+              botTokenRef: "cred:tg-1",
+              chatId: "12345",
+              enabled: true,
+              pollSeconds: 5,
+              profileId: "",
+              forwardKinds: ["waiting"],
+            },
+          ],
+        },
+      },
+      global: { provide: { [apiKey]: { saveTelegramConnection, refreshTelegram: vi.fn() } } },
+    });
+
+    await wrapper.find(".connection-item__header").trigger("click");
+    const notificationToggle = wrapper
+      .findAll("label")
+      .find((label) => label.text().includes("Forward automatic notifications"))!
+      .find("input[type='checkbox']");
+    expect((notificationToggle.element as HTMLInputElement).checked).toBe(true);
+    await notificationToggle.setValue(false);
+    expect(wrapper.get(".forward-kinds__item input").attributes("disabled")).toBeDefined();
+    expect(wrapper.get(".forward-kinds__item").text()).toContain("Waiting");
+    expect(wrapper.text()).toContain("Your selected filter will apply when forwarding is enabled.");
+    const pollingToggle = wrapper
+      .findAll(".connection-form__fields > label")
+      .find((label) => label.text().includes("Enable polling"))!
+      .find("input[type='checkbox']");
+    expect((pollingToggle.element as HTMLInputElement).checked).toBe(true);
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Save connection")!
+      .trigger("click");
+    expect(saveTelegramConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: true, notificationsEnabled: false, forwardKinds: ["waiting"] }),
     );
   });
 

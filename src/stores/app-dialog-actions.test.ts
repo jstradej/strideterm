@@ -222,6 +222,26 @@ describe("createDialogActions.openProfilesDialog", () => {
   });
 });
 
+describe("createDialogActions.openNewTabDialog SSH-tools forwarding", () => {
+  it("forwards the tab-scoped opt-in to local panel creation", async () => {
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    const quickAddTemplateTab = vi.fn(async () => undefined);
+    ctx.quickAddTemplateTab = quickAddTemplateTab;
+    const actions = createDialogActions(ctx);
+
+    actions.openNewTabDialog();
+    const props = ctx.overlayProps.value as AnyApi;
+    await props.onSubmit({ title: "Claude", command: "claude", sshMcpEnabled: true });
+
+    expect(quickAddTemplateTab).toHaveBeenCalledWith("claude", "Claude", "", {
+      kind: undefined,
+      sshHostId: undefined,
+      sshInline: undefined,
+      sshMcpEnabled: true,
+    });
+  });
+});
+
 describe("createDialogActions profile-aware saves", () => {
   beforeEach(() => {
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-b" } };

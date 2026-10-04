@@ -8,6 +8,7 @@ import type { AccountUiState } from "./account/account-state.js";
  */
 
 const nonEmptyString = z.string().min(1);
+const sshLaunchViaSchema = z.enum(["default", "ssh2", "system-ssh", "wsl"]);
 
 // Git refs cannot start with '-' — prevents option injection in execFile args arrays.
 const safeGitRef = z.string().refine((v) => !v.startsWith("-"), {
@@ -21,22 +22,46 @@ const sshInlineAuthSchema = z
     certRef: z.string().optional(),
     passwordRef: z.string().optional(),
     passphraseRef: z.string().optional(),
-    agent: z.enum(["auto", "socket", "pageant", "pipe", "off"]).default("auto"),
+    agent: z.enum(["auto", "socket", "pageant", "pipe", "off"]).optional(),
   })
   .passthrough();
 
 const sshInlineSchema = z
   .object({
     host: nonEmptyString,
-    port: z.number().int().min(1).max(65535).default(22),
-    username: nonEmptyString,
-    hostKeyPolicy: z.enum(["strict", "warn", "accept-new"]).default("warn"),
+    port: z.number().int().min(1).max(65535).optional(),
+    username: z.string().optional(),
+    hostKeyPolicy: z.enum(["strict", "warn", "accept-new"]).optional(),
     auth: sshInlineAuthSchema,
     advanced: z
       .object({
-        launchVia: z.enum(["ssh2", "system-ssh", "wsl"]).default("ssh2"),
-        command: z.string().default(""),
-        agentForward: z.boolean().default(false),
+        launchVia: sshLaunchViaSchema.default("default"),
+        portOverride: z.boolean().optional(),
+        command: z.string().optional(),
+        sshPath: z.string().nullable().optional(),
+        agentForward: z.boolean().optional(),
+        keepaliveIntervalMs: z.number().int().min(0).nullable().optional(),
+        keepaliveCountMax: z.number().int().min(0).nullable().optional(),
+        compression: z.boolean().nullable().optional(),
+        wsl: z
+          .object({
+            distro: z.string().trim().min(1).nullable().optional(),
+            user: z
+              .string()
+              .trim()
+              .regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/)
+              .nullable()
+              .optional(),
+            exec: z
+              .string()
+              .trim()
+              .min(1)
+              .refine((value) => !value.startsWith("-") && !/[\0\r\n]/.test(value))
+              .optional(),
+          })
+          .passthrough()
+          .nullable()
+          .optional(),
       })
       .partial()
       .default({}),
@@ -72,6 +97,7 @@ export const workspaceSchema = z
             cwd: z.string().optional(),
             shell: z.boolean().optional(),
             startup: z.string().optional(),
+            sshMcpEnabled: z.boolean().optional(),
             launch: panelLaunchSchema,
           })
           .passthrough(),
@@ -96,7 +122,25 @@ export const workspaceUIStateSchema = z.object({
 export type WorkspaceUIState = z.infer<typeof workspaceUIStateSchema>;
 
 export const settingsSchema = z
-  .object({ remoteAccess: z.object({ paused: z.boolean().optional() }).passthrough().optional() })
+  .object({
+    remoteAccess: z.object({ paused: z.boolean().optional() }).passthrough().optional(),
+    ssh: z
+      .object({
+        defaultLaunchVia: z.enum(["ssh2", "system-ssh", "wsl"]).optional(),
+        systemSshPath: z.string().trim().optional(),
+        wslDefaultDistro: z.string().trim().optional(),
+        wslSshExec: z
+          .string()
+          .trim()
+          .min(1)
+          .refine((value) => !value.startsWith("-") && !/[\0\r\n]/.test(value))
+          .optional(),
+        agentPath: z.string().optional(),
+        defaultAgentMode: z.enum(["auto", "socket", "pageant", "pipe", "off"]).optional(),
+        requireEncryptedStorage: z.boolean().optional(),
+      })
+      .optional(),
+  })
   .passthrough();
 export type SettingsPayload = z.infer<typeof settingsSchema>;
 
@@ -728,6 +772,7 @@ export const telegramConnectionSchema = z
     botTokenRef: z.string().optional(),
     chatId: z.string().optional(),
     enabled: z.boolean().optional(),
+    notificationsEnabled: z.boolean().optional(),
     pollSeconds: z.number().int().min(1).max(3600).optional(),
     profileId: z.string().optional(),
     forwardKinds: z.array(z.string()).optional(),
@@ -1109,49 +1154,91 @@ export const fileCommitDiffSchema = z.object({
 });
 export type FileCommitDiff = z.infer<typeof fileCommitDiffSchema>;
 
-export const sshHostCreateSchema = z.object({
-  name: z.string().min(1),
-  host: z.string().min(1),
-  port: z.number().int().min(1).max(65535).default(22),
-  username: z.string().min(1),
-  auth: z.object({
+const sshAuthSchema = z
+  .object({
     methods: z.array(z.enum(["password", "publickey", "keyboard-interactive", "agent"])).min(1),
     keyRef: z.string().optional(),
     certRef: z.string().optional(),
     passwordRef: z.string().optional(),
     passphraseRef: z.string().optional(),
-    agent: z.enum(["auto", "socket", "pageant", "pipe", "off"]).default("auto"),
-  }),
-  jump: z.array(z.string()).default([]),
-  hostKeyPolicy: z.enum(["strict", "warn", "accept-new"]).default("warn"),
-  advanced: z
-    .object({
-      keepaliveIntervalMs: z.number().int().min(0).default(30000),
-      keepaliveCountMax: z.number().int().min(0).default(3),
-      compression: z.boolean().default(true),
-      agentForward: z.boolean().default(false),
-      env: z.record(z.string(), z.string()).default({}),
-      command: z.string().default(""),
-      useSystemSsh: z.boolean().default(false),
-      launchVia: z.enum(["ssh2", "system-ssh", "wsl"]).default("ssh2"),
-      wsl: z
-        .object({
-          distro: z.string().nullable().optional(),
-          user: z.string().nullable().optional(),
-          exec: z.string().default("ssh"),
-          importFromWsl: z.boolean().default(false),
-        })
-        .optional(),
-    })
-    .partial()
-    .default({}),
-  tags: z.array(z.string()).default([]),
+    agent: z.enum(["auto", "socket", "pageant", "pipe", "off"]).nullable().optional(),
+  })
+  .passthrough();
+
+const sshWslSchema = z
+  .object({
+    distro: z.string().trim().min(1).nullable().optional(),
+    user: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z_][A-Za-z0-9_.-]*$/)
+      .nullable()
+      .optional(),
+    exec: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => !value.startsWith("-") && !/[\0\r\n]/.test(value))
+      .optional(),
+    importFromWsl: z.boolean().optional(),
+  })
+  .passthrough();
+
+const sshAdvancedSchema = z
+  .object({
+    keepaliveIntervalMs: z.number().int().min(0).nullable().optional(),
+    keepaliveCountMax: z.number().int().min(0).nullable().optional(),
+    compression: z.boolean().nullable().optional(),
+    agentForward: z.boolean().optional(),
+    env: z.record(z.string(), z.string()).nullable().optional(),
+    command: z.string().nullable().optional(),
+    sshPath: z.string().nullable().optional(),
+    useSystemSsh: z.boolean().optional(),
+    launchVia: sshLaunchViaSchema.optional(),
+    portOverride: z.boolean().optional(),
+    wsl: sshWslSchema.nullable().optional(),
+  })
+  .passthrough();
+
+export const sshHostCreateSchema = z.object({
+  name: z.string().min(1),
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535).optional(),
+  username: z.string().optional(),
+  auth: sshAuthSchema.optional(),
+  jump: z.array(z.string()).optional(),
+  hostKeyPolicy: z.enum(["strict", "warn", "accept-new"]).optional(),
+  advanced: sshAdvancedSchema.optional(),
+  tags: z.array(z.string()).optional(),
 });
 export type SshHostCreate = z.infer<typeof sshHostCreateSchema>;
 
+export const sshTestStartSchema = z.object({
+  profileId: nonEmptyString,
+  draft: sshHostCreateSchema.extend({ name: z.string().optional() }),
+});
+export type SshTestStart = z.infer<typeof sshTestStartSchema>;
+
+export const sshTestStopSchema = z.object({ sessionId: nonEmptyString });
+export type SshTestStop = z.infer<typeof sshTestStopSchema>;
+
+const sshHostPatchSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    host: z.string().min(1).optional(),
+    port: z.number().int().min(1).max(65535).nullable().optional(),
+    username: z.string().nullable().optional(),
+    auth: sshAuthSchema.partial().optional(),
+    jump: z.array(z.string()).optional(),
+    hostKeyPolicy: z.enum(["strict", "warn", "accept-new"]).nullable().optional(),
+    advanced: sshAdvancedSchema.partial().nullable().optional(),
+    tags: z.array(z.string()).optional(),
+  })
+  .passthrough();
+
 export const sshHostUpdateSchema = z.object({
-  id: z.string(),
-  patch: sshHostCreateSchema.partial(),
+  id: z.string().min(1),
+  patch: sshHostPatchSchema,
 });
 export type SshHostUpdate = z.infer<typeof sshHostUpdateSchema>;
 
@@ -1164,7 +1251,25 @@ export const sshKeyImportSchema = z.object({
   passphrase: z.string().optional(),
 });
 export type SshKeyImport = z.infer<typeof sshKeyImportSchema>;
-
+export const sshKeyRenameSchema = z.object({
+  id: nonEmptyString,
+  label: z.string().min(1).max(60),
+});
+export type SshKeyRename = z.infer<typeof sshKeyRenameSchema>;
+export const sshKeyTransferStartSchema = z
+  .object({
+    profileId: nonEmptyString,
+    hostId: nonEmptyString.optional(),
+    draft: sshHostCreateSchema.extend({ name: z.string().optional() }).optional(),
+    keyId: nonEmptyString,
+  })
+  .refine((value) => Boolean(value.hostId) !== Boolean(value.draft), {
+    message: "Provide exactly one saved host ID or host draft.",
+    path: ["hostId"],
+  });
+export type SshKeyTransferStart = z.infer<typeof sshKeyTransferStartSchema>;
+export const sshKeyTransferStopSchema = z.object({ operationId: nonEmptyString });
+export type SshKeyTransferStop = z.infer<typeof sshKeyTransferStopSchema>;
 export const sshKeyGenerateSchema = z.object({
   kind: z.enum(["ed25519", "ecdsa", "rsa"]),
   bits: z.number().int().optional(),
@@ -1172,6 +1277,9 @@ export const sshKeyGenerateSchema = z.object({
   passphrase: z.string().optional(),
 });
 export type SshKeyGenerate = z.infer<typeof sshKeyGenerateSchema>;
+
+export const sshKeyDeleteSchema = z.object({ id: z.string().min(1) });
+export const sshCertDeleteSchema = z.object({ id: z.string().min(1) });
 
 export const sshCertImportSchema = z.object({
   keyId: z.string(),

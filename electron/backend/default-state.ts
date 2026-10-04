@@ -131,23 +131,36 @@ function normalizeLaunch(launch: any): Record<string, unknown> | null {
       const auth = inline.auth || {};
       normalized.sshInline = {
         host: String(inline.host || ""),
-        port: Number(inline.port) > 0 ? Number(inline.port) : 22,
+        port: Number(inline.port) > 0 ? Number(inline.port) : undefined,
         username: String(inline.username || ""),
         hostKeyPolicy: ["strict", "warn", "accept-new"].includes(inline.hostKeyPolicy) ? inline.hostKeyPolicy : "warn",
+        jump: Array.isArray(inline.jump) ? [...inline.jump] : [],
         auth: {
+          ...auth,
           methods: Array.isArray(auth.methods) && auth.methods.length ? [...auth.methods] : ["publickey"],
           keyRef: auth.keyRef || "",
           certRef: auth.certRef || "",
           passwordRef: auth.passwordRef || "",
           passphraseRef: auth.passphraseRef || "",
-          agent: ["auto", "socket", "pageant", "pipe", "off"].includes(auth.agent) ? auth.agent : "auto",
+          agent: ["auto", "socket", "pageant", "pipe", "off"].includes(auth.agent) ? auth.agent : undefined,
         },
         advanced: {
-          launchVia: ["ssh2", "system-ssh", "wsl"].includes(inline.advanced?.launchVia)
+          ...(inline.advanced && typeof inline.advanced === "object" ? inline.advanced : {}),
+          launchVia: ["ssh2", "system-ssh", "wsl", "default"].includes(inline.advanced?.launchVia)
             ? inline.advanced.launchVia
             : "ssh2",
           command: inline.advanced?.command || "",
           agentForward: Boolean(inline.advanced?.agentForward),
+          portOverride:
+            typeof inline.advanced?.portOverride === "boolean"
+              ? inline.advanced.portOverride
+              : Number(inline.port) > 0 && Number(inline.port) !== 22,
+          sshPath: inline.advanced?.sshPath,
+          keepaliveIntervalMs: inline.advanced?.keepaliveIntervalMs,
+          keepaliveCountMax: inline.advanced?.keepaliveCountMax,
+          compression: inline.advanced?.compression,
+          env: inline.advanced?.env && typeof inline.advanced.env === "object" ? { ...inline.advanced.env } : {},
+          wsl: inline.advanced?.wsl && typeof inline.advanced.wsl === "object" ? { ...inline.advanced.wsl } : undefined,
         },
       };
     }
@@ -171,6 +184,7 @@ function normalizePanel(panel: any, panelIndex = 0): any {
     startup: panel.startup || (panelIndex === 0 ? APP_CONFIG.ui.defaultPanelStartup : APP_CONFIG.ui.manualPanelStartup),
     cwd: panel.cwd || "",
     alertsForceOn: panel.alertsForceOn === true,
+    sshMcpEnabled: panel.sshMcpEnabled === true,
     notes: typeof panel.notes === "string" ? panel.notes : "",
   };
 }
@@ -508,6 +522,17 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         subagentCompletion: APP_CONFIG.notifications.subagentCompletion,
         autoApprovePermissions: APP_CONFIG.notifications.autoApprovePermissions,
       },
+      ssh: {
+        defaultLaunchVia: (["ssh2", "wsl"].includes(APP_CONFIG.ssh.defaultLaunchVia)
+          ? APP_CONFIG.ssh.defaultLaunchVia
+          : "system-ssh") as "ssh2" | "system-ssh" | "wsl",
+        systemSshPath: APP_CONFIG.ssh.systemSshPath,
+        wslDefaultDistro: APP_CONFIG.ssh.wslDefaultDistro,
+        wslSshExec: APP_CONFIG.ssh.wslSshExec,
+        agentPath: APP_CONFIG.ssh.agentPath,
+        defaultAgentMode: "auto" as const,
+        requireEncryptedStorage: APP_CONFIG.ssh.requireEncryptedStorage,
+      },
       remoteAccess: {
         enabled: APP_CONFIG.remoteAccess.enabled,
         paused: false,
@@ -617,7 +642,6 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       certificates: [],
       knownHosts: {},
       settings: {
-        defaultAgentMode: "auto",
         importedSshConfig: false,
       },
     },
@@ -1137,10 +1161,14 @@ export function normalizeState(
   const rawAppliedMigrations = Array.isArray(rawSettings.appliedMigrations)
     ? rawSettings.appliedMigrations.filter((id: unknown) => typeof id === "string")
     : [];
+  const sshStoragePolicyMigration = "ssh-secure-storage-v1";
+  const needsSshStoragePolicyMigration = !rawAppliedMigrations.includes(sshStoragePolicyMigration);
   const forwardKindsMigrationPending = !rawAppliedMigrations.includes(TELEGRAM_QUESTION_FORWARD_MIGRATION);
-  const appliedMigrations = forwardKindsMigrationPending
-    ? [...rawAppliedMigrations, TELEGRAM_QUESTION_FORWARD_MIGRATION]
-    : rawAppliedMigrations;
+  const appliedMigrations = [
+    ...rawAppliedMigrations,
+    ...(forwardKindsMigrationPending ? [TELEGRAM_QUESTION_FORWARD_MIGRATION] : []),
+    ...(needsSshStoragePolicyMigration ? [sshStoragePolicyMigration] : []),
+  ];
 
   /**
    * Telegram `forwardKinds` migration for the split of `waiting` into
@@ -1421,6 +1449,7 @@ export function normalizeState(
           botTokenRef: connection.botTokenRef || "",
           chatId: connection.chatId || "",
           enabled: connection.enabled !== false,
+          notificationsEnabled: connection.notificationsEnabled !== false,
           pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.telegram.defaultPollSeconds,
           profileId: typeof connection.profileId === "string" ? connection.profileId : "",
           forwardKinds: migrateForwardKinds(connection.forwardKinds),
@@ -1498,6 +1527,37 @@ export function normalizeState(
       const raw = rawSettings.clipboardImagePasteDir;
       return typeof raw === "string" ? raw : "";
     })(),
+    ssh: {
+      defaultLaunchVia: (["ssh2", "system-ssh", "wsl"].includes(rawSettings.ssh?.defaultLaunchVia)
+        ? rawSettings.ssh.defaultLaunchVia
+        : defaults.settings.ssh.defaultLaunchVia) as "ssh2" | "system-ssh" | "wsl",
+      systemSshPath:
+        typeof rawSettings.ssh?.systemSshPath === "string"
+          ? rawSettings.ssh.systemSshPath
+          : defaults.settings.ssh.systemSshPath,
+      wslDefaultDistro:
+        typeof rawSettings.ssh?.wslDefaultDistro === "string"
+          ? rawSettings.ssh.wslDefaultDistro
+          : defaults.settings.ssh.wslDefaultDistro,
+      wslSshExec:
+        typeof rawSettings.ssh?.wslSshExec === "string" ? rawSettings.ssh.wslSshExec : defaults.settings.ssh.wslSshExec,
+      agentPath:
+        typeof rawSettings.ssh?.agentPath === "string" ? rawSettings.ssh.agentPath : defaults.settings.ssh.agentPath,
+      defaultAgentMode: ["auto", "socket", "pageant", "pipe", "off"].includes(
+        rawSettings.ssh?.defaultAgentMode || rawState.ssh?.settings?.defaultAgentMode,
+      )
+        ? rawSettings.ssh?.defaultAgentMode || rawState.ssh?.settings?.defaultAgentMode
+        : defaults.settings.ssh.defaultAgentMode,
+      requireEncryptedStorage:
+        rawSettings.ssh?.requireEncryptedStorage === false && needsSshStoragePolicyMigration
+          ? true
+          : typeof rawSettings.ssh?.requireEncryptedStorage === "boolean"
+            ? rawSettings.ssh.requireEncryptedStorage
+            : defaults.settings.ssh.requireEncryptedStorage,
+      storagePolicyMigrationNotice:
+        rawSettings.ssh?.storagePolicyMigrationNotice === true ||
+        (rawSettings.ssh?.requireEncryptedStorage === false && needsSshStoragePolicyMigration),
+    },
     appliedMigrations,
   };
   // Reassign workspaces whose profileId points at a deleted profile to a
@@ -1572,12 +1632,39 @@ export function normalizeState(
   migrateConnectionProfiles(normalizedSettings.integrations.azureDevops.connections, "azure");
   migrateConnectionProfiles(normalizedSettings.integrations.github.connections, "github");
 
+  const sshClientDefaultMigration = "ssh-client-default-v1";
+  const sshPortOverrideMigration = "ssh-port-override-v1";
+  const rawSshHosts: Record<string, unknown>[] = Array.isArray(rawState.ssh?.hosts) ? rawState.ssh.hosts : [];
+  const sshHosts = rawSshHosts.map((host) => {
+    const priorAdvanced =
+      host.advanced && typeof host.advanced === "object" ? (host.advanced as Record<string, unknown>) : {};
+    const advanced = { ...priorAdvanced };
+    let changed = false;
+    if (!appliedMigrations.includes(sshClientDefaultMigration) && !advanced.launchVia) {
+      advanced.launchVia = "ssh2";
+      changed = true;
+    }
+    if (
+      !appliedMigrations.includes(sshPortOverrideMigration) &&
+      advanced.portOverride === undefined &&
+      Number(host.port) > 0
+    ) {
+      // Before the override flag existed, System SSH omitted the default 22 but
+      // passed non-default ports. Preserve that behavior for existing hosts.
+      advanced.portOverride = Number(host.port) !== 22;
+      changed = true;
+    }
+    return changed ? { ...host, advanced } : host;
+  });
+  if (!appliedMigrations.includes(sshClientDefaultMigration)) appliedMigrations.push(sshClientDefaultMigration);
+  if (!appliedMigrations.includes(sshPortOverrideMigration)) appliedMigrations.push(sshPortOverrideMigration);
+
   const ssh = {
     ...defaults.ssh,
     ...(rawState.ssh || {}),
+    hosts: sshHosts,
     settings: {
-      ...defaults.ssh.settings,
-      ...((rawState.ssh || {}).settings || {}),
+      importedSshConfig: Boolean(rawState.ssh?.settings?.importedSshConfig),
     },
   };
 

@@ -17,6 +17,7 @@ export async function detectWslDistros(): Promise<WslDistros | null> {
     const { stdout } = await execFileAsync("wsl.exe", ["-l", "-q"], {
       env: { ...process.env, WSL_UTF8: "1" },
       timeout: 5000,
+      windowsHide: true,
     });
     const distros = stdout
       .split(/\r?\n/)
@@ -29,6 +30,7 @@ export async function detectWslDistros(): Promise<WslDistros | null> {
       const { stdout: defaultOut } = await execFileAsync("wsl.exe", ["-l", "-v"], {
         env: { ...process.env, WSL_UTF8: "1" },
         timeout: 5000,
+        windowsHide: true,
       });
       const defaultMatch = defaultOut.match(/^\*\s+(\S+)/m);
       if (defaultMatch) defaultDistro = defaultMatch[1]!.replace(/\0/g, "");

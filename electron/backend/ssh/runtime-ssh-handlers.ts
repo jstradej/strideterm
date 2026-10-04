@@ -1,12 +1,17 @@
 /// <reference types="node" />
 import { randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
+import ssh2 from "ssh2";
 import {
   sshHostCreateSchema,
   sshHostUpdateSchema,
   sshHostDeleteSchema,
   sshKeyImportSchema,
   sshKeyGenerateSchema,
+  sshKeyDeleteSchema,
+  sshKeyRenameSchema,
   sshCertImportSchema,
+  sshCertDeleteSchema,
   sshAuthAnswerSchema,
   sshAuthCancelSchema,
   sshAcceptHostKeySchema,
@@ -16,6 +21,9 @@ import {
 } from "../ipc-schemas.js";
 import { generateKey } from "./ssh-keygen.js";
 import { parseCertificate } from "./ssh-cert.js";
+import { runPlatformPreflight } from "./ssh-platform.js";
+
+const { utils } = ssh2;
 
 function newId(prefix: string): string {
   return `${prefix}${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
@@ -42,6 +50,16 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
   }
 
   return {
+    async "ssh:capabilities:get"() {
+      const settings = store.getState().settings?.ssh || {};
+      const result = await runPlatformPreflight({
+        safeStorageAvailable: credentialStore.isEncryptionAvailable?.() !== false,
+        systemSshPath: settings.systemSshPath || "",
+        wslSshExec: settings.wslSshExec || "ssh",
+        agentPath: settings.agentPath || "",
+      });
+      return result.capabilities;
+    },
     async "ssh:hosts:list"() {
       return sshManager.listHosts();
     },
@@ -65,14 +83,16 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:hosts:delete"(payload: any) {
       const parsed = sshHostDeleteSchema.parse(payload);
-      await sshManager.deleteHost(parsed.id);
+      const result = await sshManager.deleteHost(parsed.id);
+      if (!result.ok) return result;
       broadcastState();
-      return { ok: true };
+      return result;
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:hosts:duplicate"(payload: any) {
-      const host = sshManager.getHost(payload?.id);
+      const { id } = sshHostDeleteSchema.parse(payload);
+      const host = sshManager.getHost(id);
       if (!host) throw new Error("Host not found");
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const copy: any = { ...host, name: `${host.name} (copy)` };
@@ -87,14 +107,30 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:hosts:test"(payload: any) {
-      const host = sshManager.getHost(payload?.id);
+      const { id } = sshHostDeleteSchema.parse(payload);
+      const host = sshManager.getHost(id);
       if (!host) throw new Error("Host not found");
+      const settings = store.getState().settings?.ssh || {};
+      const { resolveSshLaunchVia } = await import("../../shared/ssh-connection.js");
+      const { APP_CONFIG } = await import("../../../config/app-config.js");
+      const mode = resolveSshLaunchVia(
+        host.advanced?.launchVia,
+        settings.defaultLaunchVia,
+        APP_CONFIG.ssh.defaultLaunchVia,
+      );
+      if (mode !== "ssh2") {
+        return {
+          ok: false,
+          error: "unsupported",
+          message: "Setup check does not test System SSH or WSL. Use Connect to verify this client.",
+        };
+      }
 
       const sessionId = `ssh-test-${Date.now()}-${randomBytes(3).toString("hex")}`;
       try {
         await sshManager.createSession({
           sessionId,
-          hostId: host.id,
+          inlineHost: { ...host, advanced: { ...host.advanced, launchVia: "ssh2", command: undefined } },
           cols: 80,
           rows: 24,
           onData: () => {},
@@ -119,18 +155,38 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:keys:import"(payload: any) {
       const parsed = sshKeyImportSchema.parse(payload);
+      const key = utils.parseKey(parsed.privateKey, parsed.passphrase);
+      if (key instanceof Error || !key.isPrivateKey()) {
+        throw new Error(
+          key instanceof Error
+            ? `Invalid private key or passphrase: ${key.message}`
+            : "The selected key must contain a private key.",
+        );
+      }
+      const publicSsh = key.getPublicSSH();
+      const fingerprint = `SHA256:${createHash("sha256").update(publicSsh).digest("base64").replace(/=+$/, "")}`;
+      const publicKey = `${key.type} ${publicSsh.toString("base64")}${key.comment ? ` ${key.comment}` : ""}`;
       const id = newId("ssh:key:");
       const keyMeta = {
         id,
         label: parsed.label || "Imported key",
-        kind: inferKeyKind(parsed.privateKey),
+        kind: key.type,
+        publicKey,
+        fingerprint,
         hasPassphrase: Boolean(parsed.passphrase),
         createdAt: new Date().toISOString(),
       };
 
-      await credentialStore.setSecret(id, parsed.privateKey);
-      if (parsed.passphrase) {
-        await credentialStore.setSecret(`ssh:passphrase:${id}`, parsed.passphrase);
+      const requireEncryptedStorage = store.getState().settings?.ssh?.requireEncryptedStorage;
+      try {
+        await credentialStore.setSecret(id, parsed.privateKey, { requireEncryptedStorage });
+        if (parsed.passphrase) {
+          await credentialStore.setSecret(`ssh:passphrase:${id}`, parsed.passphrase, { requireEncryptedStorage });
+        }
+      } catch (err) {
+        await credentialStore.deleteSecret(id).catch(() => {});
+        await credentialStore.deleteSecret(`ssh:passphrase:${id}`).catch(() => {});
+        throw err;
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -163,9 +219,10 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
         createdAt: new Date().toISOString(),
       };
 
-      await credentialStore.setSecret(id, privateKey);
+      const requireEncryptedStorage = store.getState().settings?.ssh?.requireEncryptedStorage;
+      await credentialStore.setSecret(id, privateKey, { requireEncryptedStorage });
       if (parsed.passphrase) {
-        await credentialStore.setSecret(`ssh:passphrase:${id}`, parsed.passphrase);
+        await credentialStore.setSecret(`ssh:passphrase:${id}`, parsed.passphrase, { requireEncryptedStorage });
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -180,12 +237,9 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:keys:delete"(payload: any) {
-      const id = payload?.id;
-      if (!id) throw new Error("Missing key id");
+      const { id } = sshKeyDeleteSchema.parse(payload);
       const { hosts, certs } = countReferences(id);
-      const cascade = payload?.cascade === true;
-
-      if ((hosts.length > 0 || certs.length > 0) && !cascade) {
+      if (hosts.length > 0 || certs.length > 0) {
         return {
           ok: false,
           error: "in-use",
@@ -204,15 +258,14 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
         if (!state.ssh) return;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         state.ssh.keys = (state.ssh.keys || []).filter((k: any) => k.id !== id);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: store mutate draft has unknown ssh sub-schema
-        state.ssh.certificates = (state.ssh.certificates || []).filter((c: any) => c.keyId !== id);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: same store mutate draft
-        state.ssh.hosts = (state.ssh.hosts || []).map((h: any) =>
-          h.auth?.keyRef === id ? { ...h, auth: { ...h.auth, keyRef: "", certRef: h.auth.certRef } } : h,
-        );
       });
       broadcastState();
       return { ok: true };
+    },
+
+    async "ssh:keys:rename"(payload: unknown) {
+      const parsed = sshKeyRenameSchema.parse(payload);
+      return sshManager.renameKey(parsed);
     },
 
     async "ssh:certs:list"() {
@@ -244,18 +297,22 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async "ssh:certs:delete"(payload: any) {
-      const id = payload?.id;
-      if (!id) throw new Error("Missing cert id");
+      const { id } = sshCertDeleteSchema.parse(payload);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const hosts = (store.getState().ssh?.hosts || []).filter((h: any) => h.auth?.certRef === id);
+      if (hosts.length) {
+        return {
+          ok: false,
+          error: "in-use",
+          hosts: hosts.map((h: { id: string; name?: string }) => ({ id: h.id, name: h.name || h.id })),
+        };
+      }
       await credentialStore.deleteSecret(id);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await store.mutate((state: any) => {
         if (!state.ssh) return;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: store mutate draft unknown sub-schema
         state.ssh.certificates = (state.ssh.certificates || []).filter((c: any) => c.id !== id);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: same store mutate draft
-        state.ssh.hosts = (state.ssh.hosts || []).map((h: any) =>
-          h.auth?.certRef === id ? { ...h, auth: { ...h.auth, certRef: "" } } : h,
-        );
       });
       broadcastState();
       return { ok: true };
@@ -307,12 +364,7 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const created: any[] = [];
       for (const h of selected) {
-        // Drop the parser's private _identityFile marker — it isn't valid state.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const clean: any = { ...h };
-        delete clean._identityFile;
-        if (!clean.auth) clean.auth = { methods: ["publickey"], agent: "auto" };
-        created.push(await sshManager.createHost(clean));
+        created.push(await sshManager.createHost({ ...h, auth: { methods: ["publickey"], agent: "auto" } }));
       }
       broadcastState();
       return created;

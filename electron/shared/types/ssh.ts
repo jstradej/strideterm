@@ -1,8 +1,10 @@
 export interface SshAuth {
-  methods: string[];
-  password?: string;
-  privateKey?: string;
-  agent?: boolean;
+  methods: Array<"password" | "publickey" | "keyboard-interactive" | "agent">;
+  passwordRef?: string;
+  keyRef?: string;
+  certRef?: string;
+  passphraseRef?: string;
+  agent?: "auto" | "socket" | "pageant" | "pipe" | "off" | null;
 }
 
 export interface SshHost {
@@ -12,38 +14,62 @@ export interface SshHost {
   username?: string;
   jump?: string[];
   auth?: SshAuth;
-  label?: string;
+  name?: string;
   createdAt: string;
   updatedAt: string;
   lastConnectedAt: string | null;
+  hostKeyPolicy?: "strict" | "warn" | "accept-new";
+  advanced?: {
+    launchVia?: SshLaunchVia;
+    portOverride?: boolean;
+    keepaliveIntervalMs?: number;
+    keepaliveCountMax?: number;
+    compression?: boolean;
+    agentForward?: boolean;
+    command?: string;
+    sshPath?: string;
+    env?: Record<string, string>;
+    algorithms?: Record<string, unknown>;
+    wsl?: { distro?: string | null; user?: string | null; exec?: string };
+  };
 }
 
 export interface SshKey {
   id: string;
   label: string;
-  type: string;
-  fingerprint: string;
-  path: string;
+  kind: string;
+  publicKey?: string;
+  fingerprint?: string;
+  source?: string;
   hasPassphrase: boolean;
+  /** Time key metadata was added to the app; for imported keys this is not the key's original creation date. */
   createdAt: string;
 }
 
 export interface SshCert {
   id: string;
   keyId: string;
-  serial: string;
-  validBefore: string;
-  validAfter: string;
+  publicCert?: string;
+  type?: string;
+  keyIdString?: string;
+  principals?: string[];
+  serial?: string;
+  validBefore?: string | null;
+  validAfter?: string | null;
+  signatureKey?: string;
+  extensions?: string[];
+  criticalOptions?: string[];
   createdAt: string;
 }
 
 export interface SshAuthRequest {
   sessionId: string;
-  hostId: string;
-  kind: "password" | "keyboard-interactive" | "passphrase";
-  prompt: string;
-  // Generation token, echoed back on answers and used to scope prompt dismissals.
-  promptId?: string;
+  promptId: string;
+  prompt: {
+    name?: string;
+    instructions?: string;
+    prompts: Array<{ prompt: string; echo: boolean }>;
+  };
 }
 
 export interface SshAuthPromptCancel {
@@ -51,12 +77,46 @@ export interface SshAuthPromptCancel {
   promptId: string;
 }
 
-export type SshConnectionStatus = "idle" | "connecting" | "connected" | "error" | "disconnected";
+export type SshConnectionStatus = "idle" | "connecting" | "connected" | "process-running" | "error" | "disconnected";
 
 export interface SshConnectionState {
   sessionId: string;
   hostId: string;
   status: SshConnectionStatus;
+  connected?: boolean;
   error?: string;
   connectedAt?: string;
 }
+
+export interface SshConnectionTestState {
+  sessionId: string;
+  mode: "ssh2" | "system-ssh" | "wsl";
+  status: "connecting" | "authenticated" | "process-running" | "error" | "disconnected" | "cancelled";
+  error?: string;
+}
+
+export interface SshKeyTransferState {
+  operationId: string;
+  hostId: string;
+  keyId: string;
+  status:
+    | "connecting"
+    | "uploading"
+    | "verifying"
+    | "installed"
+    | "already-installed"
+    | "verification-failed"
+    | "error"
+    | "cancelled";
+  installed?: boolean;
+  remoteMayHaveChanged?: boolean;
+  error?: string;
+}
+import type { SshLaunchVia } from "../ssh-connection.js";
+
+export type {
+  EffectiveSshLaunchVia,
+  SshConnectionSettings,
+  SshLaunchVia,
+  SshRuntimeCapabilities,
+} from "../ssh-connection.js";

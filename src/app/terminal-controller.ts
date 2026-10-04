@@ -618,32 +618,37 @@ export function createTerminalController({
     }
   }
 
-  function pruneTerminalViews(validSessionIds: Set<string>): void {
-    for (const [sessionId, view] of views.value.entries()) {
-      if (validSessionIds.has(sessionId)) {
-        continue;
-      }
-
-      window.cancelAnimationFrame(view.resizeFrame || 0);
-      view.resizeObserver?.disconnect();
-      cancelWebglRetry(view);
-      cancelWebglIdleDispose(view);
-      view.releaseTouchGesture?.();
-      view.diagRenderDisposer?.dispose();
-      view.diagRenderDisposer = null;
-      // Dispose the WebGL addon explicitly, before term.dispose(), so the GL
-      // context/canvas tears down in a controlled order. Disposing it implicitly
-      // via term.dispose() during rapid workspace deletion is what historically
-      // tripped a native GPU-driver access violation on Windows.
-      if (view.webglAddon) {
-        disposeWebglAddon(view, view.webglAddon);
-      }
-      view.term.dispose();
-      view.mount.remove();
-      views.value.delete(sessionId);
+  function disposeTerminalView(sessionId: string): void {
+    const view = views.value.get(sessionId);
+    if (!view) {
       buffers.value.delete(sessionId);
       sessionsWithRendererData.delete(sessionId);
       throughSeqBySession.delete(sessionId);
+      return;
+    }
+    window.cancelAnimationFrame(view.resizeFrame || 0);
+    view.resizeObserver?.disconnect();
+    cancelWebglRetry(view);
+    cancelWebglIdleDispose(view);
+    view.releaseTouchGesture?.();
+    view.diagRenderDisposer?.dispose();
+    view.diagRenderDisposer = null;
+    // Dispose the WebGL addon explicitly, before term.dispose(), so the GL
+    // context/canvas tears down in a controlled order. Disposing it implicitly
+    // via term.dispose() during rapid workspace deletion is what historically
+    // tripped a native GPU-driver access violation on Windows.
+    if (view.webglAddon) disposeWebglAddon(view, view.webglAddon);
+    view.term.dispose();
+    view.mount.remove();
+    views.value.delete(sessionId);
+    buffers.value.delete(sessionId);
+    sessionsWithRendererData.delete(sessionId);
+    throughSeqBySession.delete(sessionId);
+  }
+
+  function pruneTerminalViews(validSessionIds: Set<string>): void {
+    for (const sessionId of views.value.keys()) {
+      if (!validSessionIds.has(sessionId)) disposeTerminalView(sessionId);
     }
   }
 
@@ -1987,6 +1992,7 @@ export function createTerminalController({
     attachTerminalPane,
     clearTerminalViewport,
     detachTerminalPane,
+    disposeTerminalView,
     disconnectHiddenPaneObservers,
     ensureTerminal,
     exportTerminalTranscript,

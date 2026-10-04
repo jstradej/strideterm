@@ -1,6 +1,8 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  buildAgentSshMcpLaunch,
+  buildAgentSshMcpServerSpec,
   buildReviewAgentLaunch as _buildReviewAgentLaunch,
   detectReviewAgentPanel,
 } from "./review-bridge-agent-launch.js";
@@ -90,6 +92,111 @@ describe("review bridge agent launch", () => {
       "ado-main:repo-1:123",
     ]);
     expect(parsed.mcpServers.review.env).toBeUndefined();
+  });
+
+  test("adds SSH MCP to a direct Claude launch without replacing user MCP config or strict mode", () => {
+    const launch = buildAgentSshMcpLaunch({
+      workspace: createWorkspace(),
+      panel: {
+        id: "claude",
+        command:
+          'claude --dangerously-skip-permissions --mcp-config .mcp.json "{\\"mcpServers\\":{\\"personal\\":{\\"command\\":\\"my-mcp\\"}}}"',
+      },
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      sshMcp: { command: "/usr/bin/node", args: ["/app/ssh-mcp-stdio.js", "--ssh-mcp"] },
+    })!;
+
+    expect(launch.args.slice(0, 1)).toEqual(["--dangerously-skip-permissions"]);
+    expect(launch.args).not.toContain("--strict-mcp-config");
+    const mcpConfigIndex = launch.args.indexOf("--mcp-config");
+    expect(launch.args[mcpConfigIndex + 1]).toBe(".mcp.json");
+    const addedConfig = JSON.parse(launch.args[mcpConfigIndex + 2]);
+    expect(addedConfig.mcpServers.personal.command).toBe("my-mcp");
+    expect(addedConfig.mcpServers.strideterm_ssh.command).toBe("/usr/bin/node");
+    expect(launch.args.join(" ")).not.toContain("capability-value");
+  });
+
+  test("does not rewrite review-only Claude MCP config args", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "claude", command: "claude --mcp-config .mcp.json --model sonnet" },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+    })!;
+    expect(launch.args.slice(0, 3)).toEqual(["--mcp-config", ".mcp.json", "--model"]);
+    expect(launch.args).toContain("--strict-mcp-config");
+  });
+
+  test("composes review and SSH MCP servers in one Claude config while retaining review launch flags", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "claude", command: "claude --dangerously-skip-permissions --model sonnet" },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      sshMcp: { command: "/usr/bin/node", args: ["/app/ssh-mcp-stdio.js", "--ssh-mcp"] },
+    })!;
+
+    const configs = launch.args.filter((arg, index) => launch.args[index - 1] === "--mcp-config");
+    expect(configs).toHaveLength(1);
+    expect(JSON.parse(configs[0]).mcpServers).toHaveProperty("review");
+    expect(JSON.parse(configs[0]).mcpServers).toHaveProperty("strideterm_ssh");
+    expect(launch.args).not.toContain("--strict-mcp-config");
+    expect(launch.args).toContain("--dangerously-skip-permissions");
+    expect(launch.args).toContain("--append-system-prompt");
+  });
+
+  test("adds only Codex MCP config field names to args and never serializes a capability", () => {
+    const launch = buildAgentSshMcpLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "codex", command: "codex -s danger-full-access" },
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      sshMcp: { command: "/usr/bin/node", args: ["/app/ssh-mcp-stdio.js", "--ssh-mcp"] },
+    })!;
+
+    expect(launch.args).toContain("-s");
+    expect(launch.args).toContain("danger-full-access");
+    expect(launch.args).toContain(
+      'mcp_servers.strideterm_ssh.env_vars=["STRIDETERM_SSH_MCP_URL","STRIDETERM_SSH_MCP_CAPABILITY"]',
+    );
+    expect(launch.args.join(" ")).not.toContain("capability-value");
+  });
+
+  test("builds the packaged Windows SSH MCP entry as Electron-as-Node", () => {
+    const spec = buildAgentSshMcpServerSpec({
+      execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+      platform: "win32",
+      isElectron: true,
+    });
+    expect(spec.args.at(-1)).toBe("--ssh-mcp");
+    expect(spec.args[0].replaceAll("\\", "/")).toContain("/electron/backend/ssh-mcp-stdio-entry.js");
+    expect(spec.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+  });
+
+  test("launches bare Windows Codex shims through Node when the JS entry exists", () => {
+    const launch = buildAgentSshMcpLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "codex", command: "codex -s danger-full-access" },
+      processInfo: {
+        platform: "win32",
+        commandLookup: { node: "C:/node.exe", codex: "C:/Users/test/AppData/Roaming/npm/codex.cmd" },
+        pathExists: () => true,
+      },
+      sshMcp: { command: "C:/Program Files/strIDEterm/strIDEterm.exe", args: ["C:/app/ssh-mcp-stdio-entry.js"] },
+    })!;
+    expect(launch.file).toBe("C:/node.exe");
+    expect(launch.args[0].replaceAll("\\", "/")).toContain("/node_modules/@openai/codex/bin/codex.js");
+    expect(launch.args).toContain("danger-full-access");
+  });
+
+  test("launches a native Windows Codex executable directly", () => {
+    const launch = buildAgentSshMcpLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "codex", command: "codex --model gpt-5" },
+      processInfo: { platform: "win32", commandLookup: { codex: "C:/Program Files/Codex/codex.exe" } },
+      sshMcp: { command: "C:/Program Files/strIDEterm/strIDEterm.exe", args: ["C:/app/ssh-mcp-stdio-entry.js"] },
+    })!;
+    expect(launch.file).toBe("C:/Program Files/Codex/codex.exe");
+    expect(launch.args).toContain("gpt-5");
   });
 
   test("builds a codex launch with inline session-local MCP config", () => {

@@ -9,6 +9,8 @@ import { createRuntime } from "./backend/runtime.js";
 import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
+import { runSshMcpStdioServer } from "./backend/ssh-mcp-stdio.js";
+import { registerDeferredSshIpcHandlers } from "./backend/ssh-bootstrap-ipc.js";
 import { createDefaultState, normalizeState, MIGRATION_WINDOW_SLOT_ID } from "./backend/default-state.js";
 import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
 import { isInputBlockingKind } from "./shared/attention-kinds.js";
@@ -388,9 +390,11 @@ const runtimeState: RuntimeState = {
     return getPrimaryWindow();
   },
 };
+let disposeDeferredSshIpcHandlers: (() => void) | null = null;
 
 const mcpMode = parseReviewBridgeMcpArgs(process.argv.slice(1));
-const gotSingleInstanceLock = !mcpMode && app.requestSingleInstanceLock();
+const sshMcpMode = process.argv.slice(1).includes("--ssh-mcp");
+const gotSingleInstanceLock = !mcpMode && !sshMcpMode && app.requestSingleInstanceLock();
 
 function summarizeAttention(payload: Record<string, unknown>): { count: number; waitingCount: number } {
   const attention = payload?.attention as Record<string, unknown> | undefined;
@@ -1386,15 +1390,10 @@ function registerBootstrapIpcHandlers(): void {
     }
     return runtimeState.bootstrapPayload || (await loadBootstrapPayload());
   });
-  // SSH book lists are fetched by every window's renderer during App setup
-  // (sshStore.load()). Windows restored at startup race registerIpc() — the
-  // real handlers appear only after createRuntime() finishes, so the early
-  // invoke rejected with "No handler registered" (a renderer pageerror the
-  // e2e harness rightly fails on). Park the call on runtimeReady instead:
-  // invokeRuntimeMethod resolves with real data once services are up.
-  for (const channel of ["ssh:hosts:list", "ssh:keys:list", "ssh:certs:list"]) {
-    ipcMain.handle(channel, () => invokeRuntimeMethod(channel));
-  }
+  // SSH screens can trigger RPCs before createRuntime() finishes during a
+  // restored-window startup. Defer ordinary SSH requests until runtimeReady;
+  // owner-bound test, transfer, auth, and host-key handlers stay in registerIpc.
+  disposeDeferredSshIpcHandlers = registerDeferredSshIpcHandlers(ipcMain, invokeRuntimeMethod);
 }
 
 function unregisterBootstrapIpcHandlers(): void {
@@ -1403,9 +1402,8 @@ function unregisterBootstrapIpcHandlers(): void {
   ipcMain.removeHandler("project:activate");
   ipcMain.removeHandler("session:activate");
   ipcMain.removeHandler("attention:sync");
-  ipcMain.removeHandler("ssh:hosts:list");
-  ipcMain.removeHandler("ssh:keys:list");
-  ipcMain.removeHandler("ssh:certs:list");
+  disposeDeferredSshIpcHandlers?.();
+  disposeDeferredSshIpcHandlers = null;
 }
 
 async function loadBootstrapPayload(): Promise<Record<string, unknown>> {
@@ -1507,6 +1505,7 @@ async function startServices(): Promise<void> {
     deferInitialRefresh: true,
     dependencies: {
       safeStorage,
+      enableAgentSshMcp: true,
       /**
        * The managed relay's internal origin.
        *
@@ -1594,6 +1593,14 @@ if (mcpMode) {
     .catch((error: unknown) => {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
+    });
+} else if (sshMcpMode) {
+  runSshMcpStdioServer()
+    .then(() => app.quit())
+    .catch((error: unknown) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+      app.quit();
     });
 } else if (!gotSingleInstanceLock) {
   app.quit();
@@ -1763,8 +1770,12 @@ if (mcpMode) {
     // brew, mise, nvm, pnpm, ~/.local/bin, etc. — every "is X installed"
     // probe then returns false even when the binary is right there.
     await inheritShellPath();
-    runtimeState.runtimeReady = startServices().catch((error: unknown) => {
-      console.error(`Startup services failed: ${(error as Error)?.message || error}`);
+    runtimeState.runtimeReady = startServices();
+    void runtimeState.runtimeReady.catch((error: unknown) => {
+      log.error("Startup services failed", {
+        error: (error as Error)?.message || String(error),
+        stack: (error as Error)?.stack,
+      });
     });
 
     // Build application menu. On macOS, replacing the default menu (which is

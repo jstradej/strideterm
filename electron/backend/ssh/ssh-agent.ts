@@ -31,8 +31,10 @@ function hasWindowsOpenSshAgent(): Promise<boolean> {
  * Returns either a socket path / pipe string, the literal "pageant" switch,
  * or undefined when no agent is available.
  */
-export async function resolveAgent(mode: string | null | undefined): Promise<string | undefined> {
+export async function resolveAgent(mode: string | null | undefined, customPath?: string): Promise<string | undefined> {
   if (mode === "off") return undefined;
+
+  if (customPath?.trim()) return customPath.trim();
 
   if (process.platform === "win32") {
     if (mode === "pageant") return "pageant";

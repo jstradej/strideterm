@@ -1,8 +1,14 @@
 <template>
-  <div v-if="data" class="ssh-host-key-warning">
+  <div v-if="data" class="ssh-host-key-warning" @keydown.esc.stop.prevent="reject">
     <div class="dialog">
       <header class="dialog__header">
-        <h2 class="danger-title">⚠ Host Key Verification</h2>
+        <h2 class="danger-title">
+          ⚠ Host key verification
+          <HelpTooltip
+            text="An SSH host key identifies the server. Compare this fingerprint with one published by your administrator over a trusted channel before accepting it. If it changed unexpectedly, cancel and verify before reconnecting."
+            label="Host key verification help"
+          />
+        </h2>
       </header>
 
       <div class="warning-content">
@@ -35,7 +41,9 @@
         <button
           type="button"
           class="button button--ghost"
-          title="Abort the connection — the SSH session is closed without trusting the new key. Use this if you can't verify the fingerprint with the server admin."
+          autofocus
+          title="Cancel the connection and do not trust this fingerprint. Verify it with your server administrator before trying again."
+          :disabled="busy"
           @click="reject"
         >
           Cancel
@@ -43,7 +51,8 @@
         <button
           type="button"
           class="button"
-          title="Trust this fingerprint for the current connection only — the next attempt to connect will prompt again. Useful for one-shot or untrusted-network scenarios."
+          title="Trust this fingerprint for this connection only. The next connection will ask again. Accept only after verifying the fingerprint with your server administrator."
+          :disabled="busy"
           @click="acceptOnce"
         >
           Accept once
@@ -53,9 +62,10 @@
           class="button button--danger"
           :title="
             data.previous
-              ? 'Replace the previously trusted fingerprint with this new one and trust it for all future sessions. Only do this if you have verified the change with the server admin.'
-              : 'Persist this fingerprint to the TOFU store and trust it for every future connection to this host. Only do this when the fingerprint matches what the server admin published.'
+              ? 'Replace the saved fingerprint and trust this new one on future connections. Do this only after verifying the change with your server administrator.'
+              : 'Save this fingerprint and trust it on future connections. Do this only after verifying it with your server administrator.'
           "
+          :disabled="busy"
           @click="acceptPermanent"
         >
           {{ data.previous ? "Replace & trust" : "Trust forever" }}
@@ -66,11 +76,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
+import HelpTooltip from "../common/HelpTooltip.vue";
 
 interface HostKeyWarning {
   sessionId: string;
+  promptId: string;
   host?: { name?: string; host?: string; port?: number };
   previous?: { keyType?: string; fingerprint?: string };
   keyType?: string;
@@ -89,20 +101,37 @@ const props = withDefaults(
 const sshStore = useSshStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const data = computed(() => props.warning || (sshStore.hostKeyWarning as any as HostKeyWarning | null));
+const busy = ref(false);
+
+watch(
+  () => data.value?.promptId,
+  () => {
+    busy.value = false;
+  },
+);
 
 async function reject() {
-  if (!data.value?.sessionId) return;
-  await sshStore.rejectHostKey(data.value.sessionId);
+  if (!data.value?.sessionId || busy.value) return;
+  const promptId = data.value.promptId;
+  busy.value = true;
+  await sshStore.rejectHostKey(data.value.sessionId, promptId);
+  if (data.value?.promptId === promptId) busy.value = false;
 }
 
 async function acceptOnce() {
-  if (!data.value?.sessionId) return;
-  await sshStore.acceptHostKey(data.value.sessionId, "once");
+  if (!data.value?.sessionId || busy.value) return;
+  const promptId = data.value.promptId;
+  busy.value = true;
+  await sshStore.acceptHostKey(data.value.sessionId, "once", promptId);
+  if (data.value?.promptId === promptId) busy.value = false;
 }
 
 async function acceptPermanent() {
-  if (!data.value?.sessionId) return;
-  await sshStore.acceptHostKey(data.value.sessionId, "permanent");
+  if (!data.value?.sessionId || busy.value) return;
+  const promptId = data.value.promptId;
+  busy.value = true;
+  await sshStore.acceptHostKey(data.value.sessionId, "permanent", promptId);
+  if (data.value?.promptId === promptId) busy.value = false;
 }
 </script>
 
@@ -161,6 +190,7 @@ async function acceptPermanent() {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }

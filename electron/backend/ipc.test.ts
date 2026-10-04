@@ -385,3 +385,229 @@ describe("notification:target-removed IPC forwarding", () => {
     dispose();
   });
 });
+
+describe("SSH test IPC ownership and event privacy", () => {
+  beforeEach(() => resetIpcMainMock());
+
+  test("test output and prompts go only to the owning window; unknown reserved ids never broadcast", () => {
+    const handlers = new Map<string, (payload: unknown) => void>();
+    const ownerBySession = new Map([["ssh-test:live", "window-a"]]);
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop === "on") {
+            return (event: string, cb: (payload: unknown) => void) => {
+              handlers.set(event, cb);
+              return () => {};
+            };
+          }
+          if (prop === "sshTestSessionOwner") return (id: string) => ownerBySession.get(id);
+          if (prop === "isSshTestSessionId") return (id: string) => String(id).startsWith("ssh-test:");
+          return callable;
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const delivered: Array<{ windowId: string; channel: string; payload: unknown }> = [];
+    const broadcast: Array<{ channel: string; payload: unknown }> = [];
+    const dispose = registerIpc(runtime, (channel, payload) => broadcast.push({ channel, payload }), {
+      emitToWindow: (windowId, channel, payload) => delivered.push({ windowId, channel, payload }),
+    });
+
+    for (const channel of [
+      "terminal:data",
+      "terminal:exit",
+      "ssh:auth-prompt",
+      "ssh:auth-prompt-cancel",
+      "ssh:host-key-change",
+      "ssh:connection-state",
+      "ssh:test:state",
+    ]) {
+      const payload = { sessionId: "ssh-test:live", channel };
+      handlers.get(channel)!(payload);
+      expect(delivered).toContainEqual({ windowId: "window-a", channel, payload });
+    }
+    handlers.get("terminal:data")!({ sessionId: "ssh-test:retired", data: "late" });
+    expect(broadcast).toEqual([]);
+    dispose();
+  });
+
+  test("a second desktop window cannot answer, cancel, trust, stop, write, or resize a test session", async () => {
+    const ownerBySession = new Map([["ssh-test:live", "window-a"]]);
+    const writes: unknown[][] = [];
+    const sizes: unknown[][] = [];
+    const answers: unknown[][] = [];
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop === "on") return callable;
+          if (prop === "sshTestSessionOwner") return (id: string) => ownerBySession.get(id);
+          if (prop === "isSshTestSessionId") return (id: string) => String(id).startsWith("ssh-test:");
+          if (prop === "sshTestWrite") return (...args: unknown[]) => writes.push(args);
+          if (prop === "sshTestResize") return (...args: unknown[]) => sizes.push(args);
+          if (prop === "sshTestStop")
+            return async (_payload: unknown, windowId: string) => {
+              if (windowId !== "window-a") throw new Error("SSH test belongs to another window");
+              return { ok: true };
+            };
+          if (
+            ["ssh:auth:answer", "ssh:auth:cancel", "ssh:host-key:accept", "ssh:host-key:reject"].includes(String(prop))
+          ) {
+            return (...args: unknown[]) => answers.push([String(prop), ...args]);
+          }
+          return callable;
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: (id) => (id === 7 ? "window-a" : "window-b"),
+    });
+    const event = { sender: { id: 8 } };
+    const call = async (channel: string, payload: unknown) =>
+      (handleRegistry.get(channel) as (event: unknown, payload: unknown) => Promise<unknown>)(event, payload);
+
+    for (const [channel, payload] of [
+      ["ssh:auth:answer", { sessionId: "ssh-test:live", answers: ["x"], promptId: "p" }],
+      ["ssh:auth:cancel", { sessionId: "ssh-test:live", promptId: "p" }],
+      ["ssh:host-key:accept", { sessionId: "ssh-test:live", mode: "permanent", promptId: "p" }],
+      ["ssh:host-key:reject", { sessionId: "ssh-test:live", promptId: "p" }],
+      ["ssh:test:stop", { sessionId: "ssh-test:live" }],
+    ] as const) {
+      await expect(call(channel, payload)).rejects.toThrow("another window");
+    }
+    const input = [...(onRegistry.get("terminal:input") || [])][0] as (...args: unknown[]) => void;
+    const resize = [...(onRegistry.get("terminal:resize") || [])][0] as (...args: unknown[]) => void;
+    input(event, "ssh-test:live", "pwd\r");
+    resize(event, "ssh-test:live", { cols: 90, rows: 30 });
+    expect(writes).toEqual([]);
+    expect(sizes).toEqual([]);
+    expect(answers).toEqual([]);
+    dispose();
+  });
+
+  test("key-transfer upload and verification prompts are private to their owning window", async () => {
+    const uploadId = "ssh-transfer:upload-1";
+    const verifyId = `${uploadId}:verify`;
+    const ownerBySession = new Map([
+      [uploadId, "window-a"],
+      [verifyId, "window-a"],
+    ]);
+    const handlers = new Map<string, (payload: unknown) => void>();
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop === "on")
+            return (event: string, cb: (payload: unknown) => void) => {
+              handlers.set(event, cb);
+              return () => handlers.delete(event);
+            };
+          if (prop === "sshTestSessionOwner") return (id: string) => ownerBySession.get(id);
+          if (prop === "isPrivateSshOperationSessionId")
+            return (id: string) => /^(ssh-test:|ssh-transfer:)/.test(String(id));
+          if (prop === "isSshTestSessionId") return (id: string) => String(id).startsWith("ssh-test:");
+          if (prop === "sshTestWrite" || prop === "sshTestResize") return callable;
+          if (prop === "sshKeysTransferStop") return async () => ({ ok: true });
+          if (
+            ["ssh:auth:answer", "ssh:auth:cancel", "ssh:host-key:accept", "ssh:host-key:reject"].includes(String(prop))
+          )
+            return callable;
+          return callable;
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const delivered: Array<{ windowId: string; channel: string; payload: unknown }> = [];
+    const broadcast: Array<{ channel: string; payload: unknown }> = [];
+    const dispose = registerIpc(runtime, (channel, payload) => broadcast.push({ channel, payload }), {
+      emitToWindow: (windowId, channel, payload) => delivered.push({ windowId, channel, payload }),
+      getWindowIdByWebContentsId: (id) => (id === 7 ? "window-a" : "window-b"),
+    });
+
+    const transferEvent = { operationId: uploadId, hostId: "h1", keyId: "k1", status: "uploading" };
+    handlers.get("ssh:key-transfer:state")!(transferEvent);
+    for (const sessionId of [uploadId, verifyId]) {
+      for (const channel of [
+        "terminal:data",
+        "terminal:exit",
+        "ssh:auth-prompt",
+        "ssh:auth-prompt-cancel",
+        "ssh:host-key-change",
+        "ssh:connection-state",
+      ]) {
+        const payload = { sessionId, channel };
+        handlers.get(channel)!(payload);
+        expect(delivered).toContainEqual({ windowId: "window-a", channel, payload });
+      }
+    }
+    expect(delivered).toContainEqual({
+      windowId: "window-a",
+      channel: "ssh:key-transfer:state",
+      payload: transferEvent,
+    });
+    expect(broadcast).toEqual([]);
+
+    const invokeEvent = { sender: { id: 8 } };
+    const call = async (channel: string, payload: unknown) =>
+      (handleRegistry.get(channel) as (event: unknown, payload: unknown) => Promise<unknown>)(invokeEvent, payload);
+    await expect(call("ssh:auth:answer", { sessionId: uploadId, answers: ["secret"], promptId: "p1" })).rejects.toThrow(
+      "another window",
+    );
+    await expect(
+      call("ssh:host-key:accept", { sessionId: verifyId, mode: "permanent", promptId: "p2" }),
+    ).rejects.toThrow("another window");
+    dispose();
+  });
+
+  test("destroying the transfer owner window stops its upload and verification operations", async () => {
+    const operations = ["ssh-transfer:upload-2", "ssh-transfer:upload-2:verify"];
+    const ownerBySession = new Map(operations.map((id) => [id, "window-a"]));
+    const stoppedOwners: string[] = [];
+    let destroyed: (() => void) | undefined;
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop === "on") return callable;
+          if (prop === "sshTestSessionOwner") return (id: string) => ownerBySession.get(id);
+          if (prop === "isPrivateSshOperationSessionId")
+            return (id: string) => /^(ssh-test:|ssh-transfer:)/.test(String(id));
+          if (prop === "sshKeysTransferStart")
+            return async (_payload: unknown, ownerId: string) => {
+              expect(ownerId).toBe("window-a");
+              return { operationId: operations[0], status: "connecting" };
+            };
+          if (prop === "sshTestStopOwner") return async (ownerId: string) => stoppedOwners.push(ownerId);
+          return callable;
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: () => "window-a",
+    });
+    const event = {
+      sender: {
+        id: 7,
+        isDestroyed: () => false,
+        once: (name: string, listener: () => void) => {
+          expect(name).toBe("destroyed");
+          destroyed = listener;
+        },
+      },
+    };
+    await (handleRegistry.get("ssh:keys:transfer:start") as (event: unknown, payload: unknown) => Promise<unknown>)(
+      event,
+      { profileId: "default", hostId: "h1", keyId: "k1" },
+    );
+    expect(destroyed).toBeTypeOf("function");
+    destroyed?.();
+    await Promise.resolve();
+    expect(stoppedOwners).toEqual(["window-a"]);
+    expect(ownerBySession.size).toBe(2);
+    dispose();
+  });
+});

@@ -54,6 +54,8 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
   const activeViewId = ref<string | null>(null);
   const activeSessionId = ref<string | null>(null);
   const myActiveWorkspaceId = computed(() => payload.value?.appState?.activeWorkspaceId || "");
+  const myActiveProfileId = ref<string | null>("profile-a");
+  const isRemoteTransport = ref(false);
   const hiddenViewIds = ref(new Set<string>());
   const workspaceTabs = computed(
     () => [] as { id: string; type: string; title: string; status: string; tone: string }[],
@@ -69,6 +71,8 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
     activeViewId,
     activeSessionId,
     myActiveWorkspaceId,
+    myActiveProfileId,
+    isRemoteTransport,
     splitGroup,
     hiddenViewIds,
     workspaceTabs,
@@ -408,6 +412,54 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     expect(toast.body).toContain("ECONNREFUSED");
     expect(toast.copyPath).toBe("");
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
+  });
+});
+
+describe("quickAddTemplateTab SSH target scope", () => {
+  it("persists SSH tools opt-in on the new local panel only when explicitly enabled", async () => {
+    const workspace = {
+      id: "ws-a",
+      name: "A",
+      kind: "terminal",
+      profileId: "profile-a",
+      panels: [],
+      activePanelId: "",
+    };
+    const { ctx, api } = makeCtx(
+      { workspace: { workspace }, appState: { workspaces: [workspace] } },
+      { saveWorkspace: vi.fn(async (next: AnyApi) => ({ workspace: { workspace: next } })) },
+    );
+    const actions = createWorkspaceActions(ctx);
+
+    await actions.quickAddTemplateTab("claude", "Claude", "", { sshMcpEnabled: true });
+    expect(api.saveWorkspace.mock.calls[0][0].panels.at(-1)).toMatchObject({ sshMcpEnabled: true });
+
+    ctx.payload.value.workspace.workspace.panels = [];
+    await actions.quickAddTemplateTab("bash", "Shell");
+    expect(api.saveWorkspace.mock.calls[1][0].panels.at(-1)).not.toHaveProperty("sshMcpEnabled");
+  });
+
+  it("rejects absent and cross-profile SSH targets and creates a tab only in the active profile", async () => {
+    const active = { id: "ws-a", kind: "terminal", profileId: "profile-a", panels: [], activePanelId: "" };
+    const saveWorkspace = vi.fn(async (workspace: AnyApi) => ({ workspace }));
+    const initial = { workspace: { workspace: active }, appState: { workspaces: [active] } };
+    const { ctx } = makeCtx(initial, { saveWorkspace });
+    const actions = createWorkspaceActions(ctx);
+
+    await expect(actions.quickAddTemplateTab("", "SSH", "", { kind: "ssh", sshHostId: "h1" })).resolves.toBeUndefined();
+    expect(saveWorkspace).toHaveBeenCalledTimes(1);
+
+    ctx.payload.value = { ...initial, workspace: { workspace: { ...active, profileId: "profile-b" } } };
+    await expect(actions.quickAddTemplateTab("", "SSH", "", { kind: "ssh", sshHostId: "h1" })).rejects.toThrow(
+      "different profile",
+    );
+    expect(saveWorkspace).toHaveBeenCalledTimes(1);
+
+    ctx.payload.value = { ...initial, workspace: { workspace: null } };
+    await expect(actions.quickAddTemplateTab("", "SSH", "", { kind: "ssh", sshHostId: "h1" })).rejects.toThrow(
+      "Choose a terminal workspace",
+    );
+    expect(saveWorkspace).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,5 +1,6 @@
 import type { TaskState } from "./task.js";
 import type { SshHost, SshKey, SshCert } from "./ssh.js";
+import type { SshConnectionSettings } from "../ssh-connection.js";
 import type { Alert } from "./notifications.js";
 
 // Re-export for convenience
@@ -90,6 +91,8 @@ export interface TelegramConnection {
   botTokenRef: string;
   chatId: string;
   enabled: boolean;
+  /** Whether automatic strIDEterm alerts are forwarded to this chat. */
+  notificationsEnabled: boolean;
   pollSeconds: number;
   /** Profile this chat controls. Empty/undefined means ask when multiple profiles exist. */
   profileId?: string;
@@ -294,6 +297,7 @@ export interface Settings {
   sidebarCollapsed: boolean;
   logLevel: "error" | "warn" | "info" | "debug" | "trace";
   notifications: NotificationSettings;
+  ssh: SshConnectionSettings;
   remoteAccess: RemoteAccessSettings;
   taskDefaults: TaskDefaults;
   integrations: IntegrationSettings;
@@ -456,6 +460,8 @@ export interface PanelState {
    * Default false → panel inherits the global setting.
    */
   alertsForceOn?: boolean;
+  /** Exposes saved Built-in SSH hosts as tools to this Claude/Codex tab only. */
+  sshMcpEnabled?: boolean;
   /**
    * Free-text scratchpad for this tab. Purely a note to self — nothing reads
    * it but the notes dialog, and an empty string is stored as absent.
@@ -569,7 +575,6 @@ export interface WorkspaceState {
 // ------- SSH app state -------
 
 export interface SshSettings {
-  defaultAgentMode: string;
   importedSshConfig: boolean;
 }
 

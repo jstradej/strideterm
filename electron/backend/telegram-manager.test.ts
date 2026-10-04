@@ -976,6 +976,40 @@ describe("question and auto_approved alerts", () => {
 });
 
 describe("forwardAlert", () => {
+  test("notification forwarding is per connection and does not disable incoming commands", async () => {
+    const cred = makeCredentialStore({ "cred:tg-muted": "token-muted", "cred:tg-on": "token-on" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    const muted = makeConnection({
+      id: "tg-muted",
+      botTokenRef: "cred:tg-muted",
+      notificationsEnabled: false,
+    });
+    manager.configure([muted, makeConnection({ id: "tg-on", botTokenRef: "cred:tg-on", notificationsEnabled: true })]);
+
+    const forwarded: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendAlertToConnection = async (conn: TelegramConnectionConfig) => {
+      forwarded.push(conn.id);
+    };
+    await manager.forwardAlert({ workspaceId: "ws-1", panelId: "p-1", kind: "completed", title: "Done" });
+    expect(forwarded).toEqual(["tg-on"]);
+
+    const replies: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendText = async (_token: string, _chatId: string, text: string) => {
+      replies.push(text);
+    };
+    // /help uses the ordinary inbound command path even when automatic
+    // notification forwarding is disabled for this connection.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage({ chat: { id: 12345 }, text: "/help" }, muted, "token-muted");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("strIDEterm bot commands");
+    expect(
+      manager.getSnapshot().connections.find((connection) => connection.id === "tg-muted")?.notificationsEnabled,
+    ).toBe(false);
+  });
+
   test("skips connections whose forwardKinds does not include the alert kind", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "tok1", "cred:tg-2": "tok2" });
     const manager = new TelegramManager({ credentialStore: cred });

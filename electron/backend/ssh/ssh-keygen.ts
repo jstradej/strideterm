@@ -18,7 +18,7 @@ export interface GeneratedKey {
 export async function detectSshKeygen(): Promise<boolean> {
   if (keygenAvailable !== null) return keygenAvailable;
   keygenAvailable = await new Promise<boolean>((resolve) => {
-    execFile("ssh-keygen", ["-?"], { timeout: 3000 }, (err) => {
+    execFile("ssh-keygen", ["-?"], { timeout: 3000, windowsHide: true }, (err) => {
       // err.code is string|number|null for ExecFileException; exit code 1 means
       // the binary exists but printed usage (normal for ssh-keygen -?).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,14 +63,33 @@ async function generateViaKeygen({
   const file = path.join(dir, "id");
   try {
     await new Promise<void>((resolve, reject) => {
-      const args = ["-t", kind, "-f", file, "-N", passphrase, "-C", comment, "-q"];
-      const proc = spawn("ssh-keygen", args, { stdio: "ignore" });
-      proc.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`ssh-keygen exit ${code}`))));
-      proc.on("error", reject);
+      const args = ["-t", kind, "-f", file, "-N", "", "-C", comment, "-q"];
+      const proc = spawn("ssh-keygen", args, { stdio: "ignore", windowsHide: true });
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        proc.kill();
+      }, 30_000);
+      proc.once("close", (code) => {
+        clearTimeout(timeout);
+        if (timedOut) {
+          reject(new Error("ssh-keygen timed out"));
+          return;
+        }
+        code === 0 ? resolve() : reject(new Error(`ssh-keygen exit ${code}`));
+      });
+      proc.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
     });
     const privateKey = await readFile(file, "utf8");
     const publicKey = await readFile(file + ".pub", "utf8");
-    return { privateKey, publicKey, source: "ssh-keygen" };
+    return {
+      privateKey: await protectPrivateKey(privateKey, passphrase),
+      publicKey,
+      source: "ssh-keygen",
+    };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -109,20 +128,23 @@ async function generateViaSshpk({
 
   const pubPem = pubRaw.export({ type: "spki", format: "pem" });
   const privKeyType = kind === "rsa" ? "pkcs1" : "pkcs8";
-  const privPem = privRaw.export({
-    type: privKeyType,
-    format: "pem",
-    ...(passphrase ? { cipher: "aes-256-cbc", passphrase } : {}),
-  });
+  const privPem = privRaw.export({ type: privKeyType, format: "pem" });
 
   const parsedPub = sshpk.parseKey(pubPem as string, "pem");
   parsedPub.comment = comment;
 
-  const parsedPriv = sshpk.parsePrivateKey(privPem as string, "pem", { passphrase: passphrase || undefined });
+  const parsedPriv = sshpk.parsePrivateKey(privPem as string, "pem");
 
   return {
-    privateKey: parsedPriv.toString("ssh-private"),
+    privateKey: await protectPrivateKey(parsedPriv.toString("ssh-private"), passphrase),
     publicKey: parsedPub.toString("ssh"),
     source: "sshpk",
   };
+}
+
+async function protectPrivateKey(privateKey: string, passphrase: string): Promise<string> {
+  if (!passphrase) return privateKey;
+  const sshpk = await import("sshpk");
+  const parsed = sshpk.parsePrivateKey(privateKey, "auto");
+  return parsed.toString("ssh-private", { passphrase });
 }

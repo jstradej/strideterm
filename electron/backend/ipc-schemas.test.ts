@@ -27,12 +27,52 @@ import {
   mobileRenameDeviceSchema,
   mobileUpdateDeviceAllowlistSchema,
   mobileAuditLogQuerySchema,
+  telegramConnectionSchema,
   accountSignInStartSchema,
   onlineBootstrapStateOutputSchema,
   sanitizeAccountUiStateOutput,
+  sshKeyTransferStartSchema,
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
+  describe("sshKeyTransferStartSchema", () => {
+    const base = { profileId: "default", keyId: "key-1" };
+    const draft = {
+      host: "mini.local",
+      username: "alice",
+      advanced: { launchVia: "ssh2" },
+    };
+
+    test("accepts exactly one saved host ID or validated draft", () => {
+      expect(sshKeyTransferStartSchema.parse({ ...base, hostId: "host-1" })).toMatchObject({ hostId: "host-1" });
+      expect(sshKeyTransferStartSchema.parse({ ...base, draft })).toMatchObject({ draft });
+    });
+
+    test("rejects missing or ambiguous target and malformed draft", () => {
+      for (const value of [
+        base,
+        { ...base, hostId: "host-1", draft },
+        { ...base, draft: { ...draft, host: "" } },
+        { ...base, draft: { ...draft, port: 0 } },
+      ]) {
+        expect(() => sshKeyTransferStartSchema.parse(value)).toThrow();
+      }
+    });
+  });
+
+  test("validates the per-connection Telegram notification forwarding choice", () => {
+    expect(
+      validateIpc(
+        telegramConnectionSchema,
+        { id: "tg-1", enabled: true, notificationsEnabled: false },
+        "telegram:save",
+      ),
+    ).toMatchObject({ id: "tg-1", enabled: true, notificationsEnabled: false });
+    expect(() => validateIpc(telegramConnectionSchema, { notificationsEnabled: "off" }, "telegram:save")).toThrow(
+      /IPC validation failed/,
+    );
+  });
+
   describe("reviewBridgeQueueSchema", () => {
     test("accepts exactly one queue identifier for direct draft and latest-by-comment operations", () => {
       expect(

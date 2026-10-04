@@ -23,7 +23,19 @@ vi.mock("../logger.js", () => ({
 }));
 
 import * as sshpk from "sshpk";
+import ssh2 from "ssh2";
 import { generateKey } from "./ssh-keygen.js";
+
+const { utils } = ssh2;
+
+function expectMatchingSsh2Key(privateKey: string, publicKey: string, passphrase?: string) {
+  const parsedPrivate = utils.parseKey(privateKey, passphrase);
+  const parsedPublic = utils.parseKey(publicKey);
+  expect(parsedPrivate).not.toBeInstanceOf(Error);
+  expect(parsedPublic).not.toBeInstanceOf(Error);
+  if (parsedPrivate instanceof Error || parsedPublic instanceof Error) return;
+  expect(parsedPrivate.getPublicSSH()).toEqual(parsedPublic.getPublicSSH());
+}
 
 describe("generateKey sshpk fallback (ssh-keygen binary unavailable)", () => {
   test("ed25519 produces an ed25519 key", async () => {
@@ -31,6 +43,7 @@ describe("generateKey sshpk fallback (ssh-keygen binary unavailable)", () => {
     expect(result.source).toBe("sshpk");
     const pub = sshpk.parseKey(result.publicKey, "ssh");
     expect(pub.type).toBe("ed25519");
+    expectMatchingSsh2Key(result.privateKey, result.publicKey);
   });
 
   test("rsa produces an rsa key", async () => {
@@ -38,6 +51,7 @@ describe("generateKey sshpk fallback (ssh-keygen binary unavailable)", () => {
     expect(result.source).toBe("sshpk");
     const pub = sshpk.parseKey(result.publicKey, "ssh");
     expect(pub.type).toBe("rsa");
+    expectMatchingSsh2Key(result.privateKey, result.publicKey);
   });
 
   test("ecdsa produces an actual ecdsa (P-256) key — regression test for the 'ec' vs 'ecdsa' branch bug", async () => {
@@ -46,6 +60,16 @@ describe("generateKey sshpk fallback (ssh-keygen binary unavailable)", () => {
     const pub = sshpk.parseKey(result.publicKey, "ssh");
     expect(pub.type).toBe("ecdsa");
     expect(pub.curve).toBe("nistp256");
+    expectMatchingSsh2Key(result.privateKey, result.publicKey);
+  });
+
+  test("a requested passphrase encrypts the private key and preserves its public key", async () => {
+    const passphrase = "correct horse battery staple";
+    const result = await generateKey({ kind: "ed25519", passphrase });
+
+    expect(utils.parseKey(result.privateKey)).toBeInstanceOf(Error);
+    expectMatchingSsh2Key(result.privateKey, result.publicKey, passphrase);
+    expect(utils.parseKey(result.privateKey, "wrong passphrase")).toBeInstanceOf(Error);
   });
 
   test("dsa throws an explicit error instead of silently generating a different key type", async () => {

@@ -51,6 +51,7 @@ export const useTerminalStore = defineStore("terminal", () => {
   // shallowRef makes them accessible via .value without deep tracking.
   const views = shallowRef(new Map<string, TerminalView>()); // sessionId → { mount, term, fitAddon, ... }
   const buffers = shallowRef(new Map<string, string>()); // sessionId → queued data string
+  const retainedTestSessionIds = new Set<string>();
 
   let controller: ReturnType<typeof createTerminalController> | null = null;
   let reconnectFitTimer = 0;
@@ -187,8 +188,18 @@ export const useTerminalStore = defineStore("terminal", () => {
   }
 
   function pruneTerminalViews(validSessionIds: Set<string> | string[]): void {
-    const ids = validSessionIds instanceof Set ? validSessionIds : new Set(validSessionIds);
+    const ids = new Set(validSessionIds);
+    for (const sessionId of retainedTestSessionIds) ids.add(sessionId);
     controller?.pruneTerminalViews(ids);
+  }
+
+  function retainTestSession(sessionId: string): void {
+    retainedTestSessionIds.add(sessionId);
+  }
+
+  function releaseTestSession(sessionId: string): void {
+    retainedTestSessionIds.delete(sessionId);
+    controller?.disposeTerminalView(sessionId);
   }
 
   function exportTerminalTranscript(sessionId: string, options?: unknown): void {
@@ -299,6 +310,8 @@ export const useTerminalStore = defineStore("terminal", () => {
     scheduleActiveResize,
     scheduleAllVisibleResize,
     pruneTerminalViews,
+    retainTestSession,
+    releaseTestSession,
     exportTerminalTranscript,
     clearTerminalViewport,
     writeToTerminal,

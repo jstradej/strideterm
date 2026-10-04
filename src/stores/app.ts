@@ -1606,6 +1606,7 @@ export const useAppStore = defineStore("app", () => {
     activeViewId,
     activeSessionId,
     myActiveWorkspaceId,
+    myActiveProfileId,
     splitGroup,
     hiddenViewIds,
     workspaceTabs: workspaceTabs as AnyApi,

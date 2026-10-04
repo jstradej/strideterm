@@ -2,17 +2,13 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import sshConfig from "ssh-config";
+import sshConfig, { LineType } from "ssh-config";
 import type { Section } from "ssh-config";
 
 export interface ParsedSshHost {
   name: string;
   host: string;
-  port: number;
-  username: string;
-  auth: { methods: string[] };
-  advanced: Record<string, unknown>;
-  _identityFile?: string;
+  advanced: { launchVia: "system-ssh" };
 }
 
 export async function parseSshConfig(configPath = path.join(homedir(), ".ssh", "config")): Promise<ParsedSshHost[]> {
@@ -23,35 +19,14 @@ export async function parseSshConfig(configPath = path.join(homedir(), ".ssh", "
   const hosts: ParsedSshHost[] = [];
 
   for (const block of parsed) {
-    if (block.type === 1 && (block as Section).param.toLowerCase() === "host") {
+    if (block.type === LineType.DIRECTIVE && (block as Section).param.toLowerCase() === "host") {
       const section = block as Section;
-      const hostValue = typeof section.value === "string" ? section.value : "";
-      if (hostValue.includes("*") || hostValue.includes("?")) continue; // skip wildcards
-
-      const hostObj: ParsedSshHost = {
-        name: hostValue,
-        host: hostValue,
-        port: 22,
-        username: process.env["USER"] || "root",
-        auth: { methods: ["publickey"] },
-        advanced: {},
-      };
-
-      for (const line of section.config) {
-        if (line.type !== 1) continue;
-        const directive = line as Section;
-        const param = directive.param.toLowerCase();
-        const value = typeof directive.value === "string" ? directive.value : "";
-        if (param === "hostname") hostObj.host = value;
-        if (param === "port") hostObj.port = parseInt(value, 10) || 22;
-        if (param === "user") hostObj.username = value;
-        if (param === "identityfile") {
-          // just marking it to be resolved during import
-          hostObj._identityFile = value;
-        }
+      const patterns =
+        typeof section.value === "string" ? section.value.trim().split(/\s+/) : section.value.map((item) => item.val);
+      for (const alias of patterns) {
+        if (!alias || alias.startsWith("!") || /[*?]/.test(alias)) continue;
+        hosts.push({ name: alias, host: alias, advanced: { launchVia: "system-ssh" } });
       }
-
-      hosts.push(hostObj);
     }
   }
 

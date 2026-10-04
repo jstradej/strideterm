@@ -178,23 +178,52 @@ export function registerIpc(
     emitToWindow?: (windowId: string, channel: string, payload: unknown) => void;
   } = {},
 ): () => void {
+  const sshTestOwnerDestroyHandlers = new Map<string, { sender: Electron.WebContents; listener: () => void }>();
+  function emitOwnedSessionEvent(channel: string, payload: unknown): void {
+    const eventPayload = payload as { sessionId?: unknown; operationId?: unknown } | null;
+    const sessionId = String(eventPayload?.sessionId || eventPayload?.operationId || "");
+    const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+    if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId) return;
+    if (ownerWindowId) {
+      emitToWindow?.(ownerWindowId, channel, payload);
+      return;
+    }
+    emitToRenderer(channel, payload);
+  }
+
+  function assertSshTestOwner(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent, payload: unknown): void {
+    const eventPayload = payload as { sessionId?: unknown; operationId?: unknown } | null;
+    const sessionId = String(eventPayload?.sessionId || eventPayload?.operationId || "");
+    const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+    if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId)
+      throw new Error("Desktop-only SSH operation not found");
+    if (!ownerWindowId) return;
+    const callerWindowId = getWindowIdByWebContentsId?.(event.sender.id);
+    if (!callerWindowId || callerWindowId !== ownerWindowId) throw new Error("SSH test belongs to another window");
+  }
+
   const subscriptions = [
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("state:updated", (payload: any) => emitToRenderer("state:updated", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    runtime.on("terminal:data", (payload: any) => emitToRenderer("terminal:data", payload)),
+    runtime.on("terminal:data", (payload: any) => emitOwnedSessionEvent("terminal:data", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    runtime.on("terminal:exit", (payload: any) => emitToRenderer("terminal:exit", payload)),
+    runtime.on("terminal:exit", (payload: any) => emitOwnedSessionEvent("terminal:exit", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("git:push-progress", (payload: any) => emitToRenderer("git:push-progress", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    runtime.on("ssh:auth-prompt", (payload: any) => emitToRenderer("ssh:auth-prompt", payload)),
+    runtime.on("ssh:test:state", (payload: any) => emitOwnedSessionEvent("ssh:test:state", payload)),
+    runtime.on("ssh:key-transfer:state", (payload: unknown) =>
+      emitOwnedSessionEvent("ssh:key-transfer:state", payload),
+    ),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    runtime.on("ssh:auth-prompt-cancel", (payload: any) => emitToRenderer("ssh:auth-prompt-cancel", payload)),
+    runtime.on("ssh:auth-prompt", (payload: any) => emitOwnedSessionEvent("ssh:auth-prompt", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    runtime.on("ssh:host-key-change", (payload: any) => emitToRenderer("ssh:host-key-change", payload)),
+    runtime.on("ssh:auth-prompt-cancel", (payload: any) => emitOwnedSessionEvent("ssh:auth-prompt-cancel", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    runtime.on("ssh:connection-state", (payload: any) => emitToRenderer("ssh:connection-state", payload)),
+    runtime.on("ssh:host-key-change", (payload: any) => emitOwnedSessionEvent("ssh:host-key-change", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("ssh:connection-state", (payload: any) => emitOwnedSessionEvent("ssh:connection-state", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("ssh:state", (payload: any) => emitToRenderer("ssh:state", payload)),
     // Broadcast to every window: notification history is per-renderer, and a
@@ -652,6 +681,9 @@ export function registerIpc(
   handle("ssh:hosts:list", async () =>
     withOperationPromise({ opId: "ssh:hosts:list" }, () => runtime["ssh:hosts:list"]()),
   );
+  handle("ssh:capabilities:get", async () =>
+    withOperationPromise({ opId: "ssh:capabilities:get" }, () => runtime["ssh:capabilities:get"]()),
+  );
   handle("ssh:hosts:create", async (_event, payload) =>
     withOperationPromise({ opId: "ssh:hosts:create" }, () => runtime["ssh:hosts:create"](payload)),
   );
@@ -667,6 +699,28 @@ export function registerIpc(
   handle("ssh:hosts:test", async (_event, payload) =>
     withOperationPromise({ opId: "ssh:hosts:test" }, () => runtime["ssh:hosts:test"](payload)),
   );
+  function registerSshOwnerWindowClose(event: Electron.IpcMainInvokeEvent, windowId: string): void {
+    if (windowId && !sshTestOwnerDestroyHandlers.has(windowId) && !event.sender.isDestroyed()) {
+      const listener = () => {
+        sshTestOwnerDestroyHandlers.delete(windowId);
+        void runtime.sshTestStopOwner(windowId);
+      };
+      sshTestOwnerDestroyHandlers.set(windowId, { sender: event.sender, listener });
+      event.sender.once("destroyed", listener);
+    }
+  }
+  handle("ssh:test:start", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    registerSshOwnerWindowClose(event, windowId);
+    const result = await withOperationPromise({ opId: "ssh:test:start" }, () =>
+      runtime.sshTestStart(payload, windowId),
+    );
+    return result;
+  });
+  handle("ssh:test:stop", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "ssh:test:stop" }, () => runtime.sshTestStop(payload, windowId));
+  });
   handle("ssh:keys:list", async () =>
     withOperationPromise({ opId: "ssh:keys:list" }, () => runtime["ssh:keys:list"]()),
   );
@@ -679,6 +733,22 @@ export function registerIpc(
   handle("ssh:keys:delete", async (_event, payload) =>
     withOperationPromise({ opId: "ssh:keys:delete" }, () => runtime["ssh:keys:delete"](payload)),
   );
+  handle("ssh:keys:rename", async (_event, payload) =>
+    withOperationPromise({ opId: "ssh:keys:rename" }, () => runtime["ssh:keys:rename"](payload)),
+  );
+  handle("ssh:keys:transfer:start", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    registerSshOwnerWindowClose(event, windowId);
+    return withOperationPromise({ opId: "ssh:keys:transfer:start" }, () =>
+      runtime.sshKeysTransferStart(payload, windowId),
+    );
+  });
+  handle("ssh:keys:transfer:stop", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "ssh:keys:transfer:stop" }, () =>
+      runtime.sshKeysTransferStop(payload, windowId),
+    );
+  });
   handle("ssh:certs:list", async () =>
     withOperationPromise({ opId: "ssh:certs:list" }, () => runtime["ssh:certs:list"]()),
   );
@@ -688,18 +758,22 @@ export function registerIpc(
   handle("ssh:certs:delete", async (_event, payload) =>
     withOperationPromise({ opId: "ssh:certs:delete" }, () => runtime["ssh:certs:delete"](payload)),
   );
-  handle("ssh:auth:answer", async (_event, payload) =>
-    withOperationPromise({ opId: "ssh:auth:answer" }, () => runtime["ssh:auth:answer"](payload)),
-  );
-  handle("ssh:auth:cancel", async (_event, payload) =>
-    withOperationPromise({ opId: "ssh:auth:cancel" }, () => runtime["ssh:auth:cancel"](payload)),
-  );
-  handle("ssh:host-key:accept", async (_event, payload) =>
-    withOperationPromise({ opId: "ssh:host-key:accept" }, () => runtime["ssh:host-key:accept"](payload)),
-  );
-  handle("ssh:host-key:reject", async (_event, payload) =>
-    withOperationPromise({ opId: "ssh:host-key:reject" }, () => runtime["ssh:host-key:reject"](payload)),
-  );
+  handle("ssh:auth:answer", async (event, payload) => {
+    assertSshTestOwner(event, payload);
+    return withOperationPromise({ opId: "ssh:auth:answer" }, () => runtime["ssh:auth:answer"](payload));
+  });
+  handle("ssh:auth:cancel", async (event, payload) => {
+    assertSshTestOwner(event, payload);
+    return withOperationPromise({ opId: "ssh:auth:cancel" }, () => runtime["ssh:auth:cancel"](payload));
+  });
+  handle("ssh:host-key:accept", async (event, payload) => {
+    assertSshTestOwner(event, payload);
+    return withOperationPromise({ opId: "ssh:host-key:accept" }, () => runtime["ssh:host-key:accept"](payload));
+  });
+  handle("ssh:host-key:reject", async (event, payload) => {
+    assertSshTestOwner(event, payload);
+    return withOperationPromise({ opId: "ssh:host-key:reject" }, () => runtime["ssh:host-key:reject"](payload));
+  });
   handle("ssh:config:preview", async (_event, payload) =>
     withOperationPromise({ opId: "ssh:config:preview" }, () => runtime["ssh:config:preview"](payload)),
   );
@@ -1311,15 +1385,26 @@ export function registerIpc(
       }),
     );
   });
-  handle("terminal:restart", async (_event, sessionId) =>
-    withOperationPromise({ opId: "terminal:restart" }, () => runtime.restartSession(sessionId)),
-  );
-  handle("terminal:close", async (_event, sessionId) =>
-    withOperationPromise({ opId: "terminal:close" }, () => runtime.closeSession(sessionId)),
-  );
-  handle("terminal:replay", async (_event, payload) =>
+  handle("terminal:restart", async (event, sessionId) => {
+    assertSshTestOwner(event, { sessionId });
+    if (runtime.sshTestSessionOwner(sessionId)) throw new Error("Use the SSH operation stop action");
+    return withOperationPromise({ opId: "terminal:restart" }, () => runtime.restartSession(sessionId));
+  });
+  handle("terminal:close", async (event, sessionId) => {
+    assertSshTestOwner(event, { sessionId });
+    const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+    if (ownerWindowId) {
+      const callerWindowId = getWindowIdByWebContentsId?.(event.sender.id);
+      if (callerWindowId !== ownerWindowId) throw new Error("Desktop-only SSH operation belongs to another window");
+      if (runtime.isSshTestSessionId(sessionId)) return runtime.sshTestStop({ sessionId }, ownerWindowId);
+      return runtime.sshKeysTransferStop({ operationId: sessionId }, ownerWindowId);
+    }
+    return withOperationPromise({ opId: "terminal:close" }, () => runtime.closeSession(sessionId));
+  });
+  handle("terminal:replay", async (event, payload) =>
     withOperationPromise({ opId: "terminal:replay" }, () => {
       const parsed = validateIpc(terminalSessionSchema, payload, "terminal:replay");
+      assertSshTestOwner(event, parsed);
       return runtime.getTerminalReplay(parsed.sessionId);
     }),
   );
@@ -2499,6 +2584,14 @@ export function registerIpc(
   on("terminal:resize", (_event, sessionId, size) => {
     try {
       const validated = validateIpc(terminalResizeSchema, size, "terminal:resize");
+      const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+      if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId) return;
+      if (ownerWindowId) {
+        const callerWindowId = getWindowIdByWebContentsId?.(_event.sender.id);
+        if (callerWindowId !== ownerWindowId) return;
+        runtime.sshTestResize(String(sessionId), validated.cols, validated.rows, ownerWindowId);
+        return;
+      }
       runtime.resizeSession(sessionId, validated);
     } catch {
       // Non-critical: silently ignore malformed resize events
@@ -2511,6 +2604,13 @@ export function registerIpc(
       // two windows typing into the same PTY. A blocked write notifies the
       // sender, which shows the "Take control?" prompt.
       const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+      const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+      if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId) return;
+      if (ownerWindowId) {
+        if (windowId !== ownerWindowId) return;
+        runtime.sshTestWrite(sessionId, data, ownerWindowId);
+        return;
+      }
       // `originWorkspaceId` is the workspace whose UI the user typed in; the
       // runtime validates it before crediting that workspace with work.
       const origin = typeof originWorkspaceId === "string" ? originWorkspaceId : undefined;
@@ -2555,6 +2655,10 @@ export function registerIpc(
 
   return () => {
     subscriptions.forEach((unsubscribe) => unsubscribe());
+    for (const { sender, listener } of sshTestOwnerDestroyHandlers.values()) {
+      sender.removeListener("destroyed", listener);
+    }
+    sshTestOwnerDestroyHandlers.clear();
     for (const channel of registeredHandleChannels) {
       ipcMain.removeHandler(channel);
     }

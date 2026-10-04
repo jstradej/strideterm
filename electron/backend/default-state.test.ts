@@ -250,6 +250,19 @@ describe("default state", () => {
     expect(workspace.panels.find((panel) => panel.id === "p2")!.notes).toBe("");
   });
 
+  test("normalizes per-tab SSH MCP opt-in to false and preserves an explicit opt-in", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-ssh-mcp",
+      panels: [
+        { id: "ordinary", title: "Ordinary", command: "claude" },
+        { id: "enabled", title: "Enabled", command: "codex", sshMcpEnabled: true },
+      ],
+    });
+
+    expect(workspace.panels.find((panel) => panel.id === "ordinary")!.sshMcpEnabled).toBe(false);
+    expect(workspace.panels.find((panel) => panel.id === "enabled")!.sshMcpEnabled).toBe(true);
+  });
+
   // normalizeState runs on every store.mutate, so anything it doesn't recognise
   // is stripped within milliseconds of being written. The companion loop's
   // borrowed Primary is drawn under a virtual view id that matches no panel of
@@ -576,6 +589,26 @@ describe("default state", () => {
     expect(state.settings.appliedMigrations).toContain(TELEGRAM_QUESTION_FORWARD_MIGRATION);
   });
 
+  test("Telegram automatic notification forwarding defaults on and preserves an explicit off choice", () => {
+    const state = normalizeState({
+      settings: {
+        integrations: {
+          telegram: {
+            connections: [
+              { id: "tg-legacy" },
+              { id: "tg-muted", notificationsEnabled: false },
+              { id: "tg-enabled", notificationsEnabled: true },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(
+      state.settings.integrations.telegram.connections.map((connection) => connection.notificationsEnabled),
+    ).toEqual([true, false, true]);
+  });
+
   test("normalizeState forwardKinds migration leaves other filters alone", () => {
     const run = (forwardKinds: string[]) =>
       normalizeState({
@@ -621,12 +654,96 @@ describe("default state", () => {
   });
 
   test("appliedMigrations defaults to an empty list and keeps unknown ids", () => {
-    expect(normalizeState({}).settings.appliedMigrations).toEqual([TELEGRAM_QUESTION_FORWARD_MIGRATION]);
+    expect(normalizeState({}).settings.appliedMigrations).toEqual([
+      TELEGRAM_QUESTION_FORWARD_MIGRATION,
+      "ssh-secure-storage-v1",
+      "ssh-client-default-v1",
+      "ssh-port-override-v1",
+    ]);
     const withOther = normalizeState({ settings: { appliedMigrations: ["some-future-migration"] } });
     expect(withOther.settings.appliedMigrations).toEqual([
       "some-future-migration",
       TELEGRAM_QUESTION_FORWARD_MIGRATION,
+      "ssh-secure-storage-v1",
+      "ssh-client-default-v1",
+      "ssh-port-override-v1",
     ]);
+  });
+
+  test("SSH inline launch normalization preserves supported and hidden fields", () => {
+    const advanced = {
+      launchVia: "system-ssh",
+      portOverride: true,
+      command: "uptime",
+      env: { LANG: "C" },
+      algorithms: { serverHostKey: ["ssh-ed25519"] },
+      customFutureField: { keep: true },
+      wsl: { distro: "Ubuntu", user: "dev", exec: "ssh-custom" },
+    };
+    const auth = { methods: ["publickey", "keyboard-interactive"], keyRef: "key-1", customAuthField: "preserve" };
+    const state = normalizeState({
+      projects: [
+        {
+          id: "ssh-inline",
+          name: "SSH",
+          kind: "terminal",
+          cwd: "C:/",
+          profileId: "default",
+          panels: [
+            {
+              id: "ssh",
+              title: "SSH",
+              command: "",
+              launch: {
+                kind: "ssh",
+                sshInline: { host: "alias", port: 22, auth, advanced },
+              },
+            },
+          ],
+        },
+      ],
+      settings: { appliedMigrations: ["ssh-port-override-v1", "ssh-client-default-v1"] },
+    });
+    const inline = state.workspaces[0]?.panels[0]?.launch?.sshInline;
+    expect(inline?.port).toBe(22);
+    expect(inline?.auth).toMatchObject(auth);
+    expect(inline?.advanced).toMatchObject(advanced);
+    expect(inline?.advanced?.portOverride).toBe(true);
+  });
+
+  test("SSH migrations preserve legacy client/port behavior and safely migrate storage opt-out once", () => {
+    const migrated = normalizeState({
+      ssh: {
+        hosts: [
+          { id: "old-22", host: "a", port: 22, advanced: {} },
+          { id: "old-port", host: "b", port: 2222, advanced: {} },
+          { id: "already-system", host: "c", port: 22, advanced: { launchVia: "system-ssh" } },
+        ],
+      },
+      settings: { ssh: { requireEncryptedStorage: false } },
+    });
+    expect(
+      migrated.ssh.hosts.map((host) => ({
+        launchVia: host.advanced?.launchVia,
+        portOverride: host.advanced?.portOverride,
+      })),
+    ).toEqual([
+      { launchVia: "ssh2", portOverride: false },
+      { launchVia: "ssh2", portOverride: true },
+      { launchVia: "system-ssh", portOverride: false },
+    ]);
+    expect(migrated.settings.ssh.requireEncryptedStorage).toBe(true);
+    expect(migrated.settings.ssh.storagePolicyMigrationNotice).toBe(true);
+
+    const later = normalizeState({
+      ...migrated,
+      settings: {
+        ...migrated.settings,
+        ssh: { ...migrated.settings.ssh, requireEncryptedStorage: false, storagePolicyMigrationNotice: false },
+      },
+    });
+    expect(later.settings.ssh.requireEncryptedStorage).toBe(false);
+    expect(later.settings.ssh.storagePolicyMigrationNotice).toBe(false);
   });
 
   test("normalizeState defaults Telegram connection fields when omitted", () => {

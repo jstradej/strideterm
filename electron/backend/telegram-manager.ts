@@ -42,6 +42,8 @@ export interface TelegramConnectionConfig {
   botTokenRef: string;
   chatId: string;
   enabled: boolean;
+  /** Defaults to true for configurations written before per-connection filtering existed. */
+  notificationsEnabled?: boolean;
   pollSeconds: number;
   /**
    * Profile binding.
@@ -679,6 +681,7 @@ export class TelegramManager extends EventEmitter {
       chatId: string;
       status: string;
       pollSeconds: number;
+      notificationsEnabled: boolean;
       profileId?: string;
       forwardKinds: string[];
       needsProfileBinding?: boolean;
@@ -695,6 +698,7 @@ export class TelegramManager extends EventEmitter {
         // "how often is this polling?" and "what kinds of alerts forward?"
         // without forcing a trip into Settings.
         pollSeconds: c.pollSeconds,
+        notificationsEnabled: c.notificationsEnabled !== false,
         profileId: c.profileId || "",
         forwardKinds: Array.isArray(c.forwardKinds) ? [...c.forwardKinds] : [],
         // Connections without an explicit profile binding behave as global
@@ -1154,6 +1158,7 @@ export class TelegramManager extends EventEmitter {
     if (this.connections.length === 0) return;
 
     for (const conn of this.connections) {
+      if (conn.notificationsEnabled === false) continue;
       // Profile binding semantics:
       //   conn.profileId empty / undefined  → global: deliver every alert.
       //                                       (The common case: one bot,
@@ -1581,7 +1586,7 @@ export class TelegramManager extends EventEmitter {
         description?: string;
       }>(opts.botToken, "sendMessage", {
         chat_id: opts.chatId,
-        text: escapeMarkdown("✅ strIDEterm connected! Notifications will appear here."),
+        text: escapeMarkdown("✅ strIDEterm connection test succeeded."),
         parse_mode: "MarkdownV2",
       });
 

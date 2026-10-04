@@ -311,6 +311,66 @@ describe("SessionManager", () => {
     );
   });
 
+  test("strips inherited SSH MCP capabilities unless this panel launch explicitly supplies them", () => {
+    const priorUrl = process.env.STRIDETERM_SSH_MCP_URL;
+    const priorCapability = process.env.STRIDETERM_SSH_MCP_CAPABILITY;
+    process.env.STRIDETERM_SSH_MCP_URL = "http://127.0.0.1:1/ssh-mcp";
+    process.env.STRIDETERM_SSH_MCP_CAPABILITY = "inherited-secret-value";
+    try {
+      const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+      state.workspaces[0].panels[0].sshMcpEnabled = true;
+      const manager = new SessionManager({
+        getSessionLaunch: () => ({
+          file: "claude",
+          args: ["--mcp-config", "{}"],
+          cwd: process.cwd(),
+          env: {
+            STRIDETERM_SSH_MCP_URL: "http://127.0.0.1:43129/ssh-mcp",
+            STRIDETERM_SSH_MCP_CAPABILITY: "this-panel-capability",
+          },
+          skipCommandInjection: true,
+        }),
+      });
+      manager.ensureSession(state, "workspace-a:shell");
+
+      const env = spawnCalls[0].options.env as Record<string, string>;
+      expect(env.STRIDETERM_SSH_MCP_URL).toBe("http://127.0.0.1:43129/ssh-mcp");
+      expect(env.STRIDETERM_SSH_MCP_CAPABILITY).toBe("this-panel-capability");
+      expect(spawnCalls[0].args.join(" ")).not.toContain("this-panel-capability");
+    } finally {
+      if (priorUrl === undefined) delete process.env.STRIDETERM_SSH_MCP_URL;
+      else process.env.STRIDETERM_SSH_MCP_URL = priorUrl;
+      if (priorCapability === undefined) delete process.env.STRIDETERM_SSH_MCP_CAPABILITY;
+      else process.env.STRIDETERM_SSH_MCP_CAPABILITY = priorCapability;
+    }
+  });
+
+  test("shows a visible error and does not spawn when opt-in launch setup fails", async () => {
+    const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+    state.workspaces[0].panels[0].sshMcpEnabled = true;
+    const manager = new SessionManager({
+      getSessionLaunch: () => {
+        throw new Error("SSH MCP is unavailable for this command.");
+      },
+    });
+    const dataEvents: Array<{ sessionId: string; data: string }> = [];
+    manager.on("terminal:data", (payload) => dataEvents.push(payload));
+
+    expect(await manager.ensureSession(state, "workspace-a:shell")).toBeNull();
+    expect(spawnCalls).toHaveLength(0);
+    expect(manager.failedSpawns.has("workspace-a:shell")).toBe(true);
+    expect(dataEvents[0]?.data).toContain("SSH tools could not be enabled for this tab");
+    expect(dataEvents[0]?.data).toContain("SSH MCP is unavailable for this command.");
+
+    const removals: unknown[] = [];
+    manager.on("terminal:removed", (payload) => removals.push(payload));
+    const removedState = structuredClone(state);
+    removedState.workspaces[0].panels = [];
+    manager.syncWithState(removedState);
+    expect(removals).toEqual([{ sessionId: "workspace-a:shell" }]);
+    expect(manager.failedSpawns.has("workspace-a:shell")).toBe(false);
+  });
+
   test("uses session launch overrides for review-aware agent sessions", () => {
     // Use os.tmpdir() so the cwd actually exists on disk — SessionManager
     // now validates cwd before pty.spawn and falls back to $HOME when the

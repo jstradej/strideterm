@@ -2,18 +2,31 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createStore } from "../store.js";
 import { SshManager } from "./ssh-manager.js";
 import { verifyHostKey, recordHostKey } from "./ssh-known-hosts.js";
 import { buildAuth } from "./ssh-auth.js";
+import { sshHostUpdateSchema } from "../ipc-schemas.js";
 import { normalizeState } from "../default-state.js";
 import type { CredentialStore } from "../shared/credential-store.js";
 
 const tempDirs: string[] = [];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: store return type not narrowed for test helper
-async function freshStore(): Promise<any> {
+beforeEach(async () => {
+  const { SshSession } = await import("./ssh-session.js");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double needs access to the session's negotiated auth fixture
+  vi.spyOn(SshSession.prototype, "start").mockImplementation(async function (this: any) {
+    if (!this.auth.promptPassword) return;
+    await new Promise<void>((resolve, reject) => {
+      this.onPasswordPrompt?.((password: string | null) =>
+        password === null ? reject(new Error("Authentication cancelled")) : resolve(),
+      );
+    });
+  });
+});
+
+async function freshStore(): Promise<Awaited<ReturnType<typeof createStore>>> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-ssh-test-"));
   tempDirs.push(dir);
   return createStore(path.join(dir, "state.json"));
@@ -44,6 +57,7 @@ function fakeCredentialStore(initial: Record<string, string> = {}): CredentialSt
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
@@ -74,7 +88,72 @@ describe("SshManager host CRUD", () => {
     expect(listed[0].name).toBe("prod-bastion");
   });
 
-  test("deleteHost scrubs jump references from other hosts", async () => {
+  test("a host created without auth inherits the global agent mode", async () => {
+    const store = await freshStore();
+    const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: console });
+    const created = await mgr.createHost({ name: "inherits-agent", host: "agent.example.com" });
+
+    expect(created.auth).toEqual({ methods: ["publickey"] });
+    const auth = await buildAuth({ ...created, auth: { methods: ["agent"] } }, fakeCredentialStore(), {
+      defaultAgentMode: "off",
+    });
+    expect(auth.agent).toBeUndefined();
+  });
+
+  test("a name-only patch preserves hidden auth, jump, and advanced settings", async () => {
+    const store = await freshStore();
+    const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: console });
+    const host = await mgr.createHost({
+      name: "before",
+      host: "target.example.com",
+      auth: { methods: ["publickey", "password"], keyRef: "ssh:key:one", passwordRef: "ssh:password:one" },
+      jump: ["bastion-id"],
+      advanced: {
+        launchVia: "system-ssh",
+        portOverride: false,
+        keepaliveIntervalMs: 15000,
+        env: { TERM: "xterm-256color" },
+        wsl: { distro: "Ubuntu", user: "dev", exec: "/usr/bin/ssh" },
+      },
+      tags: ["prod"],
+    });
+
+    const patch = sshHostUpdateSchema.parse({ id: host.id, patch: { name: "after" } }).patch;
+    const updated = await mgr.updateHost(host.id, patch);
+    expect(updated).toMatchObject({
+      name: "after",
+      auth: { methods: ["publickey", "password"], keyRef: "ssh:key:one", passwordRef: "ssh:password:one" },
+      jump: ["bastion-id"],
+      advanced: {
+        launchVia: "system-ssh",
+        portOverride: false,
+        keepaliveIntervalMs: 15000,
+        env: { TERM: "xterm-256color" },
+        wsl: { distro: "Ubuntu", user: "dev", exec: "/usr/bin/ssh" },
+      },
+      tags: ["prod"],
+    });
+  });
+
+  test("null port and WSL overrides clear saved overrides without losing sibling settings", async () => {
+    const store = await freshStore();
+    const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: console });
+    const host = await mgr.createHost({
+      name: "target",
+      host: "target.example.com",
+      port: 22,
+      advanced: { launchVia: "wsl", portOverride: true, wsl: { distro: "Ubuntu", user: "dev" }, keepaliveCountMax: 3 },
+    });
+    const updated = await mgr.updateHost(host.id, {
+      port: null,
+      advanced: { portOverride: false, wsl: { distro: null } },
+    } as never);
+    expect(updated?.port).toBeUndefined();
+    expect(updated?.advanced).toMatchObject({ launchVia: "wsl", portOverride: false, keepaliveCountMax: 3 });
+    expect(updated?.advanced?.wsl).toEqual({ distro: null, user: "dev" });
+  });
+
+  test("deleteHost reports jump and launch dependencies without changing references", async () => {
     const store = await freshStore();
     const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: console });
 
@@ -101,10 +180,99 @@ describe("SshManager host CRUD", () => {
       tags: [],
     });
 
-    await mgr.deleteHost(bastion.id);
-    const remaining = mgr.listHosts();
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].jump).toEqual([]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test fixture adds a workspace to the persisted state
+    await store.mutate((state: any) => {
+      state.workspaces.push({
+        id: "workspace-1",
+        name: "SSH workspace",
+        profileId: "default",
+        panels: [{ id: "panel-1", title: "SSH target", launch: { kind: "ssh", sshHostId: bastion.id } }],
+      });
+    });
+
+    const result = await mgr.deleteHost(bastion.id);
+    expect(result).toMatchObject({
+      ok: false,
+      error: "in-use",
+      hosts: [{ name: "target" }],
+      workspaces: [
+        { workspaceId: "workspace-1", workspaceName: "SSH workspace", panelId: "panel-1", panelTitle: "SSH target" },
+      ],
+    });
+    expect(mgr.listHosts()).toHaveLength(2);
+    expect(mgr.listHosts().find((host) => host.name === "target")?.jump).toEqual([bastion.id]);
+  });
+});
+
+describe("SshManager key metadata", () => {
+  test("renames only the key label and preserves host/certificate references and secret refs", async () => {
+    const store = await freshStore();
+    const credentials = fakeCredentialStore({
+      "ssh:key:stable": "private-key-material",
+      "ssh:passphrase:ssh:key:stable": "private-key-passphrase",
+    });
+    const mgr = new SshManager({ store, credentialStore: credentials, logger: console });
+    const createdAt = "2025-04-03T12:00:00.000Z";
+    const key = {
+      id: "ssh:key:stable",
+      label: "Old label",
+      kind: "ssh-ed25519",
+      publicKey: "ssh-ed25519 AAAA",
+      fingerprint: "SHA256:test",
+      hasPassphrase: true,
+      createdAt,
+    };
+    await store.mutate((state) => {
+      state.ssh!.keys!.push(key);
+      state.ssh!.certificates!.push({ id: "cert:one", keyId: key.id, keyIdString: "workstation", createdAt });
+    });
+    const host = await mgr.createHost({
+      name: "uses-key",
+      host: "example.test",
+      auth: { methods: ["publickey"], keyRef: key.id },
+    });
+    const stateEvents = vi.fn();
+    mgr.on("ssh:state", stateEvents);
+
+    const renamed = await mgr.renameKey({ id: key.id, label: "  New label  " });
+
+    expect(renamed).toEqual({ ...key, label: "New label" });
+    expect(store.getState().ssh.keys).toEqual([{ ...key, label: "New label" }]);
+    expect(mgr.getHost(host.id)?.auth?.keyRef).toBe(key.id);
+    expect(store.getState().ssh.certificates).toEqual([
+      { id: "cert:one", keyId: key.id, keyIdString: "workstation", createdAt },
+    ]);
+    expect(credentials.listRefs()).toEqual([key.id, `ssh:passphrase:${key.id}`]);
+    expect(stateEvents).toHaveBeenCalledTimes(1);
+  });
+
+  test("rejects blank and oversized labels without changing metadata", async () => {
+    const store = await freshStore();
+    const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: console });
+    const key = {
+      id: "ssh:key:stable",
+      label: "Original",
+      kind: "ssh-ed25519",
+      hasPassphrase: false,
+      createdAt: "2025-04-03T12:00:00.000Z",
+    };
+    await store.mutate((state) => {
+      state.ssh!.keys!.push(key);
+    });
+
+    await expect(mgr.renameKey({ id: key.id, label: "  \t " })).rejects.toThrow("between 1 and 60 characters");
+    await expect(mgr.renameKey({ id: key.id, label: "x".repeat(61) })).rejects.toThrow("between 1 and 60 characters");
+    expect(store.getState().ssh.keys).toEqual([key]);
+  });
+
+  test("returns null for an unknown key id without emitting state", async () => {
+    const store = await freshStore();
+    const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: console });
+    const stateEvents = vi.fn();
+    mgr.on("ssh:state", stateEvents);
+
+    await expect(mgr.renameKey({ id: "missing", label: "Renamed" })).resolves.toBeNull();
+    expect(stateEvents).not.toHaveBeenCalled();
   });
 });
 
@@ -243,7 +411,7 @@ describe("normalizeState preserves SSH launch data", () => {
     const normalized = normalizeState(raw);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const inline: any = normalized.workspaces[0].panels[0].launch!.sshInline;
-    expect(inline.port).toBe(22);
+    expect(inline.port).toBeUndefined();
     expect(inline.advanced.launchVia).toBe("ssh2");
     expect(inline.auth.methods).toEqual(["publickey"]);
     expect(inline.hostKeyPolicy).toBe("warn");
@@ -316,8 +484,8 @@ describe("SshManager generation guard (late exit)", () => {
     const store = await freshStore();
     const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: console });
 
-    const states: Array<{ sessionId: string; state: string }> = [];
-    mgr.on("ssh:connection-state", (e: { sessionId: string; state: string }) => states.push(e));
+    const states: Array<{ sessionId: string; status: string }> = [];
+    mgr.on("ssh:connection-state", (e: { sessionId: string; status: string }) => states.push(e));
 
     // Capture each generation's INTERNAL onExit (the manager's own closure) by
     // stubbing start() to resolve as "ready" and record `this.onExit`.
@@ -375,8 +543,8 @@ describe("SshManager generation guard (late exit)", () => {
     const store = await freshStore();
     const mgr = new SshManager({ store, credentialStore: fakeCredentialStore(), logger: console });
 
-    const states: Array<{ sessionId: string; state: string }> = [];
-    mgr.on("ssh:connection-state", (e: { sessionId: string; state: string }) => states.push(e));
+    const states: Array<{ sessionId: string; status: string }> = [];
+    mgr.on("ssh:connection-state", (e: { sessionId: string; status: string }) => states.push(e));
 
     let captured: ((_e: { exitCode: number; signal: string | null }) => void) | undefined;
     const { SshSession } = await import("./ssh-session.js");
@@ -404,7 +572,9 @@ describe("SshManager generation guard (late exit)", () => {
 
     // The guard must not over-suppress: a single-generation exit still tears the
     // session down and reports disconnected.
-    expect(states).toContainEqual({ sessionId: "w:p", state: "disconnected" });
+    expect(states).toContainEqual(
+      expect.objectContaining({ sessionId: "w:p", status: "disconnected", connected: false }),
+    );
     expect(callerExits).toEqual([{ exitCode: 0, signal: null }]);
     expect(mgr.activeSessions.has("w:p")).toBe(false);
     expect(mgr.pendingPrompts.has("w:p")).toBe(false);
@@ -439,7 +609,7 @@ describe("SshManager.stop cancels a pending connect", () => {
 
     await promptSeen;
     // The connect is parked on the pre-auth promise; its decision is live.
-    expect(mgr.pendingPrompts.get("w:p")?.rejectPreAuth).toBeTypeOf("function");
+    expect(mgr.pendingPrompts.get("w:p")?.finishPassword).toBeTypeOf("function");
 
     await mgr.stop("w:p");
 
@@ -526,7 +696,7 @@ describe("SshManager prompt generation scoping", () => {
     // Disconnect gen1 (rejects its pre-auth; the catch runs on a later microtask),
     // then IMMEDIATELY reconnect — gen2 registers its own pending synchronously.
     // Cancel carries gen1's promptId (the guard is now unconditional).
-    mgr.cancelAuthPrompt("w:p", gen1Pending!.promptId);
+    mgr.cancelAuthPrompt("w:p", gen1Pending!.activePromptId);
     const gen2 = mgr.createSession({
       sessionId: "w:p",
       inlineHost,
@@ -563,7 +733,7 @@ describe("SshManager prompt generation scoping", () => {
       onExit: () => {},
     });
     await seen1;
-    const promptId1 = mgr.pendingPrompts.get("w:p")!.promptId;
+    const promptId1 = mgr.pendingPrompts.get("w:p")!.activePromptId;
     await mgr.stop("w:p");
     await expect(gen1).rejects.toThrow();
 
@@ -578,12 +748,12 @@ describe("SshManager prompt generation scoping", () => {
       onExit: () => {},
     });
     await seen2;
-    const promptId2 = mgr.pendingPrompts.get("w:p")!.promptId;
+    const promptId2 = mgr.pendingPrompts.get("w:p")!.activePromptId;
     expect(promptId2).not.toBe(promptId1);
 
     // An answer aimed at gen1's promptId is IGNORED — gen2 stays parked.
     mgr.answerAuthPrompt("w:p", ["stale"], promptId1);
-    expect(mgr.pendingPrompts.get("w:p")?.resolvePreAuth).toBeTypeOf("function");
+    expect(mgr.pendingPrompts.get("w:p")?.finishPassword).toBeTypeOf("function");
 
     await mgr.stop("w:p");
     await expect(gen2).rejects.toThrow();
@@ -608,11 +778,11 @@ describe("SshManager prompt generation scoping", () => {
       onExit: () => {},
     });
     await seen;
-    expect(mgr.pendingPrompts.get("w:p")?.resolvePreAuth).toBeTypeOf("function");
+    expect(mgr.pendingPrompts.get("w:p")?.finishPassword).toBeTypeOf("function");
 
     // No promptId → ignored; the pre-auth prompt is NOT resolved.
     mgr.answerAuthPrompt("w:p", ["secret"]);
-    expect(mgr.pendingPrompts.get("w:p")?.resolvePreAuth).toBeTypeOf("function");
+    expect(mgr.pendingPrompts.get("w:p")?.finishPassword).toBeTypeOf("function");
 
     await mgr.stop("w:p");
     await expect(connect).rejects.toThrow();
@@ -638,11 +808,11 @@ describe("SshManager prompt generation scoping", () => {
       onExit: () => {},
     });
     await seen;
-    expect(mgr.pendingPrompts.get("w:p")?.rejectPreAuth).toBeTypeOf("function");
+    expect(mgr.pendingPrompts.get("w:p")?.finishPassword).toBeTypeOf("function");
 
     // No promptId → ignored; the pre-auth prompt is NOT cancelled.
     mgr.cancelAuthPrompt("w:p");
-    expect(mgr.pendingPrompts.get("w:p")?.rejectPreAuth).toBeTypeOf("function");
+    expect(mgr.pendingPrompts.get("w:p")?.finishPassword).toBeTypeOf("function");
 
     await mgr.stop("w:p");
     await expect(connect).rejects.toThrow();
@@ -661,7 +831,9 @@ describe("SshManager prompt generation scoping", () => {
     let decided: boolean | null = null;
     mgr.pendingPrompts.set("w:p", {
       promptId: "w:p#7",
+      activePromptId: "w:p#7",
       finishKeyboard: null,
+      finishPassword: null,
       acceptHostKeyCb: (accept: boolean) => {
         decided = accept;
       },
@@ -704,7 +876,7 @@ describe("SshManager prompt generation scoping", () => {
       onExit: () => {},
     });
     await seen;
-    const promptId = mgr.pendingPrompts.get("w:p")!.promptId;
+    const promptId = mgr.pendingPrompts.get("w:p")!.activePromptId;
 
     await mgr.stop("w:p");
     await expect(connect).rejects.toThrow();

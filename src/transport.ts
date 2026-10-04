@@ -9,7 +9,15 @@ import type {
 } from "../electron/shared/ipc-bridge.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
-import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "../electron/shared/types/ssh.js";
+import type {
+  SshAuthRequest,
+  SshAuthPromptCancel,
+  SshConnectionState,
+  SshConnectionTestState,
+  SshKey,
+  SshKeyTransferState,
+} from "../electron/shared/types/ssh.js";
+import type { SshRuntimeCapabilities } from "../electron/shared/ssh-connection.js";
 import {
   APPROVAL_RECORDED_CHANNEL,
   approvalRecordedSchema,
@@ -72,6 +80,9 @@ export interface RemotePanelSelectionDetail {
   reject: (reason?: unknown) => void;
 }
 
+export type SshTestStatus = SshConnectionTestState["status"];
+export type SshTestStatePayload = SshConnectionTestState;
+
 const REMOTE_PANEL_SELECTION_EVENT = "strideterm:remote-select-panel";
 const REMOTE_PANEL_SELECTION_READY_EVENT = "strideterm:remote-panel-selection-ready";
 const REMOTE_PANEL_SELECTION_READY_TIMEOUT_MS = 5_000;
@@ -103,6 +114,8 @@ interface EventHub {
   sshHostKeyChange: Set<Handler<Record<string, unknown>>>;
   sshState: Set<Handler<Record<string, unknown>>>;
   sshConnectionState: Set<Handler<SshConnectionState>>;
+  sshTestState: Set<Handler<SshTestStatePayload>>;
+  sshKeyTransferState: Set<Handler<SshKeyTransferState>>;
   dockerLogsWrite: Set<Handler<{ sessionId: string; data: string }>>;
   dockerLogsClose: Set<Handler<{ sessionId: string; code: number | null }>>;
   dockerShellData: Set<Handler<{ sessionId: string; data: string }>>;
@@ -122,6 +135,15 @@ export interface Transport extends Partial<
   Omit<StridetermAPI, "onConnectionState" | "getState" | "onStateUpdated" | "attachmentList" | "attachmentDelete">
 > {
   isRemote: boolean;
+  /** Runtime platform and SSH administration capabilities. */
+  sshCapabilitiesGet?: () => Promise<SshRuntimeCapabilities>;
+  sshTestStart?: (payload: { profileId: string; draft: Record<string, unknown> }) => Promise<{
+    sessionId: string;
+    mode: SshTestStatePayload["mode"];
+    status: SshTestStatus;
+  }>;
+  sshTestStop?: (payload: { sessionId: string }) => Promise<{ ok: boolean }>;
+  onSshTestState?: (handler: Handler<SshTestStatePayload>) => void;
   /** Native mobile host directory picker. Absent in ordinary browser tabs. */
   browseDirectory?: (initialPath?: string) => Promise<unknown>;
   /** Manual state refresh — refetches /api/state and broadcasts the result.
@@ -205,6 +227,8 @@ function createEventHub(): EventHub {
     sshHostKeyChange: new Set(),
     sshState: new Set(),
     sshConnectionState: new Set(),
+    sshTestState: new Set(),
+    sshKeyTransferState: new Set(),
     dockerLogsWrite: new Set(),
     dockerLogsClose: new Set(),
     dockerShellData: new Set(),
@@ -798,6 +822,9 @@ export function createRemoteTransport(): Transport {
     }
     if (message.type === "ssh:connection-state") {
       safeDispatch(listeners.sshConnectionState, message.payload as SshConnectionState, "sshConnectionState");
+    }
+    if (message.type === "ssh:test:state") {
+      safeDispatch(listeners.sshTestState, message.payload as SshTestStatePayload, "sshTestState");
     }
     if (message.type === "docker:logs:write") {
       safeDispatch(
@@ -1937,16 +1964,30 @@ export function createRemoteTransport(): Transport {
     fileCommitFiles: (p) => fetchJson("/api/file/commit-files", p),
     fileCommitDiff: (p) => fetchJson("/api/file/commit-diff", p),
 
+    sshCapabilitiesGet: () => fetchJson("/api/ssh/capabilities", {}).then((result) => result as SshRuntimeCapabilities),
     sshHostsList: () => fetchJson("/api/ssh/hosts/list", {}),
     sshHostsCreate: (payload) => fetchJson("/api/ssh/hosts/create", payload),
     sshHostsUpdate: (payload) => fetchJson("/api/ssh/hosts/update", payload),
     sshHostsDelete: (payload) => fetchJson("/api/ssh/hosts/delete", payload),
     sshHostsDuplicate: (payload) => fetchJson("/api/ssh/hosts/duplicate", payload),
     sshHostsTest: (payload) => fetchJson("/api/ssh/hosts/test", payload),
+    sshTestStart: async () => {
+      throw new Error("SSH connection testing is available in the desktop app.");
+    },
+    sshTestStop: async () => {
+      throw new Error("SSH connection testing is available in the desktop app.");
+    },
     sshKeysList: () => fetchJson("/api/ssh/keys/list", {}),
     sshKeysImport: (payload) => fetchJson("/api/ssh/keys/import", payload),
     sshKeysGenerate: (payload) => fetchJson("/api/ssh/keys/generate", payload),
     sshKeysDelete: (payload) => fetchJson("/api/ssh/keys/delete", payload),
+    sshKeysRename: (payload) => fetchJson("/api/ssh/keys/rename", payload).then((result) => result as SshKey | null),
+    sshKeysTransferStart: (payload) =>
+      fetchJson("/api/ssh/keys/transfer/start", payload).then(
+        (result) => result as { operationId: string; status: "connecting" },
+      ),
+    sshKeysTransferStop: (payload) =>
+      fetchJson("/api/ssh/keys/transfer/stop", payload).then((result) => result as { ok: boolean }),
     sshCertsList: () => fetchJson("/api/ssh/certs/list", {}),
     sshCertsImport: (payload) => fetchJson("/api/ssh/certs/import", payload),
     sshCertsDelete: (payload) => fetchJson("/api/ssh/certs/delete", payload),
@@ -2025,6 +2066,8 @@ export function createRemoteTransport(): Transport {
     onSshHostKeyChange: (handler: Handler<Record<string, unknown>>) => listeners.sshHostKeyChange.add(handler),
     onSshState: (handler: Handler<Record<string, unknown>>) => listeners.sshState.add(handler),
     onSshConnectionState: (handler: Handler<SshConnectionState>) => listeners.sshConnectionState.add(handler),
+    onSshTestState: (handler: Handler<SshTestStatePayload>) => listeners.sshTestState.add(handler),
+    onSshKeyTransferState: (handler: Handler<SshKeyTransferState>) => listeners.sshKeyTransferState.add(handler),
     onNotificationTargetRemoved: (handler: Handler<NotificationTargetRemoved>) => {
       listeners.notificationTargetRemoved.add(handler);
     },

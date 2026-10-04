@@ -2,7 +2,8 @@
   <div class="telegram-tab">
     <p class="telegram-tab__intro">
       Forward strIDEterm alerts to a Telegram bot and handle replies to trigger actions (start a task, open a PR
-      review). No public URL needed — the bot uses long-polling.
+      review). Automatic alert forwarding can be disabled per connection while polling and chat commands stay active. No
+      public URL needed — the bot uses long-polling.
     </p>
     <ol
       class="telegram-tab__steps"
@@ -45,8 +46,8 @@
             :class="conn.enabled ? 'badge--ok' : 'badge--off'"
             :title="
               conn.enabled
-                ? 'Long-polling is active for this connection — alerts will be forwarded to Telegram.'
-                : 'Polling is paused for this connection — saved but not delivering messages.'
+                ? 'Long-polling is active for this connection, so Telegram commands and replies are available.'
+                : 'Polling is paused for this connection, so Telegram commands and replies are unavailable.'
             "
             >{{ conn.enabled ? "enabled" : "disabled" }}</span
           >
@@ -61,7 +62,7 @@
             :title="
               editingId === conn.id
                 ? 'Collapse this connection — close the inline editor and return to the connection list view.'
-                : 'Expand this connection to edit its bot token, chat ID, poll interval, forward filter, and enabled flag inline.'
+                : 'Expand this connection to edit its bot token, chat ID, poll interval, notification forwarding, and alert filter.'
             "
             >{{ editingId === conn.id ? "▲" : "▼" }}</span
           >
@@ -131,6 +132,7 @@ interface TelegramConnection {
   botTokenRef: string;
   chatId: string;
   enabled: boolean;
+  notificationsEnabled?: boolean;
   pollSeconds: number;
   profileId?: string;
   forwardKinds: string[];
@@ -186,6 +188,7 @@ function makeBlankDraft() {
     botToken: "",
     chatId: "",
     enabled: true,
+    notificationsEnabled: true,
     pollSeconds: props.telegramSettings?.defaultPollSeconds ?? 5,
     profileId: "",
     forwardKinds: [] as string[],
@@ -224,6 +227,7 @@ function toggleEdit(id: string) {
   editDraft.botToken = "";
   editDraft.chatId = conn.chatId;
   editDraft.enabled = conn.enabled;
+  editDraft.notificationsEnabled = conn.notificationsEnabled !== false;
   editDraft.pollSeconds = conn.pollSeconds;
   editDraft.profileId = conn.profileId || "";
   editDraft.forwardKinds = [...conn.forwardKinds];
@@ -254,6 +258,7 @@ type Draft = {
   botToken: string;
   chatId: string;
   enabled: boolean;
+  notificationsEnabled?: boolean;
   pollSeconds: number;
   profileId?: string;
   forwardKinds: string[];
@@ -365,6 +370,7 @@ async function saveConnection(draft: Draft) {
       botToken: draft.botToken || undefined,
       chatId: draft.chatId || undefined,
       enabled: Boolean(draft.enabled),
+      notificationsEnabled: draft.notificationsEnabled !== false,
       pollSeconds: Number(draft.pollSeconds),
       profileId: draft.profileId || undefined,
       forwardKinds: Array.isArray(draft.forwardKinds) ? [...draft.forwardKinds] : [],
@@ -647,6 +653,7 @@ export const ConnectionForm = defineComponent({
                   h("input", {
                     type: "checkbox",
                     checked: Array.isArray(d.forwardKinds) && (d.forwardKinds as string[]).includes(kind.value),
+                    disabled: d.notificationsEnabled === false,
                     onChange: (e: Event) => {
                       const on = (e.target as HTMLInputElement).checked;
                       const current = Array.isArray(d.forwardKinds) ? [...(d.forwardKinds as string[])] : [];
@@ -664,9 +671,11 @@ export const ConnectionForm = defineComponent({
             h(
               "small",
               { class: "help-text" },
-              Array.isArray(d.forwardKinds) && (d.forwardKinds as string[]).length > 0
-                ? "Only the ticked kinds are delivered. Untick everything to receive all of them."
-                : "Nothing ticked = every kind is delivered.",
+              d.notificationsEnabled === false
+                ? "Automatic notifications are off. Your selected filter will apply when forwarding is enabled."
+                : Array.isArray(d.forwardKinds) && (d.forwardKinds as string[]).length > 0
+                  ? "Only the ticked kinds are delivered. Untick everything to receive all of them."
+                  : "Nothing ticked = every kind is delivered.",
             ),
           ],
         ),
@@ -675,7 +684,7 @@ export const ConnectionForm = defineComponent({
           {
             class: "form-label form-label--inline",
             title:
-              "When checked, the bot polls Telegram for messages and forwards alerts here. Uncheck to keep the saved configuration but pause delivery.",
+              "When checked, strIDEterm polls Telegram so incoming commands, replies, and button presses continue to work. This is separate from automatic alert forwarding.",
           },
           [
             h("input", {
@@ -689,6 +698,32 @@ export const ConnectionForm = defineComponent({
             h("span", "Enable polling for this connection"),
           ],
         ),
+        h("div", { class: "form-label" }, [
+          h(
+            "label",
+            {
+              class: "form-label form-label--inline",
+              title:
+                "Turn off only automatic strIDEterm alert messages for this connection. Polling, incoming commands, and their replies remain active; native and mobile notifications are unaffected.",
+            },
+            [
+              h("input", {
+                checked: d.notificationsEnabled !== false,
+                type: "checkbox",
+                title: "Control automatic alert forwarding independently from polling.",
+                onChange: (e: Event) => {
+                  d.notificationsEnabled = (e.target as HTMLInputElement).checked;
+                },
+              }),
+              h("span", "Forward automatic notifications to this chat"),
+            ],
+          ),
+          h(
+            "small",
+            { class: "help-text" },
+            "When off, Telegram commands and their replies still work. This does not change native or mobile notifications.",
+          ),
+        ]),
         props.error ? h("p", { class: "form-error" }, props.error) : null,
         props.verification
           ? h(
@@ -926,6 +961,7 @@ export const ConnectionForm = defineComponent({
 }
 
 .form-label--inline {
+  display: flex;
   flex-direction: row;
   align-items: center;
   gap: 8px;

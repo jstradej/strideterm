@@ -130,6 +130,7 @@ export const APP_CONFIG = {
     disableWebgl: envBoolean("STRIDETERM_DISABLE_WEBGL", false),
   },
   ssh: {
+    defaultLaunchVia: envString("STRIDETERM_SSH_DEFAULT_CLIENT", "system-ssh"),
     defaultKeepaliveMs: envNumber("STRIDETERM_SSH_KEEPALIVE_MS", 30000),
     defaultConnectTimeoutMs: envNumber("STRIDETERM_SSH_CONNECT_TIMEOUT_MS", 20000),
     agentPath: envString("STRIDETERM_SSH_AGENT", ""),

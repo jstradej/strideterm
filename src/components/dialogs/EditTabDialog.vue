@@ -5,6 +5,30 @@
         <p class="eyebrow">{{ eyebrow }}</p>
         <h2>{{ mode === "new" ? "New tab" : "Edit tab" }}</h2>
       </div>
+
+      <div v-if="mode === 'new'" class="new-tab-kind" role="group" aria-label="New tab type">
+        <button
+          type="button"
+          :class="['segmented__btn', { 'segmented__btn--active': tabType === 'local' }]"
+          title="Create a local shell tab on this computer."
+          @click="tabType = 'local'"
+        >
+          <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2 3.5h12v9H2zM4.5 6l2 2-2 2M8 10h3" /></svg>
+          Local shell
+        </button>
+        <button
+          type="button"
+          :class="['segmented__btn', { 'segmented__btn--active': tabType === 'ssh' }]"
+          title="Create an SSH tab or connect to a saved host."
+          @click="tabType = 'ssh'"
+        >
+          <svg aria-hidden="true" viewBox="0 0 16 16">
+            <circle cx="8" cy="8" r="6" />
+            <path d="M2 8h12M8 2c1.7 1.6 2.4 3.6 2.4 6S9.7 12.4 8 14M8 2C6.3 3.6 5.6 5.6 5.6 8S6.3 12.4 8 14" />
+          </svg>
+          SSH
+        </button>
+      </div>
     </div>
 
     <form class="form edit-tab-dialog__form" @submit.prevent="handleSubmit">
@@ -52,35 +76,17 @@
         <input v-model="commandInput" placeholder="optional boot command" maxlength="500" />
       </label>
 
-      <details class="advanced-options" :open="advancedOpen" @toggle="onAdvancedToggle">
-        <summary>
+      <component
+        :is="tabType === 'ssh' ? 'div' : 'details'"
+        :class="tabType === 'ssh' ? 'ssh-connection-content' : 'advanced-options'"
+        :open="tabType !== 'ssh' && advancedOpen"
+        @toggle="onAdvancedToggle"
+      >
+        <summary v-if="tabType !== 'ssh'">
           <span>Advanced</span>
           <span v-if="advancedSummary" class="advanced-options__summary">{{ advancedSummary }}</span>
         </summary>
         <div class="advanced-content">
-          <div v-if="mode === 'new'" class="segmented advanced-options__control" role="tablist" aria-label="Tab type">
-            <button
-              type="button"
-              role="tab"
-              :aria-selected="tabType === 'local'"
-              :class="['segmented__btn', { 'segmented__btn--active': tabType === 'local' }]"
-              title="Create a local shell tab — runs an interactive PTY session in the workspace's working directory using your default shell."
-              @click="tabType = 'local'"
-            >
-              {{ runInWsl ? "🐧 Local · WSL" : "💻 Local shell" }}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              :aria-selected="tabType === 'ssh'"
-              :class="['segmented__btn', { 'segmented__btn--active': tabType === 'ssh' }]"
-              title="Create an SSH tab — connects to a remote host via the strIDEterm SSH client. Pick a saved host below or use Quick connect to type host details by hand."
-              @click="tabType = 'ssh'"
-            >
-              🔐 SSH
-            </button>
-          </div>
-
           <template v-if="tabType === 'ssh'">
             <div class="segmented advanced-options__control" role="tablist" aria-label="SSH mode">
               <button
@@ -136,96 +142,141 @@
 
             <template v-else>
               <div class="quick-grid">
+                <SshConnectionIdentityFields
+                  v-model:host="quick.host"
+                  v-model:username="quick.username"
+                  host-placeholder="bastion.example.com"
+                  :require-username="quickMode === 'ssh2'"
+                  host-help="Enter a server address. With SSH on this computer or SSH in WSL, use an alias from that environment's SSH config. Built-in SSH needs a server address."
+                  username-help="This is the account on the remote server. Built-in SSH requires it; with SSH on this computer or in WSL, leave it empty to use that environment's SSH config."
+                  @host-input="autofillTitle"
+                />
                 <label class="field">
-                  <span>User</span>
-                  <input
-                    v-model="quick.username"
-                    placeholder="alice"
-                    required
-                    data-validation-required="Enter the SSH login user on the remote server, for example alice or root."
-                  />
-                </label>
-                <label class="field">
-                  <span>Host</span>
-                  <input
-                    v-model="quick.host"
-                    placeholder="bastion.example.com"
-                    required
-                    data-validation-required="Enter the server hostname or IP address, for example bastion.example.com or 192.168.1.10."
-                    @input="autofillTitle"
-                  />
-                </label>
-                <label class="field">
-                  <span>Port</span>
-                  <input v-model.number="quick.port" type="number" min="1" max="65535" />
+                  <span
+                    >Connection method <HelpTooltip :text="connectionMethodHelp" label="Connection method help"
+                  /></span>
+                  <CustomSelect v-model="quick.launchVia" :options="launchViaOptions" />
                 </label>
               </div>
 
-              <div class="field auth-field" @mouseleave="authHelpOpen = false">
+              <div v-if="quickMode === 'ssh2'" class="field auth-field">
                 <div class="auth-field__heading">
                   <span class="auth-field__label">Authentication</span>
-                  <button
-                    type="button"
-                    class="auth-help"
-                    aria-label="Authentication options help"
-                    aria-describedby="auth-help-tooltip"
-                    :aria-expanded="authHelpOpen"
-                    @mouseenter="authHelpOpen = true"
-                    @focus="authHelpOpen = true"
-                    @blur="authHelpOpen = false"
-                    @click="authHelpOpen = true"
-                    @keydown.esc="authHelpOpen = false"
-                  >
-                    ?
-                  </button>
-                  <div
-                    v-show="authHelpOpen"
-                    id="auth-help-tooltip"
-                    class="auth-help__content"
-                    role="tooltip"
-                    @mouseenter="authHelpOpen = true"
-                  >
-                    <p>
-                      <strong>SSH Agent:</strong> Recommended if your key is already loaded in an SSH agent on this
-                      computer.
-                    </p>
-                    <p>
-                      <strong>Saved key:</strong> Choose this when you imported a private key in Settings → SSH and know
-                      the server accepts its matching public key.
-                    </p>
-                    <p>
-                      <strong>Password / prompt (MFA):</strong> Choose this when the server requires a password or
-                      interactive verification. Answer the app's prompt during connection; credentials are not saved.
-                    </p>
-                  </div>
+                  <HelpTooltip :text="sshAuthenticationHelp" label="Authentication options help" />
                 </div>
                 <CustomSelect v-model="quick.authMethod" :options="authMethodOptions" />
               </div>
 
-              <label v-if="quick.authMethod === 'publickey'" class="field">
-                <span>Key</span>
-                <CustomSelect v-model="quick.keyRef" placeholder="Select a key…" :options="keyOptions" />
+              <label v-if="quickMode === 'ssh2' && quick.authMethod === 'publickey'" class="field">
+                <span
+                  >Key stored in strIDEterm
+                  <HelpTooltip
+                    text="Choose the private key whose matching public key is authorized on the server. Import or generate a key, then add its public key to your account on the server. A key passphrase is separate from your server login password."
+                    label="Saved key help"
+                /></span>
+                <div class="input-row">
+                  <CustomSelect v-model="quick.keyRef" placeholder="Select a key…" :options="keyOptions" /><button
+                    type="button"
+                    class="button button--ghost"
+                    :disabled="appStore.isRemoteTransport || capabilities?.permissions?.canManageHosts === false"
+                    title="Import a private key into strIDEterm for this Built-in SSH connection."
+                    @click="appStore.openSshKeyImportDialog(undefined, 'Back to New tab')"
+                  >
+                    Import…
+                  </button>
+                </div>
               </label>
+              <p v-if="quickMode !== 'ssh2'" class="system-auth-note">
+                Your SSH configuration controls sign-in. Password and verification prompts appear in the terminal.
+              </p>
+
+              <details class="quick-advanced">
+                <summary title="Set an SSH port override or choose a WSL distribution.">
+                  Advanced connection options
+                </summary>
+                <label class="field"
+                  ><span
+                    >Port
+                    <HelpTooltip
+                      :text="
+                        quickMode === 'ssh2'
+                          ? 'Leave this blank to use the standard port 22. Enter a different number to connect to a nonstandard SSH port.'
+                          : 'Leave this blank to use the port from your SSH configuration. Enter a number to override it; entering 22 explicitly replaces a different configured port.'
+                      "
+                      label="Port help" /></span
+                  ><input
+                    v-model.number="quick.port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    placeholder="Use SSH configuration"
+                /></label>
+                <label v-if="quick.launchVia === 'wsl'" class="field"
+                  ><span
+                    >WSL distribution
+                    <HelpTooltip
+                      text="Choose the WSL Linux environment that contains the SSH config, keys and agent for this connection. Blank uses the saved app default distribution, then the Windows default if no app default is set. Different distributions keep separate files and installed software."
+                      label="WSL distribution help" /></span
+                  ><CustomSelect v-model="quick.wslDistro" :options="wslDistroOptions"
+                /></label>
+              </details>
 
               <div class="save-row">
-                <label class="save-row__toggle">
-                  <input v-model="saveToBook" type="checkbox" />
+                <label
+                  class="save-row__toggle"
+                  title="Save these connection details to the SSH host book so you can select them again later."
+                >
+                  <input
+                    v-model="saveToBook"
+                    type="checkbox"
+                    :disabled="appStore.isRemoteTransport || capabilities?.permissions?.canManageHosts === false"
+                  />
                   <span>Save to host book</span>
                 </label>
                 <input
                   v-model="savedHostName"
                   class="save-row__input"
                   placeholder="e.g. prod-bastion"
+                  title="Name used to find this connection in the saved host list."
                   :disabled="!saveToBook"
                   maxlength="60"
                 />
               </div>
               <p v-if="quick.error" class="error-msg">{{ quick.error }}</p>
+              <div class="quick-connection-test">
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="submitting || !canTestSsh"
+                  :title="
+                    canTestSsh
+                      ? 'Open a connection test with these settings. No host will be saved.'
+                      : testSshDisabledReason
+                  "
+                  @click="openQuickConnectionTest"
+                >
+                  Test connection
+                </button>
+                <span v-if="!canTestSsh" class="field-help">{{ testSshDisabledReason }}</span>
+              </div>
             </template>
 
             <label class="field">
-              <span>Initial command (optional)</span>
-              <input v-model="commandInput" placeholder="e.g. tmux attach" maxlength="500" />
+              <span
+                >Initial command (optional)
+                <HelpTooltip
+                  :text="
+                    quickMode === 'ssh2'
+                      ? 'With Built-in SSH, this command is typed into the terminal after sign-in. Leave it blank for a normal shell.'
+                      : 'OpenSSH runs this command on the remote server instead of opening the usual interactive shell. For example, use “hostname” to print the server name and end the session. OpenSSH does not request a terminal for this command; interactive programs such as tmux need OpenSSH configured to request a terminal.'
+                  "
+                  label="Initial command help"
+              /></span>
+              <input
+                v-model="commandInput"
+                :placeholder="quickMode === 'ssh2' ? 'e.g. tmux attach' : 'e.g. hostname'"
+                maxlength="500"
+              />
             </label>
           </template>
 
@@ -249,14 +300,42 @@
               </label>
             </div>
           </template>
-        </div>
-      </details>
 
+          <label v-if="showSshToolsOption" class="ssh-tools-toggle">
+            <input v-model="sshMcpEnabled" type="checkbox" :disabled="!canEnableSshTools && !sshMcpEnabled" />
+            <span>
+              SSH tools for this tab
+              <HelpTooltip
+                text="Enable SSH tools for Claude Code or Codex launched as this tab's direct command. They can run commands on saved Built-in SSH hosts only; other tabs and manually launched agents are unaffected. Applies when the terminal starts. Restart the terminal after changing this setting. Not available for WSL or remote sessions."
+                label="SSH tools for this tab help"
+              />
+              <small class="ssh-tools-toggle__summary">{{ sshToolsHint }}</small>
+            </span>
+          </label>
+        </div>
+      </component>
+
+      <p v-if="connectionError" class="error-msg" role="alert">{{ connectionError }}</p>
       <footer class="dialog__footer edit-tab-dialog__footer">
-        <button type="button" class="button button--ghost" :disabled="submitting" @click="emit('cancel')">
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Close this dialog. Unsaved tab changes will be confirmed first."
+          :disabled="submitting"
+          @click="requestClose"
+        >
           Cancel
         </button>
-        <button type="submit" class="button" :disabled="submitting">
+        <button
+          type="submit"
+          class="button"
+          :title="
+            mode === 'new'
+              ? 'Create a tab with this name and command.'
+              : 'Save this tab name, command, and SSH tools setting.'
+          "
+          :disabled="submitting"
+        >
           {{ submitting ? "Saving…" : mode === "new" ? "Create tab" : "Save" }}
         </button>
       </footer>
@@ -271,6 +350,12 @@ import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
 import { BADGE_ICONS, getTitleIcon, setTitleIcon } from "../../lib/badge-icons.js";
 import { buildWslCommand, parseWslCommand, type WslState } from "./wsl-launcher.js";
+import HelpTooltip from "../common/HelpTooltip.vue";
+import SshConnectionIdentityFields from "../ssh/SshConnectionIdentityFields.vue";
+import { resolveSshLaunchVia } from "../../../electron/shared/ssh-connection.js";
+import { validateSshConnectionIdentity } from "../../lib/ssh-connection-form.js";
+import { sshAuthenticationHelp, sshDefaultMethodHelp } from "../../lib/ssh-help-text.js";
+import { getAgentSshMcpEligibility } from "../../../electron/shared/agent-ssh.js";
 
 interface SshHostState {
   title: string;
@@ -287,6 +372,9 @@ interface Props {
   presetTabType?: string;
   presetSshMode?: string;
   presetSshHostId?: string;
+  cwdOverride?: string;
+  sshMcpEnabled?: boolean;
+  hasCustomLaunch?: boolean;
   onEditSshHost?: ((host: unknown, state: SshHostState) => void) | null;
 }
 
@@ -298,6 +386,9 @@ const props = withDefaults(defineProps<Props>(), {
   presetTabType: "local",
   presetSshMode: "saved",
   presetSshHostId: "",
+  cwdOverride: "",
+  sshMcpEnabled: false,
+  hasCustomLaunch: false,
   onEditSshHost: null,
 });
 
@@ -308,15 +399,20 @@ const emit = defineEmits<{
 
 const sshStore = useSshStore();
 const appStore = useAppStore();
+const sshRuntime = useSshStore();
 const sshHosts = computed(() => sshStore.hosts || []);
 const sshKeys = computed(() => sshStore.keys || []);
 
 const hostOptions = computed(() =>
-  sshHosts.value.map((h) => ({ value: h.id, label: `${h.label ?? h.host} (${h.host})` })),
+  sshHosts.value.map((h) => ({ value: h.id, label: `${h.name ?? h.host} (${h.host})` })),
 );
 
 const authMethodOptions = computed(() => [
-  { value: "agent", label: "SSH Agent (recommended)" },
+  {
+    value: "agent",
+    label: `SSH Agent${capabilities.value && !capabilities.value.openSshAgent ? " · unavailable" : " (recommended)"}`,
+    disabled: capabilities.value ? !capabilities.value.openSshAgent : false,
+  },
   {
     value: "publickey",
     label: `Saved key${sshKeys.value.length === 0 ? " — none imported yet" : ""}`,
@@ -326,6 +422,37 @@ const authMethodOptions = computed(() => [
 ]);
 
 const keyOptions = computed(() => sshKeys.value.map((k) => ({ value: k.id, label: k.label })));
+const storedDefault = computed(() =>
+  String(appStore.payload?.appState?.settings?.ssh?.defaultLaunchVia || "system-ssh"),
+);
+const quickMode = computed(() => resolveSshLaunchVia(quick.launchVia, storedDefault.value));
+const capabilities = computed(() => sshRuntime.capabilities);
+const launchViaOptions = computed(() => {
+  const options = [
+    { value: "default", label: `Use app default · ${quickLabel(storedDefault.value)}` },
+    {
+      value: "system-ssh",
+      label: `SSH on this computer${capabilities.value && !capabilities.value.systemSsh ? " · unavailable" : ""}`,
+      disabled: capabilities.value ? !capabilities.value.systemSsh : false,
+    },
+    { value: "ssh2", label: "Built-in SSH" },
+  ];
+  if (capabilities.value?.platform === "win32")
+    options.push({
+      value: "wsl",
+      label: `SSH in WSL${capabilities.value.wsl?.installed ? "" : " · unavailable"}`,
+      disabled: !capabilities.value.wsl?.installed,
+    });
+  return options;
+});
+const wslDistroOptions = computed(() => [
+  { value: "", label: "Default distribution" },
+  ...(capabilities.value?.wsl?.distros || []).map((distro: string) => ({ value: distro, label: distro })),
+]);
+const connectionMethodHelp = sshDefaultMethodHelp;
+const connectionError = ref("");
+const sshMcpEnabled = ref(Boolean(props.sshMcpEnabled));
+const agentSshEligibility = computed(() => getAgentSshMcpEligibility(commandInput.value));
 
 function editSelectedHost() {
   const host = sshHosts.value.find((h) => h.id === selectedSshHostId.value);
@@ -342,7 +469,6 @@ function editSelectedHost() {
     });
     return;
   }
-  emit("cancel");
   appStore.openSshHostEditor(host);
 }
 
@@ -351,6 +477,7 @@ const titleInput = ref(props.title);
 const commandInput = ref(props.command);
 const showIconPicker = ref(false);
 const submitting = ref(false);
+const confirmingDiscard = ref(false);
 const tabType = ref(props.presetTabType === "ssh" ? "ssh" : "local");
 const advancedOpen = ref(props.mode !== "new" || props.presetTabType === "ssh");
 const parsedWslPreset = props.presetTabType !== "ssh" ? parseWslCommand(props.command) : null;
@@ -363,6 +490,10 @@ function onAdvancedToggle(event: Event) {
   advancedOpen.value = (event.currentTarget as HTMLDetailsElement).open;
 }
 
+function quickLabel(mode: string) {
+  return mode === "system-ssh" ? "SSH on this computer" : mode === "wsl" ? "SSH in WSL" : "Built-in SSH";
+}
+
 const sshMode = ref(props.presetSshMode === "quick" ? "quick" : "saved");
 const selectedSshHostId = ref(props.presetSshHostId || "");
 const advancedSummary = computed(() => {
@@ -372,16 +503,63 @@ const advancedSummary = computed(() => {
 
 const quick = reactive({
   host: "",
-  port: 22,
+  port: undefined as number | undefined,
   username: "",
+  launchVia: "default",
+  wslDistro: "",
   authMethod: "agent",
   keyRef: "",
   error: "",
 });
-const authHelpOpen = ref(false);
+const canTestSsh = computed(
+  () => !appStore.isRemoteTransport && capabilities.value?.permissions?.canManageHosts !== false,
+);
+const testSshDisabledReason = computed(
+  () =>
+    capabilities.value?.permissions?.reason ||
+    (appStore.isRemoteTransport
+      ? "Connection testing is available in the desktop app."
+      : "Connection testing is unavailable."),
+);
 
 const saveToBook = ref(false);
 const savedHostName = ref("");
+function currentDraft() {
+  return JSON.stringify({
+    titleInput: titleInput.value,
+    commandInput: commandInput.value,
+    tabType: tabType.value,
+    runInWsl: runInWsl.value,
+    wsl,
+    sshMode: sshMode.value,
+    selectedSshHostId: selectedSshHostId.value,
+    quick,
+    saveToBook: saveToBook.value,
+    savedHostName: savedHostName.value,
+    sshMcpEnabled: sshMcpEnabled.value,
+  });
+}
+const initialDraft = ref("");
+async function requestClose() {
+  if (submitting.value || confirmingDiscard.value) return;
+  if (currentDraft() !== initialDraft.value) {
+    confirmingDiscard.value = true;
+    try {
+      const discard = await appStore.confirmInApp({
+        title: "Discard unsaved tab changes?",
+        message: "Your tab details have not been saved.",
+        confirmLabel: "Discard changes",
+        cancelLabel: "Keep editing",
+        danger: true,
+      });
+      if (!discard) return;
+    } finally {
+      confirmingDiscard.value = false;
+    }
+  }
+  emit("cancel");
+}
+defineExpose({ requestClose });
 
 watch(tabType, (next, prev) => {
   if (next === prev) return;
@@ -399,7 +577,7 @@ watch(tabType, (next, prev) => {
 
 function onHostSelected() {
   const host = sshHosts.value.find((h) => h.id === selectedSshHostId.value);
-  if (host) titleInput.value = `\u{1F310} ${host.label ?? host.host}`;
+  if (host) titleInput.value = `\u{1F310} ${host.name ?? host.host}`;
 }
 
 function autofillTitle() {
@@ -413,6 +591,16 @@ function autofillTitle() {
 }
 
 const currentIcon = computed(() => getTitleIcon(titleInput.value));
+const showSshToolsOption = computed(() => !appStore.isRemoteTransport && tabType.value === "local");
+const canEnableSshTools = computed(
+  () => showSshToolsOption.value && !props.hasCustomLaunch && !runInWsl.value && agentSshEligibility.value.supported,
+);
+const sshToolsHint = computed(() => {
+  if (runInWsl.value) return "Available for local Claude Code / Codex tabs; WSL is not supported yet.";
+  if (props.hasCustomLaunch) return "Custom launch settings are not supported. Use the tab's direct Command field.";
+  if (!agentSshEligibility.value.supported) return "Set Command to claude or codex to enable SSH tools.";
+  return "Built-in SSH only. Enabled when this terminal starts.";
+});
 
 function pickIcon(icon: string) {
   titleInput.value = setTitleIcon(titleInput.value, icon);
@@ -420,43 +608,103 @@ function pickIcon(icon: string) {
 }
 
 onMounted(async () => {
+  initialDraft.value = currentDraft();
   if (sshHosts.value.length === 0) await sshStore.load();
-  if (tabType.value === "ssh") {
+  const untouched = currentDraft() === initialDraft.value;
+  if (untouched && tabType.value === "ssh") {
     if (sshHosts.value.length === 0) sshMode.value = "quick";
     else if (!selectedSshHostId.value) {
       selectedSshHostId.value = sshHosts.value[0].id;
       onHostSelected();
     }
   }
+  if (untouched) initialDraft.value = currentDraft();
   requestAnimationFrame(() => {
     titleRef.value?.focus();
     titleRef.value?.select();
   });
 });
 
-function buildInlineHost() {
-  const methods = [];
-  if (quick.authMethod === "agent") methods.push("agent");
-  if (quick.authMethod === "publickey") methods.push("publickey");
-  if (quick.authMethod === "keyboard-interactive") methods.push("keyboard-interactive");
-
-  return {
-    host: quick.host.trim(),
-    port: Number(quick.port) > 0 ? Number(quick.port) : 22,
-    username: quick.username.trim(),
-    hostKeyPolicy: "warn",
-    auth: {
-      methods,
-      keyRef: quick.authMethod === "publickey" ? quick.keyRef : "",
-      agent: "auto",
-    },
-    advanced: { launchVia: "ssh2" },
+function buildInlineHost(): Record<string, unknown> {
+  const advanced: Record<string, unknown> = {
+    launchVia: quick.launchVia,
+    ...(quick.port !== undefined ? { portOverride: true } : {}),
   };
+  const host: Record<string, unknown> = {
+    host: quick.host.trim(),
+    advanced,
+  };
+  if (quick.port !== undefined) host.port = Number(quick.port);
+  if (quick.username.trim()) host.username = quick.username.trim();
+  if (quickMode.value === "ssh2") {
+    const methods = quick.authMethod === "publickey" ? ["publickey"] : [quick.authMethod];
+    host.auth = { methods, ...(quick.authMethod === "publickey" ? { keyRef: quick.keyRef } : {}) };
+  }
+  if (quick.launchVia === "wsl") advanced.wsl = { distro: quick.wslDistro || null };
+  return host;
+}
+
+function openQuickConnectionTest() {
+  if (submitting.value || !canTestSsh.value) return;
+  quick.error = "";
+  const identityError = validateSshConnectionIdentity({
+    host: quick.host,
+    username: quick.username,
+    requireUsername: quickMode.value === "ssh2",
+    port: quick.port,
+  });
+  if (identityError) {
+    quick.error = identityError;
+    return;
+  }
+  if (quickMode.value === "ssh2" && quick.authMethod === "publickey") {
+    if (!quick.keyRef || !sshKeys.value.some((key) => key.id === quick.keyRef)) {
+      quick.error = "Select an available saved key or change authentication.";
+      return;
+    }
+  }
+  if (quickMode.value === "system-ssh" && capabilities.value && !capabilities.value.systemSsh) {
+    quick.error = "System SSH was not found on the computer running strIDEterm.";
+    return;
+  }
+  if (quickMode.value === "wsl" && capabilities.value && !capabilities.value.wsl?.installed) {
+    quick.error = "WSL is not available on the computer running strIDEterm.";
+    return;
+  }
+  const draft = buildInlineHost();
+  // Connection tests use identity/authentication settings only. The separate
+  // New Tab command is never included in the temporary connection request.
+  appStore.openSubDialog("SshConnectionTestDialog", {
+    profileId: appStore.myActiveProfileId || "default",
+    draft,
+    onCancel: appStore.backDialog,
+  });
+}
+
+function canConnectHere(): boolean {
+  const workspace = appStore.activeWorkspace as { kind: string; profileId?: string } | null;
+  if (!workspace || !["terminal", "task"].includes(workspace.kind)) return false;
+  if ((workspace.profileId || "default") !== (appStore.myActiveProfileId || "default")) return false;
+  return true;
+}
+
+async function createSshTab(title: string, host: Record<string, unknown>, hostId?: string) {
+  if (!canConnectHere()) {
+    connectionError.value = "Choose a terminal workspace in the active profile before connecting.";
+    return false;
+  }
+  await appStore.quickAddTemplateTab(commandInput.value.trim(), title, props.cwdOverride, {
+    kind: "ssh",
+    ...(hostId ? { sshHostId: hostId } : { sshInline: host }),
+  });
+  emit("cancel");
+  return true;
 }
 
 async function handleSubmit() {
   const nextTitle = titleInput.value.trim();
   if (!nextTitle) return;
+  connectionError.value = "";
 
   // Classic local shell or saved SSH host — simple payload.
   if (tabType.value !== "ssh" || sshMode.value === "saved") {
@@ -470,11 +718,29 @@ async function handleSubmit() {
           ? plainCommand
           : buildWslCommand({ ...wsl, command: plainCommand }) || 'wsl -- bash -lic "exec bash"'
         : plainCommand;
+    if (props.mode === "new" && tabType.value === "ssh") {
+      submitting.value = true;
+      try {
+        await createSshTab(nextTitle, {}, selectedSshHostId.value);
+      } catch (err) {
+        connectionError.value = (err as Error).message || "Failed to create SSH tab.";
+      } finally {
+        submitting.value = false;
+      }
+      return;
+    }
+    if (sshMcpEnabled.value && showSshToolsOption.value && !canEnableSshTools.value) {
+      connectionError.value =
+        "SSH tools require a direct local Claude Code or Codex command. Turn off SSH tools or change Command.";
+      return;
+    }
     emit("submit", {
       title: nextTitle,
       command: effectiveCommand,
       kind: tabType.value === "ssh" ? "ssh" : undefined,
       sshHostId: tabType.value === "ssh" ? selectedSshHostId.value : undefined,
+      sshMcpEnabled:
+        tabType.value !== "local" ? false : appStore.isRemoteTransport ? props.sshMcpEnabled : sshMcpEnabled.value,
     });
     return;
   }
@@ -482,12 +748,57 @@ async function handleSubmit() {
   // Quick-connect path. Validate minimally; the backend schema is the source
   // of truth but we want a useful inline error before round-tripping.
   quick.error = "";
-  if (!quick.host.trim() || !quick.username.trim()) {
-    quick.error = "Host and username are required.";
+  const identityError = validateSshConnectionIdentity({
+    host: quick.host,
+    username: quick.username,
+    requireUsername: quickMode.value === "ssh2",
+    port: quick.port,
+  });
+  if (identityError) {
+    quick.error = identityError;
     return;
   }
-  if (quick.authMethod === "publickey" && !quick.keyRef) {
+  if (quickMode.value === "ssh2" && quick.authMethod === "publickey" && !quick.keyRef) {
     quick.error = "Select a key or switch to agent.";
+    return;
+  }
+  if (
+    quickMode.value === "ssh2" &&
+    quick.authMethod === "publickey" &&
+    !sshKeys.value.some((key) => key.id === quick.keyRef)
+  ) {
+    quick.error = "The selected key is no longer available.";
+    return;
+  }
+  if (quickMode.value === "wsl" && capabilities.value && !capabilities.value.wsl?.installed) {
+    quick.error = "WSL is not available on the computer running strIDEterm.";
+    return;
+  }
+  if (quickMode.value === "system-ssh" && capabilities.value && !capabilities.value.systemSsh) {
+    quick.error = "System SSH was not found on the computer running strIDEterm. Install it or choose Built-in SSH.";
+    return;
+  }
+  if (
+    quickMode.value === "ssh2" &&
+    quick.authMethod === "agent" &&
+    capabilities.value &&
+    !capabilities.value.openSshAgent
+  ) {
+    quick.error =
+      "No supported SSH agent was found. Choose a saved key or password prompt, or configure an agent in Settings.";
+    return;
+  }
+  const selectedDistro = quick.wslDistro || capabilities.value?.wsl?.default || "";
+  if (
+    quickMode.value === "wsl" &&
+    selectedDistro &&
+    capabilities.value?.wsl?.sshAvailableByDistro?.[selectedDistro] === false
+  ) {
+    quick.error = `SSH is not installed in WSL distribution ${selectedDistro}.`;
+    return;
+  }
+  if (!canConnectHere()) {
+    quick.error = "Choose a terminal workspace in the active profile before connecting.";
     return;
   }
 
@@ -497,41 +808,34 @@ async function handleSubmit() {
     // then the panel just references it by id. Declined: inline sticks on
     // the panel and dies when the tab is removed.
     if (saveToBook.value) {
-      const name = savedHostName.value.trim() || `${quick.username}@${quick.host}`;
+      const name = savedHostName.value.trim() || `${quick.username ? `${quick.username}@` : ""}${quick.host}`;
       const inline = buildInlineHost();
       const newHost = {
-        label: name,
+        name,
         host: inline.host,
         port: inline.port,
         username: inline.username,
-        hostKeyPolicy: inline.hostKeyPolicy,
         auth: inline.auth,
         jump: [],
         advanced: inline.advanced,
         tags: [],
       };
-      await sshStore.saveHost(newHost as unknown as Parameters<typeof sshStore.saveHost>[0]);
-      await sshStore.load();
-      const saved = sshStore.hosts.find((h) => h.label === name);
+      if (appStore.isRemoteTransport || capabilities.value?.permissions?.canManageHosts === false) {
+        quick.error = capabilities.value?.permissions?.reason || "Saving SSH hosts is available on the desktop app.";
+        return;
+      }
+      const saved = (await sshStore.saveHost(newHost as unknown as Parameters<typeof sshStore.saveHost>[0])) as {
+        id?: string;
+      } | null;
       if (!saved) {
         quick.error = "Failed to save host to book.";
         return;
       }
-      emit("submit", {
-        title: nextTitle,
-        command: commandInput.value.trim(),
-        kind: "ssh",
-        sshHostId: saved.id,
-      });
+      await createSshTab(nextTitle, {}, saved.id);
       return;
     }
 
-    emit("submit", {
-      title: nextTitle,
-      command: commandInput.value.trim(),
-      kind: "ssh",
-      sshInline: buildInlineHost(),
-    });
+    await createSshTab(nextTitle, buildInlineHost());
   } catch (err) {
     quick.error = (err as Error).message || "Failed to create tab";
   } finally {
@@ -543,11 +847,94 @@ async function handleSubmit() {
 <style scoped>
 .edit-tab-dialog {
   width: min(520px, 100%);
+  min-width: 0;
+  max-width: 100%;
 }
 .edit-tab-dialog__form {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
+}
+.new-tab-kind {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 12px;
+  flex-shrink: 0;
+}
+.new-tab-kind .segmented__btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.new-tab-kind svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ssh-tools-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.ssh-tools-toggle input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+}
+.ssh-tools-toggle > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.ssh-tools-toggle__summary {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.system-auth-note {
+  margin: 0;
+  padding: 9px;
+  border-left: 3px solid var(--accent);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+}
+.quick-advanced {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.quick-advanced summary {
+  padding: 6px 0;
+  cursor: pointer;
+}
+.quick-advanced .field {
+  margin-top: 10px;
 }
 
 .advanced-options {
@@ -588,6 +975,7 @@ async function handleSubmit() {
   display: grid;
   gap: 16px;
   padding-bottom: 14px;
+  min-width: 0;
 }
 .advanced-fields {
   display: grid;
@@ -804,19 +1192,51 @@ async function handleSubmit() {
   white-space: nowrap;
 }
 
-/* Quick-connect grid: user ~35%, host flexes, port fixed narrow. */
+/* Quick-connect keeps host and username together, with method below. */
 .quick-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) 80px;
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+.quick-grid > .field {
+  grid-column: 1 / -1;
+}
+.quick-grid :deep(.field),
+.quick-grid :deep(input),
+.quick-grid :deep(.custom-select),
+.quick-grid :deep(.custom-select__button) {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+.quick-grid :deep(.field > span) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.quick-grid :deep(.custom-select) {
+  width: 100%;
+}
+.quick-connection-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.quick-connection-test .field-help {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Save-row: checkbox toggle on the left, name input expanding to the right. */
 .save-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   margin: 6px 0 14px;
+  min-width: 0;
 }
 .save-row__toggle {
   display: flex !important;
@@ -841,7 +1261,7 @@ async function handleSubmit() {
   font-weight: 500;
 }
 .save-row__input {
-  flex: 1;
+  flex: 1 1 11rem;
   min-width: 0;
 }
 .save-row__input:disabled {
@@ -856,6 +1276,7 @@ async function handleSubmit() {
 
 .edit-tab-dialog__footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
@@ -863,7 +1284,7 @@ async function handleSubmit() {
   border-top: 1px solid var(--border);
 }
 
-@media (max-width: 480px) {
+@media (max-width: 560px) {
   .edit-tab-dialog__form {
     gap: 12px;
   }
@@ -872,11 +1293,10 @@ async function handleSubmit() {
     white-space: normal;
   }
   .quick-grid {
-    grid-template-columns: minmax(0, 1fr) 76px;
+    grid-template-columns: minmax(0, 1fr);
   }
-  .quick-grid .field:nth-child(2) {
-    grid-column: 1 / -1;
-    grid-row: 1;
+  .quick-grid > .field {
+    grid-column: auto;
   }
   .save-row {
     align-items: stretch;
@@ -885,7 +1305,11 @@ async function handleSubmit() {
     margin-top: 8px;
   }
   .save-row__input {
+    flex: 0 0 auto;
     width: 100%;
+  }
+  .new-tab-kind {
+    flex-wrap: wrap;
   }
   .advanced-options > summary {
     min-height: 48px;

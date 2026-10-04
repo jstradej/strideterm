@@ -240,6 +240,16 @@ function onWindowBlur() {
   closeList();
 }
 
+function closeIfInactive() {
+  setTimeout(() => {
+    if (
+      (rootRef.value?.closest(".overlay") as HTMLElement | null)?.inert ||
+      document.querySelector(".ssh-auth-prompt, .ssh-host-key-warning")
+    )
+      closeList();
+  }, 0);
+}
+
 watch(
   () => props.options,
   () => {
@@ -271,12 +281,16 @@ onMounted(() => {
   window.addEventListener("blur", onWindowBlur);
   window.addEventListener("resize", onReposition);
   window.addEventListener("scroll", onReposition, true);
+  window.addEventListener("ssh-dialog-layer-change", closeIfInactive);
+  window.addEventListener("ssh-modal-open", closeList);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("blur", onWindowBlur);
   window.removeEventListener("resize", onReposition);
   window.removeEventListener("scroll", onReposition, true);
+  window.removeEventListener("ssh-dialog-layer-change", closeIfInactive);
+  window.removeEventListener("ssh-modal-open", closeList);
 });
 
 defineExpose({ focus: () => buttonRef.value?.focus() });

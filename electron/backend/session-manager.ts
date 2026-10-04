@@ -3,6 +3,8 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import { promises as fsp, existsSync } from "node:fs";
 import crypto from "node:crypto";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pty from "node-pty";
@@ -17,6 +19,8 @@ import { PtySpawnError } from "./effect/errors/session-errors.js";
 import { tryDirectShellSpawn } from "./direct-shell-spawn.js";
 import { applyShellIntegrationLaunch } from "./shell-integration-launch.js";
 import type { SshManager } from "./ssh/ssh-manager.js";
+import { resolveSshLaunchVia } from "../shared/ssh-connection.js";
+import { detectWslDistros } from "./ssh/ssh-wsl.js";
 
 const log = getLogger("session-mgr");
 
@@ -68,6 +72,7 @@ interface PtySession extends SessionBase {
   processHandle: IPty | null;
   cleanupFn?: () => Promise<void>;
   wslDistro?: string | null;
+  sshHostId?: string;
 }
 
 interface SshSession extends SessionBase {
@@ -107,22 +112,34 @@ interface SessionManagerOpts {
   getSessionEnv?: ((ctx: SessionEnvContext) => Record<string, string>) | null;
   getSessionLaunch?: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
   sshManager?: SshManager | null;
+  spawnPty?: typeof pty.spawn;
 }
+
+export type SshTestPtySpawn = typeof pty.spawn;
 
 // Loosely-typed host record from ssh-manager (not exported from that module)
 interface HostRecord {
   id: string;
   host: string;
+  name?: string;
   port?: number;
   username?: string;
   jump?: string[];
   auth?: {
+    methods?: string[];
     keyRef?: string;
+    agent?: string;
     [key: string]: unknown;
   };
   advanced?: {
     command?: string;
     launchVia?: string;
+    portOverride?: boolean;
+    keepaliveIntervalMs?: number | null;
+    keepaliveCountMax?: number | null;
+    compression?: boolean | null;
+    agentForward?: boolean;
+    sshPath?: string;
     env?: Record<string, string>;
     wsl?: {
       distro?: string;
@@ -218,7 +235,10 @@ function isBrowserPanel(panel: PanelState | null): boolean {
 
 interface BuildSshArgsOpts {
   distro?: string | null;
+  wslUser?: string | null;
   sshManager?: SshManager | null;
+  settings?: Partial<AppState["settings"]["ssh"]>;
+  probeMarker?: string;
 }
 
 interface BuildSshArgsResult {
@@ -229,77 +249,199 @@ interface BuildSshArgsResult {
 // Acquires a temporary SSH private-key file and releases (deletes) it when
 // the enclosing Effect Scope closes.  The returned object has the filesystem
 // path (for passing to ssh -i) and a POSIX alias when writing into WSL UNC.
-function acquireSshKeyFile(privKey: string, distro: string | null) {
+function acquireSshKeyFile(privKey: string, distro: string | null, wslUser?: string | null) {
   const randomId = crypto.randomBytes(8).toString("hex");
   if (distro) {
-    const tmpPath = `\\\\wsl$\\${distro}\\tmp\\strideterm-ssh-${randomId}`;
     const posixPath = `/tmp/strideterm-ssh-${randomId}`;
     return Effect.acquireRelease(
-      Effect.promise(() => fsp.writeFile(tmpPath, privKey, { mode: 0o600 }).then(() => ({ tmpPath, posixPath }))),
-      ({ tmpPath: p }) => Effect.promise(() => fsp.unlink(p).catch(() => {})),
+      Effect.promise(async () => {
+        try {
+          await runWslCommand(
+            distro,
+            ["sh", "-c", `umask 077; set -C; cat > '${posixPath}' && chmod 600 '${posixPath}'`],
+            privKey,
+            wslUser,
+          );
+          return { posixPath };
+        } catch (err) {
+          await runWslCommand(distro, ["rm", "-f", posixPath], undefined, wslUser).catch(() => {});
+          throw err;
+        }
+      }),
+      ({ posixPath: p }) =>
+        Effect.promise(() => runWslCommand(distro, ["rm", "-f", p], undefined, wslUser).catch(() => {})),
     );
   }
   const tmpPath = path.join(os.tmpdir(), `strideterm-ssh-${randomId}`);
   return Effect.acquireRelease(
-    Effect.promise(() =>
-      fsp.writeFile(tmpPath, privKey, { mode: 0o600 }).then(() => ({ tmpPath, posixPath: tmpPath })),
-    ),
+    Effect.promise(async () => {
+      let created = false;
+      try {
+        const handle = await fsp.open(tmpPath, "wx", 0o600);
+        created = true;
+        await handle.close();
+        if (process.platform === "win32") {
+          const { stdout } = await promisify(execFile)("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
+            windowsHide: true,
+            timeout: 5000,
+          });
+          const sid = stdout.match(/"(S-1-[0-9-]+)"/)?.[1];
+          if (!sid)
+            throw new Error("Could not determine the current Windows account SID to secure the temporary SSH key");
+          await promisify(execFile)("icacls.exe", [tmpPath, "/inheritance:r", "/grant:r", `*${sid}:(F)`], {
+            windowsHide: true,
+            timeout: 5000,
+          });
+        } else {
+          await fsp.chmod(tmpPath, 0o600);
+        }
+        await fsp.writeFile(tmpPath, privKey, { encoding: "utf8" });
+        return { tmpPath, posixPath: tmpPath };
+      } catch (err) {
+        if (created) await fsp.unlink(tmpPath).catch(() => {});
+        throw err;
+      }
+    }),
     ({ tmpPath: p }) => Effect.promise(() => fsp.unlink(p).catch(() => {})),
   );
+}
+
+function runWslCommand(distro: string, args: string[], input?: string, user?: string | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const childArgs = ["-d", distro];
+    if (user) childArgs.push("-u", user);
+    childArgs.push("--exec", ...args);
+    const child = spawn("wsl.exe", childArgs, { windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    const timer = setTimeout(() => child.kill(), 8000);
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (part: string) => {
+      stderr = (stderr + part).slice(-4000);
+    });
+    child.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      code === 0 ? resolve() : reject(new Error(stderr.trim() || `wsl.exe exited with ${code}`));
+    });
+    child.stdin.once("error", (err) => {
+      clearTimeout(timer);
+      child.kill();
+      reject(err);
+    });
+    if (input !== undefined) child.stdin.end(input, "utf8");
+    else child.stdin.end();
+  });
 }
 
 async function buildSystemSshArgs(
   host: HostRecord,
   credentialStore: SshManager["credentialStore"],
-  { distro = null, sshManager = null }: BuildSshArgsOpts = {},
+  { distro = null, wslUser = null, sshManager = null, settings, probeMarker }: BuildSshArgsOpts = {},
 ): Promise<BuildSshArgsResult> {
   const args: string[] = [];
-  if (host.port && host.port !== 22) args.push("-p", String(host.port));
+  if (host.port && host.advanced?.portOverride !== false) args.push("-p", String(host.port));
   if (host.username) args.push("-l", host.username);
+  if (host.advanced?.keepaliveIntervalMs != null) {
+    args.push("-o", `ServerAliveInterval=${Math.max(0, Math.floor(host.advanced.keepaliveIntervalMs / 1000))}`);
+  }
+  if (host.advanced?.keepaliveCountMax != null) {
+    args.push("-o", `ServerAliveCountMax=${host.advanced.keepaliveCountMax}`);
+  }
+  if (host.advanced?.compression === false) args.push("-o", "Compression=no");
+  else if (host.advanced?.compression === true) args.push("-C");
+  if (host.advanced?.agentForward === true) args.push("-A");
+  // System OpenSSH owns its agent configuration. The app's agentPath is a
+  // Built-in ssh2 setting and may point at a Windows socket unavailable to WSL.
 
   if (host.hostKeyPolicy === "strict") {
     args.push("-o", "StrictHostKeyChecking=yes");
   } else if (host.hostKeyPolicy === "accept-new") {
-    args.push("-o", "StrictHostKeyChecking=accept-new");
-  } else {
     args.push("-o", "StrictHostKeyChecking=accept-new");
   }
 
   // ProxyJump chain — resolve jump host ids to `user@host:port` strings so
   // system ssh handles the chain itself. Only possible when we have a manager
   // to look up host entries; otherwise skip.
+  if (Array.isArray(host.jump) && host.jump.length > 0 && !sshManager) {
+    throw new Error("SSH jump hosts require the host book manager to resolve their aliases.");
+  }
   if (sshManager && Array.isArray(host.jump) && host.jump.length > 0) {
     const chain: string[] = [];
     for (const jumpId of host.jump) {
       const j = sshManager.getHost(jumpId);
-      if (!j) continue;
-      const port = j.port && j.port !== 22 ? `:${j.port}` : "";
-      chain.push(`${j.username || "root"}@${j.host}${port}`);
+      if (!j) throw new Error(`SSH jump host was deleted or is unavailable: ${jumpId}`);
+      const jumpHost = j.host.includes(":") && !j.host.startsWith("[") ? `[${j.host}]` : j.host;
+      const port = j.port && j.advanced?.portOverride !== false ? `:${j.port}` : "";
+      chain.push(`${j.username ? `${j.username}@` : ""}${jumpHost}${port}`);
     }
     if (chain.length) args.push("-J", chain.join(","));
+  }
+
+  if (probeMarker) {
+    if (!/^STRIDETERM_SSH_TEST_[a-f0-9]{32}$/.test(probeMarker)) {
+      throw new Error("Invalid SSH verification marker");
+    }
+    args.push(
+      "-T",
+      "-o",
+      "IgnoreUnknown=SessionType,StdinNull,ForkAfterAuthentication",
+      "-o",
+      "SessionType=default",
+      "-o",
+      "StdinNull=no",
+      "-o",
+      "ForkAfterAuthentication=no",
+      "-o",
+      "BatchMode=no",
+      "-o",
+      "PermitLocalCommand=no",
+      "-o",
+      "ClearAllForwardings=yes",
+      "-o",
+      "ControlPath=none",
+      "-o",
+      `RemoteCommand=echo ${probeMarker}`,
+    );
   }
 
   // SSH key temp file: use Effect.acquireRelease inside a long-lived Scope so
   // cleanup (unlink) runs both on PTY exit and on spawn failure.
   let cleanupFn: () => Promise<void> = async () => {};
 
-  if (host.auth && host.auth.keyRef) {
+  if (host.auth && host.auth.keyRef && (host.auth.methods || []).includes("publickey")) {
     const privKey = credentialStore.getSecret(host.auth.keyRef);
+    if (!privKey)
+      throw new Error(
+        `The managed SSH key for ${host.name || host.host} is missing. Re-select or import a key before connecting.`,
+      );
     if (privKey) {
       // Create a long-lived scope owned by the caller (ensureSystemSshSession /
       // ensureWslSshSession).  The scope is passed back so it can be closed
       // when the PTY exits or immediately when spawn fails.
       const scope = await runEffect(Scope.make());
-      const keyFile = await runEffect(
-        acquireSshKeyFile(privKey, distro).pipe(Effect.provideService(Scope.Scope, scope)),
-      );
+      let keyFile: { posixPath: string };
+      try {
+        keyFile = await runEffect(
+          acquireSshKeyFile(
+            privKey,
+            distro,
+            wslUser || (host.advanced?.wsl?.user as string | null | undefined) || undefined,
+          ).pipe(Effect.provideService(Scope.Scope, scope)),
+        );
+      } catch (err) {
+        await runEffect(Scope.close(scope, Exit.void)).catch(() => {});
+        throw err;
+      }
       cleanupFn = () => runEffect(Scope.close(scope, Exit.void));
       args.push("-i", keyFile.posixPath);
     }
   }
 
-  args.push(host.host);
-  if (host.advanced?.command) {
+  args.push("--", host.host);
+  if (!probeMarker && host.advanced?.command) {
     args.push(host.advanced.command);
   }
 
@@ -347,8 +489,14 @@ export class SessionManager extends EventEmitter {
   getSessionEnv: ((ctx: SessionEnvContext) => Record<string, string>) | null;
   getSessionLaunch: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
   sshManager: SshManager | null;
+  spawnPty: typeof pty.spawn;
 
-  constructor({ getSessionEnv = null, getSessionLaunch = null, sshManager = null }: SessionManagerOpts = {}) {
+  constructor({
+    getSessionEnv = null,
+    getSessionLaunch = null,
+    sshManager = null,
+    spawnPty = pty.spawn,
+  }: SessionManagerOpts = {}) {
     super();
     this.sessions = new Map();
     this.startingSessions = new Map();
@@ -357,6 +505,7 @@ export class SessionManager extends EventEmitter {
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
     this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
     this.sshManager = sshManager || null;
+    this.spawnPty = spawnPty;
   }
 
   async trackSessionStart(
@@ -610,6 +759,14 @@ export class SessionManager extends EventEmitter {
 
     const key = createSessionId(workspace.id, panel.id);
     const existing = this.sessions.get(key);
+    if (panel.sshMcpEnabled && panel.launch?.kind === "ssh") {
+      if (!existing) this.failedSpawns.add(key);
+      this.emit("terminal:data", {
+        sessionId: key,
+        data: "\r\n\x1b[31mSSH tools are available only for local Claude Code or Codex tabs, not SSH connection tabs.\x1b[0m\r\n",
+      });
+      return null;
+    }
     if (existing && existing.status === "running") {
       return existing;
     }
@@ -637,20 +794,37 @@ export class SessionManager extends EventEmitter {
           return null;
         }
 
-        const mode = host.advanced?.launchVia || "ssh2";
+        const mode = resolveSshLaunchVia(
+          host.advanced?.launchVia,
+          state.settings?.ssh?.defaultLaunchVia,
+          APP_CONFIG.ssh.defaultLaunchVia as "ssh2" | "system-ssh" | "wsl",
+        );
         if (mode === "system-ssh") return this.ensureSystemSshSession(state, workspace, panel, key, host);
         if (mode === "wsl") return this.ensureWslSshSession(state, workspace, panel, key, host);
         return this.ensureSshSession(state, workspace, panel, key, host);
       });
     }
 
-    const launchOverride =
-      this.getSessionLaunch?.({
-        state,
-        workspace,
-        panel,
+    let launchOverride: SessionLaunchOverride | null;
+    try {
+      launchOverride =
+        this.getSessionLaunch?.({
+          state,
+          workspace,
+          panel,
+          sessionId: key,
+        }) || null;
+    } catch (error) {
+      if (!panel.sshMcpEnabled) throw error;
+      this.sessions.delete(key);
+      this.failedSpawns.add(key);
+      const message = error instanceof Error ? error.message : String(error);
+      this.emit("terminal:data", {
         sessionId: key,
-      }) || null;
+        data: `\r\n\x1b[31mSSH tools could not be enabled for this tab: ${message}\x1b[0m\r\n`,
+      });
+      return null;
+    }
 
     // If panel.command is a bare shell invocation (e.g. `wsl -- bash -lic "…"`,
     // `pwsh -NoLogo`, `bash --login`), spawn that shell as the direct PTY
@@ -711,13 +885,17 @@ export class SessionManager extends EventEmitter {
 
     let processHandle: IPty;
     try {
+      const inheritedEnv = { ...process.env };
+      for (const key of Object.keys(inheritedEnv)) {
+        if (key.startsWith("STRIDETERM_SSH_MCP_")) delete inheritedEnv[key];
+      }
       processHandle = pty.spawn(launcher.file, launcher.args, {
         name: APP_CONFIG.session.termName,
         cols: APP_CONFIG.session.defaultCols,
         rows: APP_CONFIG.session.defaultRows,
         cwd: effectiveCwd,
         env: {
-          ...process.env,
+          ...inheritedEnv,
           ...integrationEnv,
           TERM_PROGRAM: APP_CONFIG.session.termProgram,
           FORCE_COLOR: APP_CONFIG.session.forceColor,
@@ -878,6 +1056,14 @@ export class SessionManager extends EventEmitter {
         exitCode,
         intentional,
       });
+      if (session.kind === "ssh-system" || session.kind === "ssh-wsl") {
+        this.emit("ssh:connection-state", {
+          sessionId,
+          hostId: session.sshHostId || "",
+          status: "disconnected",
+          connected: false,
+        });
+      }
       if (meta.cleanupFn) {
         meta
           .cleanupFn()
@@ -892,6 +1078,14 @@ export class SessionManager extends EventEmitter {
     // New process generation registered under this sessionId — same replay
     // boundary as the PTY spawn path above.
     this.emit("terminal:spawned", { sessionId });
+    if (session.kind === "ssh-system" || session.kind === "ssh-wsl") {
+      this.emit("ssh:connection-state", {
+        sessionId,
+        hostId: session.sshHostId || "",
+        status: "process-running",
+        connected: false,
+      });
+    }
     return session;
   }
 
@@ -901,17 +1095,29 @@ export class SessionManager extends EventEmitter {
     panel: PanelState,
     sessionId: string,
     host: HostRecord,
+    shouldContinue: () => boolean = () => true,
+    probeMarker?: string,
   ): Promise<RuntimeSession | null> {
     const existing = this.sessions.get(sessionId);
     if (existing && existing.status === "running") return existing;
 
     const { args, cleanupFn } = await buildSystemSshArgs(host, this.sshManager!.credentialStore, {
       sshManager: this.sshManager,
+      settings: _state.settings?.ssh,
+      probeMarker,
     });
+    if (!shouldContinue()) {
+      await cleanupFn();
+      return null;
+    }
     // node-pty resolves a relative name against PATH literally (no PATHEXT), so
     // a bare "ssh" is never found on Windows — spell the extension out, as the
     // WSL path does with "wsl.exe".
-    const sshExec = APP_CONFIG.ssh.systemSshPath || (process.platform === "win32" ? "ssh.exe" : "ssh");
+    const sshExec =
+      host.advanced?.sshPath ||
+      _state.settings?.ssh?.systemSshPath ||
+      APP_CONFIG.ssh.systemSshPath ||
+      (process.platform === "win32" ? "ssh.exe" : "ssh");
 
     log.debug("spawning system-ssh session", { sessionId, host: host.host, user: host.username });
 
@@ -921,7 +1127,7 @@ export class SessionManager extends EventEmitter {
       Effect.tryPromise({
         try: () =>
           Promise.resolve(
-            pty.spawn(sshExec, args, {
+            this.spawnPty(sshExec, args, {
               name: APP_CONFIG.session.termName,
               cols: APP_CONFIG.session.defaultCols,
               rows: APP_CONFIG.session.defaultRows,
@@ -959,6 +1165,7 @@ export class SessionManager extends EventEmitter {
       // below is recorded in the runtime's replay store — only failedSpawns can
       // drive its terminal:removed cleanup once the panel is gone.
       this.failedSpawns.add(sessionId);
+      this.emit("ssh:connection-state", { sessionId, hostId: host.id, status: "error", connected: false, error: msg });
       this.emit("terminal:data", {
         sessionId,
         data:
@@ -970,10 +1177,16 @@ export class SessionManager extends EventEmitter {
 
     if (!spawnResult) return null;
 
-    return this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
+    const registered = await this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
       kind: "ssh-system",
+      sshHostId: host.id,
       cleanupFn,
     });
+    if (!shouldContinue()) {
+      this.removeSession(sessionId);
+      return null;
+    }
+    return registered;
   }
 
   async ensureWslSshSession(
@@ -982,6 +1195,8 @@ export class SessionManager extends EventEmitter {
     panel: PanelState,
     sessionId: string,
     host: HostRecord,
+    shouldContinue: () => boolean = () => true,
+    probeMarker?: string,
   ): Promise<RuntimeSession | null> {
     const existing = this.sessions.get(sessionId);
     if (existing && existing.status === "running") return existing;
@@ -997,14 +1212,44 @@ export class SessionManager extends EventEmitter {
       return null;
     }
 
-    const distro = host.advanced?.wsl?.distro || APP_CONFIG.ssh.wslDefaultDistro || null;
+    const wslCaps = await detectWslDistros();
+    if (!shouldContinue()) return null;
+    const distro =
+      host.advanced?.wsl?.distro ||
+      _state.settings?.ssh?.wslDefaultDistro ||
+      APP_CONFIG.ssh.wslDefaultDistro ||
+      wslCaps?.default ||
+      null;
+    if (!distro || !wslCaps?.installed) {
+      this.failedSpawns.add(sessionId);
+      this.emit("ssh:connection-state", {
+        sessionId,
+        hostId: host.id,
+        status: "error",
+        connected: false,
+        error: "No usable WSL distribution is available for SSH",
+      });
+      this.emit("terminal:data", {
+        sessionId,
+        data: "\r\n\x1b[31m✗ No usable WSL distribution is available for SSH\x1b[0m\r\n",
+      });
+      return null;
+    }
     const wslUser = host.advanced?.wsl?.user;
-    const innerExec = host.advanced?.wsl?.exec || APP_CONFIG.ssh.wslSshExec || "ssh";
+    const innerExec =
+      host.advanced?.wsl?.exec || _state.settings?.ssh?.wslSshExec || APP_CONFIG.ssh.wslSshExec || "ssh";
 
     const { args: sshArgs, cleanupFn } = await buildSystemSshArgs(host, this.sshManager!.credentialStore, {
       distro,
+      wslUser,
       sshManager: this.sshManager,
+      settings: _state.settings?.ssh,
+      probeMarker,
     });
+    if (!shouldContinue()) {
+      await cleanupFn();
+      return null;
+    }
 
     const args: string[] = [];
     if (distro) args.push("-d", distro);
@@ -1017,7 +1262,7 @@ export class SessionManager extends EventEmitter {
       Effect.tryPromise({
         try: () =>
           Promise.resolve(
-            pty.spawn("wsl.exe", args, {
+            this.spawnPty("wsl.exe", args, {
               name: APP_CONFIG.session.termName,
               cols: APP_CONFIG.session.defaultCols,
               rows: APP_CONFIG.session.defaultRows,
@@ -1043,6 +1288,7 @@ export class SessionManager extends EventEmitter {
       await cleanupFn();
       // Same as system-ssh: no session, but a replay entry for the banner below.
       this.failedSpawns.add(sessionId);
+      this.emit("ssh:connection-state", { sessionId, hostId: host.id, status: "error", connected: false, error: msg });
       this.emit("terminal:data", {
         sessionId,
         data:
@@ -1054,11 +1300,17 @@ export class SessionManager extends EventEmitter {
 
     if (!spawnResult) return null;
 
-    return this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
+    const registered = await this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
       kind: "ssh-wsl",
+      sshHostId: host.id,
       wslDistro: distro,
       cleanupFn,
     });
+    if (!shouldContinue()) {
+      this.removeSession(sessionId);
+      return null;
+    }
+    return registered;
   }
 
   async ensureSshSession(
@@ -1347,6 +1599,7 @@ export class SessionManager extends EventEmitter {
     }
 
     for (const [sessionId, session] of this.sessions.entries()) {
+      if (sessionId.startsWith("ssh-test:")) continue;
       if (validSessionIds.has(sessionId)) {
         continue;
       }
@@ -1371,6 +1624,7 @@ export class SessionManager extends EventEmitter {
     // them. Prune the ones whose panel is gone here too, or the runtime's replay
     // entry for the surfaced error message leaks for a pane that no longer exists.
     for (const sessionId of this.failedSpawns) {
+      if (sessionId.startsWith("ssh-test:")) continue;
       if (validSessionIds.has(sessionId)) continue;
       this.failedSpawns.delete(sessionId);
       this.emit("terminal:removed", { sessionId });

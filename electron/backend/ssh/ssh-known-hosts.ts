@@ -19,8 +19,8 @@ interface AppState {
     hosts?: unknown[];
     keys?: unknown[];
     certificates?: unknown[];
-    knownHosts?: Record<string, KnownHostEntry>;
-    settings?: Record<string, unknown>;
+    knownHosts?: Record<string, unknown>;
+    settings?: { importedSshConfig?: boolean };
   };
 }
 
@@ -66,7 +66,15 @@ export function verifyHostKey(
   { key }: { key: Buffer | { type?: string } },
 ): HostKeyVerdict {
   const state = store.getState();
-  const known = state.ssh?.knownHosts?.[hostKey(host)] || null;
+  const rawKnown = state.ssh?.knownHosts?.[hostKey(host)];
+  const known =
+    rawKnown &&
+    typeof rawKnown === "object" &&
+    typeof (rawKnown as KnownHostEntry).fingerprint === "string" &&
+    typeof (rawKnown as KnownHostEntry).keyType === "string" &&
+    typeof (rawKnown as KnownHostEntry).addedAt === "string"
+      ? (rawKnown as KnownHostEntry)
+      : null;
   const keyBuf = Buffer.isBuffer(key) ? key : null;
   const incomingFp = keyBuf ? fingerprintOf(keyBuf) : "";
   const keyType =
@@ -101,9 +109,11 @@ export async function recordHostKey(
   store: Store,
   host: HostLike,
   { fingerprint, keyType }: { fingerprint?: string; keyType?: string },
+  mayRecord: () => boolean = () => true,
 ): Promise<void> {
   if (!fingerprint) return;
   await store.mutate((state) => {
+    if (!mayRecord()) return;
     if (!state.ssh) state.ssh = { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: {} };
     if (!state.ssh.knownHosts) state.ssh.knownHosts = {};
     state.ssh.knownHosts[hostKey(host)] = {

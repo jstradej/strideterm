@@ -36,6 +36,7 @@ function decide(pathname: string, body: Record<string, unknown> = {}) {
  *   guarded    allowed, with the blanket profile guard over the targets its body names
  */
 const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
+  "/api/ssh/capabilities": "own-check",
   "/api/azure/delete-connection": "deny",
   "/api/azure/save-connection": "deny",
   "/api/azure/verify-connection": "deny",
@@ -290,6 +291,9 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/ssh/keys/generate": "guarded",
   "/api/ssh/keys/import": "guarded",
   "/api/ssh/keys/list": "guarded",
+  "/api/ssh/keys/rename": "guarded",
+  "/api/ssh/keys/transfer/start": "guarded",
+  "/api/ssh/keys/transfer/stop": "guarded",
   "/api/ssh/known-hosts/import": "guarded",
   "/api/task-recovery/resolve": "guarded",
   "/api/task/answer-companion": "guarded",

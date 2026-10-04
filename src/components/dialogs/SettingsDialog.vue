@@ -8,17 +8,86 @@
     </div>
 
     <!-- Tab bar -->
-    <div class="settings-tab-bar">
+    <div class="settings-tab-bar" aria-label="Settings sections">
       <button
         v-for="tab in TABS"
         :key="tab.id"
         type="button"
         class="settings-tab-btn"
         :class="{ 'settings-tab-btn--active': activeTab === tab.id }"
+        :aria-pressed="activeTab === tab.id"
         :title="tab.title"
         @click="switchTab(tab.id)"
       >
-        {{ tab.label }}
+        <svg
+          v-if="tab.id === 'general'"
+          class="settings-tab-btn__icon"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M4 5h12M4 10h12M4 15h12" />
+          <circle cx="7" cy="5" r="1.5" />
+          <circle cx="13" cy="10" r="1.5" />
+          <circle cx="9" cy="15" r="1.5" />
+        </svg>
+        <svg
+          v-else-if="tab.id === 'templates'"
+          class="settings-tab-btn__icon"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <rect x="3" y="3" width="8" height="10" rx="1.5" />
+          <path d="M7 16h8a2 2 0 0 0 2-2V6" />
+        </svg>
+        <svg
+          v-else-if="tab.id === 'git'"
+          class="settings-tab-btn__icon"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <circle cx="5" cy="4" r="2" />
+          <circle cx="5" cy="16" r="2" />
+          <circle cx="15" cy="6" r="2" />
+          <path d="M5 6v8a4 4 0 0 0 4-4V6a4 4 0 0 1 4-4" />
+        </svg>
+        <svg
+          v-else-if="tab.id === 'ssh'"
+          class="settings-tab-btn__icon"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <circle cx="7" cy="8" r="4" />
+          <path d="m10 11 6 6m-2-2 2-2m-4 0 2-2" />
+        </svg>
+        <svg
+          v-else-if="tab.id === 'telegram'"
+          class="settings-tab-btn__icon"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="m2.5 9 15-6-4.8 14-3.1-5.2L2.5 9Z" />
+          <path d="m9.6 11.8 5-5" />
+        </svg>
+        <svg
+          v-else-if="tab.id === 'mobile'"
+          class="settings-tab-btn__icon"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <rect x="5" y="2" width="10" height="16" rx="2" />
+          <path d="M8 5h4m-2 10h.01" />
+        </svg>
+        <svg v-else class="settings-tab-btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+          <circle cx="10" cy="10" r="7.5" />
+          <path d="M10 9v5m0-8h.01" />
+        </svg>
+        <span>{{ tab.label }}</span>
       </button>
     </div>
 
@@ -35,7 +104,7 @@
     </div>
 
     <div v-else-if="activeTab === 'ssh'" class="settings-tab-content">
-      <SettingsSshTab />
+      <SettingsSshTab ref="sshSettingsTab" />
     </div>
 
     <div v-else-if="activeTab === 'telegram'" class="settings-tab-content">
@@ -63,26 +132,47 @@
         <button
           type="button"
           class="button button--ghost"
-          title="Discard every change made in this session and close the Settings dialog. Already-applied auto-saving controls (e.g. Configure hook) are not reverted."
-          @click="emit('cancel')"
+          title="Discard unsaved settings and close. Saved host and key changes are kept."
+          @click="requestCancel"
         >
-          Cancel
+          Cancel settings
         </button>
         <button
           type="button"
           class="button"
-          title="Persist every changed field in this dialog to ~/.strideterm/strideterm-state.json and apply them. The dialog stays open afterwards so you can keep tweaking."
+          title="Save pending settings and close. Host and key changes are saved separately."
+          :disabled="saving"
           @click="handleSave"
         >
-          Save
+          Save settings
         </button>
       </span>
     </footer>
+    <div v-if="cancelChoiceOpen" class="settings-discard-backdrop" role="presentation">
+      <section
+        class="settings-discard-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="settings-discard-title"
+      >
+        <h3 id="settings-discard-title">Unsaved Settings changes</h3>
+        <p>Save these changes before leaving Settings?</p>
+        <div class="settings-discard-actions">
+          <button type="button" class="button button--ghost" :disabled="saving" @click="cancelChoiceOpen = false">
+            Stay
+          </button>
+          <button type="button" class="button button--ghost" :disabled="saving" @click="discardSettings">
+            Discard
+          </button>
+          <button type="button" class="button" :disabled="saving" @click="saveAndLeave">Save and leave</button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, inject, provide, reactive, ref, toRaw } from "vue";
+import { computed, inject, provide, reactive, ref, toRaw, watch } from "vue";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import SettingsAboutTab from "./settings/SettingsAboutTab.vue";
@@ -123,6 +213,7 @@ interface TelegramConnectionSetting {
   botTokenRef: string;
   chatId: string;
   enabled: boolean;
+  notificationsEnabled?: boolean;
   pollSeconds: number;
   profileId?: string;
   forwardKinds: string[];
@@ -161,7 +252,9 @@ interface SettingsObj {
     certExpiryWarnHours?: number;
     defaultLaunchVia?: string;
     wslDefaultDistro?: string;
+    wslSshExec?: string;
     systemSshPath?: string;
+    defaultAgentMode?: string;
     requireEncryptedStorage?: boolean;
   };
   integrations?: {
@@ -188,6 +281,7 @@ interface Props {
   repositoryUrl?: string;
   versionCheck?: { versionsBehind: number; latestVersion: string; latestUrl: string } | null;
   saveError?: string;
+  saveCompleted?: number;
   /** Tab to open on mount. Defaults to `"general"`. */
   initialTab?: string;
   initialMobileView?: "overview" | "phones" | "account";
@@ -220,6 +314,7 @@ const hookSettings = reactive(useAgentHookSettings(api));
 const TABS = computed(() => [...BASE_TABS, ...(api?.createMobilePairingInvitation ? [MOBILE_TAB] : []), ABOUT_TAB]);
 
 const activeTab = ref(props.initialTab || "general");
+const sshSettingsTab = ref<{ requestClose?: () => Promise<boolean> } | null>(null);
 const form = reactive({
   theme: props.settings.theme || "dark",
   logLevel: props.settings.logLevel || "warn",
@@ -257,8 +352,10 @@ const form = reactive({
     preferAgent: props.settings.ssh?.preferAgent ?? true,
     agentPath: props.settings.ssh?.agentPath ?? "",
     certExpiryWarnHours: props.settings.ssh?.certExpiryWarnHours ?? 2,
-    defaultLaunchVia: props.settings.ssh?.defaultLaunchVia || "ssh2",
+    defaultLaunchVia: props.settings.ssh?.defaultLaunchVia || "system-ssh",
     wslDefaultDistro: props.settings.ssh?.wslDefaultDistro || "",
+    wslSshExec: props.settings.ssh?.wslSshExec || "",
+    defaultAgentMode: props.settings.ssh?.defaultAgentMode || "auto",
     systemSshPath: props.settings.ssh?.systemSshPath || "",
     requireEncryptedStorage: props.settings.ssh?.requireEncryptedStorage ?? true,
   },
@@ -300,15 +397,51 @@ async function handleCheckForUpdates() {
   }
 }
 const templates = reactive((Array.isArray(props.tabTemplates) ? props.tabTemplates : []).map((t) => ({ ...t })));
+const initialSnapshot = JSON.stringify({ form: toRaw(form), templates: toRaw(templates) });
+const cancelChoiceOpen = ref(false);
+const saving = ref(false);
+const leaveAfterSave = ref(false);
+watch(
+  () => props.saveError,
+  (error) => {
+    if (error) {
+      saving.value = false;
+      leaveAfterSave.value = false;
+    }
+  },
+);
+watch(
+  () => props.saveCompleted,
+  (completed) => {
+    if (!completed || !saving.value) return;
+    saving.value = false;
+    if (leaveAfterSave.value) emit("cancel");
+    leaveAfterSave.value = false;
+  },
+);
+const hasUnsavedChanges = computed(
+  () => JSON.stringify({ form: toRaw(form), templates: toRaw(templates) }) !== initialSnapshot,
+);
 
 provide("settingsForm", form);
 provide("settingsTemplates", templates);
 
-function switchTab(tabId: string) {
+async function guardSshSettings(): Promise<boolean> {
+  if (activeTab.value !== "ssh" || !sshSettingsTab.value?.requestClose) return true;
+  return sshSettingsTab.value.requestClose();
+}
+
+async function switchTab(tabId: string) {
+  if (tabId === activeTab.value) return;
+  if (!(await guardSshSettings())) return;
   activeTab.value = tabId;
 }
 
-function handleSave() {
+async function handleSave() {
+  if (saving.value) return;
+  if (!(await guardSshSettings())) return;
+  saving.value = true;
+  leaveAfterSave.value = true;
   emit("save", {
     theme: form.theme,
     logLevel: form.logLevel,
@@ -340,6 +473,8 @@ function handleSave() {
       certExpiryWarnHours: form.ssh.certExpiryWarnHours,
       defaultLaunchVia: form.ssh.defaultLaunchVia,
       wslDefaultDistro: form.ssh.wslDefaultDistro,
+      wslSshExec: form.ssh.wslSshExec,
+      defaultAgentMode: form.ssh.defaultAgentMode,
       systemSshPath: form.ssh.systemSshPath,
       requireEncryptedStorage: form.ssh.requireEncryptedStorage,
     },
@@ -348,6 +483,30 @@ function handleSave() {
       : { terminalFontSizeLocal: Number(form.terminalFontSize) || 13 }),
   });
 }
+
+async function requestCancel() {
+  if (saving.value) return;
+  if (!(await guardSshSettings())) return;
+  if (hasUnsavedChanges.value) cancelChoiceOpen.value = true;
+  else emit("cancel");
+}
+
+async function requestClose() {
+  await requestCancel();
+}
+
+function discardSettings() {
+  if (saving.value) return;
+  cancelChoiceOpen.value = false;
+  emit("cancel");
+}
+
+function saveAndLeave() {
+  cancelChoiceOpen.value = false;
+  leaveAfterSave.value = true;
+  handleSave();
+}
+defineExpose({ requestClose });
 </script>
 
 <style scoped>
@@ -361,6 +520,7 @@ function handleSave() {
 }
 .settings-tab-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin: 12px 0 16px;
   padding: 4px;
@@ -368,8 +528,12 @@ function handleSave() {
   background: rgba(255, 255, 255, 0.04);
 }
 .settings-tab-btn {
-  flex: 1;
-  padding: 7px 12px;
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 9px;
   border: none;
   border-radius: 4px;
   font: inherit;
@@ -382,6 +546,16 @@ function handleSave() {
     color 0.12s;
   background: transparent;
   color: var(--muted);
+}
+.settings-tab-btn__icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .settings-tab-btn--active {
   background: var(--accent);
@@ -411,5 +585,34 @@ function handleSave() {
   font-size: 13px;
   width: 100%;
   margin-bottom: 4px;
+}
+.settings-discard-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.65);
+}
+.settings-discard-dialog {
+  width: min(420px, 100%);
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-elevated);
+  box-shadow: 0 12px 34px #0009;
+}
+.settings-discard-dialog h3 {
+  margin: 0 0 8px;
+}
+.settings-discard-dialog p {
+  color: var(--muted);
+}
+.settings-discard-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
 }
 </style>

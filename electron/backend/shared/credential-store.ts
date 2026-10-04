@@ -28,6 +28,7 @@ interface SafeStorage {
 
 interface SetSecretOptions {
   forcePlaintext?: boolean;
+  requireEncryptedStorage?: boolean;
 }
 
 export interface CredentialStore {
@@ -229,7 +230,9 @@ export async function createCredentialStore(
         !canEncrypt(safeStorage) &&
         (ref.startsWith("ssh:key:") || ref.startsWith("ssh:passphrase:") || ref.startsWith("ssh:password:"))
       ) {
-        const requireEncrypted = typeof APP_CONFIG !== "undefined" ? APP_CONFIG.ssh.requireEncryptedStorage : true;
+        const requireEncrypted =
+          opts.requireEncryptedStorage ??
+          (typeof APP_CONFIG !== "undefined" ? APP_CONFIG.ssh.requireEncryptedStorage : true);
         if (requireEncrypted && !opts.forcePlaintext) {
           throw new Error("Secure storage is not available. Refusing to store SSH credentials in plaintext.");
         }

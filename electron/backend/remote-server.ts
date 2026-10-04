@@ -404,6 +404,8 @@ type AnyFn = (...args: any[]) => any;
  * The actual runtime object returned by createRuntime() satisfies this shape.
  */
 interface Runtime {
+  isPrivateSshOperationSessionId?: (sessionId: unknown) => boolean;
+  isSshTestSessionId?: (sessionId: unknown) => boolean;
   listWorkspaceDirectories?: (
     profileId: string,
     requestedPath?: string,
@@ -510,6 +512,12 @@ interface Runtime {
   // All other methods accessed dynamically via string keys
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
+}
+
+function isDesktopPrivateSshSession(runtime: Runtime, sessionId: unknown): boolean {
+  if (runtime.isPrivateSshOperationSessionId?.(sessionId)) return true;
+  if (runtime.isSshTestSessionId?.(sessionId)) return true;
+  return typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:)/.test(sessionId);
 }
 
 /**
@@ -765,6 +773,7 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
 export const REMOTE_BLOCKED_NOTIFICATION_FIELDS: ReadonlyArray<string> = ["autoApprovePermissions"];
 
 export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = [
+  "ssh",
   "externalPathOpener",
   "externalEditor",
   "terminalFontSizeLocal",
@@ -1687,9 +1696,15 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   // the runtime fell back to windowSlots[0]'s profile, letting a remote
   // client on profile B mutate profile A's state.
 
-  "/api/terminal/restart": (runtime, body) => runtime.restartSession(body.sessionId),
+  "/api/terminal/restart": (runtime, body) => {
+    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+      throw new Error("Desktop-only SSH operations cannot be controlled remotely");
+    return runtime.restartSession(body.sessionId);
+  },
   "/api/terminal/replay": (runtime, body) => {
     const parsed = validateIpc(terminalSessionSchema, body, "/api/terminal/replay");
+    if (isDesktopPrivateSshSession(runtime, parsed.sessionId))
+      throw new Error("Desktop-only SSH operations cannot be replayed remotely");
     return runtime.getTerminalReplay(parsed.sessionId);
   },
 
@@ -1827,6 +1842,16 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   "/api/file/open-in-editor": () => ({ ok: true }),
 
   // --- SSH (remote is read-only per plan §14) ---
+  "/api/ssh/capabilities": async (runtime) => {
+    const capabilities = await runtime["ssh:capabilities:get"]();
+    return {
+      ...capabilities,
+      permissions: {
+        canManageHosts: false,
+        reason: "SSH host and credential management is available on the desktop only.",
+      },
+    };
+  },
   "/api/ssh/hosts/list": (runtime) => runtime["ssh:hosts:list"](),
   // Returns metadata only; private-key material never leaves the host.
   "/api/ssh/keys/list": (runtime) => runtime["ssh:keys:list"](),
@@ -1834,10 +1859,26 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   // Remote sessions are allowed to respond to active prompts only — they
   // can't create/edit credentials. This mirrors how the user is already
   // attached to a session created locally.
-  "/api/ssh/auth/answer": (runtime, body) => runtime["ssh:auth:answer"](body),
-  "/api/ssh/auth/cancel": (runtime, body) => runtime["ssh:auth:cancel"](body),
-  "/api/ssh/host-key/accept": (runtime, body) => runtime["ssh:host-key:accept"](body),
-  "/api/ssh/host-key/reject": (runtime, body) => runtime["ssh:host-key:reject"](body),
+  "/api/ssh/auth/answer": (runtime, body) => {
+    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+      throw new Error("Desktop-only SSH operations cannot be controlled remotely");
+    return runtime["ssh:auth:answer"](body);
+  },
+  "/api/ssh/auth/cancel": (runtime, body) => {
+    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+      throw new Error("Desktop-only SSH operations cannot be controlled remotely");
+    return runtime["ssh:auth:cancel"](body);
+  },
+  "/api/ssh/host-key/accept": (runtime, body) => {
+    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+      throw new Error("Desktop-only SSH operations cannot be controlled remotely");
+    return runtime["ssh:host-key:accept"](body);
+  },
+  "/api/ssh/host-key/reject": (runtime, body) => {
+    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+      throw new Error("Desktop-only SSH operations cannot be controlled remotely");
+    return runtime["ssh:host-key:reject"](body);
+  },
 };
 
 const ATTACHMENT_PROTOCOL_VERSION = 1;
@@ -2303,6 +2344,9 @@ async function handleApiRequest(
         url.pathname === "/api/ssh/keys/import" ||
         url.pathname === "/api/ssh/keys/generate" ||
         url.pathname === "/api/ssh/keys/delete" ||
+        url.pathname === "/api/ssh/keys/rename" ||
+        url.pathname === "/api/ssh/keys/transfer/start" ||
+        url.pathname === "/api/ssh/keys/transfer/stop" ||
         url.pathname === "/api/ssh/certs/import" ||
         url.pathname === "/api/ssh/certs/delete" ||
         url.pathname === "/api/ssh/config/preview" ||
@@ -4221,6 +4265,7 @@ export async function startRemoteServer({
    */
   function routeTerminalFrame(type: "terminal:data" | "terminal:exit", payload: unknown): void {
     const sessionId = String((payload as { sessionId?: unknown })?.sessionId || "");
+    if (isDesktopPrivateSshSession(runtime, sessionId)) return;
     const serialized = JSON.stringify({ type, payload });
     for (const socket of sockets) {
       const routing = socketRouting.get(socket);
@@ -4504,11 +4549,23 @@ export async function startRemoteServer({
     // to all authed sockets like ssh:*/docker:* — the git state it mirrors is
     // already pushed to every client via state:updated.
     runtime.on("git:push-progress", (payload: unknown) => broadcast({ type: "git:push-progress", payload })),
-    runtime.on("ssh:auth-prompt", (payload: unknown) => broadcast({ type: "ssh:auth-prompt", payload })),
-    runtime.on("ssh:auth-prompt-cancel", (payload: unknown) => broadcast({ type: "ssh:auth-prompt-cancel", payload })),
-    runtime.on("ssh:host-key-change", (payload: unknown) => broadcast({ type: "ssh:host-key-change", payload })),
+    runtime.on("ssh:auth-prompt", (payload: unknown) => {
+      if (!isDesktopPrivateSshSession(runtime, (payload as { sessionId?: unknown })?.sessionId))
+        broadcast({ type: "ssh:auth-prompt", payload });
+    }),
+    runtime.on("ssh:auth-prompt-cancel", (payload: unknown) => {
+      if (!isDesktopPrivateSshSession(runtime, (payload as { sessionId?: unknown })?.sessionId))
+        broadcast({ type: "ssh:auth-prompt-cancel", payload });
+    }),
+    runtime.on("ssh:host-key-change", (payload: unknown) => {
+      if (!isDesktopPrivateSshSession(runtime, (payload as { sessionId?: unknown })?.sessionId))
+        broadcast({ type: "ssh:host-key-change", payload });
+    }),
     runtime.on("ssh:state", (payload: unknown) => broadcast({ type: "ssh:state", payload })),
-    runtime.on("ssh:connection-state", (payload: unknown) => broadcast({ type: "ssh:connection-state", payload })),
+    runtime.on("ssh:connection-state", (payload: unknown) => {
+      if (!isDesktopPrivateSshSession(runtime, (payload as { sessionId?: unknown })?.sessionId))
+        broadcast({ type: "ssh:connection-state", payload });
+    }),
     // Notification history is per-viewer, so this is deliberately NOT a
     // broadcast: a client bound to another profile never saw the removed
     // workspace and its own history must not be touched. Unauthenticated /
@@ -4687,7 +4744,11 @@ export async function startRemoteServer({
           }
           if (message.type === "terminal:input") {
             const parsed = wsTerminalInputSchema.safeParse(message);
-            if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
+            if (parsed.success && isDesktopPrivateSshSession(runtime, parsed.data.sessionId)) {
+              log.warn("WebSocket terminal input rejected: desktop SSH test sessions are private", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            } else if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
               log.warn("WebSocket terminal input rejected: session outside caller profile", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
@@ -4727,7 +4788,11 @@ export async function startRemoteServer({
             }
           } else if (message.type === "terminal:resize") {
             const parsed = wsTerminalResizeSchema.safeParse(message);
-            if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
+            if (parsed.success && isDesktopPrivateSshSession(runtime, parsed.data.sessionId)) {
+              log.warn("WebSocket terminal resize rejected: desktop SSH test sessions are private", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            } else if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
               log.warn("WebSocket terminal resize rejected: session outside caller profile", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });

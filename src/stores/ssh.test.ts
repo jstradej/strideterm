@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
+import { reactive } from "vue";
 import { useSshStore } from "./ssh.js";
 import { useNotificationStore } from "./notifications.js";
 
@@ -46,6 +47,9 @@ function makeFakeApi(overrides: AnyObj = {}) {
     }),
     onSshConnectionState: vi.fn((h: AnyObj) => {
       handlers.connectionState = h;
+    }),
+    onSshKeyTransferState: vi.fn((h: AnyObj) => {
+      handlers.keyTransferState = h;
     }),
     ...overrides,
   };
@@ -90,6 +94,101 @@ describe("ssh store", () => {
     expect(api.sshKeysList).toHaveBeenCalled(); // reload triggered
   });
 
+  it("keeps a terminal key-transfer event that arrives before the start reply", async () => {
+    const { api, handlers } = makeFakeApi({
+      sshKeysTransferStart: vi.fn(async () => {
+        handlers.keyTransferState({
+          operationId: "operation-1",
+          hostId: "host-1",
+          keyId: "key-1",
+          status: "installed",
+        });
+        return { operationId: "operation-1", status: "connecting" };
+      }),
+      sshKeysTransferStop: vi.fn(async () => ({ ok: true })),
+    });
+    const store = useSshStore();
+    store.init(api as never);
+    store.bindEvents();
+
+    await expect(store.startKeyTransfer({ profileId: "profile-1", hostId: "host-1", keyId: "key-1" })).resolves.toEqual(
+      {
+        operationId: "operation-1",
+        status: "connecting",
+      },
+    );
+    expect(store.keyTransferStates["operation-1"]).toMatchObject({ status: "installed", keyId: "key-1" });
+    expect(api.sshKeysTransferStart).toHaveBeenCalledWith({
+      profileId: "profile-1",
+      hostId: "host-1",
+      keyId: "key-1",
+    });
+
+    await store.stopKeyTransfer("operation-1");
+    store.clearKeyTransferState("operation-1");
+    expect(api.sshKeysTransferStop).toHaveBeenCalledWith({ operationId: "operation-1" });
+    expect(store.keyTransferStates["operation-1"]).toBeUndefined();
+  });
+
+  it("passes a draft target without saving the host and keeps an early transfer event", async () => {
+    const { api, handlers } = makeFakeApi({
+      sshKeysTransferStart: vi.fn(async (payload: AnyObj) => {
+        structuredClone(payload);
+        handlers.keyTransferState({
+          operationId: "draft-operation",
+          hostId: "temporary-host-id",
+          keyId: "key-1",
+          status: "installed",
+        });
+        return { operationId: "draft-operation", status: "connecting" };
+      }),
+      sshKeysTransferStop: vi.fn(async () => ({ ok: true })),
+    });
+    const store = useSshStore();
+    store.init(api as never);
+    store.bindEvents();
+    const payload = {
+      profileId: "profile-1",
+      keyId: "key-1",
+      draft: {
+        name: "new host",
+        host: "mini.local",
+        username: "dev",
+        auth: { methods: ["publickey"], keyRef: "key-1" },
+      },
+    };
+
+    await expect(store.startKeyTransfer(payload)).resolves.toEqual({
+      operationId: "draft-operation",
+      status: "connecting",
+    });
+
+    expect(api.sshKeysTransferStart).toHaveBeenCalledWith(payload);
+    expect(api.sshHostsCreate).not.toHaveBeenCalled();
+    expect(api.sshHostsList).not.toHaveBeenCalled();
+    expect(store.keyTransferStates["draft-operation"]).toMatchObject({
+      hostId: "temporary-host-id",
+      keyId: "key-1",
+      status: "installed",
+    });
+  });
+
+  it("seeds transfer state with the saved target when no event arrives first", async () => {
+    const { api } = makeFakeApi({
+      sshKeysTransferStart: vi.fn(async () => ({ operationId: "saved-operation", status: "connecting" })),
+    });
+    const store = useSshStore();
+    store.init(api as never);
+
+    await store.startKeyTransfer({ profileId: "profile-1", hostId: "host-1", keyId: "key-1" });
+
+    expect(store.keyTransferStates["saved-operation"]).toMatchObject({
+      hostId: "host-1",
+      keyId: "key-1",
+      status: "connecting",
+    });
+  });
+
   it("importCertificate forwards keyId/certificate and reloads", async () => {
     const { api } = makeFakeApi();
     const store = useSshStore();
@@ -102,24 +201,77 @@ describe("ssh store", () => {
     expect(api.sshCertsList).toHaveBeenCalled();
   });
 
+  it("serializes a nested reactive test draft before IPC without changing the editor draft", async () => {
+    const { api } = makeFakeApi({
+      sshTestStart: vi.fn(async (payload: AnyObj) => {
+        structuredClone(payload);
+        return { sessionId: "ssh-test:clone-check", mode: "wsl", status: "process-running" };
+      }),
+    });
+    const store = useSshStore();
+    store.init(api as never);
+    const draft = reactive({
+      id: "saved-id-is-omitted",
+      name: "staging",
+      host: "prod-alias",
+      username: "deploy",
+      auth: { methods: ["publickey", "keyboard-interactive"], keyRef: "key-1", agent: "pageant" },
+      jump: ["bastion-id"],
+      advanced: {
+        launchVia: "wsl",
+        command: "must-not-run",
+        env: { REGION: "eu-west" },
+        wsl: { distro: "Ubuntu", user: "dev", exec: "/usr/bin/ssh" },
+      },
+    });
+
+    await store.startTestConnection("profile-1", draft);
+
+    expect(api.sshTestStart).toHaveBeenCalledWith({
+      profileId: "profile-1",
+      draft: {
+        name: "staging",
+        host: "prod-alias",
+        username: "deploy",
+        auth: { methods: ["publickey", "keyboard-interactive"], keyRef: "key-1", agent: "pageant" },
+        jump: ["bastion-id"],
+        advanced: {
+          launchVia: "wsl",
+          env: { REGION: "eu-west" },
+          wsl: { distro: "Ubuntu", user: "dev", exec: "/usr/bin/ssh" },
+        },
+      },
+    });
+    expect(draft.advanced.command).toBe("must-not-run");
+    expect(draft.id).toBe("saved-id-is-omitted");
+  });
+
   it("bindEvents wires onSshAuthPrompt/onSshHostKeyChange/onSshConnectionState into store state", async () => {
     const { api, handlers } = makeFakeApi();
     const store = useSshStore();
     store.init(api as never);
     store.bindEvents();
 
-    handlers.authPrompt({ sessionId: "s1", name: "box", prompts: [] });
+    handlers.authPrompt({ sessionId: "s1", promptId: "p-auth", prompt: { name: "box", prompts: [] } });
     expect(store.authPrompt?.sessionId).toBe("s1");
 
-    handlers.hostKeyChange({ sessionId: "s1", host: "box", oldFp: "a", newFp: "b" });
-    expect(store.hostKeyWarning?.host).toBe("box");
+    handlers.hostKeyChange({ sessionId: "s2", promptId: "p-key", host: { host: "box" }, fingerprint: "b" });
+    expect(store.hostKeyWarning).toBeNull();
+    expect(store.decisionQueue).toHaveLength(1);
 
     handlers.connectionState({ sessionId: "s1", status: "connecting" });
     expect(store.pendingConnections.get("s1")).toBe("connecting");
+    handlers.connectionState({ sessionId: "ssh-test:transient", status: "process-running" });
+    expect(store.pendingConnections.has("ssh-test:transient")).toBe(false);
+    handlers.connectionState({ sessionId: "ssh-transfer:upload", status: "connecting" });
+    handlers.connectionState({ sessionId: "ssh-transfer:upload:verify", status: "authenticated" });
+    expect(store.pendingConnections.has("ssh-transfer:upload")).toBe(false);
+    expect(store.pendingConnections.has("ssh-transfer:upload:verify")).toBe(false);
 
     // A cancel scoped to the SAME promptId clears both prompt dialogs.
-    handlers.authPromptCancel({ sessionId: "s1", promptId: undefined });
+    handlers.authPromptCancel({ sessionId: "s1", promptId: "p-auth" });
     expect(store.authPrompt).toBeNull();
+    expect(store.hostKeyWarning?.host?.host).toBe("box");
   });
 
   it("onSshState triggers a reload", async () => {
@@ -190,7 +342,7 @@ describe("ssh store", () => {
       expect(notifications.latestToast?.title).toBe("Delete SSH certificate failed");
     });
 
-    it("answerAuthPrompt failure sets store.error, toasts, and still clears the prompt", async () => {
+    it("answerAuthPrompt failure sets store.error, toasts, and retains the prompt for retry", async () => {
       const { api } = makeFakeApi({
         sshAuthAnswer: vi.fn(async () => {
           throw new Error("session closed");
@@ -198,16 +350,16 @@ describe("ssh store", () => {
       });
       const store = useSshStore();
       store.init(api as never);
-      store.authPrompt = { sessionId: "s1", name: "box", prompts: [], promptId: "p1" };
+      store.authPrompt = { sessionId: "s1", promptId: "p1", prompt: { name: "box", prompts: [] } };
 
       await store.answerAuthPrompt("s1", ["secret"]);
       expect(store.error).toBe("session closed");
-      expect(store.authPrompt).toBeNull();
+      expect(store.authPrompt?.promptId).toBe("p1");
       const notifications = useNotificationStore();
       expect(notifications.latestToast?.title).toBe("SSH authentication failed");
     });
 
-    it("cancelAuthPrompt failure sets store.error, toasts, and still clears the prompt", async () => {
+    it("cancelAuthPrompt failure sets store.error, toasts, and retains the prompt for retry", async () => {
       const { api } = makeFakeApi({
         sshAuthCancel: vi.fn(async () => {
           throw new Error("session closed");
@@ -215,16 +367,16 @@ describe("ssh store", () => {
       });
       const store = useSshStore();
       store.init(api as never);
-      store.authPrompt = { sessionId: "s1", name: "box", prompts: [], promptId: "p1" };
+      store.authPrompt = { sessionId: "s1", promptId: "p1", prompt: { name: "box", prompts: [] } };
 
       await store.cancelAuthPrompt("s1");
       expect(store.error).toBe("session closed");
-      expect(store.authPrompt).toBeNull();
+      expect(store.authPrompt?.promptId).toBe("p1");
       const notifications = useNotificationStore();
       expect(notifications.latestToast?.title).toBe("Cancel SSH authentication failed");
     });
 
-    it("acceptHostKey failure sets store.error, toasts, and still clears the warning", async () => {
+    it("acceptHostKey failure sets store.error, toasts, and retains the warning for retry", async () => {
       const { api } = makeFakeApi({
         sshHostKeyAccept: vi.fn(async () => {
           throw new Error("write failed");
@@ -232,16 +384,22 @@ describe("ssh store", () => {
       });
       const store = useSshStore();
       store.init(api as never);
-      store.hostKeyWarning = { sessionId: "s1", host: "box", oldFp: "a", newFp: "b", promptId: "p1" };
+      store.hostKeyWarning = {
+        sessionId: "s1",
+        host: { host: "box" },
+        previous: { fingerprint: "a" },
+        fingerprint: "b",
+        promptId: "p1",
+      };
 
       await store.acceptHostKey("s1", "permanent");
       expect(store.error).toBe("write failed");
-      expect(store.hostKeyWarning).toBeNull();
+      expect(store.hostKeyWarning?.promptId).toBe("p1");
       const notifications = useNotificationStore();
       expect(notifications.latestToast?.title).toBe("Accept SSH host key failed");
     });
 
-    it("rejectHostKey failure sets store.error, toasts, and still clears the warning", async () => {
+    it("rejectHostKey failure sets store.error, toasts, and retains the warning for retry", async () => {
       const { api } = makeFakeApi({
         sshHostKeyReject: vi.fn(async () => {
           throw new Error("session closed");
@@ -249,11 +407,17 @@ describe("ssh store", () => {
       });
       const store = useSshStore();
       store.init(api as never);
-      store.hostKeyWarning = { sessionId: "s1", host: "box", oldFp: "a", newFp: "b", promptId: "p1" };
+      store.hostKeyWarning = {
+        sessionId: "s1",
+        host: { host: "box" },
+        previous: { fingerprint: "a" },
+        fingerprint: "b",
+        promptId: "p1",
+      };
 
       await store.rejectHostKey("s1");
       expect(store.error).toBe("session closed");
-      expect(store.hostKeyWarning).toBeNull();
+      expect(store.hostKeyWarning?.promptId).toBe("p1");
       const notifications = useNotificationStore();
       expect(notifications.latestToast?.title).toBe("Reject SSH host key failed");
     });

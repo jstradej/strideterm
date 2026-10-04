@@ -4,6 +4,7 @@ import type { StatePayload } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
 import { rlog } from "../lib/renderer-log.js";
 import { adoptRestoredSession } from "./app-session-restore.js";
+import { ref, watch } from "vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -217,6 +218,36 @@ export function makeOpenQuickFixWizard(
 export function createDialogActions(ctx: DialogActionsCtx) {
   // --- Dialog / overlay --------------------------------------------------
 
+  const dialogLayers = ref<
+    Array<{ name: string; props: Record<string, unknown>; id: number; returnFocus?: HTMLElement }>
+  >([]);
+  let nextDialogLayerId = 0;
+
+  watch(
+    ctx.overlay,
+    (overlay) => {
+      if (overlay === null && dialogLayers.value.length) dialogLayers.value = [];
+    },
+    { flush: "sync" },
+  );
+
+  function syncDialogTop(): void {
+    const top = dialogLayers.value.at(-1);
+    ctx.overlay.value = top?.name || null;
+    ctx.overlayProps.value = top?.props || {};
+  }
+
+  function updateTopDialogProps(patch: Record<string, unknown>): void {
+    const top = dialogLayers.value.at(-1);
+    if (!top) {
+      ctx.overlayProps.value = { ...ctx.overlayProps.value, ...patch };
+      return;
+    }
+    const updated = { ...top, props: { ...top.props, ...patch } };
+    dialogLayers.value = [...dialogLayers.value.slice(0, -1), updated];
+    syncDialogTop();
+  }
+
   function currentProfileId(): string {
     const windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
     return ctx.resolveViewerProfileId(ctx.payload.value, { isRemote: ctx.getApi().isRemote, windowId }) || "default";
@@ -225,11 +256,34 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   function openDialog(name: string, props: Record<string, unknown> = {}): void {
     ctx.contextMenu.value = null;
     ctx.layoutPickerAnchor.value = null;
-    ctx.overlay.value = name;
-    ctx.overlayProps.value = props;
+    dialogLayers.value = [{ name, props, id: ++nextDialogLayerId }];
+    syncDialogTop();
+  }
+
+  function openSubDialog(name: string, props: Record<string, unknown> = {}): void {
+    ctx.contextMenu.value = null;
+    ctx.layoutPickerAnchor.value = null;
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    dialogLayers.value = [...dialogLayers.value, { name, props, id: ++nextDialogLayerId, returnFocus }];
+    syncDialogTop();
+    window.dispatchEvent(new Event("ssh-dialog-layer-change"));
+  }
+
+  function backDialog(): void {
+    if (dialogLayers.value.length <= 1) {
+      closeDialog();
+      return;
+    }
+    const opener = dialogLayers.value.at(-1)?.returnFocus;
+    dialogLayers.value = dialogLayers.value.slice(0, -1);
+    syncDialogTop();
+    window.dispatchEvent(new Event("ssh-dialog-layer-change"));
+    if (opener instanceof HTMLElement)
+      requestAnimationFrame(() => opener.isConnected && opener.focus({ preventScroll: true }));
   }
 
   function closeDialog(): void {
+    dialogLayers.value = [];
     ctx.overlay.value = null;
     ctx.overlayProps.value = {};
   }
@@ -286,31 +340,46 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       mode: "edit",
       title: target.panel.title || "",
       command: target.panel.command || "",
+      sshMcpEnabled: Boolean(target.panel.sshMcpEnabled),
+      hasCustomLaunch: Boolean(launch),
       onCancel: closeDialog,
-      onSubmit: async ({ title, command }: { title: string; command: string }) => {
+      onSubmit: async ({
+        title,
+        command,
+        sshMcpEnabled,
+      }: {
+        title: string;
+        command: string;
+        sshMcpEnabled?: boolean;
+      }) => {
         const nextTitle = (title || "").trim();
         const nextCommand = (command || "").trim();
         const sameTitle = nextTitle === (target.panel.title || "").trim();
         const sameCommand = nextCommand === (target.panel.command || "").trim();
-        if (!nextTitle || (sameTitle && sameCommand)) {
+        const sameSshMcpEnabled = Boolean(sshMcpEnabled) === Boolean(target.panel.sshMcpEnabled);
+        if (!nextTitle || (sameTitle && sameCommand && sameSshMcpEnabled)) {
           closeDialog();
           return;
         }
         const nextWorkspace = cloneWorkspace(target.workspace);
         nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
-          p.id === target.panel.id ? { ...p, title: nextTitle, command: nextCommand } : p,
+          p.id === target.panel.id
+            ? {
+                ...p,
+                title: nextTitle,
+                command: nextCommand,
+                sshMcpEnabled: Boolean(sshMcpEnabled),
+              }
+            : p,
         );
         ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
-        // If the command changed and a live PTY is running, ask whether to
-        // reload now. The saved command otherwise only takes effect the next
-        // time the tab is launched, which is surprising when you just clicked
-        // Save and watched the tab keep running the previous command.
-        if (!sameCommand && hasLiveSession) {
+        // The command and per-tab tools setting only affect a newly started PTY.
+        if ((!sameCommand || !sameSshMcpEnabled) && hasLiveSession) {
           openDialog("ConfirmDialog", {
             eyebrow: "Tab",
             title: "Reload tab now?",
             message:
-              "The command changed. Reload now to apply it, or keep the running tab as-is — the new command will be used the next time this tab is launched.",
+              "The command or SSH tools setting changed. Restart the terminal now to apply it, or apply the change the next time this tab is launched.",
             confirmLabel: "Reload now",
             cancelLabel: "Apply on next launch",
             onCancel: closeDialog,
@@ -387,32 +456,30 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       presetTabType,
       presetSshMode,
       presetSshHostId,
+      cwdOverride,
       onEditSshHost: (host: AnyApi, currentState: AnyApi) => {
-        // Swap the new-tab dialog for the full host editor. When the editor
-        // closes (Save / Cancel / Close / backdrop) we re-open the new-tab
-        // dialog with the user's typed state preserved — otherwise they'd
-        // have to click "+ Tab" again just to pick a host.
-        openDialog("SshHostEditor", {
+        openSubDialog("SshHostEditor", {
           host,
-          onCancel: () => {
-            openNewTabDialog(cwdOverride, currentState.title, currentState.command, {
-              tabType: "ssh",
-              sshMode: currentState.sshMode,
-              sshHostId: currentState.sshHostId,
-            });
-          },
+          backLabel: "Back to New tab",
+          onCancel: backDialog,
+          onBack: backDialog,
         });
       },
       onCancel: closeDialog,
       onSubmit: async (payload: AnyApi) => {
-        const { title, command, kind, sshHostId, sshInline } = payload;
+        const { title, command, kind, sshHostId, sshInline, sshMcpEnabled } = payload;
         const nextTitle = (title || "").trim();
         if (!nextTitle) {
           closeDialog();
           return;
         }
         closeDialog();
-        await ctx.quickAddTemplateTab(command || "", nextTitle, cwdOverride, { kind, sshHostId, sshInline });
+        await ctx.quickAddTemplateTab(command || "", nextTitle, cwdOverride, {
+          kind,
+          sshHostId,
+          sshInline,
+          sshMcpEnabled,
+        });
       },
     });
   }
@@ -529,15 +596,13 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       initialMobileView: opts.initialMobileView,
       onCancel: closeDialog,
       onSave: async (patch: AnyApi) => {
+        updateTopDialogProps({ saveError: "" });
         try {
           const plain = JSON.parse(JSON.stringify(patch)) as AnyApi;
           ctx.adoptPayload((await (ctx.getApi() as AnyApi).updateSettings(plain)) as StatePayload);
-          closeDialog();
+          updateTopDialogProps({ saveError: "", saveCompleted: Date.now() });
         } catch (err) {
-          ctx.overlayProps.value = {
-            ...ctx.overlayProps.value,
-            saveError: (err as Error).message || "Failed to save settings",
-          };
+          updateTopDialogProps({ saveError: (err as Error).message || "Failed to save settings" });
         }
       },
     });
@@ -1056,30 +1121,49 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   // --- SSH dialogs -------------------------------------------------------
 
   function openSshHostsDialog(): void {
-    openDialog("SshHostsDialog", { onCancel: closeDialog });
+    const close = dialogLayers.value.length ? backDialog : closeDialog;
+    const props = { onCancel: close };
+    if (dialogLayers.value.length) openSubDialog("SshHostsDialog", props);
+    else openDialog("SshHostsDialog", props);
   }
 
   function openSshHostEditor(host: AnyApi = null): void {
-    openDialog("SshHostEditor", {
+    const close = dialogLayers.value.length ? backDialog : closeDialog;
+    const props = {
       host,
-      onCancel: closeDialog,
-    });
+      onCancel: close,
+      onBack: close,
+    };
+    if (dialogLayers.value.length) openSubDialog("SshHostEditor", props);
+    else openDialog("SshHostEditor", props);
   }
 
   function openSshKeyManager(): void {
-    openDialog("SshKeyManager", { onCancel: closeDialog });
+    const close = dialogLayers.value.length ? backDialog : closeDialog;
+    const props = { onCancel: close, onBack: close };
+    if (dialogLayers.value.length) openSubDialog("SshKeyManager", props);
+    else openDialog("SshKeyManager", props);
   }
 
-  function openSshKeyGenerateDialog(): void {
-    openDialog("SshKeyGenerateDialog", { onCancel: closeDialog });
+  function openSshKeyTransferDialog(keyId: string): void {
+    openSubDialog("SshKeyTransferDialog", {
+      keyId,
+      profileId: currentProfileId(),
+      onCancel: backDialog,
+      onBack: backDialog,
+    });
   }
 
-  function openSshKeyImportDialog(): void {
-    openDialog("SshKeyImportDialog", { onCancel: closeDialog });
+  function openSshKeyGenerateDialog(onGenerated?: (key: unknown) => void, backLabel = "Back to keys"): void {
+    openSubDialog("SshKeyGenerateDialog", { onCancel: backDialog, onBack: backDialog, onGenerated, backLabel });
   }
 
-  function openSshCertImportDialog(keyId: string): void {
-    openDialog("SshCertImportDialog", { keyId, onCancel: closeDialog });
+  function openSshKeyImportDialog(onImported?: (key: unknown) => void, backLabel = "Back to keys"): void {
+    openSubDialog("SshKeyImportDialog", { onCancel: backDialog, onBack: backDialog, onImported, backLabel });
+  }
+
+  function openSshCertImportDialog(keyId: string, backLabel = "Back to keys"): void {
+    openSubDialog("SshCertImportDialog", { keyId, onCancel: backDialog, onBack: backDialog, backLabel });
   }
 
   function openNewWindowModal(): void {
@@ -1114,6 +1198,10 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   return {
     openDialog,
+    openSubDialog,
+    updateTopDialogProps,
+    backDialog,
+    dialogLayers,
     closeDialog,
     showContextMenu,
     hideContextMenu,
@@ -1140,6 +1228,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openSshHostsDialog,
     openSshHostEditor,
     openSshKeyManager,
+    openSshKeyTransferDialog,
     openSshKeyGenerateDialog,
     openSshKeyImportDialog,
     openSshCertImportDialog,

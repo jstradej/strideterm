@@ -62,6 +62,7 @@ import type {
   SshHostUpdate,
   SshHostDelete,
   SshKeyImport,
+  SshKeyRename,
   SshKeyGenerate,
   SshCertImport,
   SshAuthAnswer,
@@ -70,6 +71,8 @@ import type {
   SshRejectHostKey,
   SshConfigImport,
   SshKnownHostsImport,
+  SshKeyTransferStart,
+  SshKeyTransferStop,
   FileList,
   FileRead,
   FileWrite,
@@ -106,6 +109,8 @@ import type {
   MobileAuditLogQuery,
 } from "../backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "./types/ssh.js";
+import type { SshConnectionTestState, SshKey, SshKeyTransferState } from "./types/ssh.js";
+import type { SshRuntimeCapabilities } from "./ssh-connection.js";
 import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "./performance.js";
 import type { AccountUiState } from "../backend/account/account-state.js";
 
@@ -729,12 +734,24 @@ export interface StridetermAPI {
   saveFile: (options?: Record<string, unknown>) => Promise<unknown>;
 
   // SSH
+  sshCapabilitiesGet: () => Promise<SshRuntimeCapabilities>;
   sshHostsList: () => Promise<unknown>;
   sshHostsCreate: (payload: SshHostCreate) => Promise<unknown>;
   sshHostsUpdate: (payload: SshHostUpdate) => Promise<unknown>;
   sshHostsDelete: (payload: SshHostDelete) => Promise<unknown>;
   sshHostsDuplicate: (payload: SshHostDelete) => Promise<unknown>;
   sshHostsTest: (payload: SshHostDelete) => Promise<unknown>;
+  sshTestStart: (payload: { profileId: string; draft: Record<string, unknown> }) => Promise<{
+    sessionId: string;
+    mode: "ssh2" | "system-ssh" | "wsl";
+    status: SshConnectionTestState["status"];
+  }>;
+  sshTestStop: (payload: { sessionId: string }) => Promise<{ ok: boolean }>;
+  onSshTestState: (handler: (payload: SshConnectionTestState) => void) => void;
+  sshKeysRename: (payload: SshKeyRename) => Promise<SshKey | null>;
+  sshKeysTransferStart: (payload: SshKeyTransferStart) => Promise<{ operationId: string; status: "connecting" }>;
+  sshKeysTransferStop: (payload: SshKeyTransferStop) => Promise<{ ok: boolean }>;
+  onSshKeyTransferState: (handler: (payload: SshKeyTransferState) => void) => void;
   sshKeysList: () => Promise<unknown>;
   sshKeysImport: (payload: SshKeyImport) => Promise<unknown>;
   sshKeysGenerate: (payload: SshKeyGenerate) => Promise<unknown>;

@@ -66,6 +66,9 @@ function makeRuntime(port: number) {
       return () => undefined;
     },
     setRemoteClientRegistry: () => undefined,
+    isSshTestSessionId: (sessionId: unknown) => typeof sessionId === "string" && sessionId.startsWith("ssh-test:"),
+    isPrivateSshOperationSessionId: (sessionId: unknown) =>
+      typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:)/.test(sessionId),
     isMobileSessionStillAuthorized: () => true,
     consumeMobileWebSessionTicket: (ticketId: string, secret: string) =>
       ticketId === "ticket-home" && secret === "secret"
@@ -408,6 +411,17 @@ describe("WebSocket writes are held to the caller's profile", () => {
     await settle();
     expect(f.called("writeToSession")).toHaveLength(1);
     expect(f.called("resizeSession")).toHaveLength(1);
+    ws.close();
+  });
+
+  test("remote clients cannot write to ephemeral SSH test sessions", async () => {
+    const f = await startFixture();
+    const ws = await connect(f, {});
+    send(ws, { type: "terminal:input", sessionId: "ssh-test:private", data: "whoami\n" });
+    send(ws, { type: "terminal:resize", sessionId: "ssh-test:private", cols: 80, rows: 24 });
+    await settle();
+    expect(f.called("writeToSession")).toEqual([]);
+    expect(f.called("resizeSession")).toEqual([]);
     ws.close();
   });
 

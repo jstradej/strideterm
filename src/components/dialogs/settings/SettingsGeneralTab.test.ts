@@ -9,6 +9,7 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { reactive } from "vue";
 import SettingsGeneralTab from "./SettingsGeneralTab.vue";
 import { useNotificationStore } from "../../../stores/notifications.js";
 
@@ -40,7 +41,7 @@ function mountTab(api: Record<string, unknown>) {
   return mount(SettingsGeneralTab, {
     props: {
       api,
-      themes: ["dark", "light"],
+      themes: ["dark", "light", "system"],
       logLevels: ["info", "debug"],
       hookSettings: { providers: [] },
     },
@@ -100,5 +101,28 @@ describe("SettingsGeneralTab — picker call sites", () => {
     const notifications = useNotificationStore();
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Failed to open picker");
+  });
+});
+
+describe("SettingsGeneralTab — theme control", () => {
+  test("uses a compact labelled segmented control and preserves theme selection semantics", async () => {
+    const wrapper = mount(SettingsGeneralTab, {
+      props: { themes: ["dark", "light", "system"], logLevels: ["info"], hookSettings: { providers: [] } },
+      global: { provide: { settingsForm: reactive(buildForm()) } },
+    });
+    const group = wrapper.get('[role="group"][aria-label="Color theme"]');
+    const dark = group.findAll("button").find((button) => button.text() === "Dark")!;
+    const light = group.findAll("button").find((button) => button.text() === "Light")!;
+    const system = group.findAll("button").find((button) => button.text() === "System")!;
+
+    expect((dark.element as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+    expect((light.element as HTMLButtonElement).getAttribute("aria-pressed")).toBe("false");
+    expect(system.attributes("title")).toBe("Follow the operating system appearance.");
+    expect(group.findAll("svg")).toHaveLength(3);
+    expect(group.findAll("svg").every((icon) => icon.attributes("aria-hidden") === "true")).toBe(true);
+
+    await light.trigger("click");
+    expect((dark.element as HTMLButtonElement).getAttribute("aria-pressed")).toBe("false");
+    expect((light.element as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
   });
 });

@@ -92,6 +92,7 @@ export const MOBILE_DOCKER_READ_ROUTES: ReadonlySet<string> = new Set([
  * the body guard (they read the session, not a target named in the body).
  */
 export const MOBILE_OWN_CHECK_ROUTES: ReadonlySet<string> = new Set([
+  "/api/ssh/capabilities",
   "/api/state",
   "/api/approvals/audit-log",
   "/api/approvals/audit-log/stats",

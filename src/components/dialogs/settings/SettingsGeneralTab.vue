@@ -2,16 +2,40 @@
   <div class="settings-general-tab">
     <div>
       <span class="section-label">Theme</span>
-      <div class="button-row">
+      <div class="theme-control" role="group" aria-label="Color theme">
         <button
           v-for="theme in themes"
           :key="theme"
           type="button"
-          :class="['button', 'button-row__item', form.theme === theme ? 'button--active' : 'button--ghost']"
-          :title="`Switch the app to the ${theme} theme — affects sidebar, dialogs, terminal colours, and the Electron title bar.`"
+          :class="['button', 'theme-control__option', form.theme === theme ? 'button--active' : 'button--ghost']"
+          :aria-pressed="form.theme === theme"
+          :title="themeTitle(theme)"
           @click="form.theme = theme"
         >
-          {{ theme }}
+          <svg
+            v-if="theme === 'dark'"
+            class="theme-control__icon"
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M16.5 12.4A7 7 0 0 1 7.6 3.5 7 7 0 1 0 16.5 12.4Z" />
+          </svg>
+          <svg
+            v-else-if="theme === 'light'"
+            class="theme-control__icon"
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <circle cx="10" cy="10" r="3.5" />
+            <path d="M10 1.5v2m0 13v2m8.5-8.5h-2m-13 0h-2m14.5-6-1.4 1.4m-9.2 9.2L3 16m13 0-1.4-1.4M4.4 4.4 3 3" />
+          </svg>
+          <svg v-else class="theme-control__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="2" y="3" width="16" height="11" rx="1.5" />
+            <path d="M7 17h6m-3-3v3" />
+          </svg>
+          <span>{{ themeLabel(theme) }}</span>
         </button>
       </div>
     </div>
@@ -436,6 +460,15 @@ const form = inject<Record<string, any>>("settingsForm")!;
 
 const logLevelOptions = computed(() => props.logLevels.map((level) => ({ value: level, label: level })));
 
+function themeLabel(theme: string): string {
+  return theme === "dark" ? "Dark" : theme === "light" ? "Light" : "System";
+}
+
+function themeTitle(theme: string): string {
+  if (theme === "system") return "Follow the operating system appearance.";
+  return `Use the ${theme} appearance for the app — including the sidebar, dialogs, terminal colours, and title bar.`;
+}
+
 // Auto-approve rides entirely on the Claude Code PermissionRequest hook: with
 // the listener off or the hooks unregistered, ticking the box would change
 // nothing at all, so it stays disabled with a hint pointing at what's missing.
@@ -551,14 +584,35 @@ async function browseClipboardImageDir() {
   margin-bottom: 6px;
 }
 
-.button-row {
+.theme-control {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+  width: max-content;
+  max-width: 100%;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
 }
 
-.button-row__item {
-  flex: 1;
-  text-transform: capitalize;
+.theme-control__option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 84px;
+  padding: 6px 10px;
+}
+
+.theme-control__icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .settings-input {
@@ -697,7 +751,8 @@ async function browseClipboardImageDir() {
 
 .path-opener-modes {
   display: grid;
-  gap: 6px;
+  gap: 8px;
+  padding-left: 4px;
 }
 
 .path-opener-mode {
@@ -707,21 +762,8 @@ async function browseClipboardImageDir() {
   column-gap: 8px;
   row-gap: 2px;
   align-items: start;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  padding: 2px 0;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.02);
-  transition: background 0.12s ease;
-}
-
-.path-opener-mode:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.path-opener-mode--active {
-  border-color: var(--accent);
-  background: rgba(var(--tint), 0.08);
 }
 
 .path-opener-mode input[type="radio"] {
@@ -741,6 +783,7 @@ async function browseClipboardImageDir() {
 }
 
 .path-opener-mode__hint {
+  grid-column: 2;
   font-size: 12px;
   color: var(--muted);
   line-height: 1.4;

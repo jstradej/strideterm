@@ -51,6 +51,7 @@ interface WorkspaceActionsCtx {
   activeViewId: Ref<string | null>;
   activeSessionId: Ref<string | null>;
   myActiveWorkspaceId: ComputedRef<string>;
+  myActiveProfileId: ComputedRef<string | null>;
   splitGroup: Ref<SplitGroup | null>;
   hiddenViewIds: Ref<Set<string>>;
   workspaceTabs: ComputedRef<WorkspaceTab[]>;
@@ -514,13 +515,24 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   ): Promise<void> {
     const workspace = (ctx.payload.value as AnyApi)?.workspace;
     const activeWs = workspace?.workspace || workspace?.project;
+    if (options.kind === "ssh") {
+      const expectedProfile = ctx.myActiveProfileId.value || "default";
+      if (!activeWs || !["terminal", "task"].includes((activeWs as AnyApi).kind))
+        throw new Error("Choose a terminal workspace before creating an SSH tab.");
+      if (((activeWs as AnyApi).profileId || "default") !== expectedProfile)
+        throw new Error(
+          "The active workspace belongs to a different profile. Select a workspace in the active profile before connecting.",
+        );
+    }
     if (
       !activeWs ||
       (activeWs as AnyApi).kind === "docker" ||
       (activeWs as AnyApi).kind === "azure" ||
       (activeWs as AnyApi).kind === "github"
-    )
+    ) {
+      if (options.kind === "ssh") throw new Error("Choose a terminal workspace before creating an SSH tab.");
       return;
+    }
 
     const nextWorkspace = cloneWorkspace(activeWs as AnyApi);
     const panelId = `panel-${crypto.randomUUID()}`;
@@ -535,6 +547,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       shell: !isVirtual,
       startup: isVirtual ? "none" : APP_CONFIG.ui.defaultPanelStartup,
     };
+    if (options.sshMcpEnabled === true && options.kind !== "ssh") panel.sshMcpEnabled = true;
     if (cwdOverride) panel.cwd = cwdOverride;
     if (options.kind === "ssh") {
       // Two valid shapes: saved host reference, or inline ad-hoc definition.

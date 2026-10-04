@@ -39,7 +39,7 @@ function findAgentsOnlyCheckbox(wrapper: VueWrapper) {
 }
 
 function clickSave(wrapper: VueWrapper) {
-  const saveBtn = wrapper.findAll("button").find((b) => b.text() === "Save");
+  const saveBtn = wrapper.findAll("button").find((b) => b.text() === "Save settings");
   if (!saveBtn) throw new Error("Save button not found");
   return saveBtn.trigger("click");
 }
@@ -115,6 +115,28 @@ describe("SettingsDialog — notifications.agentsOnly", () => {
       agentHook: true,
       shellIntegration: false,
     });
+  });
+});
+
+describe("SettingsDialog — section navigation", () => {
+  test("keeps tab labels accessible alongside decorative icons", async () => {
+    const wrapper = await mountDialog();
+    const tabs = wrapper.findAll(".settings-tab-btn");
+    expect(tabs.map((tab) => tab.text().trim())).toEqual([
+      "General",
+      "Tab Templates",
+      "Git",
+      "SSH",
+      "Telegram",
+      "About",
+    ]);
+    expect(tabs.every((tab) => tab.find('svg[aria-hidden="true"]').exists())).toBe(true);
+    expect(tabs.every((tab) => tab.attributes("aria-pressed") !== undefined)).toBe(true);
+    expect(tabs.find((tab) => tab.text().trim() === "General")?.attributes("aria-pressed")).toBe("true");
+
+    await tabs.find((tab) => tab.text().trim() === "SSH")!.trigger("click");
+    expect(tabs.find((tab) => tab.text().trim() === "SSH")?.attributes("aria-pressed")).toBe("true");
+    expect(tabs.find((tab) => tab.text().trim() === "General")?.attributes("aria-pressed")).toBe("false");
   });
 });
 

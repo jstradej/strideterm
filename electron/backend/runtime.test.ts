@@ -32,6 +32,7 @@ import {
   publicKeyFromRaw,
 } from "./mobile/mobile-crypto.js";
 import { PROTOCOL_VERSION, SESSION_KEY_HKDF_INFO } from "./mobile/mobile-schemas.js";
+import { SshManager } from "./ssh/ssh-manager.js";
 
 // Lets a single test capture log calls made through getLogger(label), for any
 // label, without altering real logging behavior for the other ~230 tests in
@@ -378,9 +379,11 @@ class FakeSessionManager extends EventEmitter {
   declare stopped: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare getSessionEnv: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare getSessionLaunch: any;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  constructor({ getSessionEnv }: any = {}) {
+  constructor({ getSessionEnv, getSessionLaunch }: any = {}) {
     super();
     this.sessions = new Map();
     this.syncedStates = [];
@@ -390,6 +393,7 @@ class FakeSessionManager extends EventEmitter {
     this.writeCalls = [];
     this.stopped = false;
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
+    this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -948,6 +952,7 @@ async function createFixture({
         constructor(opts: any) {
           super();
           sessionManager.getSessionEnv = typeof opts?.getSessionEnv === "function" ? opts.getSessionEnv : null;
+          sessionManager.getSessionLaunch = typeof opts?.getSessionLaunch === "function" ? opts.getSessionLaunch : null;
           return sessionManager;
         }
       },
@@ -1238,6 +1243,178 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     expect(strayStatePayloadKeys(fixture.runtime.getPayload())).toEqual([]);
+  });
+
+  test("forwards payload-free SSH state events during host create, save, and delete", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    const forwarded: unknown[] = [];
+    fixture.runtime.on("ssh:state", (payload: unknown) => forwarded.push(payload));
+
+    const host = await fixture.runtime["ssh:hosts:create"]({
+      name: "mini-local",
+      host: "mini.local",
+      username: "js",
+      advanced: { launchVia: "system-ssh" },
+    });
+    expect(host).toMatchObject({ host: "mini.local", username: "js" });
+
+    const updated = await fixture.runtime["ssh:hosts:update"]({
+      id: host.id,
+      patch: { name: "mini-local-saved" },
+    });
+    expect(updated).toMatchObject({ id: host.id, name: "mini-local-saved" });
+
+    expect(await fixture.runtime["ssh:hosts:delete"]({ id: host.id })).toEqual({ ok: true });
+    expect(forwarded).toEqual([undefined, undefined, undefined]);
+  });
+
+  test("forwards owned SSH test prompts and connection status while suppressing MCP internals", async () => {
+    let sshManager: SshManager | null = null;
+    class CapturedSshManager extends SshManager {
+      constructor(options: ConstructorParameters<typeof SshManager>[0]) {
+        super(options);
+        sshManager = this;
+      }
+    }
+    const fixture = await createFixture({ dependencies: { SshManager: CapturedSshManager } });
+    fixtures.push(fixture);
+    vi.spyOn(sshManager!, "createSession").mockResolvedValue({} as never);
+    const testStates: Array<{ sessionId: string; status: string }> = [];
+    const prompts: unknown[] = [];
+    const hostKeys: unknown[] = [];
+    const connectionEvents: unknown[] = [];
+    fixture.runtime.on("ssh:test:state", (payload: { sessionId: string; status: string }) => testStates.push(payload));
+    fixture.runtime.on("ssh:auth-prompt", (payload: unknown) => prompts.push(payload));
+    fixture.runtime.on("ssh:host-key-change", (payload: unknown) => hostKeys.push(payload));
+    fixture.runtime.on("ssh:connection-state", (payload: unknown) => connectionEvents.push(payload));
+
+    const started = await fixture.runtime.sshTestStart(
+      {
+        profileId: "default",
+        draft: { name: "test host", host: "test.example", username: "tester", advanced: { launchVia: "ssh2" } },
+      },
+      "window-main",
+    );
+    const prompt = { sessionId: started.sessionId, promptId: "prompt-1", kind: "password" };
+    sshManager!.emit("ssh:auth-prompt", prompt);
+    const hostKey = { sessionId: started.sessionId, fingerprint: "SHA256:test" };
+    sshManager!.emit("ssh:host-key-change", hostKey);
+    sshManager!.emit("ssh:connection-state", { sessionId: started.sessionId, status: "connected" });
+
+    expect(prompts).toEqual([prompt]);
+    expect(hostKeys).toEqual([hostKey]);
+    expect(fixture.runtime.sshTestSessionOwner(started.sessionId)).toBe("window-main");
+    expect(testStates.map(({ status }) => status)).toEqual(["connecting", "authenticated"]);
+    expect(connectionEvents).toEqual([{ sessionId: started.sessionId, status: "connected" }]);
+
+    sshManager!.emit("ssh:connection-state", { sessionId: "ssh-mcp:private-op", status: "connected" });
+    expect(connectionEvents).toHaveLength(1);
+
+    const failed = await fixture.runtime.sshTestStart(
+      {
+        profileId: "default",
+        draft: { name: "failing host", host: "fail.example", username: "tester", advanced: { launchVia: "ssh2" } },
+      },
+      "window-main",
+    );
+    sshManager!.emit("ssh:connection-state", {
+      sessionId: failed.sessionId,
+      status: "error",
+      error: "authentication failed",
+    });
+    expect(testStates.at(-1)).toMatchObject({ sessionId: failed.sessionId, status: "error" });
+  });
+
+  test("per-panel SSH MCP stays opt-in and keeps its capability out of argv and state", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let brokerOptions: any;
+    let mintCount = 0;
+    const broker = {
+      async start() {
+        return { url: "http://127.0.0.1:43129/ssh-mcp" };
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mintGrant(context: any) {
+        brokerOptions.mintedContext = context;
+        mintCount += 1;
+        return { url: "http://127.0.0.1:43129/ssh-mcp", capability: `capability-secret-test-value-${mintCount}` };
+      },
+      revokeSession: vi.fn(),
+      revokeInvalid: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const workspace = {
+      id: "ssh-mcp-workspace",
+      name: "SSH MCP test",
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      activePanelId: "agent",
+      panels: [
+        { id: "agent", title: "Claude", command: "claude", sshMcpEnabled: true },
+        { id: "agent-off", title: "Claude without SSH", command: "claude", sshMcpEnabled: false },
+      ],
+    };
+    const fixture = await createFixture({
+      initialState: { workspaces: [workspace] },
+      dependencies: {
+        enableAgentSshMcp: true,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        createSshMcpBroker: (options: any) => {
+          brokerOptions = options;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return broker as any;
+        },
+      },
+    });
+    fixtures.push(fixture);
+
+    const sessionId = createSessionId(workspace.id, "agent");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const savedWorkspace = fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id);
+    const disabledPanel = savedWorkspace.panels.find((item: { id: string }) => item.id === "agent-off");
+    expect(
+      fixture.sessionManager.getSessionLaunch({
+        workspace: savedWorkspace,
+        panel: disabledPanel,
+        sessionId: `${workspace.id}:agent-off`,
+      }),
+    ).toBeNull();
+    expect(mintCount).toBe(0);
+    fixture.sessionManager.sessions.set(sessionId, {
+      id: sessionId,
+      status: "running",
+      workspaceId: workspace.id,
+      panelId: "agent",
+      kind: "terminal",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panel = savedWorkspace.panels.find((item: any) => item.id === "agent");
+
+    const launch = fixture.sessionManager.getSessionLaunch({ workspace: savedWorkspace, panel, sessionId });
+
+    expect(launch.env.STRIDETERM_SSH_MCP_CAPABILITY).toBe("capability-secret-test-value-1");
+    expect(launch.args.join(" ")).not.toContain("capability-secret-test-value");
+    expect(JSON.stringify(fixture.store.getState())).not.toContain("capability-secret-test-value");
+    expect(brokerOptions.isGrantLive(brokerOptions.mintedContext)).toBe(true);
+
+    const privateTerminalEvents: unknown[] = [];
+    fixture.runtime.on("terminal:data", (payload: unknown) => privateTerminalEvents.push(payload));
+    fixture.sessionManager.emit("terminal:data", { sessionId: "ssh-mcp:private-op", data: "private" });
+    expect(privateTerminalEvents).toEqual([]);
+
+    await fixture.runtime.saveWorkspace({
+      ...savedWorkspace,
+      panels: savedWorkspace.panels.map((item: { id: string; sshMcpEnabled?: boolean }) => ({
+        ...item,
+        sshMcpEnabled: false,
+      })),
+    });
+    expect(broker.revokeInvalid).toHaveBeenCalled();
+    expect(brokerOptions.isGrantLive(brokerOptions.mintedContext)).toBe(false);
+    fixture.sessionManager.emit("terminal:exit", { sessionId, exitCode: 0, intentional: false });
+    expect(broker.revokeSession).toHaveBeenCalledWith(sessionId);
   });
 
   test("keeps a bounded terminal replay tail for renderer startup attach", async () => {
@@ -10749,6 +10926,44 @@ describe("multiple windows per profile — viewer model", () => {
 
     // The window already showing ws-a2 wins over the last-focused window.
     expect(captured).toEqual(["win-2"]);
+  });
+
+  test("Telegram save preserves an omitted notification choice and persists explicit changes", async () => {
+    const originalFetch = globalThis.fetch;
+    const telegramFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const method = String(input).split("/").at(-1);
+      const result =
+        method === "getMe"
+          ? { ok: true, result: { username: "test-bot" } }
+          : { ok: true, result: { message_id: 1, chat: { title: "Test chat" } } };
+      return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", telegramFetch);
+
+    try {
+      const fixture = await createFixture({ dependencies: { safeStorage: ENCRYPTING_SAFE_STORAGE } });
+      fixtures.push(fixture);
+      const save = (payload: { id: string; botToken?: string; chatId: string; notificationsEnabled?: boolean }) =>
+        fixture.runtime.saveTelegramConnection(payload);
+
+      await save({ id: "tg-notifications", botToken: "offline-token", chatId: "12345", notificationsEnabled: false });
+      expect(fixture.store.getState().settings.integrations.telegram.connections[0].notificationsEnabled).toBe(false);
+      expect(fixture.runtime._telegramManagerForTest().getSnapshot().connections[0].notificationsEnabled).toBe(false);
+
+      await save({ id: "tg-notifications", chatId: "12345" });
+      expect(fixture.store.getState().settings.integrations.telegram.connections[0].notificationsEnabled).toBe(false);
+
+      await save({ id: "tg-notifications", chatId: "12345", notificationsEnabled: true });
+      expect(fixture.store.getState().settings.integrations.telegram.connections[0].notificationsEnabled).toBe(true);
+
+      await save({ id: "tg-notifications", chatId: "12345", notificationsEnabled: false });
+      expect(
+        normalizeState(fixture.store.getState()).settings.integrations.telegram.connections[0].notificationsEnabled,
+      ).toBe(false);
+      expect(telegramFetch).toHaveBeenCalled();
+    } finally {
+      vi.stubGlobal("fetch", originalFetch);
+    }
   });
 
   test("telegram screenshot-current with several profile windows asks the user instead of guessing", async () => {

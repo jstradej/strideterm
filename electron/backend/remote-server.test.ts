@@ -569,6 +569,7 @@ describe("remote token client profile context", () => {
     let registryRef: any = null;
     const runtime = {
       getPayload: () => payload,
+      isSshTestSessionId: (sessionId: unknown) => typeof sessionId === "string" && sessionId.startsWith("ssh-test:"),
       getInitialState: async () => payload,
       setRemoteInfo: () => undefined,
       listRemoteUrls: () => [],
@@ -1592,6 +1593,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     >();
     const runtime = {
       getPayload: () => payload,
+      isSshTestSessionId: (sessionId: unknown) => typeof sessionId === "string" && sessionId.startsWith("ssh-test:"),
       _azureMutationCalls: azureMutationCalls,
       _gitConflictCalls: gitConflictCalls,
       _prMutationCalls: prMutationCalls,
@@ -1871,6 +1873,86 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       runtime._emit("terminal:data", { sessionId: "ws1:a", data: "hidden", seq: 1 });
       await delay(80);
       expect(terminalFrames(c)).toHaveLength(0);
+      c.ws.close();
+    });
+  });
+
+  test("SSH test and key-transfer terminal, state, and authentication events never reach remote clients", async () => {
+    await withServer("tok-ssh-test", async ({ port, runtime }) => {
+      const c = connectWs(port, "tok-ssh-test", "ssh-test-remote");
+      await c.opened;
+      const marker = "private-test-marker-89df0";
+      const privateIds = ["ssh-test:private", "ssh-transfer:private", "ssh-transfer:private:verify"];
+      for (const sessionId of privateIds) {
+        runtime._emit("terminal:data", { sessionId, data: marker, seq: 1 });
+        runtime._emit("terminal:exit", { sessionId, exitCode: 0 });
+        runtime._emit("ssh:auth-prompt", { sessionId, prompt: marker });
+        runtime._emit("ssh:auth-prompt-cancel", { sessionId });
+        runtime._emit("ssh:host-key-change", { sessionId, fingerprint: marker });
+        runtime._emit("ssh:connection-state", { sessionId, status: "connected" });
+      }
+      runtime._emit("ssh:key-transfer:state", {
+        operationId: "ssh-transfer:private",
+        hostId: "h1",
+        keyId: "k1",
+        status: "uploading",
+      });
+      await delay(100);
+      expect(c.messages.some((message) => privateIds.some((id) => JSON.stringify(message).includes(id)))).toBe(false);
+      expect(c.messages.some((message) => JSON.stringify(message).includes(marker))).toBe(false);
+      c.ws.close();
+    });
+  });
+
+  test("remote clients cannot start or stop key transfer, answer its prompts, replay it, or attach terminal input", async () => {
+    await withServer("tok-ssh-transfer-private", async ({ port, runtime }) => {
+      const transferId = "ssh-transfer:private-http-ws";
+      const verifyId = `${transferId}:verify`;
+      const c = connectWs(port, "tok-ssh-transfer-private", "transfer-private-remote");
+      await c.opened;
+      const writes = vi.spyOn(runtime, "writeToSession");
+      const resizes = vi.spyOn(runtime, "resizeSession");
+      c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: [transferId, verifyId] }));
+      c.ws.send(JSON.stringify({ type: "terminal:input", sessionId: transferId, data: "secret\r" }));
+      c.ws.send(JSON.stringify({ type: "terminal:resize", sessionId: verifyId, cols: 100, rows: 35 }));
+      runtime._emit("terminal:data", { sessionId: transferId, data: "private-output", seq: 1 });
+      runtime._emit("terminal:data", { sessionId: verifyId, data: "private-verify-output", seq: 2 });
+      await delay(100);
+      expect(writes).not.toHaveBeenCalled();
+      expect(resizes).not.toHaveBeenCalled();
+      expect(c.messages.some((message) => JSON.stringify(message).includes("private-output"))).toBe(false);
+
+      for (const sessionId of [transferId, verifyId]) {
+        const replay = await fetch(`http://127.0.0.1:${port}/api/terminal/replay`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer tok-ssh-transfer-private" },
+          body: JSON.stringify({ sessionId }),
+        });
+        expect(replay.status).not.toBe(200);
+        const answer = await fetch(`http://127.0.0.1:${port}/api/ssh/auth/answer`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer tok-ssh-transfer-private" },
+          body: JSON.stringify({ sessionId, promptId: "p1", answers: ["never-forward"] }),
+        });
+        expect(answer.status).not.toBe(200);
+        const trust = await fetch(`http://127.0.0.1:${port}/api/ssh/host-key/accept`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer tok-ssh-transfer-private" },
+          body: JSON.stringify({ sessionId, promptId: "p2", mode: "permanent" }),
+        });
+        expect(trust.status).not.toBe(200);
+      }
+      for (const [path, body] of [
+        ["/api/ssh/keys/transfer/start", { profileId: "default", hostId: "h1", keyId: "k1" }],
+        ["/api/ssh/keys/transfer/stop", { operationId: transferId }],
+      ] as const) {
+        const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer tok-ssh-transfer-private" },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(403);
+      }
       c.ws.close();
     });
   });
