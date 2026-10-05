@@ -16,7 +16,7 @@ import type { Ref, ShallowRef, ComputedRef } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-display.js";
 import { isCompanionPrimaryViewId } from "../../electron/shared/companion-primary.js";
-import type { Transport } from "../transport.js";
+import type { Transport, CallableTransport } from "../transport.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -138,7 +138,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   async function saveWorkspace(draft: AnyApi): Promise<void> {
-    ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(draft)) as StatePayload);
+    ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(draft)) as StatePayload);
   }
 
   /**
@@ -155,7 +155,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     if (/^(Azure DevOps|GitHub) review workspace for /.test(String((ws as AnyApi).notes || ""))) {
       next.notes = "";
     }
-    ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(next)) as StatePayload);
+    ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(next)) as StatePayload);
   }
 
   /**
@@ -198,7 +198,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
     if (!ws || !(ws as AnyApi).review) return;
     const next: AnyApi = { ...(ws as AnyApi), review: { ...(ws as AnyApi).review, writable: true } };
-    ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(next)) as StatePayload);
+    ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(next)) as StatePayload);
   }
 
   /**
@@ -245,7 +245,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     // collapse into a single ambiguous error.
     void (async () => {
       try {
-        const result = (await (ctx.getApi() as AnyApi).deleteWorkspace(
+        const result = (await (ctx.getApi() as CallableTransport).deleteWorkspace(
           workspaceId,
           variant === "delete" ? { deleteFromDisk, diskPath } : { deleteFromDisk },
         )) as AnyApi;
@@ -426,7 +426,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
         });
         ctx.activeViewId.value = (tabs as WorkspaceTab[]).find((t) => t.id !== viewId)?.id || null;
       }
-      const _api = ctx.getApi() as AnyApi;
+      const _api = ctx.getApi() as CallableTransport;
       if (!isGitViewId(viewId) && !isDockerViewId(viewId) && _api.closeTerminal) {
         (_api.closeTerminal(viewId) as Promise<StatePayload>)
           .then((p) => {
@@ -456,10 +456,10 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       });
       ctx.activeViewId.value = ctx.splitGroup.value?.viewIds[0] || (tabs as WorkspaceTab[])[0]?.id || null;
     }
-    (ctx.getApi() as AnyApi)
+    (ctx.getApi() as CallableTransport)
       .saveWorkspace(nextWorkspace)
-      .then((p: StatePayload) => {
-        ctx.adoptPayload(p);
+      .then((p) => {
+        ctx.adoptPayload(p as StatePayload);
       })
       .catch(async (err: Error) => {
         console.warn("[closeTab] failed to save workspace after panel removal:", err?.message || err);
@@ -502,7 +502,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     nextWorkspace.panels.push(panel);
     nextWorkspace.activePanelId = panelId;
     await ctx.withSuppressedBroadcast(async () => {
-      ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
+      ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
     });
     ctx.activeViewId.value = `${nextWorkspace.id}:${panelId}`;
   }
@@ -566,7 +566,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
           ? `task-dashboard:${panelId}`
           : `${nextWorkspace.id}:${panelId}`;
     await ctx.withSuppressedBroadcast(async () => {
-      ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
+      ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
     });
     ctx.activeViewId.value = nextViewId;
   }
@@ -687,7 +687,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     }
 
     try {
-      ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
+      ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
     } catch (err) {
       if (prevPayload) ctx.payload.value = prevPayload;
       throw err;
@@ -703,13 +703,13 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
       p.id === target.panel.id ? { ...p, title: title.trim() } : p,
     );
-    ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
+    ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
   }
 
   async function createWorktree(workspaceId: string, name: string, rootPath = ""): Promise<void> {
     if (!workspaceId || !name) return;
     ctx.adoptPayload(
-      (await (ctx.getApi() as AnyApi).createWorktree({
+      (await (ctx.getApi() as CallableTransport).createWorktree({
         workspaceId,
         name,
         rootPath,
@@ -739,7 +739,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       } as StatePayload;
     }
     try {
-      ctx.adoptPayload((await (ctx.getApi() as AnyApi).reorderWorkspaces(orderedIds)) as StatePayload);
+      ctx.adoptPayload((await (ctx.getApi() as CallableTransport).reorderWorkspaces(orderedIds)) as StatePayload);
     } catch (err) {
       if (prevPayload) ctx.payload.value = prevPayload;
       throw err;

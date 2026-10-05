@@ -283,7 +283,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   gitConflictDetail: (payload) => ipcRenderer.invoke("git:conflict-detail", payload),
   gitResolveConflict: (payload) => ipcRenderer.invoke("git:resolve-conflict", payload),
   gitUnresolveConflict: (payload) => ipcRenderer.invoke("git:unresolve-conflict", payload),
-  dockerAction: (action, containerId) => ipcRenderer.invoke("docker:action", action, containerId),
+  dockerAction: (payload) => ipcRenderer.invoke("docker:action", payload),
   openDockerSession: (payload) => ipcRenderer.invoke("docker:open-session", payload),
   openLazydockerSession: (payload) => ipcRenderer.invoke("docker:open-lazydocker", payload),
   openLazygitSession: (payload) => ipcRenderer.invoke("git:open-lazygit", payload),

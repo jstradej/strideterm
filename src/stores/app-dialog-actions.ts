@@ -1,7 +1,8 @@
 import { cloneWorkspace } from "../workspace-state.js";
 import type { Ref, ShallowRef } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
-import type { Transport } from "../transport.js";
+import type { Transport, CallableTransport } from "../transport.js";
+import type { ConnectionDraft } from "./app-api-actions.js";
 import { rlog } from "../lib/renderer-log.js";
 import { adoptRestoredSession } from "./app-session-restore.js";
 import { ref, watch } from "vue";
@@ -126,7 +127,7 @@ function hookApiForProvider(
 interface ConnectionDialogConfig {
   settingsKey: "azureDevops" | "github";
   provider: "azure" | "github";
-  saveConnection: (api: AnyApi, draft: unknown) => Promise<AnyApi>;
+  saveConnection: (api: CallableTransport, draft: ConnectionDraft) => Promise<AnyApi>;
 }
 
 export function makeOpenConnectionDialog(
@@ -146,7 +147,7 @@ export function makeOpenConnectionDialog(
       onCancel: closeDialog,
       onSave: async (draft: AnyApi) => {
         draft.profileId = currentProfileId();
-        const result = (await config.saveConnection(ctx.getApi() as AnyApi, draft)) as AnyApi;
+        const result = (await config.saveConnection(ctx.getApi() as CallableTransport, draft)) as AnyApi;
         ctx.adoptPayload((result.payload || result) as StatePayload);
         closeDialog();
       },
@@ -372,7 +373,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
               }
             : p,
         );
-        ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
+        ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
         // The command and per-tab tools setting only affect a newly started PTY.
         if ((!sameCommand || !sameSshMcpEnabled) && hasLiveSession) {
           openDialog("ConfirmDialog", {
@@ -386,7 +387,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             onConfirm: async () => {
               closeDialog();
               try {
-                ctx.adoptPayload((await (ctx.getApi() as AnyApi).restartTerminal(viewId)) as StatePayload);
+                ctx.adoptPayload((await (ctx.getApi() as CallableTransport).restartTerminal(viewId)) as StatePayload);
                 ctx.activeViewId.value = viewId;
               } catch (err) {
                 console.error("[edit-tab] reload after save failed:", err);
@@ -432,7 +433,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
           p.id === target.panel.id ? { ...p, notes: next } : p,
         );
-        ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload);
+        ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
         closeDialog();
       },
     });
@@ -530,9 +531,9 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         // the dialog footer instead of swallowing them into devtools console
         // and silently closing the dialog.
         await ctx.withSuppressedBroadcast(async () => {
-          ctx.adoptPayload((await (ctx.getApi() as AnyApi).saveWorkspace(plain)) as StatePayload);
+          ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(plain)) as StatePayload);
           if (isNew) {
-            ctx.adoptPayload((await (ctx.getApi() as AnyApi).activateWorkspace(plain.id)) as StatePayload);
+            ctx.adoptPayload((await (ctx.getApi() as CallableTransport).activateWorkspace(plain.id)) as StatePayload);
           }
         });
         closeDialog();
@@ -599,7 +600,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         updateTopDialogProps({ saveError: "" });
         try {
           const plain = JSON.parse(JSON.stringify(patch)) as AnyApi;
-          ctx.adoptPayload((await (ctx.getApi() as AnyApi).updateSettings(plain)) as StatePayload);
+          ctx.adoptPayload((await (ctx.getApi() as CallableTransport).updateSettings(plain)) as StatePayload);
           updateTopDialogProps({ saveError: "", saveCompleted: Date.now() });
         } catch (err) {
           updateTopDialogProps({ saveError: (err as Error).message || "Failed to save settings" });
@@ -653,7 +654,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       desktopOccupancy,
       onCancel: closeDialog,
       onSave: async (profile: AnyApi) => {
-        ctx.adoptPayload((await (api as AnyApi).saveProfile(profile)) as StatePayload);
+        ctx.adoptPayload((await (api as CallableTransport).saveProfile(profile)) as StatePayload);
       },
       onActivate: async (profileId: string) => {
         ctx.suppressBroadcast.value = true;
@@ -673,7 +674,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           } as StatePayload;
         }
         try {
-          ctx.adoptPayload((await (api as AnyApi).activateProfile(profileId)) as StatePayload);
+          ctx.adoptPayload((await (api as CallableTransport).activateProfile(profileId)) as StatePayload);
         } catch (err) {
           if (previousPayload) ctx.payload.value = previousPayload;
           ctx.suppressBroadcast.value = false;
@@ -698,7 +699,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       },
       onDelete: async (profileId: string, options?: { taskAction?: "pause" | "stop" }) => {
         try {
-          ctx.adoptPayload((await (api as AnyApi).deleteProfile(profileId, options)) as StatePayload);
+          ctx.adoptPayload((await (api as CallableTransport).deleteProfile(profileId, options)) as StatePayload);
         } catch (err) {
           const msg = ((err as Error)?.message || String(err || ""))
             .replace(/^Error invoking remote method '[^']+':\s*/, "")
@@ -807,7 +808,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
     // Re-check Claude CLI availability in the background so the dialog
     // shows up-to-date status (user may have installed claude mid-session)
-    (ctx.getApi() as AnyApi)
+    (ctx.getApi() as CallableTransport)
       .recheckClaude?.()
       .then((result: AnyApi) => {
         if (result?.payload) ctx.adoptPayload(result.payload as StatePayload);
@@ -950,7 +951,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
           // Strip Vue reactive proxies before IPC — structuredClone can't serialize them
           const plainConfig = JSON.parse(JSON.stringify(config)) as AnyApi;
-          const result = (await (ctx.getApi() as AnyApi).createTaskWorkspace(plainConfig)) as AnyApi;
+          const result = (await (ctx.getApi() as CallableTransport).createTaskWorkspace(plainConfig)) as AnyApi;
           if (result?.payload) {
             ctx.adoptPayload(result.payload as StatePayload);
           }
@@ -996,7 +997,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       onCancel: closeDialog,
       onSubmit: async (payload: AnyApi) => {
         try {
-          const result = (await (ctx.getApi() as AnyApi).createCompanionTask(payload)) as AnyApi;
+          const result = (await (ctx.getApi() as CallableTransport).createCompanionTask(payload)) as AnyApi;
           if (result?.payload) {
             ctx.adoptPayload(result.payload as StatePayload);
           }
@@ -1015,7 +1016,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   }
 
   async function doStartTask(workspaceId: string): Promise<void> {
-    const api = ctx.getApi() as AnyApi;
+    const api = ctx.getApi() as CallableTransport;
     try {
       const result = (await api.startTask({ workspaceId })) as AnyApi;
       if (result?.payload) ctx.adoptPayload(result.payload as StatePayload);
@@ -1025,7 +1026,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   }
 
   async function startTaskWithHookCheck(workspaceId: string): Promise<void> {
-    const api = ctx.getApi() as AnyApi;
+    const api = ctx.getApi() as CallableTransport;
     // Check if agent hook setting is enabled
     const settings = (ctx.payload.value?.appState?.settings as AnyApi)?.notifications;
     const hookSettingEnabled = (settings as AnyApi)?.agentHook !== false;
@@ -1173,7 +1174,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         // Save the new profile, then open a window for it. saveProfile drives
         // the runtime state update; createWindow attaches a BrowserWindow to
         // the profile via main.ts:window:create.
-        await (ctx.getApi() as AnyApi).saveProfile(profile);
+        await (ctx.getApi() as CallableTransport).saveProfile(profile);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (window as any).strideterm?.createWindow?.(profile.id);
         closeDialog();

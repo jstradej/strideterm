@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { Transport } from "../transport.js";
+import type { Transport, CallableTransport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { rlog } from "../lib/renderer-log.js";
 
@@ -591,7 +591,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.branchesLoading = true;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await (_api as any).gitListBranches({ workspaceId, rootPath })) as any;
+      const result = (await (_api as CallableTransport).gitListBranches({ workspaceId, rootPath })) as any;
       if (result?.ok) {
         ui.branchList = {
           current: result.current || "",
@@ -623,8 +623,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitDeleteBranch(workspaceId: string, branch: string, force: boolean): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "delete-branch", () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitDeleteBranch({ workspaceId, branch, force, rootPath }),
+      (_api as CallableTransport).gitDeleteBranch({ workspaceId, branch, force, rootPath }),
     );
     // Race-net: branchList may have been stale (worktree created since the
     // last refresh). When the backend rejects with the structured code, fall
@@ -647,8 +646,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitDeleteRemoteBranch(workspaceId: string, branch: string, remote: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "delete-remote-branch", () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitDeleteRemoteBranch({ workspaceId, branch, remote, rootPath }),
+      (_api as CallableTransport).gitDeleteRemoteBranch({ workspaceId, branch, remote, rootPath }),
     );
     await gitListBranches(workspaceId);
   }
@@ -656,8 +654,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitRenameBranch(workspaceId: string, branch: string, newName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "rename-branch", () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitRenameBranch({ workspaceId, branch, newName, rootPath }),
+      (_api as CallableTransport).gitRenameBranch({ workspaceId, branch, newName, rootPath }),
     );
     await gitListBranches(workspaceId);
   }
@@ -669,8 +666,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   ): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "checkout-remote", () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, localBranch, rootPath }),
+      (_api as CallableTransport).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, localBranch, rootPath }),
     );
     await gitListBranches(workspaceId);
   }
@@ -724,8 +720,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     }
     ui.graphLoading = true;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await (_api as any).gitLogGraph(payload)) as {
+      const result = (await (_api as CallableTransport).gitLogGraph(payload)) as {
         ok?: boolean;
         head?: string;
         commits?: unknown[];
@@ -1189,7 +1184,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.tagsLoading = true;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await (_api as any).gitListTags({ workspaceId, rootPath })) as any;
+      const result = (await (_api as CallableTransport).gitListTags({ workspaceId, rootPath })) as any;
       ui.tags = result?.tags || [];
       ui.tagsError = result?.ok === false ? result.summary : "";
     } catch (error) {
@@ -1371,7 +1366,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     try {
       const rootPath = getActiveRoot(workspaceId);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await (_api as any).azureListRemoteBranches({ workspaceId, rootPath })) as any;
+      const result = (await (_api as CallableTransport).azureListRemoteBranches({ workspaceId, rootPath })) as any;
       ui.remoteBranches = result?.branches || [];
       ui.remoteBranchesError = "";
     } catch (error) {
@@ -1387,8 +1382,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const appStore = useAppStore();
     const rootPath = getActiveRoot(workspaceId);
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const nextPayload = await (_api as any).openLazygitSession({ workspaceId, rootPath });
+      const nextPayload = await (_api as CallableTransport).openLazygitSession({ workspaceId, rootPath });
       appStore.adoptPayload(nextPayload as StatePayload);
       appStore.activeViewId = `${workspaceId}:lazygit`;
     } catch (error) {
@@ -1481,8 +1475,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     dlg.loading = true;
     dlg.error = "";
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await (_api as any).gitListConflicts({
+      const result = (await (_api as CallableTransport).gitListConflicts({
         workspaceId,
         rootPath: dlg.rootPath,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1540,8 +1533,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const dlg = ui.conflictDialog;
     if (!dlg) return;
     await runGitAction(workspaceId, `resolve:${filePath}`, () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitResolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath, mode, content }),
+      (_api as CallableTransport).gitResolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath, mode, content }),
     );
     await loadConflicts(workspaceId);
   }
@@ -1551,8 +1543,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const dlg = ui.conflictDialog;
     if (!dlg) return;
     await runGitAction(workspaceId, `unresolve:${filePath}`, () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitUnresolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath }),
+      (_api as CallableTransport).gitUnresolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath }),
     );
     await loadConflicts(workspaceId);
   }
@@ -1563,8 +1554,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!dlg) return;
     const kind = await currentOperationKind(workspaceId, dlg.rootPath);
     await runGitAction(workspaceId, "skip", () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
+      (_api as CallableTransport).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
     );
     // After skip, check if there are more conflicts (rebase may pause again)
     await refreshGit(workspaceId);
@@ -1582,8 +1572,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!dlg) return;
     const kind = await currentOperationKind(workspaceId, dlg.rootPath);
     await runGitAction(workspaceId, "continue", () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
+      (_api as CallableTransport).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
     );
     // After continue, operation may stop again (next conflicting commit in rebase)
     await refreshGit(workspaceId);
@@ -1639,8 +1628,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const dlg = ui.conflictDialog;
     if (!dlg) return;
     await runGitAction(workspaceId, "abort", () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (_api as any).gitAbortOperation({ workspaceId, rootPath: dlg.rootPath }),
+      (_api as CallableTransport).gitAbortOperation({ workspaceId, rootPath: dlg.rootPath }),
     );
     closeConflictDialog(workspaceId);
   }

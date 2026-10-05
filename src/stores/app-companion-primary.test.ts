@@ -209,7 +209,7 @@ describe("Companion Primary relocation — store", () => {
 
   it("never rewrites a task layout the user arranged themselves", async () => {
     const { store } = await makeStore(taskPayload("running"));
-    const custom = { layout: "rows", viewIds: [COMPANION_SESSION, DASHBOARD_VIEW] };
+    const custom = { layout: "rows" as const, viewIds: [COMPANION_SESSION, DASHBOARD_VIEW] };
     store.splitGroup = { ...custom };
     await nextTick();
 

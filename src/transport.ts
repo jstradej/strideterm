@@ -211,6 +211,21 @@ export interface Transport extends Partial<
   attachmentDelete?: (payload: AttachmentDeleteRequest) => Promise<AttachmentDeleteResult>;
 }
 
+/** The transport as the stores call it: every method treated as present. A
+ *  missing method still throws at the call site, as the `AnyApi` casts this
+ *  replaces did, but payloads are now checked against the IPC bridge types —
+ *  so a payload the main process's zod schema refuses (a vote sent as "10")
+ *  fails the typecheck instead of failing silently at runtime. */
+export type CallableTransport = Required<Transport>;
+
+/** First argument of a transport method — for store actions that forward a
+ *  payload unchanged, so their parameter is the IPC contract itself. */
+export type TransportPayload<K extends keyof CallableTransport> = CallableTransport[K] extends (
+  ...args: infer A
+) => unknown
+  ? A[0]
+  : never;
+
 // ---------------------------------------------------------------------------
 
 function createEventHub(): EventHub {

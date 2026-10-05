@@ -1,4 +1,4 @@
-import type { StatePayload, Settings, RecoveryResult } from "./types/state.js";
+import type { StatePayload, RecoveryResult } from "./types/state.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type {
   Workspace,
@@ -107,6 +107,7 @@ import type {
   MobileRenameDevice,
   MobileUpdateDeviceAllowlist,
   MobileAuditLogQuery,
+  SettingsPayload,
 } from "../backend/ipc-schemas.js";
 import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "./types/ssh.js";
 import type { SshConnectionTestState, SshKey, SshKeyTransferState } from "./types/ssh.js";
@@ -216,7 +217,7 @@ export interface StridetermAPI {
   deleteProject: (projectId: string) => Promise<unknown>;
   reorderWorkspaces: (workspaceIds: string[]) => Promise<unknown>;
   reorderProjects: (projectIds: string[]) => Promise<unknown>;
-  updateSettings: (settings: Partial<Settings>) => Promise<unknown>;
+  updateSettings: (settings: SettingsPayload) => Promise<unknown>;
 
   // Azure integration
   verifyAzureConnection: (connection: AzureConnectionPayload) => Promise<unknown>;
@@ -512,7 +513,7 @@ export interface StridetermAPI {
 
   // Docker
   refreshDocker: () => Promise<unknown>;
-  dockerAction: (action: string, containerId: string) => Promise<unknown>;
+  dockerAction: (payload: DockerAction) => Promise<unknown>;
   openDockerSession: (payload: DockerSession) => Promise<unknown>;
   openLazydockerSession: (payload: DockerSession) => Promise<unknown>;
   dockerLogsOpen: (payload: {

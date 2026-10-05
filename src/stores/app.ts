@@ -51,7 +51,7 @@ import type {
   RecoveryResult,
 } from "../../electron/shared/types/state.js";
 import { RECOVERY_OUTCOMES, SETTLED_RECOVERY_OUTCOMES } from "../../electron/shared/types/state.js";
-import type { RemotePanelSelectionDetail, Transport } from "../transport.js";
+import type { RemotePanelSelectionDetail, Transport, CallableTransport, TransportPayload } from "../transport.js";
 import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "../../electron/shared/performance.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -61,7 +61,8 @@ let remotePanelSelectionReceiver: ((event: Event) => void) | null = null;
 let remotePanelSelectionWindowListenerBound = false;
 
 interface SplitGroup {
-  layout: string;
+  // The layouts workspaceUIStateSchema persists; "solo" is splitGroup = null.
+  layout: NonNullable<Parameters<CallableTransport["setWorkspaceUIState"]>[1]["splitLayout"]>;
   viewIds: string[];
 }
 
@@ -399,11 +400,11 @@ export const useAppStore = defineStore("app", () => {
       const firstNonNull = ids.find((id) => id != null);
       if (firstNonNull) await activateWorkspace(firstNonNull);
     }
-    await (_api as AnyApi)?.enableWorkspaceGrid?.(layout, ids);
+    await (_api as CallableTransport)?.enableWorkspaceGrid?.(layout, ids);
   }
 
   async function disableWorkspaceGrid(): Promise<void> {
-    await (_api as AnyApi)?.disableWorkspaceGrid?.();
+    await (_api as CallableTransport)?.disableWorkspaceGrid?.();
   }
 
   async function setGridLayout(layout: string): Promise<void> {
@@ -426,15 +427,15 @@ export const useAppStore = defineStore("app", () => {
         }
       }
     }
-    await (_api as AnyApi)?.setGridLayout?.(layout);
+    await (_api as CallableTransport)?.setGridLayout?.(layout);
   }
 
   async function setGridCell(cellIndex: number, workspaceId: string | null): Promise<void> {
-    await (_api as AnyApi)?.setGridCell?.(cellIndex, workspaceId);
+    await (_api as CallableTransport)?.setGridCell?.(cellIndex, workspaceId);
   }
 
   async function swapGridCells(a: number, b: number): Promise<void> {
-    await (_api as AnyApi)?.swapGridCells?.(a, b);
+    await (_api as CallableTransport)?.swapGridCells?.(a, b);
   }
 
   /**
@@ -582,8 +583,8 @@ export const useAppStore = defineStore("app", () => {
     // Skip while a workspace activation is pending — the splitGroup update during
     // that window is just us restoring the persisted state, not a user change.
     if (pendingWorkspaceActivationId.value) return;
-    if ((_api as AnyApi)?.setWorkspaceUIState) {
-      (_api as AnyApi)
+    if ((_api as CallableTransport)?.setWorkspaceUIState) {
+      (_api as CallableTransport)
         .setWorkspaceUIState(wsId, {
           splitLayout: next?.layout || null,
           splitViewIds: next?.viewIds ? [...next.viewIds] : [],
@@ -1355,8 +1356,8 @@ export const useAppStore = defineStore("app", () => {
       pendingViewActivationId.value = "";
       activeViewId.value = viewId;
       activeSessionId.value = binding.sourceSessionId;
-      if (workspaceId && (_api as AnyApi)?.setWorkspaceUIState) {
-        (_api as AnyApi).setWorkspaceUIState(workspaceId, { activeViewId: viewId }).catch(() => {});
+      if (workspaceId && (_api as CallableTransport)?.setWorkspaceUIState) {
+        (_api as CallableTransport).setWorkspaceUIState(workspaceId, { activeViewId: viewId }).catch(() => {});
       }
       return;
     }
@@ -1379,17 +1380,17 @@ export const useAppStore = defineStore("app", () => {
       // Persist the non-session active view so it's restored on workspace switch/restart.
       // Sessions already persist via api.activateSession below.
       const wsId = myActiveWorkspaceId.value;
-      if (wsId && (_api as AnyApi)?.setWorkspaceUIState) {
-        (_api as AnyApi).setWorkspaceUIState(wsId, { activeViewId: viewId }).catch(() => {});
+      if (wsId && (_api as CallableTransport)?.setWorkspaceUIState) {
+        (_api as CallableTransport).setWorkspaceUIState(wsId, { activeViewId: viewId }).catch(() => {});
       }
       // Refresh git data on-demand when the Git tab is activated
       if (isGitViewId(viewId) && _api) {
         if (wsId) {
-          (_api as AnyApi)
+          (_api as CallableTransport)
             .refreshGit(wsId)
-            .then((nextPayload: StatePayload) => {
+            .then((nextPayload) => {
               if (nextPayload && !pendingWorkspaceActivationId.value) {
-                adoptPayload(nextPayload);
+                adoptPayload(nextPayload as StatePayload);
               }
             })
             .catch((err: unknown) => {
@@ -1407,7 +1408,7 @@ export const useAppStore = defineStore("app", () => {
     activeSessionId.value = viewId;
 
     try {
-      const nextPayload = (await (_api as AnyApi).activateSession(viewId)) as StatePayload;
+      const nextPayload = (await (_api as CallableTransport).activateSession(viewId)) as StatePayload;
       if (pendingViewActivationId.value === viewId && !(nextPayload as AnyApi)?.meta?.bootstrap) {
         pendingViewActivationId.value = "";
       }
@@ -1905,21 +1906,21 @@ export const useAppStore = defineStore("app", () => {
   /** Fetch a process-metrics snapshot. Returns null on transports that don't
    *  support it (remote), so callers can no-op gracefully. */
   async function getPerformanceSnapshot(): Promise<PerformanceSnapshot | null> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.getPerformanceSnapshot !== "function") return null;
     return api.getPerformanceSnapshot();
   }
 
   /** Trigger a renderer CPU-profile capture (Ctrl+Shift+F12 equivalent). */
   async function captureRendererCpuProfile(): Promise<CpuProfileCaptureResult | null> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.captureRendererCpuProfile !== "function") return null;
     return api.captureRendererCpuProfile();
   }
 
   /** Reveal a captured .cpuprofile in the OS file manager. */
   async function revealCpuProfile(filePath: string): Promise<RevealResult | null> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.revealCpuProfile !== "function") return null;
     return api.revealCpuProfile(filePath);
   }
@@ -2056,17 +2057,16 @@ export const useAppStore = defineStore("app", () => {
   const mobileAuditLog = ref<{ entries: AnyApi[]; total: number }>({ entries: [], total: 0 });
 
   async function refreshMobileDevices(): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.listMobileDevices !== "function") return;
     const devices = await api.listMobileDevices();
     mobileDevices.value = Array.isArray(devices) ? devices : [];
   }
 
-  async function createMobilePairingInvitation(options: {
-    profileAllowlist: string[];
-    capabilities: string[];
-  }): Promise<void> {
-    const api = getApi() as AnyApi;
+  async function createMobilePairingInvitation(
+    options: TransportPayload<"createMobilePairingInvitation">,
+  ): Promise<void> {
+    const api = getApi() as CallableTransport;
     if (typeof api?.createMobilePairingInvitation !== "function") {
       throw new Error("Mobile pairing is only available in the desktop app.");
     }
@@ -2078,7 +2078,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function cancelMobilePairingInvitation(): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     mobilePairingInvitation.value = null;
     mobilePairingClaimInFlight.value = false;
     await api?.cancelMobilePairingInvitation?.();
@@ -2090,7 +2090,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function renameMobileDevice(deviceId: string, label: string): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.renameMobileDevice !== "function") {
       throw new Error("Managing mobile devices is only available in the desktop app.");
     }
@@ -2099,7 +2099,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function revokeMobileDevice(deviceId: string): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.revokeMobileDevice !== "function") {
       throw new Error("Managing mobile devices is only available in the desktop app.");
     }
@@ -2112,7 +2112,7 @@ export const useAppStore = defineStore("app", () => {
    * because the two reasons the backend says no are both things to show next to the row.
    */
   async function forgetMobileDevice(deviceId: string): Promise<{ ok: boolean; reason?: string }> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.forgetMobileDevice !== "function") {
       throw new Error("Managing mobile devices is only available in the desktop app.");
     }
@@ -2131,7 +2131,7 @@ export const useAppStore = defineStore("app", () => {
    * and the user needs to be told.
    */
   async function approveMobileDevice(deviceId: string, sas: string): Promise<{ ok: boolean; reason?: string }> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.approveMobileDevice !== "function") {
       throw new Error("Managing mobile devices is only available in the desktop app.");
     }
@@ -2145,8 +2145,11 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /** "Mismatch — revoke", or the dialog being dismissed. Revokes locally and in the cloud. */
-  async function rejectMobileDevice(deviceId: string, reason: string): Promise<void> {
-    const api = getApi() as AnyApi;
+  async function rejectMobileDevice(
+    deviceId: string,
+    reason: TransportPayload<"rejectMobileDevice">["reason"],
+  ): Promise<void> {
+    const api = getApi() as CallableTransport;
     if (typeof api?.rejectMobileDevice !== "function") {
       throw new Error("Managing mobile devices is only available in the desktop app.");
     }
@@ -2163,7 +2166,7 @@ export const useAppStore = defineStore("app", () => {
    * TTL sweep can resolve (review 3 §P0.1's restart case).
    */
   async function refreshMobileDevicesAwaitingApproval(deviceId?: string): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.listMobileDevicesAwaitingApproval !== "function") return;
     const pending = (await api.listMobileDevicesAwaitingApproval()) as Array<{
       deviceId: string;
@@ -2177,9 +2180,9 @@ export const useAppStore = defineStore("app", () => {
 
   async function updateMobileDeviceAllowlist(
     deviceId: string,
-    update: { capabilities?: string[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
+    update: Omit<TransportPayload<"updateMobileDeviceAllowlist">, "deviceId">,
   ): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.updateMobileDeviceAllowlist !== "function") {
       throw new Error("Managing mobile devices is only available in the desktop app.");
     }
@@ -2188,7 +2191,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function setMobileEnabled(enabled: boolean): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.setMobileEnabled !== "function") {
       throw new Error("The Mobile feature can only be toggled from the desktop app.");
     }
@@ -2201,7 +2204,7 @@ export const useAppStore = defineStore("app", () => {
 
   /** Turns the managed relay on or off. Desktop-only, like every other mobile action here. */
   async function setMobileRelayEnabled(enabled: boolean): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.setMobileRelayEnabled !== "function") {
       throw new Error("The managed relay can only be toggled from the desktop app.");
     }
@@ -2215,7 +2218,7 @@ export const useAppStore = defineStore("app", () => {
 
   /** Whether a relay session requires end-to-end encryption from the phone. Desktop-only. */
   async function setMobileRelayRequireE2e(requireE2e: boolean): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.setMobileRelayRequireE2e !== "function") {
       throw new Error("The relay's end-to-end requirement can only be changed from the desktop app.");
     }
@@ -2228,33 +2231,33 @@ export const useAppStore = defineStore("app", () => {
 
   /** Reads the relay's own state so the UI can say whether it actually connected. */
   async function refreshMobileRelayStatus(): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.getMobileRelayStatus !== "function") return;
-    const status = (await api.getMobileRelayStatus()) ?? null;
+    const status = ((await api.getMobileRelayStatus()) ?? null) as AnyApi;
     mobileRelayStatus.value = status;
     if (Array.isArray(status?.connectedDevices)) setMobileConnectedDevices(status.connectedDevices);
   }
 
   async function refreshMobileConnectionHealth(): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.refreshMobileConnectionHealth !== "function") return;
-    const result = await api.refreshMobileConnectionHealth();
+    const result = (await api.refreshMobileConnectionHealth()) as AnyApi;
     mobileConnectionHealth.value = result?.health ?? null;
     mobileQuota.value = result?.quota ?? null;
   }
 
   async function sendMobileTestPush(deviceId: string): Promise<{ ok: boolean; reason?: string }> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.sendMobileTestPush !== "function") {
       throw new Error("Sending a test push is only available in the desktop app.");
     }
-    return api.sendMobileTestPush(deviceId);
+    return (await api.sendMobileTestPush(deviceId)) as { ok: boolean; reason?: string };
   }
 
   async function queryMobileAuditLog(filters: Record<string, unknown> = {}): Promise<void> {
-    const api = getApi() as AnyApi;
+    const api = getApi() as CallableTransport;
     if (typeof api?.queryMobileAuditLog !== "function") return;
-    const result = await api.queryMobileAuditLog(filters);
+    const result = (await api.queryMobileAuditLog(filters)) as AnyApi;
     mobileAuditLog.value = {
       entries: Array.isArray(result?.entries) ? result.entries : [],
       total: Number(result?.total) || 0,

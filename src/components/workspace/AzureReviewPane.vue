@@ -674,7 +674,9 @@ type ReviewBridgeDraft = {
 };
 
 type ReviewThread = {
-  id: string | number;
+  // Azure DevOps thread ids and GitHub review/issue comment ids are both
+  // numeric; reviewBridgeDraftCommentSchema refuses anything else.
+  id: number;
   filePath?: string;
   lineStart?: number | null;
   lineSide?: string;

@@ -1,7 +1,7 @@
 import { preferredRemoteUrl, withRemoteToken } from "../app/helpers.js";
 import type { Ref } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
-import type { Transport } from "../transport.js";
+import type { Transport, CallableTransport, TransportPayload } from "../transport.js";
 import { useRemoteDetailsStore } from "./remote-details.js";
 import { adoptRestoredSession } from "./app-session-restore.js";
 
@@ -65,11 +65,14 @@ type AnyApi = any;
  */
 type ProviderKind = "azure" | "github";
 
+/** A connection draft both providers' save schemas accept. */
+export type ConnectionDraft = TransportPayload<"saveAzureConnection"> & TransportPayload<"saveGitHubConnection">;
+
 interface ProviderApiMethods {
   /** Human copy for the delete-connection confirm dialog, e.g. "Azure DevOps connection". */
   displayName: string;
-  refresh: (api: AnyApi) => Promise<AnyApi>;
-  markPrSeen: (api: AnyApi, prKey: string) => Promise<AnyApi>;
+  refresh: (api: CallableTransport) => Promise<AnyApi>;
+  markPrSeen: (api: CallableTransport, prKey: string) => Promise<AnyApi>;
   openPullRequest: (
     api: AnyApi,
     args: { prKey: string; workspaceId: string; forceReview?: boolean },
@@ -77,11 +80,11 @@ interface ProviderApiMethods {
   /** The Refresh button's git-mutating half: fast-forward the review checkout
    *  onto the PR's latest source commit. Returns {payload, result} — result is
    *  the structured sync outcome (status/message/commitCount/headSha). */
-  syncReviewWorkspace: (api: AnyApi, workspaceId: string) => Promise<AnyApi>;
-  rebaseReviewWorkspace: (api: AnyApi, workspaceId: string) => Promise<AnyApi>;
-  pushReviewWorkspace: (api: AnyApi, workspaceId: string, opts: { force: boolean }) => Promise<AnyApi>;
-  deleteConnection: (api: AnyApi, connectionId: string) => Promise<AnyApi>;
-  saveConnection: (api: AnyApi, draft: unknown) => Promise<AnyApi>;
+  syncReviewWorkspace: (api: CallableTransport, workspaceId: string) => Promise<AnyApi>;
+  rebaseReviewWorkspace: (api: CallableTransport, workspaceId: string) => Promise<AnyApi>;
+  pushReviewWorkspace: (api: CallableTransport, workspaceId: string, opts: { force: boolean }) => Promise<AnyApi>;
+  deleteConnection: (api: CallableTransport, connectionId: string) => Promise<AnyApi>;
+  saveConnection: (api: CallableTransport, draft: ConnectionDraft) => Promise<AnyApi>;
 }
 
 const PROVIDER_API_METHODS: Record<ProviderKind, ProviderApiMethods> = {
@@ -118,12 +121,12 @@ export function makeProviderApiActions(
   const m = PROVIDER_API_METHODS[provider];
 
   async function refresh(): Promise<void> {
-    setPayload((await m.refresh(ctx.getApi() as AnyApi)) as StatePayload);
+    setPayload((await m.refresh(ctx.getApi() as CallableTransport)) as StatePayload);
   }
 
   async function markPrSeen(prKey: string): Promise<void> {
     if (!prKey) return;
-    setPayload((await m.markPrSeen(ctx.getApi() as AnyApi, prKey)) as StatePayload);
+    setPayload((await m.markPrSeen(ctx.getApi() as CallableTransport, prKey)) as StatePayload);
   }
 
   async function openPullRequest(
@@ -133,7 +136,7 @@ export function makeProviderApiActions(
   ): Promise<void> {
     if (!prKey) return;
     setPayload(
-      (await m.openPullRequest(ctx.getApi() as AnyApi, {
+      (await m.openPullRequest(ctx.getApi() as CallableTransport, {
         prKey,
         workspaceId: workspaceId || "",
         forceReview,
@@ -143,19 +146,21 @@ export function makeProviderApiActions(
 
   async function syncReviewWorkspace(workspaceId: string): Promise<unknown> {
     if (!workspaceId) return null;
-    const response = (await m.syncReviewWorkspace(ctx.getApi() as AnyApi, workspaceId)) as AnyApi;
+    const response = (await m.syncReviewWorkspace(ctx.getApi() as CallableTransport, workspaceId)) as AnyApi;
     setPayload((response?.payload || response) as StatePayload);
     return response?.result ?? null;
   }
 
   async function rebaseReviewWorkspace(workspaceId: string): Promise<void> {
     if (!workspaceId) return;
-    setPayload((await m.rebaseReviewWorkspace(ctx.getApi() as AnyApi, workspaceId)) as StatePayload);
+    setPayload((await m.rebaseReviewWorkspace(ctx.getApi() as CallableTransport, workspaceId)) as StatePayload);
   }
 
   async function pushReviewWorkspace(workspaceId: string, { force = false } = {}): Promise<void> {
     if (!workspaceId) return;
-    setPayload((await m.pushReviewWorkspace(ctx.getApi() as AnyApi, workspaceId, { force })) as StatePayload);
+    setPayload(
+      (await m.pushReviewWorkspace(ctx.getApi() as CallableTransport, workspaceId, { force })) as StatePayload,
+    );
   }
 
   async function deleteConnection(connectionId: string): Promise<void> {
@@ -167,11 +172,11 @@ export function makeProviderApiActions(
       danger: true,
     });
     if (!confirmed) return;
-    setPayload((await m.deleteConnection(ctx.getApi() as AnyApi, connectionId)) as StatePayload);
+    setPayload((await m.deleteConnection(ctx.getApi() as CallableTransport, connectionId)) as StatePayload);
   }
 
-  async function saveConnection(draft: unknown): Promise<void> {
-    const result = (await m.saveConnection(ctx.getApi() as AnyApi, draft)) as AnyApi;
+  async function saveConnection(draft: ConnectionDraft): Promise<void> {
+    const result = (await m.saveConnection(ctx.getApi() as CallableTransport, draft)) as AnyApi;
     setPayload((result.payload || result) as StatePayload);
   }
 
@@ -234,13 +239,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // before anything reaches Azure DevOps.
   async function azureVote(prKey: string, vote: number): Promise<void> {
     if (!prKey) return;
-    setPayload((await (ctx.getApi() as AnyApi).voteAzurePullRequest({ prKey, vote })) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).voteAzurePullRequest({ prKey, vote })) as StatePayload);
   }
 
   async function azureResolveThread(prKey: string, threadId: number): Promise<void> {
     if (!prKey || !threadId) return;
     setPayload(
-      (await (ctx.getApi() as AnyApi).updateAzureThreadStatus({
+      (await (ctx.getApi() as CallableTransport).updateAzureThreadStatus({
         prKey,
         threadId,
         status: "fixed",
@@ -251,7 +256,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   async function azureReactivateThread(prKey: string, threadId: number): Promise<void> {
     if (!prKey || !threadId) return;
     setPayload(
-      (await (ctx.getApi() as AnyApi).updateAzureThreadStatus({
+      (await (ctx.getApi() as CallableTransport).updateAzureThreadStatus({
         prKey,
         threadId,
         status: "active",
@@ -262,12 +267,12 @@ export function createApiActions(ctx: ApiActionsCtx) {
   async function azureComment(
     prKey: string,
     content: string,
-    threadId: string | null = null,
+    threadId: number | null = null,
     parentCommentId = 0,
   ): Promise<void> {
     if (!prKey) return;
     setPayload(
-      (await (ctx.getApi() as AnyApi).commentAzurePullRequest({
+      (await (ctx.getApi() as CallableTransport).commentAzurePullRequest({
         prKey,
         content,
         threadId,
@@ -278,8 +283,8 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   // --- Review bridge ---------------------------------------------------
 
-  async function saveReviewBridgeDraft(params: unknown): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).saveReviewBridgeDraft(params)) as StatePayload);
+  async function saveReviewBridgeDraft(params: TransportPayload<"saveReviewBridgeDraft">): Promise<void> {
+    setPayload((await (ctx.getApi() as CallableTransport).saveReviewBridgeDraft(params)) as StatePayload);
   }
 
   async function deleteReviewBridgeDraft(prKey: string, draftId: string): Promise<void> {
@@ -291,14 +296,14 @@ export function createApiActions(ctx: ApiActionsCtx) {
       danger: true,
     });
     if (!confirmed) return;
-    setPayload((await (ctx.getApi() as AnyApi).deleteReviewBridgeDraft({ prKey, draftId })) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).deleteReviewBridgeDraft({ prKey, draftId })) as StatePayload);
   }
 
   async function queueReviewBridgeDraft(prKey: string, draftId?: string, commentKey?: string): Promise<void> {
     if (!prKey || (!draftId && !commentKey)) return;
     const queueIdentifier = draftId ? { draftId } : { commentKey };
     setPayload(
-      (await (ctx.getApi() as AnyApi).queueReviewBridgeDraft({
+      (await (ctx.getApi() as CallableTransport).queueReviewBridgeDraft({
         prKey,
         ...queueIdentifier,
       })) as StatePayload,
@@ -315,20 +320,22 @@ export function createApiActions(ctx: ApiActionsCtx) {
     });
     if (!confirmed) return;
     setPayload(
-      (await (ctx.getApi() as AnyApi).deleteReviewBridgeComment({
+      (await (ctx.getApi() as CallableTransport).deleteReviewBridgeComment({
         prKey,
         commentKey,
       })) as StatePayload,
     );
   }
 
-  async function createReviewBridgeDraftComment(params: unknown): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).createReviewBridgeDraftComment(params)) as StatePayload);
+  async function createReviewBridgeDraftComment(
+    params: TransportPayload<"createReviewBridgeDraftComment">,
+  ): Promise<void> {
+    setPayload((await (ctx.getApi() as CallableTransport).createReviewBridgeDraftComment(params)) as StatePayload);
   }
 
   async function syncReviewBridgePullRequest(prKey: string): Promise<void> {
     if (!prKey) return;
-    setPayload((await (ctx.getApi() as AnyApi).syncReviewBridgePullRequest({ prKey })) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).syncReviewBridgePullRequest({ prKey })) as StatePayload);
   }
 
   // The per-PR review-bridge context lives in `payload.reviewBridge` on desktop
@@ -361,7 +368,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
       danger: true,
     });
     if (!confirmed) return;
-    const api = ctx.getApi() as AnyApi;
+    const api = ctx.getApi() as CallableTransport;
     for (const comment of draftComments) {
       setPayload(
         (await api.deleteReviewBridgeComment({
@@ -382,7 +389,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const drafts = ((readReviewBridge(prKey).drafts || []) as any[]).filter((d: AnyApi) => d.status === "draft");
     if (!drafts.length) return;
-    const api = ctx.getApi() as AnyApi;
+    const api = ctx.getApi() as CallableTransport;
     for (const draft of drafts) {
       setPayload((await api.queueReviewBridgeDraft({ prKey, draftId: draft.draftId })) as StatePayload);
     }
@@ -392,7 +399,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     if (!workspaceId) return null;
     // `{ payload, pushAndPublishResult }` — the result rides beside the payload
     // so the remote ack keeps it (the ack drops only the nested payload).
-    const result = (await (ctx.getApi() as AnyApi).pushAndPublishReview({ workspaceId })) as AnyApi;
+    const result = (await (ctx.getApi() as CallableTransport).pushAndPublishReview({ workspaceId })) as AnyApi;
     const summary = result?.pushAndPublishResult || null;
     if (result?.payload) setPayload(result.payload as StatePayload);
     return summary;
@@ -404,13 +411,17 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function githubComment(prKey: string, body: string): Promise<void> {
     if (!prKey) return;
-    setPayload((await (ctx.getApi() as AnyApi).commentGitHubPullRequest({ prKey, body })) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).commentGitHubPullRequest({ prKey, body })) as StatePayload);
   }
 
-  async function githubSubmitReview(prKey: string, event: string, body = ""): Promise<void> {
+  async function githubSubmitReview(
+    prKey: string,
+    event: TransportPayload<"submitGitHubPullRequestReview">["event"],
+    body = "",
+  ): Promise<void> {
     if (!prKey) return;
     setPayload(
-      (await (ctx.getApi() as AnyApi).submitGitHubPullRequestReview({
+      (await (ctx.getApi() as CallableTransport).submitGitHubPullRequestReview({
         prKey,
         event,
         body,
@@ -420,12 +431,12 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   // --- Agent prompts ---------------------------------------------------
 
-  async function saveAgentPrompt(params: unknown): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).saveAgentPrompt(params)) as StatePayload);
+  async function saveAgentPrompt(params: TransportPayload<"saveAgentPrompt">): Promise<void> {
+    setPayload((await (ctx.getApi() as CallableTransport).saveAgentPrompt(params)) as StatePayload);
   }
 
   async function resetAgentPrompts(): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).resetAgentPrompts()) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).resetAgentPrompts()) as StatePayload);
   }
 
   async function deleteAgentPrompt(promptId: string): Promise<void> {
@@ -437,7 +448,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
       danger: true,
     });
     if (!confirmed) return;
-    setPayload((await (ctx.getApi() as AnyApi).deleteAgentPrompt({ promptId })) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).deleteAgentPrompt({ promptId })) as StatePayload);
   }
 
   // --- Remote access ---------------------------------------------------
@@ -452,7 +463,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const enabled = !(ctx.payload.value as any)?.appState?.settings?.remoteAccess?.enabled;
     setPayload(
-      (await (ctx.getApi() as AnyApi).updateSettings({
+      (await (ctx.getApi() as CallableTransport).updateSettings({
         remoteAccess: { enabled },
       })) as StatePayload,
     );
@@ -464,7 +475,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function saveCustomPublicUrl(url: string): Promise<void> {
     setPayload(
-      (await (ctx.getApi() as AnyApi).updateSettings({
+      (await (ctx.getApi() as CallableTransport).updateSettings({
         remoteAccess: { customPublicUrl: url },
       })) as StatePayload,
     );
@@ -472,22 +483,22 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function clearCustomPublicUrl(): Promise<void> {
     setPayload(
-      (await (ctx.getApi() as AnyApi).updateSettings({
+      (await (ctx.getApi() as CallableTransport).updateSettings({
         remoteAccess: { customPublicUrl: "" },
       })) as StatePayload,
     );
   }
 
   async function createCloudflareTunnel(): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).createCloudflareTunnel()) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).createCloudflareTunnel()) as StatePayload);
   }
 
   async function stopCloudflareTunnel(): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).stopCloudflareTunnel()) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).stopCloudflareTunnel()) as StatePayload);
   }
 
   async function refreshTunnel(): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).refreshTunnel()) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).refreshTunnel()) as StatePayload);
   }
 
   function pickLanUrl(url: string): void {
@@ -525,7 +536,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // --- Docker ----------------------------------------------------------
 
   async function refreshDocker(): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).refreshDocker()) as StatePayload);
+    setPayload((await (ctx.getApi() as CallableTransport).refreshDocker()) as StatePayload);
   }
 
   async function dockerShell(
@@ -536,7 +547,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   ): Promise<void> {
     if (!workspaceId || !containerId) return;
     setPayload(
-      (await (ctx.getApi() as AnyApi).openDockerSession({
+      (await (ctx.getApi() as CallableTransport).openDockerSession({
         workspaceId,
         containerId,
         mode: "shell",
@@ -550,7 +561,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   async function dockerLogs(workspaceId: string, containerId: string): Promise<void> {
     if (!workspaceId || !containerId) return;
     setPayload(
-      (await (ctx.getApi() as AnyApi).openDockerSession({
+      (await (ctx.getApi() as CallableTransport).openDockerSession({
         workspaceId,
         containerId,
         mode: "logs",
@@ -569,7 +580,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     if (!workspaceId || !containerId) return;
     const cleanAction = action.replace("docker-", "");
     setPayload(
-      (await (ctx.getApi() as AnyApi).dockerAction({
+      (await (ctx.getApi() as CallableTransport).dockerAction({
         action: cleanAction,
         containerId,
         backendId,
@@ -585,7 +596,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     contextName: string,
     options?: { timestamps?: boolean; tail?: number | "all" },
   ): Promise<void> {
-    await (ctx.getApi() as AnyApi).dockerLogsOpen({
+    await (ctx.getApi() as CallableTransport).dockerLogsOpen({
       sessionId,
       containerId,
       backendId,
@@ -599,12 +610,14 @@ export function createApiActions(ctx: ApiActionsCtx) {
     sessionId: string,
     options: { timestamps?: boolean; tail?: number | "all" },
   ): Promise<boolean> {
-    const r = (await (ctx.getApi() as AnyApi).dockerLogsUpdate({ sessionId, ...options })) as { ok: boolean };
+    const r = (await (ctx.getApi() as CallableTransport).dockerLogsUpdate({ sessionId, ...options })) as {
+      ok: boolean;
+    };
     return !!r?.ok;
   }
 
   async function dockerLogsClose(sessionId: string): Promise<void> {
-    await (ctx.getApi() as AnyApi).dockerLogsClose({ sessionId });
+    await (ctx.getApi() as CallableTransport).dockerLogsClose({ sessionId });
   }
 
   async function dockerComposeAction(
@@ -614,7 +627,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     projectName: string,
   ): Promise<void> {
     setPayload(
-      (await (ctx.getApi() as AnyApi).dockerComposeAction({
+      (await (ctx.getApi() as CallableTransport).dockerComposeAction({
         action,
         backendId,
         contextName,
@@ -624,11 +637,11 @@ export function createApiActions(ctx: ApiActionsCtx) {
   }
 
   async function dockerInspect(containerId: string, backendId: string, contextName: string): Promise<string> {
-    return (await (ctx.getApi() as AnyApi).dockerInspect({ containerId, backendId, contextName })) as string;
+    return (await (ctx.getApi() as CallableTransport).dockerInspect({ containerId, backendId, contextName })) as string;
   }
 
   async function dockerTop(containerId: string, backendId: string, contextName: string): Promise<string> {
-    return (await (ctx.getApi() as AnyApi).dockerTop({ containerId, backendId, contextName })) as string;
+    return (await (ctx.getApi() as CallableTransport).dockerTop({ containerId, backendId, contextName })) as string;
   }
 
   async function dockerStats(
@@ -643,7 +656,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     blockIO: string;
     pids: string;
   } | null> {
-    return (await (ctx.getApi() as AnyApi).dockerStats({ containerId, backendId, contextName })) as {
+    return (await (ctx.getApi() as CallableTransport).dockerStats({ containerId, backendId, contextName })) as {
       cpuPerc: string;
       memUsage: string;
       memPerc: string;
@@ -654,11 +667,15 @@ export function createApiActions(ctx: ApiActionsCtx) {
   }
 
   async function dockerImageInspect(imageId: string, backendId: string, contextName: string): Promise<string> {
-    return (await (ctx.getApi() as AnyApi).dockerImageInspect({ resource: imageId, backendId, contextName })) as string;
+    return (await (ctx.getApi() as CallableTransport).dockerImageInspect({
+      resource: imageId,
+      backendId,
+      contextName,
+    })) as string;
   }
 
   async function dockerVolumeInspect(volumeName: string, backendId: string, contextName: string): Promise<string> {
-    return (await (ctx.getApi() as AnyApi).dockerVolumeInspect({
+    return (await (ctx.getApi() as CallableTransport).dockerVolumeInspect({
       resource: volumeName,
       backendId,
       contextName,
@@ -666,7 +683,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   }
 
   async function dockerNetworkInspect(networkId: string, backendId: string, contextName: string): Promise<string> {
-    return (await (ctx.getApi() as AnyApi).dockerNetworkInspect({
+    return (await (ctx.getApi() as CallableTransport).dockerNetworkInspect({
       resource: networkId,
       backendId,
       contextName,
@@ -680,7 +697,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     force = false,
   ): Promise<void> {
     setPayload(
-      (await (ctx.getApi() as AnyApi).dockerImageRemove({
+      (await (ctx.getApi() as CallableTransport).dockerImageRemove({
         resource: imageId,
         backendId,
         contextName,
@@ -696,7 +713,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     force = false,
   ): Promise<void> {
     setPayload(
-      (await (ctx.getApi() as AnyApi).dockerVolumeRemove({
+      (await (ctx.getApi() as CallableTransport).dockerVolumeRemove({
         resource: volumeName,
         backendId,
         contextName,
@@ -707,7 +724,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function dockerNetworkRemove(networkId: string, backendId: string, contextName: string): Promise<void> {
     setPayload(
-      (await (ctx.getApi() as AnyApi).dockerNetworkRemove({
+      (await (ctx.getApi() as CallableTransport).dockerNetworkRemove({
         resource: networkId,
         backendId,
         contextName,
@@ -717,7 +734,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function dockerImagePull(reference: string, backendId: string, contextName: string): Promise<void> {
     setPayload(
-      (await (ctx.getApi() as AnyApi).dockerImagePull({
+      (await (ctx.getApi() as CallableTransport).dockerImagePull({
         resource: reference,
         backendId,
         contextName,
@@ -732,7 +749,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // core the docker resource invalidation refetches the pane's detail instead).
   // ---------------------------------------------------------------------------
   async function dockerImagePrune(backendId: string, contextName: string, all: boolean): Promise<DockerPruneResult> {
-    const r = (await (ctx.getApi() as AnyApi).dockerImagePrune({ backendId, contextName, all })) as {
+    const r = (await (ctx.getApi() as CallableTransport).dockerImagePrune({ backendId, contextName, all })) as {
       payload: StatePayload;
       result: DockerPruneResult;
     };
@@ -741,7 +758,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   }
 
   async function dockerVolumePrune(backendId: string, contextName: string): Promise<DockerPruneResult> {
-    const r = (await (ctx.getApi() as AnyApi).dockerVolumePrune({ backendId, contextName })) as {
+    const r = (await (ctx.getApi() as CallableTransport).dockerVolumePrune({ backendId, contextName })) as {
       payload: StatePayload;
       result: DockerPruneResult;
     };
@@ -750,7 +767,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   }
 
   async function dockerNetworkPrune(backendId: string, contextName: string): Promise<DockerPruneResult> {
-    const r = (await (ctx.getApi() as AnyApi).dockerNetworkPrune({ backendId, contextName })) as {
+    const r = (await (ctx.getApi() as CallableTransport).dockerNetworkPrune({ backendId, contextName })) as {
       payload: StatePayload;
       result: DockerPruneResult;
     };
@@ -759,7 +776,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   }
 
   async function dockerBuilderPrune(backendId: string, contextName: string, all: boolean): Promise<DockerPruneResult> {
-    const r = (await (ctx.getApi() as AnyApi).dockerBuilderPrune({ backendId, contextName, all })) as {
+    const r = (await (ctx.getApi() as CallableTransport).dockerBuilderPrune({ backendId, contextName, all })) as {
       payload: StatePayload;
       result: DockerPruneResult;
     };
@@ -768,7 +785,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   }
 
   async function dockerSystemDf(backendId?: string, contextName?: string): Promise<string> {
-    return (await (ctx.getApi() as AnyApi).dockerSystemDf({ backendId, contextName })) as string;
+    return (await (ctx.getApi() as CallableTransport).dockerSystemDf({ backendId, contextName })) as string;
   }
 
   async function dockerVolumeList(
@@ -777,7 +794,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     contextName: string,
     subPath: string,
   ): Promise<string> {
-    return (await (ctx.getApi() as AnyApi).dockerVolumeList({
+    return (await (ctx.getApi() as CallableTransport).dockerVolumeList({
       volumeName,
       backendId,
       contextName,
@@ -791,7 +808,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     contextName: string,
     subPath: string,
   ): Promise<string> {
-    return (await (ctx.getApi() as AnyApi).dockerVolumeRead({
+    return (await (ctx.getApi() as CallableTransport).dockerVolumeRead({
       volumeName,
       backendId,
       contextName,
@@ -802,7 +819,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
   async function openLazydocker(workspaceId: string, backendId?: string): Promise<void> {
     if (!workspaceId) return;
     setPayload(
-      (await (ctx.getApi() as AnyApi).openLazydockerSession({
+      (await (ctx.getApi() as CallableTransport).openLazydockerSession({
         workspaceId,
         backendId,
       })) as StatePayload,
@@ -835,8 +852,8 @@ export function createApiActions(ctx: ApiActionsCtx) {
     adoptRestoredSession(ctx, restoredSession);
   }
 
-  async function updateSettings(patch: unknown): Promise<void> {
-    setPayload((await (ctx.getApi() as AnyApi).updateSettings(patch)) as StatePayload);
+  async function updateSettings(patch: TransportPayload<"updateSettings">): Promise<void> {
+    setPayload((await (ctx.getApi() as CallableTransport).updateSettings(patch)) as StatePayload);
   }
 
   return {

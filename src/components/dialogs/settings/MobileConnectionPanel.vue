@@ -1087,7 +1087,7 @@ async function submitTypedSas() {
 }
 
 /** "Mismatch — revoke", and the same path for any other reason the pairing must not proceed. */
-async function rejectPairing(reason: string) {
+async function rejectPairing(reason: Parameters<typeof appStore.rejectMobileDevice>[1]) {
   const pending = pairingSas.value;
   if (!pending || approvalBusy.value) return;
   approvalBusy.value = true;
@@ -1145,7 +1145,10 @@ const profileOptions = computed<ProfileOption[]>(() =>
  * are not the same permission, and neither is "may see status" and "may open a live view of the
  * whole remote UI".
  */
-const CAPABILITY_OPTIONS = [
+type MobileCapability = Parameters<typeof appStore.createMobilePairingInvitation>[0]["capabilities"][number];
+
+// Typed so an id the IPC schema does not know fails the typecheck.
+const CAPABILITY_OPTIONS: Array<{ id: MobileCapability; label: string; title: string }> = [
   {
     id: "notifications",
     label: "Receive notifications",
@@ -1420,7 +1423,7 @@ const quotaTitle = computed(
 
 // --- Pairing ---
 const pairingProfileIds = computed(() => profileOptions.value.map((p) => p.id));
-const pairingCapabilities = ref<string[]>(CAPABILITY_OPTIONS.map((c) => c.id));
+const pairingCapabilities = ref<MobileCapability[]>(CAPABILITY_OPTIONS.map((c) => c.id));
 const addPhoneSetupOpen = ref(false);
 const pairingQr = ref<HTMLElement | null>(null);
 const pairingBusy = ref(false);
@@ -1556,13 +1559,13 @@ async function confirmRename(device: { deviceId: string }) {
 const editingAllowlistId = ref<string | null>(null);
 const accessSaving = ref(false);
 const accessError = ref("");
-const allowlistDraft = reactive<{ capabilities: string[]; excludedProfileIds: string[] }>({
+const allowlistDraft = reactive<{ capabilities: MobileCapability[]; excludedProfileIds: string[] }>({
   capabilities: [],
   excludedProfileIds: [],
 });
 function toggleAllowlistEdit(device: {
   deviceId: string;
-  capabilities: string[];
+  capabilities: MobileCapability[];
   profileAllowlist: string[];
   excludedProfileIds?: string[];
 }) {
