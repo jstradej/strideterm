@@ -267,13 +267,25 @@ describe("routes a mobile session may not call", () => {
     expect(f.called("regenerateRemoteToken")).toHaveLength(1);
   });
 
-  test("settings/update: a phone may write nothing, not even its font size", async () => {
+  test("settings/update: a phone may persist only its remote terminal font size", async () => {
     const f = await startFixture();
     const cookie = await f.mobileCookie();
-    for (const settings of [{ terminalFontSizeRemote: 14 }, { externalEditor: "x" }]) {
-      expect((await post(f, "/api/settings/update", cookie, { settings })).status).toBe(403);
+    const allowed = await post(f, "/api/settings/update", cookie, {
+      settings: { terminalFontSizeRemote: 14 },
+    });
+    expect(allowed.status).toBe(200);
+    expect(f.called("updateSettings").map((call) => call.args[0])).toEqual([{ terminalFontSizeRemote: 14 }]);
+
+    for (const body of [
+      { settings: { terminalFontSizeLocal: 14 } },
+      { settings: { externalEditor: "x" } },
+      { settings: { terminalFontSizeRemote: 14, externalEditor: "x" } },
+      { settings: { terminalFontSizeRemote: 7 } },
+      { settings: { terminalFontSizeRemote: 14 }, workspaceId: "ws-home" },
+    ]) {
+      expect((await post(f, "/api/settings/update", cookie, body)).status).toBe(403);
     }
-    expect(f.called("updateSettings")).toHaveLength(0);
+    expect(f.called("updateSettings")).toHaveLength(1);
   });
 
   test("a target of another profile is refused on routes that are otherwise allowed", async () => {

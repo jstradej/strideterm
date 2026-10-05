@@ -395,9 +395,28 @@ describe("mobile session route policy", () => {
     expect(MOBILE_DENIED_PREFIXES).toContain("/api/docker/");
   });
 
-  test("settings/update is refused for a phone, whatever the body", () => {
-    for (const settings of [{ terminalFontSizeRemote: 14 }, { externalEditor: "x" }, {}]) {
-      expect(decide("/api/settings/update", { settings }), JSON.stringify(settings)).toMatchObject({
+  test("settings/update only allows the exact remote terminal font-size preference", () => {
+    expect(decide("/api/settings/update", { settings: { terminalFontSizeRemote: 14 } })).toEqual({ allow: true });
+    expect(decide("/api/settings/update", { settings: { terminalFontSizeRemote: 8 } })).toEqual({ allow: true });
+    expect(decide("/api/settings/update", { settings: { terminalFontSizeRemote: 32 } })).toEqual({ allow: true });
+
+    for (const body of [
+      { settings: { terminalFontSizeRemote: 7 } },
+      { settings: { terminalFontSizeRemote: 33 } },
+      { settings: { terminalFontSizeRemote: 14.5 } },
+      { settings: { terminalFontSizeRemote: Number.NaN } },
+      { settings: { terminalFontSizeRemote: Number.POSITIVE_INFINITY } },
+      { settings: { terminalFontSizeRemote: "14" } },
+      { settings: { terminalFontSizeLocal: 14 } },
+      { settings: { externalEditor: "x" } },
+      { settings: { terminalFontSizeRemote: 14, externalEditor: "x" } },
+      { settings: { terminalFontSizeRemote: 14 }, workspaceId: "ws-home" },
+      { settings: null },
+      { settings: [] },
+      { settings: {} },
+      {},
+    ]) {
+      expect(decide("/api/settings/update", body), JSON.stringify(body)).toMatchObject({
         allow: false,
         reason: "route-not-available-to-mobile",
       });

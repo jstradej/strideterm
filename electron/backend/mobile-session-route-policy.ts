@@ -209,6 +209,13 @@ export function workspaceOfSessionId(sessionId: string): string {
 
 export function evaluateMobileRoute(input: MobileRouteInput): MobileRouteDecision {
   const { pathname, body, profileId } = input;
+  // A mobile terminal persists its own zoom through the normal settings API.
+  // Keep that route denied by default, but allow this one transport-specific,
+  // non-security preference when it is the entire request. In particular, a
+  // mixed settings patch must not inherit permission for any other setting.
+  if (pathname === "/api/settings/update" && isMobileTerminalFontSizeUpdate(body)) {
+    return { allow: true };
+  }
   const cls = classifyMobileRoute(pathname);
   if (cls === "own-check") return { allow: true };
   if (cls === "deny") {
@@ -252,4 +259,14 @@ export function evaluateMobileRoute(input: MobileRouteInput): MobileRouteDecisio
   const asserted = body.profileId;
   if (typeof asserted === "string" && asserted && asserted !== profileId) return outside("profile", asserted);
   return { allow: true };
+}
+
+function isMobileTerminalFontSizeUpdate(body: Record<string, unknown>): boolean {
+  if (Object.keys(body).length !== 1) return false;
+  const settings = body.settings;
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return false;
+  const entries = Object.entries(settings);
+  if (entries.length !== 1 || entries[0][0] !== "terminalFontSizeRemote") return false;
+  const size = entries[0][1];
+  return typeof size === "number" && Number.isInteger(size) && size >= 8 && size <= 32;
 }
