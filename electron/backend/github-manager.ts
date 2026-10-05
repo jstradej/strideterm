@@ -936,7 +936,21 @@ export class GitHubManager extends BaseProviderManager {
   // Write actions
   // ---------------------------------------------------------------------------
 
-  async addPullRequestComment({ prKey, body }: { prKey: string; body: string }): Promise<void> {
+  async addPullRequestComment({
+    prKey,
+    body,
+    threadId = null,
+    filePath,
+    lineNumber,
+    lineSide = "new",
+  }: {
+    prKey: string;
+    body: string;
+    threadId?: string | number | null;
+    filePath?: string;
+    lineNumber?: number | null;
+    lineSide?: "old" | "new";
+  }): Promise<void> {
     const summary = await this.ensurePullRequestDetail(prKey);
     this.setAuditContext({ connectionId: (summary.connectionId as string) || "", userInitiated: true });
     const connection = this.findConnection(summary.connectionId as string);
@@ -948,7 +962,30 @@ export class GitHubManager extends BaseProviderManager {
     const api = this.api as any;
     const repository = summary.repository as Record<string, unknown>;
     const pullRequest = summary.pullRequest as Record<string, unknown>;
-    await api.createIssueComment(connection, token, repository.owner, repository.name, pullRequest.number, body);
+    const owner = repository.owner as string;
+    const repo = repository.name as string;
+    const pullNumber = pullRequest.number as number;
+
+    // A thread with a file is a review-comment thread keyed by its root comment;
+    // one without is an issue comment, which GitHub has no replies for.
+    if (threadId && filePath) {
+      await api.createReviewCommentReply(connection, token, owner, repo, pullNumber, threadId, body);
+      return;
+    }
+    if (!threadId && filePath && Number.isInteger(lineNumber) && Number(lineNumber) > 0) {
+      // The cached head SHA predates a push-and-publish, so ask for the current one.
+      const pr = await api.getPullRequest(connection, token, owner, repo, pullNumber);
+      await api.createReviewComment(connection, token, owner, repo, pullNumber, {
+        body,
+        commitId: pr?.head?.sha || "",
+        // GitHub wants a repo-relative path without the leading "/" ADO needs.
+        path: filePath.replace(/\\/g, "/").replace(/^\/+/, ""),
+        line: Number(lineNumber),
+        side: lineSide === "old" ? "LEFT" : "RIGHT",
+      });
+      return;
+    }
+    await api.createIssueComment(connection, token, owner, repo, pullNumber, body);
   }
 
   async submitPullRequestReview({

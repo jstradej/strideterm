@@ -188,4 +188,73 @@ describe("syncReviewBridgePullRequest — cross-profile viewer guard", () => {
       }
     },
   );
+
+  test.each(["sync", "push"] as const)(
+    "hands the inline comment location to GitHub through the real store and %s handler",
+    async (publishMode) => {
+      const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-publish-github-"));
+      tempPaths.push(rootPath);
+      const prKey = "gh-main:acme:web:42";
+      const store = await createReviewBridgeStore(rootPath);
+      openStores.push(store);
+      await store.syncPullRequest({
+        provider: "github",
+        prKey,
+        connectionId: "gh-main",
+        repository: { id: "", name: "web" },
+        pullRequest: { id: 42, title: "Inline location", status: "open", sourceRefName: "feature" },
+        threads: [],
+      });
+      await store.createDraftComment({
+        prKey,
+        body: "The parser can throw here.",
+        filePath: "src/parser.ts",
+        lineNumber: 42,
+        lineSide: "old",
+        autoQueue: true,
+      });
+
+      const addPullRequestComment = vi.fn(async () => {});
+      const handlers = createReviewBridgeHandlers({
+        azure: { addPullRequestComment: vi.fn(), findSummary: () => null },
+        github: { addPullRequestComment, findSummary: () => null },
+        reviewBridgeStore: store,
+        getState: () => ({
+          workspaces: [
+            {
+              id: "review-workspace",
+              cwd: rootPath,
+              review: { provider: "github", prKey, pullRequest: { sourceRefName: "feature" } },
+            },
+          ],
+        }),
+        getPayload: () => ({}),
+        broadcastState: vi.fn(),
+        refreshAzure: vi.fn(async () => {}),
+        refreshGitHub: vi.fn(async () => {}),
+        refreshGit: vi.fn(async () => {}),
+        assertWorkspaceInViewerProfile: vi.fn(),
+        assertPrInViewerProfile: vi.fn(),
+        git: { execGit: vi.fn(async () => ({ stdout: "0" })) },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+
+      if (publishMode === "sync") {
+        await handlers.syncReviewBridgePullRequest({ prKey });
+      } else {
+        await handlers.pushAndPublishReview({ workspaceId: "review-workspace" });
+      }
+      await store.close();
+
+      expect(addPullRequestComment).toHaveBeenCalledTimes(1);
+      expect(addPullRequestComment).toHaveBeenCalledWith({
+        prKey,
+        body: "The parser can throw here.",
+        threadId: null,
+        filePath: "src/parser.ts",
+        lineNumber: 42,
+        lineSide: "old",
+      });
+    },
+  );
 });

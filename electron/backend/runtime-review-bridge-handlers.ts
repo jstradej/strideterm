@@ -116,7 +116,14 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await reviewBridgeStore.syncPendingDrafts(prKey, async (entry: any) => {
         if (isGitHub) {
-          await github.addPullRequestComment({ prKey, body: entry.body });
+          await github.addPullRequestComment({
+            prKey,
+            body: entry.body,
+            threadId: entry.remoteThreadId,
+            filePath: entry.comment?.filePath,
+            lineNumber: entry.comment?.lineNumber,
+            lineSide: entry.comment?.lineSide,
+          });
         } else {
           await azure.addPullRequestComment({
             prKey,
@@ -188,7 +195,14 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await reviewBridgeStore.syncPendingDrafts(prKey, async (entry: any) => {
           if (provider === "github") {
-            await github.addPullRequestComment({ prKey, body: entry.body });
+            await github.addPullRequestComment({
+              prKey,
+              body: entry.body,
+              threadId: entry.remoteThreadId,
+              filePath: entry.comment?.filePath,
+              lineNumber: entry.comment?.lineNumber,
+              lineSide: entry.comment?.lineSide,
+            });
           } else {
             await azure.addPullRequestComment({
               prKey,

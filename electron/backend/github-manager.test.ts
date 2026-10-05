@@ -309,6 +309,68 @@ describe("GitHubManager check-run aggregation", () => {
   });
 });
 
+describe("GitHubManager addPullRequestComment", () => {
+  async function setup() {
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42, { head: { sha: "sha-42", ref: "feature" } });
+    const { manager, fetchImpl } = createManager({
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    const posts = () =>
+      fetchImpl.mock.calls
+        .filter(([, options]) => (options as RequestInit | undefined)?.method === "POST")
+        .map(([url, options]) => ({
+          url: String(url),
+          body: JSON.parse(String((options as RequestInit).body)) as Record<string, unknown>,
+        }));
+    return { prKey, pr, manager, posts };
+  }
+
+  test.each([
+    ["old", "LEFT"],
+    ["new", "RIGHT"],
+  ] as const)("anchors a %s-side comment as a review comment on the current head", async (lineSide, side) => {
+    const { prKey, pr, manager, posts } = await setup();
+    // A push between the last sync and the publish moves the head.
+    pr.head = { sha: "sha-pushed", ref: "feature" };
+
+    await manager.addPullRequestComment({
+      prKey,
+      body: "The parser can throw here.",
+      filePath: "/src\\parser.ts",
+      lineNumber: 12,
+      lineSide,
+    });
+
+    expect(posts()).toEqual([
+      {
+        url: "https://api.github.com/repos/acme/web/pulls/42/comments",
+        body: { body: "The parser can throw here.", commit_id: "sha-pushed", path: "src/parser.ts", line: 12, side },
+      },
+    ]);
+  });
+
+  test("replies inside a review-comment thread", async () => {
+    const { prKey, manager, posts } = await setup();
+    await manager.addPullRequestComment({ prKey, body: "Fixed.", threadId: 777, filePath: "src/parser.ts" });
+    expect(posts()).toEqual([
+      { url: "https://api.github.com/repos/acme/web/pulls/42/comments/777/replies", body: { body: "Fixed." } },
+    ]);
+  });
+
+  test.each([
+    ["a comment with no location", {}],
+    ["a reply to a conversation comment", { threadId: 555, filePath: "" }],
+  ])("posts %s to the PR conversation", async (_label, extra) => {
+    const { prKey, manager, posts } = await setup();
+    await manager.addPullRequestComment({ prKey, body: "LGTM", ...extra });
+    expect(posts()).toEqual([
+      { url: "https://api.github.com/repos/acme/web/issues/42/comments", body: { body: "LGTM" } },
+    ]);
+  });
+});
+
 describe("GitHubManager inbox dedup", () => {
   test("collapses the same PR reachable via two GitHub connections into one inbox entry", async () => {
     const searchItems = [searchItem("acme", "web", 42)];

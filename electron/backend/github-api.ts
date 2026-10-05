@@ -48,6 +48,14 @@ interface SubmitReviewOptions {
   body?: string;
 }
 
+interface CreateReviewCommentOptions {
+  body: string;
+  commitId: string;
+  path: string;
+  line: number;
+  side: "LEFT" | "RIGHT";
+}
+
 interface CreatePullRequestOptions {
   title: string;
   body?: string;
@@ -169,6 +177,25 @@ export function createGitHubApi(
     perPage = 100,
   ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/comments?per_page=${perPage}&sort=created&direction=asc`;
+  }
+
+  function buildCreateReviewCommentUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+  ): string {
+    return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/comments`;
+  }
+
+  function buildCreateReviewCommentReplyUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    commentId: number | string,
+  ): string {
+    return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/comments/${encodeURIComponent(String(commentId))}/replies`;
   }
 
   // Issue comments (general conversation)
@@ -352,6 +379,39 @@ export function createGitHubApi(
     });
   }
 
+  async function createReviewComment(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    { body, commitId, path, line, side }: CreateReviewCommentOptions,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+  ): Promise<any> {
+    return requestJson(buildCreateReviewCommentUrl(connection, owner, repo, pullNumber), {
+      token,
+      method: "POST",
+      body: { body, commit_id: commitId, path, line, side },
+    });
+  }
+
+  async function createReviewCommentReply(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    commentId: number | string,
+    body: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+  ): Promise<any> {
+    return requestJson(buildCreateReviewCommentReplyUrl(connection, owner, repo, pullNumber, commentId), {
+      token,
+      method: "POST",
+      body: { body },
+    });
+  }
+
   async function listUserRepos(
     connection: Connection,
     token: string,
@@ -415,6 +475,8 @@ export function createGitHubApi(
     rerunCheckSuite,
     listRequestedReviewers,
     createIssueComment,
+    createReviewComment,
+    createReviewCommentReply,
     submitReview,
     listUserRepos,
     listBranches,
