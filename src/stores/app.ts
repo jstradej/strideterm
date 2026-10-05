@@ -250,6 +250,23 @@ export const useAppStore = defineStore("app", () => {
     return _api!;
   }
 
+  /**
+   * True when this client is the phone's WebView onto a remote session: the remote
+   * transport plus the native `StridetermHost` channel the Flutter WebView installs.
+   */
+  function isMobileSession(): boolean {
+    if (!isRemoteTransport.value) return false;
+    const host = (window as unknown as Record<string, unknown>).StridetermHost as { postMessage?: unknown } | undefined;
+    return typeof host?.postMessage === "function";
+  }
+
+  function sidebarViewModeStorageKey(profileId: string): string {
+    return `strideterm:sidebarWorkspaceViewMode:${profileId}`;
+  }
+
+  // Per-device sidebar view-mode overrides (mobile sessions only), keyed by profile id.
+  const localSidebarViewModes = ref<Record<string, "tree" | "recent">>({});
+
   // --- Memoized computed ---
   // These computed properties return the same reference when the result is structurally
   // identical, preventing unnecessary downstream re-renders on every payload broadcast.
@@ -345,6 +362,26 @@ export const useAppStore = defineStore("app", () => {
     _prevProfileKey = key;
     _prevProfile = found;
     return found;
+  });
+
+  /**
+   * The sidebar workspace list mode actually in force. A mobile session reads its
+   * local per-device override first; everything else uses the profile's saved mode.
+   */
+  const sidebarWorkspaceViewMode = computed<"tree" | "recent">(() => {
+    const profile = activeProfile.value as AnyApi;
+    if (profile?.id && isMobileSession()) {
+      let local: string | null | undefined = localSidebarViewModes.value[profile.id];
+      if (!local) {
+        try {
+          local = window.localStorage.getItem(sidebarViewModeStorageKey(profile.id));
+        } catch {
+          local = null;
+        }
+      }
+      if (local === "recent" || local === "tree") return local;
+    }
+    return profile?.sidebarWorkspaceViewMode === "recent" ? "recent" : "tree";
   });
 
   // --- Workspace grid computed ---
@@ -1989,6 +2026,17 @@ export const useAppStore = defineStore("app", () => {
   async function saveSidebarWorkspaceViewMode(mode: "tree" | "recent"): Promise<void> {
     const profile = activeProfile.value as AnyApi;
     if (!profile?.id) return;
+    if (isMobileSession()) {
+      // A mobile session is denied `/api/profile/*`, so here the view mode is a
+      // per-device display preference kept in this WebView's own storage.
+      localSidebarViewModes.value = { ...localSidebarViewModes.value, [profile.id]: mode };
+      try {
+        window.localStorage.setItem(sidebarViewModeStorageKey(profile.id), mode);
+      } catch {
+        /* Storage unavailable: the in-memory override still applies for this load. */
+      }
+      return;
+    }
     await apiActions.saveProfile({ ...profile, sidebarWorkspaceViewMode: mode });
   }
 
@@ -2326,6 +2374,7 @@ export const useAppStore = defineStore("app", () => {
     captureRendererCpuProfile,
     revealCpuProfile,
     saveSidebarWorkspaceViewMode,
+    sidebarWorkspaceViewMode,
     // Mobile state + actions (plan §10.5)
     mobileEnabled,
     mobileDevices,

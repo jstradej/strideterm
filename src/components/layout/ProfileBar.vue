@@ -84,11 +84,7 @@ const query = computed({
   },
 });
 
-const viewMode = computed<"tree" | "recent">(() =>
-  (store.activeProfile as { sidebarWorkspaceViewMode?: string } | null)?.sidebarWorkspaceViewMode === "recent"
-    ? "recent"
-    : "tree",
-);
+const viewMode = computed<"tree" | "recent">(() => store.sidebarWorkspaceViewMode);
 
 async function toggleViewMode(): Promise<void> {
   const next = viewMode.value === "recent" ? "tree" : "recent";

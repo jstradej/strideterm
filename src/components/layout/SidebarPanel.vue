@@ -675,11 +675,7 @@ async function onActivateAgentRow(target: { hostWorkspaceId: string; viewId: str
 
 // --- "Recently worked" shortcuts -----------------------------------------
 
-const viewMode = computed<"tree" | "recent">(() =>
-  (store.activeProfile as { sidebarWorkspaceViewMode?: string } | null)?.sidebarWorkspaceViewMode === "recent"
-    ? "recent"
-    : "tree",
-);
+const viewMode = computed<"tree" | "recent">(() => store.sidebarWorkspaceViewMode);
 
 // The recent mode adds a shortcut list ABOVE the canonical tree; it never
 // replaces it. An active search SUSPENDS it — two filtered result sets for one

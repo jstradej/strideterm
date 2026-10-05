@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useAppStore } from "./app.js";
 
@@ -158,5 +158,78 @@ describe("useAppStore — saveSidebarWorkspaceViewMode", () => {
     expect(remoteTransport.saveProfile).toHaveBeenCalledWith(
       expect.objectContaining({ id: "p1", sidebarWorkspaceViewMode: "recent" }),
     );
+  });
+});
+
+describe("useAppStore — sidebar view mode in a mobile session", () => {
+  const KEY = "strideterm:sidebarWorkspaceViewMode:p1";
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+    window.localStorage.clear();
+    (window as AnyApi).StridetermHost = { postMessage: vi.fn() };
+  });
+
+  afterEach(() => {
+    delete (window as AnyApi).StridetermHost;
+    vi.restoreAllMocks();
+  });
+
+  async function mobileStore() {
+    const payload = makeBasePayload();
+    (payload as AnyApi).remoteClient = { id: "r1", profileId: "p1", activeWorkspaceId: "", activeSessionId: "" };
+    const transport = makeTransport(payload, true);
+    return { transport, store: await initStore(transport) };
+  }
+
+  it("stores the mode locally without calling saveProfile", async () => {
+    const { transport, store } = await mobileStore();
+    expect(store.sidebarWorkspaceViewMode).toBe("tree");
+
+    await store.saveSidebarWorkspaceViewMode("recent");
+
+    expect(transport.saveProfile).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(KEY)).toBe("recent");
+    expect(store.sidebarWorkspaceViewMode).toBe("recent");
+  });
+
+  it("survives a reload of the store", async () => {
+    const first = await mobileStore();
+    await first.store.saveSidebarWorkspaceViewMode("recent");
+
+    setActivePinia(createPinia());
+    const second = await mobileStore();
+    expect(second.store.sidebarWorkspaceViewMode).toBe("recent");
+  });
+
+  it("falls back to the profile value when storage throws", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    const { transport, store } = await mobileStore();
+    expect(store.sidebarWorkspaceViewMode).toBe("tree");
+
+    await expect(store.saveSidebarWorkspaceViewMode("recent")).resolves.toBeUndefined();
+
+    expect(transport.saveProfile).not.toHaveBeenCalled();
+    expect(store.sidebarWorkspaceViewMode).toBe("recent");
+  });
+
+  it("a non-mobile remote session still saves the profile and ignores local storage", async () => {
+    delete (window as AnyApi).StridetermHost;
+    window.localStorage.setItem(KEY, "recent");
+    const payload = makeBasePayload();
+    (payload as AnyApi).remoteClient = { id: "r1", profileId: "p1", activeWorkspaceId: "", activeSessionId: "" };
+    const transport = makeTransport(payload, true);
+    transport.saveProfile.mockResolvedValue(payload);
+    const store = await initStore(transport);
+
+    expect(store.sidebarWorkspaceViewMode).toBe("tree");
+    await store.saveSidebarWorkspaceViewMode("recent");
+    expect(transport.saveProfile).toHaveBeenCalledTimes(1);
   });
 });
