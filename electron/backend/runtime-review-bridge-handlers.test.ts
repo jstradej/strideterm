@@ -165,7 +165,7 @@ describe("syncReviewBridgePullRequest — cross-profile viewer guard", () => {
       expect(requests).toHaveLength(1);
       expect(requests[0].url).toContain("/pullRequests/42/threads?");
       expect(requests[0].body.threadContext).toMatchObject({
-        filePath: "src/parser.ts",
+        filePath: "/src/parser.ts",
         ...(lineSide === "old"
           ? {
               leftFileStart: { line: 42, offset: 1 },

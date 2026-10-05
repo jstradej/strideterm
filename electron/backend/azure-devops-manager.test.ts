@@ -883,7 +883,7 @@ describe("AzureDevOpsManager", () => {
       ),
     ) as { threadContext?: unknown };
     expect(createdThread.threadContext).toMatchObject({
-      filePath: "src/example.ts",
+      filePath: "/src/example.ts",
       leftFileStart: { line: 8, offset: 1 },
       leftFileEnd: { line: 8, offset: 1 },
     });
@@ -892,6 +892,35 @@ describe("AzureDevOpsManager", () => {
         ([url, options]) => String(url).includes("/reviewers/reviewer-1") && options.method === "PUT",
       ),
     ).toBe(true);
+  });
+
+  test.each([
+    ["src/example.ts", "/src/example.ts"],
+    ["/src/example.ts", "/src/example.ts"],
+    ["src\\nested\\example.ts", "/src/nested/example.ts"],
+  ])("roots inline comment path %s as %s for ADO", async (filePath, expected) => {
+    const { manager, fetchImpl } = createManager();
+    await manager.sync({
+      connections: [connection],
+      workspaces: [],
+      gitSnapshots: {},
+    });
+
+    await manager.addPullRequestComment({
+      prKey: createPullRequestKey("ado-main", "repo-1", 123),
+      content: "LGTM",
+      filePath,
+      lineNumber: 8,
+    });
+
+    const createdThread = JSON.parse(
+      String(
+        fetchImpl.mock.calls.find(
+          ([url, options]) => String(url).includes("/threads?api-version=7.1") && options.method === "POST",
+        )?.[1].body,
+      ),
+    ) as { threadContext?: { filePath?: string } };
+    expect(createdThread.threadContext?.filePath).toBe(expected);
   });
 
   test("stale PR resolution marks a PR completed when the detail check 404s", async () => {

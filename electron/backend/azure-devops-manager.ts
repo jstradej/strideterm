@@ -1914,7 +1914,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
           ...(filePath && Number.isInteger(lineNumber) && Number(lineNumber) > 0
             ? {
                 threadContext: {
-                  filePath,
+                  // ADO anchors a thread only to a repo-rooted path ("/src/a.ts"); a relative
+                  // one is accepted but shown as "file no longer exists in the latest changes".
+                  filePath: `/${filePath.replace(/\\/g, "/").replace(/^\/+/, "")}`,
                   ...(lineSide === "old"
                     ? {
                         leftFileStart: { line: lineNumber, offset: 1 },
