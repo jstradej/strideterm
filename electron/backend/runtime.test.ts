@@ -4466,6 +4466,127 @@ describe("runtime integration", () => {
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
   });
 
+  async function createWorktreeFixture(execFileTextImpl?: ReturnType<typeof vi.fn>) {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-worktree-"));
+    tempPaths.push(projectRoot);
+    const fixture = await createFixture({
+      execFileTextImpl,
+      initialState: {
+        activeProjectId: "frontend",
+        projects: [
+          {
+            id: "frontend",
+            name: "Frontend",
+            icon: "FE",
+            color: "#ffa424",
+            kind: "terminal",
+            cwd: projectRoot,
+            activePanelId: "dev",
+            panels: [{ id: "dev", title: "Dev", command: "", shell: true, startup: "manual" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    return { fixture, projectRoot };
+  }
+
+  // The dialog's own placeholder is `feature/my-branch`, and the backend used
+  // to refuse every `/` — with the refusal never reaching the user.
+  test("createWorktree accepts a slash in the branch name and folds it into the folder name", async () => {
+    const { fixture, projectRoot } = await createWorktreeFixture();
+    const calls = captureLogCalls();
+    try {
+      const payload = await fixture.runtime.createWorktree({ projectId: "frontend", name: "feature/my-branch" });
+
+      const treePath = path.join(projectRoot, ".strideterm", "tree", "feature-my-branch");
+      expect(fixture.execFileText).toHaveBeenCalledWith(
+        "git",
+        ["worktree", "add", treePath, "-b", "feature/my-branch"],
+        { cwd: projectRoot },
+      );
+      expect(payload.appState.workspaces.find((w) => w.name === "Frontend / feature/my-branch")?.cwd).toBe(treePath);
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "info",
+          message: "createWorktree: worktree created",
+          meta: expect.objectContaining({ branch: "feature/my-branch", treePath }),
+        }),
+      );
+    } finally {
+      logCallCapture.current = null;
+    }
+  });
+
+  test("createWorktree refuses characters outside the branch-name set and logs the refusal", async () => {
+    const { fixture } = await createWorktreeFixture();
+    const calls = captureLogCalls();
+    try {
+      await expect(fixture.runtime.createWorktree({ projectId: "frontend", name: "oprava čtení" })).rejects.toThrow(
+        /alphanumeric characters, dots, hyphens, slashes, or underscores/,
+      );
+      expect(
+        fixture.execFileText.mock.calls.some(
+          (call: unknown[]) => Array.isArray(call[1]) && (call[1] as unknown[])[0] === "worktree",
+        ),
+      ).toBe(false);
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "createWorktree: failed",
+          meta: expect.objectContaining({ workspaceId: "frontend", name: "oprava čtení" }),
+        }),
+      );
+    } finally {
+      logCallCapture.current = null;
+    }
+  });
+
+  // execFileText rejects with a plain { error, stdout, stderr } object, which
+  // Electron's IPC turns into "[object Object]". The plain createWorktree path
+  // must hand the renderer a real Error carrying git's stderr — and must NOT
+  // borrow createTaskWorkspace's retry-against-existing-branch fallback.
+  test("createWorktree turns a git failure into an Error with git's stderr, logs it, and adds no workspace", async () => {
+    const execFileText = vi.fn(async (_cmd: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "worktree" && args[1] === "add") {
+        throw {
+          error: new Error("Command failed: git worktree add"),
+          stdout: "",
+          stderr: "fatal: a branch named 'feature-x' already exists\n",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const { fixture } = await createWorktreeFixture(execFileText);
+    const workspacesBefore = fixture.store.getState().workspaces.length;
+    const calls = captureLogCalls();
+    try {
+      const error = await fixture.runtime.createWorktree({ projectId: "frontend", name: "feature-x" }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        "Failed to create git worktree: fatal: a branch named 'feature-x' already exists",
+      );
+      const worktreeAdds = execFileText.mock.calls.filter((c) => c[1][0] === "worktree" && c[1][1] === "add");
+      expect(worktreeAdds).toHaveLength(1);
+      expect(fixture.store.getState().workspaces).toHaveLength(workspacesBefore);
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "createWorktree: failed",
+          meta: expect.objectContaining({
+            name: "feature-x",
+            err: "Failed to create git worktree: fatal: a branch named 'feature-x' already exists",
+          }),
+        }),
+      );
+    } finally {
+      logCallCapture.current = null;
+    }
+  });
+
   test("saveWorkspace spawns default-startup panels in the CALLER's workspace, not the global one", async () => {
     // A remote/mobile viewer (or a second desktop window) sits on its own
     // workspace while the global activeWorkspaceId points at whatever the

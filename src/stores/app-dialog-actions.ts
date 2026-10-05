@@ -760,34 +760,19 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       : [];
     const isMultiRepo = gitRoots.length >= 2;
 
-    if (isMultiRepo) {
-      const repoChoices = gitRoots.map((root) => ({
-        value: root,
-        label: formatRootBasename(root, gitRoots),
-      }));
-      openDialog("WorktreeDialog", {
-        repoChoices,
-        preselectedRootPath: preselectedRootPath || gitRoots[0],
-        onCancel: closeDialog,
-        onSubmit: async ({ name, rootPath }: { name: string; rootPath: string }) => {
-          closeDialog();
-          await ctx.createWorktree(workspaceId, name, rootPath);
-        },
-      });
-      return;
-    }
-
-    openDialog("TextInputDialog", {
-      eyebrow: "Git",
-      title: "New worktree",
-      label: "Branch name",
-      value: "",
-      placeholder: "feature/my-branch",
-      submitLabel: "Create",
+    // One dialog for both shapes — it hides the repo picker below two repos.
+    // WorktreeDialog awaits onSubmit and shows a rejection inline, so the
+    // dialog closes only once the worktree exists. Closing it first (as the
+    // single-repo TextInputDialog path did) dropped every backend error.
+    openDialog("WorktreeDialog", {
+      repoChoices: isMultiRepo
+        ? gitRoots.map((root) => ({ value: root, label: formatRootBasename(root, gitRoots) }))
+        : [],
+      preselectedRootPath: preselectedRootPath || (isMultiRepo ? gitRoots[0] : ""),
       onCancel: closeDialog,
-      onSubmit: async (name: string) => {
+      onSubmit: async ({ name, rootPath }: { name: string; rootPath: string }) => {
+        await ctx.createWorktree(workspaceId, name, rootPath);
         closeDialog();
-        await ctx.createWorktree(workspaceId, name, preselectedRootPath || "");
       },
     });
   }

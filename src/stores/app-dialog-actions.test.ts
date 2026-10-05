@@ -513,6 +513,51 @@ describe("createDialogActions.openCompanionAgentDialog", () => {
   });
 });
 
+describe("createDialogActions.createWorktreeWithDialog", () => {
+  it("single-repo workspace uses WorktreeDialog (no repo picker) and closes once the worktree exists", async () => {
+    const ctx = makeCtx({ appState: { workspaces: [{ id: "ws-1", cwd: "/repo" }] } });
+    ctx.createWorktree = vi.fn(async () => undefined);
+    const actions = createDialogActions(ctx);
+
+    actions.createWorktreeWithDialog("ws-1");
+
+    expect(ctx.overlay.value).toBe("WorktreeDialog");
+    expect(ctx.overlayProps.value.repoChoices).toEqual([]);
+    await (ctx.overlayProps.value.onSubmit as (p: AnyApi) => Promise<void>)({ name: "feature/x", rootPath: "" });
+    expect(ctx.createWorktree).toHaveBeenCalledWith("ws-1", "feature/x", "");
+    expect(ctx.overlay.value).toBeNull();
+  });
+
+  // Regression: the dialog used to close BEFORE the create, so a backend
+  // refusal (e.g. a branch name with `/`) left the user with nothing at all.
+  it("a backend rejection re-throws for the inline banner and keeps the dialog open", async () => {
+    const ctx = makeCtx({ appState: { workspaces: [{ id: "ws-1", cwd: "/repo" }] } });
+    ctx.createWorktree = vi.fn(() =>
+      Promise.reject(new Error("Failed to create git worktree: fatal: a branch named 'x' already exists")),
+    );
+    const actions = createDialogActions(ctx);
+
+    actions.createWorktreeWithDialog("ws-1");
+    await expect(
+      (ctx.overlayProps.value.onSubmit as (p: AnyApi) => Promise<void>)({ name: "x", rootPath: "" }),
+    ).rejects.toThrow("a branch named 'x' already exists");
+
+    expect(ctx.overlay.value).toBe("WorktreeDialog");
+  });
+
+  it("multi-repo workspace offers every git root and preselects the requested one", () => {
+    const ctx = makeCtx({
+      appState: { workspaces: [{ id: "ws-1", cwd: "/stack", gitRoots: ["/stack/a", "/stack/b"] }] },
+    });
+    const actions = createDialogActions(ctx);
+
+    actions.createWorktreeWithDialog("ws-1", { preselectedRootPath: "/stack/b" });
+
+    expect((ctx.overlayProps.value.repoChoices as AnyApi[]).map((c) => c.value)).toEqual(["/stack/a", "/stack/b"]);
+    expect(ctx.overlayProps.value.preselectedRootPath).toBe("/stack/b");
+  });
+});
+
 // makeOpenConnectionDialog is the factory behind openAzureConnectionDialog /
 // openGitHubConnectionDialog. These tests exercise it directly (not through
 // createDialogActions) to prove "azure" vs "github" config wires the right

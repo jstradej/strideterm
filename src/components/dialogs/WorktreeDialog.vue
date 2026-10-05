@@ -25,16 +25,24 @@
           data-validation-required="Enter a name for the new branch."
         />
       </label>
+      <div v-if="errorMessage" class="dialog__error" role="alert">
+        <span class="dialog__error-icon" aria-hidden="true">⚠</span>
+        <span class="dialog__error-text">{{ errorMessage }}</span>
+      </div>
       <footer class="dialog__footer">
-        <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-        <button type="submit" class="button" :disabled="!canSubmit">Create</button>
+        <button type="button" class="button button--ghost" :disabled="submitting" @click="emit('cancel')">
+          Cancel
+        </button>
+        <button type="submit" class="button" :disabled="!canSubmit || submitting">
+          {{ submitting ? "Creating…" : "Create" }}
+        </button>
       </footer>
     </form>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, useAttrs } from "vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
 interface RepoChoice {
@@ -52,14 +60,22 @@ const props = withDefaults(defineProps<Props>(), {
   preselectedRootPath: "",
 });
 
+// "submit" is deliberately NOT a declared emit: emit is fire-and-forget, so a
+// failed create closed nothing, showed nothing and logged nothing. Calling
+// attrs.onSubmit lets us await it and show the rejection inline (same as
+// WorkspaceDialog / CompanionAgentDialog). inheritAttrs: false stops Vue from
+// also binding onSubmit as a native "submit" listener on the root div.
 const emit = defineEmits<{
   cancel: [];
-  submit: [payload: { name: string; rootPath: string }];
 }>();
+const attrs = useAttrs();
+defineOptions({ inheritAttrs: false });
 
 const inputRef = ref<HTMLInputElement | null>(null);
 const branchName = ref("");
 const selectedRoot = ref(props.preselectedRootPath || props.repoChoices[0]?.value || "");
+const submitting = ref(false);
+const errorMessage = ref("");
 
 const repoOptions = computed(() => props.repoChoices.map((r) => ({ value: r.value, label: r.label })));
 
@@ -75,11 +91,27 @@ onMounted(() =>
   }),
 );
 
-function handleSubmit() {
+async function handleSubmit() {
   const name = branchName.value.trim();
-  if (!name) return;
+  if (!name || submitting.value) return;
   if (props.repoChoices.length > 1 && !selectedRoot.value) return;
-  emit("submit", { name, rootPath: selectedRoot.value || "" });
+  submitting.value = true;
+  errorMessage.value = "";
+  try {
+    await (attrs.onSubmit as ((payload: { name: string; rootPath: string }) => Promise<void>) | undefined)?.({
+      name,
+      rootPath: selectedRoot.value || "",
+    });
+  } catch (err) {
+    errorMessage.value = extractErrorMessage(err);
+  } finally {
+    submitting.value = false;
+  }
+}
+
+function extractErrorMessage(err: unknown): string {
+  const raw = (err as Error)?.message || String(err || "Unknown error");
+  return raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "");
 }
 </script>
 

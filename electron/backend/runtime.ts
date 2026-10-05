@@ -7077,9 +7077,12 @@ export async function createRuntime({
    *
    * createWorktree and createTaskWorkspace had drifted on failure handling
    * before this extraction — createTaskWorkspace retries against an
-   * existing branch and rewrites common git failures into friendlier
-   * messages, createWorktree does neither. `richErrorHandling` preserves
-   * both original behaviors verbatim rather than silently merging them.
+   * existing branch and rewrites "not a git repository" into a task-dialog
+   * hint, createWorktree does neither. `richErrorHandling` keeps those two
+   * task-only behaviors opt-in. Every other git failure, on both paths,
+   * becomes an Error carrying git's stderr: execFileText rejects with a
+   * plain `{ error, stdout, stderr }` object, which crosses IPC as
+   * "[object Object]" and left the New worktree dialog with nothing to show.
    */
   async function ensureWorktree(
     repoPath: string,
@@ -7102,13 +7105,8 @@ export async function createRuntime({
     // Ensure directory exists for worktree
     await mkdir(path.dirname(treePath), { recursive: true });
 
-    if (!richErrorHandling) {
-      // git worktree add — run inside the chosen repo root, not the workspace parent
-      await execFileTextImpl("git", ["worktree", "add", treePath, "-b", branchOrName], { cwd: repoPath });
-      return treePath;
-    }
-
     try {
+      // git worktree add — run inside the chosen repo root, not the workspace parent
       await execFileTextImpl("git", ["worktree", "add", treePath, "-b", branchOrName], { cwd: repoPath });
     } catch (err) {
       // execFileText rejects with { error, stdout, stderr } — the useful
@@ -7116,9 +7114,9 @@ export async function createRuntime({
       // rely on it for either the branch-exists fallback or the user error.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || (err as Error).message || "";
-      if (stderr.includes("already exists")) {
+      if (richErrorHandling && stderr.includes("already exists")) {
         await execFileTextImpl("git", ["worktree", "add", treePath, branchOrName], { cwd: repoPath });
-      } else if (stderr.includes("not a git repository")) {
+      } else if (richErrorHandling && stderr.includes("not a git repository")) {
         // Most common user mistake — surface a clear, actionable message.
         throw new Error(
           `"${repoPath}" is not a git repository. Initialize with \`git init\` there, or disable "Use git worktree" in the task dialog.`,
@@ -10650,84 +10648,99 @@ export async function createRuntime({
       windowId?: string,
     ) {
       const targetWorkspaceId = workspaceId || projectId;
-      if (!name || !/^[a-zA-Z0-9._-]+$/.test(name)) {
-        throw new Error("Worktree name must contain only alphanumeric characters, dots, hyphens, or underscores.");
+      try {
+        // Same character set createTaskWorkspace accepts. `/` is safe on disk:
+        // worktreeTreePath folds it into `-`, so the folder stays one level
+        // under .strideterm/tree/. Anything else git refuses (`feature/`,
+        // `a..b`) comes back as git's own message via ensureWorktree.
+        if (!name || !/^[a-zA-Z0-9._/-]+$/.test(name)) {
+          throw new Error(
+            "Worktree name must contain only alphanumeric characters, dots, hyphens, slashes, or underscores.",
+          );
+        }
+        const project = findWorkspace(getState(), targetWorkspaceId);
+        if (!project?.cwd) throw new Error("Workspace has no working directory");
+        // Refuse upfront if the parent lives in a profile the caller's window
+        // isn't bound to — a remote/mobile client must not be able to spawn
+        // a worktree on disk in another profile just by passing its ID.
+        assertWorkspaceInViewerProfile(targetWorkspaceId, windowId);
+
+        // Multi-repo: a rootPath must be chosen. Single-repo: fall back to workspace cwd.
+        const normalizePath = (p: string) =>
+          String(p || "")
+            .replace(/\\/g, "/")
+            .replace(/\/+$/, "");
+        const gitRoots = Array.isArray(project.gitRoots) ? project.gitRoots.filter(Boolean) : [];
+        let repoPath = rootPath || "";
+        if (gitRoots.length >= 2) {
+          if (!repoPath) {
+            throw new Error("Multi-repo workspace requires a repository to be selected for the worktree.");
+          }
+          const normRepo = normalizePath(repoPath);
+          const normRoots = gitRoots.map(normalizePath);
+          if (!normRoots.includes(normRepo) && normRepo !== normalizePath(project.cwd)) {
+            throw new Error(`Selected repository ${repoPath} is not part of this workspace.`);
+          }
+        } else if (!repoPath) {
+          repoPath = project.cwd;
+        }
+
+        const treePath = await ensureWorktree(repoPath, name);
+        log.info("createWorktree: worktree created", { workspaceId: targetWorkspaceId, branch: name, treePath });
+
+        // Create subproject cloning parent panels
+        const newProject = normalizeWorkspace({
+          id: `workspace-${randomUUID()}`,
+          name: `${project.name} / ${name}`,
+          icon: project.icon,
+          color: project.color,
+          kind: project.kind,
+          source: project.source,
+          pluginId: project.pluginId,
+          profileId: project.profileId,
+          connectionId: project.connectionId || "",
+          cwd: treePath,
+          notes: `Worktree of ${project.name}`,
+          activePanelId: "",
+          panels:
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: project is server state JSON, typed migration pending
+            (project as any).panels?.map((p: any) => ({
+              ...p,
+              id: `panel-${randomUUID()}`,
+              sshMcpEnabled: false,
+            })) || [],
+        });
+
+        await store.mutate((draft: AppState) => {
+          insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
+          draft.activeWorkspaceId = newProject.id;
+          // Creating a worktree workspace is work (V2 plan allowlist).
+          markWorkspaceWorked(draft, newProject.id);
+          // Entry check (assertWorkspaceInViewerProfile) already refused any
+          // cross-profile request, so the mirror here is always in-profile.
+          if (windowId) {
+            const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+            if (slot) slot.activeWorkspaceId = newProject.id;
+          }
+        });
+        // Remote viewer: show the new worktree in the caller's remote context.
+        mirrorRemoteViewerWorkspace(windowId, newProject.id);
+
+        sessions.syncWithState(getState());
+        await refreshGit(newProject.id);
+        ensureVisibleSession();
+        broadcastState();
+        refreshAzure().catch((err: unknown) => {
+          log.warn("createWorktree: refreshAzure failed", { err: (err as Error)?.message });
+        });
+        return getPayload();
+      } catch (err) {
+        // The dialog shows this to the user, but it is also the only trace of
+        // a failed create in strideterm.log — before this, nothing recorded it.
+        const message = (err as Error)?.message || String(err);
+        log.warn("createWorktree: failed", { workspaceId: targetWorkspaceId, name, rootPath, err: message });
+        throw err;
       }
-      const project = findWorkspace(getState(), targetWorkspaceId);
-      if (!project?.cwd) throw new Error("Workspace has no working directory");
-      // Refuse upfront if the parent lives in a profile the caller's window
-      // isn't bound to — a remote/mobile client must not be able to spawn
-      // a worktree on disk in another profile just by passing its ID.
-      assertWorkspaceInViewerProfile(targetWorkspaceId, windowId);
-
-      // Multi-repo: a rootPath must be chosen. Single-repo: fall back to workspace cwd.
-      const normalizePath = (p: string) =>
-        String(p || "")
-          .replace(/\\/g, "/")
-          .replace(/\/+$/, "");
-      const gitRoots = Array.isArray(project.gitRoots) ? project.gitRoots.filter(Boolean) : [];
-      let repoPath = rootPath || "";
-      if (gitRoots.length >= 2) {
-        if (!repoPath) {
-          throw new Error("Multi-repo workspace requires a repository to be selected for the worktree.");
-        }
-        const normRepo = normalizePath(repoPath);
-        const normRoots = gitRoots.map(normalizePath);
-        if (!normRoots.includes(normRepo) && normRepo !== normalizePath(project.cwd)) {
-          throw new Error(`Selected repository ${repoPath} is not part of this workspace.`);
-        }
-      } else if (!repoPath) {
-        repoPath = project.cwd;
-      }
-
-      const treePath = await ensureWorktree(repoPath, name);
-
-      // Create subproject cloning parent panels
-      const newProject = normalizeWorkspace({
-        id: `workspace-${randomUUID()}`,
-        name: `${project.name} / ${name}`,
-        icon: project.icon,
-        color: project.color,
-        kind: project.kind,
-        source: project.source,
-        pluginId: project.pluginId,
-        profileId: project.profileId,
-        connectionId: project.connectionId || "",
-        cwd: treePath,
-        notes: `Worktree of ${project.name}`,
-        activePanelId: "",
-        panels:
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: project is server state JSON, typed migration pending
-          (project as any).panels?.map((p: any) => ({
-            ...p,
-            id: `panel-${randomUUID()}`,
-            sshMcpEnabled: false,
-          })) || [],
-      });
-
-      await store.mutate((draft: AppState) => {
-        insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
-        draft.activeWorkspaceId = newProject.id;
-        // Creating a worktree workspace is work (V2 plan allowlist).
-        markWorkspaceWorked(draft, newProject.id);
-        // Entry check (assertWorkspaceInViewerProfile) already refused any
-        // cross-profile request, so the mirror here is always in-profile.
-        if (windowId) {
-          const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
-          if (slot) slot.activeWorkspaceId = newProject.id;
-        }
-      });
-      // Remote viewer: show the new worktree in the caller's remote context.
-      mirrorRemoteViewerWorkspace(windowId, newProject.id);
-
-      sessions.syncWithState(getState());
-      await refreshGit(newProject.id);
-      ensureVisibleSession();
-      broadcastState();
-      refreshAzure().catch((err: unknown) => {
-        log.warn("createWorktree: refreshAzure failed", { err: (err as Error)?.message });
-      });
-      return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async saveProfile(profile: any) {
