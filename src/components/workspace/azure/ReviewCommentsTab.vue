@@ -540,22 +540,20 @@ async function handleDeleteDraft(draftId: string) {
   }
 }
 
-async function handleResolveThread(threadId: number | string) {
+async function handleResolveThread(threadId: number) {
   busyAction.value = `resolve-${threadId}`;
   try {
-    await notifications.runWithToast("Resolve thread failed", () =>
-      appStore.azureResolveThread(props.prKey, String(threadId)),
-    );
+    await notifications.runWithToast("Resolve thread failed", () => appStore.azureResolveThread(props.prKey, threadId));
   } finally {
     busyAction.value = "";
   }
 }
 
-async function handleReactivateThread(threadId: number | string) {
+async function handleReactivateThread(threadId: number) {
   busyAction.value = `reactivate-${threadId}`;
   try {
     await notifications.runWithToast("Reactivate thread failed", () =>
-      appStore.azureReactivateThread(props.prKey, String(threadId)),
+      appStore.azureReactivateThread(props.prKey, threadId),
     );
   } finally {
     busyAction.value = "";
@@ -581,15 +579,18 @@ function openNewDraftComment() {
     placeholder: "Write your review comment...",
     submitLabel: "Create & queue",
     onCancel: () => appStore.closeDialog(),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    onSubmit: (content: any) => {
-      appStore.createReviewBridgeDraftComment({
-        prKey: props.prKey,
-        body: content,
-        authorAgent: "human",
-        autoQueue: true,
-      });
-      appStore.closeDialog();
+    // Awaited so a refused draft keeps the dialog (and the typed text) open
+    // and says why, instead of closing as if it had been created.
+    onSubmit: async (content: string) => {
+      const created = await notifications.runWithToast("Create draft failed", () =>
+        appStore.createReviewBridgeDraftComment({
+          prKey: props.prKey,
+          body: content,
+          authorAgent: "human",
+          autoQueue: true,
+        }),
+      );
+      if (created) appStore.closeDialog();
     },
   });
 }
@@ -603,16 +604,17 @@ function replyToThread(thread: Record<string, any>): void {
     placeholder: "Write your reply...",
     submitLabel: "Create & queue",
     onCancel: () => appStore.closeDialog(),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    onSubmit: (content: any) => {
-      appStore.createReviewBridgeDraftComment({
-        prKey: props.prKey,
-        body: content,
-        threadId: thread.id,
-        authorAgent: "human",
-        autoQueue: true,
-      });
-      appStore.closeDialog();
+    onSubmit: async (content: string) => {
+      const created = await notifications.runWithToast("Create draft failed", () =>
+        appStore.createReviewBridgeDraftComment({
+          prKey: props.prKey,
+          body: content,
+          threadId: thread.id,
+          authorAgent: "human",
+          autoQueue: true,
+        }),
+      );
+      if (created) appStore.closeDialog();
     },
   });
 }

@@ -18,6 +18,7 @@ const saveReviewBridgeDraft = vi.fn();
 const queueReviewBridgeDraft = vi.fn();
 const openDialog = vi.fn();
 const closeDialog = vi.fn();
+const createReviewBridgeDraftComment = vi.fn();
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
@@ -30,7 +31,7 @@ vi.mock("../../../stores/app.js", () => ({
     queueReviewBridgeDraft,
     openDialog,
     closeDialog,
-    createReviewBridgeDraftComment: vi.fn(),
+    createReviewBridgeDraftComment,
   }),
 }));
 vi.mock("../../../stores/git-ui.js", () => ({
@@ -43,6 +44,7 @@ vi.mock("../../../stores/git-ui.js", () => ({
 
 import ReviewCommentsTab from "./ReviewCommentsTab.vue";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { azureThreadStatusSchema } from "../../../../electron/backend/ipc-schemas.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function baseProps(overrides: Record<string, any> = {}) {
@@ -80,6 +82,82 @@ beforeEach(() => {
   queueReviewBridgeDraft.mockReset();
   openDialog.mockReset();
   closeDialog.mockReset();
+  createReviewBridgeDraftComment.mockReset();
+});
+
+// Regression: Resolve / Reactivate sent String(threadId), and the main
+// process's azureThreadStatusSchema (threadId: z.number()) refused it before
+// any request to Azure DevOps. The fixtures above used `id: "t1"`, which Azure
+// never returns, so the string went unnoticed; hold the payload to the schema.
+describe("ReviewCommentsTab — thread status payload matches the IPC contract", () => {
+  test.each([
+    ["Resolve", "active", azureResolveThread, "fixed"],
+    ["Reactivate", "closed", azureReactivateThread, "active"],
+  ] as const)("%s sends a numeric threadId azureThreadStatusSchema accepts", async (label, status, action, target) => {
+    action.mockResolvedValueOnce(undefined);
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({ filteredThreads: [{ id: 42, status, comments: [] }] }),
+    });
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === label)!
+      .trigger("click");
+    await flushPromises();
+
+    const [prKey, threadId] = action.mock.calls[0];
+    expect(threadId).toBe(42);
+    expect(azureThreadStatusSchema.safeParse({ prKey, threadId, status: target }).success).toBe(true);
+  });
+});
+
+// Regression: New comment and Reply fired the create without awaiting it and
+// closed the dialog straight away, so a refused draft vanished with the text
+// the user had typed and no message.
+describe("ReviewCommentsTab — new comment / reply dialogs wait for the draft", () => {
+  async function openDialogFrom(label: string, threads: unknown[] = []) {
+    const wrapper = mount(ReviewCommentsTab, { props: baseProps({ filteredThreads: threads }) });
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === label)!
+      .trigger("click");
+    return openDialog.mock.calls.at(-1)?.[1] as { onSubmit: (body: string) => Promise<void> };
+  }
+
+  test("New comment: a refused draft keeps the dialog open and shows a toast", async () => {
+    createReviewBridgeDraftComment.mockRejectedValueOnce(new Error("body: Too small"));
+    const dialog = await openDialogFrom("New comment");
+    await dialog.onSubmit("text");
+
+    expect(closeDialog).not.toHaveBeenCalled();
+    expect(useNotificationStore().sessions[0]?.events[0]?.title).toBe("Create draft failed");
+  });
+
+  test("New comment: closes only after the draft was created", async () => {
+    createReviewBridgeDraftComment.mockResolvedValueOnce(undefined);
+    const dialog = await openDialogFrom("New comment");
+    await dialog.onSubmit("text");
+
+    expect(createReviewBridgeDraftComment).toHaveBeenCalledWith({
+      prKey: "pr-1",
+      body: "text",
+      authorAgent: "human",
+      autoQueue: true,
+    });
+    expect(closeDialog).toHaveBeenCalledOnce();
+  });
+
+  test("Reply: a refused draft keeps the dialog open, success closes it", async () => {
+    const threads = [{ id: 42, status: "active", comments: [] }];
+    createReviewBridgeDraftComment.mockRejectedValueOnce(new Error("locked"));
+    const dialog = await openDialogFrom("Reply", threads);
+    await dialog.onSubmit("reply");
+    expect(closeDialog).not.toHaveBeenCalled();
+
+    createReviewBridgeDraftComment.mockResolvedValueOnce(undefined);
+    await dialog.onSubmit("reply");
+    expect(createReviewBridgeDraftComment).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: 42 }));
+    expect(closeDialog).toHaveBeenCalledOnce();
+  });
 });
 
 describe("ReviewCommentsTab — draft/thread/comment mutations surface failures instead of silently succeeding", () => {
@@ -168,13 +246,13 @@ describe("ReviewCommentsTab — draft/thread/comment mutations surface failures 
   test("handleResolveThread: rejection is caught and surfaced as a toast, busy resets", async () => {
     azureResolveThread.mockRejectedValueOnce(new Error("network down"));
     const wrapper = mount(ReviewCommentsTab, {
-      props: baseProps({ filteredThreads: [{ id: "t1", status: "active", comments: [] }] }),
+      props: baseProps({ filteredThreads: [{ id: 7, status: "active", comments: [] }] }),
     });
     const resolveBtn = wrapper.findAll("button").find((b) => b.text() === "Resolve")!;
     await resolveBtn.trigger("click");
     await flushPromises();
 
-    expect(azureResolveThread).toHaveBeenCalledWith("pr-1", "t1");
+    expect(azureResolveThread).toHaveBeenCalledWith("pr-1", 7);
     const notifications = useNotificationStore();
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Resolve thread failed");
@@ -184,13 +262,13 @@ describe("ReviewCommentsTab — draft/thread/comment mutations surface failures 
   test("handleReactivateThread: rejection is caught and surfaced as a toast, busy resets", async () => {
     azureReactivateThread.mockRejectedValueOnce(new Error("network down"));
     const wrapper = mount(ReviewCommentsTab, {
-      props: baseProps({ filteredThreads: [{ id: "t1", status: "closed", comments: [] }] }),
+      props: baseProps({ filteredThreads: [{ id: 7, status: "closed", comments: [] }] }),
     });
     const reactivateBtn = wrapper.findAll("button").find((b) => b.text() === "Reactivate")!;
     await reactivateBtn.trigger("click");
     await flushPromises();
 
-    expect(azureReactivateThread).toHaveBeenCalledWith("pr-1", "t1");
+    expect(azureReactivateThread).toHaveBeenCalledWith("pr-1", 7);
     const notifications = useNotificationStore();
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Reactivate thread failed");

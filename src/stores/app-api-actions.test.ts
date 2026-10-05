@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { ref, shallowRef } from "vue";
 import { createApiActions, makeProviderApiActions } from "./app-api-actions.js";
 import { resolveViewerProfileId } from "./app.js";
+import { azureVoteSchema } from "../../electron/backend/ipc-schemas.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -86,6 +87,22 @@ describe("createApiActions.pushAndPublishReview", () => {
 
     expect(await actions.pushAndPublishReview("ws1")).toEqual(summary);
     expect(ctx.payload.value).toBe(nextPayload);
+  });
+});
+
+describe("createApiActions.azureVote", () => {
+  // The IPC handler validates with azureVoteSchema; a payload it refuses
+  // never reaches Azure DevOps (see ReviewSummaryTab.test.ts).
+  it("sends the vote as a number the IPC schema accepts", async () => {
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    const voteAzurePullRequest = vi.fn(async (_payload: unknown) => ({ appState: { workspaces: [] } }));
+    ctx.getApi = () => ({ isRemote: false, voteAzurePullRequest });
+    const actions = createApiActions(ctx);
+
+    await actions.azureVote("pr-1", 10);
+
+    expect(voteAzurePullRequest).toHaveBeenCalledWith({ prKey: "pr-1", vote: 10 });
+    expect(azureVoteSchema.safeParse(voteAzurePullRequest.mock.calls[0][0]).success).toBe(true);
   });
 });
 

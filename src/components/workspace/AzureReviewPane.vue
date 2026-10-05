@@ -1339,15 +1339,23 @@ function openAzureComment() {
     label: "Comment",
     placeholder: "Write your review comment...",
     submitLabel: "Create & queue",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    onSubmit: (content: any) => {
-      appStore.createReviewBridgeDraftComment({
-        prKey: prKey.value,
-        body: content,
-        authorAgent: "human",
-        autoQueue: true,
-      });
-      appStore.closeDialog();
+    onCancel: () => appStore.closeDialog(),
+    onSubmit: async (content: string) => {
+      if (inlineCommentBusy.value) return;
+      inlineCommentBusy.value = true;
+      try {
+        const result = await notifications.runWithToast("Create draft failed", () =>
+          appStore.createReviewBridgeDraftComment({
+            prKey: prKey.value,
+            body: content,
+            authorAgent: "human",
+            autoQueue: true,
+          }),
+        );
+        if (result) appStore.closeDialog();
+      } finally {
+        inlineCommentBusy.value = false;
+      }
     },
   });
 }

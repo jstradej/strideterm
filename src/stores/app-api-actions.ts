@@ -229,12 +229,15 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   const azureApi = makeProviderApiActions(ctx, setPayload, "azure");
 
-  async function azureVote(prKey: string, vote: string): Promise<void> {
+  // `vote` and `threadId` must stay numbers: azureVoteSchema and
+  // azureThreadStatusSchema (z.number()) refuse "10" at the IPC boundary,
+  // before anything reaches Azure DevOps.
+  async function azureVote(prKey: string, vote: number): Promise<void> {
     if (!prKey) return;
     setPayload((await (ctx.getApi() as AnyApi).voteAzurePullRequest({ prKey, vote })) as StatePayload);
   }
 
-  async function azureResolveThread(prKey: string, threadId: string): Promise<void> {
+  async function azureResolveThread(prKey: string, threadId: number): Promise<void> {
     if (!prKey || !threadId) return;
     setPayload(
       (await (ctx.getApi() as AnyApi).updateAzureThreadStatus({
@@ -245,7 +248,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     );
   }
 
-  async function azureReactivateThread(prKey: string, threadId: string): Promise<void> {
+  async function azureReactivateThread(prKey: string, threadId: number): Promise<void> {
     if (!prKey || !threadId) return;
     setPayload(
       (await (ctx.getApi() as AnyApi).updateAzureThreadStatus({

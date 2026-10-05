@@ -429,7 +429,7 @@ function formatDate(iso: unknown): string {
 async function handleVote(prKey: string, vote: number, label: string) {
   busyAction.value = `vote-${vote}`;
   try {
-    await notifications.runWithToast(`${label} failed`, () => appStore.azureVote(prKey, String(vote)));
+    await notifications.runWithToast(`${label} failed`, () => appStore.azureVote(prKey, vote));
   } finally {
     busyAction.value = "";
   }

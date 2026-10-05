@@ -36,6 +36,7 @@ vi.mock("../../../stores/git-ui.js", () => ({
 
 import ReviewSummaryTab from "./ReviewSummaryTab.vue";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { azureVoteSchema } from "../../../../electron/backend/ipc-schemas.js";
 
 const PULL_REQUEST = {
   id: 42,
@@ -74,6 +75,33 @@ async function openAdvancedMenu(wrapper: ReturnType<typeof mountTab>) {
   await flushPromises();
 }
 
+// Regression: every vote went out as String(vote), and the main process's
+// azureVoteSchema (vote: z.number()) refused it before any request to Azure
+// DevOps — Approve had not worked from the desktop since the TS migration.
+// The tests above only compared the component with itself; this one holds it
+// to the schema the IPC boundary actually enforces.
+describe("ReviewSummaryTab — vote payload matches the IPC contract", () => {
+  test.each([
+    ["Approve", 10],
+    ["Approve with suggestions", 5],
+    ["Wait", -5],
+    ["Reject", -10],
+    ["Clear vote", 0],
+  ])("%s sends a payload azureVoteSchema accepts (vote %i)", async (label, expectedVote) => {
+    azureVote.mockResolvedValueOnce(undefined);
+    const wrapper = mountTab();
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === label)!
+      .trigger("click");
+    await flushPromises();
+
+    const [prKey, vote] = azureVote.mock.calls[0];
+    expect(vote).toBe(expectedVote);
+    expect(azureVoteSchema.safeParse({ prKey, vote }).success).toBe(true);
+  });
+});
+
 describe("ReviewSummaryTab — vote/fetch/rebase surface failures instead of silently succeeding", () => {
   test("handleVote (Approve): rejection is caught and surfaced as a toast, not an unhandled rejection", async () => {
     azureVote.mockRejectedValueOnce(new Error("network down"));
@@ -82,7 +110,7 @@ describe("ReviewSummaryTab — vote/fetch/rebase surface failures instead of sil
     await approveBtn.trigger("click");
     await flushPromises();
 
-    expect(azureVote).toHaveBeenCalledWith("pr-1", "10");
+    expect(azureVote).toHaveBeenCalledWith("pr-1", 10);
     const notifications = useNotificationStore();
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Approve failed");
@@ -97,7 +125,7 @@ describe("ReviewSummaryTab — vote/fetch/rebase surface failures instead of sil
     await rejectBtn.trigger("click");
     await flushPromises();
 
-    expect(azureVote).toHaveBeenCalledWith("pr-1", "-10");
+    expect(azureVote).toHaveBeenCalledWith("pr-1", -10);
     const notifications = useNotificationStore();
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Reject failed");

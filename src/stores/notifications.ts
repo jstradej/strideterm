@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { hasMeaningfulUserInput } from "../../electron/shared/terminal-input.js";
+import { rlog } from "../lib/renderer-log.js";
 
 /**
  * Notification center state — session-grouped (Plan § 3.3.1).
@@ -1070,7 +1071,13 @@ export const useNotificationStore = defineStore("notifications", () => {
       await fn();
       return true;
     } catch (err) {
-      showError(title, (err as Error)?.message || "Action failed", options);
+      // Electron prefixes every IPC rejection with "Error invoking remote
+      // method '<channel>': Error:", which filled the toast and cut off the
+      // actual reason. The log line keeps the raw text, channel included.
+      const raw = (err as Error)?.message || String(err || "");
+      const message = raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "");
+      rlog("warn", `[toast] ${title}`, { message: raw, workspaceId: options.workspaceId || "" });
+      showError(title, message || "Action failed", options);
       return false;
     }
   }

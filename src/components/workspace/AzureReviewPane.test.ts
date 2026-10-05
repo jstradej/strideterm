@@ -1018,3 +1018,46 @@ describe("AzureReviewPane — Conflicts tab (ReviewFileTree's second call site)"
     expect(wrapper.find(".review-tree-file").exists()).toBe(false);
   });
 });
+
+// Regression: the Summary tab's "New comment" dialog fired the create without
+// awaiting it and closed at once (a refused draft vanished with no message),
+// and it had no onCancel — Cancel, Escape and a backdrop click did nothing.
+describe("AzureReviewPane — Summary 'New comment' dialog", () => {
+  async function openNewComment() {
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    const openDialog = vi.spyOn(appStore, "openDialog").mockImplementation(() => {});
+    const closeDialog = vi.spyOn(appStore, "closeDialog").mockImplementation(() => {});
+    wrapper.findComponent({ name: "ReviewSummaryTab" }).vm.$emit("new-comment");
+    await flushPromises();
+    const options = openDialog.mock.calls.at(-1)?.[1] as {
+      onSubmit: (body: string) => Promise<void>;
+      onCancel?: () => void;
+    };
+    return { appStore, options, closeDialog };
+  }
+
+  test("can be cancelled", async () => {
+    const { options, closeDialog } = await openNewComment();
+    expect(typeof options.onCancel).toBe("function");
+    options.onCancel!();
+    expect(closeDialog).toHaveBeenCalledOnce();
+  });
+
+  test("a refused draft keeps the dialog open and shows a toast; success closes it", async () => {
+    const { appStore, options, closeDialog } = await openNewComment();
+    const create = vi
+      .spyOn(appStore, "createReviewBridgeDraftComment")
+      .mockRejectedValueOnce(new Error("body: Too small"))
+      .mockResolvedValueOnce(undefined);
+
+    await options.onSubmit("text");
+    expect(closeDialog).not.toHaveBeenCalled();
+    expect(useNotificationStore().sessions[0]?.events[0]?.title).toBe("Create draft failed");
+
+    await options.onSubmit("text");
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(closeDialog).toHaveBeenCalledOnce();
+  });
+});

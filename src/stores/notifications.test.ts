@@ -241,6 +241,36 @@ describe("notification store (session-grouped)", () => {
       expect(store.sessions[0].events[0].body).toBe("disk full");
     });
 
+    // Regression: the toast showed "Error invoking remote method
+    // 'azure:pull-req…" and the real reason was cut off; nothing was logged.
+    it("drops Electron's IPC prefix from the toast and logs the raw message to the app log", async () => {
+      const logRenderer = vi.fn();
+      (window as unknown as { strideterm?: unknown }).strideterm = { logRenderer };
+      try {
+        const store = useNotificationStore();
+        await store.runWithToast(
+          "Approve failed",
+          async () => {
+            throw new Error(
+              "Error invoking remote method 'azure:pull-request:vote': Error: IPC validation failed on 'azure:pull-request:vote': vote: expected number",
+            );
+          },
+          { workspaceId: "ws-1" },
+        );
+
+        expect(store.sessions[0].events[0].body).toBe(
+          "IPC validation failed on 'azure:pull-request:vote': vote: expected number",
+        );
+        expect(logRenderer).toHaveBeenCalledWith("warn", "[toast] Approve failed", {
+          message:
+            "Error invoking remote method 'azure:pull-request:vote': Error: IPC validation failed on 'azure:pull-request:vote': vote: expected number",
+          workspaceId: "ws-1",
+        });
+      } finally {
+        delete (window as unknown as { strideterm?: unknown }).strideterm;
+      }
+    });
+
     it("passes profileId through to the error toast for profile-scoped rendering", async () => {
       const store = useNotificationStore();
       await store.runWithToast(
