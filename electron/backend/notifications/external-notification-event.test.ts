@@ -132,4 +132,17 @@ describe("buildExternalNotificationEvent", () => {
       }),
     ).not.toHaveProperty("exitCode");
   });
+
+  test("sanitizes terminal control reports from activity before truncation", () => {
+    const event = buildExternalNotificationEvent({
+      eventId: "evt-terminal-activity",
+      profileId: "p1",
+      workspaceId: "ws-1",
+      kind: "completed",
+      title: "Agent finished",
+      activity: "[<35;52;28M[<0;75;55M[<0;75;55m [I/O] make test",
+    });
+
+    expect(event.activity).toBe("[I/O] make test");
+  });
 });

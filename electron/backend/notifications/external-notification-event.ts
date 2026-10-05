@@ -17,6 +17,7 @@ import type {
   MobileCommandType,
 } from "../../shared/types/notifications.js";
 import { truncateUtf8Head } from "./notification-context.js";
+import { sanitizeTerminalText } from "./terminal-text.js";
 
 export interface BuildExternalNotificationEventInput {
   eventId: string;
@@ -88,6 +89,7 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
   const workspaceId = input.workspaceId || "";
   const sessionId = input.sessionId || null;
   const panelId = input.panelId || null;
+  const activity = displayText(sanitizeTerminalText(input.activity || ""), 200);
   const dedupeKey = `${workspaceId}:${sessionId || panelId || ""}:${kind}`;
 
   return {
@@ -103,7 +105,7 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
     ...(displayText(input.workspaceName, 120) ? { workspaceName: displayText(input.workspaceName, 120) } : {}),
     ...(input.taskId && input.taskId.length <= 200 ? { taskId: input.taskId } : {}),
     ...(displayText(input.tab, 120) ? { tab: displayText(input.tab, 120) } : {}),
-    ...(displayText(input.activity, 200) ? { activity: displayText(input.activity, 200) } : {}),
+    ...(activity ? { activity } : {}),
     ...(input.prompt ? { prompt: truncateUtf8Head(input.prompt, 500) } : {}),
     ...(Number.isInteger(input.exitCode) ? { exitCode: input.exitCode! } : {}),
     ...(Number.isInteger(input.durationMs) && input.durationMs! >= 0 ? { durationMs: input.durationMs! } : {}),

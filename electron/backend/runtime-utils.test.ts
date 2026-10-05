@@ -6,7 +6,46 @@ import {
   shouldRefreshNow,
   createIntervalGate,
   matchesShellPromptStrict,
+  createTerminalInputFilterState,
+  filterTerminalInputText,
 } from "./runtime-utils.js";
+
+describe("filterTerminalInputText", () => {
+  test("drops mouse, focus, OSC, and control-string reports without changing pasted text", () => {
+    const state = createTerminalInputFilterState();
+    const input =
+      "git status" +
+      "\u001b[<35;52;28M\u001b[I\u001b[O" +
+      "\u001b[M   " +
+      "\u001b[T      " +
+      "\u001b]0;title\u0007" +
+      "\u001bP1$r0m\u001b\\" +
+      "\u001b[200~ echo [I/O] [0] \u001b[201~\r";
+
+    expect(filterTerminalInputText(input, state)).toBe("git status echo [I/O] [0] \r");
+  });
+
+  test("keeps parser state across every split of SGR, X10, and highlight mouse reports", () => {
+    const reports = ["\u001b[<35;52;28M", '\u001b[M !"', '\u001b[T !"#$%'];
+    for (const report of reports) {
+      for (let cut = 1; cut < report.length; cut++) {
+        const state = createTerminalInputFilterState();
+        expect(filterTerminalInputText(report.slice(0, cut), state)).toBe("");
+        expect(filterTerminalInputText(report.slice(cut), state)).toBe("");
+      }
+    }
+  });
+
+  test("ignores ESC intermediate sequences and restarts CSI after an interrupting ESC", () => {
+    const state = createTerminalInputFilterState();
+    expect(filterTerminalInputText("\u001b(Bgit\u001b[123\u001b[<35;1;1M status", state)).toBe("git status");
+  });
+
+  test("keeps editing controls usable after an incomplete sequence", () => {
+    const state = createTerminalInputFilterState();
+    expect(filterTerminalInputText("\u001b[123\u0003git\u007f\r", state)).toBe("\u0003git\u007f\r");
+  });
+});
 
 // All "now" anchors in this file are local-time Dates; the detectors operate
 // in local time (Claude Code's clock-time format is the user's local zone).

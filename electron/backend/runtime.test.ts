@@ -8212,6 +8212,40 @@ describe("runtime integration", () => {
       }
     });
 
+    test("mouse reports do not enter the activity preview, while original input still reaches the PTY", async () => {
+      vi.useFakeTimers();
+      try {
+        const fixture = await createTwoWorkspaceFixture();
+        fixtures.push(fixture);
+        const externalEvents = fixture.runtime._externalNotificationEventsForTest();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const received: any[] = [];
+        const listener = (event: unknown) => received.push(event);
+        externalEvents.on("event", listener);
+
+        await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+        await vi.advanceTimersByTimeAsync(16_000);
+        fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+        const firstReportChunk = "\u001b[<35;52;";
+        const secondReportChunk = `28M${"\u001b[<35;52;28M".repeat(40)}git status\r`;
+        fixture.runtime.writeToSession("backend:shell", firstReportChunk);
+        fixture.runtime.writeToSession("backend:shell", secondReportChunk);
+        fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+
+        expect(received).toHaveLength(1);
+        expect(received[0].activity).toBe("git status");
+        expect(fixture.sessionManager.writeCalls.slice(-2)).toEqual([
+          { sessionId: "backend:shell", data: firstReportChunk },
+          { sessionId: "backend:shell", data: secondReportChunk },
+        ]);
+        externalEvents.off("event", listener);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     test("Telegram's forwardAlert call count and payload are identical whether or not a Mobile listener is attached", async () => {
       vi.useFakeTimers();
       try {

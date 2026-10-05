@@ -206,6 +206,7 @@ import {
   matchesWaitingPattern,
   looksLikeShellPrompt,
   createSessionSignal,
+  filterTerminalInputText,
   PENDING_PERMISSION_TTL_MS,
   MAX_PENDING_PERMISSIONS,
   type PendingPermission,
@@ -4681,7 +4682,8 @@ export async function createRuntime({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function updateCommandClassFromInput(signal: any, data: any) {
     if (!signal || !data) return;
-    for (const ch of String(data)) {
+    const filtered = filterTerminalInputText(String(data), signal.inputFilterState);
+    for (const ch of filtered) {
       if (ch === "\r" || ch === "\n") {
         const cmd = signal.inputBuffer.trim();
         signal.inputBuffer = "";

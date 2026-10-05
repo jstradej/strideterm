@@ -26,6 +26,103 @@ export const AGENT_OUTPUT_RE =
   /\b(claude code|openai codex|codex|claude|gemini|aider|opencode|github copilot|copilot)\b/i;
 export const AGENT_OUTPUT_BURST_THRESHOLD = 10;
 
+export interface TerminalInputFilterState {
+  mode:
+    | "text"
+    | "escape"
+    | "escape-intermediate"
+    | "csi"
+    | "osc"
+    | "osc-escape"
+    | "control-string"
+    | "control-string-escape";
+  csiHasContent: boolean;
+  mousePayloadRemaining: number;
+}
+
+export function createTerminalInputFilterState(): TerminalInputFilterState {
+  return { mode: "text", csiHasContent: false, mousePayloadRemaining: 0 };
+}
+
+/**
+ * Removes terminal control sequences from text accumulated for command
+ * classification. This stateful filter is deliberately separate from PTY
+ * forwarding: callers still send the original input bytes to the terminal.
+ * Only a few parser flags are retained, never the sequence payload.
+ */
+export function filterTerminalInputText(data: string, state: TerminalInputFilterState): string {
+  let result = "";
+  for (const char of data) {
+    const code = char.charCodeAt(0);
+    if (state.mousePayloadRemaining > 0) {
+      state.mousePayloadRemaining--;
+      continue;
+    }
+    if (state.mode !== "text") {
+      if (char === "\r" || char === "\n" || char === "\u0003" || char === "\u0004" || code === 0x7f || code === 0x08) {
+        // An incomplete control sequence must not make Enter, Ctrl+C/D, or
+        // editing keys stop working in the command classifier.
+        state.mode = "text";
+      }
+    }
+    if (state.mode === "csi" && code === 0x1b) state.mode = "escape";
+    switch (state.mode) {
+      case "text":
+        if (code === 0x1b) state.mode = "escape";
+        else if (code === 0x9b) {
+          state.mode = "csi";
+          state.csiHasContent = false;
+        } else if (code === 0x9d) state.mode = "osc";
+        else if (code === 0x90 || code === 0x98 || code === 0x9e || code === 0x9f) {
+          state.mode = "control-string";
+        } else result += char;
+        break;
+      case "escape":
+        if (char === "[") {
+          state.mode = "csi";
+          state.csiHasContent = false;
+        } else if (char === "]") state.mode = "osc";
+        else if (char === "P" || char === "X" || char === "^" || char === "_") {
+          state.mode = "control-string";
+        } else if (code === 0x1b) state.mode = "escape";
+        else if (code >= 0x20 && code <= 0x2f) state.mode = "escape-intermediate";
+        else state.mode = "text";
+        break;
+      case "escape-intermediate":
+        if (code === 0x1b) state.mode = "escape";
+        else if (code >= 0x30 && code <= 0x7e) state.mode = "text";
+        break;
+      case "csi":
+        if (code >= 0x40 && code <= 0x7e) {
+          if (!state.csiHasContent && (char === "M" || char === "T")) {
+            state.mousePayloadRemaining = char === "M" ? 3 : 6;
+          }
+          state.mode = "text";
+        } else {
+          state.csiHasContent = true;
+        }
+        break;
+      case "osc":
+        if (code === 0x07 || code === 0x9c) state.mode = "text";
+        else if (code === 0x1b) state.mode = "osc-escape";
+        break;
+      case "osc-escape":
+        if (char === "\\") state.mode = "text";
+        else if (code !== 0x1b) state.mode = "osc";
+        break;
+      case "control-string":
+        if (code === 0x9c) state.mode = "text";
+        else if (code === 0x1b) state.mode = "control-string-escape";
+        break;
+      case "control-string-escape":
+        if (char === "\\") state.mode = "text";
+        else if (code !== 0x1b) state.mode = "control-string";
+        break;
+    }
+  }
+  return result;
+}
+
 // ----------------------------------------------------------------------
 // Rate-limit detection
 //
@@ -479,6 +576,7 @@ export function createSessionSignal(sessionId: string): {
   commandClass: string;
   currentCommand: string;
   inputBuffer: string;
+  inputFilterState: TerminalInputFilterState;
   lastAnimationAt: number;
   activity: string;
   activityStartedAt: number;
@@ -526,6 +624,7 @@ export function createSessionSignal(sessionId: string): {
     currentCommand: "",
     // Keystroke accumulator for command classification on Enter.
     inputBuffer: "",
+    inputFilterState: createTerminalInputFilterState(),
     // Phase 3 § 3.2.2: timestamp of last cursor-movement / spinner / progress
     // animation in PTY output. T3 alerts suppress if this was recent — the
     // program is still redrawing, not idle.
