@@ -8323,7 +8323,9 @@ describe("runtime integration", () => {
         // from the same local data — not a second, independently-derived copy.
         expect(mobileReceived).toHaveLength(1);
         expect(mobileReceived[0].workspaceId).toBe(forwardAlertCalls[0].workspaceId);
-        expect(mobileReceived[0].title).toBe("Waiting for input");
+        // The phone title names where it happened ("<workspace> · <tab>"); what happened is the detail.
+        expect(mobileReceived[0].title).toBe("Backend · Shell");
+        expect(mobileReceived[0].detail).toBe("Waiting for input");
         expect(mobileReceived[0].tab).toBe(forwardAlertCalls[0].title);
         expect(mobileReceived[0].kind).toBe(forwardAlertCalls[0].kind);
 
