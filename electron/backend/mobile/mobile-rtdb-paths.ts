@@ -49,6 +49,8 @@ export function diagnosticReportsForUidPath(uid: string): string {
 
 export const ACCOUNTS_ROOT = "v2/accounts";
 export const ACCOUNT_BY_UID_ROOT = "v2/accountByUid";
+export const REVIEW_ACCESS_ROOT = "v2/reviewAccess";
+export const REVIEW_ACCESS_INVITATIONS_ROOT = "v2/reviewAccess/invitations";
 export const ACCOUNT_BY_INSTALLATION_KEY_ROOT = "v2/accountByInstallationKey";
 export const ACCOUNT_BY_MOBILE_KEY_ROOT = "v2/accountByMobileKey";
 export const ACCOUNT_BY_PAIR_ROOT = "v2/accountByPair";
@@ -85,6 +87,14 @@ export const RELAY_REVOCATION_OUTBOX_ROOT = "v2/relayRevocationOutbox";
  */
 export function accountPath(accountId: string): string {
   return `v2/accounts/${accountId}`;
+}
+
+export function reviewAccessAccountPath(accountId: string): string {
+  return `v2/reviewAccess/accounts/${accountId}`;
+}
+
+export function reviewAccessInvitationPath(invitationHash: string): string {
+  return `v2/reviewAccess/invitations/${invitationHash}`;
 }
 
 /**

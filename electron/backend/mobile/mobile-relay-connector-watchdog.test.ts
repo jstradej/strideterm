@@ -49,6 +49,7 @@ const otherFrame: RelayFrameHeader = {
 };
 
 let sockets: ScriptedSocket[];
+let socketOptions: { headers: Record<string, string> } | undefined;
 let connector: RelayConnector;
 
 async function ready(): Promise<ScriptedSocket> {
@@ -62,13 +63,15 @@ async function ready(): Promise<ScriptedSocket> {
 beforeEach(() => {
   vi.useFakeTimers();
   sockets = [];
+  socketOptions = undefined;
   connector = createRelayConnector({
     relayOrigin: "http://127.0.0.1:1",
     identity: {} as RelayInstallationIdentity,
     internalOrigin: { host: "127.0.0.1", port: 1, guardToken: "guard" },
     getGrant: async () => "grant",
     reconnectDelayMs: () => 1000,
-    createSocket: () => {
+    createSocket: (_url, _protocols, options) => {
+      socketOptions = options;
       const socket = new ScriptedSocket();
       sockets.push(socket);
       return socket as never;
@@ -134,4 +137,32 @@ describe("inbound-silence watchdog", () => {
     await vi.advanceTimersByTimeAsync(10 * RELAY_CONNECTOR_HEARTBEAT_TIMEOUT_MS);
     expect(second.terminated).toBe(false);
   });
+});
+
+test("advertises system-channel support only when the handler is wired", async () => {
+  await vi.advanceTimersByTimeAsync(0);
+  expect(socketOptions).toBeUndefined();
+  await connector.stop();
+
+  socketOptions = undefined;
+  connector = createRelayConnector({
+    relayOrigin: "http://127.0.0.1:1",
+    identity: {} as RelayInstallationIdentity,
+    internalOrigin: { host: "127.0.0.1", port: 1, guardToken: "guard" },
+    getGrant: async () => "grant",
+    reconnectDelayMs: () => 1000,
+    systemChannel: { open: () => null },
+    createSocket: (_url, _protocols, options) => {
+      socketOptions = options;
+      const socket = new ScriptedSocket();
+      sockets.push(socket);
+      return socket as never;
+    },
+  });
+  connector.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect((socketOptions as unknown as { headers: Record<string, string> }).headers).toEqual({
+    "X-Strideterm-System-Channel": "1",
+  });
+  await connector.stop();
 });

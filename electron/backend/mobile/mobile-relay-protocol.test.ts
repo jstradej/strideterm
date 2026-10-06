@@ -111,7 +111,7 @@ describe("the relay frame codec mirror", () => {
   });
 
   test("payloads are allowed on exactly the ordered frame types", () => {
-    expect(RELAY_FRAME_TYPES).toHaveLength(27);
+    expect(RELAY_FRAME_TYPES).toHaveLength(31);
     for (const type of RELAY_FRAME_TYPES) {
       expect(relayFrameCarriesPayload(type)).toBe(RELAY_FRAME_RULES[type].required.includes("q"));
     }
@@ -192,6 +192,30 @@ describe("the relay frame codec mirror", () => {
     expect(rejectionCode(() => encodeRelayFrame(revoke({ src: "relay", dst: "connector" })))).toBe(
       "src-role-not-allowed",
     );
+  });
+
+  test("system frames use a distinct system role and a connection id", () => {
+    const open: RelayFrameHeader = {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "sys.open",
+      src: "relay",
+      dst: "connector",
+      s: SESSION,
+      d: "mobile-AAAAAAAAAAAAAAAAAAAAAA",
+    };
+    const data: RelayFrameHeader = {
+      v: RELAY_PROTOCOL_VERSION,
+      t: "sys.data",
+      src: "system",
+      dst: "connector",
+      s: SESSION,
+      q: 0,
+    };
+    expect(decodeRelayFrame(encodeRelayFrame(open)).header).toEqual(open);
+    expect(decodeRelayFrame(encodeRelayFrame(data, Buffer.from([1]))).payload).toEqual(Buffer.from([1]));
+    expect(rejectionCode(() => encodeRelayFrame({ ...open, src: "viewer" }))).toBe("src-role-not-allowed");
+    expect(rejectionCode(() => encodeRelayFrame({ ...data, q: -1 }))).toBe("sequence-invalid");
+    expect(rejectionCode(() => encodeRelayFrame({ ...data, b: true }))).toBe("unknown-field");
   });
 });
 

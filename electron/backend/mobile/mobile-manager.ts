@@ -352,6 +352,24 @@ export class MobileManager extends EventEmitter {
     return this.running;
   }
 
+  getSystemChannelDevice(deviceId: string): {
+    deviceId: string;
+    pairId: string;
+    sessionKey: Buffer;
+    capabilities: string[];
+    profileAllowlist: string[];
+  } | null {
+    const device = this.deviceStore.getDevice(deviceId);
+    if (!isDeviceUsable(device)) return null;
+    return {
+      deviceId: device.deviceId,
+      pairId: device.pairId,
+      sessionKey: Buffer.from(this.sessionKeyFor(device)),
+      capabilities: [...device.capabilities],
+      profileAllowlist: [...device.profileAllowlist],
+    };
+  }
+
   /**
    * The pairing SAS for one just-claimed device, or `null` if either key is unusable.
    *

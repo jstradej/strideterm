@@ -27,6 +27,7 @@ import {
   defaultDefinitiveRefusalRetryDelay,
   defaultReconnectDelay,
   type RelayConnector,
+  type RelayConnectorOptions,
   type RelayConnectorState,
   type RelayRevocationRecord,
 } from "./mobile-relay-connector.js";
@@ -122,6 +123,7 @@ export interface MobileRelayManagerOptions {
    * every `e2e.*` frame outright rather than treating a missing store as a reason to try plaintext.
    */
   e2eSessionStore?: RelayE2eSessionStore;
+  systemChannel?: RelayConnectorOptions["systemChannel"];
   /**
    * The relay origin the effective control-plane configuration (after the signed bootstrap) states,
    * read on every grant. When it returns a non-empty value a grant naming any other origin is
@@ -294,6 +296,7 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
       onStateChange: (state) => log.info("relay connector state", { state }),
       definitiveRefusalRetryDelayMs,
       e2eSessionStore: options.e2eSessionStore,
+      systemChannel: options.systemChannel,
     });
     connector.start();
     log.info("managed relay started", { internalPort: address.port });

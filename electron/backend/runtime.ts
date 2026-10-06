@@ -119,6 +119,9 @@ import {
   type RelayOriginStarter,
 } from "./mobile/mobile-relay-manager.js";
 import { createMobileRegistrationOnboarding } from "./mobile/registration-onboarding.js";
+import { createMobileSystemChannel } from "./mobile/mobile-system-channel.js";
+import { createCachedMobileSystemPayloadSource } from "./mobile/mobile-system-channel-source.js";
+import { projectMobileWorkspaces } from "./mobile/mobile-workspace-projection.js";
 import {
   computeKeyProof,
   decodeCanonicalPublicKey,
@@ -2123,6 +2126,33 @@ export async function createRuntime({
     },
   });
 
+  const systemPayloadSource = createCachedMobileSystemPayloadSource({
+    getPayload: () => getPayload() as Record<string, unknown>,
+    subscribe: (listener: (payload: Record<string, unknown>) => void) => {
+      const update = (payload: unknown) => listener(payload as Record<string, unknown>);
+      events.on("state:updated", update);
+      return () => events.off("state:updated", update);
+    },
+  });
+  const mobileSystemChannel = createMobileSystemChannel({
+    resolveDevice: (deviceId) => mobileManager.getSystemChannelDevice(deviceId),
+    source: {
+      getRows(profileId) {
+        const payload = systemPayloadSource.getPayload();
+        const appState = payload.appState as
+          { profiles?: Array<{ id?: string }>; workspaces?: WorkspaceState[] } | undefined;
+        if (!appState?.profiles?.some((profile) => profile.id === profileId)) return null;
+        const workspaces = (appState.workspaces ?? []).filter(
+          (workspace) => (workspace.profileId || "default") === profileId,
+        );
+        return projectMobileWorkspaces(workspaces, payload as Parameters<typeof projectMobileWorkspaces>[1]) as Array<
+          Record<string, unknown> & { id: string }
+        >;
+      },
+      subscribe: (listener) => systemPayloadSource.subscribe(listener),
+    },
+  });
+
   // THE ACCOUNT MANAGER (plan §8.1). Built once, like MobileManager, and for the same reason: one
   // per installation whatever the window count, so every window renders the same derived state
   // rather than each computing its own.
@@ -2719,6 +2749,7 @@ export async function createRuntime({
             .filter((device) => device.revoked)
             .map((device) => ({ deviceId: device.deviceId, revokedAt: device.revokedAt })),
         e2eSessionStore: mobileRelayE2eSessionStore,
+        systemChannel: mobileSystemChannel,
       })
     : null;
 
@@ -8574,7 +8605,10 @@ export async function createRuntime({
     getMobileRelayStatus() {
       return {
         ...(mobileRelayManager?.status() ?? RELAY_OFF),
-        stats: mobileRelayManager?.stats() ?? null,
+        stats: {
+          ...(mobileRelayManager?.stats() ?? {}),
+          systemChannel: mobileSystemChannel.stats(),
+        },
         connectedDevices: mobileConnectedDevices,
       };
     },
@@ -10912,6 +10946,7 @@ export async function createRuntime({
       startInstallationTokenRefresh = null;
       installationTokenRefresh?.stop();
       emailSignInBroker?.dispose();
+      mobileSystemChannel.stop();
       // The relay's own listener and outbound socket are not the mobile manager's to close, and a
       // process that exits with either still open leaves a bound loopback port behind.
       await mobileRelayManager?.stop().catch(() => undefined);

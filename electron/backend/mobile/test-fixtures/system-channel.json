@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "description": "Fixed public test key/nonce only; production uses fresh random nonces. The AEAD key is channelKey = HKDF-SHA-256(IKM = the pairing session key, salt = channelKeySaltUtf8, info = channelKeyInfoUtf8, 32 bytes), never the session key itself.",
+  "sessionKeyBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "channelKeySaltUtf8": "strideterm-system-channel",
+  "channelKeyInfoUtf8": "aes-256-gcm/v1",
+  "channelKeyBase64": "NzJgDU966DT/QtVN+FjfaytPNYtIxtIXifgY0dnr/SA=",
+  "aadFields": {
+    "v": 1,
+    "channel": "strideterm-system",
+    "connectionId": "connection-test-001",
+    "pairId": "pair-test-001",
+    "deviceId": "phone-test-001",
+    "sequence": 7,
+    "direction": "desktop-to-phone"
+  },
+  "aadUtf8": "{\"v\":1,\"channel\":\"strideterm-system\",\"connectionId\":\"connection-test-001\",\"pairId\":\"pair-test-001\",\"deviceId\":\"phone-test-001\",\"sequence\":7,\"direction\":\"desktop-to-phone\"}",
+  "plaintextUtf8": "{\"v\":1,\"type\":\"catalog.batch\",\"profileId\":\"work\",\"epoch\":\"epoch-test-001\",\"baseRevision\":1,\"revision\":2,\"batchId\":\"batch-test-001\",\"part\":0,\"parts\":1,\"mode\":\"delta\",\"changes\":[{\"id\":\"ws-4\",\"set\":{\"dirtyCount\":0,\"gitAvailable\":false},\"unset\":[\"branch\"]}],\"removed\":[]}",
+  "payloadBase64": "EBESExQVFhcYGRobHLqDo7g1UlDNAGBnot9AJ6120T5qLCavqAKHtpREovufHTuCdnW9M+tTFZSTMP8vq2K1I2MPEnIxQD9OpKo6NfwaLfmz03C4aNyaxerZAWHROpoQvlk1vmk1pERiL1t3Dg25c+b88qK9Dg1I8bt5VUGle8e+cuC/XhdL37cEwaiQUlJpA+hQ3BS7+6rs5/ldJOTu2kX5A2vJr2AT8BNcmLGBaFbte0LJhv/1TD5Vn/lYxCCsh5Oo70F38WQiKrImQb9ZKvDoYpvkkBWTDEfLbSEICEbUIj7G+oXqsI4JjbgWVEoxk3tpFtkzXt9gElsqMPHAcVOHKFO+yIqt4UXBnw87Ue3Rgt7/vMjuMUZqIHAOXSkOi7Lzj6MapA==",
+  "readyHeader": {
+    "v": 2,
+    "t": "sys.ready",
+    "src": "relay",
+    "dst": "system",
+    "s": "connection-test-001"
+  },
+  "readyFrameBase64": "AAAATnsidiI6MiwidCI6InN5cy5yZWFkeSIsInNyYyI6InJlbGF5IiwiZHN0Ijoic3lzdGVtIiwicyI6ImNvbm5lY3Rpb24tdGVzdC0wMDEifQ==",
+  "dataHeader": {
+    "v": 2,
+    "t": "sys.data",
+    "src": "connector",
+    "dst": "system",
+    "s": "connection-test-001",
+    "q": 7
+  },
+  "dataFrameBase64": "AAAAV3sidiI6MiwidCI6InN5cy5kYXRhIiwic3JjIjoiY29ubmVjdG9yIiwiZHN0Ijoic3lzdGVtIiwicyI6ImNvbm5lY3Rpb24tdGVzdC0wMDEiLCJxIjo3fRAREhMUFRYXGBkaGxy6g6O4NVJQzQBgZ6LfQCetdtE+aiwmr6gCh7aURKL7nx07gnZ1vTPrUxWUkzD/L6titSNjDxJyMUA/TqSqOjX8Gi35s9NwuGjcmsXq2QFh0TqaEL5ZNb5pNaREYi9bdw4NuXPm/PKivQ4NSPG7eVVBpXvHvnLgv14XS9+3BMGokFJSaQPoUNwUu/uq7Of5XSTk7tpF+QNrya9gE/ATXJixgWhW7XtCyYb/9Uw+VZ/5WMQgrIeTqO9Bd/FkIiqyJkG/WSrw6GKb5JAVkwxHy20hCAhG1CI+xvqF6rCOCY24FlRKMZN7aRbZM17fYBJbKjDxwHFThyhTvsiKreFFwZ8PO1Ht0YLe/7zI7jFGaiBwDl0pDouy84+jGqQ="
+}

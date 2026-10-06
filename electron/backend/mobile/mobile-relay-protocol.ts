@@ -110,8 +110,8 @@ export const RELAY_CONNECTOR_SUBPROTOCOL = "strideterm-relay.v1";
 // Mirror of protocol/typescript/src/relay/frames.ts
 // ---------------------------------------------------------------------------
 
-export type RelayRole = "relay" | "connector" | "viewer";
-export const RELAY_ROLES: readonly RelayRole[] = ["relay", "connector", "viewer"];
+export type RelayRole = "relay" | "connector" | "viewer" | "system";
+export const RELAY_ROLES: readonly RelayRole[] = ["relay", "connector", "viewer", "system"];
 
 export type RelayFrameType =
   | "conn.challenge"
@@ -140,7 +140,11 @@ export type RelayFrameType =
   | "flow.timeout"
   | "e2e.open"
   | "e2e.data"
-  | "e2e.close";
+  | "e2e.close"
+  | "sys.open"
+  | "sys.ready"
+  | "sys.data"
+  | "sys.close";
 
 export type RelayHttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 export const RELAY_HTTP_METHODS: readonly RelayHttpMethod[] = [
@@ -267,6 +271,10 @@ export const RELAY_FRAME_RULES: Readonly<Record<RelayFrameType, FrameRule>> = {
   "e2e.open": { required: ["s", "id"], optional: ["d"], src: "any", dst: "any" },
   "e2e.data": { required: ["s", "id", "q"], optional: [], src: "any", dst: "any" },
   "e2e.close": { required: ["s", "id", "e"], optional: [], src: "any", dst: "any" },
+  "sys.open": { required: ["s", "d"], optional: [], src: "relay", dst: "connector" },
+  "sys.ready": { required: ["s"], optional: [], src: "relay", dst: "system" },
+  "sys.data": { required: ["s", "q"], optional: [], src: "any", dst: "any" },
+  "sys.close": { required: ["s", "e"], optional: [], src: "any", dst: "any" },
 };
 
 export const RELAY_FRAME_TYPES = Object.keys(RELAY_FRAME_RULES) as RelayFrameType[];

@@ -62,6 +62,7 @@ import {
   type RelayE2eKeys,
 } from "./mobile-crypto.js";
 import type { RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
+import type { SystemChannelConnection } from "./mobile-system-channel.js";
 
 const log = getLogger("mobile-relay-connector");
 
@@ -289,7 +290,7 @@ export interface RelayConnectorOptions {
    */
   syncTimeoutMs?: number;
   /** Injectable purely so tests can observe the socket; production always builds a real one. */
-  createSocket?: (url: string, protocols: string[]) => WebSocket;
+  createSocket?: (url: string, protocols: string[], options?: { headers: Record<string, string> }) => WebSocket;
   /**
    * Where the derived relay end-to-end encryption keys live, keyed by `mobileDeviceId` (plan
    * 2026-09-23, decisions 1/2). Absent on an older build with no e2e support wired at all — every
@@ -297,6 +298,16 @@ export interface RelayConnectorOptions {
    * back to plaintext for a stream that was never plaintext to begin with.
    */
   e2eSessionStore?: RelayE2eSessionStore;
+  /** Authenticated native system-channel streams; kept separate from the loopback WebView proxy. */
+  systemChannel?: {
+    open(input: {
+      connectionId: string;
+      deviceId: string;
+      send: (sequence: number, ciphertext: Buffer) => boolean;
+      close: (reason: RelayReason) => void;
+    }): SystemChannelConnection | null;
+    revokeDevice?: (deviceId: string) => void;
+  };
   /**
    * How long an HTTP request may make no progress before it is failed with `timeout`. Defaults to the
    * shared `RELAY_HTTP_REQUEST_TIMEOUT_MS`. Injectable so a test can show that a slow upload outlives
@@ -376,6 +387,7 @@ export interface RelayConnector {
     wsStreams: number;
     liveHttpStreams: number;
     liveWsStreams: number;
+    liveSystemStreams?: number;
     bytesIn: number;
     bytesOut: number;
     overflows: number;
@@ -398,7 +410,10 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
   const handshakeTimeoutMs = options.handshakeTimeoutMs ?? RELAY_CONNECTOR_HANDSHAKE_TIMEOUT_MS;
   const syncTimeoutMs = options.syncTimeoutMs ?? RELAY_CONNECTOR_SYNC_TIMEOUT_MS;
   const httpRequestTimeoutMs = options.httpRequestTimeoutMs ?? RELAY_HTTP_REQUEST_TIMEOUT_MS;
-  const createSocket = options.createSocket ?? ((url: string, protocols: string[]) => new WebSocket(url, protocols));
+  const createSocket =
+    options.createSocket ??
+    ((url: string, protocols: string[], socketOptions?: { headers: Record<string, string> }) =>
+      new WebSocket(url, protocols, socketOptions));
 
   /**
    * One keep-alive agent for every request into the internal origin, owned by this connector.
@@ -443,6 +458,8 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
 
   const httpStreams = new Map<string, HttpStream>();
   const wsStreams = new Map<string, WsStream>();
+  const systemStreams = new Map<string, SystemChannelConnection>();
+  const systemClosingFromRelay = new Set<string>();
 
   // ---------------------------------------------------------------------------
   // Relay end-to-end encryption state (plan 2026-09-23, decisions 1/2). Every map here is emptied on
@@ -1006,7 +1023,16 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       // left absent when it did not — which is what lets the sync phase, where no session exists yet,
       // use the same sender as everything after it. A frame that named `s: ""` before `conn.ready`
       // would be refused by the relay as a frame from the wrong phase.
-      socket.send(encodeRelayFrame({ ...header, ...(header.s === undefined ? {} : { s: sessionId }) }, payload));
+      const preserveSystemConnectionId = header.t.startsWith("sys.");
+      socket.send(
+        encodeRelayFrame(
+          {
+            ...header,
+            ...(header.s === undefined || preserveSystemConnectionId ? {} : { s: sessionId }),
+          },
+          payload,
+        ),
+      );
       return true;
     } catch (error) {
       stats.lastError = error instanceof RelayFrameError ? error.code : "send-failed";
@@ -1043,7 +1069,12 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       .then((grant) => {
         if (stopped) return;
         const url = `${options.relayOrigin.replace(/^http/, "ws")}/__relay/connect`;
-        const next = createSocket(url, [RELAY_CONNECTOR_SUBPROTOCOL, grant]);
+        const socketHeaders = options.systemChannel?.open ? { "X-Strideterm-System-Channel": "1" } : undefined;
+        const next = createSocket(
+          url,
+          [RELAY_CONNECTOR_SUBPROTOCOL, grant],
+          socketHeaders ? { headers: socketHeaders } : undefined,
+        );
         socket = next;
         localCloseCause = null;
         // The last socket error, as a sanitized token. `ws` reports 1006 when TCP ends without a close
@@ -1115,6 +1146,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     // what keeps a reconnect from resuming into half-open local requests and orphaned PTY sockets.
     for (const streamId of [...httpStreams.keys()]) endHttpStream(streamId, "connector-gone");
     for (const streamId of [...wsStreams.keys()]) endWsStream(streamId, 1012, "connector-gone");
+    for (const connectionId of [...systemStreams.keys()]) closeSystemStream(connectionId, "connector-gone", false);
     // The e2e routing maps are scoped to THIS socket's outer stream ids, which mean nothing to a
     // reconnect's fresh session — but NOT `e2eDeviceSessions`: the derived key and its nonce counters
     // are tied to the ticket's own TTL, not to this socket, and must keep advancing rather than
@@ -1340,6 +1372,19 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
         return;
       case "e2e.close":
         onE2eClose(header);
+        return;
+      case "sys.open":
+        openSystemStream(header);
+        return;
+      case "sys.data": {
+        const stream = systemStreams.get(header.s as string);
+        if (stream && header.src === "system" && header.dst === "connector")
+          stream.receive(header.q as number, payload);
+        else if (stream) closeSystemStream(header.s as string, "protocol-error");
+        return;
+      }
+      case "sys.close":
+        closeSystemStream(header.s as string, header.e ?? "normal", false);
         return;
       case "flow.credit": {
         const outerId = header.id ?? "";
@@ -1820,6 +1865,65 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     flushWsQueue(streamId, stream);
   }
 
+  function openSystemStream(header: RelayFrameHeader): void {
+    const connectionId = header.s as string;
+    if (systemStreams.has(connectionId)) {
+      closeSystemStream(connectionId, "protocol-error");
+      return;
+    }
+    let stream: SystemChannelConnection | null = null;
+    stream =
+      options.systemChannel?.open({
+        connectionId,
+        deviceId: header.d as string,
+        send: (sequence, ciphertext) =>
+          send(
+            {
+              v: RELAY_PROTOCOL_VERSION,
+              t: "sys.data",
+              src: "connector",
+              dst: "system",
+              s: connectionId,
+              q: sequence,
+            },
+            ciphertext,
+          ),
+        close: (reason) => {
+          if (systemClosingFromRelay.delete(connectionId)) return;
+          if (systemStreams.get(connectionId) === stream) systemStreams.delete(connectionId);
+          send({
+            v: RELAY_PROTOCOL_VERSION,
+            t: "sys.close",
+            src: "connector",
+            dst: "system",
+            s: connectionId,
+            e: reason,
+          });
+        },
+      }) ?? null;
+    if (!stream) {
+      send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "sys.close",
+        src: "connector",
+        dst: "system",
+        s: connectionId,
+        e: "unauthorized",
+      });
+      return;
+    }
+    systemStreams.set(connectionId, stream);
+  }
+
+  function closeSystemStream(connectionId: string, reason: RelayReason, notify = true): void {
+    const stream = systemStreams.get(connectionId);
+    if (!stream) return;
+    systemStreams.delete(connectionId);
+    if (notify) systemClosingFromRelay.delete(connectionId);
+    else systemClosingFromRelay.add(connectionId);
+    stream.close(reason);
+  }
+
   /**
    * Ends a ws stream from THIS side and, on an e2e stream, tells the phone (see `endE2eInnerStream`).
    * `endWsStream` alone sends nothing, which left a dead terminal that looked live on the phone.
@@ -2059,6 +2163,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       stopHandshakeTimeout();
       for (const streamId of [...httpStreams.keys()]) endHttpStream(streamId, "shutting-down");
       for (const streamId of [...wsStreams.keys()]) endWsStream(streamId, 1001, "shutting-down");
+      for (const connectionId of [...systemStreams.keys()]) closeSystemStream(connectionId, "shutting-down", false);
       if (socket) {
         send({
           v: RELAY_PROTOCOL_VERSION,
@@ -2079,6 +2184,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
     },
     state: () => state,
     endDeviceStreams(mobileDeviceId: string) {
+      options.systemChannel?.revokeDevice?.(mobileDeviceId);
       for (const [outerId, owner] of [...e2eOuterDeviceId]) {
         if (owner.deviceId === mobileDeviceId) endE2eOuterStreamAndNotify(outerId, "unauthorized");
       }
@@ -2109,6 +2215,7 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       wsStreams: stats.wsStreams,
       liveHttpStreams: httpStreams.size,
       liveWsStreams: wsStreams.size,
+      liveSystemStreams: systemStreams.size,
       bytesIn: stats.bytesIn,
       bytesOut: stats.bytesOut,
       overflows: stats.overflows,

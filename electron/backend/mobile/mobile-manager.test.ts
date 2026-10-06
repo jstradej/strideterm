@@ -6,9 +6,6 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { MobileManager, catalogRevisionOf, notificationKindFor } from "./mobile-manager.js";
 import { buildExternalNotificationEvent } from "../notifications/external-notification-event.js";
 
-test("questions use the native waiting-for-input notification channel", () => {
-  expect(notificationKindFor("question")).toBe("waiting");
-});
 import { buildNotificationBody, recentTerminalExcerpt } from "../notifications/notification-context.js";
 import { createMobilePairing } from "./mobile-pairing.js";
 import { createMobileDeviceStore } from "./mobile-device-store.js";
@@ -41,6 +38,29 @@ import type { Capability, Command, EncryptedEnvelope, MobileDeviceRecord } from 
 import type { ExternalNotificationEvent } from "../../shared/types/notifications.js";
 import type { AppState } from "../../shared/types/state.js";
 import { makeCloudDevice } from "./mobile-test-fixtures.js";
+
+test("questions use the native waiting-for-input notification channel", () => {
+  expect(notificationKindFor("question")).toBe("waiting");
+});
+
+test("system channel device resolver exposes only an active pairing key and live allowlist", async () => {
+  const fixture = await createFixture();
+  const { deviceId, keyPair } = await addMobileDevice(fixture.deviceStore, {
+    profileAllowlist: ["work"],
+    verified: false,
+  });
+  expect(fixture.manager.getSystemChannelDevice(deviceId)).toBeNull();
+
+  await fixture.deviceStore.markActive(deviceId, 2000);
+  const resolved = fixture.manager.getSystemChannelDevice(deviceId);
+  expect(resolved).toMatchObject({ deviceId, pairId: OWN_DEVICE_ID, profileAllowlist: ["work"] });
+  // The channel enforces status.read itself, so the resolver must carry the live grant set.
+  expect(resolved?.capabilities).toContain("status.read");
+  expect(resolved?.sessionKey).toEqual(sessionKeyFor(keyPair.privateKey, fixture.desktopKeyPair.publicKey));
+
+  await fixture.deviceStore.revokeDevice(deviceId, 3000);
+  expect(fixture.manager.getSystemChannelDevice(deviceId)).toBeNull();
+});
 
 const OWN_DEVICE_ID = "desktop-1";
 /**

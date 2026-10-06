@@ -148,6 +148,9 @@ export const QuotaWindowKindSchema = z.enum([
   "relay-viewer-grant-minute",
   "relay-viewer-grant-hour",
   "relay-viewer-grant-day",
+  "relay-system-grant-minute",
+  "relay-system-grant-hour",
+  "relay-system-grant-day",
   "relay-connector-grant-minute",
   "relay-connector-grant-hour",
   "relay-connector-grant-day",
@@ -1079,6 +1082,9 @@ export const MAX_PENDING_COMMANDS_PER_PAIR = 50 as const;
 export const MAX_RELAY_VIEWER_GRANTS_PER_DEVICE_PER_MINUTE = 6 as const;
 export const MAX_RELAY_VIEWER_GRANTS_PER_ENTITLEMENT_PER_HOUR = 60 as const;
 export const MAX_RELAY_VIEWER_GRANTS_PER_ENTITLEMENT_PER_UTC_DAY = 300 as const;
+export const MAX_RELAY_SYSTEM_GRANTS_PER_DEVICE_PER_MINUTE = 6 as const;
+export const MAX_RELAY_SYSTEM_GRANTS_PER_ENTITLEMENT_PER_HOUR = 60 as const;
+export const MAX_RELAY_SYSTEM_GRANTS_PER_ENTITLEMENT_PER_UTC_DAY = 300 as const;
 export const MAX_RELAY_CONNECTOR_GRANTS_PER_INSTALLATION_PER_MINUTE = 12 as const;
 export const MAX_RELAY_CONNECTOR_GRANTS_PER_ENTITLEMENT_PER_HOUR = 240 as const;
 export const MAX_RELAY_CONNECTOR_GRANTS_PER_ENTITLEMENT_PER_UTC_DAY = 1200 as const;

@@ -74,6 +74,7 @@ import type { MobileIdempotencyStore } from "./mobile-idempotency-store.js";
 import type { Command, CommandResult, CommandTerminalState, MobileDeviceRecord } from "./mobile-schemas.js";
 import type { AppState } from "../../shared/types/state.js";
 import type { MobileCommandType } from "../../shared/types/notifications.js";
+import { projectMobileWorkspaces } from "./mobile-workspace-projection.js";
 
 const log = getLogger("mobile-command-dispatch");
 
@@ -90,19 +91,6 @@ function workspaceParentIds(workspaces: WorkspaceState[]): Map<string, string | 
 function workspaceCatalogToken(workspaces: WorkspaceState[], parents: Map<string, string | null>): string {
   const membership = workspaces.map((workspace) => [workspace.id, parents.get(workspace.id) ?? null]);
   return createHash("sha256").update(JSON.stringify(membership)).digest("hex");
-}
-
-function latestIso(...values: Array<string | null | undefined>): string | undefined {
-  let latest: string | undefined;
-  let latestTime = 0;
-  for (const value of values) {
-    if (!value) continue;
-    const time = Date.parse(value);
-    if (!Number.isFinite(time) || time <= latestTime) continue;
-    latest = value;
-    latestTime = time;
-  }
-  return latest;
 }
 
 interface MobileCatalogPullRequest {
@@ -641,27 +629,10 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           (workspace) => (workspace.profileId || "default") === profileId,
         );
         const runtimePayload = deps.runtime.getPayload();
-        const gitWorkspaces = runtimePayload.git?.workspaces ?? {};
-        const taskRunner = runtimePayload.taskRunner ?? {};
-        const attention = runtimePayload.attention;
-        const attentionSessions = Object.values(attention?.sessions ?? {});
-        const azurePullRequests = runtimePayload.azureDevops?.pullRequests ?? {};
-        const githubPullRequests = runtimePayload.github?.pullRequests ?? {};
-        const agentActivityByWorkspace = new Map<string, { runningCount: number; doneCount: number }>();
-        for (const session of attentionSessions) {
-          if (
-            !session.workspaceId ||
-            !session.agentLike ||
-            !session.hasUserInput ||
-            (session.activity !== "running" && session.activity !== "done")
-          ) {
-            continue;
-          }
-          const counts = agentActivityByWorkspace.get(session.workspaceId) ?? { runningCount: 0, doneCount: 0 };
-          if (session.activity === "running") counts.runningCount++;
-          else counts.doneCount++;
-          agentActivityByWorkspace.set(session.workspaceId, counts);
-        }
+        const rows = projectMobileWorkspaces(
+          profileWorkspaces,
+          runtimePayload as Parameters<typeof projectMobileWorkspaces>[1],
+        );
         const parents = workspaceParentIds(profileWorkspaces);
         const catalogToken = workspaceCatalogToken(profileWorkspaces, parents);
         const offset = command.payload.workspaceOffset ?? 0;
@@ -688,114 +659,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         // CommandResult JSON so encoding, optional fields and wrapper costs all
         // count toward the page budget.
         for (let i = offset; i < profileWorkspaces.length && page.length < WORKSPACE_CATALOG_MAX_PAGE_ITEMS; i++) {
-          const workspace = profileWorkspaces[i];
-          const workspaceId = workspace.id;
-          const task = workspace.task;
-          const liveTask = taskRunner[workspaceId];
-          const gitSummary = gitWorkspaces[workspaceId];
-          const workspaceAttention = attention?.byWorkspace?.[workspaceId] ?? attention?.byProject?.[workspaceId];
-          const agentActivity = agentActivityByWorkspace.get(workspaceId);
-          const agentRunningCount = agentActivity?.runningCount ?? 0;
-          const agentDoneCount = agentActivity?.doneCount ?? 0;
-          const agentActivityState = agentRunningCount > 0 ? "running" : agentDoneCount > 0 ? "done" : undefined;
-          const review = workspace.review;
-          const reviewProvider = review?.provider;
-          const reviewCheckoutMode = review?.checkout?.mode;
-          const isReviewChild =
-            (reviewProvider === "azure-devops" || reviewProvider === "github") &&
-            reviewCheckoutMode === "managed-worktree";
-          const reviewSummary = review?.prKey
-            ? reviewProvider === "github"
-              ? githubPullRequests[review.prKey]
-              : reviewProvider === "azure-devops"
-                ? azurePullRequests[review.prKey]
-                : undefined
-            : undefined;
-          const reviewPr = reviewSummary?.pullRequest;
-          let prStatus: string | undefined;
-          let prClosedAt: string | undefined;
-          if (isReviewChild && review?.prKey) {
-            if (reviewProvider === "azure-devops") {
-              prStatus =
-                reviewPr?.status === "completed" || reviewPr?.status === "abandoned" ? reviewPr.status : "active";
-              if (prStatus !== "active" && reviewPr?.closedDate) prClosedAt = reviewPr.closedDate;
-            } else if (reviewProvider === "github") {
-              if (reviewPr?.mergedAt) {
-                prStatus = "completed";
-                prClosedAt = reviewPr.mergedAt;
-              } else if (reviewPr && reviewPr.state !== "open") {
-                prStatus = "abandoned";
-                prClosedAt = reviewPr.closedAt || reviewPr.updatedAt;
-              } else {
-                prStatus = "active";
-              }
-            }
-          } else if (!isReviewChild && gitSummary?.branchMerged) {
-            prStatus = "completed";
-          }
-          const checks = reviewSummary?.checks;
-          const checksState = checks?.failedCount
-            ? "failed"
-            : checks?.pendingCount
-              ? "pending"
-              : checks?.passedCount
-                ? "passed"
-                : undefined;
-          const prLastActivityAt = reviewSummary?.lastActivityAt || undefined;
-          const attentionLatestAt = workspaceAttention?.latestAt || undefined;
-          const gitLastChangeAt = gitSummary?.lastChangeAt || undefined;
-          const lastActivityAt = latestIso(
-            isReviewChild ? prLastActivityAt : undefined,
-            attentionLatestAt,
-            gitLastChangeAt,
-          );
-          const item: Record<string, unknown> = {
-            id: workspace.id,
-            name: formatWorkspaceDisplayName(workspace) || workspace.name,
-            kind: workspace.kind || "terminal",
-            ...(workspace.icon ? { icon: workspace.icon } : {}),
-            ...(workspace.color ? { color: workspace.color } : {}),
-            ...(workspace.starred ? { starred: true } : {}),
-            ...(parents.get(workspace.id) ? { parentWorkspaceId: parents.get(workspace.id) } : {}),
-            tabCount: workspace.panels?.length ?? 0,
-            ...(task?.state || liveTask?.state ? { taskState: liveTask?.state || task?.state } : {}),
-            ...(workspace.kind === "task"
-              ? {
-                  taskCurrentRound: liveTask?.currentRound ?? task?.currentRound ?? 0,
-                  taskMaxRounds: liveTask?.maxRounds ?? task?.maxRounds ?? 10,
-                  ...(task?.createdAt ? { taskCreatedAt: task.createdAt } : {}),
-                }
-              : {}),
-            ...(gitSummary
-              ? {
-                  ...(typeof gitSummary.available === "boolean" ? { gitAvailable: gitSummary.available } : {}),
-                  ...(typeof gitSummary.branchMerged === "boolean" ? { branchMerged: gitSummary.branchMerged } : {}),
-                  ...(gitLastChangeAt ? { gitLastChangeAt } : {}),
-                }
-              : {}),
-            ...(reviewProvider ? { reviewProvider } : {}),
-            ...(reviewCheckoutMode ? { reviewCheckoutMode } : {}),
-            ...(isReviewChild ? { reviewHasPullRequest: Boolean(review?.pullRequest) } : {}),
-            ...(prStatus ? { prStatus } : {}),
-            ...(prClosedAt ? { prClosedAt } : {}),
-            ...(checksState ? { checksState } : {}),
-            ...(prLastActivityAt ? { prLastActivityAt } : {}),
-            ...(workspaceAttention?.count ? { attentionCount: workspaceAttention.count } : {}),
-            ...(attentionLatestAt ? { attentionLatestAt } : {}),
-            ...(agentActivityState ? { agentActivityState } : {}),
-            ...(agentRunningCount > 0 ? { agentRunningCount } : {}),
-            ...(agentDoneCount > 0 ? { agentDoneCount } : {}),
-            ...(lastActivityAt ? { lastActivityAt } : {}),
-            ...(gitWorkspaces[workspace.id]?.available
-              ? {
-                  ...(gitWorkspaces[workspace.id].branch ? { branch: gitWorkspaces[workspace.id].branch } : {}),
-                  ...(typeof gitWorkspaces[workspace.id].dirtyCount === "number"
-                    ? { dirtyCount: gitWorkspaces[workspace.id].dirtyCount }
-                    : {}),
-                }
-              : {}),
-            ...(workspace.lastWorkedAt ? { lastWorkedAt: workspace.lastWorkedAt } : {}),
-          };
+          const item = rows[i]!;
           page.push(item);
           const next = i + 1 < profileWorkspaces.length ? i + 1 : undefined;
           selectedProfile.workspaces = page;
