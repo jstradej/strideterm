@@ -357,6 +357,457 @@ describe("profile catalog", () => {
     });
   });
 
+  test("keeps the legacy catalog byte shape when workspace projection is omitted", async () => {
+    const { dispatcher } = await createFixture({
+      profiles: [{ id: "default", name: "Default", color: "#123456", workspaceIds: ["ws-1"] }],
+    });
+    const result = await dispatcher.dispatch(
+      makeCommand({ type: "profile.catalog.get", payload: {} }),
+      makeDevice({ capabilities: ["status.read"] }),
+    );
+    expect(result.data).toEqual({
+      profiles: [{ id: "default", name: "Default", workspaceCount: 1, workspaceNames: ["Fix the parser #3"] }],
+    });
+  });
+
+  test("projects only the selected allowed profile using safe tree parents and no private fields", async () => {
+    const { dispatcher } = await createFixture({
+      profiles: [
+        // Deliberately stale relative to AppState.workspaces, which the
+        // desktop sidebar and manual reordering actually use.
+        { id: "default", name: "Default", color: "#123456", workspaceIds: ["child", "parent", "cycle-a", "cycle-b"] },
+        { id: "secret", name: "Secret", color: "#654321", workspaceIds: ["secret-ws"] },
+      ],
+      workspaces: [
+        {
+          id: "parent",
+          name: "Same name",
+          profileId: "default",
+          icon: "folder",
+          color: "#abc",
+          starred: true,
+          panels: [{ id: "p1" }],
+          cwd: "C:/private",
+          notes: "private notes",
+        },
+        {
+          id: "child",
+          name: "Child",
+          profileId: "default",
+          kind: "task",
+          task: { taskId: "task-child", state: "paused", sequenceNumber: 7, parentWorkspaceId: "parent" },
+          panels: [{ id: "p1" }, { id: "p2" }],
+          cwd: "C:/private",
+          notes: "private notes",
+        },
+        { id: "cycle-a", name: "A", profileId: "default", task: { parentWorkspaceId: "cycle-b" } },
+        { id: "cycle-b", name: "B", profileId: "default", task: { parentWorkspaceId: "cycle-a" } },
+        { id: "secret-ws", name: "Secret workspace", profileId: "secret", task: { parentWorkspaceId: "parent" } },
+      ] as unknown as AppState["workspaces"],
+    });
+    const result = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-page-2",
+        idempotencyKey: "idem-page-2",
+        type: "profile.catalog.get",
+        profileId: "default",
+        payload: { includeWorkspaces: true },
+      }),
+      makeDevice({ capabilities: ["status.read"], profileAllowlist: ["default", "secret"] }),
+    );
+    expect(result.data).toMatchObject({
+      workspaceCatalogVersion: 1,
+      workspaceCatalogProfileId: "default",
+      profiles: [
+        {
+          id: "default",
+          workspaces: [
+            { id: "parent", name: "Same name", icon: "folder", color: "#abc", starred: true, tabCount: 1 },
+            { id: "child", name: "Child #7", parentWorkspaceId: "parent", tabCount: 2 },
+            { id: "cycle-a" },
+            { id: "cycle-b" },
+          ],
+        },
+        { id: "secret", name: "Secret", workspaceCount: 1, workspaceNames: ["Secret workspace"] },
+      ],
+    });
+    const serialized = JSON.stringify(result.data);
+    expect(serialized).not.toContain("secret-ws");
+    expect(serialized).not.toContain("private");
+    expect(serialized).not.toContain("C:/");
+    expect((result.data as { profiles: Array<Record<string, unknown>> }).profiles[1]).not.toHaveProperty("workspaces");
+  });
+
+  test("includes Git fields only from an available cached summary", async () => {
+    const runtime = createFakeRuntime();
+    const { dispatcher } = await createFixture(
+      {
+        profiles: [{ id: "default", name: "Default", color: "#123456", workspaceIds: ["ws-1"] }],
+      },
+      null,
+      null,
+      {
+        runtime: {
+          ...runtime,
+          getPayload: () => ({
+            git: {
+              workspaces: {
+                "ws-1": { available: true, branch: "feature/cached", dirtyCount: 3 },
+                "ws-other-profile": { available: false, branch: "hidden", dirtyCount: 99 },
+              },
+            },
+          }),
+        },
+      },
+    );
+    const result = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-git-summary",
+        idempotencyKey: "idem-git-summary",
+        type: "profile.catalog.get",
+        payload: { includeWorkspaces: true },
+      }),
+      makeDevice({ capabilities: ["status.read"] }),
+    );
+    expect(result.data).toMatchObject({
+      profiles: [{ workspaces: [{ id: "ws-1", branch: "feature/cached", dirtyCount: 3 }] }],
+    });
+    expect(JSON.stringify(result.data)).not.toContain("hidden");
+  });
+
+  test("projects scoped sidebar metadata from cached task, Git, review, attention and session summaries", async () => {
+    const runtime = createFakeRuntime();
+    runtime.getPayload = () => ({
+      git: {
+        workspaces: {
+          "task-ws": {
+            available: true,
+            branch: "feature/task",
+            dirtyCount: 2,
+            branchMerged: false,
+            lastChangeAt: "2026-10-04T10:00:00.000Z",
+          },
+          "azure-ws": {
+            available: true,
+            branch: "review/azure",
+            dirtyCount: 0,
+            branchMerged: false,
+            lastChangeAt: "2026-10-04T11:00:00.000Z",
+          },
+          "github-ws": { available: false, branchMerged: true },
+          "secret-ws": { available: true, branch: "private-branch", dirtyCount: 91 },
+        },
+      },
+      taskRunner: {
+        "task-ws": { state: "failed", currentRound: 10, maxRounds: 10 },
+      },
+      attention: {
+        byWorkspace: {
+          "task-ws": { count: 2, latestAt: "2026-10-04T09:00:00.000Z" },
+          "azure-ws": { count: 1, latestAt: "2026-10-04T12:00:00.000Z" },
+        },
+        byProject: {
+          // Per-workspace legacy fallback mirrors the renderer selector.
+          "github-ws": { count: 3, latestAt: "2026-10-04T13:00:00.000Z" },
+        },
+        sessions: {
+          taskRunning: {
+            workspaceId: "task-ws",
+            activity: "running",
+            agentLike: true,
+            hasUserInput: true,
+          },
+          taskDone: {
+            workspaceId: "task-ws",
+            activity: "done",
+            agentLike: true,
+            hasUserInput: true,
+          },
+          ignoredNoInput: {
+            workspaceId: "task-ws",
+            activity: "running",
+            agentLike: true,
+            hasUserInput: false,
+          },
+          ignoredPlainTerminal: {
+            workspaceId: "task-ws",
+            activity: "running",
+            agentLike: false,
+            hasUserInput: true,
+          },
+        },
+      },
+      azureDevops: {
+        pullRequests: {
+          "azure-pr": {
+            pullRequest: { status: "completed", closedDate: "2026-10-03T08:00:00.000Z" },
+            checks: { failedCount: 1, pendingCount: 4, passedCount: 2 },
+            lastActivityAt: "2026-10-04T15:00:00.000Z",
+          },
+        },
+      },
+      github: {
+        pullRequests: {
+          "github-pr": {
+            pullRequest: { state: "closed", closedAt: "2026-10-02T08:00:00.000Z" },
+          },
+        },
+      },
+    });
+    const { dispatcher } = await createFixture(
+      {
+        profiles: [
+          { id: "default", name: "Default", color: "#123456", workspaceIds: [] },
+          { id: "secret", name: "Secret", color: "#654321", workspaceIds: [] },
+        ],
+        workspaces: [
+          {
+            id: "task-ws",
+            name: "Fix task",
+            profileId: "default",
+            kind: "task",
+            panels: [],
+            task: {
+              taskId: "private-task-id",
+              description: "private task description",
+              state: "paused",
+              sequenceNumber: 4,
+              currentRound: 2,
+              maxRounds: 8,
+              createdAt: "2026-10-01T08:00:00.000Z",
+              workerProviderConfig: { apiKey: "private-provider-secret" },
+            },
+          },
+          {
+            id: "azure-ws",
+            name: "Azure review",
+            profileId: "default",
+            kind: "manual",
+            panels: [],
+            review: {
+              provider: "azure-devops",
+              prKey: "azure-pr",
+              checkout: { mode: "managed-worktree" },
+              pullRequest: { title: "private pull request title" },
+            },
+          },
+          {
+            id: "github-ws",
+            name: "GitHub new branch",
+            profileId: "default",
+            kind: "manual",
+            panels: [],
+            review: {
+              provider: "github",
+              prKey: "github-pr",
+              checkout: { mode: "managed-worktree" },
+            },
+          },
+          {
+            id: "secret-ws",
+            name: "Private workspace",
+            profileId: "secret",
+            kind: "task",
+            panels: [],
+            task: { taskId: "private-task-id-2", description: "secret workspace details" },
+          },
+        ] as unknown as AppState["workspaces"],
+      },
+      null,
+      null,
+      { runtime },
+    );
+
+    const result = await dispatcher.dispatch(
+      makeCommand({
+        type: "profile.catalog.get",
+        profileId: "default",
+        payload: { includeWorkspaces: true },
+      }),
+      makeDevice({ capabilities: ["status.read"], profileAllowlist: ["default"] }),
+    );
+
+    expect(result.data).toMatchObject({
+      profiles: [
+        {
+          workspaces: [
+            {
+              id: "task-ws",
+              name: "Fix task #4",
+              kind: "task",
+              taskState: "failed",
+              taskCurrentRound: 10,
+              taskMaxRounds: 10,
+              taskCreatedAt: "2026-10-01T08:00:00.000Z",
+              gitAvailable: true,
+              branchMerged: false,
+              gitLastChangeAt: "2026-10-04T10:00:00.000Z",
+              attentionCount: 2,
+              attentionLatestAt: "2026-10-04T09:00:00.000Z",
+              agentActivityState: "running",
+              agentRunningCount: 1,
+              agentDoneCount: 1,
+              lastActivityAt: "2026-10-04T10:00:00.000Z",
+            },
+            {
+              id: "azure-ws",
+              reviewProvider: "azure-devops",
+              reviewCheckoutMode: "managed-worktree",
+              reviewHasPullRequest: true,
+              prStatus: "completed",
+              prClosedAt: "2026-10-03T08:00:00.000Z",
+              checksState: "failed",
+              prLastActivityAt: "2026-10-04T15:00:00.000Z",
+              lastActivityAt: "2026-10-04T15:00:00.000Z",
+            },
+            {
+              id: "github-ws",
+              gitAvailable: false,
+              branchMerged: true,
+              reviewHasPullRequest: false,
+              prStatus: "abandoned",
+              prClosedAt: "2026-10-02T08:00:00.000Z",
+              attentionCount: 3,
+              lastActivityAt: "2026-10-04T13:00:00.000Z",
+            },
+          ],
+        },
+      ],
+    });
+    const serialized = JSON.stringify(result.data);
+    expect(serialized).not.toContain("secret-ws");
+    expect(serialized).not.toContain("private-task-id");
+    expect(serialized).not.toContain("private task description");
+    expect(serialized).not.toContain("private-provider-secret");
+    expect(serialized).not.toContain("private pull request title");
+    expect(serialized).not.toContain("secret workspace details");
+    expect(serialized).not.toContain("private-branch");
+  });
+
+  test("paginates large catalogs within the encrypted result limit and detects catalog changes", async () => {
+    const workspaces = Array.from({ length: 5000 }, (_, i) => ({
+      id: `workspace-${i}`,
+      name: `Workspace 😀 ${"é".repeat(48)} ${i}`,
+      profileId: "default",
+      panels: [],
+    }));
+    const { dispatcher, state } = await createFixture({
+      profiles: [{ id: "default", name: "Default", color: "#123456", workspaceIds: workspaces.map((ws) => ws.id) }],
+      workspaces: workspaces as unknown as AppState["workspaces"],
+    });
+    const device = makeDevice({ capabilities: ["status.read"], profileAllowlist: ["default"] });
+    const first = await dispatcher.dispatch(
+      makeCommand({ type: "profile.catalog.get", profileId: "default", payload: { includeWorkspaces: true } }),
+      device,
+    );
+    expect(first.status).toBe("succeeded");
+    const firstData = first.data as {
+      profiles: Array<{ workspacesTruncated: boolean; workspaces: Array<{ id: string }> }>;
+      workspaceNextOffset: number;
+      workspaceCatalogToken: string;
+    };
+    expect(firstData.profiles[0].workspacesTruncated).toBe(true);
+    expect(firstData.workspaceNextOffset).toBe(firstData.profiles[0].workspaces.length);
+    const firstResultJson = JSON.stringify(first);
+    const estimatedCiphertextBase64Bytes = Math.ceil((Buffer.byteLength(firstResultJson, "utf8") + 16) / 3) * 4;
+    expect(estimatedCiphertextBase64Bytes).toBeLessThanOrEqual(16_384);
+
+    // Display metadata can change while paging without invalidating catalog
+    // identity; membership, order and parent links define the token.
+    state.workspaces[0].name = "Renamed during paging";
+    const collectedIds = [...firstData.profiles[0].workspaces.map((workspace) => workspace.id)];
+    let offset = firstData.workspaceNextOffset as number | undefined;
+    let pageNumber = 2;
+    while (offset !== undefined) {
+      const pageResult = await dispatcher.dispatch(
+        makeCommand({
+          commandId: `cmd-page-${pageNumber}`,
+          idempotencyKey: `idem-page-${pageNumber}`,
+          type: "profile.catalog.get",
+          profileId: "default",
+          payload: {
+            includeWorkspaces: true,
+            workspaceOffset: offset,
+            workspaceCatalogToken: firstData.workspaceCatalogToken,
+          },
+        }),
+        device,
+      );
+      expect(pageResult.status).toBe("succeeded");
+      const page = pageResult.data as {
+        profiles: Array<{ workspaces: Array<{ id: string }>; workspacesTruncated: boolean }>;
+        workspaceNextOffset?: number;
+      };
+      const pageJson = JSON.stringify(pageResult);
+      expect(Math.ceil((Buffer.byteLength(pageJson, "utf8") + 16) / 3) * 4).toBeLessThanOrEqual(16_384);
+      collectedIds.push(...page.profiles[0].workspaces.map((workspace) => workspace.id));
+      expect(page.profiles[0].workspacesTruncated).toBe(page.workspaceNextOffset !== undefined);
+      offset = page.workspaceNextOffset;
+      pageNumber++;
+    }
+    expect(collectedIds).toEqual(workspaces.map((workspace) => workspace.id));
+
+    const changed = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-stale-page",
+        idempotencyKey: "idem-stale-page",
+        type: "profile.catalog.get",
+        profileId: "default",
+        payload: { includeWorkspaces: true, workspaceOffset: 2, workspaceCatalogToken: "0".repeat(64) },
+      }),
+      device,
+    );
+    expect(changed).toMatchObject({ status: "failed", errorCode: "workspace-catalog-changed" });
+  });
+
+  test("returns an empty, complete catalog and rejects a stale token after order changes", async () => {
+    const { dispatcher, state } = await createFixture({
+      profiles: [{ id: "default", name: "Default", color: "#123456", workspaceIds: [] }],
+      workspaces: [],
+    });
+    const device = makeDevice({ capabilities: ["status.read"], profileAllowlist: ["default"] });
+    const empty = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-empty",
+        idempotencyKey: "idem-empty",
+        type: "profile.catalog.get",
+        payload: { includeWorkspaces: true },
+      }),
+      device,
+    );
+    expect(empty.data).toMatchObject({
+      workspaceCatalogVersion: 1,
+      profiles: [{ workspaces: [], workspacesTruncated: false }],
+    });
+    expect(Math.ceil((Buffer.byteLength(JSON.stringify(empty), "utf8") + 16) / 3) * 4).toBeLessThanOrEqual(16_384);
+    const base = state.workspaces;
+    state.workspaces = [
+      { ...base[0], id: "one", name: "One", profileId: "default" } as AppState["workspaces"][number],
+      { ...base[0], id: "two", name: "Two", profileId: "default" } as AppState["workspaces"][number],
+    ];
+    const first = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-order-1",
+        idempotencyKey: "idem-order-1",
+        type: "profile.catalog.get",
+        payload: { includeWorkspaces: true },
+      }),
+      device,
+    );
+    const token = (first.data as { workspaceCatalogToken: string }).workspaceCatalogToken;
+    state.workspaces.reverse();
+    const stale = await dispatcher.dispatch(
+      makeCommand({
+        commandId: "cmd-order-2",
+        idempotencyKey: "idem-order-2",
+        type: "profile.catalog.get",
+        payload: { includeWorkspaces: true, workspaceOffset: 1, workspaceCatalogToken: token },
+      }),
+      device,
+    );
+    expect(stale).toMatchObject({ status: "failed", errorCode: "workspace-catalog-changed" });
+  });
+
   describe("desktop window order", () => {
     const profiles = [
       { id: "default", name: "Default", color: "#111", workspaceIds: [] },

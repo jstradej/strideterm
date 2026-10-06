@@ -299,7 +299,11 @@ export const TaskSendInstructionPayloadSchema = z.object({
 });
 export type TaskSendInstructionPayload = z.infer<typeof TaskSendInstructionPayloadSchema>;
 
-export const ProfileCatalogGetPayloadSchema = z.object({});
+export const ProfileCatalogGetPayloadSchema = z.object({
+  includeWorkspaces: z.boolean().optional(),
+  workspaceOffset: z.number().int().min(0).optional(),
+  workspaceCatalogToken: z.string().min(1).optional(),
+});
 export type ProfileCatalogGetPayload = z.infer<typeof ProfileCatalogGetPayloadSchema>;
 
 export const RemoteStatusGetPayloadSchema = z.object({

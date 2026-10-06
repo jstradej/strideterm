@@ -101,6 +101,15 @@ describe("buildWorkspaceTree", () => {
     expect(tree.ancestorsOf("c")).toEqual(["a", "b"]);
   });
 
+  it("indexes long workspace chains without repeating a full cycle walk per node", () => {
+    const chain = Array.from({ length: 2000 }, (_, index) =>
+      ws(`node-${index}`, index === 0 ? {} : { task: { parentWorkspaceId: `node-${index - 1}` } }),
+    );
+    const tree = buildWorkspaceTree(chain);
+    expect(tree.parentOf("node-1999")).toBe("node-1998");
+    expect(tree.depthOf("node-1999")).toBe(1999);
+  });
+
   it("compares by canonical order first, then by id", () => {
     const tree = buildWorkspaceTree([ws("z"), ws("a"), ws("m")]);
     expect(tree.indexOf("z")).toBe(0);

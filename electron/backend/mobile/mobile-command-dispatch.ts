@@ -50,6 +50,9 @@ import { canReconnectTunnel } from "../tunnel-manager.js";
 import { getLogger } from "../logger.js";
 import { findWorkspace } from "../runtime-utils.js";
 import { formatWorkspaceDisplayName } from "../../shared/workspace-display.js";
+import { createHash } from "node:crypto";
+import { buildWorkspaceTree } from "../../shared/workspace-tree.js";
+import type { WorkspaceState } from "../../shared/types/state.js";
 import { checkCommandPolicy, policyFor } from "./mobile-command-policy.js";
 import { deviceAllowsProfile, deviceHasCapability, isDeviceUsable } from "./mobile-device-store.js";
 import { REMOTE_WEB_SESSION_CAPABILITY } from "./mobile-web-session-ticket-store.js";
@@ -73,6 +76,49 @@ import type { AppState } from "../../shared/types/state.js";
 import type { MobileCommandType } from "../../shared/types/notifications.js";
 
 const log = getLogger("mobile-command-dispatch");
+
+// RTDB limits encrypted command results to 16 KiB of base64 ciphertext. Keep
+// each page within that limit after adding the
+// 16-byte AES-GCM tag.
+const WORKSPACE_CATALOG_MAX_PAGE_ITEMS = 1000;
+
+function workspaceParentIds(workspaces: WorkspaceState[]): Map<string, string | null> {
+  const tree = buildWorkspaceTree(workspaces);
+  return new Map(workspaces.map((workspace) => [workspace.id, tree.parentOf(workspace.id)]));
+}
+
+function workspaceCatalogToken(workspaces: WorkspaceState[], parents: Map<string, string | null>): string {
+  const membership = workspaces.map((workspace) => [workspace.id, parents.get(workspace.id) ?? null]);
+  return createHash("sha256").update(JSON.stringify(membership)).digest("hex");
+}
+
+function latestIso(...values: Array<string | null | undefined>): string | undefined {
+  let latest: string | undefined;
+  let latestTime = 0;
+  for (const value of values) {
+    if (!value) continue;
+    const time = Date.parse(value);
+    if (!Number.isFinite(time) || time <= latestTime) continue;
+    latest = value;
+    latestTime = time;
+  }
+  return latest;
+}
+
+interface MobileCatalogPullRequest {
+  status?: string;
+  closedDate?: string;
+  mergedAt?: string | null;
+  closedAt?: string | null;
+  updatedAt?: string;
+  state?: string;
+}
+
+interface MobileCatalogReviewSummary {
+  pullRequest?: MobileCatalogPullRequest;
+  checks?: { failedCount?: number; pendingCount?: number; passedCount?: number };
+  lastActivityAt?: string | null;
+}
 
 interface TaskActionResult {
   ok: boolean;
@@ -100,6 +146,29 @@ export interface MobileCommandRuntime {
   clearAlertForSession(sessionId: string, options?: { dismissed?: boolean }): unknown;
   createCloudflareTunnel(): Promise<unknown>;
   getPayload(): {
+    git?: {
+      workspaces?: Record<
+        string,
+        {
+          available?: boolean;
+          branch?: string;
+          dirtyCount?: number;
+          branchMerged?: boolean;
+          lastChangeAt?: string | null;
+        }
+      >;
+    };
+    taskRunner?: Record<string, { state?: string; currentRound?: number; maxRounds?: number }>;
+    attention?: {
+      byWorkspace?: Record<string, { count?: number; latestAt?: string | null }>;
+      byProject?: Record<string, { count?: number; latestAt?: string | null }>;
+      sessions?: Record<
+        string,
+        { workspaceId?: string; activity?: string; agentLike?: boolean; hasUserInput?: boolean }
+      >;
+    };
+    azureDevops?: { pullRequests?: Record<string, MobileCatalogReviewSummary> };
+    github?: { pullRequests?: Record<string, MobileCatalogReviewSummary> };
     remoteAccess?: {
       enabled?: boolean;
       host?: string;
@@ -540,27 +609,220 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         // itself, and is simply absent when that window belongs to a profile outside the allowlist.
         const focusOrder = deps.desktopProfileFocusOrder?.() ?? [];
         const openAllowed = focusOrder.filter((profileId) => allowed.has(profileId));
-        return succeeded({
-          profiles: state.profiles
-            .filter((profile) => allowed.has(profile.id))
-            .map((profile) => {
-              const desktopRank = openAllowed.indexOf(profile.id);
-              return {
-                id: profile.id,
-                name: profile.name,
-                workspaceCount: state.workspaces.filter(
-                  (workspace) => (workspace.profileId || "default") === profile.id,
-                ).length,
-                workspaceNames: state.workspaces
-                  .filter((workspace) => (workspace.profileId || "default") === profile.id)
-                  .map((workspace) => formatWorkspaceDisplayName(workspace))
-                  .filter((name): name is string => typeof name === "string" && name.length > 0)
-                  .slice(0, 5),
-                ...(desktopRank >= 0 ? { desktopRank } : {}),
-                ...(focusOrder[0] === profile.id ? { desktopActive: true } : {}),
-              };
-            }),
-        });
+        const profiles = state.profiles
+          .filter((profile) => allowed.has(profile.id))
+          .map((profile) => {
+            const profileWorkspaces = state.workspaces.filter(
+              (workspace) => (workspace.profileId || "default") === profile.id,
+            );
+            const desktopRank = openAllowed.indexOf(profile.id);
+            return {
+              id: profile.id,
+              name: profile.name,
+              workspaceCount: profileWorkspaces.length,
+              workspaceNames: profileWorkspaces
+                .map((workspace) => formatWorkspaceDisplayName(workspace))
+                .filter((name): name is string => typeof name === "string" && name.length > 0)
+                .slice(0, 5),
+              ...(desktopRank >= 0 ? { desktopRank } : {}),
+              ...(focusOrder[0] === profile.id ? { desktopActive: true } : {}),
+            };
+          });
+        if (!command.payload.includeWorkspaces) return succeeded({ profiles });
+
+        const profileId = command.profileId;
+        if (!allowed.has(profileId)) return failed("profile-not-allowed");
+        const profileIndex = state.profiles.findIndex((profile) => profile.id === profileId);
+        if (profileIndex < 0) return failed("profile-not-found");
+        // AppState.workspaces is the desktop's canonical manually ordered list.
+        // Profile.workspaceIds is retained for legacy/grid compatibility and
+        // can lag behind manual reorders, so never use it as the catalog order.
+        const profileWorkspaces = state.workspaces.filter(
+          (workspace) => (workspace.profileId || "default") === profileId,
+        );
+        const runtimePayload = deps.runtime.getPayload();
+        const gitWorkspaces = runtimePayload.git?.workspaces ?? {};
+        const taskRunner = runtimePayload.taskRunner ?? {};
+        const attention = runtimePayload.attention;
+        const attentionSessions = Object.values(attention?.sessions ?? {});
+        const azurePullRequests = runtimePayload.azureDevops?.pullRequests ?? {};
+        const githubPullRequests = runtimePayload.github?.pullRequests ?? {};
+        const agentActivityByWorkspace = new Map<string, { runningCount: number; doneCount: number }>();
+        for (const session of attentionSessions) {
+          if (
+            !session.workspaceId ||
+            !session.agentLike ||
+            !session.hasUserInput ||
+            (session.activity !== "running" && session.activity !== "done")
+          ) {
+            continue;
+          }
+          const counts = agentActivityByWorkspace.get(session.workspaceId) ?? { runningCount: 0, doneCount: 0 };
+          if (session.activity === "running") counts.runningCount++;
+          else counts.doneCount++;
+          agentActivityByWorkspace.set(session.workspaceId, counts);
+        }
+        const parents = workspaceParentIds(profileWorkspaces);
+        const catalogToken = workspaceCatalogToken(profileWorkspaces, parents);
+        const offset = command.payload.workspaceOffset ?? 0;
+        if (
+          (offset > 0 && !command.payload.workspaceCatalogToken) ||
+          (command.payload.workspaceCatalogToken && command.payload.workspaceCatalogToken !== catalogToken)
+        ) {
+          return failed("workspace-catalog-changed");
+        }
+        if (offset > profileWorkspaces.length) return failed("workspace-catalog-changed");
+
+        const resultProfiles: Array<Record<string, unknown>> = profiles.map((profile) => ({ ...profile }));
+        const selectedProfile = resultProfiles.find((profile) => profile.id === profileId);
+        if (!selectedProfile) return failed("profile-not-allowed");
+        const resultData: Record<string, unknown> = {
+          profiles: resultProfiles,
+          workspaceCatalogVersion: 1,
+          workspaceCatalogProfileId: profileId,
+          workspaceCatalogToken: catalogToken,
+          workspaceNextOffset: undefined,
+        };
+        const page: Array<Record<string, unknown>> = [];
+        // Starting at offset, add only allowlisted metadata. Measure the final
+        // CommandResult JSON so encoding, optional fields and wrapper costs all
+        // count toward the page budget.
+        for (let i = offset; i < profileWorkspaces.length && page.length < WORKSPACE_CATALOG_MAX_PAGE_ITEMS; i++) {
+          const workspace = profileWorkspaces[i];
+          const workspaceId = workspace.id;
+          const task = workspace.task;
+          const liveTask = taskRunner[workspaceId];
+          const gitSummary = gitWorkspaces[workspaceId];
+          const workspaceAttention = attention?.byWorkspace?.[workspaceId] ?? attention?.byProject?.[workspaceId];
+          const agentActivity = agentActivityByWorkspace.get(workspaceId);
+          const agentRunningCount = agentActivity?.runningCount ?? 0;
+          const agentDoneCount = agentActivity?.doneCount ?? 0;
+          const agentActivityState = agentRunningCount > 0 ? "running" : agentDoneCount > 0 ? "done" : undefined;
+          const review = workspace.review;
+          const reviewProvider = review?.provider;
+          const reviewCheckoutMode = review?.checkout?.mode;
+          const isReviewChild =
+            (reviewProvider === "azure-devops" || reviewProvider === "github") &&
+            reviewCheckoutMode === "managed-worktree";
+          const reviewSummary = review?.prKey
+            ? reviewProvider === "github"
+              ? githubPullRequests[review.prKey]
+              : reviewProvider === "azure-devops"
+                ? azurePullRequests[review.prKey]
+                : undefined
+            : undefined;
+          const reviewPr = reviewSummary?.pullRequest;
+          let prStatus: string | undefined;
+          let prClosedAt: string | undefined;
+          if (isReviewChild && review?.prKey) {
+            if (reviewProvider === "azure-devops") {
+              prStatus =
+                reviewPr?.status === "completed" || reviewPr?.status === "abandoned" ? reviewPr.status : "active";
+              if (prStatus !== "active" && reviewPr?.closedDate) prClosedAt = reviewPr.closedDate;
+            } else if (reviewProvider === "github") {
+              if (reviewPr?.mergedAt) {
+                prStatus = "completed";
+                prClosedAt = reviewPr.mergedAt;
+              } else if (reviewPr && reviewPr.state !== "open") {
+                prStatus = "abandoned";
+                prClosedAt = reviewPr.closedAt || reviewPr.updatedAt;
+              } else {
+                prStatus = "active";
+              }
+            }
+          } else if (!isReviewChild && gitSummary?.branchMerged) {
+            prStatus = "completed";
+          }
+          const checks = reviewSummary?.checks;
+          const checksState = checks?.failedCount
+            ? "failed"
+            : checks?.pendingCount
+              ? "pending"
+              : checks?.passedCount
+                ? "passed"
+                : undefined;
+          const prLastActivityAt = reviewSummary?.lastActivityAt || undefined;
+          const attentionLatestAt = workspaceAttention?.latestAt || undefined;
+          const gitLastChangeAt = gitSummary?.lastChangeAt || undefined;
+          const lastActivityAt = latestIso(
+            isReviewChild ? prLastActivityAt : undefined,
+            attentionLatestAt,
+            gitLastChangeAt,
+          );
+          const item: Record<string, unknown> = {
+            id: workspace.id,
+            name: formatWorkspaceDisplayName(workspace) || workspace.name,
+            kind: workspace.kind || "terminal",
+            ...(workspace.icon ? { icon: workspace.icon } : {}),
+            ...(workspace.color ? { color: workspace.color } : {}),
+            ...(workspace.starred ? { starred: true } : {}),
+            ...(parents.get(workspace.id) ? { parentWorkspaceId: parents.get(workspace.id) } : {}),
+            tabCount: workspace.panels?.length ?? 0,
+            ...(task?.state || liveTask?.state ? { taskState: liveTask?.state || task?.state } : {}),
+            ...(workspace.kind === "task"
+              ? {
+                  taskCurrentRound: liveTask?.currentRound ?? task?.currentRound ?? 0,
+                  taskMaxRounds: liveTask?.maxRounds ?? task?.maxRounds ?? 10,
+                  ...(task?.createdAt ? { taskCreatedAt: task.createdAt } : {}),
+                }
+              : {}),
+            ...(gitSummary
+              ? {
+                  ...(typeof gitSummary.available === "boolean" ? { gitAvailable: gitSummary.available } : {}),
+                  ...(typeof gitSummary.branchMerged === "boolean" ? { branchMerged: gitSummary.branchMerged } : {}),
+                  ...(gitLastChangeAt ? { gitLastChangeAt } : {}),
+                }
+              : {}),
+            ...(reviewProvider ? { reviewProvider } : {}),
+            ...(reviewCheckoutMode ? { reviewCheckoutMode } : {}),
+            ...(isReviewChild ? { reviewHasPullRequest: Boolean(review?.pullRequest) } : {}),
+            ...(prStatus ? { prStatus } : {}),
+            ...(prClosedAt ? { prClosedAt } : {}),
+            ...(checksState ? { checksState } : {}),
+            ...(prLastActivityAt ? { prLastActivityAt } : {}),
+            ...(workspaceAttention?.count ? { attentionCount: workspaceAttention.count } : {}),
+            ...(attentionLatestAt ? { attentionLatestAt } : {}),
+            ...(agentActivityState ? { agentActivityState } : {}),
+            ...(agentRunningCount > 0 ? { agentRunningCount } : {}),
+            ...(agentDoneCount > 0 ? { agentDoneCount } : {}),
+            ...(lastActivityAt ? { lastActivityAt } : {}),
+            ...(gitWorkspaces[workspace.id]?.available
+              ? {
+                  ...(gitWorkspaces[workspace.id].branch ? { branch: gitWorkspaces[workspace.id].branch } : {}),
+                  ...(typeof gitWorkspaces[workspace.id].dirtyCount === "number"
+                    ? { dirtyCount: gitWorkspaces[workspace.id].dirtyCount }
+                    : {}),
+                }
+              : {}),
+            ...(workspace.lastWorkedAt ? { lastWorkedAt: workspace.lastWorkedAt } : {}),
+          };
+          page.push(item);
+          const next = i + 1 < profileWorkspaces.length ? i + 1 : undefined;
+          selectedProfile.workspaces = page;
+          selectedProfile.workspacesTruncated = next !== undefined;
+          resultData.workspaceNextOffset = next;
+          const commandResult = {
+            commandId: command.commandId,
+            status: "succeeded",
+            completedAt: now(),
+            data: resultData,
+            errorCode: null,
+          };
+          // Keep a 64-byte safety margin for the actual completion timestamp
+          // and any wrapper details added to CommandResult in a compatible way.
+          const plaintextBytes = Buffer.byteLength(JSON.stringify(commandResult), "utf8") + 64;
+          const ciphertextBase64Bytes = Math.ceil((plaintextBytes + 16) / 3) * 4;
+          if (ciphertextBase64Bytes > 16_384) {
+            page.pop();
+            if (page.length === 0) return failed("workspace-metadata-too-large");
+            break;
+          }
+        }
+        const nextOffset = offset + page.length;
+        selectedProfile.workspaces = page;
+        selectedProfile.workspacesTruncated = nextOffset < profileWorkspaces.length;
+        resultData.workspaceNextOffset = nextOffset < profileWorkspaces.length ? nextOffset : undefined;
+        return succeeded(resultData);
       }
 
       case "remote.status.get": {
