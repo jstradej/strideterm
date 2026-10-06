@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
+  buildMobileNotificationContent,
   buildNotificationBody,
+  mobileNotificationTitle,
   NOTIFICATION_BODY_MAX_BYTES,
   notificationSummary,
   recentTerminalExcerpt,
@@ -72,5 +74,52 @@ describe("notification context", () => {
       expect(body).toMatch(/Last line$/);
       expect(body).not.toContain("\uFFFD");
     }
+  });
+});
+
+describe("mobile notification content", () => {
+  test("title is workspace · tab and degrades to the known half, then the profile", () => {
+    expect(mobileNotificationTitle({ workspaceName: "api-gateway", tab: "tests", profileLabel: "Work" })).toBe(
+      "api-gateway · tests",
+    );
+    expect(mobileNotificationTitle({ workspaceName: "api-gateway", profileLabel: "Work" })).toBe("api-gateway");
+    expect(mobileNotificationTitle({ workspaceName: "docs", tab: "docs" })).toBe("docs");
+    expect(mobileNotificationTitle({ tab: "tests" })).toBe("tests");
+    expect(mobileNotificationTitle({ profileLabel: "Work" })).toBe("Work");
+  });
+
+  test("a finished event carries a short lead and no terminal output or prompt", () => {
+    const content = buildMobileNotificationContent({
+      kind: "completed",
+      detail: "hook:Stop",
+      recentOutput: "lots\nof\noutput",
+    });
+    expect(content).toEqual({ lead: "Agent finished" });
+  });
+
+  test("a waiting event with a message sends the question as the prompt", () => {
+    const content = buildMobileNotificationContent({
+      kind: "question",
+      detail: "hook:Notification:permission_prompt",
+      message: "Bash: chmod +x deploy.sh",
+      recentOutput: "ignored\nbecause\nthe message wins",
+    });
+    expect(content.lead).toBe("Bash: chmod +x deploy.sh");
+    expect(content.prompt).toBe("Bash: chmod +x deploy.sh");
+  });
+
+  test("a waiting event without a message sends only the last three terminal lines as the prompt", () => {
+    const content = buildMobileNotificationContent({
+      kind: "waiting",
+      detail: "prompt-returned",
+      recentOutput: "one\ntwo\nthree\nContinue? [y/N]",
+    });
+    expect(content.prompt).toBe("two\nthree\nContinue? [y/N]");
+    expect(content.lead).not.toContain("Recent terminal output");
+  });
+
+  test("a very long question is capped", () => {
+    const content = buildMobileNotificationContent({ kind: "waiting", message: "q".repeat(450) });
+    expect(content.prompt!.length).toBeLessThanOrEqual(300);
   });
 });

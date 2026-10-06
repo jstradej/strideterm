@@ -66,3 +66,59 @@ export function buildNotificationBody(input: {
   if (remaining <= 3) return truncateUtf8Head(lead, NOTIFICATION_BODY_MAX_BYTES);
   return `${lead}${separator}${label}${truncateUtf8End(output, remaining)}`;
 }
+
+export const MOBILE_PROMPT_MAX_CHARS = 300;
+
+function singleLine(value: string | undefined): string {
+  return sanitizeTerminalText(String(value || ""))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Headline for a notification on the phone: "<workspace> · <tab>", degrading to whichever half is
+ * known, then to the profile label. What happened is the body's job, never the title's.
+ */
+export function mobileNotificationTitle(input: {
+  workspaceName?: string;
+  tab?: string;
+  profileLabel?: string;
+}): string {
+  const workspace = singleLine(input.workspaceName);
+  const tab = singleLine(input.tab);
+  if (workspace && tab && workspace !== tab) return `${workspace} · ${tab}`;
+  return workspace || tab || singleLine(input.profileLabel);
+}
+
+/**
+ * The text a phone shows for one alert: a short lead sentence plus, for events where the agent is
+ * blocked on the user, the question itself. Unlike `buildNotificationBody` (the Telegram-era
+ * "lead + recent terminal output" dump) it never ships terminal output as the body: the excerpt is
+ * reduced to its last few lines and sent as `prompt`, and only for `waiting`/`question`.
+ */
+export function buildMobileNotificationContent(input: {
+  kind: string;
+  detail?: string;
+  message?: string;
+  exitCode?: number;
+  recentOutput?: string;
+}): { lead: string; prompt?: string } {
+  const message = truncateUtf8Head(sanitizeTerminalText(input.message), 500);
+  const lead = truncateUtf8Head(
+    message || notificationSummary(input.kind, String(input.detail || ""), input.exitCode),
+    500,
+  );
+  if (input.kind !== "waiting" && input.kind !== "question") return { lead };
+
+  let prompt = message.trim();
+  if (!prompt) {
+    const lines = sanitizeTerminalText(String(input.recentOutput || ""))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    prompt = lines.slice(-3).join("\n");
+  }
+  if (!prompt) return { lead };
+  if (prompt.length > MOBILE_PROMPT_MAX_CHARS) prompt = `…${prompt.slice(-(MOBILE_PROMPT_MAX_CHARS - 1)).trimStart()}`;
+  return { lead, prompt };
+}

@@ -133,8 +133,8 @@ import {
 import { PROTOCOL_VERSION, SESSION_KEY_HKDF_INFO, type MobileDeviceRecord } from "./mobile/mobile-schemas.js";
 import { buildExternalNotificationEvent } from "./notifications/external-notification-event.js";
 import {
-  buildNotificationBody,
-  notificationSummary,
+  buildMobileNotificationContent,
+  mobileNotificationTitle,
   recentTerminalExcerpt,
 } from "./notifications/notification-context.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
@@ -4110,9 +4110,15 @@ export async function createRuntime({
       const profileId = (workspace as { profileId?: string } | undefined)?.profileId || "default";
       const signal = opts.sessionId ? sessionSignals.get(opts.sessionId) : undefined;
       const message = String(opts.message || "").trim();
-      const excerpt = opts.sessionId ? recentTerminalExcerpt(terminalReplay.snapshot(String(opts.sessionId)).data) : "";
-      const body = buildNotificationBody({
-        kind: String(opts.kind || "info"),
+      const kind = String(opts.kind || "info");
+      // The terminal excerpt is only worth reading when the agent is asking something; it is
+      // reduced to the question and sent as `prompt`, never as the body.
+      const excerpt =
+        opts.sessionId && (kind === "waiting" || kind === "question")
+          ? recentTerminalExcerpt(terminalReplay.snapshot(String(opts.sessionId)).data)
+          : "";
+      const content = buildMobileNotificationContent({
+        kind,
         detail: String(opts.detail || ""),
         message,
         exitCode: opts.exitCode,
@@ -4121,7 +4127,12 @@ export async function createRuntime({
       const activity = String(signal?.currentCommand || "").trim();
       const taskId = workspace?.kind === "task" ? workspace.task?.taskId : undefined;
       const durationMs = signal?.activityStartedAt ? Math.max(0, Date.now() - signal.activityStartedAt) : undefined;
-      const title = notificationSummary(String(opts.kind || "info"), String(opts.detail || ""), opts.exitCode);
+      const workspaceName = formatWorkspaceDisplayName(workspace) || "";
+      const title = mobileNotificationTitle({
+        workspaceName,
+        tab: panel?.title || undefined,
+        profileLabel: resolveProfileDisplayName(profileId),
+      });
       telegramManager
         .forwardAlert({
           alertId: opts.sessionId || `${opts.projectId}:${opts.panelId}`,
@@ -4160,8 +4171,9 @@ export async function createRuntime({
           kind: opts.kind || "info",
           urgency: opts.urgency === "urgent" ? "urgent" : "normal",
           title,
-          detail: body,
-          workspaceName: formatWorkspaceDisplayName(workspace) || opts.projectId || "",
+          detail: content.lead,
+          prompt: content.prompt,
+          workspaceName,
           taskId,
           tab: panel?.title || undefined,
           activity: activity || undefined,
