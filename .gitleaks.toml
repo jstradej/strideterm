@@ -77,3 +77,10 @@ condition = "AND"
 regexTarget = "secret"
 paths = ['^electron/backend/mobile/mobile-relay-e2e-vectors\.json$']
 regexes = ['^(?:4337da770b9a358587567f8ae2b78e0b41337cfa307cbb95fddd539162183e91|43c6653d0892469541bc22b2e67fd594e2e645f26ca6e45c0b30de5c7ec5e58a|5b32cb70b63e0796d0a914411dfd3f75138e0927dae6645eb754355e4da6bfd0|7fb7dc972d965188bac258a0377997ce4d6faf81b263d397aa4da201ac14c565)$']
+
+[[allowlists]]
+description = "audited deterministic fixtures: electron/backend/mobile/test-fixtures/system-channel\\.json (public cross-runtime vector: fixed test session key and its HKDF-derived channel key)"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^electron/backend/mobile/test-fixtures/system-channel\.json$']
+regexes = ['^(?:NzJgDU966DT/QtVN\+FjfaytPNYtIxtIXifgY0dnr/SA=|AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=)$']
