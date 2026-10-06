@@ -249,6 +249,13 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     syncDialogTop();
   }
 
+  // A follow-up the user is waiting on failed: show it (which also logs it)
+  // instead of leaving it in the DevTools console where nobody looks.
+  async function reportFailure(title: string, err: unknown): Promise<void> {
+    const { useNotificationStore } = await import("./notifications.js");
+    useNotificationStore().showError(title, (err as Error)?.message || String(err));
+  }
+
   function currentProfileId(): string {
     const windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
     return ctx.resolveViewerProfileId(ctx.payload.value, { isRemote: ctx.getApi().isRemote, windowId }) || "default";
@@ -390,7 +397,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
                 ctx.adoptPayload((await (ctx.getApi() as CallableTransport).restartTerminal(viewId)) as StatePayload);
                 ctx.activeViewId.value = viewId;
               } catch (err) {
-                console.error("[edit-tab] reload after save failed:", err);
+                await reportFailure("Reload tab failed", err);
               }
             },
           });
@@ -1021,7 +1028,9 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       const result = (await api.startTask({ workspaceId })) as AnyApi;
       if (result?.payload) ctx.adoptPayload(result.payload as StatePayload);
     } catch (err) {
-      console.error("[task] start failed:", err);
+      // Callers (dashboard Start, sidebar play) cannot see this rejection —
+      // it is often reached from a dialog callback — so report it here.
+      await reportFailure("Task start failed", err);
     }
   }
 
@@ -1061,7 +1070,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             // Then configure the hook for the worker provider
             if (hookApi?.configure) await hookApi.configure();
           } catch (err) {
-            console.error("[task] hook configure failed:", err);
+            await reportFailure("Agent hook setup failed", err);
           }
           await doStartTask(workspaceId);
         },
@@ -1097,7 +1106,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         try {
           if (hookApi?.configure) await hookApi.configure();
         } catch (err) {
-          console.error("[task] hook configure failed:", err);
+          await reportFailure("Agent hook setup failed", err);
         }
         await doStartTask(workspaceId);
       },

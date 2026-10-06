@@ -13,6 +13,8 @@ import { apiKey } from "./types/keys.js";
 import { useAccountStore } from "./stores/account.js";
 import { bootstrapMobileSessionFromFragment } from "./mobile-session-bootstrap.js";
 import { installFormValidationFeedback } from "./lib/form-validation.js";
+import { installVueErrorHandler } from "./lib/vue-error-handler.js";
+import { useNotificationStore } from "./stores/notifications.js";
 
 // Use consistent, field-specific feedback for native form constraints across
 // the main app and dynamically mounted dialogs.
@@ -171,6 +173,7 @@ if (popoutView === "diff-popout") {
 
     const app = createApp(App);
     app.use(createPinia());
+    installVueErrorHandler(app, (title, body) => useNotificationStore().showError(title, body));
     app.provide(apiKey, api);
     app.mount("#app");
 

@@ -190,6 +190,7 @@ import { useTerminalStore } from "../../stores/terminal.js";
 import { useSshStore } from "../../stores/ssh.js";
 import { useContextMenu } from "../../composables/useContextMenu.js";
 import { LAYOUTS } from "../../app/layout-geometry.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import {
   isGitViewId,
   isDockerViewId,
@@ -463,7 +464,7 @@ function onDisconnectSsh() {
     .getApi()
     .closeTerminal?.(id)
     .catch((err) => {
-      console.warn("Failed to disconnect SSH:", err);
+      useNotificationStore().showError("Disconnect failed", (err as Error)?.message || String(err));
     });
 }
 

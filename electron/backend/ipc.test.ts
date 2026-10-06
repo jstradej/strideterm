@@ -56,6 +56,28 @@ const { ipcMainMock, handleRegistry, onRegistry, removeHandlerCalls, removeAllLi
     return { ipcMainMock, handleRegistry, onRegistry, removeHandlerCalls, removeAllListenersCalls, resetIpcMainMock };
   });
 
+// Captures getLogger(label) calls for the IPC-failure tests below while still
+// forwarding every call to the real logger, so other tests are unaffected.
+type LogCall = { level: string; label: string; message: string; meta?: Record<string, unknown> };
+const logCalls = vi.hoisted(() => [] as LogCall[]);
+vi.mock("./logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./logger.js")>();
+  return {
+    ...actual,
+    getLogger: (label: string) => {
+      const real = actual.getLogger(label);
+      const wrapped = {} as Record<string, (message: string, meta?: Record<string, unknown>) => void>;
+      for (const level of ["error", "warn", "info", "debug", "trace"] as const) {
+        wrapped[level] = (message, meta) => {
+          logCalls.push({ level, label, message, meta });
+          real[level](message, meta);
+        };
+      }
+      return wrapped;
+    },
+  };
+});
+
 vi.mock("electron", () => ({
   ipcMain: ipcMainMock,
   dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
@@ -608,6 +630,72 @@ describe("SSH test IPC ownership and event privacy", () => {
     await Promise.resolve();
     expect(stoppedOwners).toEqual(["window-a"]);
     expect(ownerBySession.size).toBe(2);
+    dispose();
+  });
+});
+
+// Before this, a failing IPC call left no trace in strideterm.log unless the
+// renderer happened to log it — and Approve, Resolve and New worktree did not.
+describe("registerIpc — every failing handler is logged", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+    logCalls.length = 0;
+  });
+
+  function ipcFailures(): LogCall[] {
+    return logCalls.filter((call) => call.label === "ipc" && call.message === "ipc handler failed");
+  }
+
+  test("a rejected handler is logged with its channel and rethrown unchanged", async () => {
+    const dispose = registerIpc(makeRuntimeStub(), () => {});
+    const listener = handleRegistry.get("azure:pull-request:vote") as (e: unknown, p: unknown) => Promise<unknown>;
+
+    // The vote the renderer used to send: refused by azureVoteSchema.
+    const error = await listener({ sender: { id: 1 } }, { prKey: "pr", vote: "10" }).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/IPC validation failed on 'azure:pull-request:vote'/);
+    expect(ipcFailures()).toEqual([
+      expect.objectContaining({
+        level: "warn",
+        meta: { channel: "azure:pull-request:vote", err: (error as Error).message },
+      }),
+    ]);
+    dispose();
+  });
+
+  test("a plain { stderr } rejection is logged by its stderr", async () => {
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, method: string) =>
+          method === "createWorktree"
+            ? () => Promise.reject({ error: new Error("Command failed"), stdout: "", stderr: "fatal: bad ref\n" })
+            : () => () => {},
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {});
+    const listener = handleRegistry.get("git:create-worktree") as (e: unknown, p: unknown) => Promise<unknown>;
+
+    await expect(listener({ sender: { id: 1 } }, { workspaceId: "ws", name: "x" })).rejects.toMatchObject({
+      stderr: "fatal: bad ref\n",
+    });
+    expect(ipcFailures()[0]?.meta).toEqual({ channel: "git:create-worktree", err: "fatal: bad ref" });
+    dispose();
+  });
+
+  test("the same failure on the same channel is logged once a minute at most", async () => {
+    const dispose = registerIpc(makeRuntimeStub(), () => {});
+    const vote = handleRegistry.get("azure:pull-request:vote") as (e: unknown, p: unknown) => Promise<unknown>;
+    const comment = handleRegistry.get("azure:pull-request:comment") as (e: unknown, p: unknown) => Promise<unknown>;
+
+    for (let i = 0; i < 3; i++) await vote({ sender: { id: 1 } }, { prKey: "pr", vote: "10" }).catch(() => {});
+    await comment({ sender: { id: 1 } }, { prKey: "", content: "x" }).catch(() => {});
+
+    expect(ipcFailures().map((call) => call.meta?.channel)).toEqual([
+      "azure:pull-request:vote",
+      "azure:pull-request:comment",
+    ]);
     dispose();
   });
 });

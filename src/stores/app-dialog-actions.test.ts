@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ref, shallowRef } from "vue";
+import { createPinia, setActivePinia } from "pinia";
 import { createDialogActions, makeOpenConnectionDialog, makeOpenQuickFixWizard } from "./app-dialog-actions.js";
 import { resolveViewerProfileId } from "./app.js";
+import { useNotificationStore } from "./notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -510,6 +512,55 @@ describe("createDialogActions.openCompanionAgentDialog", () => {
     expect(startTask).not.toHaveBeenCalled();
     // Dialog stays open — openCompanionAgentDialog never calls closeDialog on failure.
     expect(ctx.overlay.value).toBe("CompanionAgentDialog");
+  });
+});
+
+// Regression: doStartTask caught a failed start and only console.error'd it.
+// Its callers (dashboard Start, sidebar play) wrap the call in try/catch with
+// a toast, but the rejection never reached them — Start just did nothing.
+describe("createDialogActions.startTaskWithHookCheck surfaces a failed start", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("shows (and so logs) the start failure instead of swallowing it", async () => {
+    const ctx = makeCtx({
+      appState: { settings: { notifications: { agentHook: true } }, workspaces: [{ id: "task-1" }] },
+    });
+    ctx.getApi = () => ({
+      getClaudeHookStatus: async () => ({ status: "configured" }),
+      startTask: async () => {
+        throw new Error("Error invoking remote method 'task:start': Error: Another task agent is currently running");
+      },
+    });
+    const actions = createDialogActions(ctx);
+
+    await actions.startTaskWithHookCheck("task-1");
+
+    const event = useNotificationStore().sessions[0]?.events[0];
+    expect(event?.title).toBe("Task start failed");
+    expect(event?.body).toBe("Another task agent is currently running");
+  });
+
+  it("reports a failed hook setup and still starts the task", async () => {
+    const ctx = makeCtx({
+      appState: { settings: { notifications: { agentHook: true } }, workspaces: [{ id: "task-1" }] },
+    });
+    const startTask = vi.fn(async () => ({ payload: null }));
+    ctx.getApi = () => ({
+      getClaudeHookStatus: async () => ({ status: "missing" }),
+      configureClaudeHook: async () => {
+        throw new Error("settings.json is read-only");
+      },
+      startTask,
+    });
+    const actions = createDialogActions(ctx);
+
+    await actions.startTaskWithHookCheck("task-1");
+    await (ctx.overlayProps.value.onConfigure as () => Promise<void>)();
+
+    expect(useNotificationStore().sessions[0]?.events[0]?.title).toBe("Agent hook setup failed");
+    expect(startTask).toHaveBeenCalledWith({ workspaceId: "task-1" });
   });
 });
 

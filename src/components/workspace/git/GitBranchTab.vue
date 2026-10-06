@@ -606,7 +606,9 @@ watch(
 // step for a history-rewriting op. The pick is persisted, so the Pull button
 // in the toolbar offers the same one.
 function selectStrategy(strategy: "rebase" | "merge") {
-  void appStore.updateSettings({ git: { ui: { updateStrategy: strategy } } }).catch(() => {});
+  void notifications.runWithToast("Saving the update strategy failed", () =>
+    appStore.updateSettings({ git: { ui: { updateStrategy: strategy } } }),
+  );
 }
 
 watch(

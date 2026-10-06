@@ -165,6 +165,15 @@ function osClipboardFormat(name: string): string {
   return `electron application/osclipboard;format="${name}"`;
 }
 
+/** A rejection's message for the log. Not every rejection is an Error:
+ *  execFileText rejects with a plain `{ error, stdout, stderr }` object. */
+function describeIpcFailure(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  const e = err as { message?: unknown; stderr?: unknown; error?: { message?: unknown } } | null;
+  const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
+  return String(e?.message || stderr || e?.error?.message || err);
+}
+
 export function registerIpc(
   runtime: Runtime,
   emitToRenderer: (channel: string, payload: unknown) => void,
@@ -279,8 +288,33 @@ export function registerIpc(
   const registeredHandleChannels: string[] = [];
   const registeredListenerChannels: string[] = [];
   function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void {
-    ipcMain.handle(channel, listener);
+    ipcMain.handle(channel, async (event, ...args) => {
+      try {
+        return await listener(event, ...args);
+      } catch (err) {
+        logIpcFailure(channel, err);
+        throw err;
+      }
+    });
     registeredHandleChannels.push(channel);
+  }
+
+  // Every failing IPC call lands in strideterm.log, whatever the renderer then
+  // does with the rejection — a toast, an inline banner, or (a bug) nothing.
+  // The same failure on the same channel is logged once a minute at most, so a
+  // poll that keeps failing cannot flood the log.
+  const ipcLog = getLogger("ipc");
+  const IPC_FAILURE_REPEAT_MS = 60_000;
+  const recentIpcFailures = new Map<string, number>();
+  function logIpcFailure(channel: string, err: unknown): void {
+    const message = describeIpcFailure(err);
+    const key = `${channel}\n${message}`;
+    const now = Date.now();
+    const last = recentIpcFailures.get(key);
+    if (last !== undefined && now - last < IPC_FAILURE_REPEAT_MS) return;
+    if (recentIpcFailures.size >= 500) recentIpcFailures.clear();
+    recentIpcFailures.set(key, now);
+    ipcLog.warn("ipc handler failed", { channel, err: message });
   }
 
   /**

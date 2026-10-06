@@ -1195,6 +1195,12 @@ function handleToggleStar(ws: any): void {
     })
     .catch((err) => {
       console.error("[sidebar] toggle star failed:", err);
+      notifications.pushEphemeralToast({
+        title: "Could not update the star",
+        body: (err as Error)?.message || String(err),
+        kind: "error",
+        durationMs: 5000,
+      });
       // The optimistic flip never made it to disk — put it back, and re-freeze
       // so the frozen list tells the truth about what is starred again.
       setStarredLocally(ws.id, previousStarred);
@@ -1252,6 +1258,12 @@ async function handleTaskStop(ws: any): Promise<void> {
     if (result?.payload) store.handleBroadcastPayload(result.payload);
   } catch (err) {
     console.error("[sidebar] task stop failed:", err);
+    notifications.pushEphemeralToast({
+      title: "Stop failed",
+      body: (err as Error)?.message || String(err),
+      kind: "error",
+      durationMs: 5000,
+    });
   }
 }
 

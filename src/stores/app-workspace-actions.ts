@@ -432,8 +432,14 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
           .then((p) => {
             ctx.adoptPayload(p);
           })
-          .catch((err: Error) => {
-            console.warn("[closeTab] failed to close terminal:", err?.message || err);
+          .catch(async (err: Error) => {
+            const { useNotificationStore } = await import("./notifications.js");
+            useNotificationStore().pushPersistentToast({
+              title: "Couldn't close tab",
+              body: err?.message || String(err),
+              kind: "error",
+              profileId: (activeWs as AnyApi)?.profileId || "default",
+            });
           });
       }
       return;
@@ -588,8 +594,9 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       // would vanish. When the grid is NOT visible yet (chip click in solo
       // mode), boot it with the current workspace in slot 0.
       const dispatch = ctx.isGridVisible.value ? ctx.setGridLayout(layout) : ctx.enableWorkspaceGrid(layout);
-      dispatch.catch((err: unknown) => {
-        console.error("[grid] picker dispatch failed:", err);
+      dispatch.catch(async (err: unknown) => {
+        const { useNotificationStore } = await import("./notifications.js");
+        useNotificationStore().showError("Couldn't change layout", (err as Error)?.message || String(err));
       });
       return;
     }

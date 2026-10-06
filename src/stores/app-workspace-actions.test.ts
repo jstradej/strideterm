@@ -696,3 +696,28 @@ describe("createWorkspaceActions — detaching a workspace from its PR review", 
     expect(ctx.overlay.value).toBeNull();
   });
 });
+
+// Regression: a refused grid re-shape was only console.error'd, so picking a
+// layout in the chip simply did nothing.
+describe("createWorkspaceActions.pickLayout — grid re-shape failure", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("tells the user when the grid layout cannot be changed", async () => {
+    const { ctx } = makeCtx({ appState: { workspaces: [] } });
+    ctx.layoutPickerMode = ref("grid");
+    ctx.isGridVisible = ref(true);
+    ctx.setGridLayout = vi.fn(() => Promise.reject(new Error("Grid is not enabled for this window")));
+    ctx.enableWorkspaceGrid = vi.fn();
+    const actions = createWorkspaceActions(ctx);
+
+    actions.pickLayout("rows");
+    await vi.waitFor(() => expect(useNotificationStore().sessions).toHaveLength(1));
+
+    expect(ctx.setGridLayout).toHaveBeenCalledWith("rows");
+    const event = useNotificationStore().sessions[0].events[0];
+    expect(event.title).toBe("Couldn't change layout");
+    expect(event.body).toBe("Grid is not enabled for this window");
+  });
+});

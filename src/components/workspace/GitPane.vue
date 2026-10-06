@@ -399,6 +399,7 @@ import ConfirmDialog from "../dialogs/ConfirmDialog.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
@@ -903,7 +904,9 @@ function onPullClick() {
 }
 
 function onPullStrategyChange(strategy: UpdateStrategy) {
-  void appStore.updateSettings({ git: { ui: { updateStrategy: strategy } } }).catch(() => {});
+  void useNotificationStore().runWithToast("Saving the update strategy failed", () =>
+    appStore.updateSettings({ git: { ui: { updateStrategy: strategy } } }),
+  );
 }
 
 function onBulkFetchAll() {

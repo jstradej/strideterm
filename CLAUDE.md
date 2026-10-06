@@ -42,6 +42,20 @@ Users run on **Windows, macOS, and Linux**, and may drive the app from multiple 
 - Don't tie behavior to a single agent's conventions; agent integrations should share the generic plumbing.
 - When adding a feature, ask: "does this work on all three OSes and for any agent?" If you need platform- or agent-specific code, isolate it behind the existing abstractions.
 
+### A failed user action must reach the user AND strideterm.log
+
+Every button, menu item, shortcut and dialog submit: when it fails, the user sees why (a toast, or an error shown in the dialog) and the failure is in `strideterm.log`. Never end a user action in `catch → console.*`, `.catch(() => {})`, or an un-awaited call. Silent swallowing is only for background work — polling, best-effort cleanup, UI-state persistence — and even then the IPC wrapper below logs it.
+
+Already central — use it, don't duplicate it:
+
+- **Every failing IPC handler is logged** by `handle()` in `electron/backend/ipc.ts` (`[ipc] ipc handler failed {channel, err}`, the same channel + message at most once a minute). Handlers registered outside it (the window/state channels in `main.ts`, `ssh-bootstrap-ipc.ts`) are not covered.
+- **Every error toast is logged** by the notifications store — `showError`, `runWithToast`, `pushEphemeralToast` / `pushPersistentToast` with `kind: "error"` — as `[renderer] [toast] <title>`, and shown without Electron's `Error invoking remote method '…': Error:` prefix (`userFacingMessage`, `src/lib/error-message.ts`).
+- **Safety net:** `installVueErrorHandler` (`src/lib/vue-error-handler.ts`) turns an event handler that throws or rejects uncaught into an "Action failed" toast plus a log line with the stack. A net, not a substitute: it cannot word the failure for the action, and a `void action()` never reaches it.
+
+Dialog submits: call `attrs.onSubmit` and await it (an `emit` is fire-and-forget), show a rejection in the dialog, and close only after success — `WorktreeDialog` / `WorkspaceDialog`. Closing first is how a refused worktree name produced "nothing happens".
+
+Payloads are type-checked: stores call the transport as `CallableTransport` (`src/transport.ts`), never `as AnyApi` — a source guard test enforces it. A test of what a button sends holds the payload to the real zod schema (`azureVoteSchema.safeParse(...)`), not only to the component's own expectation; Approve sent `"10"` for months while its tests asserted `"10"`.
+
 ### Profiles — what is and isn't isolated
 
 Profiles group workspaces inside one installation. They are a UI/organizational construct, **not a security or storage boundary**.

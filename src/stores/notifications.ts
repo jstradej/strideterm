@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { hasMeaningfulUserInput } from "../../electron/shared/terminal-input.js";
 import { rlog } from "../lib/renderer-log.js";
+import { userFacingMessage } from "../lib/error-message.js";
 
 /**
  * Notification center state — session-grouped (Plan § 3.3.1).
@@ -885,7 +886,7 @@ export const useNotificationStore = defineStore("notifications", () => {
             .then((nextPayload) => {
               if (nextPayload) appStore.adoptPayload(nextPayload as StatePayload);
             })
-            .catch(() => {});
+            .catch((err: unknown) => showError("Clear all failed", (err as Error)?.message || String(err)));
         }
       })
       .catch(() => {});
@@ -946,6 +947,14 @@ export const useNotificationStore = defineStore("notifications", () => {
     if (!pinned.value) panelOpen.value = true;
   }
 
+  // Every error toast — showError, pushPersistentToast, pushEphemeralToast —
+  // also lands in strideterm.log, so a failure the user was shown can be
+  // traced afterwards. The raw text is kept (IPC channel included); the toast
+  // shows it without Electron's "Error invoking remote method" prefix.
+  function recordFailure(title: string, body: string, workspaceId = ""): void {
+    rlog("warn", `[toast] ${title}`, workspaceId ? { message: body, workspaceId } : { message: body });
+  }
+
   // Surface an app-level error to the user: persistent entry in the dock
   // (so it survives scroll-away) plus a transient toast (so it grabs
   // attention even when the dock is closed behind a dialog). Callers should
@@ -965,9 +974,10 @@ export const useNotificationStore = defineStore("notifications", () => {
       profileId = "",
     }: { workspaceId?: string; workspaceName?: string; profileId?: string } = {},
   ): NotificationEvent {
+    recordFailure(title, body, workspaceId);
     const entry = addEvent({
       title,
-      body,
+      body: userFacingMessage(body) || body,
       kind: "error",
       tier: 1,
       urgency: "normal",
@@ -1008,6 +1018,10 @@ export const useNotificationStore = defineStore("notifications", () => {
     profileId?: string;
     action?: PersistentToast["action"];
   }): string {
+    if (kind === "error") {
+      recordFailure(title, body);
+      body = userFacingMessage(body) || body;
+    }
     const id = crypto.randomUUID();
     persistentToasts.value = [
       ...persistentToasts.value,
@@ -1048,6 +1062,10 @@ export const useNotificationStore = defineStore("notifications", () => {
     kind?: NotificationKind;
     durationMs?: number;
   }): string {
+    if (kind === "error") {
+      recordFailure(title, body);
+      body = userFacingMessage(body) || body;
+    }
     const id = crypto.randomUUID();
     persistentToasts.value = [...persistentToasts.value, { id, title, body, kind, at: new Date().toISOString() }];
     if (durationMs > 0) {
@@ -1071,13 +1089,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       await fn();
       return true;
     } catch (err) {
-      // Electron prefixes every IPC rejection with "Error invoking remote
-      // method '<channel>': Error:", which filled the toast and cut off the
-      // actual reason. The log line keeps the raw text, channel included.
-      const raw = (err as Error)?.message || String(err || "");
-      const message = raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "");
-      rlog("warn", `[toast] ${title}`, { message: raw, workspaceId: options.workspaceId || "" });
-      showError(title, message || "Action failed", options);
+      showError(title, (err as Error)?.message || String(err || "") || "Action failed", options);
       return false;
     }
   }

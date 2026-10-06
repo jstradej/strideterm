@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AzureAuditLog from "./AzureAuditLog.vue";
 import { useAppStore } from "../../../stores/app.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -168,6 +169,24 @@ describe("AzureAuditLog — exportLog uses the shared downloadTextFile helper", 
     expect(capturedDownload).toMatch(/^azure-audit-log-.*\.csv$/);
 
     vi.restoreAllMocks();
+  });
+
+  // Regression: a failed export only console.warn'd — the button stopped
+  // spinning and nothing was downloaded, with no word as to why.
+  it("a failed export tells the user", async () => {
+    const queryAzureAuditLog = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [ENTRY], total: 1 })
+      .mockRejectedValue(new Error("database is locked"));
+    const { wrapper } = mountLog({ queryAzureAuditLog });
+    await flushPromises();
+
+    await findExportButton(wrapper, "⬇ CSV").trigger("click");
+    await flushPromises();
+
+    const event = useNotificationStore().sessions[0]?.events[0];
+    expect(event?.title).toBe("Audit log export failed");
+    expect(event?.body).toBe("database is locked");
   });
 
   it("downloads a JSON blob containing the loaded entries", async () => {

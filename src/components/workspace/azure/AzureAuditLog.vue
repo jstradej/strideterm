@@ -202,6 +202,7 @@ import { useAppStore } from "../../../stores/app.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 import { downloadTextFile } from "../../../app/helpers.js";
 import { formatRelativeUntil } from "./azurePipelineFormat.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
 
 const filterCategoryOptions = [
   { value: "", label: "All operations" },
@@ -490,7 +491,7 @@ async function exportLog(format: "csv" | "json"): Promise<void> {
       downloadTextFile(`${provider}-audit-log-${stamp}.json`, JSON.stringify(rows, null, 2), "application/json");
     }
   } catch (err) {
-    console.warn("Audit log export failed:", err);
+    useNotificationStore().showError("Audit log export failed", (err as Error)?.message || String(err));
   } finally {
     exporting.value = false;
   }

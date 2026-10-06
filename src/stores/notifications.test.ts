@@ -271,6 +271,36 @@ describe("notification store (session-grouped)", () => {
       }
     });
 
+    // Every error toast is logged, whichever helper raised it — the dashboard,
+    // sidebar and tab-close paths use pushEphemeralToast / pushPersistentToast
+    // and used to leave nothing in strideterm.log.
+    it("logs every error toast (showError, pushEphemeralToast, pushPersistentToast) but not an info toast", () => {
+      const logRenderer = vi.fn();
+      (window as unknown as { strideterm?: unknown }).strideterm = { logRenderer };
+      try {
+        const store = useNotificationStore();
+        const raw = "Error invoking remote method 'task:stop': Error: Task is not running";
+        store.showError("Stop failed", raw, { workspaceId: "ws-1" });
+        store.pushEphemeralToast({ title: "Start failed", body: raw, kind: "error" });
+        store.pushPersistentToast({ title: "Couldn't close tab", body: raw, kind: "error" });
+        store.pushEphemeralToast({ title: "Copied", body: "path", kind: "info" });
+
+        expect(logRenderer.mock.calls).toEqual([
+          ["warn", "[toast] Stop failed", { message: raw, workspaceId: "ws-1" }],
+          ["warn", "[toast] Start failed", { message: raw }],
+          ["warn", "[toast] Couldn't close tab", { message: raw }],
+        ]);
+        // What the user reads has no IPC prefix, whichever helper showed it.
+        expect(store.persistentToasts.map((t) => t.body)).toEqual([
+          "Task is not running",
+          "Task is not running",
+          "path",
+        ]);
+      } finally {
+        delete (window as unknown as { strideterm?: unknown }).strideterm;
+      }
+    });
+
     it("passes profileId through to the error toast for profile-scoped rendering", async () => {
       const store = useNotificationStore();
       await store.runWithToast(
