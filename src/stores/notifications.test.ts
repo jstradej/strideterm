@@ -222,6 +222,43 @@ describe("notification store (session-grouped)", () => {
     });
   });
 
+  describe("entries without a tab are never waiting", () => {
+    it("an app error is unread news, not a tab waiting for the user", () => {
+      const store = useNotificationStore();
+      store.showError("Couldn't open a path from the terminal", "File not found — C:\\tmp\\x.md");
+      expect(store.sessions[0].state).toBe("finished");
+      expect(store.waitingSessions).toHaveLength(0);
+      expect(store.unreadCount).toBe(1);
+    });
+
+    it("a waiting-kind event with a workspace but no tab still lands as finished", () => {
+      const store = useNotificationStore();
+      store.add({ title: "Task workspace warning", kind: "warning", workspaceId: "ws1", viewId: "" });
+      expect(store.sessions[0].state).toBe("finished");
+    });
+
+    it("a resolved app-error thread reopens as unread on the next error", () => {
+      const store = useNotificationStore();
+      store.showError("First", "a");
+      store.setState(store.sessions[0].id, "resolved");
+      store.showError("Second", "b");
+      expect(store.sessions[0].state).toBe("finished");
+      expect(store.unreadCount).toBe(1);
+    });
+
+    it("history persisted as waiting before the rule loads as finished", () => {
+      window.localStorage.setItem(
+        "strideterm-notifications-v2",
+        JSON.stringify([
+          { id: ":", workspaceId: "", viewId: "", state: "waiting", events: [], snoozedUntil: 0 },
+          { id: "ws1:ws1:sh", workspaceId: "ws1", viewId: "ws1:sh", state: "waiting", events: [], snoozedUntil: 0 },
+        ]),
+      );
+      const store = useNotificationStore();
+      expect(store.sessions.map((s: { state: string }) => s.state)).toEqual(["finished", "waiting"]);
+    });
+  });
+
   describe("runWithToast", () => {
     it("returns true and stays silent when the action resolves", async () => {
       const store = useNotificationStore();

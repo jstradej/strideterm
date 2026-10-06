@@ -1,11 +1,11 @@
 <template>
   <Transition name="toast">
     <div v-if="visible" class="return-banner" @click="openCenter">
-      <span>⚠ {{ waitingCount }} session{{ waitingCount === 1 ? "" : "s" }} waiting for you</span>
+      <span>⚠ {{ waitingCount === 1 ? "1 tab is" : `${waitingCount} tabs are` }} waiting for you</span>
       <button
         type="button"
         class="return-banner__action"
-        title="Open the notification panel to see the waiting sessions and pick what to do next (Jump / Dismiss / Snooze)."
+        title="Open the notification panel to see the waiting tabs and pick what to do next (Jump / Dismiss / Snooze)."
         @click.stop="openCenter"
       >
         Show
@@ -13,7 +13,7 @@
       <button
         type="button"
         class="return-banner__close"
-        title="Hide this welcome-back banner — the waiting sessions stay in the notification history and the bell icon will keep flagging them."
+        title="Hide this welcome-back banner — the waiting tabs stay in the notification history and the bell icon will keep flagging them."
         @click.stop="dismiss"
       >
         &times;
@@ -28,22 +28,31 @@
  * are sessions still in "waiting" state, surface a transient banner at the
  * top of the workspace for 8s. Clicking opens the notification center.
  */
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { useNotificationProfileScope } from "../../composables/useNotificationProfileScope.js";
 
 const notifStore = useNotificationStore();
+const { sessionInActiveProfile } = useNotificationProfileScope();
 const visible = ref(false);
+const waitingCount = ref(0);
 let blurAt = 0;
 let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
-const waitingCount = computed(() => notifStore.waitingSessions.length);
+// Counted the way the dock lists them — this profile only, snoozed ones
+// hidden — so "Show" opens on exactly what the banner announced.
+function countWaiting(): number {
+  const now = Date.now();
+  return notifStore.waitingSessions.filter((s) => !(s.snoozedUntil > now) && sessionInActiveProfile(s)).length;
+}
 
 function onFocus() {
   if (blurAt === 0 || Date.now() - blurAt < 30_000) return;
   blurAt = 0;
-  if (waitingCount.value === 0) return;
   // Pinned dock already shows waiting sessions in-place — banner would be redundant.
   if (notifStore.pinned) return;
+  waitingCount.value = countWaiting();
+  if (waitingCount.value === 0) return;
   show();
 }
 function onBlur() {

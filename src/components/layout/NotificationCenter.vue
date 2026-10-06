@@ -1030,6 +1030,14 @@ function sessionTitle(s: NotificationSession): string {
     const latest = s.events?.[0];
     return latest?.title || s.workspaceName || "Pull request";
   }
+  // An app error or a docker/git result belongs to no tab, so "workspace › tab"
+  // would print placeholders — the event names itself instead.
+  if (!s.viewId && !s.tabName) {
+    const title = s.events?.[0]?.title || "Notification";
+    const workspaces = appStore.payload?.appState?.workspaces || [];
+    const wsName = s.workspaceName || workspaces.find((w) => w.id === s.workspaceId)?.name || "";
+    return wsName ? `${wsName} › ${title}` : title;
+  }
   const wsName = s.workspaceName || s.workspaceId || "Workspace";
   const tab = s.tabName || s.viewId || "Tab";
   return `${wsName} › ${tab}`;

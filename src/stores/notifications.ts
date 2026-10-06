@@ -169,7 +169,13 @@ function threadId(workspaceId: string, viewId: string): string {
 function loadFromStorage(): NotificationSession[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as NotificationSession[];
+    if (raw) {
+      const sessions = JSON.parse(raw) as NotificationSession[];
+      // History written before the no-tab rule in kindToState would otherwise
+      // keep a stale app error counted as "waiting for you" until dismissed.
+      for (const s of sessions) if (s.state === "waiting" && !s.viewId) s.state = "finished";
+      return sessions;
+    }
   } catch {
     // fall through
   }
@@ -206,7 +212,12 @@ function savePinned(value: boolean): void {
   }
 }
 
-function kindToState(kind: NotificationKind): NotificationState {
+function kindToState(kind: NotificationKind, viewId: string): NotificationState {
+  // Only a terminal tab can be waiting on the user. An entry with no tab — an
+  // app error, a docker/git result, a task warning — has nobody behind it to
+  // answer, so it is news to acknowledge (still on the bell), never one of the
+  // "tabs waiting for you" the welcome-back banner counts.
+  if (!viewId) return "finished";
   // Review activity and info/completed events don't block on user input —
   // they land in "Finished" so the user can ack them at their convenience.
   // SubagentStop is treated the same: a sub-agent finishing within a turn
@@ -573,7 +584,7 @@ export const useNotificationStore = defineStore("notifications", () => {
         if (category) existing.category = category;
         if (meta) existing.meta = { ...(existing.meta || {}), ...meta };
         // Urgent always takes precedence; waiting > finished when comparing kinds.
-        const nextState = kindToState(kind);
+        const nextState = kindToState(kind, viewId);
         if (existing.state === "resolved" && (nextState === "waiting" || urgency === "urgent")) {
           existing.state = nextState;
         } else if (existing.state !== "waiting") {
@@ -599,7 +610,7 @@ export const useNotificationStore = defineStore("notifications", () => {
         workspaceName,
         tabName,
         viewId,
-        state: kindToState(kind),
+        state: kindToState(kind, viewId),
         tier,
         urgency,
         category,

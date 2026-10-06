@@ -1890,9 +1890,37 @@ describe("path-link providers — shared error reporting (reportOpenPathError)",
     await flushPromises();
     await flushPromises();
 
-    expect(mockShowError).toHaveBeenCalledWith("Open path failed", "Couldn't open /usr/local/bin/mytool: boom", {
-      profileId: "test-profile",
-    });
+    expect(mockShowError).toHaveBeenCalledWith(
+      "Couldn't open a path from the terminal",
+      "boom — /usr/local/bin/mytool",
+      {
+        profileId: "test-profile",
+      },
+    );
+  });
+
+  test("path-link provider: names the path the backend resolved, not the relative text that was clicked", async () => {
+    mockShowError.mockClear();
+    const openTerminalPath = vi.fn(async () => ({ ok: false, error: "File not found", absPath: "/repo/src/gone.ts" }));
+    const { controller, views } = buildAttachController({ isRemote: false, openTerminalPath });
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    setLine(view, "./src/gone.ts");
+    const { pathProvider } = getProviders(view);
+
+    const callback = vi.fn();
+    pathProvider.provideLinks(1, callback);
+    callback.mock.calls[0][0][0].activate();
+    await flushPromises();
+    await flushPromises();
+
+    expect(mockShowError).toHaveBeenCalledWith(
+      "Couldn't open a path from the terminal",
+      "File not found — /repo/src/gone.ts",
+      { profileId: "test-profile" },
+    );
   });
 
   test("path-link provider: a rejected openTerminalPath call routes through reportOpenPathError", async () => {
@@ -1917,8 +1945,8 @@ describe("path-link providers — shared error reporting (reportOpenPathError)",
     await flushPromises();
 
     expect(mockShowError).toHaveBeenCalledWith(
-      "Open path failed",
-      "Couldn't open /usr/local/bin/mytool: network down",
+      "Couldn't open a path from the terminal",
+      "network down — /usr/local/bin/mytool",
       { profileId: "test-profile" },
     );
   });
@@ -1943,9 +1971,13 @@ describe("path-link providers — shared error reporting (reportOpenPathError)",
     await flushPromises();
     await flushPromises();
 
-    expect(mockShowError).toHaveBeenCalledWith("Open path failed", "Couldn't open /usr/local/bin/mytool: boom", {
-      profileId: "test-profile",
-    });
+    expect(mockShowError).toHaveBeenCalledWith(
+      "Couldn't open a path from the terminal",
+      "boom — /usr/local/bin/mytool",
+      {
+        profileId: "test-profile",
+      },
+    );
   });
 
   test("file:// URL provider: a rejected openTerminalPath call routes through reportOpenPathError", async () => {
@@ -1970,8 +2002,8 @@ describe("path-link providers — shared error reporting (reportOpenPathError)",
     await flushPromises();
 
     expect(mockShowError).toHaveBeenCalledWith(
-      "Open path failed",
-      "Couldn't open /usr/local/bin/mytool: network down",
+      "Couldn't open a path from the terminal",
+      "network down — /usr/local/bin/mytool",
       { profileId: "test-profile" },
     );
   });
@@ -2003,7 +2035,7 @@ describe("path-link providers — shared error reporting (reportOpenPathError)",
     // shape — evidence they share the one reportOpenPathError implementation
     // rather than each formatting its own toast independently.
     for (const call of mockShowError.mock.calls) {
-      expect(call[0]).toBe("Open path failed");
+      expect(call[0]).toBe("Couldn't open a path from the terminal");
       expect(call[2]).toEqual({ profileId: "test-profile" });
     }
   });
@@ -2353,8 +2385,8 @@ describe("internal path opener — out-of-workspace fallback", () => {
     for (let i = 0; i < 5; i++) await flushPromises();
 
     expect(mockShowError).toHaveBeenCalledWith(
-      "Open path failed",
-      "Couldn't open /tmp/scratch/notes.md: no application knows how to open this",
+      "Couldn't open a path from the terminal",
+      "no application knows how to open this — /tmp/scratch/notes.md",
       { profileId: "test-profile" },
     );
   });

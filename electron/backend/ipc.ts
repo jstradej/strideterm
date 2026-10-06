@@ -421,7 +421,7 @@ export function registerIpc(
       try {
         statResult = await stat(resolved);
       } catch {
-        return { ok: false, error: `File not found: ${resolved}` };
+        return { ok: false, error: "File not found", absPath: resolved };
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime payload type is open by design

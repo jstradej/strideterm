@@ -824,6 +824,9 @@ export function createTerminalController({
       // file:// URL) — each has a "backend responded but couldn't open it"
       // and a "the IPC call itself rejected" site, so 4 near-identical blocks
       // collapse to this one helper (mirrors reportImagePasteError's shape).
+      // The title says where the failure came from — it can be read long after
+      // the click — and the reason leads the body, because a long path in
+      // front of it got the reason cut off in the notification panel.
       async function reportOpenPathError(path: string, message: string): Promise<void> {
         const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
           import("../stores/notifications.js"),
@@ -831,7 +834,9 @@ export function createTerminalController({
         ]);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
-        useNotificationStore().showError("Open path failed", `Couldn't open ${path}: ${message}`, { profileId });
+        useNotificationStore().showError("Couldn't open a path from the terminal", `${message} — ${path}`, {
+          profileId,
+        });
       }
       // Second chance for a path the in-app Files pane refused. That pane is
       // rooted at the workspace, so a path outside it — /tmp, the desktop, a
@@ -870,7 +875,7 @@ export function createTerminalController({
               void openPath({ path: m.path, line: m.line, column: m.column, workspaceCwd })
                 .then(async (result) => {
                   if (!result?.ok) {
-                    void reportOpenPathError(m.path, result?.error || "unknown error");
+                    void reportOpenPathError(result?.absPath || m.path, result?.error || "unknown error");
                     return;
                   }
                   // Internal-mode response: backend resolved + validated the
@@ -948,7 +953,7 @@ export function createTerminalController({
                 void openPath({ path: resolvedPath, workspaceCwd })
                   .then(async (result) => {
                     if (!result?.ok) {
-                      void reportOpenPathError(resolvedPath, result?.error || "unknown error");
+                      void reportOpenPathError(result?.absPath || resolvedPath, result?.error || "unknown error");
                       return;
                     }
                     if (result.internal === true && result.absPath) {

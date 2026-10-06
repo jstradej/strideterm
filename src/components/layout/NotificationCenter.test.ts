@@ -135,6 +135,31 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect(wrapper.find(".notification-item__profile-label").exists()).toBe(false);
   });
 
+  it("names an entry with no tab by its own title, not the 'Workspace › Tab' placeholders", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+
+    notifStore.showError("Couldn't open a path from the terminal", "File not found — C:\\tmp\\x.md", {
+      profileId: "p1",
+    });
+    // Only the workspace id is known — its name comes from the payload.
+    notifStore.showError("Pull request failed", "boom", { workspaceId: "ws-a" });
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    const titles = wrapper.findAll(".notification-item__title").map((el) => el.text());
+    expect(titles).toHaveLength(2);
+    expect(titles).toEqual(
+      expect.arrayContaining(["Couldn't open a path from the terminal", "WsA › Pull request failed"]),
+    );
+    // Nothing is waiting on the user, so no Jump / Dismiss / Snooze row.
+    expect(wrapper.find(".notification-item__quick-actions").exists()).toBe(false);
+  });
+
   it("does not render profile label when profileId references a deleted/unknown profile", async () => {
     const appStore = useAppStore();
     const notifStore = useNotificationStore();
@@ -279,7 +304,7 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect((appStore as AnyApi).activateWorkspaceInGrid).toHaveBeenCalledWith("ws-b");
     // A failed navigation must not be treated as "cleared" — session stays waiting.
     expect(clearSpy).not.toHaveBeenCalled();
-    expect(notifStore.sessions[0].state).toBe("waiting");
+    expect(notifStore.sessions.find((s) => s.viewId === "ws-b:sh")!.state).toBe("waiting");
     expect(notifStore.sessions.find((s) => s.category === "error")).toBeTruthy();
     const errorSession = notifStore.sessions.find((s) => s.category === "error")!;
     expect(errorSession.events[0].title).toBe("Open workspace failed");
@@ -334,7 +359,7 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect((appStore as AnyApi).activateView).toHaveBeenCalledWith("ws-a:sh");
     // A failed tab open must not be treated as "cleared" — session stays waiting.
     expect(clearSpy).not.toHaveBeenCalled();
-    expect(notifStore.sessions[0].state).toBe("waiting");
+    expect(notifStore.sessions.find((s) => s.viewId === "ws-a:sh")!.state).toBe("waiting");
     const errorSession = notifStore.sessions.find((s) => s.category === "error")!;
     expect(errorSession.events[0].title).toBe("Open tab failed");
     expect(errorSession.events[0].body).toBe("tab boom");
