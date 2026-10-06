@@ -125,6 +125,8 @@ export interface MobileWebSessionTicketIssuer {
     allowedOrigin: string;
     /** Which of this installation's servers the ticket may be redeemed at. */
     transport: "relay" | "legacy";
+    /** Audit correlation only: the last 8 characters of the requesting command's id. */
+    commandRef?: string;
   }): { ticketId: string; secret: string; expiresAt: number };
 }
 
@@ -724,6 +726,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           profileId: command.profileId,
           allowedOrigin: command.payload.allowedOrigin,
           transport,
+          commandRef: command.commandId.slice(-8),
         });
 
         if (e2eOffer && e2eAcceptance && deps.ownPrivateKey) {

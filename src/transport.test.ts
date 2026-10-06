@@ -598,7 +598,7 @@ describe("remote transport endpoint routing", () => {
     expect(bridge.isSessionLost()).toBe(true);
     expect(bridge.isSuspended()).toBe(true);
     expect(posted.map((message) => JSON.parse(message)).filter((message) => message.type === "session-lost")).toEqual([
-      { type: "session-lost" },
+      { type: "session-lost", reason: "unauthorized" },
     ]);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(MockWebSocket.instances.length).toBe(socketsAfterResume);
@@ -791,7 +791,7 @@ describe("remote transport endpoint routing", () => {
     bridge.resume();
     await vi.advanceTimersByTimeAsync(0);
     resolveOldBody("no session");
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(30_000);
 
     expect(states).toEqual([{ coreRevision: 46 }]);
     expect(bridge.isSessionLost()).toBe(false);
@@ -907,7 +907,7 @@ describe("remote transport endpoint routing", () => {
     // The host hears it exactly once, however many requests were already in flight.
     await expect(transport.getState()).rejects.toThrow();
     expect(posted.map((message) => JSON.parse(message)).filter((message) => message.type === "session-lost")).toEqual([
-      { type: "session-lost" },
+      { type: "session-lost", reason: "unauthorized" },
     ]);
 
     // And the banner says the session ended rather than "reconnecting" — the page is not coming back
@@ -959,7 +959,7 @@ describe("remote transport endpoint routing", () => {
       postMessage.mock.calls
         .map(([message]) => JSON.parse(message as string))
         .filter(({ type }) => type === "session-lost"),
-    ).toEqual([{ type: "session-lost" }]);
+    ).toEqual([{ type: "session-lost", reason: "unauthorized" }]);
   });
 
   it("a burst of relay bootstrap redirects reports the session lost exactly once", async () => {
@@ -979,7 +979,7 @@ describe("remote transport endpoint routing", () => {
       postMessage.mock.calls
         .map(([message]) => JSON.parse(message as string))
         .filter(({ type }) => type === "session-lost"),
-    ).toEqual([{ type: "session-lost" }]);
+    ).toEqual([{ type: "session-lost", reason: "unauthorized" }]);
   });
 
   it("does not report an unrelated redirected HTML response as connected or session loss", async () => {
@@ -1177,7 +1177,7 @@ describe("remote transport endpoint routing", () => {
       }
 
       expect(bridge.isSessionLost()).toBe(true);
-      expect(sessionLost()).toEqual([{ type: "session-lost" }]);
+      expect(sessionLost()).toEqual([{ type: "session-lost", reason: "unauthorized" }]);
       expect(connections.at(-1)).toEqual(expect.objectContaining({ connected: false, reconnecting: false }));
       const sockets = MockWebSocket.instances.length;
       expect(sockets).toBe(3);
@@ -1191,7 +1191,7 @@ describe("remote transport endpoint routing", () => {
       socket.open();
       socket.close(1008, "session expired");
 
-      expect(sessionLost()).toEqual([{ type: "session-lost" }]);
+      expect(sessionLost()).toEqual([{ type: "session-lost", reason: "expired" }]);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(MockWebSocket.instances.length).toBe(1);
     });
@@ -2023,5 +2023,92 @@ describe("remote transport failure messages", () => {
     // The store reads the hint from here — a message that arrived without one would leave the
     // banner saying what happened and not what to do, which is where this started.
     expect(failed?.hint).toContain("strIDEterm app");
+  });
+});
+
+describe("host connection-state dedupe and session-lost reason", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let originalWebSocket: typeof globalThis.WebSocket;
+  type Bridge = { suspend(): void; resume(): void; isSuspended(): boolean };
+  const bridge = () => (window as unknown as Record<string, Bridge>).__stridetermRemote;
+
+  beforeEach(() => {
+    MockWebSocket.instances.length = 0;
+    originalFetch = globalThis.fetch;
+    originalWebSocket = globalThis.WebSocket;
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
+  });
+
+  afterEach(() => {
+    (window as unknown as Record<string, { suspend?: () => void } | undefined>).__stridetermRemote?.suspend?.();
+    delete (window as unknown as Record<string, unknown>).StridetermHost;
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+    vi.useRealTimers();
+  });
+
+  function hostMessages(posted: string[], type: string) {
+    return posted.map((message) => JSON.parse(message)).filter((message) => message.type === type);
+  }
+
+  it("does not tell the host it is connected from an HTTP reply that lands while suspended", async () => {
+    // A reply that resolves after the suspend made the host believe a backgrounded page was
+    // connected, which caused false "resume stalled" re-bootstraps.
+    vi.useFakeTimers();
+    const posted: string[] = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(message),
+    };
+    let release: (response: Response) => void = () => {};
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const transport = createRemoteTransport();
+    transport.onConnectionState(() => {});
+    const pending = transport.getState();
+    bridge().suspend();
+    const before = hostMessages(posted, "connection-state").length;
+    release({ ok: true, json: async () => ({}) } as Response);
+    await pending.catch(() => {});
+    const after = hostMessages(posted, "connection-state");
+    expect(after).toHaveLength(before);
+    expect(after.at(-1)).toMatchObject({ connected: false });
+  });
+
+  it("sends a presence message while visible and not suspended, and none once suspended", async () => {
+    vi.useFakeTimers();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage: () => {} };
+    const transport = createRemoteTransport();
+    transport.onConnectionState(() => {});
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(1);
+    bridge().suspend();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(1);
+  });
+
+  it.each([
+    ["device revoked", "revoked"],
+    ["idle-expired", "expired"],
+    ["absolute-expired", "expired"],
+    ["session expired", "expired"],
+    ["unauthorized", "unauthorized"],
+    ["some other server text with /secret/path", "unknown"],
+  ])("reports a server close reason %j to the host as the allowlisted %s", (closeReason, expected) => {
+    const posted: string[] = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(message),
+    };
+    const transport = createRemoteTransport();
+    transport.onConnectionState(() => {});
+    MockWebSocket.instances[0].open();
+    MockWebSocket.instances[0].close(1008, closeReason);
+    expect(hostMessages(posted, "session-lost")).toEqual([{ type: "session-lost", reason: expected }]);
   });
 });

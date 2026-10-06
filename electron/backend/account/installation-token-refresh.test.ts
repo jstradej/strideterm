@@ -169,3 +169,60 @@ describe("the installation token-refresh listener", () => {
     expect(harness.unsubscribed()).toBe(1);
   });
 });
+
+describe("the applied-marker memory", () => {
+  it("does not restart anything when the stream reconnects and re-sends the marker it already applied", async () => {
+    // 2026-10-05: the ID token behind the SSE stream expires about hourly, the stream reconnects, and
+    // RTDB re-sends the CURRENT value first. That is not news.
+    const harness = fakes();
+    await harness.listener.start();
+    harness.emit({ revision: 7, changedAt: 1 });
+    await vi.waitFor(() => expect(harness.order.length).toBe(3));
+    harness.advance(TOKEN_REFRESH_MIN_INTERVAL_MS * 10);
+    harness.emit({ revision: 7, changedAt: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.client.refreshSession).toHaveBeenCalledTimes(1);
+    harness.emit({ revision: 8, changedAt: 2 });
+    await vi.waitFor(() => expect(harness.client.refreshSession).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not treat the unchanged marker as news after a process restart either", async () => {
+    let stored: string | null = null;
+    const make = () => {
+      const order: string[] = [];
+      let emit: ((event: { data: unknown }) => void) | null = null;
+      const client: TokenRefreshSource = {
+        currentSession: async () => ({ uid: UID }),
+        refreshSession: async () => void order.push("refresh-token"),
+        stream: (_path, handlers) => {
+          emit = handlers.onEvent;
+          return () => {};
+        },
+      };
+      const listener = createInstallationTokenRefreshListener({
+        client,
+        restartStreams: () => order.push("restart-streams"),
+        refreshAccount: async () => void order.push("refresh-account"),
+        loadAppliedMarker: () => stored,
+        saveAppliedMarker: (marker) => {
+          stored = marker;
+        },
+      });
+      return { listener, order, emit: (data: unknown) => emit?.({ data }) };
+    };
+    const first = make();
+    await first.listener.start();
+    first.emit({ revision: 3 });
+    await vi.waitFor(() => expect(first.order.length).toBe(3));
+    first.listener.stop();
+
+    const second = make();
+    await second.listener.start();
+    second.emit({ revision: 3 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(second.order).toEqual([]);
+    second.emit({ revision: 4 });
+    await vi.waitFor(() => expect(second.order.length).toBe(3));
+    second.listener.stop();
+  });
+});

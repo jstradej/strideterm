@@ -46,6 +46,15 @@ export interface MobileAuditLogEntry {
   status: "success" | "failure";
   /** Non-content detail only — e.g. an error code or "device-limit-reached". Never payload text. */
   detail?: string;
+  /**
+   * Last 8 characters of the command messageId this row is about — enough to correlate a line with the
+   * phone's own log without writing the full id. File mirror only; there is no column for it.
+   */
+  msg?: string;
+  /** Age of the envelope in whole seconds when it was refused (expired rejections). File mirror only. */
+  ageSeconds?: number;
+  /** How many further identical rows a burst suppressed (see the manager's replay summary). File mirror only. */
+  suppressed?: number;
 }
 
 export interface MobileAuditLogFilters {
@@ -119,6 +128,9 @@ export function createMobileAuditLogStore(databasePath: string, options: MobileA
         actor: entry.actor,
         status: entry.status,
         detail: entry.detail || "",
+        ...(entry.msg ? { msg: entry.msg } : {}),
+        ...(typeof entry.ageSeconds === "number" ? { ageSeconds: entry.ageSeconds } : {}),
+        ...(typeof entry.suppressed === "number" ? { suppressed: entry.suppressed } : {}),
       });
     } catch (err) {
       log.warn("failed to mirror entry to file log", { err: (err as Error)?.message || String(err) });

@@ -25,7 +25,7 @@
  * docs/adr/0016-recipient-bound-routing.md.
  */
 import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import {
   buildRoutingAad,
@@ -62,7 +62,7 @@ import type {
   NotificationPayload,
   Severity,
 } from "./mobile-schemas.js";
-import type { MobileAuditLogFilters, MobileAuditLogStore } from "./mobile-audit-log-store.js";
+import type { MobileAuditLogEntry, MobileAuditLogFilters, MobileAuditLogStore } from "./mobile-audit-log-store.js";
 import type { MobileCommandDispatcher } from "./mobile-command-dispatch.js";
 import type { MobileNotificationOriginStore } from "./mobile-notification-origin-store.js";
 import { isDeviceUsable, type MobileDeviceStore } from "./mobile-device-store.js";
@@ -229,6 +229,17 @@ export interface MobileManagerDeps {
 function meetsNotificationFilter(device: MobileDeviceRecord, event: ExternalNotificationEvent): boolean {
   if (device.notificationFilter.mutedKinds.includes(event.kind)) return false;
   return PRIORITY_RANK[event.priority] >= PRIORITY_RANK[device.notificationFilter.minPriority];
+}
+
+/**
+ * The catalog revision is a pure function of the catalog content. It used to be a random UUID minted on
+ * every publish, so each manager restart (the hourly token-refresh one, 2026-10-05) "changed" the
+ * catalog and made the phone refetch its profile catalog although nothing in it had moved. Shaped
+ * like a UUID so the cloud's opaque-id validation and the phone's parsing stay untouched.
+ */
+export function catalogRevisionOf(catalogSignature: string): string {
+  const hex = createHash("sha256").update(catalogSignature).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 export class MobileManager extends EventEmitter {
@@ -897,18 +908,15 @@ export class MobileManager extends EventEmitter {
           }
           const device = this.deviceStore.getDevice(original.deviceId);
           if (!device || device.revoked || device.state !== "active") continue;
-          const signature = JSON.stringify([
-            device.capabilities,
-            device.profileAllowlist,
-            this.getCatalogSignature?.(device.profileAllowlist),
-          ]);
+          const catalogSignature = this.getCatalogSignature?.(device.profileAllowlist);
+          const signature = JSON.stringify([device.capabilities, device.profileAllowlist, catalogSignature]);
           if (this.syncedAccess.get(device.deviceId) === signature) continue;
           await this.transport.updateDeviceAccess(
             this.ownDeviceId,
             device.deviceId,
             device.capabilities,
             device.profileAllowlist,
-            ...(this.getCatalogSignature ? [randomUUID()] : []),
+            ...(catalogSignature !== undefined ? [catalogRevisionOf(catalogSignature)] : []),
           );
           this.syncedAccess.set(device.deviceId, signature);
         }
@@ -1371,18 +1379,103 @@ export class MobileManager extends EventEmitter {
    * obsahu").
    */
   private rejectEnvelope(envelope: EncryptedEnvelope, reason: string): void {
-    this.auditLogStore.logEntry({
-      deviceId: envelope.senderDeviceId,
-      pairId: envelope.pairId,
-      actor: "device",
-      action: "command.rejected",
-      status: "failure",
-      detail: reason,
-    });
+    const ageSeconds = Math.max(0, Math.round((this.now() - envelope.createdAt) / 1000));
+    this.auditBurst(
+      {
+        deviceId: envelope.senderDeviceId,
+        pairId: envelope.pairId,
+        actor: "device",
+        action: "command.rejected",
+        status: "failure",
+        detail: reason,
+        msg: envelope.messageId.slice(-8),
+        // The age is what tells a replayed backlog from a live clock problem; only meaningful here.
+        ...(reason === "envelope-expired" ? { ageSeconds } : {}),
+      },
+      // Only the reasons a manager restart can re-deliver in bulk are collapsed. Every other refusal
+      // (identity, AAD, decrypt) is a security signal and keeps its own line.
+      reason === "envelope-expired",
+    );
   }
+
+  /** Message ids already answered (claimed or refused for good), so a replay costs no network round trip. */
+  private handledMessageIds = new Set<string>();
+  private markHandled(messageId: string): void {
+    this.handledMessageIds.add(messageId);
+    // Bounded: the mailbox holds 24 h of commands, so this is far more than a replay can contain.
+    if (this.handledMessageIds.size > 5_000) {
+      const oldest = this.handledMessageIds.values().next().value;
+      if (oldest !== undefined) this.handledMessageIds.delete(oldest);
+    }
+  }
+
+  private auditBursts = new Map<
+    string,
+    { suppressed: number; entry: MobileAuditLogEntry; timer: ReturnType<typeof setTimeout> }
+  >();
+
+  /**
+   * Writes [entry], collapsing a replay burst when [collapse] is set.
+   *
+   * 2026-10-05: each restart of the manager re-delivered the whole 24 h command mailbox and wrote one
+   * `command.rejected` / `duplicate-delivery-ignored` row per command — dozens of identical lines
+   * drowning the audit log. The first row of a burst is written at once (so nothing is delayed and an
+   * isolated event looks exactly as before); identical rows inside the window are only counted, and ONE
+   * summary row with the count follows when the window closes.
+   */
+  private auditBurst(entry: MobileAuditLogEntry, collapse: boolean): void {
+    if (!collapse) {
+      this.auditLogStore.logEntry(entry);
+      return;
+    }
+    const key = [entry.deviceId, entry.action, entry.detail ?? ""].join("|");
+    const open = this.auditBursts.get(key);
+    if (open) {
+      open.suppressed += 1;
+      return;
+    }
+    this.auditLogStore.logEntry(entry);
+    const timer = setTimeout(() => {
+      const burst = this.auditBursts.get(key);
+      this.auditBursts.delete(key);
+      if (burst && burst.suppressed > 0) {
+        // The summary carries counts only: no message id (it would name one of N), the age of nothing.
+        this.auditLogStore.logEntry({
+          deviceId: entry.deviceId,
+          pairId: entry.pairId,
+          actor: entry.actor,
+          action: entry.action,
+          status: entry.status,
+          detail: entry.detail,
+          suppressed: burst.suppressed,
+        });
+      }
+    }, MobileManager.AUDIT_BURST_WINDOW_MS);
+    timer.unref?.();
+    this.auditBursts.set(key, { suppressed: 0, entry, timer });
+  }
+  private static readonly AUDIT_BURST_WINDOW_MS = 2_000;
 
   private async handleIncomingEnvelope(envelope: EncryptedEnvelope): Promise<void> {
     if (envelope.messageType !== "command") return;
+
+    // A message this manager already answered (a replay after a restart, or the transport's own
+    // re-delivery) is dropped BEFORE any network round trip. This used to run after `getDevice`, so a
+    // replayed mailbox cost one cloud read per command (2026-10-05).
+    if (this.handledMessageIds.has(envelope.messageId)) {
+      this.auditBurst(
+        {
+          deviceId: envelope.senderDeviceId,
+          pairId: envelope.pairId,
+          actor: "device",
+          action: "command.duplicate-delivery-ignored",
+          status: "success",
+          msg: envelope.messageId.slice(-8),
+        },
+        true,
+      );
+      return;
+    }
 
     // ---- Identity, before anything else (review 2 §P0.2) --------------------------------------
     //
@@ -1441,6 +1534,9 @@ export class MobileManager extends EventEmitter {
     // difference satisfied the per-type policy, and the inner `expiresAt` was still in the future.
     const receivedAt = this.now();
     if (envelope.expiresAt <= receivedAt) {
+      // Final for good: an expired envelope never becomes valid again, so a replay of it is ignored
+      // cheaply instead of being re-evaluated (and re-logged) after every manager restart.
+      this.markHandled(envelope.messageId);
       this.rejectEnvelope(envelope, "envelope-expired");
       return;
     }
@@ -1559,14 +1655,19 @@ export class MobileManager extends EventEmitter {
     // Exactly-one-desktop-executes guard — also protects against a duplicate
     // delivery of the same envelope (e.g. transport offline-queue replay).
     const claimed = await this.transport.claimCommand(envelope.pairId, command.commandId);
+    this.markHandled(envelope.messageId);
     if (!claimed) {
-      this.auditLogStore.logEntry({
-        deviceId: device.deviceId,
-        pairId: envelope.pairId,
-        actor: "device",
-        action: "command.duplicate-delivery-ignored",
-        status: "success",
-      });
+      this.auditBurst(
+        {
+          deviceId: device.deviceId,
+          pairId: envelope.pairId,
+          actor: "device",
+          action: "command.duplicate-delivery-ignored",
+          status: "success",
+          msg: envelope.messageId.slice(-8),
+        },
+        true,
+      );
       return;
     }
 

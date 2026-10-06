@@ -458,6 +458,8 @@ interface Runtime {
     transport: "relay" | "legacy";
     requiredCapability: "remote.webSession";
     expiresAt: number;
+    /** Last 8 characters of the command that issued the ticket; audit correlation only. */
+    commandRef?: string;
   } | null;
   /**
    * Whether [deviceId] may still hold a mobile session on [profileId], right now.
@@ -3971,14 +3973,28 @@ export async function startRemoteServer({
       return;
     }
 
+    // ONE LIVE SESSION PER DEVICE ON THIS SERVER. A device that bootstraps again has abandoned the page
+    // the old session served, but the old one used to linger until its idle deadline (30 minutes) with
+    // its sockets open (2026-10-05). Ending it here, with the reason the page maps to `superseded`,
+    // closes those sockets and keeps a stale cookie from outliving the one that replaced it.
+    for (const [existingId, existing] of [...activeSessions]) {
+      if (existing.deviceId === ticket.deviceId) endMobileSession(existingId, "superseded");
+    }
     const sessionId = mintMobileSession(ticket);
+    const sessionRef = remoteSessionRef(sessionId);
     recordMobileSessionAudit(
       activeSessions.get(sessionId),
       "session.started",
       "success",
-      `profile=${ticket.profileId} transport=${ticket.transport}`,
+      `profile=${ticket.profileId} transport=${ticket.transport} sessionRef=${sessionRef}${
+        ticket.commandRef ? ` cmd=${ticket.commandRef}` : ""
+      }`,
     );
-    audit.info("mobile session bootstrap succeeded", { remoteAddress, sessionRef: remoteSessionRef(sessionId) });
+    audit.info("mobile session bootstrap succeeded", {
+      remoteAddress,
+      sessionRef,
+      deviceRef: remoteSessionRef(ticket.deviceId),
+    });
     writeHead(response, 302, {
       "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
       Location: "/",
@@ -4755,7 +4771,12 @@ export async function startRemoteServer({
             message.type === "terminal:subscribe" ||
             message.type === "docker:shell:write" ||
             message.type === "docker:shell:resize" ||
-            message.type === "resource:interest";
+            message.type === "resource:interest" ||
+            // The mobile page's foreground heartbeat: sent only while the page is visible, not
+            // suspended and holding an open socket, i.e. while somebody is watching. Unlike a bare
+            // keep-alive it is gated on that presence on the client, and the absolute deadline still
+            // bounds it. Without it a phone watching output was logged out after the idle window.
+            message.type === "client:presence";
           if (wsSessionId && !touchMobileSession(wsSessionId, meaningful)) {
             try {
               ws.close(1008, "session expired");

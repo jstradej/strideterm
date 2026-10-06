@@ -407,6 +407,7 @@ export function createRemoteTransport(): Transport {
   const mobileHost = (window as unknown as Record<string, unknown>).StridetermHost as
     { postMessage?: (message: string) => void } | undefined;
 
+  type SessionLostReason = "expired" | "revoked" | "superseded" | "unauthorized" | "unknown";
   let lastPostedConnectionState = "";
   function emitConnectionState(payload: ConnectionStatePayload): void {
     listeners.connectionState.forEach((handler) => handler(payload));
@@ -720,6 +721,19 @@ export function createRemoteTransport(): Transport {
     return event.code === 1008;
   }
 
+  /**
+   * Maps the server's close reason (see `closeSessionSockets`/`endMobileSession`) onto the allowlist the
+   * host is told. Unrecognised text collapses to `unknown` so nothing else crosses the channel.
+   */
+  function sessionLostReasonFromClose(reason: string | undefined): SessionLostReason {
+    const text = reason || "";
+    if (/revoked/i.test(text)) return "revoked";
+    if (/superseded/i.test(text)) return "superseded";
+    if (/expired/i.test(text)) return "expired";
+    if (/unauthori[sz]ed/i.test(text)) return "unauthorized";
+    return "unknown";
+  }
+
   /** The upgrade was refused for lack of a session; the relay proxy reports it as a close reason. */
   function isUnauthorizedClose(event: CloseEvent): boolean {
     return /unauthori[sz]ed/i.test(event.reason || "");
@@ -992,7 +1006,7 @@ export function createRemoteTransport(): Transport {
       // takes several in a row, with no healthy connection in between.
       if (isExplicitAuthClose(event)) {
         rlog("warn", "WebSocket closed by the server as a lost session", { code: event.code });
-        reportSessionLost();
+        reportSessionLost(sessionLostReasonFromClose(event.reason));
         return;
       }
       if (isUnauthorizedClose(event)) {
@@ -1001,7 +1015,7 @@ export function createRemoteTransport(): Transport {
           rlog("warn", "WebSocket repeatedly refused as unauthorized; treating the session as lost", {
             closes: consecutiveAuthCloses,
           });
-          reportSessionLost();
+          reportSessionLost("unauthorized");
           return;
         }
       }
@@ -1158,6 +1172,26 @@ export function createRemoteTransport(): Transport {
       });
   }
 
+  // PRESENCE. The server's idle deadline moves only for typing, resizing and subscribing, so a phone
+  // that is merely WATCHING a terminal looked idle and was logged out after the idle window (2026-10-05).
+  // While the page is visible, not suspended and holding an open socket, the host app is in the
+  // foreground and a person can see the screen: that is the activity. Sent only inside a native host
+  // (a browser tab has no such deadline) and never while suspended, so a backgrounded phone still idles
+  // out. The server's absolute deadline is untouched by it.
+  const PRESENCE_INTERVAL_MS = 60_000;
+  if (mobileHost && typeof window !== "undefined") {
+    window.setInterval(() => {
+      const current = ws;
+      if (suspended || sessionLost || !current || current.readyState !== WebSocket.OPEN) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      try {
+        current.send(JSON.stringify({ type: "client:presence" }));
+      } catch {
+        // A socket that cannot send is closing; the reconnect path owns that.
+      }
+    }, PRESENCE_INTERVAL_MS);
+  }
+
   function suspendTransport(): void {
     if (suspended) return;
     suspended = true;
@@ -1188,6 +1222,11 @@ export function createRemoteTransport(): Transport {
   function resumeTransport(): void {
     if (!suspended) return;
     suspended = false;
+    // Forget what was last told to the host. The suspend posted `connected:false`, and a reconnect that
+    // lands on the same payload (or a reply that raced the suspend with `connected:true`) would be
+    // swallowed by the dedupe, so the host never saw the reconnect it is waiting for and declared the
+    // resume stalled (2026-10-05).
+    lastPostedConnectionState = "";
     // A resume follows either a background teardown or a fresh bootstrap; both are a new verdict on
     // whether this page has a session, so the latch must not survive one.
     sessionLost = false;
@@ -1233,7 +1272,7 @@ export function createRemoteTransport(): Transport {
    * next `resume()` is what un-latches this, so a re-bootstrap that lands on the SAME document
    * recovers without a reload.
    */
-  function reportSessionLost(): void {
+  function reportSessionLost(reason: SessionLostReason = "unknown"): void {
     if (sessionLost) return;
     sessionLost = true;
     cancelActiveBrowse?.();
@@ -1243,7 +1282,10 @@ export function createRemoteTransport(): Transport {
     let hosted = false;
     try {
       if (typeof host?.postMessage === "function") {
-        host.postMessage(JSON.stringify({ type: "session-lost" }));
+        // `reason` is an allowlisted token, never the server's own text: the phone must tell an idle
+        // expiry (a new ticket fixes it, WebView storage stays) from a revocation (final, wipe) without
+        // this page leaking anything else across the channel. An extra field only: older hosts ignore it.
+        host.postMessage(JSON.stringify({ type: "session-lost", reason }));
         hosted = true;
       }
     } catch {
@@ -1435,6 +1477,17 @@ export function createRemoteTransport(): Transport {
     }
   }
 
+  /**
+   * A successful HTTP reply proves the server answered, not that this page is connected: once the
+   * transport is suspended there is no socket, and a reply that lands after the suspend made the host
+   * believe the page was connected while backgrounded — which then produced false "resume stalled"
+   * re-bootstraps on the phone (2026-10-05).
+   */
+  function emitFetchConnected(): void {
+    if (suspended) return;
+    emitConnectionState({ connected: true, message: "" });
+  }
+
   async function fetchJson(
     pathname: string,
     payload?: unknown,
@@ -1488,13 +1541,13 @@ export function createRemoteTransport(): Transport {
     // of a 401; unrelated redirects and HTML responses remain ordinary malformed API responses.
     if (isRelayBootstrapRedirect(response)) {
       const error = createRemoteIssue({ kind: "http", statusCode: 401 });
-      reportSessionLost();
+      reportSessionLost("unauthorized");
       throw error;
     }
 
     // 304 Not Modified — the resource is unchanged; reuse the cached body.
     if (response.status === 304 && cachedEntry) {
-      if (options.emitConnectionState !== false) emitConnectionState({ connected: true, message: "" });
+      if (options.emitConnectionState !== false) emitFetchConnected();
       return cachedEntry.body;
     }
 
@@ -1511,7 +1564,7 @@ export function createRemoteTransport(): Transport {
       // 401 is the session ending, not a request failing. Everything else falls through to the
       // ordinary banner-and-throw below.
       if (response.status === 401) {
-        reportSessionLost();
+        reportSessionLost("unauthorized");
         throw error;
       }
       if (options.emitConnectionState !== false) {
@@ -1544,7 +1597,7 @@ export function createRemoteTransport(): Transport {
     if (options.signal?.aborted) {
       throw createRemoteIssue({ kind: "cancelled", recoverable: false });
     }
-    if (options.emitConnectionState !== false) emitConnectionState({ connected: true, message: "" });
+    if (options.emitConnectionState !== false) emitFetchConnected();
     // Remember the ETag so the next GET of this path can revalidate. Optional
     // chaining guards environments/mocks whose Response omits `headers`.
     const etag = isGet ? (response.headers?.get?.("ETag") ?? null) : null;

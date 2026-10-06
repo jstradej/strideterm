@@ -387,6 +387,34 @@ describe("pairing", () => {
     expect(seen).toEqual(["mobile-device-1"]);
   });
 
+  test("a PARTIAL patch revokes a device by merging into the cached record", async () => {
+    // 2026-10-05: the cloud's account revocation writes `update({revoked, state})`, which RTDB streams
+    // as a patch holding only those two fields. It used to be parsed as a full record and dropped.
+    const stub = makeStubClient();
+    const transport = makeTransport(stub);
+    await transport.connect();
+    const seen: { id: string; revoked: boolean; state: string }[] = [];
+    transport.watchDeviceUpdates(PAIR_ID, (device) =>
+      seen.push({ id: device.deviceId, revoked: device.revoked, state: device.state }),
+    );
+    const handlers = stub.streams.get(pairDevicesPath(PAIR_ID))!;
+    handlers.onEvent({ type: "put", path: "/", data: { "mobile-device-1": makeDevice() } });
+    handlers.onEvent({ type: "patch", path: "/mobile-device-1", data: { revoked: true, state: "revoked" } });
+    expect(seen.at(-1)).toEqual({ id: "mobile-device-1", revoked: true, state: "revoked" });
+    // A single-field put and a root-level patch merge the same way.
+    handlers.onEvent({
+      type: "put",
+      path: "/",
+      data: { "mobile-device-2": makeDevice({ deviceId: "mobile-device-2" }) },
+    });
+    handlers.onEvent({ type: "put", path: "/mobile-device-2/revoked", data: true });
+    expect(seen.at(-1)).toMatchObject({ id: "mobile-device-2", revoked: true });
+    // A patch for a device never seen cannot form a record and is dropped, not crashed on.
+    const before = seen.length;
+    handlers.onEvent({ type: "patch", path: "/ghost", data: { revoked: true } });
+    expect(seen).toHaveLength(before);
+  });
+
   test("revokeDevice calls the revoke callable", async () => {
     const stub = makeStubClient();
     const transport = makeTransport(stub);

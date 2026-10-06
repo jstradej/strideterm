@@ -898,6 +898,49 @@ describe("timestamps: the stale destructive command (review 3 §P0.4)", () => {
     fixture.manager.stop();
   });
 
+  test("a replayed backlog of expired commands is one line plus one counted summary, tagged with msg and age", async () => {
+    // 2026-10-05: every manager restart re-delivered the 24 h mailbox and wrote one row per command.
+    const fixture = await createFixture();
+    const { sessionKey } = await claimAndApprove(fixture);
+    const logged: { action: string; detail?: string; msg?: string; ageSeconds?: number; suppressed?: number }[] = [];
+    const original = fixture.auditLogStore.logEntry.bind(fixture.auditLogStore);
+    fixture.auditLogStore.logEntry = (entry) => {
+      logged.push(entry);
+      original(entry);
+    };
+    const now = Date.now();
+    for (let i = 0; i < 5; i++) {
+      const command = pauseCommand(now, `cmd-expired-burst-0000000${i}`);
+      fixture.transport.pushCommandEnvelope(
+        OWN_DEVICE_ID,
+        commandEnvelope(sessionKey, command, { createdAt: now - 600_000, expiresAt: now - 300_000 }),
+      );
+    }
+    await flush();
+    const expired = () => logged.filter((e) => e.action === "command.rejected" && e.detail === "envelope-expired");
+    expect(expired()).toHaveLength(1);
+    expect(expired()[0]).toMatchObject({ msg: "00000000", ageSeconds: 600 });
+
+    // The same ids again (a second restart) cost nothing and add nothing but to the count.
+    for (let i = 0; i < 5; i++) {
+      const command = pauseCommand(now, `cmd-expired-burst-0000000${i}`);
+      fixture.transport.pushCommandEnvelope(
+        OWN_DEVICE_ID,
+        commandEnvelope(sessionKey, command, { createdAt: now - 600_000, expiresAt: now - 300_000 }),
+      );
+    }
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 2_200));
+    const summary = logged.filter((e) => e.suppressed !== undefined);
+    expect(summary.filter((e) => e.detail === "envelope-expired")).toEqual([
+      expect.objectContaining({ suppressed: 4 }),
+    ]);
+    expect(logged.filter((e) => e.action === "command.duplicate-delivery-ignored" && e.suppressed === 4)).toHaveLength(
+      1,
+    );
+    fixture.manager.stop();
+  });
+
   test("inner and outer timestamps must agree exactly", async () => {
     const fixture = await createFixture();
     const { sessionKey } = await claimAndApprove(fixture);

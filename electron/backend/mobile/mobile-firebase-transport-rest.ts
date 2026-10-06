@@ -169,18 +169,67 @@ export function createFirebaseMobileTransport(deps: FirebaseMobileTransportDeps)
    * them.
    */
   function watchDeviceUpdates(pairId: string, onDevice: (device: Device) => void): () => void {
+    // The merged view of every device record. RTDB streams DELTAS: a partial `update()` such as the
+    // account revocation's `{revoked, state}` arrives as a `patch` carrying only those two fields.
+    // Parsing each patch as a full record dropped it as malformed, so an account-level revoke never
+    // reached this desktop and a direct/LAN session stayed live for up to ~30 minutes (2026-10-05).
+    // `put` replaces, `patch` merges, and revocation is evaluated on the merged record.
+    let cache: Record<string, unknown> = {};
+    /** Applies one SSE delta to the cache and returns the device ids whose record it touched. */
+    function applyStreamEvent(type: "put" | "patch", segments: string[], data: unknown): string[] {
+      const isObject = (value: unknown): value is Record<string, unknown> =>
+        typeof value === "object" && value !== null && !Array.isArray(value);
+      if (segments.length === 0) {
+        if (type === "put") {
+          cache = isObject(data) ? { ...data } : {};
+          return Object.keys(cache);
+        }
+        if (!isObject(data)) return [];
+        for (const [key, value] of Object.entries(data)) {
+          if (value === null) delete cache[key];
+          else cache[key] = value;
+        }
+        return Object.keys(data);
+      }
+      const [deviceId, ...rest] = segments as [string, ...string[]];
+      if (rest.length === 0) {
+        if (type === "put") {
+          if (data === null || data === undefined) delete cache[deviceId];
+          else cache[deviceId] = data;
+        } else if (isObject(data)) {
+          const base = isObject(cache[deviceId]) ? { ...(cache[deviceId] as Record<string, unknown>) } : {};
+          for (const [key, value] of Object.entries(data)) {
+            if (value === null) delete base[key];
+            else base[key] = value;
+          }
+          cache[deviceId] = base;
+        }
+        return [deviceId];
+      }
+      // A deeper path is one FIELD (or sub-field) of one device: write it into a copy of the record.
+      const record = isObject(cache[deviceId]) ? { ...(cache[deviceId] as Record<string, unknown>) } : {};
+      let cursor: Record<string, unknown> = record;
+      for (const segment of rest.slice(0, -1)) {
+        const next = cursor[segment];
+        cursor[segment] = isObject(next) ? { ...next } : {};
+        cursor = cursor[segment] as Record<string, unknown>;
+      }
+      const leaf = rest[rest.length - 1]!;
+      if (type === "patch" && isObject(data)) {
+        const existing = isObject(cursor[leaf]) ? (cursor[leaf] as Record<string, unknown>) : {};
+        cursor[leaf] = { ...existing, ...data };
+      } else if (data === null || data === undefined) delete cursor[leaf];
+      else cursor[leaf] = data;
+      cache[deviceId] = record;
+      return [deviceId];
+    }
     const unsubscribe = requireClient().stream(pairDevicesPath(pairId), {
       onEvent: (event) => {
-        // `/` carries the whole devices map (initial snapshot / post-reconnect resync);
-        // `/{deviceId}` carries one device. A deeper path is one FIELD of one device (what a partial
-        // `update()` produces) and must not be parsed as a record — the revocation sequence writes the
-        // whole record, so nothing is lost by skipping those.
-        const entries: [string, unknown][] =
-          event.path === "/"
-            ? Object.entries((event.data as Record<string, unknown>) || {})
-            : [[event.path.replace(/^\//, ""), event.data]];
-        for (const [key, raw] of entries) {
-          if (!raw || key.includes("/")) continue;
+        const segments = event.path.split("/").filter(Boolean);
+        const touched = applyStreamEvent(event.type, segments, event.data);
+        for (const key of touched) {
+          const raw = cache[key];
+          if (!raw || typeof raw !== "object") continue;
           const parsed = DeviceSchema.safeParse(hydrateDeviceRecord(raw));
           if (!parsed.success) {
             log.warn("ignoring malformed device record", { deviceId: key });

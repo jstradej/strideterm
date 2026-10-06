@@ -54,7 +54,9 @@ const CUSTOM_LEVELS = {
 type LogLevelName = keyof typeof CUSTOM_LEVELS.levels;
 const LOG_METHODS = Object.keys(CUSTOM_LEVELS.levels) as LogLevelName[];
 
-const TIMESTAMP_FORMAT = winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss.SSS" });
+// Local time WITH its UTC offset (`ZZ`): during the 2026-10-05 mobile incident the desktop log (local)
+// and the cloud/relay logs (UTC) could not be lined up without guessing the machine's zone.
+const TIMESTAMP_FORMAT = winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss.SSS ZZ" });
 
 // ---------------------------------------------------------------------------
 // Token redaction

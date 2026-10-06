@@ -2378,6 +2378,16 @@ export async function createRuntime({
           mobileManager.start();
       },
       refreshAccount: () => accountManager.onClaimsChanged(),
+      // Survives a process restart, so the marker RTDB re-sends on every (re)connect is only news
+      // when it differs from the one last acted on (2026-10-05: an hourly restart of the manager).
+      loadAppliedMarker: async () => {
+        try {
+          return await readFile(path.join(userDataPath, "token-refresh-marker.txt"), "utf-8");
+        } catch {
+          return null;
+        }
+      },
+      saveAppliedMarker: (marker) => writeFile(path.join(userDataPath, "token-refresh-marker.txt"), marker, "utf-8"),
       onError: (error) => {
         log.warn("installation token-refresh listener failed", { error: String(error) });
       },

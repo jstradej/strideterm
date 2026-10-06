@@ -40,6 +40,13 @@ export interface InstallationTokenRefreshDeps {
   /** Re-reads the account overview, so the page agrees with the new claims. */
   readonly refreshAccount: () => Promise<void>;
   readonly now?: () => number;
+  /**
+   * Where the last marker this installation ACTED ON is kept, so a restart of the process does not
+   * treat the node's unchanged current value as news. Both optional: without them the marker is
+   * remembered for the life of the listener only. Must never throw into the listener.
+   */
+  readonly loadAppliedMarker?: () => Promise<string | null> | string | null;
+  readonly saveAppliedMarker?: (marker: string) => Promise<void> | void;
   /** Collapses a burst. Defaults to five seconds. */
   readonly minIntervalMs?: number;
   readonly onError?: (error: unknown) => void;
@@ -66,6 +73,12 @@ export function createInstallationTokenRefreshListener(
   let pending = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  // The marker last acted on (serialised). A stream's ID token expires about hourly and the
+  // reconnect makes RTDB re-send the CURRENT value as the first event; without this memory that old
+  // marker looked like news and restarted the whole mobile manager every hour (2026-10-05: command
+  // mailbox replayed, presence flapped, catalog refetched at 19:14, 20:14, 21:14).
+  let appliedMarker: string | null = null;
+  let markerLoad: Promise<void> | null = null;
 
   function requestRefresh(): void {
     if (stopped) return;
@@ -112,6 +125,26 @@ export function createInstallationTokenRefreshListener(
     return applying;
   }
 
+  async function handleMarker(marker: string): Promise<void> {
+    // One load, shared by every early event, so a second marker cannot be compared with "nothing".
+    markerLoad ??= (async () => {
+      try {
+        appliedMarker = (await deps.loadAppliedMarker?.()) ?? null;
+      } catch (error) {
+        deps.onError?.(error);
+      }
+    })();
+    await markerLoad;
+    if (stopped || marker === appliedMarker) return;
+    appliedMarker = marker;
+    try {
+      await deps.saveAppliedMarker?.(marker);
+    } catch (error) {
+      deps.onError?.(error);
+    }
+    requestRefresh();
+  }
+
   return {
     async start(): Promise<void> {
       stopped = false;
@@ -122,12 +155,11 @@ export function createInstallationTokenRefreshListener(
       const session = await deps.client.currentSession();
       unsubscribe = deps.client.stream(tokenRefreshPath(session.uid), {
         onEvent: (event) => {
-          // The first event of an SSE subscription is the node's CURRENT value, which on a machine
-          // that has been running is a marker it has already acted on. `null` (no marker) is skipped;
-          // anything else is applied, and the interval is what stops the initial value costing a
-          // restart on every start-up.
+          // The first event of every SSE (re)subscription is the node's CURRENT value, which is a
+          // marker this machine has already acted on. `null` (no marker) is skipped; a marker equal to
+          // the one last applied is skipped too — only a CHANGED one means "ask again now".
           if (event.data === null || event.data === undefined) return;
-          requestRefresh();
+          void handleMarker(JSON.stringify(event.data));
         },
         onError: (error) => deps.onError?.(error),
       });

@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { MobileManager, notificationKindFor } from "./mobile-manager.js";
+import { MobileManager, catalogRevisionOf, notificationKindFor } from "./mobile-manager.js";
 import { buildExternalNotificationEvent } from "../notifications/external-notification-event.js";
 
 test("questions use the native waiting-for-input notification channel", () => {
@@ -2353,6 +2353,14 @@ describe("MobileManager presence: the desktop says it is reachable", () => {
 });
 
 describe("default profile access and live synchronization", () => {
+  test("the catalog revision is a pure function of the catalog content", () => {
+    // 2026-10-05: a random UUID per publish made every manager restart look like a catalog change.
+    const a = catalogRevisionOf('[["work","Work"]]');
+    expect(a).toBe(catalogRevisionOf('[["work","Work"]]'));
+    expect(a).not.toBe(catalogRevisionOf('[["work","Work renamed"]]'));
+    expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
   test("publishes a new opaque revision only when this device's allowed catalog changes", async () => {
     let workName = "Work";
     let privateName = "Private";

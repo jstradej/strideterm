@@ -4741,6 +4741,39 @@ describe("a mobile session is finite", () => {
     }
   });
 
+  test("the foreground presence message postpones the idle deadline, so watching a terminal is not idle", async () => {
+    // 2026-10-05: a phone that only watched output was logged out after the idle window, because only
+    // typing, resizing and subscribing counted. The page now sends `client:presence` while visible.
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+    seedTicket("t1", "s1", "dev-1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+      mobileSessionAbsoluteTtlMs: 60_000,
+      mobileSessionIdleTtlMs: 400,
+      mobileSessionSweepMs: 1_000_000,
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: cookie } });
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      for (let i = 0; i < 4; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        ws.send(JSON.stringify({ type: "client:presence" }));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      ws.close();
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(200);
+    } finally {
+      await server.close();
+    }
+  });
+
   test("a capability or profile change ends the session at its next request, without a revoke", async () => {
     const port = await getFreePort();
     const { seedTicket, deauthorize, runtime } = makeFiniteSessionRuntime(port);
@@ -4933,7 +4966,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
           pairId: "pair-dev-1",
           action: "session.started",
           status: "success",
-          detail: "profile=default transport=legacy",
+          detail: expect.stringMatching(/^profile=default transport=legacy sessionRef=cookie:[0-9a-f]{12}$/),
         },
       ]);
     });
@@ -5055,7 +5088,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
       { server: { mobileSessionAbsoluteTtlMs: 60_000, mobileSessionIdleTtlMs: 200, mobileSessionSweepMs: 50 } },
       async ({ baseUrl, rows, seedTicket }) => {
         seedTicket("t1", "s1", "dev-1");
-        seedTicket("t2", "s2", "dev-1");
+        seedTicket("t2", "s2", "dev-2"); // a DIFFERENT device: the same one would supersede the first
         const firstCookie = await bootstrap(baseUrl, "t1", "s1");
         const secondCookie = await bootstrap(baseUrl, "t2", "s2");
         await vi.waitFor(() => expect(rows.filter((row) => row.action === "session.ended")).toHaveLength(2));
@@ -5082,6 +5115,24 @@ describe("a mobile session's activity is audited (metadata only)", () => {
     );
   });
 
+  test("a new bootstrap by the same device ends the previous session as superseded and closes its sockets", async () => {
+    // 2026-10-05: the replaced session used to linger until its 30 minute idle deadline.
+    await withAuditedServer({}, async ({ baseUrl, port, rows, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      seedTicket("t2", "s2", "dev-1");
+      const first = await bootstrap(baseUrl, "t1", "s1");
+      const ws = await openSocket(`ws://127.0.0.1:${port}/ws`, { Cookie: first });
+      const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+        ws.on("close", (code: number, reason: Buffer) => resolve({ code, reason: reason.toString("utf8") })),
+      );
+      const second = await bootstrap(baseUrl, "t2", "s2");
+      expect(await closed).toEqual({ code: 1008, reason: "superseded" });
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: first } })).status).toBe(401);
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: second } })).status).toBe(200);
+      expect(rows.filter((r) => r.action === "session.ended").map((r) => r.detail)).toEqual(["reason=superseded"]);
+    });
+  });
+
   test("a revoke records session.ended with reason=revoked, once, after flushing pending terminal input", async () => {
     await withAuditedServer({}, async ({ baseUrl, port, rows, written, seedTicket, server }) => {
       seedTicket("t1", "s1", "dev-1");
@@ -5092,7 +5143,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
       server.revokeMobileSessionsForDevice!("dev-1");
       server.revokeMobileSessionsForDevice!("dev-1");
       expect(rows.map((r) => `${r.action} ${r.detail}`)).toEqual([
-        "session.started profile=default transport=legacy",
+        expect.stringMatching(/^session.started profile=default transport=legacy sessionRef=cookie:[0-9a-f]{12}$/),
         "session.terminal-input terminal=ws1:1 bytes=3 lines=0",
         "session.ended reason=revoked",
       ]);
@@ -5115,7 +5166,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
       await fs.rm(dir, { recursive: true, force: true });
     }
     expect(rows.map((r) => `${r.action} ${r.detail}`)).toEqual([
-      "session.started profile=default transport=legacy",
+      expect.stringMatching(/^session.started profile=default transport=legacy sessionRef=cookie:[0-9a-f]{12}$/),
       "session.ended reason=server-stopped",
     ]);
   });

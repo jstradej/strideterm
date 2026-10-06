@@ -1200,176 +1200,190 @@ describe("relay end-to-end encryption", () => {
     expect(phone.open(sealedEnd).header.id).toBe("inner-stream-1");
   });
 
-  test("delayed replies on replaced key generations close without consuming the new generation", async () => {
-    await internal.close();
-    let releaseHttp: (() => void) | null = null;
-    let releaseWs: (() => void) | null = null;
-    let resolveHttpSeen!: () => void;
-    let resolveWsSeen!: () => void;
-    const httpSeen = new Promise<void>((resolve) => (resolveHttpSeen = resolve));
-    const wsSeen = new Promise<void>((resolve) => (resolveWsSeen = resolve));
-    internal = await startInternalOrigin(
-      (request, response) => {
-        if (request.url === "/delayed-http") {
-          releaseHttp = () => response.writeHead(200).end("delayed-http");
-          resolveHttpSeen();
-        } else {
-          response.writeHead(200).end("fresh-session");
+  // The real phone (`RelayE2eProxy`) gives an inner frame the SAME id as its outer stream. With
+  // distinct ids this test passed while production overflowed the stack: the outer `e2e.close` for
+  // a stale reply was looked up as an inner frame, re-wrapped, refused again, forever (2026-10-05).
+  for (const idScheme of ["distinct", "phone"] as const) {
+    test(`delayed replies on replaced key generations close without consuming the new generation (${idScheme} inner ids)`, async () => {
+      await internal.close();
+      let releaseHttp: (() => void) | null = null;
+      let releaseWs: (() => void) | null = null;
+      let resolveHttpSeen!: () => void;
+      let resolveWsSeen!: () => void;
+      const httpSeen = new Promise<void>((resolve) => (resolveHttpSeen = resolve));
+      const wsSeen = new Promise<void>((resolve) => (resolveWsSeen = resolve));
+      internal = await startInternalOrigin(
+        (request, response) => {
+          if (request.url === "/delayed-http") {
+            releaseHttp = () => response.writeHead(200).end("delayed-http");
+            resolveHttpSeen();
+          } else {
+            response.writeHead(200).end("fresh-session");
+          }
+        },
+        (socket) => {
+          releaseWs = () => socket.send("delayed-ws");
+          resolveWsSeen();
+        },
+      );
+
+      const store = createRelayE2eSessionStore();
+      const oldKeys = makeE2eKeys();
+      const newKeys = makeE2eKeys();
+      store.put(DEVICE_ID, oldKeys, 60_000);
+      await awaitConnectorReady(startConnector({ e2eSessionStore: store }));
+      const oldPhone = fakePhone(oldKeys);
+      const newPhone = fakePhone(newKeys);
+      const sessionId = "rotation-session";
+      const outerHttpId = "outer-rotation-http";
+      const outerWsId = "outer-rotation-ws";
+      const innerHttpId = idScheme === "phone" ? outerHttpId : "inner-rotation-http";
+      const innerWsId = idScheme === "phone" ? outerWsId : "inner-rotation-ws";
+
+      for (const outerId of [outerHttpId, outerWsId]) {
+        relay.send({
+          v: RELAY_PROTOCOL_VERSION,
+          t: "e2e.open",
+          src: "viewer",
+          dst: "connector",
+          s: sessionId,
+          id: outerId,
+          d: DEVICE_ID,
+        });
+      }
+
+      const requestStart = oldPhone.sealToConnector(outerHttpId, sessionId, {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.start",
+        src: "viewer",
+        dst: "connector",
+        s: "old-inner-session",
+        id: innerHttpId,
+        m: "GET",
+        u: "/delayed-http",
+        h: [],
+      });
+      relay.send(requestStart.header, requestStart.payload);
+      const requestEnd = oldPhone.sealToConnector(outerHttpId, sessionId, {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.end",
+        src: "viewer",
+        dst: "connector",
+        s: "old-inner-session",
+        id: innerHttpId,
+      });
+      relay.send(requestEnd.header, requestEnd.payload);
+      await httpSeen;
+
+      const wsOpen = oldPhone.sealToConnector(outerWsId, sessionId, {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "ws.open",
+        src: "viewer",
+        dst: "connector",
+        s: "old-inner-session",
+        id: innerWsId,
+        u: "/ws",
+        h: [],
+      });
+      relay.send(wsOpen.header, wsOpen.payload);
+      await relay.waitFor(
+        (frame) =>
+          frame.header.t === "e2e.data" &&
+          frame.header.id === outerWsId &&
+          oldPhone.open(frame).header.t === "ws.opened",
+      );
+      const wsData = oldPhone.sealToConnector(
+        outerWsId,
+        sessionId,
+        {
+          v: RELAY_PROTOCOL_VERSION,
+          t: "ws.data",
+          src: "viewer",
+          dst: "connector",
+          s: "old-inner-session",
+          id: innerWsId,
+          q: 0,
+          b: false,
+        },
+        Buffer.from("request-ws"),
+      );
+      relay.send(wsData.header, wsData.payload);
+      await wsSeen;
+
+      // This is the same operation `remote.webSession.issue` performs: replacing the store entry
+      // makes the connector's next lookup return a new key object while both old streams are pending.
+      const rotationFrameIndex = relay.frames.length;
+      store.put(DEVICE_ID, newKeys, 60_000);
+      releaseHttp!();
+      releaseWs!();
+      const openWithNewKeys = (frame: RelayFrame): { header: RelayFrameHeader; payload: Buffer } | null => {
+        try {
+          return newPhone.open(frame);
+        } catch {
+          return null;
         }
-      },
-      (socket) => {
-        releaseWs = () => socket.send("delayed-ws");
-        resolveWsSeen();
-      },
-    );
+      };
 
-    const store = createRelayE2eSessionStore();
-    const oldKeys = makeE2eKeys();
-    const newKeys = makeE2eKeys();
-    store.put(DEVICE_ID, oldKeys, 60_000);
-    await awaitConnectorReady(startConnector({ e2eSessionStore: store }));
-    const oldPhone = fakePhone(oldKeys);
-    const newPhone = fakePhone(newKeys);
-    const sessionId = "rotation-session";
-    const outerHttpId = "outer-rotation-http";
-    const outerWsId = "outer-rotation-ws";
+      const staleHttpClose = await relay.waitFor(
+        (frame) => frame.header.t === "e2e.close" && frame.header.id === outerHttpId,
+      );
+      const staleWsClose = await relay.waitFor(
+        (frame) => frame.header.t === "e2e.close" && frame.header.id === outerWsId,
+      );
+      expect(
+        relay.frames.slice(rotationFrameIndex).filter((frame) => frame.header.t === "e2e.close").length,
+        "one outer close per stale stream, never a loop",
+      ).toBe(2);
+      expect(staleHttpClose.header.e).toBe("unauthorized");
+      expect(staleWsClose.header.e).toBe("unauthorized");
+      expect(
+        relay.frames
+          .slice(rotationFrameIndex)
+          .some((frame) => frame.header.t === "e2e.data" && [outerHttpId, outerWsId].includes(frame.header.id ?? "")),
+      ).toBe(false);
 
-    for (const outerId of [outerHttpId, outerWsId]) {
+      const outerNewId = "outer-rotation-new-session";
+      const innerNewId = idScheme === "phone" ? outerNewId : "inner-rotation-new-session";
       relay.send({
         v: RELAY_PROTOCOL_VERSION,
         t: "e2e.open",
         src: "viewer",
         dst: "connector",
         s: sessionId,
-        id: outerId,
+        id: outerNewId,
         d: DEVICE_ID,
       });
-    }
-
-    const requestStart = oldPhone.sealToConnector(outerHttpId, sessionId, {
-      v: RELAY_PROTOCOL_VERSION,
-      t: "http.request.start",
-      src: "viewer",
-      dst: "connector",
-      s: "old-inner-session",
-      id: "inner-rotation-http",
-      m: "GET",
-      u: "/delayed-http",
-      h: [],
-    });
-    relay.send(requestStart.header, requestStart.payload);
-    const requestEnd = oldPhone.sealToConnector(outerHttpId, sessionId, {
-      v: RELAY_PROTOCOL_VERSION,
-      t: "http.request.end",
-      src: "viewer",
-      dst: "connector",
-      s: "old-inner-session",
-      id: "inner-rotation-http",
-    });
-    relay.send(requestEnd.header, requestEnd.payload);
-    await httpSeen;
-
-    const wsOpen = oldPhone.sealToConnector(outerWsId, sessionId, {
-      v: RELAY_PROTOCOL_VERSION,
-      t: "ws.open",
-      src: "viewer",
-      dst: "connector",
-      s: "old-inner-session",
-      id: "inner-rotation-ws",
-      u: "/ws",
-      h: [],
-    });
-    relay.send(wsOpen.header, wsOpen.payload);
-    await relay.waitFor(
-      (frame) =>
-        frame.header.t === "e2e.data" && frame.header.id === outerWsId && oldPhone.open(frame).header.t === "ws.opened",
-    );
-    const wsData = oldPhone.sealToConnector(
-      outerWsId,
-      sessionId,
-      {
+      const newRequestStart = newPhone.sealToConnector(outerNewId, sessionId, {
         v: RELAY_PROTOCOL_VERSION,
-        t: "ws.data",
+        t: "http.request.start",
         src: "viewer",
         dst: "connector",
-        s: "old-inner-session",
-        id: "inner-rotation-ws",
-        q: 0,
-        b: false,
-      },
-      Buffer.from("request-ws"),
-    );
-    relay.send(wsData.header, wsData.payload);
-    await wsSeen;
+        s: "new-inner-session",
+        id: innerNewId,
+        m: "GET",
+        u: "/fresh-session",
+        h: [],
+      });
+      relay.send(newRequestStart.header, newRequestStart.payload);
+      const newRequestEnd = newPhone.sealToConnector(outerNewId, sessionId, {
+        v: RELAY_PROTOCOL_VERSION,
+        t: "http.request.end",
+        src: "viewer",
+        dst: "connector",
+        s: "new-inner-session",
+        id: innerNewId,
+      });
+      relay.send(newRequestEnd.header, newRequestEnd.payload);
+      const newSessionReply = await relay.waitFor(
+        (frame) =>
+          frame.header.t === "e2e.data" &&
+          frame.header.id === outerNewId &&
+          openWithNewKeys(frame)?.header.t === "http.response.start",
+      );
 
-    // This is the same operation `remote.webSession.issue` performs: replacing the store entry
-    // makes the connector's next lookup return a new key object while both old streams are pending.
-    const rotationFrameIndex = relay.frames.length;
-    store.put(DEVICE_ID, newKeys, 60_000);
-    releaseHttp!();
-    releaseWs!();
-    const openWithNewKeys = (frame: RelayFrame): { header: RelayFrameHeader; payload: Buffer } | null => {
-      try {
-        return newPhone.open(frame);
-      } catch {
-        return null;
-      }
-    };
-
-    const staleHttpClose = await relay.waitFor(
-      (frame) => frame.header.t === "e2e.close" && frame.header.id === outerHttpId,
-    );
-    const staleWsClose = await relay.waitFor(
-      (frame) => frame.header.t === "e2e.close" && frame.header.id === outerWsId,
-    );
-    expect(staleHttpClose.header.e).toBe("unauthorized");
-    expect(staleWsClose.header.e).toBe("unauthorized");
-    expect(
-      relay.frames
-        .slice(rotationFrameIndex)
-        .some((frame) => frame.header.t === "e2e.data" && [outerHttpId, outerWsId].includes(frame.header.id ?? "")),
-    ).toBe(false);
-
-    const outerNewId = "outer-rotation-new-session";
-    relay.send({
-      v: RELAY_PROTOCOL_VERSION,
-      t: "e2e.open",
-      src: "viewer",
-      dst: "connector",
-      s: sessionId,
-      id: outerNewId,
-      d: DEVICE_ID,
+      expect(relayE2eCounterOf(newSessionReply.payload.subarray(0, RELAY_E2E_NONCE_BYTES))).toBe(0n);
     });
-    const newRequestStart = newPhone.sealToConnector(outerNewId, sessionId, {
-      v: RELAY_PROTOCOL_VERSION,
-      t: "http.request.start",
-      src: "viewer",
-      dst: "connector",
-      s: "new-inner-session",
-      id: "inner-rotation-new-session",
-      m: "GET",
-      u: "/fresh-session",
-      h: [],
-    });
-    relay.send(newRequestStart.header, newRequestStart.payload);
-    const newRequestEnd = newPhone.sealToConnector(outerNewId, sessionId, {
-      v: RELAY_PROTOCOL_VERSION,
-      t: "http.request.end",
-      src: "viewer",
-      dst: "connector",
-      s: "new-inner-session",
-      id: "inner-rotation-new-session",
-    });
-    relay.send(newRequestEnd.header, newRequestEnd.payload);
-    const newSessionReply = await relay.waitFor(
-      (frame) =>
-        frame.header.t === "e2e.data" &&
-        frame.header.id === outerNewId &&
-        openWithNewKeys(frame)?.header.t === "http.response.start",
-    );
-
-    expect(relayE2eCounterOf(newSessionReply.payload.subarray(0, RELAY_E2E_NONCE_BYTES))).toBe(0n);
-  });
+  }
 
   test("stale live and ended streams cannot advance the replacement generation's inbound counter", async () => {
     const store = createRelayE2eSessionStore();
@@ -1862,10 +1876,10 @@ describe("relay end-to-end encryption", () => {
       relay.send(body.header, body.payload);
     }
 
-    const cancel = await relay.waitFor(
-      (frame) => frame.header.t === "e2e.data" && phone.open(frame).header.t === "http.cancel",
-    );
-    expect(phone.open(cancel).header.e).toBe("too-large");
+    // Ended with a STREAM-scoped outer close (`too-large` is not session-fatal on the phone), not a
+    // sealed http.cancel that the relay could drop.
+    const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === outerId);
+    expect(close.header.e).toBe("too-large");
   });
 
   test("a replayed e2e.data (the same counter twice) is refused the second time", async () => {
@@ -2233,14 +2247,13 @@ describe("relay end-to-end encryption: identity and continuity", () => {
     }
   }
 
-  /** Whether a sealed connector frame opens (under this test's keys) to the http.cancel a failed stream sends. */
-  function openCancel(frame: RelayFrame, keys: RelayE2eKeys): boolean {
+  /** The inner header of a sealed connector frame, or null when it does not open under these keys. */
+  function openInner(frame: RelayFrame, keys: RelayE2eKeys): RelayFrameHeader | null {
     try {
       const aad = Buffer.from(JSON.stringify(frame.header), "utf8");
-      const opened = decodeRelayFrame(openRelayE2eFrame(frame.payload, keys.desktopToPhone, aad));
-      return opened.header.t === "http.cancel" && opened.header.e === "protocol-error";
+      return decodeRelayFrame(openRelayE2eFrame(frame.payload, keys.desktopToPhone, aad)).header;
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -2328,6 +2341,16 @@ describe("relay end-to-end encryption: identity and continuity", () => {
       const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER);
       expect(close.header.e).toBe("protocol-error");
       expect(internal.requests.length).toBe(0);
+      // The refusal names the real cause (it used to say "auth-failed" for a plain counter gap).
+      expect(connector!.stats().lastError).toBe("relay-e2e-counter-gap");
+    });
+
+    test("a frame that fails authentication is refused as such, not as a gap", async () => {
+      const keys = await openE2e();
+      sendAll(makeE2eKeys(), OUTER, [[0n, inner("http.request.end", "in-bad")]]);
+      await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER);
+      expect(connector!.stats().lastError).toBe("relay-e2e-aead-failed");
+      expect(keys).toBeTruthy();
     });
 
     test("once a gap has happened every later frame is refused too, on any stream", async () => {
@@ -2358,8 +2381,14 @@ describe("relay end-to-end encryption: identity and continuity", () => {
         [1n, inner("http.request.body", "in-6", { q: 0 }), Buffer.from("first")],
         [2n, inner("http.request.body", "in-6", { q: 2 }), Buffer.from("third-skipped-second")],
       ]);
-      const cancel = await relay.waitFor((frame) => frame.header.t === "e2e.data" && openCancel(frame, keys));
-      expect(cancel).toBeTruthy();
+      // A bad inner sequence is one stream's bug: it ends that stream with an outer close the phone does
+      // not read as "the session is refused" (`protocol-error` would be), and seals nothing that could be
+      // dropped.
+      const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER);
+      expect(close.header.e).toBe("normal");
+      expect(
+        relay.frames.some((frame) => frame.header.t === "e2e.data" && openInner(frame, keys)?.t === "http.cancel"),
+      ).toBe(false);
     });
 
     test("the inner sequence of a well-formed body is accepted from 0 without gaps", async () => {
@@ -2407,6 +2436,216 @@ describe("relay end-to-end encryption: identity and continuity", () => {
         false,
       );
     });
+  });
+
+  describe("streams that end on this side (production 2026-10-05)", () => {
+    const creditsFor = (outerId: string) =>
+      relay.frames.filter((frame) => frame.header.t === "flow.credit" && frame.header.id === outerId);
+
+    test("an upload that outlives the request timeout keeps its stream and its session", async () => {
+      const store = createRelayE2eSessionStore();
+      const keys = makeE2eKeys();
+      store.put(DEVICE_ID, keys, 60_000);
+      await awaitConnectorReady(startConnector({ e2eSessionStore: store, httpRequestTimeoutMs: 400 }));
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s: S,
+        id: OUTER,
+        d: DEVICE_ID,
+      });
+      sendAll(keys, OUTER, [
+        [0n, inner("http.request.start", "in-up", { m: "POST", u: "/echo", h: [] })],
+        [1n, inner("http.request.body", "in-up", { q: 0 }), Buffer.from("a")],
+      ]);
+      // Each chunk lands inside the idle bound, but the whole upload takes longer than it.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      sendAll(keys, OUTER, [[2n, inner("http.request.body", "in-up", { q: 1 }), Buffer.from("b")]]);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      sendAll(keys, OUTER, [
+        [3n, inner("http.request.body", "in-up", { q: 2 }), Buffer.from("c")],
+        [4n, inner("http.request.end", "in-up")],
+      ]);
+      await waitFor(() => internal.requests.some((r) => r.url === "/echo"), 10_000, "the echo request");
+      expect(internal.requests.at(-1)!.body.toString("utf8")).toBe("abc");
+      expect(relay.frames.some((frame) => frame.header.t === "e2e.close")).toBe(false);
+    });
+
+    test("the idle timeout still fires, ends only that stream with a non-fatal close, and in-flight chunks are counted", async () => {
+      const store = createRelayE2eSessionStore();
+      const keys = makeE2eKeys();
+      store.put(DEVICE_ID, keys, 60_000);
+      await awaitConnectorReady(startConnector({ e2eSessionStore: store, httpRequestTimeoutMs: 150 }));
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s: S,
+        id: OUTER,
+        d: DEVICE_ID,
+      });
+      sendAll(keys, OUTER, [[0n, inner("http.request.start", "in-idle", { m: "POST", u: "/echo", h: [] })]]);
+      const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER);
+      expect(close.header.e).toBe("timeout");
+      // The phone's next chunk was already in flight; then another stream follows with the next counter.
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s: S,
+        id: "outer-after",
+        d: DEVICE_ID,
+      });
+      sendAll(keys, OUTER, [[1n, inner("http.request.body", "in-idle", { q: 0 }), Buffer.from("late")]]);
+      sendAll(keys, "outer-after", [
+        [2n, inner("http.request.start", "in-after", { m: "GET", u: "/hello", h: [] })],
+        [3n, inner("http.request.end", "in-after")],
+      ]);
+      await waitFor(() => internal.requests.some((r) => r.url === "/hello"), 10_000, "the next stream's request");
+      expect(relay.frames.some((frame) => frame.header.t === "e2e.close" && frame.header.id === "outer-after")).toBe(
+        false,
+      );
+    });
+
+    test("a body chunk for an inner stream that already ended here is credited and dropped, not refused", async () => {
+      const keys = await openE2e();
+      sendAll(keys, OUTER, [
+        [0n, inner("http.request.start", "in-early", { m: "GET", u: "/hello", h: [] })],
+        [1n, inner("http.request.end", "in-early")],
+      ]);
+      // The desktop has answered and ended the inner stream before the phone's next chunk arrives.
+      await relay.waitFor(
+        (frame) => frame.header.t === "e2e.data" && openInner(frame, keys)?.t === "http.response.end",
+      );
+      const before = creditsFor(OUTER).length;
+      const chunk = Buffer.from("late-chunk");
+      sendAll(keys, OUTER, [[2n, inner("http.request.body", "in-early", { q: 0 }), chunk]]);
+      await waitFor(() => creditsFor(OUTER).length > before, 10_000, "the credit for the dropped chunk");
+      expect(relay.frames.some((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER)).toBe(false);
+    });
+
+    test("a body for a stream that never had a start is still refused", async () => {
+      const keys = await openE2e();
+      sendAll(keys, OUTER, [[0n, inner("http.request.body", "in-never", { q: 0 }), Buffer.from("x")]]);
+      const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER);
+      expect(close.header.e).toBe("protocol-error");
+    });
+
+    test("a desktop-side websocket that closes tells the phone with a sealed ws.close that respects the window", async () => {
+      const own = await startInternalOrigin(undefined, (socket) => socket.close(1000, "done"));
+      try {
+        const store = createRelayE2eSessionStore();
+        const keys = makeE2eKeys();
+        store.put(DEVICE_ID, keys, 60_000);
+        await awaitConnectorReady(
+          startConnector({
+            e2eSessionStore: store,
+            internalOrigin: { host: own.host, port: own.port, guardToken: own.guardToken },
+          }),
+        );
+        relay.send({
+          v: RELAY_PROTOCOL_VERSION,
+          t: "e2e.open",
+          src: "viewer",
+          dst: "connector",
+          s: S,
+          id: OUTER,
+          d: DEVICE_ID,
+        });
+        sendAll(keys, OUTER, [[0n, inner("ws.open", "ws-end", { u: "/ws", h: [] })]]);
+        await relay.waitFor((frame) => frame.header.t === "e2e.data" && openInner(frame, keys)?.t === "ws.opened");
+        sendAll(keys, OUTER, [[1n, inner("ws.data", "ws-end", { q: 0, b: false, f: true }), Buffer.from("bye")]]);
+        const closeFrame = await relay.waitFor(
+          (frame) => frame.header.t === "e2e.data" && openInner(frame, keys)?.t === "ws.close",
+        );
+        expect(openInner(closeFrame, keys)?.x).toBe(1000);
+      } finally {
+        await own.close();
+      }
+    });
+
+    test("a ws stream the desktop ends for a sequence error is closed toward the phone with a non-fatal outer close", async () => {
+      const keys = await openE2e();
+      sendAll(keys, OUTER, [
+        [0n, inner("ws.open", "ws-seq", { u: "/ws", h: [] })],
+        [1n, inner("ws.data", "ws-seq", { q: 5, b: false, f: true }), Buffer.from("skipped")],
+      ]);
+      const close = await relay.waitFor((frame) => frame.header.t === "e2e.close" && frame.header.id === OUTER);
+      expect(close.header.e).toBe("normal");
+    });
+  });
+});
+
+describe("AEAD nonce uniqueness across connector instances", () => {
+  const DEVICE = "mobile-device-restart";
+
+  test("a second connector over the same session store continues the counters; no (key, counter) repeats", async () => {
+    // Pausing and re-enabling the relay builds a new connector over the SAME process-wide store. Its
+    // counters used to restart at 0 under the same desktopToPhone key: AES-GCM nonce reuse.
+    const store = createRelayE2eSessionStore();
+    const keys = makeE2eKeys();
+    store.put(DEVICE, keys, 60_000);
+    const phone = fakePhone(keys);
+    const counterOf = (frame: RelayFrame): bigint =>
+      relayE2eCounterOf(frame.payload.subarray(0, RELAY_E2E_NONCE_BYTES));
+    const requestOn = async (outerId: string, innerId: string): Promise<bigint[]> => {
+      relay.send({
+        v: RELAY_PROTOCOL_VERSION,
+        t: "e2e.open",
+        src: "viewer",
+        dst: "connector",
+        s: "x",
+        id: outerId,
+        d: DEVICE,
+      });
+      for (const header of [
+        {
+          v: RELAY_PROTOCOL_VERSION,
+          t: "http.request.start",
+          src: "viewer",
+          dst: "connector",
+          s: "i",
+          id: innerId,
+          m: "GET",
+          u: "/hello",
+          h: [],
+        },
+        { v: RELAY_PROTOCOL_VERSION, t: "http.request.end", src: "viewer", dst: "connector", s: "i", id: innerId },
+      ] as RelayFrameHeader[]) {
+        const sealed = phone.sealToConnector(outerId, "x", header);
+        relay.send(sealed.header, sealed.payload);
+      }
+      await relay.waitFor(
+        (frame) =>
+          frame.header.t === "e2e.data" &&
+          frame.header.id === outerId &&
+          phone.open(frame).header.t === "http.response.end",
+      );
+      return relay.frames
+        .filter((frame) => frame.header.t === "e2e.data" && frame.header.id === outerId)
+        .map(counterOf);
+    };
+
+    await awaitConnectorReady(startConnector({ e2eSessionStore: store }));
+    const first = await requestOn("outer-before-restart", "inner-before");
+    expect(first.length).toBeGreaterThan(0);
+    expect(first[0]).toBe(0n);
+
+    await connector!.stop();
+    const handshakes = relay.handshakes();
+    await awaitConnectorReady(startConnector({ e2eSessionStore: store }));
+    expect(relay.handshakes()).toBe(handshakes + 1);
+
+    // The phone's own counter kept running, so the new instance must also accept its next frame
+    // (a restarted inbound counter would refuse it as a gap) and must seal from where the old one stopped.
+    const second = await requestOn("outer-after-restart", "inner-after");
+    const all = [...first, ...second];
+    expect(new Set(all.map(String)).size).toBe(all.length);
+    expect(second[0]).toBe(first.at(-1)! + 1n);
   });
 });
 

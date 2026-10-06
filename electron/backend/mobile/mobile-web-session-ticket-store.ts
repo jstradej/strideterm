@@ -76,6 +76,12 @@ const IssueTicketInputSchema = z.object({
   profileId: z.string().min(1),
   allowedOrigin: z.string().min(1),
   transport: z.enum(["relay", "legacy"]),
+  /**
+   * Last 8 characters of the command that asked for this ticket. A correlation tag for the audit
+   * trail only (so `session.started` can be tied to the command that caused it); never consulted for
+   * any decision.
+   */
+  commandRef: z.string().max(16).optional(),
 });
 export type IssueTicketInput = z.infer<typeof IssueTicketInputSchema>;
 
@@ -123,6 +129,8 @@ export interface TicketRecord {
   /** Always `remote.webSession`. Kept on the record so the consuming route re-checks it by name. */
   requiredCapability: typeof REMOTE_WEB_SESSION_CAPABILITY;
   expiresAt: number;
+  /** See `IssueTicketInput.commandRef`. Audit correlation only. */
+  commandRef?: string;
 }
 
 interface StoredTicket extends TicketRecord {
@@ -179,6 +187,7 @@ function toRecord(stored: StoredTicket): TicketRecord {
     transport: stored.transport,
     requiredCapability: stored.requiredCapability,
     expiresAt: stored.expiresAt,
+    ...(stored.commandRef ? { commandRef: stored.commandRef } : {}),
   };
 }
 
@@ -209,6 +218,7 @@ export function createMobileWebSessionTicketStore(now: () => number = () => Date
         transport: validated.transport,
         requiredCapability: REMOTE_WEB_SESSION_CAPABILITY,
         expiresAt,
+        ...(validated.commandRef ? { commandRef: validated.commandRef } : {}),
         secretHash: hashSecret(secret),
       });
       return { ticketId, secret, expiresAt };
