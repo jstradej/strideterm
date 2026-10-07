@@ -29,7 +29,14 @@ description = "audited deterministic fixtures: electron/backend/logger-redaction
 condition = "AND"
 regexTarget = "secret"
 paths = ['^electron/backend/logger-redaction\.test\.ts$']
-regexes = ['^(?:eyJhbGciOiJSUzI1NiIsImtpZCI6ImFiYyJ9\.eyJhdWQiOiJkZW1vIn0\.AbCdEfGhIjKlMnOp)$']
+regexes = ['^(?:eyJhbGciOiJSUzI1NiIsImtpZCI6ImFiYyJ9\.eyJhdWQiOiJkZW1vIn0\.AbCdEfGhIjKlMnOp|dXNlcjpwYXNzd29yZA==)$']
+
+[[allowlists]]
+description = "audited deterministic fixtures: electron/backend/remote-upgrade-errors\\\\.test\\\\.ts (RFC 6455 sample Sec-WebSocket-Key)"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^electron/backend/remote-upgrade-errors\.test\.ts$']
+regexes = ['^dGhlIHNhbXBsZSBub25jZQ==$']
 
 [[allowlists]]
 description = "audited deterministic fixtures: electron/backend/mobile/mobile-crypto\\\\.test\\\\.ts"
