@@ -380,12 +380,12 @@ const agentModeOptions = computed(() => [
 ]);
 const launchViaOptions = computed(() => {
   const options = [
+    { value: "ssh2", label: "Built-in SSH (recommended)" },
     {
       value: "system-ssh",
       label: `SSH on this computer${capabilities.value && !capabilities.value.systemSsh ? " · unavailable" : ""}`,
       disabled: capabilities.value ? !capabilities.value.systemSsh : false,
     },
-    { value: "ssh2", label: "Built-in SSH" },
   ];
   if (platform.value === "win32")
     options.push({

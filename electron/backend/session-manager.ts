@@ -440,10 +440,12 @@ async function buildSystemSshArgs(
     }
   }
 
+  // A remote command gets no terminal from ssh unless asked: without -t, interactive programs
+  // (claude, tmux) fail. It must precede the destination.
+  const remoteCommand = !probeMarker ? host.advanced?.command : undefined;
+  if (remoteCommand) args.push("-t");
   args.push("--", host.host);
-  if (!probeMarker && host.advanced?.command) {
-    args.push(host.advanced.command);
-  }
+  if (remoteCommand) args.push(remoteCommand);
 
   return { args, cleanupFn };
 }
@@ -794,6 +796,10 @@ export class SessionManager extends EventEmitter {
           return null;
         }
 
+        // A command set on the tab (e.g. a Claude Code template switched to SSH) runs after
+        // sign-in instead of the host's own startup command.
+        const tabCommand = panel.command?.trim();
+        if (tabCommand) host = { ...host, advanced: { ...host.advanced, command: tabCommand } } as HostRecord;
         const mode = resolveSshLaunchVia(
           host.advanced?.launchVia,
           state.settings?.ssh?.defaultLaunchVia,
@@ -889,6 +895,9 @@ export class SessionManager extends EventEmitter {
       for (const key of Object.keys(inheritedEnv)) {
         if (key.startsWith("STRIDETERM_SSH_MCP_")) delete inheritedEnv[key];
       }
+      // This launch's own backend declaration (main.ts defaults it to prod) must not leak into
+      // user shells: a dev.ps1 started from one would otherwise run against prod.
+      delete inheritedEnv.STRIDETERM_ENV;
       processHandle = pty.spawn(launcher.file, launcher.args, {
         name: APP_CONFIG.session.termName,
         cols: APP_CONFIG.session.defaultCols,
@@ -1363,6 +1372,8 @@ export class SessionManager extends EventEmitter {
     } else {
       createArgs.hostId = panel.launch?.sshHostId;
     }
+    // SshManager re-resolves the host from id/inlineHost, so the tab's command travels separately.
+    if (panel.command?.trim()) createArgs.startupCommand = panel.command.trim();
 
     // New generation boundary — emitted BEFORE createSession because the
     // onData callback can fire during the await (connection banners) and that

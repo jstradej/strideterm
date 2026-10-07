@@ -323,7 +323,8 @@ const emit = defineEmits<{ cancel: [] }>();
 const ssh = useSshStore();
 const store = useAppStore();
 const panelNavigation = useSshPanelNavigation();
-const isNew = !props.host;
+// A host without an id (a quick-connect tab being saved) is prefilled but still created.
+const isNew = !props.host?.id;
 const original = props.host ? (JSON.parse(JSON.stringify(props.host)) as SshHost) : null;
 const nameWasEdited = ref(!isNew);
 const transferOpen = ref(false);
@@ -363,12 +364,12 @@ const caps = computed(() => ssh.capabilities);
 const launchViaOptions = computed(() => {
   const options = [
     { value: "default", label: `Use app default · ${modeLabel(settingsDefault.value)}` },
+    { value: "ssh2", label: "Built-in SSH (recommended)" },
     {
       value: "system-ssh",
       label: `SSH on this computer${caps.value && !caps.value.systemSsh ? " · unavailable" : ""}`,
       disabled: caps.value ? !caps.value.systemSsh : false,
     },
-    { value: "ssh2", label: "Built-in SSH" },
   ];
   if (caps.value?.platform === "win32")
     options.push({
@@ -855,6 +856,14 @@ async function save() {
 .checkbox-label input {
   width: auto;
   margin: 0;
+}
+/* Match the field labels (.field > label) instead of the global small-caps `label span`. */
+.checkbox-label > span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
 }
 .warning {
   color: #fbbf24;

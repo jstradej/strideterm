@@ -12,10 +12,14 @@
 
       <template v-if="isTerminal">
         <button
-          v-if="hasPersistentPanel && !isSshPanel"
+          v-if="hasPersistentPanel"
           type="button"
           class="context-menu__item"
-          title="Edit this tab's title, command, icon, and notification override."
+          :title="
+            isSshPanel
+              ? 'Edit this tab’s title, icon, and startup command (runs after sign-in, replacing the host’s own). Connection settings are in Edit SSH host.'
+              : 'Edit this tab’s title, command, icon, and notification override.'
+          "
           @click="onEdit"
         >
           <span class="context-menu__icon">&#x270E;</span><span>Edit tab</span>
@@ -24,7 +28,7 @@
           v-if="isSshPanel"
           type="button"
           class="context-menu__item"
-          title="Open the SSH host editor for the host this tab is connected to — change auth, port, jump hosts, post-login command, etc."
+          title="Edit the connection of the host this tab uses: address, sign-in, port, jump hosts, and the host’s default startup command. Title, icon, and this tab’s own command are in Edit tab."
           @click="onEditSshHost"
         >
           <span class="context-menu__icon">&#x1F310;</span><span>Edit SSH host</span>
@@ -187,7 +191,6 @@
 import { ref, computed, watch, nextTick, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
-import { useSshStore } from "../../stores/ssh.js";
 import { useContextMenu } from "../../composables/useContextMenu.js";
 import { LAYOUTS } from "../../app/layout-geometry.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -204,7 +207,6 @@ import {
 
 const store = useAppStore();
 const termStore = useTerminalStore();
-const sshStore = useSshStore();
 const menuRef = ref<HTMLElement | null>(null);
 
 const viewId = computed(() => store.contextMenu?.viewId || "");
@@ -442,15 +444,10 @@ function onNotes() {
   store.openTabNotesDialog(id);
 }
 
-function onEditSshHost() {
+async function onEditSshHost() {
   const id = viewId.value;
   store.hideContextMenu();
-  const target = store.getPanelByViewId(id) as { panel?: { launch?: { sshHostId?: string } } } | undefined;
-  const hostId = target?.panel?.launch?.sshHostId;
-  const host = sshStore.hosts.find((h) => h.id === hostId);
-  if (host && store.openSshHostEditor) {
-    store.openSshHostEditor(host);
-  }
+  await store.editSshHostForView(id);
 }
 
 function onDisconnectSsh() {

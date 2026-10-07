@@ -6,7 +6,7 @@ SSH tabs use one of three clients: strIDEterm's Built-in client, the system Open
 
 Each host can use **Use app default** or choose a method directly. A host-level choice takes precedence over **Settings → SSH → Default connection method**. Changing the default affects the next connection for hosts that inherit it; open sessions keep running with their current client.
 
-New hosts inherit the app default. A fresh installation uses System SSH unless `STRIDETERM_SSH_DEFAULT_CLIENT` configures another default. Existing hosts that had no saved client are migrated once to Built-in SSH to preserve their previous behavior. Existing explicit choices are kept.
+Connection-method lists show Built-in SSH first as the recommended choice; that is a suggestion, not the default. New hosts inherit the app default. A fresh installation uses System SSH unless `STRIDETERM_SSH_DEFAULT_CLIENT` configures another default. Existing hosts that had no saved client are migrated once to Built-in SSH to preserve their previous behavior. Existing explicit choices are kept.
 
 | Method                   | What it uses                                                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
@@ -20,7 +20,13 @@ An existing saved host that already selects public-key authentication with a str
 
 System SSH and WSL use separate executables and settings. The System SSH executable path applies on the host operating system; WSL uses the executable inside Linux. The host value is passed as the OpenSSH target, so an alias such as `prod` is resolved by that client's configuration. Blank optional fields are omitted from argv so OpenSSH can apply its normal configuration. The app's agent mode and path settings apply only to Built-in SSH; System SSH and WSL use agents configured in their native OpenSSH environments.
 
-Saving in the host editor adds or updates the host book only. To open a real SSH session, use **New Tab → SSH → Saved host** and choose the entry. A running System SSH or WSL process does not prove that authentication succeeded: it may still be connecting or waiting for a prompt. Check the terminal output for the actual OpenSSH result.
+Saving in the host editor adds or updates the host book only. To open a real SSH session, use **New Tab → SSH → Saved host** and choose the entry, or **Quick connect** to connect with details typed in the dialog without saving them (tick **Save to host book** to keep them). A running System SSH or WSL process does not prove that authentication succeeded: it may still be connecting or waiting for a prompt. Check the terminal output for the actual OpenSSH result.
+
+## Tabs and startup commands
+
+An SSH tab can carry its own startup command, for example when a Claude Code tab template is switched to SSH in the New Tab dialog. It runs after sign-in and replaces the host's own startup command for that tab. A tab without one uses the host's startup command, or opens a normal shell.
+
+**Edit tab** changes what belongs to the tab: its title, icon and startup command. **Edit SSH host** changes the connection: address, sign-in, port, jump hosts and the host's own startup command. On a Quick Connect tab, **Edit SSH host** opens the tab's connection as a new host; once it is saved, the tab uses that saved host.
 
 ## Test connection
 
@@ -36,7 +42,7 @@ The runtime's separate legacy host setup-check operation tests Built-in SSH only
 
 ## Saved hosts and OpenSSH configuration
 
-The host book (available in **Settings → SSH**) stores the target or alias, display name, tags, optional username and port, client choice, agent settings, and advanced options such as keepalive, agent forwarding, compression, startup command and jump hosts. A Built-in startup command is sent to the terminal after connection; System SSH and WSL pass it to OpenSSH as a remote command.
+The host book (available in **Settings → SSH**) stores the target or alias, display name, tags, optional username and port, client choice, agent settings, and advanced options such as keepalive, agent forwarding, compression, startup command and jump hosts. A Built-in startup command is sent to the terminal after connection; System SSH and WSL pass it to OpenSSH as a remote command and request a terminal for it, so interactive programs such as `tmux` or `claude` work.
 
 OpenSSH config import adds host-book entries for non-wildcard `Host` aliases. It does not copy or translate `Hostname`, `User`, `Port`, `IdentityFile`, `Include` or `Match` rules into the host entry. The alias remains the connection target, and OpenSSH reads the configuration when the connection starts. The importer is a helper for listing aliases, not a complete config parser; a manually entered alias can still work when the parser cannot list it.
 
@@ -54,7 +60,7 @@ The key manager can generate ed25519, ECDSA and RSA keys, or import a private ke
 
 Managed keys can be renamed. Their **Added** date records when the key was imported or generated in strIDEterm, not the key's original creation date. Imported certificate metadata includes its validity dates so an expired certificate can be identified.
 
-For a saved Built-in SSH host, **Transfer public key…** can install a managed key without opening a shell. strIDEterm asks for the target account password when needed, uploads only the validated public key through SFTP to the authenticated account's home directory, preserves existing `authorized_keys` entries, and then verifies authentication using only the selected key. The account password is used for this operation only and is not saved. A result is reported as installed only after key-only authentication succeeds; if the upload may have completed but verification fails, the result says so. This action requires Built-in SSH; System SSH and WSL hosts must use their own OpenSSH tools or a manual `authorized_keys` update.
+For a Built-in SSH host — saved, open in the host editor, or entered in Quick Connect — **Transfer public key…** can install a managed key without opening a shell. Transferring does not save the host. strIDEterm asks for the target account password when needed, uploads only the validated public key through SFTP to the authenticated account's home directory, preserves existing `authorized_keys` entries, and then verifies authentication using only the selected key. The account password is used for this operation only and is not saved. A result is reported as installed only after key-only authentication succeeds; if the upload may have completed but verification fails, the result says so. This action requires Built-in SSH; System SSH and WSL hosts must use their own OpenSSH tools or a manual `authorized_keys` update.
 
 OpenSSH user certificates can be imported and their metadata is retained, but Built-in SSH does not authenticate with an attached certificate. The host editor blocks saving a Built-in connection with a certificate reference. To use a certificate, configure the matching key and certificate in the OpenSSH environment used by System SSH or WSL, then connect with that method.
 

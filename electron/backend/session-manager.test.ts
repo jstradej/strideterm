@@ -345,6 +345,19 @@ describe("SessionManager", () => {
     }
   });
 
+  test("does not pass this launch's STRIDETERM_ENV to the shell", () => {
+    const prior = process.env.STRIDETERM_ENV;
+    process.env.STRIDETERM_ENV = "prod";
+    try {
+      const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+      new SessionManager().ensureSession(state, "workspace-a:shell");
+      expect((spawnCalls[0].options.env as Record<string, string>).STRIDETERM_ENV).toBeUndefined();
+    } finally {
+      if (prior === undefined) delete process.env.STRIDETERM_ENV;
+      else process.env.STRIDETERM_ENV = prior;
+    }
+  });
+
   test("shows a visible error and does not spawn when opt-in launch setup fails", async () => {
     const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
     state.workspaces[0].panels[0].sshMcpEnabled = true;
@@ -488,6 +501,75 @@ describe("SessionManager", () => {
     expect(terminalData[0]).toMatchObject({
       sessionId: "workspace-a:shell",
       data: expect.stringContaining("bad cwd"),
+    });
+  });
+
+  describe("tab command on an SSH tab", () => {
+    function sshState(tabCommand: string, launchVia: string, hostCommand?: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const state: any = createState();
+      state.workspaces[0].activePanelId = "ssh";
+      state.workspaces[0].panels[0] = {
+        id: "ssh",
+        title: "SSH",
+        command: tabCommand,
+        startup: "default",
+        launch: { kind: "ssh", sshHostId: "host-a" },
+      };
+      const sshManager = {
+        credentialStore: {},
+        getHost: vi.fn(() => ({
+          id: "host-a",
+          host: "example.test",
+          advanced: { launchVia, ...(hostCommand ? { command: hostCommand } : {}) },
+        })),
+        createSession: vi.fn().mockResolvedValue(undefined),
+      };
+      return { state, sshManager };
+    }
+
+    test("ssh2 receives the tab command as startupCommand", async () => {
+      const { state, sshManager } = sshState("  claude  ", "ssh2", "tmux attach");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      expect(sshManager.createSession).toHaveBeenCalledWith(expect.objectContaining({ startupCommand: "claude" }));
+    });
+
+    test("ssh2 passes no startupCommand when the tab has none", async () => {
+      const { state, sshManager } = sshState("", "ssh2", "tmux attach");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      expect(sshManager.createSession.mock.calls[0][0]).not.toHaveProperty("startupCommand");
+    });
+
+    test("system-ssh asks for a terminal and the tab command wins over the host's", async () => {
+      const { state, sshManager } = sshState("claude", "system-ssh", "tmux attach");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      const args = spawnCalls[0].args;
+      const dashDash = args.indexOf("--");
+      expect(args.slice(dashDash)).toEqual(["--", "example.test", "claude"]);
+      expect(args.indexOf("-t")).toBeGreaterThanOrEqual(0);
+      expect(args.indexOf("-t")).toBeLessThan(dashDash);
+      expect(args).not.toContain("tmux attach");
+    });
+
+    test("system-ssh falls back to the host's startup command, still with a terminal", async () => {
+      const { state, sshManager } = sshState("", "system-ssh", "tmux attach");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      const args = spawnCalls[0].args;
+      expect(args.slice(args.indexOf("--"))).toEqual(["--", "example.test", "tmux attach"]);
+      expect(args).toContain("-t");
+    });
+
+    test("system-ssh requests no terminal when there is no command", async () => {
+      const { state, sshManager } = sshState("", "system-ssh");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      const args = spawnCalls[0].args;
+      expect(args).not.toContain("-t");
+      expect(args.slice(args.indexOf("--"))).toEqual(["--", "example.test"]);
     });
   });
 

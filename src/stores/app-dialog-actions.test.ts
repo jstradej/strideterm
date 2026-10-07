@@ -862,3 +862,116 @@ describe("createDialogActions.openTabNotesDialog", () => {
     expect(ctx.overlay.value).toBe(null);
   });
 });
+
+describe("createDialogActions.editSshHostForView", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  const inline = { host: "mini.local", username: "js", advanced: { launchVia: "ssh2" }, auth: { methods: ["agent"] } };
+  function quickConnectCtx() {
+    const workspace = {
+      id: "ws",
+      panels: [{ id: "p1", title: "@mini.local", launch: { kind: "ssh", sshInline: inline } }],
+    };
+    const ctx = makeCtx({ appState: { ssh: { hosts: [] } }, workspace });
+    ctx.getPanelByViewId = () => ({ workspace, panel: workspace.panels[0] });
+    return ctx;
+  }
+
+  it("opens a quick-connect tab's connection as a new host and links the tab to it once saved", async () => {
+    const ctx = quickConnectCtx();
+    const saveWorkspace = vi.fn(async (next: AnyApi) => ({ workspace: next }));
+    ctx.getApi = () => ({ saveWorkspace });
+    const actions = createDialogActions(ctx);
+
+    await actions.editSshHostForView("ws:p1");
+
+    expect(ctx.overlay.value).toBe("SshHostEditor");
+    const props = ctx.overlayProps.value as AnyApi;
+    expect(props.host).toEqual(inline);
+    expect(props.host.id).toBeUndefined();
+
+    await props.onSaved({ ...inline, id: "host-1" });
+
+    expect(saveWorkspace).toHaveBeenCalledTimes(1);
+    expect(saveWorkspace.mock.calls[0][0].panels[0].launch).toEqual({ kind: "ssh", sshHostId: "host-1" });
+  });
+
+  it("tells the user when linking the tab to the saved host fails", async () => {
+    const ctx = quickConnectCtx();
+    ctx.getApi = () => ({
+      saveWorkspace: async () => {
+        throw new Error("disk full");
+      },
+    });
+    const actions = createDialogActions(ctx);
+
+    await actions.editSshHostForView("ws:p1");
+    await (ctx.overlayProps.value as AnyApi).onSaved({ ...inline, id: "host-1" });
+
+    const event = useNotificationStore().sessions[0]?.events[0];
+    expect(event?.title).toBe("Host saved, but the tab could not be linked to it");
+    expect(event?.body).toBe("disk full");
+  });
+
+  it("reports a saved-host tab whose host was deleted instead of doing nothing", async () => {
+    const workspace = { id: "ws", panels: [{ id: "p1", launch: { kind: "ssh", sshHostId: "gone" } }] };
+    const ctx = makeCtx({ appState: { ssh: { hosts: [] } }, workspace });
+    ctx.getPanelByViewId = () => ({ workspace, panel: workspace.panels[0] });
+    const actions = createDialogActions(ctx);
+
+    await actions.editSshHostForView("ws:p1");
+
+    expect(ctx.overlay.value).toBeNull();
+    expect(useNotificationStore().sessions[0]?.events[0]?.title).toBe("Cannot edit SSH host");
+  });
+});
+
+describe("createDialogActions.editTabWithDialog on an SSH tab", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  function sshTabCtx(launchedSessions: AnyApi[] = []) {
+    const host = { id: "host-1", host: "mini.local", username: "js" };
+    const panel = { id: "p1", title: "mini", command: "", launch: { kind: "ssh", sshHostId: "host-1" } };
+    const workspace = { id: "ws", panels: [panel], sessions: launchedSessions };
+    const ctx = makeCtx({ appState: { ssh: { hosts: [host] } }, workspace });
+    ctx.getPanelByViewId = () => ({ workspace, panel });
+    return ctx;
+  }
+
+  it("opens EditTabDialog (not the host editor) flagged as an SSH tab", () => {
+    const ctx = sshTabCtx();
+    createDialogActions(ctx).editTabWithDialog("ws:p1");
+
+    expect(ctx.overlay.value).toBe("EditTabDialog");
+    const props = ctx.overlayProps.value as AnyApi;
+    expect(props.mode).toBe("edit");
+    expect(props.sshTab).toBe(true);
+  });
+
+  it("does not flag a local tab as an SSH tab", () => {
+    const panel = { id: "p2", title: "sh", command: "" };
+    const workspace = { id: "ws", panels: [panel], sessions: [] };
+    const ctx = makeCtx({ appState: {}, workspace });
+    ctx.getPanelByViewId = () => ({ workspace, panel });
+    createDialogActions(ctx).editTabWithDialog("ws:p2");
+
+    expect((ctx.overlayProps.value as AnyApi).sshTab).toBe(false);
+  });
+
+  it("saves the command and offers a reload when the tab is live", async () => {
+    const ctx = sshTabCtx([{ sessionId: "ws:p1" }]);
+    const saveWorkspace = vi.fn(async (next: AnyApi) => ({ workspace: next }));
+    ctx.getApi = () => ({ saveWorkspace });
+    createDialogActions(ctx).editTabWithDialog("ws:p1");
+
+    await (ctx.overlayProps.value as AnyApi).onSubmit({ title: "mini", command: "claude" });
+
+    expect(saveWorkspace.mock.calls[0][0].panels[0]).toMatchObject({ title: "mini", command: "claude" });
+    expect(ctx.overlay.value).toBe("ConfirmDialog");
+    expect((ctx.overlayProps.value as AnyApi).title).toBe("Reload tab now?");
+  });
+});

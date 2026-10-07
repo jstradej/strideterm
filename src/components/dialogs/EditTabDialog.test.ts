@@ -4,6 +4,8 @@ import { createPinia, setActivePinia } from "pinia";
 import EditTabDialog from "./EditTabDialog.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useSshStore } from "../../stores/ssh.js";
+import CustomSelect from "../common/CustomSelect.vue";
+import SshKeyTransferDialog from "../ssh/SshKeyTransferDialog.vue";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -14,6 +16,21 @@ function mountDialog(props: Record<string, unknown> = {}) {
 }
 
 describe("EditTabDialog", () => {
+  test("switching a Claude Code template to SSH keeps its command and title", async () => {
+    const wrapper = mountDialog({
+      mode: "new",
+      title: "🤖 Claude Code",
+      command: "claude --dangerously-skip-permissions",
+    });
+    await flushPromises();
+    const sshButton = wrapper.findAll(".new-tab-kind button").find((b) => b.text().includes("SSH"));
+    await sshButton!.trigger("click");
+    await flushPromises();
+    const commandField = wrapper.find("input[placeholder='e.g. tmux attach'], input[placeholder='e.g. hostname']");
+    expect((commandField.element as HTMLInputElement).value).toBe("claude --dangerously-skip-permissions");
+    expect((wrapper.find(".title-input").element as HTMLInputElement).value).toBe("🤖 Claude Code");
+  });
+
   test("an untouched new tab closes without a discard prompt", async () => {
     const app = useAppStore();
     const confirm = vi.spyOn(app, "confirmInApp");
@@ -328,5 +345,139 @@ describe("EditTabDialog", () => {
     const sshTab = wrapper.get('[aria-label="New tab type"] button:nth-child(2)');
     await sshTab.trigger("click");
     expect(wrapper.find(".edit-tab-dialog__form").text()).not.toContain("htop");
+  });
+
+  describe("editing an SSH tab", () => {
+    test("shows the Startup command and no local-only Advanced section, and submits the plain command", async () => {
+      const wrapper = mountDialog({ mode: "edit", sshTab: true, title: "mini", command: "claude" });
+      await flushPromises();
+      expect(wrapper.text()).toContain("Startup command");
+      expect((wrapper.find("input[placeholder='e.g. claude']").element as HTMLInputElement).value).toBe("claude");
+      expect(wrapper.find(".advanced-options").exists()).toBe(false);
+      expect(wrapper.text()).not.toContain("Run in WSL");
+      expect(wrapper.text()).not.toContain("SSH tools for this tab");
+
+      await wrapper.find("input[placeholder='e.g. claude']").setValue("tmux attach");
+      await wrapper.find("form").trigger("submit");
+      expect(wrapper.emitted("submit")![0][0]).toMatchObject({ title: "mini", command: "tmux attach" });
+    });
+
+    test("a command starting with wsl is not unwrapped or wrapped", async () => {
+      const wrapper = mountDialog({ mode: "edit", sshTab: true, title: "mini", command: "wsl -- ls" });
+      await flushPromises();
+      await wrapper.find("form").trigger("submit");
+      expect(wrapper.emitted("submit")![0][0]).toMatchObject({ command: "wsl -- ls" });
+    });
+  });
+
+  describe("quick connect key authentication", () => {
+    const prop = (w: { props: () => unknown }, name: string) => (w.props() as Record<string, unknown>)[name];
+    const key = { id: "k1", label: "My key", publicKey: "ssh-ed25519 AAAA test" };
+    function setup(opts: { agent: boolean; keys: unknown[] }) {
+      const ssh = useSshStore();
+      vi.spyOn(ssh, "load").mockResolvedValue(undefined as never);
+      ssh.capabilities = {
+        openSshAgent: opts.agent,
+        systemSsh: true,
+        permissions: { canManageHosts: true },
+      } as never;
+      ssh.keys = opts.keys as never;
+      return { ssh, app: useAppStore() };
+    }
+    const mountRaw = () =>
+      mount(EditTabDialog, {
+        props: { mode: "new", presetTabType: "ssh", presetSshMode: "quick" },
+        global: { stubs: { SshKeyTransferDialog: true } },
+      });
+    const mountQuick = async () => {
+      const wrapper = mountRaw();
+      await flushPromises();
+      wrapper
+        .findAllComponents(CustomSelect)
+        .find((c) => (prop(c, "options") as { value: string }[]).some((o) => o.value === "ssh2"))!
+        .vm.$emit("update:modelValue", "ssh2");
+      await flushPromises();
+      return wrapper;
+    };
+    const selectWith = (wrapper: ReturnType<typeof mountRaw>, value: string) =>
+      wrapper
+        .findAllComponents(CustomSelect)
+        .find((c) => (prop(c, "options") as { value: string }[]).some((o) => o.value === value))!;
+
+    test("Saved key stays selectable with no keys and is the default when the agent is unavailable", async () => {
+      setup({ agent: false, keys: [] });
+      const app = useAppStore();
+      app.openSshKeyImportDialog = vi.fn() as never;
+      const wrapper = await mountQuick();
+      const auth = selectWith(wrapper, "publickey");
+      const saved = (prop(auth, "options") as { value: string; label: string; disabled?: boolean }[]).find(
+        (o) => o.value === "publickey",
+      )!;
+      expect(saved.disabled).toBeFalsy();
+      expect(saved.label).toBe("Saved key — import or generate one");
+      expect(prop(auth, "modelValue")).toBe("publickey");
+      expect(wrapper.text()).toContain("Generate…");
+    });
+
+    test("the automatic switch to Saved key is not an unsaved change", async () => {
+      const { app } = setup({ agent: false, keys: [] });
+      const confirm = vi.spyOn(app, "confirmInApp");
+      const wrapper = mountRaw();
+      await flushPromises();
+      await wrapper
+        .findAll("button")
+        .find((b) => b.text() === "Cancel")!
+        .trigger("click");
+      expect(confirm).not.toHaveBeenCalled();
+      expect(wrapper.emitted("cancel")).toHaveLength(1);
+    });
+
+    test("an available agent keeps the agent default", async () => {
+      setup({ agent: true, keys: [key] });
+      const wrapper = await mountQuick();
+      expect(prop(selectWith(wrapper, "publickey"), "modelValue")).toBe("agent");
+    });
+
+    test("Generate selects the new key through the callback", async () => {
+      const { app } = setup({ agent: false, keys: [] });
+      const generate = vi.fn();
+      app.openSshKeyGenerateDialog = generate as never;
+      const wrapper = await mountQuick();
+      await wrapper
+        .findAll("button")
+        .find((b) => b.text() === "Generate…")!
+        .trigger("click");
+      expect(generate).toHaveBeenCalledWith(expect.any(Function), "Back to New tab");
+      useSshStore().keys = [key] as never;
+      generate.mock.calls[0][0]({ key: { id: "k1" } });
+      await flushPromises();
+      expect(prop(selectWith(wrapper, "publickey"), "modelValue")).toBe("publickey");
+      expect(wrapper.findAllComponents(CustomSelect).some((c) => prop(c, "modelValue") === "k1")).toBe(true);
+    });
+
+    test("Transfer public key is disabled until host, user and key are set, then passes the draft", async () => {
+      setup({ agent: false, keys: [key] });
+      const wrapper = await mountQuick();
+      const transfer = () => wrapper.findAll("button").find((b) => b.text() === "Transfer public key…")!;
+      expect(transfer().attributes("disabled")).toBeDefined();
+      expect(transfer().attributes("title")).toBe("Enter the server address or SSH alias first.");
+      await wrapper.get("input[placeholder='bastion.example.com']").setValue(" host.example.com ");
+      expect(transfer().attributes("title")).toBe("Enter the remote username before transferring a key.");
+      await wrapper.get("input[placeholder='alice']").setValue("root");
+      expect(transfer().attributes("title")).toBe("Select or generate a key stored in strIDEterm first.");
+      selectWith(wrapper, "k1").vm.$emit("update:modelValue", "k1");
+      await flushPromises();
+      expect(transfer().attributes("disabled")).toBeUndefined();
+      await transfer().trigger("click");
+      await flushPromises();
+      const dialog = wrapper.findComponent(SshKeyTransferDialog);
+      expect(dialog.exists()).toBe(true);
+      expect(prop(dialog, "keyId")).toBe("k1");
+      expect(prop(dialog, "draft")).toMatchObject({
+        host: "host.example.com",
+        username: "root",
+        auth: { methods: ["publickey"], keyRef: "k1" },
+      });
+    });
   });
 });

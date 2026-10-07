@@ -320,21 +320,42 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   // --- Tab edit dialog ---------------------------------------------------
 
+  // "Edit SSH host" on an SSH tab. A saved-host tab opens that host. A quick-connect tab has no
+  // host to edit, so its inline connection opens as a new host; once saved, the tab points at it.
+  async function editSshHostForView(viewId: string): Promise<void> {
+    const target = ctx.getPanelByViewId(viewId);
+    const launch = target?.panel?.launch;
+    if (!target || launch?.kind !== "ssh") return;
+    if (launch.sshHostId) {
+      const host = ctx.payload.value?.appState?.ssh?.hosts?.find((h: AnyApi) => h.id === launch.sshHostId);
+      if (host) openSshHostEditor(host);
+      else await reportFailure("Cannot edit SSH host", new Error("The saved host for this tab no longer exists."));
+      return;
+    }
+    if (!launch.sshInline) return;
+    const draft = JSON.parse(JSON.stringify(launch.sshInline));
+    delete draft.id;
+    openSshHostEditor(draft, async (saved: AnyApi) => {
+      try {
+        const current = ctx.getPanelByViewId(viewId);
+        if (!current) return;
+        const nextWorkspace = cloneWorkspace(current.workspace);
+        nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
+          p.id === current.panel.id ? { ...p, launch: { kind: "ssh", sshHostId: saved.id } } : p,
+        );
+        ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
+      } catch (err) {
+        await reportFailure("Host saved, but the tab could not be linked to it", err);
+      }
+    });
+  }
+
   function editTabWithDialog(viewId: string): void {
     const target = ctx.getPanelByViewId(viewId);
     if (!target) return;
-    // For SSH tabs pointing at a saved host, jump straight to the full host
-    // editor — tab-level edit (title/command only) is a poor fit when the
-    // user wants to tweak hostname, auth, etc.
+    // An SSH tab edits only what is the tab's own (title, icon, startup command); the connection
+    // belongs to the host (editSshHostForView).
     const launch = target.panel.launch;
-    if (launch?.kind === "ssh" && launch.sshHostId) {
-      const appState = ctx.payload.value?.appState;
-      const host = appState?.ssh?.hosts?.find((h: AnyApi) => h.id === launch.sshHostId);
-      if (host && openSshHostEditor) {
-        openSshHostEditor(host);
-        return;
-      }
-    }
     // Snapshot whether the tab has a live PTY *before* opening the dialog —
     // saveWorkspace could in theory mutate the session list, so we capture the
     // pre-save state. Used after Save to decide if the reload prompt makes
@@ -350,6 +371,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       command: target.panel.command || "",
       sshMcpEnabled: Boolean(target.panel.sshMcpEnabled),
       hasCustomLaunch: Boolean(launch),
+      sshTab: launch?.kind === "ssh",
       onCancel: closeDialog,
       onSubmit: async ({
         title,
@@ -1122,12 +1144,13 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     else openDialog("SshHostsDialog", props);
   }
 
-  function openSshHostEditor(host: AnyApi = null): void {
+  function openSshHostEditor(host: AnyApi = null, onSaved?: (saved: AnyApi) => void | Promise<void>): void {
     const close = dialogLayers.value.length ? backDialog : closeDialog;
     const props = {
       host,
       onCancel: close,
       onBack: close,
+      ...(onSaved ? { onSaved } : {}),
     };
     if (dialogLayers.value.length) openSubDialog("SshHostEditor", props);
     else openDialog("SshHostEditor", props);
@@ -1203,6 +1226,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     showLayoutPicker,
     hideLayoutPicker,
     editTabWithDialog,
+    editSshHostForView,
     openTabNotesDialog,
     openNewTabDialog,
     openWorkspaceDialog,

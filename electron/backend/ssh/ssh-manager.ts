@@ -110,6 +110,8 @@ interface CreateSessionOpts {
   skipLastConnectedAt?: boolean;
   validatePrivateKeyBeforeConnect?: boolean;
   authenticatedActionTimeoutMs?: number;
+  /** The tab's own startup command; replaces the host's `advanced.command` for this session. */
+  startupCommand?: string;
 }
 
 interface SshManagerOpts {
@@ -317,6 +319,7 @@ export class SshManager extends EventEmitter {
     skipLastConnectedAt,
     validatePrivateKeyBeforeConnect,
     authenticatedActionTimeoutMs,
+    startupCommand,
   }: CreateSessionOpts): Promise<SshSession> {
     let host: HostRecord;
     if (inlineHost) {
@@ -331,6 +334,7 @@ export class SshManager extends EventEmitter {
       host = found;
     }
     if (authOverride) host = { ...host, auth: authOverride };
+    if (startupCommand) host = { ...host, advanced: { ...host.advanced, command: startupCommand } };
 
     // Register the pending record BEFORE the first await. ssh2 auth and
     // jump-host credential resolution below are async, and a teardown (stop() /

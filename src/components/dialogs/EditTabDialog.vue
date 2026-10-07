@@ -71,13 +71,23 @@
         </div>
       </label>
 
-      <label v-if="tabType !== 'ssh'" class="field">
+      <label v-if="tabType !== 'ssh' && sshTab" class="field">
+        <span
+          >Startup command
+          <HelpTooltip
+            text="Runs on the server right after sign-in and replaces the host's own startup command for this tab. Leave it blank to use the host's startup command, or a normal shell. Connection details (address, sign-in, port, jump hosts) are edited with Edit SSH host."
+            label="Startup command help"
+        /></span>
+        <input v-model="commandInput" placeholder="e.g. claude" maxlength="500" />
+      </label>
+      <label v-else-if="tabType !== 'ssh'" class="field">
         <span>Command</span>
         <input v-model="commandInput" placeholder="optional boot command" maxlength="500" />
       </label>
 
       <component
         :is="tabType === 'ssh' ? 'div' : 'details'"
+        v-if="!sshTab"
         :class="tabType === 'ssh' ? 'ssh-connection-content' : 'advanced-options'"
         :open="tabType !== 'ssh' && advancedOpen"
         @toggle="onAdvancedToggle"
@@ -141,54 +151,94 @@
             </template>
 
             <template v-else>
-              <div class="quick-grid">
-                <SshConnectionIdentityFields
-                  v-model:host="quick.host"
-                  v-model:username="quick.username"
-                  host-placeholder="bastion.example.com"
-                  :require-username="quickMode === 'ssh2'"
-                  host-help="Enter a server address. With SSH on this computer or SSH in WSL, use an alias from that environment's SSH config. Built-in SSH needs a server address."
-                  username-help="This is the account on the remote server. Built-in SSH requires it; with SSH on this computer or in WSL, leave it empty to use that environment's SSH config."
-                  @host-input="autofillTitle"
-                />
-                <label class="field">
+              <fieldset class="quick-fields" :disabled="transferOpen">
+                <div class="quick-grid">
+                  <SshConnectionIdentityFields
+                    v-model:host="quick.host"
+                    v-model:username="quick.username"
+                    host-placeholder="bastion.example.com"
+                    :require-username="quickMode === 'ssh2'"
+                    host-help="Enter a server address. With SSH on this computer or SSH in WSL, use an alias from that environment's SSH config. Built-in SSH needs a server address."
+                    username-help="This is the account on the remote server. Built-in SSH requires it; with SSH on this computer or in WSL, leave it empty to use that environment's SSH config."
+                    @host-input="autofillTitle"
+                  />
+                  <label class="field">
+                    <span
+                      >Connection method <HelpTooltip :text="connectionMethodHelp" label="Connection method help"
+                    /></span>
+                    <CustomSelect v-model="quick.launchVia" :options="launchViaOptions" />
+                  </label>
+                </div>
+
+                <div v-if="quickMode === 'ssh2'" class="field auth-field">
+                  <div class="auth-field__heading">
+                    <span class="auth-field__label">Authentication</span>
+                    <HelpTooltip :text="sshAuthenticationHelp" label="Authentication options help" />
+                  </div>
+                  <CustomSelect
+                    v-model="quick.authMethod"
+                    :options="authMethodOptions"
+                    @update:model-value="authTouched = true"
+                  />
+                </div>
+
+                <div v-if="quickMode === 'ssh2' && quick.authMethod === 'publickey'" class="field">
                   <span
-                    >Connection method <HelpTooltip :text="connectionMethodHelp" label="Connection method help"
+                    >Key stored in strIDEterm
+                    <HelpTooltip
+                      text="Choose the private key whose matching public key is authorized on the server. Import or generate a key, then add its public key to your account on the server. A key passphrase is separate from your server login password."
+                      label="Saved key help"
                   /></span>
-                  <CustomSelect v-model="quick.launchVia" :options="launchViaOptions" />
-                </label>
-              </div>
-
-              <div v-if="quickMode === 'ssh2'" class="field auth-field">
-                <div class="auth-field__heading">
-                  <span class="auth-field__label">Authentication</span>
-                  <HelpTooltip :text="sshAuthenticationHelp" label="Authentication options help" />
+                  <div class="input-row">
+                    <CustomSelect v-model="quick.keyRef" placeholder="Select a key…" :options="keyOptions" /><button
+                      type="button"
+                      class="button button--ghost"
+                      :disabled="!canManageKeys"
+                      title="Import a private key into strIDEterm and select it for this Built-in SSH connection."
+                      @click="appStore.openSshKeyImportDialog(selectKey, 'Back to New tab')"
+                    >
+                      Import…
+                    </button>
+                    <button
+                      type="button"
+                      class="button button--ghost"
+                      :disabled="!canManageKeys"
+                      title="Generate a private key in strIDEterm and select it for this Built-in SSH connection."
+                      @click="appStore.openSshKeyGenerateDialog(selectKey, 'Back to New tab')"
+                    >
+                      Generate…
+                    </button>
+                    <button
+                      v-if="!transferOpen"
+                      type="button"
+                      class="button button--ghost"
+                      :disabled="!canTransferSelectedKey"
+                      :title="
+                        transferDisabledReason || 'Add this key to the remote account for the host currently entered.'
+                      "
+                      @click="openKeyTransfer"
+                    >
+                      Transfer public key…
+                    </button>
+                  </div>
+                  <p class="field-help">
+                    Sends only the public key; the private key stays here. The server password may be requested once.
+                    This does not save the host.
+                  </p>
                 </div>
-                <CustomSelect v-model="quick.authMethod" :options="authMethodOptions" />
-              </div>
-
-              <label v-if="quickMode === 'ssh2' && quick.authMethod === 'publickey'" class="field">
-                <span
-                  >Key stored in strIDEterm
-                  <HelpTooltip
-                    text="Choose the private key whose matching public key is authorized on the server. Import or generate a key, then add its public key to your account on the server. A key passphrase is separate from your server login password."
-                    label="Saved key help"
-                /></span>
-                <div class="input-row">
-                  <CustomSelect v-model="quick.keyRef" placeholder="Select a key…" :options="keyOptions" /><button
-                    type="button"
-                    class="button button--ghost"
-                    :disabled="appStore.isRemoteTransport || capabilities?.permissions?.canManageHosts === false"
-                    title="Import a private key into strIDEterm for this Built-in SSH connection."
-                    @click="appStore.openSshKeyImportDialog(undefined, 'Back to New tab')"
-                  >
-                    Import…
-                  </button>
-                </div>
-              </label>
-              <p v-if="quickMode !== 'ssh2'" class="system-auth-note">
-                Your SSH configuration controls sign-in. Password and verification prompts appear in the terminal.
-              </p>
+                <p v-if="quickMode !== 'ssh2'" class="system-auth-note">
+                  Your SSH configuration controls sign-in. Password and verification prompts appear in the terminal.
+                </p>
+              </fieldset>
+              <SshKeyTransferDialog
+                v-if="transferOpen && transferDraft && transferKeyId"
+                ref="keyTransferDialog"
+                :key-id="transferKeyId"
+                :profile-id="appStore.myActiveProfileId || 'default'"
+                :draft="transferDraft"
+                inline
+                @cancel="transferOpen = false"
+              />
 
               <details class="quick-advanced">
                 <summary title="Set an SSH port override or choose a WSL distribution.">
@@ -247,7 +297,7 @@
                 <button
                   type="button"
                   class="button button--ghost"
-                  :disabled="submitting || !canTestSsh"
+                  :disabled="submitting || transferBusy || !canTestSsh"
                   :title="
                     canTestSsh
                       ? 'Open a connection test with these settings. No host will be saved.'
@@ -267,8 +317,8 @@
                 <HelpTooltip
                   :text="
                     quickMode === 'ssh2'
-                      ? 'With Built-in SSH, this command is typed into the terminal after sign-in. Leave it blank for a normal shell.'
-                      : 'OpenSSH runs this command on the remote server instead of opening the usual interactive shell. For example, use “hostname” to print the server name and end the session. OpenSSH does not request a terminal for this command; interactive programs such as tmux need OpenSSH configured to request a terminal.'
+                      ? 'Runs on the server right after sign-in: it is typed into the terminal, so interactive programs such as claude or tmux work. It replaces the startup command of a saved host. Leave it blank for a normal shell.'
+                      : 'Runs on the server right after sign-in and replaces the startup command of a saved host. A terminal is requested, so interactive programs such as claude or tmux work. Leave it blank for a normal shell; a one-shot command such as hostname prints its output and ends the session.'
                   "
                   label="Initial command help"
               /></span>
@@ -334,7 +384,7 @@
               ? 'Create a tab with this name and command.'
               : 'Save this tab name, command, and SSH tools setting.'
           "
-          :disabled="submitting"
+          :disabled="submitting || transferBusy"
         >
           {{ submitting ? "Saving…" : mode === "new" ? "Create tab" : "Save" }}
         </button>
@@ -344,7 +394,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
@@ -352,6 +402,8 @@ import { BADGE_ICONS, getTitleIcon, setTitleIcon } from "../../lib/badge-icons.j
 import { buildWslCommand, parseWslCommand, type WslState } from "./wsl-launcher.js";
 import HelpTooltip from "../common/HelpTooltip.vue";
 import SshConnectionIdentityFields from "../ssh/SshConnectionIdentityFields.vue";
+import SshKeyTransferDialog from "../ssh/SshKeyTransferDialog.vue";
+import type { SshKeyTransferStart } from "../../../electron/backend/ipc-schemas.js";
 import { resolveSshLaunchVia } from "../../../electron/shared/ssh-connection.js";
 import { validateSshConnectionIdentity } from "../../lib/ssh-connection-form.js";
 import { sshAuthenticationHelp, sshDefaultMethodHelp } from "../../lib/ssh-help-text.js";
@@ -375,6 +427,8 @@ interface Props {
   cwdOverride?: string;
   sshMcpEnabled?: boolean;
   hasCustomLaunch?: boolean;
+  /** Edit mode for a tab that launches an SSH host: only title/icon/command apply. */
+  sshTab?: boolean;
   onEditSshHost?: ((host: unknown, state: SshHostState) => void) | null;
 }
 
@@ -389,6 +443,7 @@ const props = withDefaults(defineProps<Props>(), {
   cwdOverride: "",
   sshMcpEnabled: false,
   hasCustomLaunch: false,
+  sshTab: false,
   onEditSshHost: null,
 });
 
@@ -415,8 +470,7 @@ const authMethodOptions = computed(() => [
   },
   {
     value: "publickey",
-    label: `Saved key${sshKeys.value.length === 0 ? " — none imported yet" : ""}`,
-    disabled: sshKeys.value.length === 0,
+    label: `Saved key${sshKeys.value.length === 0 ? " — import or generate one" : ""}`,
   },
   { value: "keyboard-interactive", label: "Password / prompt (MFA)" },
 ]);
@@ -430,12 +484,12 @@ const capabilities = computed(() => sshRuntime.capabilities);
 const launchViaOptions = computed(() => {
   const options = [
     { value: "default", label: `Use app default · ${quickLabel(storedDefault.value)}` },
+    { value: "ssh2", label: "Built-in SSH (recommended)" },
     {
       value: "system-ssh",
       label: `SSH on this computer${capabilities.value && !capabilities.value.systemSsh ? " · unavailable" : ""}`,
       disabled: capabilities.value ? !capabilities.value.systemSsh : false,
     },
-    { value: "ssh2", label: "Built-in SSH" },
   ];
   if (capabilities.value?.platform === "win32")
     options.push({
@@ -480,9 +534,10 @@ const submitting = ref(false);
 const confirmingDiscard = ref(false);
 const tabType = ref(props.presetTabType === "ssh" ? "ssh" : "local");
 const advancedOpen = ref(props.mode !== "new" || props.presetTabType === "ssh");
-const parsedWslPreset = props.presetTabType !== "ssh" ? parseWslCommand(props.command) : null;
-const rawWslPreset = props.presetTabType !== "ssh" && !parsedWslPreset && /^wsl(?:\s|$)/i.test(props.command.trim());
-const runInWsl = ref(props.presetTabType !== "ssh" && Boolean(parsedWslPreset || rawWslPreset));
+const parsedWslPreset = props.presetTabType !== "ssh" && !props.sshTab ? parseWslCommand(props.command) : null;
+const rawWslPreset =
+  props.presetTabType !== "ssh" && !props.sshTab && !parsedWslPreset && /^wsl(?:\s|$)/i.test(props.command.trim());
+const runInWsl = ref(props.presetTabType !== "ssh" && !props.sshTab && Boolean(parsedWslPreset || rawWslPreset));
 const wsl = reactive<WslState>(parsedWslPreset ?? { distro: "", cwd: "", command: "", keepOpen: true });
 if (parsedWslPreset) commandInput.value = parsedWslPreset.command;
 const isRawWslCommand = computed(() => /^wsl(?:\s|$)/i.test(commandInput.value.trim()));
@@ -522,6 +577,64 @@ const testSshDisabledReason = computed(
       : "Connection testing is unavailable."),
 );
 
+const canManageKeys = computed(
+  () => !appStore.isRemoteTransport && capabilities.value?.permissions?.canManageHosts !== false,
+);
+const transferOpen = ref(false);
+const keyTransferDialog = ref<{
+  requestClose?: () => Promise<boolean>;
+  isBusy?: () => boolean;
+  $el?: HTMLElement;
+} | null>(null);
+const transferDraft = ref<NonNullable<SshKeyTransferStart["draft"]> | null>(null);
+const transferKeyId = ref("");
+const transferBusy = computed(
+  () => transferOpen.value && (!keyTransferDialog.value || Boolean(keyTransferDialog.value.isBusy?.())),
+);
+const selectedManagedKey = computed(() => sshKeys.value.find((key) => key.id === quick.keyRef) || null);
+const transferDisabledReason = computed(() => {
+  if (!quick.host.trim()) return "Enter the server address or SSH alias first.";
+  if (!quick.username.trim()) return "Enter the remote username before transferring a key.";
+  if (!selectedManagedKey.value) return "Select or generate a key stored in strIDEterm first.";
+  if (!selectedManagedKey.value.publicKey?.trim()) return "The selected key has no public-key data to transfer.";
+  if (appStore.isRemoteTransport) return "Public-key transfer is available in the desktop app only.";
+  return "";
+});
+const canTransferSelectedKey = computed(() => !transferDisabledReason.value);
+
+function selectKey(result: unknown) {
+  const record =
+    result && typeof result === "object" ? (result as { key?: { id?: string }; id?: string; keyId?: string }) : {};
+  const keyId = record.key?.id || record.id || record.keyId;
+  if (keyId) {
+    authTouched.value = true;
+    quick.keyRef = keyId;
+    quick.authMethod = "publickey";
+  }
+}
+
+function openKeyTransfer() {
+  if (!canTransferSelectedKey.value || !selectedManagedKey.value) return;
+  transferDraft.value = buildInlineHost() as NonNullable<SshKeyTransferStart["draft"]>;
+  transferKeyId.value = selectedManagedKey.value.id;
+  transferOpen.value = true;
+  void nextTick(() => {
+    const element = keyTransferDialog.value?.$el;
+    if (element && typeof element.scrollIntoView === "function") {
+      element.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  });
+}
+
+// Closes the inline transfer panel (it may confirm an abort). False means it stayed open.
+async function closeTransferSetup(): Promise<boolean> {
+  if (!transferOpen.value) return true;
+  const close = keyTransferDialog.value?.requestClose;
+  if (!close) return false;
+  const closed = await close();
+  return closed && !transferOpen.value;
+}
+
 const saveToBook = ref(false);
 const savedHostName = ref("");
 function currentDraft() {
@@ -542,6 +655,7 @@ function currentDraft() {
 const initialDraft = ref("");
 async function requestClose() {
   if (submitting.value || confirmingDiscard.value) return;
+  if (!(await closeTransferSetup())) return;
   if (currentDraft() !== initialDraft.value) {
     confirmingDiscard.value = true;
     try {
@@ -561,9 +675,9 @@ async function requestClose() {
 }
 defineExpose({ requestClose });
 
+// The command survives the switch: "Claude Code" then SSH means run claude on that host.
 watch(tabType, (next, prev) => {
   if (next === prev) return;
-  commandInput.value = "";
   if (next === "ssh") {
     if (sshHosts.value.length === 0) sshMode.value = "quick";
     else if (!selectedSshHostId.value) {
@@ -577,15 +691,18 @@ watch(tabType, (next, prev) => {
 
 function onHostSelected() {
   const host = sshHosts.value.find((h) => h.id === selectedSshHostId.value);
-  if (host) titleInput.value = `\u{1F310} ${host.name ?? host.host}`;
+  if (host && isDefaultTitle()) titleInput.value = `\u{1F310} ${host.name ?? host.host}`;
+}
+
+// A title is the dialog's own default (empty, "Shell", or one derived from a host) until the user
+// or a tab template set something else; only a default one follows the chosen host.
+function isDefaultTitle() {
+  const trimmed = titleInput.value.trim();
+  return ["", "Shell", "\u{1F4BB} Shell", "\u{1F310}"].includes(trimmed) || /^\u{1F310}\s/u.test(trimmed);
 }
 
 function autofillTitle() {
-  // Only populate the title if the user hasn't typed something custom.
-  const trimmed = titleInput.value.trim();
-  const defaults = ["", "Shell", "\u{1F310}"];
-  const isDefault = defaults.includes(trimmed) || /^\u{1F310}\s/u.test(trimmed);
-  if (isDefault && quick.host.trim()) {
+  if (isDefaultTitle() && quick.host.trim()) {
     titleInput.value = `\u{1F310} ${quick.username || ""}@${quick.host}`.trim();
   }
 }
@@ -607,6 +724,17 @@ function pickIcon(icon: string) {
   showIconPicker.value = false;
 }
 
+// Without a usable SSH agent the useful default is a saved key. Switch only
+// while the user has not chosen an auth method themselves.
+const authTouched = ref(false);
+function applyAuthDefault() {
+  if (authTouched.value || quick.authMethod !== "agent" || capabilities.value?.openSshAgent !== false) return;
+  const untouched = currentDraft() === initialDraft.value;
+  quick.authMethod = "publickey";
+  if (untouched) initialDraft.value = currentDraft();
+}
+watch(capabilities, applyAuthDefault);
+
 onMounted(async () => {
   initialDraft.value = currentDraft();
   if (sshHosts.value.length === 0) await sshStore.load();
@@ -619,6 +747,7 @@ onMounted(async () => {
     }
   }
   if (untouched) initialDraft.value = currentDraft();
+  applyAuthDefault();
   requestAnimationFrame(() => {
     titleRef.value?.focus();
     titleRef.value?.select();
@@ -644,8 +773,9 @@ function buildInlineHost(): Record<string, unknown> {
   return host;
 }
 
-function openQuickConnectionTest() {
+async function openQuickConnectionTest() {
   if (submitting.value || !canTestSsh.value) return;
+  if (!(await closeTransferSetup())) return;
   quick.error = "";
   const identityError = validateSshConnectionIdentity({
     host: quick.host,
@@ -704,6 +834,7 @@ async function createSshTab(title: string, host: Record<string, unknown>, hostId
 async function handleSubmit() {
   const nextTitle = titleInput.value.trim();
   if (!nextTitle) return;
+  if (!(await closeTransferSetup())) return;
   connectionError.value = "";
 
   // Classic local shell or saved SSH host — simple payload.
@@ -759,7 +890,7 @@ async function handleSubmit() {
     return;
   }
   if (quickMode.value === "ssh2" && quick.authMethod === "publickey" && !quick.keyRef) {
-    quick.error = "Select a key or switch to agent.";
+    quick.error = "Select a key, or import or generate one.";
     return;
   }
   if (
@@ -1193,6 +1324,14 @@ async function handleSubmit() {
 }
 
 /* Quick-connect keeps host and username together, with method below. */
+.quick-fields {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
