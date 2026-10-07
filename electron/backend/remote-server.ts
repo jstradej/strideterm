@@ -2573,47 +2573,73 @@ export async function startRemoteServer({
     string,
     { windowStart: number; count: number; blockedUntil: number; notifiedUntil: number }
   >();
-  let authFailureGlobalWindow = { windowStart: Date.now(), count: 0, blockedUntil: 0 };
+  // One global window per request scope, so an attacker behind the Cloudflare tunnel cannot lock out
+  // direct (LAN) logins by exhausting the shared budget.
+  const authFailureGlobalWindows = new Map<
+    "tunnel" | "direct",
+    { windowStart: number; count: number; blockedUntil: number }
+  >();
+  // Failures from a live cookie session are counted against that session, never the address.
+  const sessionAuthFailures = new Map<string, { windowStart: number; count: number }>();
 
-  function authAddress(request: IncomingMessage): string {
+  function authOrigin(request: IncomingMessage): { address: string; scope: "tunnel" | "direct" } {
     const socketAddress = request.socket?.remoteAddress || "unknown";
     const loopback = socketAddress === "127.0.0.1" || socketAddress === "::1" || socketAddress === "::ffff:127.0.0.1";
-    if (!loopback || !runtime.isCloudflareTunnelConnected?.()) return socketAddress;
+    if (!loopback || !runtime.isCloudflareTunnelConnected?.()) return { address: socketAddress, scope: "direct" };
     const forwarded = String(request.headers["cf-connecting-ip"] || "").trim();
-    return isIP(forwarded) ? forwarded : socketAddress;
+    return isIP(forwarded) ? { address: forwarded, scope: "tunnel" } : { address: socketAddress, scope: "direct" };
+  }
+
+  function authAddress(request: IncomingMessage): string {
+    return authOrigin(request).address;
   }
 
   function failedAuthentication(request: IncomingMessage, kind: "token" | "ticket" | "api" | "ws", path = ""): boolean {
     const now = Date.now();
-    const address = authAddress(request);
+    const { address, scope } = authOrigin(request);
     const entryKey = address;
     audit.warn("auth failed", { kind, addr: address, ...(path ? { path } : {}) });
-    if (hasLiveCookieSession(request.headers)) return false;
+    const liveSessionId = liveCookieSessionId(request.headers);
+    if (liveSessionId) {
+      let sessionEntry = sessionAuthFailures.get(liveSessionId);
+      if (!sessionEntry || now - sessionEntry.windowStart >= authFailureWindowMs) {
+        sessionEntry = { windowStart: now, count: 0 };
+      }
+      sessionEntry.count += 1;
+      if (sessionEntry.count > 10) {
+        endMobileSession(liveSessionId, "auth-failures");
+        return true;
+      }
+      sessionAuthFailures.set(liveSessionId, sessionEntry);
+      return false;
+    }
     let entry = authFailureEntries.get(entryKey);
     if (entry?.blockedUntil && entry.blockedUntil > now) return true;
-    if (authFailureGlobalWindow.blockedUntil > now) return true;
+    let globalWindow = authFailureGlobalWindows.get(scope);
+    if (globalWindow && globalWindow.blockedUntil > now) return true;
     for (const [key, existing] of authFailureEntries) {
       if (existing.blockedUntil <= now && now - existing.windowStart >= authFailureWindowMs)
         authFailureEntries.delete(key);
     }
-    if (now - authFailureGlobalWindow.windowStart >= authFailureWindowMs) {
-      authFailureGlobalWindow = { windowStart: now, count: 0, blockedUntil: 0 };
+    if (!globalWindow || now - globalWindow.windowStart >= authFailureWindowMs) {
+      globalWindow = { windowStart: now, count: 0, blockedUntil: 0 };
+      authFailureGlobalWindows.set(scope, globalWindow);
     }
     if (!entry || now - entry.windowStart >= authFailureWindowMs) {
       entry = { windowStart: now, count: 0, blockedUntil: 0, notifiedUntil: 0 };
     }
     entry.count += 1;
-    authFailureGlobalWindow.count += 1;
+    globalWindow.count += 1;
     if (authFailureEntries.size >= 512 && !authFailureEntries.has(entryKey)) {
       const oldest = [...authFailureEntries].sort((a, b) => a[1].windowStart - b[1].windowStart)[0];
       if (oldest) authFailureEntries.delete(oldest[0]);
     }
     const localLimit = entry.count > 10;
-    const globalLimit = authFailureGlobalWindow.count > 200;
+    const globalLimit = globalWindow.count > 200;
     const overLimit = localLimit || globalLimit;
     if (overLimit) {
       entry.blockedUntil = now + authFailureBlockMs;
-      if (globalLimit) authFailureGlobalWindow.blockedUntil = now + authFailureBlockMs;
+      if (globalLimit) globalWindow.blockedUntil = now + authFailureBlockMs;
       if (localLimit && entry.notifiedUntil <= now) {
         entry.notifiedUntil = entry.blockedUntil;
         runtime.reportRemoteAuthFailures?.({ address, count: entry.count, blockedUntil: entry.blockedUntil });
@@ -2675,14 +2701,19 @@ export async function startRemoteServer({
     return false;
   }
 
-  function hasLiveCookieSession(headers: IncomingMessage["headers"]): boolean {
+  /** The id of the live cookie session the request carries, or "" when it has none. */
+  function liveCookieSessionId(headers: IncomingMessage["headers"]): string {
     const sessionId = getSessionFromRequest(headers);
-    return Boolean(
-      sessionId &&
+    return sessionId &&
       !sessionId.startsWith("token-client:") &&
       activeSessions.has(sessionId) &&
-      touchMobileSession(sessionId, false),
-    );
+      touchMobileSession(sessionId, false)
+      ? sessionId
+      : "";
+  }
+
+  function hasLiveCookieSession(headers: IncomingMessage["headers"]): boolean {
+    return liveCookieSessionId(headers) !== "";
   }
 
   function mintSession(
@@ -2945,6 +2976,7 @@ export async function startRemoteServer({
   function endMobileSession(sessionId: string, reason: string): void {
     const record = activeSessions.get(sessionId);
     activeSessions.delete(sessionId);
+    sessionAuthFailures.delete(sessionId);
     auditMobileSessionEnded(record, reason);
     closeSessionSockets(sessionId, reason);
     registry.remove(sessionId);
@@ -3555,10 +3587,10 @@ export async function startRemoteServer({
       }
 
       if (request.method === "GET" && url.pathname === "/" && url.searchParams.has("ticket")) {
-        const address = authAddress(request);
+        const { address, scope } = authOrigin(request);
         const rateLimited =
           !hasLiveCookieSession(request.headers) &&
-          (authFailureGlobalWindow.blockedUntil > Date.now() ||
+          ((authFailureGlobalWindows.get(scope)?.blockedUntil ?? 0) > Date.now() ||
             (authFailureEntries.get(address)?.blockedUntil ?? 0) > Date.now());
         if (rateLimited) {
           audit.warn("auth failed", { kind: "ticket", addr: address });
