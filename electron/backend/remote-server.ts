@@ -2587,9 +2587,9 @@ export async function startRemoteServer({
     const now = Date.now();
     const address = authAddress(request);
     const entryKey = address;
+    audit.warn("auth failed", { kind, addr: address, ...(path ? { path } : {}) });
     if (hasLiveCookieSession(request.headers)) return false;
     let entry = authFailureEntries.get(entryKey);
-    audit.warn("auth failed", { kind, addr: address, ...(path ? { path } : {}) });
     if (entry?.blockedUntil && entry.blockedUntil > now) return true;
     if (authFailureGlobalWindow.blockedUntil > now) return true;
     for (const [key, existing] of authFailureEntries) {
