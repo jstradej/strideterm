@@ -553,6 +553,38 @@ describe("useAppStore — remote mode identity", () => {
     await activateTask;
   });
 
+  it("propagates workspace activation failures so the caller can report them", async () => {
+    const payload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [
+          { id: "ws1", name: "WS1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "WS2", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const transport = makeElectronTransport(payload);
+    const failure = new Error("activation rejected");
+    transport.activateWorkspace = vi.fn(() => Promise.reject(failure));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(store.activateWorkspace("ws2")).rejects.toBe(failure);
+  });
+
   it("adopts remote activation HTTP responses scoped by remoteClient without waiting for WS", async () => {
     const initialPayload = makeBasePayload({
       remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },

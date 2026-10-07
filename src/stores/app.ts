@@ -1372,6 +1372,7 @@ export const useAppStore = defineStore("app", () => {
         err: (err as Error)?.message || String(err),
       });
       pendingWorkspaceActivationId.value = "";
+      throw err;
     }
   }
 

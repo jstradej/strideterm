@@ -28,11 +28,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { AREA_LAYOUTS, AREA_NAMES } from "../../app/layout-geometry.js";
 import { isMobileViewport } from "../../composables/useIsNarrow.js";
 import WorkspaceCell from "./WorkspaceCell.vue";
 
 const store = useAppStore();
+const notifications = useNotificationStore();
 
 const narrowMode = computed(() => isMobileViewport.value);
 
@@ -70,6 +72,6 @@ function onCellFocus(index: number): void {
   const ids = store.workspaceGrid?.cellWorkspaceIds;
   if (!ids) return;
   const wsId = ids[index];
-  if (wsId) store.activateWorkspace(wsId);
+  if (wsId) void notifications.runWithToast("Activate workspace failed", () => store.activateWorkspace(wsId));
 }
 </script>

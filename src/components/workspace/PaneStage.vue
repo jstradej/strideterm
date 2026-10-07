@@ -64,6 +64,7 @@
 <script setup lang="ts">
 import { computed, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import {
   isGitViewId,
@@ -91,6 +92,7 @@ interface Tab {
 }
 
 const store = useAppStore();
+const notifications = useNotificationStore();
 const termStore = useTerminalStore();
 
 const visibleTabs = computed(() => store.visibleTabs);
@@ -106,7 +108,11 @@ const hostedPrimary = computed(() => store.getCompanionPrimaryHost(store.myActiv
 
 function openCompanionTask(): void {
   const taskWorkspaceId = hostedPrimary.value?.taskWorkspaceId;
-  if (taskWorkspaceId) void store.activateWorkspaceInGrid(taskWorkspaceId);
+  if (taskWorkspaceId) {
+    void notifications.runWithToast("Couldn't open the companion task", () =>
+      store.activateWorkspaceInGrid(taskWorkspaceId),
+    );
+  }
 }
 
 const currentLayout = computed(() => {

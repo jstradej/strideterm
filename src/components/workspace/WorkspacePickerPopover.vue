@@ -51,6 +51,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, nextTick, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 
 const props = defineProps<{
   cellIndex: number;
@@ -65,6 +66,7 @@ const emit = defineEmits<{
 type AnyApi = any;
 
 const store = useAppStore();
+const notifications = useNotificationStore();
 const query = ref("");
 const collapsed = ref(new Set<string>());
 const searchRef = ref<HTMLInputElement | null>(null);
@@ -328,8 +330,10 @@ function toggleCollapse(id: string): void {
 }
 
 async function pick(workspaceId: string): Promise<void> {
-  await store.setGridCell(props.cellIndex, workspaceId);
-  await store.activateWorkspace(workspaceId);
-  emit("close");
+  const succeeded = await notifications.runWithToast("Activate workspace failed", async () => {
+    await store.setGridCell(props.cellIndex, workspaceId);
+    await store.activateWorkspace(workspaceId);
+  });
+  if (succeeded) emit("close");
 }
 </script>
