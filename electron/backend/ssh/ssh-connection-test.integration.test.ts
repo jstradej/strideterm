@@ -601,6 +601,11 @@ describe("runtime SSH connection tests against a real loopback server", () => {
 
   test.skipIf(systemSshMissing)(
     "native OpenSSH verifies the unsaved connection with a controlled remote command",
+    // On windows-latest CI a ssh.exe started right after the previous one exits occasionally
+    // loses its ConPTY: the server receives and answers its command, yet the PTY delivers neither
+    // output nor an exit, so the test waits out its 20 s. It never reproduces locally and the
+    // product logic is not involved, so retry there instead of letting it fail unrelated changes.
+    { retry: process.platform === "win32" ? 2 : 0 },
     async () => {
       const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
       const privateKey = pair.privateKey.export({ type: "pkcs1", format: "pem" }).toString();
