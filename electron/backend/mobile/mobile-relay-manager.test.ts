@@ -483,9 +483,23 @@ describe("the relay origin named by a grant is validated before it is dialled", 
     await harness.manager.reconfigure();
   });
 
-  test("a public https origin is accepted when no expected origin is configured", async () => {
+  test("production requires a configured expected origin", async () => {
     for (const expectedRelayOrigin of [undefined, () => undefined, () => ""]) {
-      const harness = makeHarness({ grant: grantNaming(RELAY_ORIGIN), expectedRelayOrigin, environment: "prod" });
+      const harness = makeHarness({
+        grant: grantNaming(RELAY_ORIGIN),
+        expectedRelayOrigin,
+        environment: "prod",
+        retryDelayMs: () => 60_000,
+      });
+      await startRejected(harness);
+      harness.setEnabled(false);
+      await harness.manager.reconfigure();
+    }
+  });
+
+  test("a public https origin may be accepted without a pin outside production", async () => {
+    for (const environment of ["dev", "qa", undefined] as const) {
+      const harness = makeHarness({ grant: grantNaming(RELAY_ORIGIN), environment });
       harness.setEnabled(true);
       await harness.manager.reconfigure();
       expect(harness.connectorsStarted).toBe(1);

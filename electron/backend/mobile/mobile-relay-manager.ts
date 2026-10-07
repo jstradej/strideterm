@@ -126,8 +126,8 @@ export interface MobileRelayManagerOptions {
   systemChannel?: RelayConnectorOptions["systemChannel"];
   /**
    * The relay origin the effective control-plane configuration (after the signed bootstrap) states,
-   * read on every grant. When it returns a non-empty value a grant naming any other origin is
-   * refused; when it returns nothing the grant is still held to the endpoint rules below.
+   * read on every grant. Production requires this pin; other environments may omit it and still
+   * rely on the endpoint rules below.
    */
   expectedRelayOrigin?: () => string | undefined;
   /**
@@ -239,7 +239,8 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
     const expected = trimTrailingSlash((options.expectedRelayOrigin?.() ?? "").trim());
     const wellFormed =
       options.environment === "local" ? isLocalBootstrapUrl(normalized) : isSecureBootstrapEndpoint(normalized);
-    if (wellFormed && (!expected || normalized === expected)) return;
+    const productionPinConfigured = options.environment !== "prod" || expected.length > 0;
+    if (wellFormed && productionPinConfigured && (!expected || normalized === expected)) return;
     lastError = RELAY_ORIGIN_REJECTED;
     log.error("relay grant names an origin this desktop refuses to dial", {
       code: RELAY_ORIGIN_REJECTED,
