@@ -2587,6 +2587,7 @@ export async function startRemoteServer({
     const now = Date.now();
     const address = authAddress(request);
     const entryKey = address;
+    if (hasLiveCookieSession(request.headers)) return false;
     let entry = authFailureEntries.get(entryKey);
     audit.warn("auth failed", { kind, addr: address, ...(path ? { path } : {}) });
     if (entry?.blockedUntil && entry.blockedUntil > now) return true;
@@ -2672,6 +2673,16 @@ export async function startRemoteServer({
       return touchMobileSession(sessionId);
     }
     return false;
+  }
+
+  function hasLiveCookieSession(headers: IncomingMessage["headers"]): boolean {
+    const sessionId = getSessionFromRequest(headers);
+    return Boolean(
+      sessionId &&
+      !sessionId.startsWith("token-client:") &&
+      activeSessions.has(sessionId) &&
+      touchMobileSession(sessionId, false),
+    );
   }
 
   function mintSession(
@@ -3546,8 +3557,9 @@ export async function startRemoteServer({
       if (request.method === "GET" && url.pathname === "/" && url.searchParams.has("ticket")) {
         const address = authAddress(request);
         const rateLimited =
-          authFailureGlobalWindow.blockedUntil > Date.now() ||
-          (authFailureEntries.get(address)?.blockedUntil ?? 0) > Date.now();
+          !hasLiveCookieSession(request.headers) &&
+          (authFailureGlobalWindow.blockedUntil > Date.now() ||
+            (authFailureEntries.get(address)?.blockedUntil ?? 0) > Date.now());
         if (rateLimited) {
           audit.warn("auth failed", { kind: "ticket", addr: address });
           writeHead(response, 429, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
