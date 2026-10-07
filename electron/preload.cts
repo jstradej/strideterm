@@ -160,6 +160,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   sendMobileTestPush: (deviceId) => ipcRenderer.invoke("mobile:test-push", deviceId),
   queryMobileAuditLog: (filters) => ipcRenderer.invoke("mobile:audit-log:query", filters),
   regenerateRemoteToken: () => ipcRenderer.invoke("remote:token:regenerate"),
+  listRemoteSessions: () => ipcRenderer.invoke("remote:sessions:list"),
+  revokeRemoteSessions: (payload) => ipcRenderer.invoke("remote:sessions:revoke", payload),
   configureClaudeHook: () => ipcRenderer.invoke("claude-hook:configure"),
   removeClaudeHook: () => ipcRenderer.invoke("claude-hook:remove"),
   getClaudeHookStatus: () => ipcRenderer.invoke("claude-hook:status"),
@@ -359,6 +361,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   onApprovalRecorded: (handler) => ipcRenderer.on("approval:recorded", (_event, payload) => handler(payload)),
   onMobileStatus: (handler) => ipcRenderer.on("mobile:status", (_event, payload) => handler(payload)),
   onMobileSessionStarted: (handler) => ipcRenderer.on("mobile:session-started", (_event, payload) => handler(payload)),
+  onRemoteAuthFailures: (handler) => ipcRenderer.on("remote:auth-failures", (_event, payload) => handler(payload)),
   onMobilePairingProgress: (handler) =>
     ipcRenderer.on("mobile:pairing-progress", (_event, payload) => handler(payload)),
   onMobileDeviceRevoked: (handler) => ipcRenderer.on("mobile:device-revoked", (_event, payload) => handler(payload)),

@@ -24,6 +24,7 @@ import {
   type ApprovalRecorded,
 } from "../electron/shared/approval-events.js";
 import { mobileSessionStartedSchema, type MobileSessionStarted } from "../electron/shared/mobile-session-events.js";
+import { remoteAuthFailuresSchema, type RemoteAuthFailures } from "../electron/shared/remote-access.js";
 import {
   NOTIFICATION_TARGET_REMOVED_CHANNEL,
   notificationTargetRemovedSchema,
@@ -207,6 +208,7 @@ export interface Transport extends Partial<
   onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => void;
   /** A paired phone opened a session (desktop only). Validated at this boundary. */
   onMobileSessionStarted?: (handler: Handler<MobileSessionStarted>) => void;
+  onRemoteAuthFailures?: (handler: Handler<RemoteAuthFailures>) => void;
   attachmentList?: (payload: AttachmentWorkspaceRequest) => Promise<AttachmentRecord[]>;
   attachmentDelete?: (payload: AttachmentDeleteRequest) => Promise<AttachmentDeleteResult>;
 }
@@ -313,6 +315,8 @@ function bindElectronTransport(): Transport {
     getRemoteToken: () => "",
     setRemoteToken: () => {},
     regenerateRemoteToken: () => window.strideterm.regenerateRemoteToken(),
+    listRemoteSessions: async () => window.strideterm.listRemoteSessions(),
+    revokeRemoteSessions: async (payload) => window.strideterm.revokeRemoteSessions(payload),
     saveProfile: (profile: ProfilePayload) => window.strideterm.saveProfile(profile),
     deleteProfile: (profileId: string, options?: { taskAction?: "pause" | "stop" }) =>
       window.strideterm.deleteProfile(profileId, options),
@@ -367,6 +371,16 @@ function bindElectronTransport(): Transport {
         const parsed = mobileSessionStartedSchema.safeParse(payload);
         if (!parsed.success) {
           rlog("warn", "mobile:session-started ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
+    onRemoteAuthFailures: (handler: Handler<RemoteAuthFailures>) => {
+      window.strideterm.onRemoteAuthFailures?.((payload: unknown) => {
+        const parsed = remoteAuthFailuresSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "remote:auth-failures ignored: malformed payload");
           return;
         }
         handler(parsed.data);

@@ -1,9 +1,12 @@
-import { mount, type VueWrapper } from "@vue/test-utils";
-import { describe, expect, test } from "vitest";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
 import SettingsDialog from "./SettingsDialog.vue";
 import { apiKey } from "../../types/keys.js";
 
 type AnySettings = Record<string, unknown>;
+
+beforeEach(() => setActivePinia(createPinia()));
 
 async function mountDialog(settings: AnySettings = {}, apiOverrides: AnySettings = {}) {
   const wrapper = mount(SettingsDialog, {
@@ -120,7 +123,7 @@ describe("SettingsDialog — notifications.agentsOnly", () => {
 
 describe("SettingsDialog — section navigation", () => {
   test("keeps tab labels accessible alongside decorative icons", async () => {
-    const wrapper = await mountDialog();
+    const wrapper = await mountDialog({}, { isRemote: false, listRemoteSessions: vi.fn(async () => []) });
     const tabs = wrapper.findAll(".settings-tab-btn");
     expect(tabs.map((tab) => tab.text().trim())).toEqual([
       "General",
@@ -128,6 +131,7 @@ describe("SettingsDialog — section navigation", () => {
       "Git",
       "SSH",
       "Telegram",
+      "Remote access",
       "About",
     ]);
     expect(tabs.every((tab) => tab.find('svg[aria-hidden="true"]').exists())).toBe(true);
@@ -137,6 +141,71 @@ describe("SettingsDialog — section navigation", () => {
     await tabs.find((tab) => tab.text().trim() === "SSH")!.trigger("click");
     expect(tabs.find((tab) => tab.text().trim() === "SSH")?.attributes("aria-pressed")).toBe("true");
     expect(tabs.find((tab) => tab.text().trim() === "General")?.attributes("aria-pressed")).toBe("false");
+  });
+});
+
+describe("SettingsDialog — remote session controls", () => {
+  test("hides remote-only settings and omits desktop TTL fields on Save", async () => {
+    const wrapper = await mountWithTransport(
+      { remoteAccess: { sessionIdleTtlMinutes: 777, sessionAbsoluteTtlMinutes: 9999 } },
+      true,
+    );
+    expect(wrapper.findAll(".settings-tab-btn").some((tab) => tab.text().includes("Remote access"))).toBe(false);
+    await clickSave(wrapper);
+    expect(lastSavedPayload(wrapper).remoteAccess).toEqual({ cloudflaredPath: "" });
+    wrapper.unmount();
+  });
+
+  test("saves desktop TTL settings and validates idle against absolute TTL", async () => {
+    const wrapper = await mountDialog(
+      { remoteAccess: {} },
+      { isRemote: false, listRemoteSessions: vi.fn(async () => []) },
+    );
+    await wrapper
+      .findAll(".settings-tab-btn")
+      .find((tab) => tab.text().includes("Remote access"))!
+      .trigger("click");
+    const inputs = wrapper.findAll('[data-testid="remote-session-settings"] input');
+    await inputs[0].setValue(600);
+    await inputs[1].setValue(500);
+    expect(wrapper.text()).toContain("Idle timeout cannot exceed the absolute lifetime.");
+    await inputs[1].setValue(1000);
+    await clickSave(wrapper);
+    expect(lastSavedPayload(wrapper).remoteAccess).toMatchObject({
+      sessionIdleTtlMinutes: 600,
+      sessionAbsoluteTtlMinutes: 1000,
+    });
+    wrapper.unmount();
+  });
+
+  test("loads and revokes browser sessions without rendering the session reference", async () => {
+    const session = {
+      sessionRef: "a".repeat(64),
+      origin: "token",
+      remoteAddress: "192.0.2.10",
+      createdAt: 100,
+      lastSeenAt: 200,
+      expiresAt: 1000,
+      idleExpiresAt: 800,
+    };
+    const listRemoteSessions = vi.fn(async () => [session]);
+    const revokeRemoteSessions = vi.fn(async () => ({ revoked: 1 }));
+    const wrapper = await mountDialog({}, { isRemote: false, listRemoteSessions, revokeRemoteSessions });
+    await wrapper
+      .findAll(".settings-tab-btn")
+      .find((tab) => tab.text().includes("Remote access"))!
+      .trigger("click");
+    await flushPromises();
+    expect(listRemoteSessions).toHaveBeenCalled();
+    expect(wrapper.text()).toContain("192.0.2.10");
+    expect(wrapper.text()).not.toContain(session.sessionRef);
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Sign out")!
+      .trigger("click");
+    await flushPromises();
+    expect(revokeRemoteSessions).toHaveBeenCalledWith({ sessionRef: session.sessionRef });
+    wrapper.unmount();
   });
 });
 

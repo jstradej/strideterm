@@ -1697,6 +1697,10 @@ describe("remote transport API parity — no method silently missing its remote 
     "onMobileSessionStarted",
     "onMobilePairingProgress",
     "onMobileDeviceRevoked",
+    // Browser sessions and authentication alerts are private to the desktop owner.
+    "listRemoteSessions",
+    "revokeRemoteSessions",
+    "onRemoteAuthFailures",
     // Account (plan §8.2). Every one of these is desktop-only on purpose, and the reason is not
     // "not yet": signing in, paying and revoking are acts whose consequences land at THIS machine,
     // and a credential crossing a remote HTTP hop is a credential in one more place than it needs to

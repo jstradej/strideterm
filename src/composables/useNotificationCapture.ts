@@ -2,6 +2,7 @@ import { getCurrentScope, onScopeDispose, watch } from "vue";
 import { storeToRefs } from "pinia";
 import type { ApprovalRecorded } from "../../electron/shared/approval-events.js";
 import type { MobileSessionStarted } from "../../electron/shared/mobile-session-events.js";
+import { remoteAuthFailuresSchema, type RemoteAuthFailures } from "../../electron/shared/remote-access.js";
 import type { Transport } from "../transport.js";
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
@@ -154,7 +155,12 @@ type AttentionByWs = Record<string, AttentionAlertBucket | any>;
 export function useNotificationCapture(
   api?: Pick<
     Transport,
-    "onApprovalRecorded" | "queryApprovalAuditLog" | "onConnectionState" | "onMobileSessionStarted"
+    | "onApprovalRecorded"
+    | "queryApprovalAuditLog"
+    | "onConnectionState"
+    | "onMobileSessionStarted"
+    | "onRemoteAuthFailures"
+    | "isRemote"
   > | null,
 ) {
   const appStore = useAppStore();
@@ -263,6 +269,7 @@ export function useNotificationCapture(
   markStaleNotificationsRead();
   bindApprovalRecorded();
   bindMobileSessionStarted();
+  if (!api?.isRemote) bindRemoteAuthFailures();
 
   /**
    * How far each profile's history has already been rebuilt, keyed by profile
@@ -741,6 +748,31 @@ export function useNotificationCapture(
         sourceAlertId: `mobile-session:${event.deviceId}:${event.startedAt}`,
         occurredAt: new Date(event.startedAt).toISOString(),
       });
+    });
+  }
+
+  function bindRemoteAuthFailures(): void {
+    api?.onRemoteAuthFailures?.((payload: RemoteAuthFailures) => {
+      const parsed = remoteAuthFailuresSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const event = parsed.data;
+      const title = "Failed remote sign-in attempts";
+      const body = `${event.count} failed remote sign-in attempts from ${event.address}.`;
+      const { event: entry, inserted } = notifStore.addAlertEvent({
+        title,
+        body,
+        kind: "error",
+        tier: 1,
+        urgency: "normal",
+        workspaceName: "Remote access",
+        category: "remote-auth",
+        meta: { address: event.address, blockedUntil: event.blockedUntil },
+        sourceAlertId: `remote-auth:${event.address}:${event.blockedUntil}`,
+        occurredAt: new Date().toISOString(),
+      });
+      if (inserted && !notifStore.pinned) {
+        notifStore.pushToast({ ...entry, category: "remote-auth" });
+      }
     });
   }
 

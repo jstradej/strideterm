@@ -74,6 +74,16 @@
           <path d="m9.6 11.8 5-5" />
         </svg>
         <svg
+          v-else-if="tab.id === 'remote'"
+          class="settings-tab-btn__icon"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M4 11a6 6 0 0 1 12 0v4H4v-4Z" />
+          <path d="M7 15v2m6-2v2" />
+        </svg>
+        <svg
           v-else-if="tab.id === 'mobile'"
           class="settings-tab-btn__icon"
           viewBox="0 0 20 20"
@@ -114,6 +124,51 @@
     <div v-else-if="activeTab === 'mobile'" class="settings-tab-content">
       <SettingsMobileTab :profiles="profiles" :initial-view="initialMobileView" />
     </div>
+
+    <section v-else-if="activeTab === 'remote'" class="form settings-tab-content" data-testid="remote-session-settings">
+      <h3>Browser session expiry</h3>
+      <p>Sessions end after inactivity or when their absolute lifetime expires.</p>
+      <label class="settings-check__row">
+        <span>Idle timeout (minutes)</span>
+        <input v-model.number="form.remoteAccess.sessionIdleTtlMinutes" type="number" min="15" max="43200" />
+      </label>
+      <label class="settings-check__row">
+        <span>Absolute lifetime (minutes)</span>
+        <input v-model.number="form.remoteAccess.sessionAbsoluteTtlMinutes" type="number" min="60" max="129600" />
+      </label>
+      <p v-if="sessionTtlError" class="inline-error" role="alert">{{ sessionTtlError }}</p>
+      <h3>Active browser sessions</h3>
+      <div class="remote-sessions__actions">
+        <button type="button" class="button button--ghost" :disabled="remoteSessionsBusy" @click="loadRemoteSessions">
+          Refresh
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
+          :disabled="remoteSessionsBusy || !remoteSessions.length"
+          @click="revokeAllRemoteSessions"
+        >
+          Sign out all
+        </button>
+      </div>
+      <p v-if="remoteSessionsBusy">Loading sessions…</p>
+      <p v-else-if="!remoteSessions.length">No active browser sessions.</p>
+      <article v-for="session in remoteSessions" :key="session.sessionRef" class="remote-sessions__entry">
+        <strong>{{ session.origin }}</strong> · {{ session.remoteAddress }}
+        <p>
+          Created {{ formatRemoteDate(session.createdAt) }} · Last used {{ formatRemoteDate(session.lastSeenAt) }} ·
+          Expires {{ formatRemoteDate(Math.min(session.expiresAt, session.idleExpiresAt)) }}
+        </p>
+        <button
+          type="button"
+          class="button button--ghost"
+          :disabled="remoteSessionsBusy"
+          @click="revokeRemoteSession(session.sessionRef)"
+        >
+          Sign out
+        </button>
+      </article>
+    </section>
 
     <div v-else-if="activeTab === 'about'" class="settings-tab-content">
       <SettingsAboutTab
@@ -181,6 +236,8 @@ import SettingsGitTab from "./settings/SettingsGitTab.vue";
 import SettingsSshTab from "./settings/SettingsSshTab.vue";
 import SettingsTelegramTab from "./settings/SettingsTelegramTab.vue";
 import SettingsMobileTab from "./settings/SettingsMobileTab.vue";
+import { useNotificationStore } from "../../stores/notifications.js";
+import type { RemoteBrowserSession } from "../../../electron/shared/remote-access.js";
 import SettingsTemplatesTab from "./settings/SettingsTemplatesTab.vue";
 import { useAgentHookSettings } from "./settings/useAgentHookSettings.js";
 
@@ -203,6 +260,7 @@ const MOBILE_TAB = {
     "Account and subscription for the hosted control plane, plus pairing strIDEterm Mobile for push notifications and typed remote actions.",
 };
 const ABOUT_TAB = { id: "about", label: "About", title: "Version, repository link, and update check." };
+const REMOTE_TAB = { id: "remote", label: "Remote access", title: "Browser session expiry." };
 
 const THEMES = ["dark", "light", "system"];
 const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
@@ -231,7 +289,7 @@ interface SettingsObj {
   externalEditor?: string;
   clipboardImagePasteEnabled?: boolean;
   clipboardImagePasteDir?: string;
-  remoteAccess?: { cloudflaredPath?: string };
+  remoteAccess?: { cloudflaredPath?: string; sessionIdleTtlMinutes?: number; sessionAbsoluteTtlMinutes?: number };
   notifications?: {
     promptQuietMs?: number;
     agentQuietMs?: number;
@@ -311,9 +369,55 @@ const hookSettings = reactive(useAgentHookSettings(api));
 // (see transport.test.ts's KNOWN_DESKTOP_ONLY_METHODS), so the tab is simply
 // absent there rather than showing controls that would silently no-op —
 // same v-if-on-bridge-method precedent as WorkspaceDialog's browseDirectory.
-const TABS = computed(() => [...BASE_TABS, ...(api?.createMobilePairingInvitation ? [MOBILE_TAB] : []), ABOUT_TAB]);
+const TABS = computed(() => [
+  ...BASE_TABS,
+  ...(api?.listRemoteSessions ? [REMOTE_TAB] : []),
+  ...(api?.createMobilePairingInvitation ? [MOBILE_TAB] : []),
+  ABOUT_TAB,
+]);
 
 const activeTab = ref(props.initialTab || "general");
+const remoteSessions = ref<RemoteBrowserSession[]>([]);
+const remoteSessionsBusy = ref(false);
+const notifications = computed(() => useNotificationStore());
+async function loadRemoteSessions() {
+  if (!api?.listRemoteSessions || remoteSessionsBusy.value) return;
+  remoteSessionsBusy.value = true;
+  try {
+    await notifications.value.runWithToast("Failed to load sessions", async () => {
+      remoteSessions.value = await api.listRemoteSessions!();
+    });
+  } finally {
+    remoteSessionsBusy.value = false;
+  }
+}
+async function revokeRemoteSession(sessionRef: string) {
+  if (!api?.revokeRemoteSessions || remoteSessionsBusy.value) return;
+  remoteSessionsBusy.value = true;
+  try {
+    await notifications.value.runWithToast("Failed to sign out session", async () => {
+      await api.revokeRemoteSessions!({ sessionRef });
+      remoteSessions.value = await api.listRemoteSessions!();
+    });
+  } finally {
+    remoteSessionsBusy.value = false;
+  }
+}
+async function revokeAllRemoteSessions() {
+  if (!api?.revokeRemoteSessions || remoteSessionsBusy.value) return;
+  remoteSessionsBusy.value = true;
+  try {
+    await notifications.value.runWithToast("Failed to sign out sessions", async () => {
+      await api.revokeRemoteSessions!({ all: true });
+      remoteSessions.value = await api.listRemoteSessions!();
+    });
+  } finally {
+    remoteSessionsBusy.value = false;
+  }
+}
+function formatRemoteDate(at: number): string {
+  return new Date(at).toLocaleString();
+}
 const sshSettingsTab = ref<{ requestClose?: () => Promise<boolean> } | null>(null);
 const form = reactive({
   theme: props.settings.theme || "dark",
@@ -323,6 +427,8 @@ const form = reactive({
   clipboardImagePasteDir: props.settings.clipboardImagePasteDir || "",
   remoteAccess: {
     cloudflaredPath: props.settings.remoteAccess?.cloudflaredPath || "",
+    sessionIdleTtlMinutes: props.settings.remoteAccess?.sessionIdleTtlMinutes ?? 1440,
+    sessionAbsoluteTtlMinutes: props.settings.remoteAccess?.sessionAbsoluteTtlMinutes ?? 10080,
   },
   notifications: {
     promptQuietMs: props.settings.notifications?.promptQuietMs ?? 2500,
@@ -422,6 +528,22 @@ watch(
 const hasUnsavedChanges = computed(
   () => JSON.stringify({ form: toRaw(form), templates: toRaw(templates) }) !== initialSnapshot,
 );
+watch(
+  activeTab,
+  (tabId) => {
+    if (tabId === "remote" && api?.listRemoteSessions && api.isRemote === false) void loadRemoteSessions();
+  },
+  { immediate: true },
+);
+const sessionTtlError = computed(() => {
+  const { sessionIdleTtlMinutes: idle, sessionAbsoluteTtlMinutes: absolute } = form.remoteAccess;
+  if (!Number.isInteger(idle) || idle < 15 || idle > 43200)
+    return "Idle timeout must be between 15 and 43,200 minutes.";
+  if (!Number.isInteger(absolute) || absolute < 60 || absolute > 129600)
+    return "Absolute lifetime must be between 60 and 129,600 minutes.";
+  if (idle > absolute) return "Idle timeout cannot exceed the absolute lifetime.";
+  return "";
+});
 
 provide("settingsForm", form);
 provide("settingsTemplates", templates);
@@ -439,6 +561,10 @@ async function switchTab(tabId: string) {
 
 async function handleSave() {
   if (saving.value) return;
+  if (!api?.isRemote && sessionTtlError.value) {
+    useNotificationStore().showError("Invalid session expiry", sessionTtlError.value);
+    return;
+  }
   if (!(await guardSshSettings())) return;
   saving.value = true;
   leaveAfterSave.value = true;
@@ -448,7 +574,15 @@ async function handleSave() {
     externalEditor: form.externalEditor,
     clipboardImagePasteEnabled: form.clipboardImagePasteEnabled,
     clipboardImagePasteDir: form.clipboardImagePasteDir,
-    remoteAccess: { cloudflaredPath: form.remoteAccess.cloudflaredPath },
+    remoteAccess: {
+      cloudflaredPath: form.remoteAccess.cloudflaredPath,
+      ...(!api?.isRemote
+        ? {
+            sessionIdleTtlMinutes: form.remoteAccess.sessionIdleTtlMinutes,
+            sessionAbsoluteTtlMinutes: form.remoteAccess.sessionAbsoluteTtlMinutes,
+          }
+        : {}),
+    },
     notifications: {
       promptQuietMs: form.notifications.promptQuietMs,
       agentQuietMs: form.notifications.agentQuietMs,

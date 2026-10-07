@@ -125,6 +125,24 @@ describe("useNotificationCapture — per-window profile scoping", () => {
   });
 });
 
+describe("useNotificationCapture — remote auth failures", () => {
+  it("adds one desktop notification and toast, while remote clients do not subscribe", async () => {
+    const notifStore = useNotificationStore();
+    let handler: ((payload: AnyApi) => void) | undefined;
+    const api: AnyApi = { isRemote: false, onRemoteAuthFailures: (fn: (payload: AnyApi) => void) => (handler = fn) };
+    useNotificationCapture(api);
+    const failure = { address: "192.0.2.4", count: 11, blockedUntil: 123456 };
+    handler!(failure);
+    await nextTick();
+    expect(notifStore.sessions[0].events[0].title).toBe("Failed remote sign-in attempts");
+    expect(notifStore.latestToast?.body).toContain("192.0.2.4");
+
+    const remoteSubscribe = vi.fn();
+    useNotificationCapture({ isRemote: true, onRemoteAuthFailures: remoteSubscribe } as AnyApi);
+    expect(remoteSubscribe).not.toHaveBeenCalled();
+  });
+});
+
 describe("useNotificationCapture — question alerts", () => {
   beforeEach(() => {
     vi.useFakeTimers();

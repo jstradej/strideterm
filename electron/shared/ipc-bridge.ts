@@ -1,5 +1,6 @@
 import type { StatePayload, RecoveryResult } from "./types/state.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
+import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
   Workspace,
   WorkspaceUIState,
@@ -432,6 +433,8 @@ export interface StridetermAPI {
 
   // Agent hooks
   regenerateRemoteToken: () => Promise<unknown>;
+  listRemoteSessions: () => Promise<RemoteBrowserSession[]>;
+  revokeRemoteSessions: (payload: { sessionRef?: string; all?: boolean }) => Promise<{ revoked: number }>;
   configureClaudeHook: () => Promise<unknown>;
   removeClaudeHook: () => Promise<unknown>;
   getClaudeHookStatus: () => Promise<unknown>;
@@ -808,6 +811,7 @@ export interface StridetermAPI {
   ) => void;
   /** A paired phone opened a session. The payload is UNVALIDATED here; consumers parse it at the transport boundary. */
   onMobileSessionStarted: (handler: (payload: unknown) => void) => void;
+  onRemoteAuthFailures: (handler: (payload: unknown) => void) => void;
   onMobilePairingProgress: (handler: (payload: Record<string, unknown>) => void) => void;
   onMobileDeviceRevoked: (handler: (payload: { deviceId: string }) => void) => void;
 }
