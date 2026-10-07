@@ -1,10 +1,11 @@
 import os from "node:os";
 import path from "node:path";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createNotifyUrlRegistry, normalizeCwd, SHARD_LEASE_TTL_MS } from "./notify-url-registry.js";
 
 let tempDir: string;
@@ -16,6 +17,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
@@ -66,6 +68,44 @@ describe("notify URL registry", () => {
     );
     expect(local[KEY][0].url).toBe(urlFor(1111, "ws:p1"));
   });
+
+  test.skipIf(process.platform !== "win32")(
+    "retries transient shard rename failures and removes the temp file after exhaustion",
+    () => {
+      const registry = makeRegistry("aaaaaaaaaaaa");
+      const realRenameSync = fsSync.renameSync.bind(fsSync);
+      const transientError = Object.assign(new Error("file is in use"), { code: "EPERM" });
+      let transientFailures = 2;
+      vi.spyOn(fsSync, "renameSync").mockImplementation((source, destination) => {
+        if (String(destination) === registry.ownPath && transientFailures > 0) {
+          transientFailures -= 1;
+          throw transientError;
+        }
+        return realRenameSync(source, destination);
+      });
+
+      registry.register(REPO, urlFor(1111, "ws:p1"));
+
+      expect(transientFailures).toBe(0);
+      expect(registry.readOwn()[KEY][0].url).toBe(urlFor(1111, "ws:p1"));
+
+      const persistentError = Object.assign(new Error("file is in use"), { code: "EBUSY" });
+      const attempts: string[] = [];
+      vi.spyOn(fsSync, "renameSync").mockImplementation((source, destination) => {
+        if (String(destination) === registry.ownPath) {
+          attempts.push(String(source));
+          throw persistentError;
+        }
+        return realRenameSync(source, destination);
+      });
+
+      registry.register(REPO, urlFor(2222, "ws:p1"));
+
+      expect(attempts).toHaveLength(4);
+      expect(attempts.every((source) => !existsSync(source))).toBe(true);
+      expect(registry.readOwn()[KEY][0].url).toBe(urlFor(1111, "ws:p1"));
+    },
+  );
 
   test("two processes registering at the same time keep both entries", async () => {
     // P2-5: with one shared document, dev and prod each read the old content,

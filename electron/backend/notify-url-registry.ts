@@ -5,6 +5,8 @@ import { getLogger } from "./logger.js";
 
 const log = getLogger("notify-urls");
 
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40] as const;
+
 /**
  * The registry that tells an installed `notify.mjs` where to POST a hook.
  *
@@ -194,7 +196,25 @@ function writeFileAtomic(file: string, data: NotifyUrlRegistry | NotifyUrlShard)
   }
   const tmpPath = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
   fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(tmpPath, file);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tmpPath, file);
+      break;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const delayMs = WINDOWS_RENAME_RETRY_DELAYS_MS[attempt];
+      if (process.platform !== "win32" || !["EPERM", "EBUSY", "EACCES"].includes(code || "") || delayMs === undefined) {
+        try {
+          fs.unlinkSync(tmpPath);
+        } catch {
+          // Best effort: preserve the rename failure as the reported error.
+        }
+        throw err;
+      }
+      log.debug("notify-urls atomic rename blocked, retrying", { attempt: attempt + 1, code });
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+    }
+  }
   try {
     fs.chmodSync(file, 0o600);
   } catch {
