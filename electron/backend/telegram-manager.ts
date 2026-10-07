@@ -231,12 +231,12 @@ export interface TelegramPrInfo {
 export interface TelegramTunnelInfo {
   /** Whether LAN remote access is enabled in settings */
   remoteEnabled: boolean;
-  /** LAN URLs (one per network interface when host=0.0.0.0). Includes ?token=. */
+  /** LAN URLs (one per network interface when host=0.0.0.0). */
   lanUrls: string[];
   /** Cloudflare quick tunnel public URL when connected; empty otherwise. */
   cloudflareUrl: string;
-  /** Auth token to append (?token=...) to cloudflare URL when remote auth is on. */
-  remoteToken: string;
+  /** Mint a one-use URL ticket scoped to the exact URL origin and profile. */
+  createBrowserTicket: (profileId: string, origin: string, chatId?: string) => string;
   /** Cloudflare tunnel status: idle | connecting | connected */
   cloudflareStatus: string;
   /** Configured tunnel mode (e.g. "off" | "cloudflare" | "lan-only") */
@@ -2666,14 +2666,29 @@ export class TelegramManager extends EventEmitter {
     }
 
     const lanUrls = (info.lanUrls || []).filter((u) => !!u);
-    let cloudflareUrl = info.cloudflareUrl || "";
-    if (cloudflareUrl && info.remoteToken && !cloudflareUrl.includes("?token=")) {
-      // Append the auth token so the user doesn't have to re-paste it on
-      // their phone — the cloudflared snapshot only carries the public URL.
-      cloudflareUrl += `?token=${encodeURIComponent(info.remoteToken)}`;
+    const makeTicketUrl = (base: string): string => {
+      const url = new URL(base);
+      url.search = "";
+      url.hash = "";
+      const ticket = info.createBrowserTicket(profileId, url.origin, chatId);
+      url.searchParams.set("ticket", ticket);
+      return url.toString();
+    };
+    const cloudflareUrl = info.cloudflareUrl ? makeTicketUrl(info.cloudflareUrl) : "";
+    const profileLanUrls = lanUrls.map(makeTicketUrl);
+    const ticketCount = profileLanUrls.length + (cloudflareUrl ? 1 : 0);
+    if (ticketCount) {
+      this._audit({
+        chatId,
+        operation: "remote.browser-ticket.issue",
+        category: "read",
+        method: "/tunnel",
+        resourceType: "profile",
+        resourceId: profileId,
+        summary: `urls=${ticketCount}`,
+        userInitiated: true,
+      });
     }
-    cloudflareUrl = this._withTunnelProfile(cloudflareUrl, profileId);
-    const profileLanUrls = lanUrls.map((url) => this._withTunnelProfile(url, profileId));
 
     if (!info.remoteEnabled && !cloudflareUrl && !profileLanUrls.length) {
       await this._sendText(
@@ -2703,6 +2718,10 @@ export class TelegramManager extends EventEmitter {
     const showRestart = reconnectAllowed && info.cloudflareStatus === "connected";
 
     const lines: string[] = ["🌐 *strIDEterm tunnel*", ""];
+    if (cloudflareUrl || profileLanUrls.length) {
+      lines.push("Links are valid for 5 minutes and can be used once\\.");
+      lines.push("");
+    }
 
     if (cloudflareUrl) {
       const statusEmoji =

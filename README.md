@@ -21,7 +21,7 @@
 - **Agent Task Runner** - supervised coding loop with Worker + Judge agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot, or OpenCode for either role): runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress. The task brief and worker rules live in editable `TASK.md` / `WORKER.md` files — concrete verification commands belong in your brief, not auto-detected from the repo — see [docs](docs/agent-task-runner.md)
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **SSH Support** - connect to remote machines from a saved host book or ad-hoc, with built-in key manager, host key TOFU verification, `~/.ssh/config` import, SSH agent support, jump hosts, and three launch modes (built-in, system `ssh`, or WSL) — see [docs](docs/ssh.md)
-- **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
+- **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code; browser sessions expire after 24 hours idle or 7 days total by default and can be revoked in Settings
 - **Telegram Bot** - forward strIDEterm alerts to a Telegram chat and reply / tap inline buttons to drive the app from your phone — start a task, pause / resume agents, capture screenshots, fetch task files, open a PR review, grab the remote-access URL via `/tunnel`, all over Telegram's long-polling API (no webhook, no public tunnel) — see [docs](docs/telegram.md)
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
 - **Finish Notifications** - know when a command or agent finishes without watching the screen:

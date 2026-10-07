@@ -59,6 +59,8 @@ export interface RemoteAccessSettings {
   customPublicUrl: string;
   cloudflaredPath: string;
   autoTunnel: boolean;
+  sessionIdleTtlMinutes: number;
+  sessionAbsoluteTtlMinutes: number;
 }
 
 export interface ProviderDefaultConfig {

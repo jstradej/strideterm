@@ -26,6 +26,10 @@ const UTF8_DECODER = (() => {
   }
 })();
 
+function normalizeTtlMinutes(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+}
+
 const WINDOWS_1250_ENCODER_MAP = (() => {
   try {
     const decoder = new TextDecoder("windows-1250");
@@ -543,6 +547,8 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         customPublicUrl: "",
         cloudflaredPath: "",
         autoTunnel: false,
+        sessionIdleTtlMinutes: 1440,
+        sessionAbsoluteTtlMinutes: 10080,
       },
       taskDefaults: {
         workerProvider: { providerId: "claude", model: "sonnet" },
@@ -1149,6 +1155,21 @@ export function normalizeState(
   const rawTelegram = rawIntegrations.telegram || {};
   const rawMobile = rawIntegrations.mobile || {};
   const rawRemoteAccess = rawSettings.remoteAccess || {};
+  const remoteSessionAbsoluteTtlMinutes = normalizeTtlMinutes(
+    rawRemoteAccess.sessionAbsoluteTtlMinutes,
+    60,
+    129600,
+    defaults.settings.remoteAccess.sessionAbsoluteTtlMinutes,
+  );
+  const remoteSessionIdleTtlMinutes = Math.min(
+    normalizeTtlMinutes(
+      rawRemoteAccess.sessionIdleTtlMinutes,
+      15,
+      43200,
+      defaults.settings.remoteAccess.sessionIdleTtlMinutes,
+    ),
+    remoteSessionAbsoluteTtlMinutes,
+  );
   const rawTaskDefaults = rawSettings.taskDefaults || {};
   const rawGit = rawSettings.git || {};
   const rawExternalPathOpener = rawSettings.externalPathOpener || {};
@@ -1389,6 +1410,8 @@ export function normalizeState(
       ...defaults.settings.remoteAccess,
       ...rawRemoteAccess,
       paused: rawRemoteAccess.paused === true,
+      sessionIdleTtlMinutes: remoteSessionIdleTtlMinutes,
+      sessionAbsoluteTtlMinutes: remoteSessionAbsoluteTtlMinutes,
       host: rawRemoteAccess.host || defaults.settings.remoteAccess.host,
       // A plain default backfill, not a migration: a missing key gets `true` (today's behaviour), a
       // stored `false` is never overwritten.

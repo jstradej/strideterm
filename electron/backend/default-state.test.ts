@@ -382,6 +382,28 @@ describe("default state", () => {
     });
   });
 
+  describe("remote access session lifetimes", () => {
+    test("defaults to a 24-hour idle and 7-day absolute lifetime", () => {
+      expect(createDefaultState().settings.remoteAccess).toMatchObject({
+        sessionIdleTtlMinutes: 1440,
+        sessionAbsoluteTtlMinutes: 10080,
+      });
+    });
+
+    test("normalizes out-of-range values and caps idle at the absolute lifetime", () => {
+      expect(
+        normalizeState({
+          settings: { remoteAccess: { sessionIdleTtlMinutes: 1, sessionAbsoluteTtlMinutes: 200000 } },
+        }).settings.remoteAccess,
+      ).toMatchObject({ sessionIdleTtlMinutes: 1440, sessionAbsoluteTtlMinutes: 10080 });
+      expect(
+        normalizeState({
+          settings: { remoteAccess: { sessionIdleTtlMinutes: 5000, sessionAbsoluteTtlMinutes: 3000 } },
+        }).settings.remoteAccess,
+      ).toMatchObject({ sessionIdleTtlMinutes: 3000, sessionAbsoluteTtlMinutes: 3000 });
+    });
+  });
+
   test("default state includes Azure DevOps integration settings", () => {
     const state = createDefaultState();
     expect(state.settings.integrations.azureDevops.enabled).toBe(true);

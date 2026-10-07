@@ -1,4 +1,5 @@
 import { z } from "zod";
+export { remoteSessionRevokeSchema } from "../shared/remote-access.js";
 
 import type { AccountUiState } from "./account/account-state.js";
 

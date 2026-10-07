@@ -19,6 +19,7 @@ import {
   workspaceUIStateSchema,
   projectSchema,
   settingsSchema,
+  remoteSessionRevokeSchema,
   azureConnectionSchema,
   azureCommentSchema,
   azureVoteSchema,
@@ -251,6 +252,7 @@ export function registerIpc(
     runtime.on("mobile:session-started", (payload: any) => emitToRenderer("mobile:session-started", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:device-revoked", (payload: any) => emitToRenderer("mobile:device-revoked", payload)),
+    runtime.on("remote:auth-failures", (payload: unknown) => emitToRenderer("remote:auth-failures", payload)),
     // One derived account state, broadcast to EVERY window. The renderer computes nothing from it —
     // see account-state.ts for what it carries and, more to the point, what it never does.
     runtime.on("account:updated", (payload: unknown) =>
@@ -1444,6 +1446,10 @@ export function registerIpc(
   );
   handle("remote:token:regenerate", async () =>
     withOperationPromise({ opId: "remote:token:regenerate" }, () => runtime.regenerateRemoteToken()),
+  );
+  handle("remote:sessions:list", async () => runtime.listRemoteSessions());
+  handle("remote:sessions:revoke", async (_event, payload) =>
+    runtime.revokeRemoteSessions(validateIpc(remoteSessionRevokeSchema, payload, "remote:sessions:revoke")),
   );
   handle("tunnel:refresh", async () =>
     withOperationPromise({ opId: "tunnel:refresh" }, () => runtime.refreshTunnelState()),

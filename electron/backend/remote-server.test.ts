@@ -145,6 +145,8 @@ describe("sanitizeSettingsFromRemote", () => {
         port: 1234,
         token: "attacker-chosen",
         customPublicUrl: "https://my.tunnel.example",
+        sessionIdleTtlMinutes: 30,
+        sessionAbsoluteTtlMinutes: 60,
         someUnknownFutureField: "kept",
       },
       logLevel: "debug",

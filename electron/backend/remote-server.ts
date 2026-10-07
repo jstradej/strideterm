@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
@@ -85,6 +86,7 @@ import { parseRemoteViewerId, remoteViewerId } from "./viewer-id.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
 import { classifyMobileRoute, evaluateMobileRoute } from "./mobile-session-route-policy.js";
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
+import type { RemoteBrowserSession, RemoteSessionRevoke } from "../shared/remote-access.js";
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import {
   buildRemoteCore,
@@ -148,13 +150,13 @@ const SESSION_COOKIE_ATTRS_BASE = "HttpOnly; SameSite=Strict; Path=/";
  * the door on accidental insecure-channel echoes (e.g. tooling that strips
  * TLS for debugging).
  */
-export function buildSessionCookieAttrs(headers: IncomingMessage["headers"]): string {
+export function buildSessionCookieAttrs(headers: IncomingMessage["headers"], maxAgeSeconds?: number): string {
   const proto = String(headers["x-forwarded-proto"] || "")
     .toLowerCase()
     .split(",")[0]
     .trim();
-  if (proto === "https") return `${SESSION_COOKIE_ATTRS_BASE}; Secure`;
-  return SESSION_COOKIE_ATTRS_BASE;
+  const attrs = proto === "https" ? `${SESSION_COOKIE_ATTRS_BASE}; Secure` : SESSION_COOKIE_ATTRS_BASE;
+  return Number.isFinite(maxAgeSeconds) ? `${attrs}; Max-Age=${Math.max(0, Math.floor(maxAgeSeconds!))}` : attrs;
 }
 
 const log = getLogger("remote-server");
@@ -424,7 +426,15 @@ interface Runtime {
   getPayload(): {
     appState: {
       settings: {
-        remoteAccess: { enabled: boolean; paused?: boolean; host: string; port: number; token: string };
+        remoteAccess: {
+          enabled: boolean;
+          paused?: boolean;
+          host: string;
+          port: number;
+          token: string;
+          sessionIdleTtlMinutes?: number;
+          sessionAbsoluteTtlMinutes?: number;
+        };
       };
     };
   };
@@ -445,6 +455,17 @@ interface Runtime {
   on(channel: string, handler: AnyFn): () => void;
   /** Wires this server's session-revoke function back into the runtime (see MobileManager.revokeDevice). */
   setMobileRemoteSessionRevoker?(fn: (deviceId: string) => void): void;
+  setRemoteBrowserSessionController?(
+    controller: {
+      list(): RemoteBrowserSession[];
+      revoke(payload: RemoteSessionRevoke): { revoked: number };
+    } | null,
+  ): void;
+  clearRemoteBrowserTickets?(): void;
+  issueRemoteBrowserTicket?(profileId: string, origin: string): string;
+  consumeRemoteBrowserTicket?(ticket: string, origin: string): { profileId: string } | null;
+  isCloudflareTunnelConnected?(): boolean;
+  reportRemoteAuthFailures?(payload: { address: string; count: number; blockedUntil: number }): void;
   /** Single-use WebView session ticket exchange (plan §9.2) — null on any failure, reason undisclosed. */
   consumeMobileWebSessionTicket?(
     ticketId: string,
@@ -645,10 +666,8 @@ function writeHead(response: ServerResponse, statusCode: number, headers: Record
  *     a profile-allowlist change ends the session at the next thing it tries to do, in addition to
  *     the revoke path closing it immediately.
  *
- * `expiresAt` stays `null` for the pre-existing browser/token-client/Telegram sessions, whose
- * lifetime question is a different one (they hold the master token or a desktop-issued cookie, and
- * the user's own remote-access settings are what end them). Only a mobile session — the kind a phone
- * bootstraps from a ticket — is bounded here.
+ * Browser cookie sessions also have idle and absolute deadlines. `token-client:*` entries are
+ * registry contexts only and are never accepted as cookie sessions.
  */
 interface MobileSessionRecord {
   sessionId: string;
@@ -657,10 +676,13 @@ interface MobileSessionRecord {
   profileId: string;
   createdAt: number;
   lastSeenAt: number;
-  /** Absolute deadline. Non-null exactly for a mobile (ticket-bootstrapped) session. */
+  /** Absolute deadline. Null only for token-client registry contexts. */
   expiresAt: number | null;
-  /** Idle deadline, moved forward by meaningful activity only. Null when `expiresAt` is. */
+  /** Idle deadline, moved forward by meaningful activity only. */
   idleExpiresAt: number | null;
+  origin?: "token" | "ticket" | "mobile" | "token-client";
+  remoteAddress?: string;
+  idleTtlMs?: number;
 }
 
 /**
@@ -713,6 +735,8 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
   // access), but the fix is one entry and the lost capability — "edit my
   // VPS URL from the phone" — is rare enough to walk back to the desktop.
   "customPublicUrl",
+  "sessionIdleTtlMinutes",
+  "sessionAbsoluteTtlMinutes",
 ];
 
 /**
@@ -1409,6 +1433,10 @@ function remoteSessionRef(sessionId: string): string {
   const kind = sessionId.startsWith("token-client:") ? "token-client" : "cookie";
   const digest = createHash("sha256").update(sessionId).digest("hex").slice(0, 12);
   return `${kind}:${digest}`;
+}
+
+function remoteSessionManagementRef(sessionId: string): string {
+  return createHash("sha256").update(sessionId).digest("hex");
 }
 
 /**
@@ -2539,6 +2567,60 @@ export async function startRemoteServer({
   }
 
   const audit = createAuditLogger(isLoopbackOrigin ? "relay-origin-api-audit" : "remote-api-audit");
+  const authFailureWindowMs = 5 * 60_000;
+  const authFailureBlockMs = 15 * 60_000;
+  const authFailureEntries = new Map<
+    string,
+    { windowStart: number; count: number; blockedUntil: number; notifiedUntil: number }
+  >();
+  let authFailureGlobalWindow = { windowStart: Date.now(), count: 0, blockedUntil: 0 };
+
+  function authAddress(request: IncomingMessage): string {
+    const socketAddress = request.socket?.remoteAddress || "unknown";
+    const loopback = socketAddress === "127.0.0.1" || socketAddress === "::1" || socketAddress === "::ffff:127.0.0.1";
+    if (!loopback || !runtime.isCloudflareTunnelConnected?.()) return socketAddress;
+    const forwarded = String(request.headers["cf-connecting-ip"] || "").trim();
+    return isIP(forwarded) ? forwarded : socketAddress;
+  }
+
+  function failedAuthentication(request: IncomingMessage, kind: "token" | "ticket" | "api" | "ws", path = ""): boolean {
+    const now = Date.now();
+    const address = authAddress(request);
+    const entryKey = address;
+    let entry = authFailureEntries.get(entryKey);
+    audit.warn("auth failed", { kind, addr: address, ...(path ? { path } : {}) });
+    if (entry?.blockedUntil && entry.blockedUntil > now) return true;
+    if (authFailureGlobalWindow.blockedUntil > now) return true;
+    for (const [key, existing] of authFailureEntries) {
+      if (existing.blockedUntil <= now && now - existing.windowStart >= authFailureWindowMs)
+        authFailureEntries.delete(key);
+    }
+    if (now - authFailureGlobalWindow.windowStart >= authFailureWindowMs) {
+      authFailureGlobalWindow = { windowStart: now, count: 0, blockedUntil: 0 };
+    }
+    if (!entry || now - entry.windowStart >= authFailureWindowMs) {
+      entry = { windowStart: now, count: 0, blockedUntil: 0, notifiedUntil: 0 };
+    }
+    entry.count += 1;
+    authFailureGlobalWindow.count += 1;
+    if (authFailureEntries.size >= 512 && !authFailureEntries.has(entryKey)) {
+      const oldest = [...authFailureEntries].sort((a, b) => a[1].windowStart - b[1].windowStart)[0];
+      if (oldest) authFailureEntries.delete(oldest[0]);
+    }
+    const localLimit = entry.count > 10;
+    const globalLimit = authFailureGlobalWindow.count > 200;
+    const overLimit = localLimit || globalLimit;
+    if (overLimit) {
+      entry.blockedUntil = now + authFailureBlockMs;
+      if (globalLimit) authFailureGlobalWindow.blockedUntil = now + authFailureBlockMs;
+      if (localLimit && entry.notifiedUntil <= now) {
+        entry.notifiedUntil = entry.blockedUntil;
+        runtime.reportRemoteAuthFailures?.({ address, count: entry.count, blockedUntil: entry.blockedUntil });
+      }
+    }
+    authFailureEntries.set(entryKey, entry);
+    return overLimit;
+  }
 
   // Active sessions, keyed by session id (cookie value or `token-client:*`).
   // Lives only in process memory; restarts (settings change, token
@@ -2586,11 +2668,16 @@ export async function startRemoteServer({
     // `touchMobileSession` is the whole enforcement point for a mobile session: it ends one that is
     // past either deadline or whose device is no longer authorized, and returns false — so the answer
     // to "is this request authorized" and "is this session still alive" cannot disagree.
-    if (sessionId && activeSessions.has(sessionId)) return touchMobileSession(sessionId);
+    if (sessionId && !sessionId.startsWith("token-client:") && activeSessions.has(sessionId)) {
+      return touchMobileSession(sessionId);
+    }
     return false;
   }
 
-  function mintSession(requestedProfileId = ""): string {
+  function mintSession(
+    requestedProfileId = "",
+    options: { origin?: "token" | "ticket"; remoteAddress?: string; absoluteTtlMs?: number } = {},
+  ): string {
     const id = randomBytes(32).toString("base64url");
     // Bootstrap default profile / workspace context for this new session.
     const client = registry.getOrCreate(
@@ -2599,6 +2686,8 @@ export async function startRemoteServer({
       requestedProfileId,
     );
     const now = Date.now();
+    const absoluteTtlMs = Math.min(options.absoluteTtlMs ?? browserAbsoluteTtlMs(), browserAbsoluteTtlMs());
+    const idleTtlMs = Math.min(browserIdleTtlMs(), absoluteTtlMs);
     activeSessions.set(id, {
       sessionId: id,
       deviceId: null,
@@ -2606,11 +2695,66 @@ export async function startRemoteServer({
       profileId: client.profileId,
       createdAt: now,
       lastSeenAt: now,
-      expiresAt: null,
-      idleExpiresAt: null,
+      expiresAt: now + absoluteTtlMs,
+      idleExpiresAt: now + idleTtlMs,
+      origin: options.origin ?? "token",
+      remoteAddress: options.remoteAddress ?? "",
+      idleTtlMs,
     });
     return id;
   }
+
+  function browserAbsoluteTtlMs(): number {
+    const minutes = runtime.getPayload().appState.settings.remoteAccess.sessionAbsoluteTtlMinutes;
+    const ttl =
+      typeof minutes === "number" && Number.isInteger(minutes) && minutes >= 60 && minutes <= 129600 ? minutes : 10080;
+    return ttl * 60_000;
+  }
+
+  function browserIdleTtlMs(): number {
+    const settings = runtime.getPayload().appState.settings.remoteAccess;
+    const absoluteMinutes = settings.sessionAbsoluteTtlMinutes;
+    const idleMinutes = settings.sessionIdleTtlMinutes;
+    const absolute =
+      typeof absoluteMinutes === "number" && Number.isInteger(absoluteMinutes) && absoluteMinutes >= 60
+        ? absoluteMinutes
+        : 10080;
+    const idle =
+      typeof idleMinutes === "number" && Number.isInteger(idleMinutes) && idleMinutes >= 15 ? idleMinutes : 1440;
+    return Math.min(idle, absolute) * 60_000;
+  }
+
+  if (!isLoopbackOrigin)
+    runtime.setRemoteBrowserSessionController?.({
+      list: () => {
+        const now = Date.now();
+        for (const record of [...activeSessions.values()]) {
+          if (record.origin !== "token" && record.origin !== "ticket") continue;
+          const expiry = mobileSessionExpiry(record, now);
+          if (expiry !== "live") endMobileSession(record.sessionId, expiry);
+        }
+        return [...activeSessions.values()]
+          .filter((record) => record.origin === "token" || record.origin === "ticket")
+          .map((record) => ({
+            sessionRef: remoteSessionManagementRef(record.sessionId),
+            origin: record.origin as "token" | "ticket",
+            remoteAddress: record.remoteAddress ?? "",
+            createdAt: record.createdAt,
+            lastSeenAt: record.lastSeenAt,
+            expiresAt: record.expiresAt ?? 0,
+            idleExpiresAt: record.idleExpiresAt ?? 0,
+          }));
+      },
+      revoke: (payload) => {
+        const matching = [...activeSessions.values()].filter(
+          (record) =>
+            (record.origin === "token" || record.origin === "ticket") &&
+            (payload.all === true || remoteSessionManagementRef(record.sessionId) === payload.sessionRef),
+        );
+        for (const record of matching) endMobileSession(record.sessionId, "revoked");
+        return { revoked: matching.length };
+      },
+    });
 
   /**
    * Records one `session.*` row for a MOBILE session (a record with a device id); a no-op for every
@@ -2751,6 +2895,7 @@ export async function startRemoteServer({
       // Both deadlines start here, and the absolute one is never moved again.
       expiresAt: now + mobileSessionAbsoluteTtlMs,
       idleExpiresAt: now + mobileSessionIdleTtlMs,
+      origin: "mobile",
     });
     publishMobileSessions();
     return id;
@@ -2793,7 +2938,10 @@ export async function startRemoteServer({
     closeSessionSockets(sessionId, reason);
     registry.remove(sessionId);
     if (record?.deviceId) publishMobileSessions();
-    audit.info("mobile session ended", { sessionRef: remoteSessionRef(sessionId), reason });
+    audit.info(record?.origin === "token" || record?.origin === "ticket" ? "session ended" : "mobile session ended", {
+      sessionRef: remoteSessionRef(sessionId),
+      reason,
+    });
   }
 
   /**
@@ -2812,10 +2960,11 @@ export async function startRemoteServer({
       return false;
     }
     if (activity && record.expiresAt !== null) {
+      const idleTtlMs = record.idleTtlMs ?? mobileSessionIdleTtlMs;
       activeSessions.set(sessionId, {
         ...record,
         lastSeenAt: now,
-        idleExpiresAt: now + mobileSessionIdleTtlMs,
+        idleExpiresAt: Math.min(now + idleTtlMs, record.expiresAt),
       });
     }
     return true;
@@ -2840,7 +2989,7 @@ export async function startRemoteServer({
   function sessionIdForRequest(requestUrl: string, headers: IncomingMessage["headers"]): string {
     const url = new URL(requestUrl, "http://localhost");
     const cookieSessionId = getSessionFromRequest(headers);
-    if (cookieSessionId && activeSessions.has(cookieSessionId)) {
+    if (cookieSessionId && !cookieSessionId.startsWith("token-client:") && activeSessions.has(cookieSessionId)) {
       // Same check as `isAuthorized`, because this function is reached on paths that did not go
       // through it — and a session id handed out here would otherwise outlive its own deadline.
       return touchMobileSession(cookieSessionId) ? cookieSessionId : "";
@@ -2865,6 +3014,7 @@ export async function startRemoteServer({
       lastSeenAt: now,
       expiresAt: null,
       idleExpiresAt: null,
+      origin: "token-client",
     });
     return tokenSessionId;
   }
@@ -3393,9 +3543,75 @@ export async function startRemoteServer({
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/" && url.searchParams.has("ticket")) {
+        const address = authAddress(request);
+        const rateLimited =
+          authFailureGlobalWindow.blockedUntil > Date.now() ||
+          (authFailureEntries.get(address)?.blockedUntil ?? 0) > Date.now();
+        if (rateLimited) {
+          audit.warn("auth failed", { kind: "ticket", addr: address });
+          writeHead(response, 429, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+          response.end("Too many failed authentication attempts");
+          return;
+        }
+        const proto = String(request.headers["x-forwarded-proto"] || "http")
+          .split(",")[0]!
+          .trim()
+          .toLowerCase();
+        const hostHeader = String(request.headers.host || "");
+        const origin = hostHeader ? `${proto}://${hostHeader}` : "";
+        const ticketValue = url.searchParams.get("ticket") || "";
+        const record = !isLoopbackOrigin ? runtime.consumeRemoteBrowserTicket?.(ticketValue, origin) : null;
+        const appState = (runtime.getPayload() as Record<string, unknown>).appState as
+          Record<string, unknown> | undefined;
+        const profiles = Array.isArray(appState?.profiles) ? appState.profiles : [];
+        const profileExists = Boolean(
+          record?.profileId &&
+          profiles.some(
+            (profile) =>
+              typeof profile === "object" && profile !== null && "id" in profile && profile.id === record.profileId,
+          ),
+        );
+        if (!record || !profileExists) {
+          const blocked = failedAuthentication(request, "ticket");
+          writeHead(response, blocked ? 429 : 401, {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          response.end(
+            blocked
+              ? "Too many failed authentication attempts"
+              : "This link has expired. Request a new one with /tunnel.",
+          );
+          return;
+        }
+        const sessionId = mintSession(record.profileId, {
+          origin: "ticket",
+          remoteAddress: authAddress(request),
+          absoluteTtlMs: 12 * 60 * 60 * 1000,
+        });
+        const session = activeSessions.get(sessionId)!;
+        audit.info("browser ticket redeemed", {
+          sessionRef: remoteSessionRef(sessionId),
+          ticketRef: createHash("sha256").update(ticketValue).digest("hex").slice(0, 16),
+          remoteAddress: authAddress(request),
+        });
+        writeHead(response, 302, {
+          "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(
+            request.headers,
+            ((session.expiresAt ?? Date.now()) - Date.now()) / 1000,
+          )}`,
+          Location: "/",
+          "Cache-Control": "no-store",
+        });
+        response.end();
+        return;
+      }
+
       if (isApiRoute && !isAuthorized(requestUrl, request.headers)) {
-        writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
-        response.end("Unauthorized");
+        const blocked = failedAuthentication(request, "api", url.pathname);
+        writeHead(response, blocked ? 429 : 401, { "Content-Type": "text/plain; charset=utf-8" });
+        response.end(blocked ? "Too many failed authentication attempts" : "Unauthorized");
         // WHY it was rejected, not just that it was. Three booleans separate three very different
         // failures that all look like this line: a client that sent no credential at all, one whose
         // session cookie names a session this server does not have (restarted, or swept), and one
@@ -3710,13 +3926,21 @@ export async function startRemoteServer({
       // subsequent request, including the WebSocket upgrade.
       if (request.method === "GET" && url.pathname === "/" && url.searchParams.has("token")) {
         if (!tokensEqual(url.searchParams.get("token") || "", token)) {
-          writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
-          response.end("Unauthorized");
+          const blocked = failedAuthentication(request, "token");
+          writeHead(response, blocked ? 429 : 401, { "Content-Type": "text/plain; charset=utf-8" });
+          response.end(blocked ? "Too many failed authentication attempts" : "Unauthorized");
           return;
         }
-        const sessionId = mintSession(url.searchParams.get("profileId") || "");
+        const sessionId = mintSession(url.searchParams.get("profileId") || "", {
+          origin: "token",
+          remoteAddress: authAddress(request),
+        });
+        const record = activeSessions.get(sessionId)!;
         writeHead(response, 302, {
-          "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
+          "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(
+            request.headers,
+            ((record.expiresAt ?? Date.now()) - Date.now()) / 1000,
+          )}`,
           Location: "/",
         });
         response.end();
@@ -4649,11 +4873,12 @@ export async function startRemoteServer({
     // renderer's `new WebSocket(url)` call no longer needs the token
     // in the URL once the user has bootstrapped.
     if (url.pathname !== "/ws" || !isAuthorized(request.url || "/", request.headers)) {
+      const blocked = url.pathname === "/ws" ? failedAuthentication(request, "ws") : false;
       log.warn("WebSocket upgrade rejected: unauthorized", {
         path: url.pathname,
         remoteAddress: request.socket?.remoteAddress,
       });
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.write(`HTTP/1.1 ${blocked ? "429 Too Many Requests" : "401 Unauthorized"}\r\n\r\n`);
       socket.destroy();
       return;
     }
@@ -4776,7 +5001,7 @@ export async function startRemoteServer({
             // suspended and holding an open socket, i.e. while somebody is watching. Unlike a bare
             // keep-alive it is gated on that presence on the client, and the absolute deadline still
             // bounds it. Without it a phone watching output was logged out after the idle window.
-            message.type === "client:presence";
+            (message.type === "client:presence" && Boolean(activeSessions.get(wsSessionId)?.deviceId));
           if (wsSessionId && !touchMobileSession(wsSessionId, meaningful)) {
             try {
               ws.close(1008, "session expired");
@@ -5133,6 +5358,8 @@ export async function startRemoteServer({
     clearInterval(stallSweep);
     clearInterval(telemetryLog);
     clearInterval(mobileSessionSweep);
+    if (!isLoopbackOrigin) runtime.setRemoteBrowserSessionController?.(null);
+    if (!isLoopbackOrigin) runtime.clearRemoteBrowserTickets?.();
     audit.close();
     unsubscribe.forEach((dispose) => dispose());
     wss.close();
@@ -5172,11 +5399,18 @@ export async function startRemoteServer({
       clearInterval(stallSweep);
       clearInterval(telemetryLog);
       clearInterval(mobileSessionSweep);
+      if (!isLoopbackOrigin) runtime.setRemoteBrowserSessionController?.(null);
+      if (!isLoopbackOrigin) runtime.clearRemoteBrowserTickets?.();
       if (telemetry.hasActivity()) log.debug("remote state delivery telemetry (final)", telemetry.snapshot());
       registry.stopCleanupSweep();
       releaseRegistry();
       // Sessions live only in this process: stopping the server drops every one of them.
-      for (const record of [...activeSessions.values()]) auditMobileSessionEnded(record, "server-stopped");
+      for (const record of [...activeSessions.values()]) {
+        auditMobileSessionEnded(record, "server-stopped");
+        if (record.origin === "token" || record.origin === "ticket") {
+          audit.info("session ended", { sessionRef: remoteSessionRef(record.sessionId), reason: "server-stopped" });
+        }
+      }
       // Sessions die with the process; the desktop's "connected" indicator must not outlive them.
       publishMobileSessions(true);
       audit.close();

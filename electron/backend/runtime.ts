@@ -77,6 +77,9 @@ import { createMobileAuditLogStore } from "./mobile/mobile-audit-log-store.js";
 import { createMobileCommandDispatcher, type MobileCommandRuntime } from "./mobile/mobile-command-dispatch.js";
 import { createMobileNotificationOriginStore } from "./mobile/mobile-notification-origin-store.js";
 import { createMobileWebSessionTicketStore } from "./mobile/mobile-web-session-ticket-store.js";
+import { createRemoteBrowserTicketStore } from "./remote-browser-ticket-store.js";
+import type { RemoteBrowserSession, RemoteSessionRevoke, RemoteAuthFailures } from "../shared/remote-access.js";
+import { REMOTE_AUTH_FAILURES_CHANNEL } from "../shared/remote-access.js";
 import { createRelayE2eOfferStore } from "./mobile/mobile-relay-e2e-offer-store.js";
 import { createRelayE2eSessionStore } from "./mobile/mobile-relay-e2e-session-store.js";
 import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
@@ -622,6 +625,10 @@ export async function createRuntime({
   // mutable indirection instead of a direct reference — same forward-
   // reference shape as `_rt` above.
   let _mobileRemoteSessionRevoker: ((deviceId: string) => void) | null = null;
+  let _remoteBrowserSessionController: {
+    list(): RemoteBrowserSession[];
+    revoke(payload: RemoteSessionRevoke): { revoked: number };
+  } | null = null;
 
   // --- Terminal input lease (multi-viewer sessions) ---
   // A PTY session may be VIEWED by any number of windows / remote clients,
@@ -1621,7 +1628,10 @@ export async function createRuntime({
       remoteEnabled: !!remote.enabled,
       lanUrls: remoteUrls.filter((u) => typeof u === "string" && u.length > 0),
       cloudflareUrl: tunnelSnap?.publicUrl || "",
-      remoteToken: remote.token || "",
+      createBrowserTicket: (profileId: string, origin: string, chatId?: string) => {
+        void chatId;
+        return remoteBrowserTicketStore.issue(profileId, origin);
+      },
       cloudflareStatus: tunnelSnap?.status || "idle",
       tunnelMode: APP_CONFIG.tunnel?.mode || "off",
       // Telegram may only re-establish a tunnel the user already configured
@@ -1706,6 +1716,7 @@ export async function createRuntime({
   // via runtime.consumeMobileWebSessionTicket / MobileManager's revoke hook —
   // never a separate store, or an issued ticket would never be found.
   const mobileWebSessionTicketStore = createMobileWebSessionTicketStore();
+  const remoteBrowserTicketStore = createRemoteBrowserTicketStore();
 
   // Relay end-to-end encryption (plan 2026-09-23, decision 1): the offer store is written by
   // remote.endpoint.request and read by remote.webSession.issue below, the session-key store is
@@ -8362,6 +8373,32 @@ export async function createRuntime({
       _mobileRemoteSessionRevoker = fn;
     },
 
+    setRemoteBrowserSessionController(controller: typeof _remoteBrowserSessionController): void {
+      _remoteBrowserSessionController = controller;
+    },
+    listRemoteSessions(): RemoteBrowserSession[] {
+      return _remoteBrowserSessionController?.list() ?? [];
+    },
+    revokeRemoteSessions(payload: RemoteSessionRevoke): { revoked: number } {
+      if (!_remoteBrowserSessionController) return { revoked: 0 };
+      return _remoteBrowserSessionController.revoke(payload);
+    },
+    issueRemoteBrowserTicket(profileId: string, origin: string): string {
+      return remoteBrowserTicketStore.issue(profileId, origin);
+    },
+    consumeRemoteBrowserTicket(ticket: string, origin: string): { profileId: string } | null {
+      return remoteBrowserTicketStore.consume(ticket, origin);
+    },
+    clearRemoteBrowserTickets(): void {
+      remoteBrowserTicketStore.clear();
+    },
+    isCloudflareTunnelConnected(): boolean {
+      return tunnel.getSnapshot().status === "connected";
+    },
+    reportRemoteAuthFailures(payload: RemoteAuthFailures): void {
+      events.emit(REMOTE_AUTH_FAILURES_CHANNEL, payload);
+    },
+
     /** Wired by the IPC layer, which owns Electron's `shell`. See `_externalUrlOpener`. */
     setExternalUrlOpener(fn: (url: string) => Promise<void>): void {
       _externalUrlOpener = fn;
@@ -10081,6 +10118,7 @@ export async function createRuntime({
       // and on disk instead of the two disagreeing across a restart.
       const token = createAccessToken();
       await credentialStore.setSecret(REMOTE_ACCESS_TOKEN_REF, token);
+      remoteBrowserTicketStore.clear();
       await store.mutate((draft: AppState) => {
         draft.settings.remoteAccess.token = token;
       });

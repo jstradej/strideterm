@@ -36,6 +36,10 @@ where an answer is needed.
 Exposes the runtime over HTTP and streams state and terminal events over WebSocket, and serves the
 built web UI from the same host. It talks to the same runtime as the desktop.
 
+Browser sessions created from a master-token URL expire after 24 hours idle or 7 days total by
+default; Settings → Remote access can change both limits and revoke one or all live browser sessions.
+Telegram `/tunnel` links use separate one-use tickets that expire after 5 minutes.
+
 ### 4. Shared renderer — `src/`
 
 One Vue 3 + Pinia app, rendered against either Electron preload or the remote HTTP/WebSocket

@@ -8,6 +8,7 @@ import {
 } from "./telegram-manager.js";
 import type { TelegramConnectionConfig, TelegramPrInfo, TelegramWorkspaceInfo } from "./telegram-manager.js";
 // TelegramWorkspaceInfo is used in the windowSlot validation tests at the bottom.
+let tunnelTicketSequence = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -4245,9 +4246,12 @@ describe("/tunnel command", () => {
     manager.configure([makeConnection()]);
     manager.setTunnelInfoGetter(() => ({
       remoteEnabled: true,
-      lanUrls: ["http://192.168.1.20:7333/?token=abc", "http://10.0.0.5:7333/?token=abc"],
+      lanUrls: [
+        "http://192.168.1.20:7333/?token=MASTER-DO-NOT-LEAK-123456",
+        "http://10.0.0.5:7333/?token=MASTER-DO-NOT-LEAK-123456",
+      ],
       cloudflareUrl: "https://blah-blah.trycloudflare.com",
-      remoteToken: "abc",
+      createBrowserTicket: (_profileId: string, _origin: string) => `test-ticket-${++tunnelTicketSequence}`,
       cloudflareStatus: "connected",
       tunnelMode: "cloudflare",
     }));
@@ -4266,10 +4270,13 @@ describe("/tunnel command", () => {
     expect(sentBodies).toHaveLength(1);
     const body = sentBodies[0];
     const text = body.text as string;
-    // Cloudflare URL is shown with appended ?token= so it works without
-    // re-pasting the auth secret on the phone.
+    // Every destination carries its own short-lived browser ticket.
     expect(text).toContain("blah-blah.trycloudflare.com");
-    expect(text).toContain("token=abc");
+    expect(text).toContain("ticket=test-ticket-");
+    expect(JSON.stringify(body)).not.toContain("MASTER-DO-NOT-LEAK-123456");
+    expect(text).not.toContain("profileId=");
+    const embeddedTickets = [...text.matchAll(/ticket=(test-ticket-[^`]+)/g)].map((match) => match[1]);
+    expect(new Set(embeddedTickets).size).toBe(3);
     // LAN URLs are listed underneath as fallbacks.
     expect(text).toContain("192.168.1.20:7333");
     expect(text).toContain("10.0.0.5:7333");
@@ -4289,7 +4296,7 @@ describe("/tunnel command", () => {
       remoteEnabled: true,
       lanUrls: ["http://192.168.1.20:7333/?token=abc"],
       cloudflareUrl: "",
-      remoteToken: "abc",
+      createBrowserTicket: (_profileId: string, _origin: string) => `test-ticket-${++tunnelTicketSequence}`,
       cloudflareStatus: "idle",
       tunnelMode: "lan-only",
     }));
@@ -4311,17 +4318,21 @@ describe("/tunnel command", () => {
     expect(text).not.toContain("trycloudflare");
   });
 
-  test("/tunnel appends the bound open desktop profile context to URLs", async () => {
+  test("/tunnel binds the selected profile into each one-use ticket, not into the shared URL", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
     manager.configure([makeConnection({ profileId: "work" })]);
     manager.setProfilesGetter(() => [{ id: "work", name: "Work" }]);
     manager.setWindowSlotsGetter(() => [{ id: "win-work", profileId: "work" }]);
+    const ticketProfiles: string[] = [];
     manager.setTunnelInfoGetter(() => ({
       remoteEnabled: true,
       lanUrls: ["http://192.168.1.20:7333/?token=abc"],
       cloudflareUrl: "https://blah-blah.trycloudflare.com",
-      remoteToken: "abc",
+      createBrowserTicket: (profileId: string, _origin: string) => {
+        ticketProfiles.push(profileId);
+        return `test-ticket-${++tunnelTicketSequence}`;
+      },
       cloudflareStatus: "connected",
       tunnelMode: "cloudflare",
     }));
@@ -4341,12 +4352,14 @@ describe("/tunnel command", () => {
     );
 
     const text = sentBodies[0].text as string;
-    expect(text).toContain("profileId=work");
+    expect(text).not.toContain("profileId=work");
+    expect(text).toContain("ticket=test-ticket-");
+    expect(ticketProfiles).toEqual(["work", "work"]);
     const markup = sentBodies[0].reply_markup as { inline_keyboard: Array<Array<{ url: string }>> };
     expect(
       markup.inline_keyboard
         .flatMap((row) => row.map((button) => button.url))
-        .every((url) => url.includes("profileId=work")),
+        .every((url) => url.includes("ticket=test-ticket-")),
     ).toBe(true);
   });
 
@@ -4366,7 +4379,7 @@ describe("/tunnel command", () => {
       remoteEnabled: true,
       lanUrls: ["http://192.168.1.20:7333/?token=abc"],
       cloudflareUrl: "",
-      remoteToken: "abc",
+      createBrowserTicket: (_profileId: string, _origin: string) => `test-ticket-${++tunnelTicketSequence}`,
       cloudflareStatus: "idle",
       tunnelMode: "lan-only",
     }));
@@ -4403,7 +4416,7 @@ describe("/tunnel command", () => {
       remoteEnabled: false,
       lanUrls: [],
       cloudflareUrl: "",
-      remoteToken: "",
+      createBrowserTicket: (_profileId: string, _origin: string) => `test-ticket-${++tunnelTicketSequence}`,
       cloudflareStatus: "idle",
       tunnelMode: "off",
     }));
@@ -4446,7 +4459,7 @@ describe("/tunnel command", () => {
         remoteEnabled: true,
         lanUrls: ["http://192.168.1.20:7333/?token=abc"],
         cloudflareUrl: "",
-        remoteToken: "abc",
+        createBrowserTicket: (_profileId: string, _origin: string) => `test-ticket-${++tunnelTicketSequence}`,
         cloudflareStatus: "disconnected",
         tunnelMode: "lan-only",
       };
@@ -4476,7 +4489,7 @@ describe("/tunnel command", () => {
       remoteEnabled: true,
       lanUrls: ["http://10.0.0.1:7333/?token=t"],
       cloudflareUrl: "",
-      remoteToken: "t",
+      createBrowserTicket: (_profileId: string, _origin: string) => `test-ticket-${++tunnelTicketSequence}`,
       cloudflareStatus: "idle",
       tunnelMode: "lan-only",
     }));
@@ -4509,7 +4522,7 @@ describe("/tunnel command", () => {
       remoteEnabled: true,
       lanUrls: ["http://10.0.0.1:7333/?token=t"],
       cloudflareUrl: "",
-      remoteToken: "t",
+      createBrowserTicket: (_profileId: string, _origin: string) => `test-ticket-${++tunnelTicketSequence}`,
       cloudflareStatus: "idle",
       tunnelMode: "lan-only",
     }));
@@ -4564,7 +4577,7 @@ describe("/tunnel reconnect", () => {
       remoteEnabled: true,
       lanUrls: ["http://192.168.1.20:7333/?token=abc"],
       cloudflareUrl: "",
-      remoteToken: "abc",
+      createBrowserTicket: (_profileId: string, _origin: string) => `test-ticket-${++tunnelTicketSequence}`,
       cloudflareStatus: "idle",
       tunnelMode: "cloudflare",
       canReconnect: true,
