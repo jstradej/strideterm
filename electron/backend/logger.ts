@@ -88,6 +88,16 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   // request URL in several of its error messages, so without these two names a single failed fetch
   // put a live Firebase credential in the log — review 2 §"Logy a diagnostika".
   [/([?&](?:token|pat|access_token|api[_-]?key|auth|key)=)[^&\s"']+/gi, `$1${REDACTED}`],
+  // Browser bootstrap tickets are short-lived bearer credentials. The encoded form covers a ticket
+  // nested in a URL that has itself been percent-encoded (for example, inside a redirect URL).
+  [/([?&]ticket=)[^&\s"']+/gi, `$1${REDACTED}`],
+  [/((?:%3f|%26)ticket%3d)[^&\s"'%]+/gi, `$1${REDACTED}`],
+  // Only redact the application's session cookie; preserve neighboring cookies and similarly named
+  // public cookies in header dumps.
+  [/((?:^|[;,\s"])strideterm_session\s*=\s*)[^;,\s"']+/gim, `$1${REDACTED}`],
+  // Basic credentials are often logged as a serialized Authorization header. Match only the
+  // base64 credential so trailing punctuation and control delimiters remain intact.
+  [/((?:\bauthorization\\?"?\s*[:=]\s*\\?"?\s*)basic\s+)[A-Za-z0-9+/]+={0,2}/gi, `$1${REDACTED}`],
   // THE PASSWORDLESS SIGN-IN'S OWN THREE. `oobCode` is a bearer credential for somebody's account
   // for as long as the identity service honours it; `claimSecret` is what authorises collecting one
   // from the broker; and `continueUrl` is where the FIRST of those hides when the whole link is
@@ -101,7 +111,7 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   [/((?:oobCode|claimSecret|claimSecretHash)%3D)[^&\s"'%]+/gi, `$1${REDACTED}`],
   // JSON-style: "token":"...",  "pat":"...",  "password":"...", "secret":"..."
   [
-    /("(?:token|pat|access[_-]?token|api[_-]?key|password|passphrase|secret|secretHash|botToken|idToken|refreshToken|refresh_token|id_token|oobCode|claimSecret|claimSecretHash|continueUrl|link)"\s*:\s*")[^"]+/gi,
+    /("(?:token|ticket|pat|access[_-]?token|api[_-]?key|password|passphrase|secret|secretHash|botToken|idToken|refreshToken|refresh_token|id_token|strideterm_session|oobCode|claimSecret|claimSecretHash|continueUrl|link)"\s*:\s*")[^"]+/gi,
     `$1${REDACTED}`,
   ],
   // Any JWT-shaped string, wherever it appears.
@@ -115,8 +125,9 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 /**
- * Strip known secret shapes (bearer tokens, `token=` query params, JSON
- * password/secret fields, Telegram bot tokens) from a string.
+ * Strip known secret shapes (bearer tokens, sensitive query params, session
+ * cookies, authorization credentials, JSON password/secret fields, Telegram
+ * bot tokens) from a string.
  *
  * Every log line goes through this automatically via PRINT_FORMAT, so callers
  * never need to pre-redact before logging. It is exported for the cases that

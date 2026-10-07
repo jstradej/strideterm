@@ -228,6 +228,10 @@ describe("remote browser session hardening", () => {
         const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
         socket.once("unexpected-response", (_request, response) => {
           response.resume();
+          if (typeof response.statusCode !== "number") {
+            reject(new Error("WebSocket upgrade response omitted its status code"));
+            return;
+          }
           resolve(response.statusCode);
         });
         socket.once("open", () => reject(new Error("unauthenticated socket unexpectedly opened")));

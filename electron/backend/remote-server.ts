@@ -4866,6 +4866,23 @@ export async function startRemoteServer({
   ];
 
   server.on("upgrade", (request, socket, head) => {
+    try {
+      handleWebSocketUpgradeRequest(request, socket, head);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      log.error("WebSocket upgrade failed", {
+        error: { name: error.name, message: error.message, stack: error.stack },
+        remoteAddress: request.socket?.remoteAddress,
+      });
+      socket.destroy();
+    }
+  });
+
+  function handleWebSocketUpgradeRequest(
+    request: IncomingMessage,
+    socket: import("node:stream").Duplex,
+    head: Buffer,
+  ): void {
     if (isLoopbackOrigin && !relayGuardPassed(request.headers)) {
       audit.warn("relay origin request rejected", {
         surface: "websocket",
@@ -4877,7 +4894,18 @@ export async function startRemoteServer({
       socket.destroy();
       return;
     }
-    const url = new URL(request.url || "/", "http://localhost");
+    let url: URL;
+    try {
+      url = new URL(request.url || "/", "http://localhost");
+    } catch (err) {
+      log.error("WebSocket upgrade rejected: malformed request target", {
+        errorName: err instanceof Error ? err.name : "Error",
+        errorCode: typeof err === "object" && err !== null && "code" in err ? String(err.code) : undefined,
+        remoteAddress: request.socket?.remoteAddress,
+      });
+      socket.end("HTTP/1.1 400 Bad Request\r\n\r\n", () => socket.destroy());
+      return;
+    }
     // WS upgrade accepts either the master token (Bearer header or
     // ?token= URL — useful for non-browser clients that don't carry
     // cookies) or the session cookie set during bootstrap. Browsers
@@ -4924,7 +4952,7 @@ export async function startRemoteServer({
     wss.handleUpgrade(request, socket, head, (ws) => {
       void handleWsUpgrade(request, ws);
     });
-  });
+  }
 
   // wss.handleUpgrade's callback type is (ws) => void — same reasoning as
   // handleHttpRequest above: an async listener passed directly is a

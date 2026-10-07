@@ -17,6 +17,50 @@ describe("logger secret redaction", () => {
     expect(out).toContain("[REDACTED]");
   });
 
+  test("Basic Authorization credentials are redacted in text and JSON headers", () => {
+    const credential = "dXNlcjpwYXNzd29yZA==";
+    for (const line of [
+      `request failed; Authorization: Basic ${credential},`,
+      JSON.stringify({ headers: { authorization: `Basic ${credential}` } }),
+      JSON.stringify({ error: `headers: {"authorization":"Basic ${credential}"}` }),
+      `Authorization = "Basic ${credential}"\u0001`,
+    ]) {
+      const out = redact(line);
+      expect(out).not.toContain(credential);
+      expect(out).toContain("[REDACTED]");
+    }
+  });
+
+  test("browser ticket query and JSON values are redacted, including encoded nested URLs", () => {
+    const ticket = "AbCdEf0123456789.xyZ_9876543210-abcdefghijklmnopqrstuvwx";
+    for (const line of [
+      `GET https://desktop.example/tunnel?ticket=${ticket}&next=/home`,
+      JSON.stringify({ ticket }),
+      `redirect=https%3A%2F%2Fdesktop.example%2Ftunnel%3Fticket%3D${ticket}%26next%3D%2Fhome`,
+    ]) {
+      const out = redact(line);
+      expect(out).not.toContain(ticket);
+      expect(out).toContain("[REDACTED]");
+    }
+  });
+
+  test("only the strideterm_session cookie value is redacted", () => {
+    const session = "session_cookie_fake_secret";
+    const line = `Cookie: public=value; strideterm_session=${session}; strideterm_session_extra=keep`;
+    const out = redact(line);
+    expect(out).not.toContain(session);
+    expect(out).toContain("public=value");
+    expect(out).toContain("strideterm_session_extra=keep");
+    expect(out).toContain("[REDACTED]");
+
+    const json = redact(JSON.stringify({ Cookie: `strideterm_session=${session}; theme=dark` }));
+    expect(json).not.toContain(session);
+    expect(json).toContain("theme=dark");
+
+    const structured = redact(JSON.stringify({ strideterm_session: session }));
+    expect(structured).not.toContain(session);
+  });
+
   test("bare Bearer prefix in plain text is redacted", () => {
     const out = redact("got 401 with Bearer abc123def456ghi789jkl012mnopqr");
     expect(out).not.toContain("abc123def456ghi789jkl012mnopqr");
