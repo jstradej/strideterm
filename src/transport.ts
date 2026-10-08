@@ -121,7 +121,6 @@ interface EventHub {
   dockerLogsClose: Set<Handler<{ sessionId: string; code: number | null }>>;
   dockerShellData: Set<Handler<{ sessionId: string; data: string }>>;
   dockerShellClose: Set<Handler<{ sessionId: string; code: number | null }>>;
-  terminalInputBlocked: Set<Handler<{ sessionId: string; ownerLabel: string }>>;
   resourceInvalidate: Set<Handler<ResourceInvalidate>>;
   notificationTargetRemoved: Set<Handler<NotificationTargetRemoved>>;
   approvalRecorded: Set<Handler<ApprovalRecorded>>;
@@ -188,10 +187,7 @@ export interface Transport extends Partial<
    * its session id names the source workspace).
    */
   writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) => void;
-  /** Take over the per-session input lease ("Take control?" confirmation). */
-  takeSessionControl: (sessionId: string) => Promise<{ ok: boolean }>;
-  /** Fired when typed input was blocked because another viewer holds the input lease. */
-  onTerminalInputBlocked: (handler: Handler<{ sessionId: string; ownerLabel: string }>) => void;
+  submitTerminal: (sessionId: string, text: string, originWorkspaceId?: string) => void;
   activateWorkspace: (workspaceId: string) => Promise<unknown>;
   restartTerminal: (sessionId: string) => Promise<unknown>;
   getTerminalReplay: (sessionId: string) => Promise<TerminalReplayPayload>;
@@ -250,7 +246,6 @@ function createEventHub(): EventHub {
     dockerLogsClose: new Set(),
     dockerShellData: new Set(),
     dockerShellClose: new Set(),
-    terminalInputBlocked: new Set(),
     resourceInvalidate: new Set(),
     notificationTargetRemoved: new Set(),
     approvalRecorded: new Set(),
@@ -547,6 +542,7 @@ export function createRemoteTransport(): Transport {
     cols?: number;
     rows?: number;
     data?: string;
+    text?: string;
     sessionIds?: string[];
     resources?: string[];
   }
@@ -895,15 +891,6 @@ export function createRemoteTransport(): Transport {
         listeners.dockerShellClose,
         message.payload as { sessionId: string; code: number | null },
         "dockerShellClose",
-      );
-    }
-    if (message.type === "terminal:input-blocked") {
-      // Sent flat (no payload wrapper) — { type, sessionId, ownerLabel }.
-      const blocked = message as unknown as { sessionId: string; ownerLabel: string };
-      safeDispatch(
-        listeners.terminalInputBlocked,
-        { sessionId: blocked.sessionId || "", ownerLabel: blocked.ownerLabel || "another window" },
-        "terminalInputBlocked",
       );
     }
     if (message.type === "resource:invalidate") {
@@ -2083,13 +2070,10 @@ export function createRemoteTransport(): Transport {
 
     resizeTerminal: (sessionId: string, size: TerminalSize) =>
       send({ type: "terminal:resize", sessionId, cols: size.cols, rows: size.rows }),
+    submitTerminal: (sessionId: string, text: string, originWorkspaceId?: string) =>
+      send({ type: "terminal:submit", sessionId, text, ...(originWorkspaceId ? { originWorkspaceId } : {}) }),
     writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) =>
       send({ type: "terminal:input", sessionId, data, ...(originWorkspaceId ? { originWorkspaceId } : {}) }),
-    takeSessionControl: (sessionId: string) =>
-      fetchJson("/api/session/take-control", { sessionId }) as Promise<{ ok: boolean }>,
-    onTerminalInputBlocked: (handler: Handler<{ sessionId: string; ownerLabel: string }>) => {
-      listeners.terminalInputBlocked.add(handler);
-    },
     onStateUpdated: (handler: Handler<CoreState>) => listeners.stateUpdated.add(handler),
     onTerminalData: (handler: Handler<TerminalDataPayload>) => listeners.terminalData.add(handler),
     onTerminalReplay: (handler: Handler<TerminalReplayPayload>) => listeners.terminalReplay.add(handler),

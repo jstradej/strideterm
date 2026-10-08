@@ -61,7 +61,9 @@ function createMockDeps(workspaces: any[] = []): any {
 
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    writeToSession: vi.fn((sessionId: any, data: any) => written.push({ sessionId, data })),
+    writeToSession: vi.fn((sessionId: any, data: any, signal?: AbortSignal) =>
+      written.push({ sessionId, data, signal }),
+    ),
     getState: () => ({ workspaces, activeProfileId: "default" }),
     broadcastState: vi.fn(() => broadcastCount++),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1282,6 +1284,169 @@ describe("startTask - prompt sent tracking", () => {
 });
 
 describe("resumeTask - late prompt delivery", () => {
+  test("manual input cancels a paste before its delayed Enter without affecting another session", async () => {
+    vi.useFakeTimers();
+    const runner = new AgentTaskRunner();
+    try {
+      const ws = runner.createTaskWorkspace({
+        state: {},
+        description: "Takeover",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+      });
+      const otherWs = runner.createTaskWorkspace({
+        state: {},
+        description: "Other task",
+        cwd: "/tmp/test-other",
+        parentWorkspaceId: "",
+      });
+      const deps = createMockDeps([ws, otherWs]);
+      const written = deps.written as Array<{ sessionId: string; data: string; signal?: AbortSignal }>;
+      runner.init(deps);
+      ws.task.state = "paused";
+      ws.task.promptSent = false;
+      runner.resumeTask(ws.id);
+      otherWs.task.state = "paused";
+      otherWs.task.promptSent = false;
+      runner.resumeTask(otherWs.id);
+      const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+      const otherSessionId = `${otherWs.id}:${otherWs.task.workerPanelId}`;
+      await vi.waitFor(() => {
+        expect(written.some((w) => w.sessionId === sessionId)).toBe(true);
+        expect(written.some((w) => w.sessionId === otherSessionId)).toBe(true);
+      });
+      ws.task.state = "evaluating";
+      runner.onUserInput(sessionId);
+      expect(ws.task.state).toBe("paused");
+      expect(written.find((w) => w.sessionId === sessionId)?.signal?.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(written.some((w) => w.sessionId === sessionId && w.data === "\r")).toBe(false);
+      expect(written.some((w) => w.sessionId === otherSessionId && w.data === "\r")).toBe(true);
+    } finally {
+      runner.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  test("manual input stops Copilot-style typing at the next character boundary", async () => {
+    vi.useFakeTimers();
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-type-cancel-"));
+    const runner = new AgentTaskRunner();
+    try {
+      const ws = runner.createTaskWorkspace({
+        state: {},
+        description: "Takeover",
+        cwd: tmp,
+        parentWorkspaceId: "",
+        workerProvider: { providerId: "copilot", model: "gpt-5.4" },
+      });
+      await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+      const deps = createMockDeps([ws]);
+      const written = deps.written as Array<{ sessionId: string; data: string }>;
+      runner.init(deps);
+      ws.task.state = "paused";
+      ws.task.promptSent = false;
+      runner.resumeTask(ws.id);
+      const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+      await vi.waitFor(() => expect(written.some((w) => w.sessionId === sessionId)).toBe(true));
+      const countAtTakeover = written.filter((w) => w.sessionId === sessionId).length;
+      ws.task.state = "evaluating";
+      runner.onUserInput(sessionId);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(written.filter((w) => w.sessionId === sessionId)).toHaveLength(countAtTakeover);
+    } finally {
+      runner.dispose();
+      vi.useRealTimers();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("manual input cancels hook confirmation retries after the first Enter", async () => {
+    vi.useFakeTimers();
+    const prevTimeout = AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS;
+    AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS = 10_000;
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-hook-cancel-"));
+    const runner = new AgentTaskRunner();
+    try {
+      const ws = runner.createTaskWorkspace({ state: {}, description: "Takeover", cwd: tmp, parentWorkspaceId: "" });
+      await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+      const deps = createMockDeps([ws]);
+      const written = deps.written as Array<{ sessionId: string; data: string }>;
+      deps.isSessionHookCapable = () => true;
+      runner.init(deps);
+      ws.task.state = "paused";
+      ws.task.promptSent = false;
+      runner.resumeTask(ws.id);
+      const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+      await vi.waitFor(() => expect(written.some((w) => w.sessionId === sessionId)).toBe(true));
+      await vi.advanceTimersByTimeAsync(250);
+      const entersBeforeTakeover = written.filter((w) => w.sessionId === sessionId && w.data === "\r").length;
+      expect(entersBeforeTakeover).toBeGreaterThan(0);
+      ws.task.state = "evaluating";
+      runner.onUserInput(sessionId);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(written.filter((w) => w.sessionId === sessionId && w.data === "\r")).toHaveLength(entersBeforeTakeover);
+    } finally {
+      runner.dispose();
+      AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS = prevTimeout;
+      vi.useRealTimers();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("dispose settles pending paste injection and prevents its delayed Enter", async () => {
+    vi.useFakeTimers();
+    const runner = new AgentTaskRunner();
+    try {
+      const ws = runner.createTaskWorkspace({
+        state: {},
+        description: "Takeover",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+      });
+      const deps = createMockDeps([ws]);
+      const written = deps.written as Array<{ sessionId: string; data: string }>;
+      runner.init(deps);
+      ws.task.state = "paused";
+      ws.task.promptSent = false;
+      runner.resumeTask(ws.id);
+      const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+      await vi.waitFor(() => expect(written.some((w) => w.sessionId === sessionId)).toBe(true));
+      runner.dispose();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(written.filter((w) => w.sessionId === sessionId && w.data === "\r")).toHaveLength(0);
+    } finally {
+      runner.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  test("manual input during context clear prevents the new task prompt from starting", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-clear-cancel-"));
+    vi.useFakeTimers();
+    const runner = new AgentTaskRunner();
+    try {
+      await fs.mkdir(path.join(tmp, ".git"));
+      const ws = runner.createTaskWorkspace({ state: {}, description: "Takeover", cwd: tmp, parentWorkspaceId: "" });
+      await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+      ws.task.needsContextClear = true;
+      const deps = createMockDeps([ws]);
+      const written = deps.written as Array<{ sessionId: string; data: string; signal?: AbortSignal }>;
+      runner.init(deps);
+      const start = runner.startTask(ws.id);
+      const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+      await vi.waitFor(() => expect(written.some((w) => w.sessionId === sessionId && w.data === "/clear")).toBe(true));
+      runner.onUserInput(sessionId);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await start).toBe(false);
+      expect(written.some((w) => w.sessionId === sessionId && w.data !== "/clear")).toBe(false);
+    } finally {
+      runner.dispose();
+      vi.useRealTimers();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test("injects prompt on resume if startTask ran before prompt was ever sent", async () => {
     // Scenario: legacy task workspace created/started under the old code path
     // with promptSent=false. User pauses and resumes — the Worker must finally
@@ -2435,6 +2600,47 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
       await fs.rm(tmp, { recursive: true, force: true });
     }
   }, 20000);
+});
+
+describe("attached capture readiness", () => {
+  test("nudges once when capture files are still missing", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-capture-nudge-"));
+    const runner = new AgentTaskRunner();
+    try {
+      const primary = {
+        id: "primary",
+        kind: "terminal",
+        cwd: tmp,
+        profileId: "default",
+        panels: [{ id: "primary-panel", cwd: tmp, command: "claude" }],
+      };
+      const ws = runner.createCompanionTaskWorkspace({
+        state: { workspaces: [primary] },
+        workerWorkspaceId: primary.id,
+        workerPanelId: "primary-panel",
+        companionRole: "reviewer",
+        companionProvider: { providerId: "claude", model: "sonnet" },
+      });
+      ws.task.state = "paused";
+      ws.task.pausedFromState = "capturing-context";
+      ws.task.captureStartedAt = new Date().toISOString();
+      const deps = createMockDeps([primary, ws]);
+      const written = deps.written as Array<{ sessionId: string; data: string }>;
+      runner.init(deps);
+
+      const sessionId = `${primary.id}:${ws.task.workerPanelId}`;
+      expect(runner.resumeTask(ws.id)).toBe(true);
+      await waitFor(() => written.some((w) => w.sessionId === sessionId && w.data.includes("CONTEXT.md/HANDOFF.md")));
+      expect(ws.task.captureNudged).toBe(true);
+      expect(ws.task.state).toBe("capturing-context");
+      expect(written.filter((w) => w.sessionId === sessionId && w.data.includes("CONTEXT.md/HANDOFF.md"))).toHaveLength(
+        1,
+      );
+    } finally {
+      runner.dispose();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("resetTask", () => {

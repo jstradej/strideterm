@@ -624,6 +624,8 @@ export const terminalResizeSchema = z.object({
 });
 export type TerminalResize = z.infer<typeof terminalResizeSchema>;
 
+export const terminalSubmitSchema = z.tuple([nonEmptyString, z.string(), z.string().optional()]);
+
 export const terminalSessionSchema = z.object({
   sessionId: nonEmptyString,
 });
@@ -1020,6 +1022,14 @@ export const wsTerminalInputSchema = z.object({
   originWorkspaceId: z.string().optional(),
 });
 export type WsTerminalInput = z.infer<typeof wsTerminalInputSchema>;
+
+export const wsTerminalSubmitSchema = z.object({
+  type: z.literal("terminal:submit"),
+  sessionId: nonEmptyString,
+  text: z.string(),
+  originWorkspaceId: z.string().optional(),
+});
+export type WsTerminalSubmit = z.infer<typeof wsTerminalSubmitSchema>;
 
 export const wsTerminalResizeSchema = z.object({
   type: z.literal("terminal:resize"),

@@ -72,6 +72,7 @@ import {
   wsDockerShellWriteSchema,
   wsResourceInterestSchema,
   wsTerminalInputSchema,
+  wsTerminalSubmitSchema,
   wsTerminalResizeSchema,
   wsTerminalSubscribeSchema,
 } from "./ipc-schemas.js";
@@ -529,6 +530,7 @@ interface Runtime {
     } | null;
   };
   writeToSession(sessionId: string, data: string, viewerId?: string, originWorkspaceId?: string): unknown;
+  submitToSession(sessionId: string, text: string, viewerId?: string, originWorkspaceId?: string): unknown;
   resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
   // getTerminalReplaySnapshot / getTerminalReplay and all other methods are
   // accessed dynamically via the string index signature below.
@@ -3333,9 +3335,6 @@ export async function startRemoteServer({
       runtime.deleteGitHubConnection(body.connectionId || body.id || "", windowId),
     // Activation in window slot — same cross-profile rules as workspace.
     "/api/session/activate-in-window": (body, windowId) => runtime.activateSessionInWindow(body.sessionId, windowId),
-    // Take over the per-session input lease ("Take control?" confirm).
-    "/api/session/take-control": (body, windowId) =>
-      Promise.resolve(runtime.takeSessionControl(String(body.sessionId || ""), windowId)),
     // Reorder must be slot-aware: the runtime's profile-safe branch only
     // activates when windowId is supplied. Without it, the legacy global
     // branch replaces the entire workspaces array with the caller's IDs
@@ -5064,6 +5063,7 @@ export async function startRemoteServer({
           // socket may be hours away.
           const meaningful =
             message.type === "terminal:input" ||
+            message.type === "terminal:submit" ||
             message.type === "terminal:resize" ||
             message.type === "terminal:subscribe" ||
             message.type === "docker:shell:write" ||
@@ -5101,28 +5101,30 @@ export async function startRemoteServer({
               // A mobile session's typing is audited as counts only (never the bytes). Nothing is
               // recorded for a master-token or browser session — it has no device id.
               if (wsSessionId) recordMobileTerminalInput(wsSessionId, parsed.data.sessionId, parsed.data.data || "");
-              // The remote client is a viewer — its typing participates in
-              // the per-session input lease like a desktop window's.
               const viewerId = wsSessionId ? remoteViewerId(wsSessionId) : undefined;
-              const result = runtime.writeToSession(
-                parsed.data.sessionId,
-                parsed.data.data,
-                viewerId,
-                parsed.data.originWorkspaceId,
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              ) as any;
-              if (result?.blocked) {
-                checkedSend(
-                  ws,
-                  JSON.stringify({
-                    type: "terminal:input-blocked",
-                    sessionId: parsed.data.sessionId,
-                    ownerLabel: String(result.ownerLabel || "another window"),
-                  }),
-                );
-              }
+              runtime.writeToSession(parsed.data.sessionId, parsed.data.data, viewerId, parsed.data.originWorkspaceId);
             } else {
               log.warn("WebSocket terminal input rejected: invalid payload", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            }
+          } else if (message.type === "terminal:submit") {
+            const parsed = wsTerminalSubmitSchema.safeParse(message);
+            if (parsed.success && isDesktopPrivateSshSession(runtime, parsed.data.sessionId)) {
+              log.warn("WebSocket terminal submit rejected: desktop SSH test sessions are private", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            } else if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
+              log.warn("WebSocket terminal submit rejected: session outside caller profile", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            } else if (parsed.success) {
+              const input = `${parsed.data.text}\r`;
+              if (wsSessionId) recordMobileTerminalInput(wsSessionId, parsed.data.sessionId, input);
+              const viewerId = wsSessionId ? remoteViewerId(wsSessionId) : undefined;
+              runtime.submitToSession(parsed.data.sessionId, parsed.data.text, viewerId, parsed.data.originWorkspaceId);
+            } else {
+              log.warn("WebSocket terminal submit rejected: invalid payload", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
             }

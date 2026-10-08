@@ -500,10 +500,7 @@ export interface StridetermAPI {
    * its session id still names the source workspace.
    */
   writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) => void;
-  /** Take over the per-session input lease ("Take control?" confirmation). */
-  takeSessionControl: (sessionId: string) => Promise<{ ok: boolean }>;
-  /** Fired when typed input was blocked because another viewer holds the input lease. */
-  onTerminalInputBlocked: (handler: (payload: { sessionId: string; ownerLabel: string }) => void) => void;
+  submitTerminal: (sessionId: string, text: string, originWorkspaceId?: string) => void;
 
   // Performance diagnostics (Electron-only; the remote transport does not
   // advertise these, so the Performance panel is hidden on remote clients).

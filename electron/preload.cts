@@ -335,11 +335,11 @@ contextBridge.exposeInMainWorld("strideterm", {
   resizeTerminal: (sessionId, size) => ipcRenderer.send("terminal:resize", sessionId, size),
   writeTerminal: (sessionId, data, originWorkspaceId) =>
     ipcRenderer.send("terminal:input", sessionId, data, originWorkspaceId),
-  takeSessionControl: (sessionId) => ipcRenderer.invoke("session:take-control", sessionId),
+  submitTerminal: (sessionId, text, originWorkspaceId) =>
+    ipcRenderer.send("terminal:submit", sessionId, text, originWorkspaceId),
   getPerformanceSnapshot: () => ipcRenderer.invoke("perf:get-snapshot"),
   captureRendererCpuProfile: () => ipcRenderer.invoke("perf:capture-cpu-profile"),
   revealCpuProfile: (filePath) => ipcRenderer.invoke("perf:reveal-cpu-profile", filePath),
-  onTerminalInputBlocked: (handler) => ipcRenderer.on("terminal:input-blocked", (_event, payload) => handler(payload)),
   onStateUpdated: (handler) => ipcRenderer.on("state:updated", (_event, payload) => handler(payload)),
   onAccountUpdated: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload as AccountUiState);

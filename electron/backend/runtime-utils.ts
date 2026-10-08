@@ -372,8 +372,8 @@ export function findWorkspace(
  * The caller list is a CLOSED, positive allowlist (V2 plan, "Co timestamp
  * posouvá"). Only these qualify, and only once the action has succeeded:
  *
- *   - viewer-originated meaningful terminal input, after the input lease was
- *     granted (runtime's `stampWorkspaceWorkedByTyping`, which throttles the
+ *   - viewer-originated meaningful terminal input (runtime's
+ *     `stampWorkspaceWorkedByTyping`, which throttles the
  *     persist);
  *   - creating a workspace, a worktree, a review/quickfix workspace or a task
  *     workspace;

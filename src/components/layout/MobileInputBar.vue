@@ -906,13 +906,6 @@ function selectText(): void {
   }
 }
 
-// Delay between the composed text and its Enter, matching #writeAndSubmit in
-// agent-task-runner.ts. Agent TUIs (Claude Code, Copilot…) classify a fast
-// multi-char chunk as a paste, and a \r inside a paste inserts a newline
-// instead of submitting — so the Enter must arrive as its own write, late
-// enough not to be coalesced with the text. Plain shells don't care.
-const SUBMIT_DELAY_MS = 200;
-
 function sendComposed(): void {
   if (composing.value) {
     submitAfterComposition.value = true;
@@ -920,21 +913,13 @@ function sendComposed(): void {
   }
   const sessionId = targetSessionId.value;
   if (!sessionId) return;
-  notifications.resolveByEngagement(sessionId, draft.value || "\r");
-  // Empty draft sends a bare Enter — confirming TUI prompts without typing.
-  if (!draft.value) {
-    writeTerminal(sessionId, "\r");
-    finishSending();
-    return;
-  }
-  // No trimming: predictive-text picks leave a trailing space, which is
-  // harmless, and intentional leading/trailing spaces must survive.
-  writeTerminal(sessionId, draft.value);
+  const text = draft.value;
+  notifications.resolveByEngagement(sessionId, text || "\r");
+  // Keep whitespace intact. The backend queues text and Enter as one submit
+  // operation so a closed session cannot receive a delayed ghost Enter.
+  api?.submitTerminal(sessionId, text, originWorkspaceIdFor(sessionId));
   draft.value = "";
   finishSending();
-  // The session id is captured above so switching tabs mid-delay can't route
-  // the pending Enter to a different terminal than the one that got the text.
-  setTimeout(() => writeTerminal(sessionId, "\r"), SUBMIT_DELAY_MS);
 }
 
 function handleCompositionStart(): void {

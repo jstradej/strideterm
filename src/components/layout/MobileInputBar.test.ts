@@ -1,7 +1,7 @@
 /**
  * Component tests for MobileInputBar — the mobile composer that bypasses the
  * xterm.js Android IME bug (xtermjs/xterm.js#3600) by composing lines in a
- * plain input and pushing them to the PTY via Transport.writeTerminal.
+ * plain input and submitting it to the PTY through Transport.submitTerminal.
  */
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
@@ -62,17 +62,19 @@ function mountBar({
 }: { isRemote?: boolean; sessionId?: string | null } = {}): {
   wrapper: VueWrapper;
   writeTerminal: Mock;
+  submitTerminal: Mock;
 } {
   const store = useAppStore();
   store.activeViewId = sessionId;
   store.activeSessionId = sessionId;
   const writeTerminal = vi.fn();
+  const submitTerminal = vi.fn();
   const wrapper = mount(MobileInputBar, {
     global: {
-      provide: { [apiKey]: { isRemote, writeTerminal } as AnyApi },
+      provide: { [apiKey]: { isRemote, writeTerminal, submitTerminal } as AnyApi },
     },
   });
-  return { wrapper, writeTerminal };
+  return { wrapper, writeTerminal, submitTerminal };
 }
 
 describe("MobileInputBar", () => {
@@ -229,7 +231,7 @@ describe("MobileInputBar", () => {
   });
 
   it("optionally hides after sending and remembers the choice", async () => {
-    const { wrapper, writeTerminal } = mountBar();
+    const { wrapper, submitTerminal } = mountBar();
     await wrapper.get(".mobile-input-bar__key--more").trigger("click");
     const option = wrapper.get('[role="menuitemcheckbox"]');
     expect(option.attributes("aria-checked")).toBe("false");
@@ -237,7 +239,7 @@ describe("MobileInputBar", () => {
     expect(localStorage.getItem("strideterm.mobile.hideKeyboardAfterSend")).toBe("true");
     await wrapper.get(".mobile-input-bar__input").setValue("draft");
     await wrapper.get("form").trigger("submit");
-    expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "draft", ORIGIN_WS);
+    expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "draft", ORIGIN_WS);
     expect(wrapper.find(".mobile-input-bar__input").exists()).toBe(false);
     wrapper.unmount();
   });
@@ -290,14 +292,15 @@ describe("MobileInputBar", () => {
       store.activeSessionId = null;
       store.activeViewId = SESSION_ID;
       const writeTerminal = vi.fn();
+      const submitTerminal = vi.fn();
       const wrapper = mount(MobileInputBar, {
-        global: { provide: { [apiKey]: { isRemote: true, writeTerminal } as AnyApi } },
+        global: { provide: { [apiKey]: { isRemote: true, writeTerminal, submitTerminal } as AnyApi } },
       });
 
       expect(wrapper.find("[data-role='mobile-input-bar']").exists()).toBe(true);
       await wrapper.find("[data-role='mobile-input-bar-input']").setValue("pwd");
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "pwd", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "pwd", ORIGIN_WS);
     });
 
     it.each([
@@ -342,9 +345,7 @@ describe("MobileInputBar", () => {
   });
 
   describe("composing and sending", () => {
-    // The Enter is written separately after SUBMIT_DELAY_MS (agent TUIs would
-    // swallow a \r arriving in the same chunk as the text — see the component).
-    // Fake timers make the delayed write assertable.
+    // Fake timers prove submits never schedule a second, potentially stale Enter.
     beforeEach(() => {
       vi.useFakeTimers();
     });
@@ -355,7 +356,7 @@ describe("MobileInputBar", () => {
     it("captures the caret and inserts a validated attachment path without sending", async () => {
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, writeTerminal, submitTerminal } = mountBar();
       const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
       await input.setValue("echo done");
       input.element.setSelectionRange(5, 5);
@@ -422,7 +423,7 @@ describe("MobileInputBar", () => {
       window.localStorage.setItem(COLLAPSED_KEY, "true");
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, writeTerminal, submitTerminal } = mountBar();
       window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-open"));
       const request = JSON.parse(postMessage.mock.calls.at(-1)![0]);
       window.dispatchEvent(
@@ -444,7 +445,7 @@ describe("MobileInputBar", () => {
     it("sends an attachment result through the normal composer routine", async () => {
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
       await input.setValue("cat");
       await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
@@ -459,21 +460,21 @@ describe("MobileInputBar", () => {
           },
         }),
       );
-      expect(writeTerminal).toHaveBeenCalledWith(
+      expect(submitTerminal).toHaveBeenCalledWith(
         SESSION_ID,
         'cat ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/a.txt"',
         ORIGIN_WS,
       );
-      expect(writeTerminal).toHaveBeenCalledTimes(1);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
       wrapper.unmount();
     });
 
     it("rejects a stale draft and acknowledges duplicate results without sending twice", async () => {
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
       await input.setValue("old");
       await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
@@ -487,7 +488,7 @@ describe("MobileInputBar", () => {
       };
       window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-result", { detail }));
       expect(input.element.value).toBe("changed");
-      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(submitTerminal).not.toHaveBeenCalled();
       const count = postMessage.mock.calls.length;
       window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-result", { detail }));
       expect(postMessage).toHaveBeenCalledTimes(count + 1);
@@ -525,61 +526,61 @@ describe("MobileInputBar", () => {
       wrapper.unmount();
     });
 
-    it("sends the composed line, then Enter as a separate delayed write", async () => {
-      const { wrapper, writeTerminal } = mountBar();
+    it("submits the composed line once and schedules no delayed Enter", async () => {
+      const { wrapper, writeTerminal, submitTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
       await input.setValue("echo mobile-composer");
       await wrapper.find("form").trigger("submit");
 
-      expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo mobile-composer", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "echo mobile-composer", ORIGIN_WS);
+      expect(writeTerminal).not.toHaveBeenCalled();
       expect((input.element as HTMLInputElement).value).toBe("");
 
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenCalledTimes(2);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
+      expect(writeTerminal).not.toHaveBeenCalled();
     });
 
     it("preserves leading/trailing whitespace in the composed line", async () => {
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       await wrapper.find("[data-role='mobile-input-bar-input']").setValue("ls ");
       await wrapper.find("form").trigger("submit");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "ls ", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "ls ", ORIGIN_WS);
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
     });
 
     it("sends a bare Enter immediately when the field is empty", async () => {
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       await wrapper.find("form").trigger("submit");
 
-      expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r", ORIGIN_WS);
-      // No stray delayed write follows a bare Enter.
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "", ORIGIN_WS);
+      // Empty draft still submits an Enter in the backend's atomic operation.
       vi.advanceTimersByTime(500);
-      expect(writeTerminal).toHaveBeenCalledTimes(1);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
     });
 
     it("routes the delayed Enter to the session that received the text", async () => {
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       const store = useAppStore();
       await wrapper.find("[data-role='mobile-input-bar-input']").setValue("echo hi");
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo hi", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "echo hi", ORIGIN_WS);
 
-      // Tab switch during the submit delay — the pending Enter still belongs
-      // to the terminal that got the text, not the newly active one.
+      // A later timer tick cannot route an extra Enter to either session.
       store.activeViewId = "ws-a:panel-other";
       store.activeSessionId = "ws-a:panel-other";
       await nextTick();
 
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
     });
 
     it("sends the committed IME composition result", async () => {
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
       const element = input.element as HTMLInputElement;
 
@@ -590,13 +591,13 @@ describe("MobileInputBar", () => {
       await input.trigger("compositionend");
       await wrapper.find("form").trigger("submit");
 
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz", ORIGIN_WS);
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
     });
 
     it("defers submit until the active IME composition commits", async () => {
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
       const element = input.element as HTMLInputElement;
 
@@ -604,21 +605,20 @@ describe("MobileInputBar", () => {
       element.value = "prik";
       await input.trigger("input");
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(submitTerminal).not.toHaveBeenCalled();
 
       element.value = "příkaz";
       await input.trigger("compositionend");
       await nextTick();
 
-      expect(writeTerminal).toHaveBeenCalledTimes(1);
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "příkaz", ORIGIN_WS);
       vi.advanceTimersByTime(200);
-      expect(writeTerminal).toHaveBeenCalledTimes(2);
-      expect(writeTerminal).toHaveBeenLastCalledWith(SESSION_ID, "\r", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledTimes(1);
     });
 
     it("clears a pending draft when the target session changes", async () => {
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       const store = useAppStore();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
       await input.setValue("do not forward");
@@ -629,7 +629,7 @@ describe("MobileInputBar", () => {
 
       expect((input.element as HTMLInputElement).value).toBe("");
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith("ws-a:panel-other", "\r", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledWith("ws-a:panel-other", "", ORIGIN_WS);
     });
   });
 
@@ -862,7 +862,7 @@ describe("MobileInputBar", () => {
 
     it("commits an active IME composition before appending", async () => {
       mockClipboard("pasted");
-      const { wrapper, writeTerminal } = mountBar();
+      const { wrapper, submitTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
       const element = input.element as HTMLInputElement;
 
@@ -878,7 +878,7 @@ describe("MobileInputBar", () => {
       expect(element.value).toBe("prikpasted");
 
       await wrapper.find("form").trigger("submit");
-      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "prikpasted", ORIGIN_WS);
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "prikpasted", ORIGIN_WS);
     });
   });
 
@@ -912,7 +912,7 @@ describe("MobileInputBar", () => {
       });
 
       it("drops a value autofilled into a field the user never touched", async () => {
-        const { wrapper, writeTerminal } = mountBar();
+        const { wrapper, submitTerminal } = mountBar();
         const input = wrapper.find("[data-role='mobile-input-bar-input']");
         // Autofill sets the value and dispatches input, exactly like setValue.
         await input.setValue("Ahoj");
@@ -923,8 +923,8 @@ describe("MobileInputBar", () => {
         expect((input.element as HTMLInputElement).value).toBe("");
         // The foreign value is gone from the draft too — ⏎ sends a bare Enter.
         await wrapper.find("form").trigger("submit");
-        expect(writeTerminal).toHaveBeenCalledTimes(1);
-        expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\r", ORIGIN_WS);
+        expect(submitTerminal).toHaveBeenCalledTimes(1);
+        expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "", ORIGIN_WS);
       });
 
       it.each([
@@ -948,7 +948,7 @@ describe("MobileInputBar", () => {
       });
 
       it("keeps text typed into the field after the user focused it", async () => {
-        const { wrapper, writeTerminal } = mountBar();
+        const { wrapper, submitTerminal } = mountBar();
         const input = wrapper.find("[data-role='mobile-input-bar-input']");
         await input.trigger("focus");
         await input.setValue("echo typed");
@@ -958,7 +958,7 @@ describe("MobileInputBar", () => {
 
         expect((input.element as HTMLInputElement).value).toBe("echo typed");
         await wrapper.find("form").trigger("submit");
-        expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "echo typed", ORIGIN_WS);
+        expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "echo typed", ORIGIN_WS);
       });
     });
   });
@@ -984,7 +984,7 @@ describe("MobileInputBar", () => {
       // And submitting is what sends it — the draft was one deliberate action away, not zero. (The
       // Enter follows as its own delayed write; the "composing and sending" suite covers that half.)
       await second.wrapper.find("form").trigger("submit");
-      expect(second.writeTerminal).toHaveBeenCalledWith(SESSION_ID, "git rebase -i HEAD~3", ORIGIN_WS);
+      expect(second.submitTerminal).toHaveBeenCalledWith(SESSION_ID, "git rebase -i HEAD~3", ORIGIN_WS);
     });
 
     it("keeps one session's draft out of another session's field", async () => {
@@ -1116,8 +1116,9 @@ describe("MobileInputBar — relocated Companion Primary", () => {
     store.activeSessionId = "ws-source:panel-primary";
 
     const writeTerminal = vi.fn();
+    const submitTerminal = vi.fn();
     const wrapper = mount(MobileInputBar, {
-      global: { provide: { [apiKey]: { isRemote: true, writeTerminal } as AnyApi } },
+      global: { provide: { [apiKey]: { isRemote: true, writeTerminal, submitTerminal } as AnyApi } },
     });
     await flushPromises();
 
@@ -1130,7 +1131,7 @@ describe("MobileInputBar — relocated Companion Primary", () => {
     // The virtual view id must never reach the PTY layer — and the write is
     // credited to the TASK workspace the user is actually typing in, not to
     // the source workspace that happens to own the session (V2 plan, Fáze 3).
-    expect(writeTerminal).toHaveBeenCalledWith("ws-source:panel-primary", "hello", "ws-task");
+    expect(submitTerminal).toHaveBeenCalledWith("ws-source:panel-primary", "hello", "ws-task");
   });
 
   it("has no write target once the loop finishes and the alias is gone", async () => {

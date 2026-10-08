@@ -630,17 +630,6 @@ export async function createRuntime({
     revoke(payload: RemoteSessionRevoke): { revoked: number };
   } | null = null;
 
-  // --- Terminal input lease (multi-viewer sessions) ---
-  // A PTY session may be VIEWED by any number of windows / remote clients,
-  // but typed input has a single runtime-only owner: the last viewer that
-  // typed. The lease has a short TTL renewed on every meaningful keystroke;
-  // another viewer's typing is blocked (the UI offers "Take control?")
-  // instead of silently interleaving two users' keystrokes into the same
-  // terminal — which a task agent could misread as user intervention.
-  // Internal writers (task runner prompts) bypass the lease entirely.
-  const INPUT_LEASE_TTL_MS = 45_000;
-  const sessionInputLeases = new Map<string, { viewerId: string; expiresAt: number }>();
-
   // --- Work stamping from real typing ---
   // Typing into a session is the strongest "the user works here" signal there
   // is, so accepted viewer input stamps `lastWorkedAt`. Activation does NOT:
@@ -948,6 +937,7 @@ export async function createRuntime({
    * a panel the user already closed.
    */
   function retireSession(sessionId: string): void {
+    taskRunner.cancelPendingInput(sessionId);
     deleteSessionSignal(sessionId);
     sessionOwnershipTokens.delete(sessionId);
     sshMcpBroker?.revokeSession(sessionId);
@@ -4651,8 +4641,8 @@ export async function createRuntime({
 
   // --- Task runner init (needs broadcastState and sessions) ---
   taskRunner.init({
-    writeToSession(sessionId, data) {
-      sessions.writeToSession(sessionId, data);
+    writeToSession(sessionId, data, signal) {
+      sessions.writeToSession(sessionId, data, signal);
       markSessionPromptInjected(sessionId);
     },
     getState,
@@ -4675,6 +4665,7 @@ export async function createRuntime({
       });
     },
     async restartSession(sessionId) {
+      taskRunner.cancelPendingInput(String(sessionId || ""));
       clearTerminalReplay(String(sessionId || ""));
       sshMcpBroker?.revokeSession(String(sessionId || ""));
       await sessions.restartSession(getState(), sessionId);
@@ -5057,6 +5048,7 @@ export async function createRuntime({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:spawned", (payload: any) => {
     if (isSshMcpSessionId(payload.sessionId)) return;
+    taskRunner.cancelPendingInput(String(payload.sessionId || ""));
     codexTerminalNotifications.delete(String(payload.sessionId || ""));
     clearTerminalReplay(String(payload.sessionId || ""));
   });
@@ -6840,37 +6832,11 @@ export async function createRuntime({
     }
   }
 
-  /** Human label for a viewer id — used in "controlled from …" prompts. */
-  function describeViewer(viewerId: string): string {
-    if (parseRemoteViewerId(viewerId)) return "a remote client";
-    const slots = getState().windowSlots || [];
-    const idx = slots.findIndex((s) => s.id === viewerId);
-    return idx >= 0 ? `Window ${idx + 1}` : "another window";
-  }
-
-  /**
-   * Acquire/renew the input lease for `viewerId` on `sessionId`. Returns
-   * ok:false with the current owner when a DIFFERENT viewer holds a live
-   * lease — the caller surfaces the take-control prompt instead of writing.
-   */
-  function acquireSessionInputLease(
-    sessionId: string,
-    viewerId: string,
-  ): { ok: true } | { ok: false; ownerViewerId: string; ownerLabel: string } {
-    const now = Date.now();
-    const lease = sessionInputLeases.get(sessionId);
-    if (lease && lease.viewerId !== viewerId && lease.expiresAt > now) {
-      return { ok: false, ownerViewerId: lease.viewerId, ownerLabel: describeViewer(lease.viewerId) };
-    }
-    sessionInputLeases.set(sessionId, { viewerId, expiresAt: now + INPUT_LEASE_TTL_MS });
-    return { ok: true };
-  }
-
   /**
    * Stamp `lastWorkedAt` because the user typed into this workspace. Throttled
    * (see TYPING_STAMP_INTERVAL_MS) and fire-and-forget: writeToSession is
    * synchronous and must never wait on a state persist. Only viewer-originated
-   * meaningful input that the input lease accepted reaches here — never
+   * meaningful viewer-originated input reaches here — never
    * task-runner writes, PTY output, or focus/mouse escape sequences.
    */
   function stampWorkspaceWorkedByTyping(workspaceId: string): void {
@@ -7490,6 +7456,31 @@ export async function createRuntime({
       }
     }
     return diskDeleteError;
+  }
+
+  function prepareTerminalInput(sessionId: string, data: string, viewerId?: string, originWorkspaceId?: string): void {
+    const isUserTyping = hasMeaningfulUserInput(data);
+    resetSessionSignal(sessionId);
+    const signal = sessionSignals.get(sessionId);
+    if (signal && !signal.hasUserInput) log.debug("first user input recorded", { sessionId });
+    if (signal) {
+      signal.hasUserInput = true;
+      signal.lastUserInteractionAt = Date.now();
+      updateCommandClassFromInput(signal, data);
+      adaptiveRecordInteraction(sessionId);
+    }
+    if (isUserTyping) taskRunner.onUserInput(sessionId);
+    const descriptor = parseSessionId(sessionId);
+    if (!descriptor) return;
+    if (viewerId && isUserTyping) {
+      stampWorkspaceWorkedByTyping(resolveWorkOriginWorkspaceId(sessionId, originWorkspaceId));
+    }
+    const current = projectAlerts.get(descriptor.workspaceId);
+    const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
+    if (alert && Date.now() - new Date(alert.at).getTime() >= ATTENTION_MIN_DISPLAY_MS) {
+      clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
+      broadcastState();
+    }
   }
 
   const returnObj = {
@@ -10152,85 +10143,14 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     writeToSession(sessionId: any, data: any, viewerId?: string, originWorkspaceId?: string) {
-      const isUserTyping = hasMeaningfulUserInput(data);
-      // Input lease: only viewer-originated MEANINGFUL typing participates —
-      // mouse-reporting escapes from a viewer that merely clicked to watch
-      // neither grab nor get blocked by the lease, and internal writers
-      // (no viewerId — task runner, tests) always pass through.
-      if (viewerId && isUserTyping) {
-        const verdict = acquireSessionInputLease(String(sessionId), viewerId);
-        if (!verdict.ok) {
-          log.info("terminal input blocked by input lease", {
-            sessionId,
-            viewerId,
-            ownerViewerId: verdict.ownerViewerId,
-          });
-          return { blocked: true, ownerViewerId: verdict.ownerViewerId, ownerLabel: verdict.ownerLabel };
-        }
-      }
-      resetSessionSignal(sessionId);
-      const signal = sessionSignals.get(sessionId);
-      if (signal && !signal.hasUserInput) {
-        log.debug("first user input recorded", { sessionId });
-      }
-      if (signal) {
-        signal.hasUserInput = true;
-        // Plan Phase 1 § 4.7: records the moment of active user engagement
-        // with THIS session. Detector uses it to suppress T3 alerts within
-        // the grace window (userInteractionGraceMs).
-        signal.lastUserInteractionAt = Date.now();
-        // Phase 2 § 3.2.4: accumulate keystrokes so we can classify the
-        // command when Enter is pressed. Filter control characters — we
-        // only care about the command text itself.
-        updateCommandClassFromInput(signal, data);
-        // Phase 3 § 3.2.6: active user interaction resets adaptive counter
-        adaptiveRecordInteraction(sessionId);
-      }
-      // Pause task runner only on real typing — mouse clicks and focus events
-      // emit escape sequences too (e.g. \x1b[<0;x;yM) and would otherwise pause
-      // the task just because the user clicked into the panel to watch.
-      if (isUserTyping) {
-        taskRunner.onUserInput(sessionId);
-      }
-      const descriptor = parseSessionId(sessionId);
-      if (descriptor) {
-        // Same rule as the lease: a viewer typing is the user working here.
-        // An internal writer (no viewerId) is the task runner driving an
-        // agent, which must never look like manual use. The workspace credited
-        // is the one whose UI the viewer typed in, not blindly the session's
-        // owner — see resolveWorkOriginWorkspaceId for the attached-task case.
-        if (viewerId && isUserTyping) {
-          stampWorkspaceWorkedByTyping(resolveWorkOriginWorkspaceId(String(sessionId), originWorkspaceId));
-        }
-        const current = projectAlerts.get(descriptor.workspaceId);
-        const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
-        if (alert && Date.now() - new Date(alert.at).getTime() >= ATTENTION_MIN_DISPLAY_MS) {
-          clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
-          broadcastState();
-        }
-      }
+      prepareTerminalInput(String(sessionId), String(data), viewerId, originWorkspaceId);
       sessions.writeToSession(sessionId, data);
       return { ok: true };
     },
-
-    /**
-     * Explicit take-over of a session's input lease ("Take control?"
-     * confirmation). Task dashboard lifecycle buttons are NOT gated by the
-     * lease — only raw terminal typing is.
-     */
-    takeSessionControl(sessionId: string, viewerId: string): { ok: boolean } {
-      if (!sessionId || !viewerId) return { ok: false };
-      sessionInputLeases.set(String(sessionId), {
-        viewerId,
-        expiresAt: Date.now() + INPUT_LEASE_TTL_MS,
-      });
-      log.info("terminal input lease taken over", { sessionId, viewerId });
+    submitToSession(sessionId: string, text: string, viewerId?: string, originWorkspaceId?: string) {
+      prepareTerminalInput(sessionId, `${text}\r`, viewerId, originWorkspaceId);
+      sessions.submitToSession(sessionId, text);
       return { ok: true };
-    },
-
-    /** Test hook: raw input-lease map. */
-    _sessionInputLeasesForTest() {
-      return sessionInputLeases;
     },
     /**
      * Test hook: the `PermissionRequest` decision path. In production this is
@@ -10547,6 +10467,7 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async restartSession(sessionId: any) {
       const descriptor = parseSessionId(sessionId);
+      taskRunner.cancelPendingInput(String(sessionId || ""));
       clearTerminalReplay(String(sessionId || ""));
       sshMcpBroker?.revokeSession(String(sessionId || ""));
       await store.mutate((draft: AppState) => {
@@ -10991,6 +10912,7 @@ export async function createRuntime({
       await tunnel.stop({ preserveAvailability: true, quiet: true });
       await pluginManager.stopAll();
       await stopAllSshTests();
+      taskRunner.dispose();
       sessions.stopAll();
       await reviewBridgeStore.close?.();
       auditLogStore.close?.();

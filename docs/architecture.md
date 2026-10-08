@@ -74,9 +74,10 @@ workspaces stay individually addressable from the sidebar.
 ## Sessions
 
 A session is keyed `workspaceId:panelId`. Activating a workspace starts its `startup: "default"`
-tabs. Any number of viewers may watch one PTY, but typed input has a single short-lived lease owner:
-a second viewer's typing asks "Take control?" instead of interleaving keystrokes. Browser panels
-render as webviews and create no PTY.
+tabs. Any number of authorized viewers may watch and type into one PTY. A mobile composer submits
+text and Enter as one queued operation; competing raw writes wait until that operation finishes.
+Meaningful manual input applies the existing task pause rules and cancels pending automatic prompt
+writes. Browser panels render as webviews and create no PTY.
 
 ## Managers
 

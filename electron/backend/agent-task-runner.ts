@@ -176,7 +176,7 @@ interface InjectionStrategy {
 }
 
 interface RuntimeDeps {
-  writeToSession: (sessionId: string, data: string) => void;
+  writeToSession: (sessionId: string, data: string, signal?: AbortSignal) => void;
   getState: () => AppState | null;
   broadcastState: () => void;
   raiseAlert: (alert: RaiseAlertArgs) => void;
@@ -338,6 +338,8 @@ export class AgentTaskRunner {
   /** Krok 1 — sessions awaiting a UserPromptSubmit confirmation after an inject.
    * onUserPromptSubmit resolves the waiters for the session. */
   #submitWaiters = new Map<string, Array<() => void>>();
+  #injectionAbortControllers = new Map<string, AbortController>();
+  #disposed = false;
   /** Krok 8 — fs.watch fallback watchers on task dirs, keyed by workspaceId. */
   #taskDirWatchers = new Map<string, { close: () => void }>();
   /** Krok 9 — per-role rate-limit hold expiry for the judge (worker hold is
@@ -802,10 +804,17 @@ export class AgentTaskRunner {
     if (task.needsContextClear) {
       const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
       try {
-        await Promise.all([
-          this.#clearSessionContext(workerSessionId, workspace),
-          this.#clearSessionContext(judgeSessionId, workspace),
-        ]);
+        const workerClear = this.#clearSessionContext(workerSessionId, workspace);
+        const workerClearController = this.#injectionAbortControllers.get(workerSessionId);
+        const judgeClear = this.#clearSessionContext(judgeSessionId, workspace);
+        const judgeClearController = this.#injectionAbortControllers.get(judgeSessionId);
+        const cleared = await Promise.all([workerClear, judgeClear]);
+        if (
+          cleared.some((result) => !result) ||
+          (workerClearController && !this.#isCurrentInjection(workerSessionId, workerClearController)) ||
+          (judgeClearController && !this.#isCurrentInjection(judgeSessionId, judgeClearController))
+        )
+          return false;
         log.info("task start: cleared Worker + Judge context after reset", { workspaceId });
         void this.#logTaskEvent(workspace, "context-cleared", "Sent /clear to Worker and Judge before initial prompt");
       } catch (err: unknown) {
@@ -818,7 +827,7 @@ export class AgentTaskRunner {
     }
 
     const prompt = buildInitialWorkerPrompt(task);
-    await this.#injectPrompt(workerSessionId, prompt, workspace);
+    if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return false;
     task.promptSent = true;
     const detail = task.description ? "Prompt sent to Worker" : "Prompt sent to Worker (task in TASK.md)";
     log.info("task started, prompt sent to worker", {
@@ -835,6 +844,7 @@ export class AgentTaskRunner {
   stopTask(workspaceId: string): boolean {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
+    this.#cancelTaskInjections(workspace);
 
     // Krok 4 — record where we paused from so Continue resumes to the right
     // state (e.g. judge-evaluating, so the verdict gets read) rather than
@@ -861,6 +871,8 @@ export class AgentTaskRunner {
       workspace.task.state !== "capturing-context"
     )
       return false;
+
+    this.#cancelTaskInjections(workspace);
 
     // Krok 4 — capture the pre-pause state for a correct Continue.
     workspace.task.pausedFromState = workspace.task.state;
@@ -1047,7 +1059,7 @@ export class AgentTaskRunner {
         "Initial prompt was never delivered — injecting now.",
       );
       const prompt = buildInitialWorkerPrompt(task);
-      await this.#injectPrompt(workerSessionId, prompt, workspace);
+      if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return;
       task.promptSent = true;
       this.#broadcastState!();
       return;
@@ -1109,6 +1121,7 @@ export class AgentTaskRunner {
     if (!resettable.has(workspace.task.state)) return false;
 
     const task = workspace.task;
+    this.#cancelTaskInjections(workspace);
     const previousState = task.state;
     const isAttached = task.mode === "attached";
 
@@ -1391,7 +1404,10 @@ export class AgentTaskRunner {
     }
 
     try {
-      await this.#injectPrompt(workerSessionId, prompt, workspace);
+      if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) {
+        await rollback();
+        return false;
+      }
     } catch (err: unknown) {
       log.error("rejectTaskVerdict: failed to inject prompt", { workspaceId, err: (err as Error)?.message });
       const { verificationRestored } = await rollback();
@@ -2462,6 +2478,7 @@ export class AgentTaskRunner {
    * Called when a session exits — if it's a worker session, pause the task.
    */
   onSessionExit(sessionId: string): void {
+    this.cancelPendingInput(sessionId);
     const binding = this.#resolveTaskBinding(sessionId);
     if (!binding) return;
     const { workspace, task, role } = binding;
@@ -2681,6 +2698,7 @@ export class AgentTaskRunner {
    * (e.g. focus events from xterm.js when switching between panels).
    */
   onUserInput(sessionId: string): void {
+    this.cancelPendingInput(sessionId);
     const binding = this.#resolveTaskBinding(sessionId);
     if (!binding) return;
     const { workspace, task, role } = binding;
@@ -2725,6 +2743,10 @@ export class AgentTaskRunner {
     // timing (plan §6.1); "brief-ready"/"awaiting-user" deliberately do not.
     const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing", "capturing-context"]);
     const prev = task.state;
+    if (!ACTIVE.has(newState)) {
+      const workspace = this.#findTaskWorkspace(this.#workspaceIdForTask(task) ?? "");
+      if (workspace) this.#cancelTaskInjections(workspace);
+    }
     const now = Date.now();
 
     // Fresh start from idle
@@ -3065,17 +3087,20 @@ export class AgentTaskRunner {
           log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
           void this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
           await this.#ensureFormatFlag(task, workspace);
+          if (task.state === "paused") return;
           const prompt = buildRePrompt(task, round);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
-          await this.#injectPrompt(workerSessionId, prompt, workspace);
+          if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return;
           this.#setTaskState(task, "running");
           round.action = "running";
         }
       } else {
         await this.#ensureFormatFlag(task, workspace);
+        if (task.state === "paused") return;
         const prompt = buildRePrompt(task, round);
         const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
-        await this.#injectPrompt(workerSessionId, prompt, workspace);
+        if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return;
+        if (task.state === "paused") return;
         this.#setTaskState(task, "running");
         round.action = "running";
         log.info("worker re-prompted", { workspaceId, round: task.currentRound });
@@ -3120,6 +3145,7 @@ export class AgentTaskRunner {
       const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
       await this.#ensureFormatFlag(task, workspace);
       const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
+      if (task.state === "paused") return;
       if (shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)) {
         this.#setTaskState(task, "judge-evaluating");
         this.#programmaticJudges.add(workspaceId);
@@ -3159,8 +3185,9 @@ export class AgentTaskRunner {
       }
 
       // Clear judge context for independent evaluation, then inject prompt
-      await this.#clearSessionContext(judgeSessionId, workspace);
-      await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
+      if (!(await this.#clearSessionContext(judgeSessionId, workspace))) return;
+      if (!(await this.#injectPrompt(judgeSessionId, judgePrompt, workspace))) return;
+      if (task.state === "paused") return;
       const totalSetupMs = Date.now() - judgeSetupStart;
       this.#setTaskState(task, "judge-evaluating");
       log.info("judge evaluation requested", { workspaceId, round: task.currentRound, gitContextMs, totalSetupMs });
@@ -3219,7 +3246,7 @@ export class AgentTaskRunner {
           const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} as a JSON file now. Use the Write tool or cat/heredoc. Example:\n\n{"verdict": "continue", "reason": "Describe what still needs work."}\n\nWrite the file now.`;
           log.info("judge verdict file missing, sending nudge", { workspaceId });
           void this.#logTaskEvent(workspace, "judge-nudged", "Verdict file missing — reminded Judge to write it");
-          await this.#injectPrompt(judgeSessionId, nudge, workspace);
+          if (!(await this.#injectPrompt(judgeSessionId, nudge, workspace))) return;
           this.#broadcastState!();
           return; // Wait for next judge idle — will re-enter #handleJudgeVerdict
         }
@@ -3311,14 +3338,14 @@ export class AgentTaskRunner {
           // Clear worker context before each new round so the agent starts fresh
           // without accumulating stale context from prior rounds.
           try {
-            await this.#clearSessionContext(workerSessionId, workspace);
+            if (!(await this.#clearSessionContext(workerSessionId, workspace))) return;
           } catch (err: unknown) {
             log.warn("worker context clear before new round failed (proceeding)", {
               workspaceId,
               err: (err as Error)?.message,
             });
           }
-          await this.#injectPrompt(workerSessionId, prompt, workspace);
+          if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return;
           this.#setTaskState(task, "running");
           if (lastRound) lastRound.action = "re-prompted";
           task.currentRound += 1;
@@ -3553,7 +3580,7 @@ export class AgentTaskRunner {
       task.captureStartedAt = new Date().toISOString();
       const prompt = buildContextCapturePrompt(task);
       try {
-        await this.#injectPrompt(sessionId, prompt, workspace);
+        if (!(await this.#injectPrompt(sessionId, prompt, workspace))) return false;
       } catch (err: unknown) {
         log.error("startAttachedTask: failed to inject capture prompt", {
           workspaceId,
@@ -3759,8 +3786,9 @@ export class AgentTaskRunner {
           ? `${staleFiles.join(" and ")} ${staleFiles.length > 1 ? "are" : "is"} left over from an earlier capture — rewrite ${staleFiles.length > 1 ? "them" : "it"} from your current context. `
           : ""
       }Finish writing both files with every required section (see your capture instructions), then stop.`;
+      if (this.#findTaskWorkspace(workspace.id)?.task.state !== "capturing-context") return;
       try {
-        await this.#injectPrompt(sessionId, nudge, workspace);
+        if (!(await this.#injectPrompt(sessionId, nudge, workspace))) return;
       } catch (err: unknown) {
         log.warn("checkCaptureReadiness: nudge injection failed", {
           workspaceId: workspace.id,
@@ -3822,9 +3850,12 @@ export class AgentTaskRunner {
       const structurallyBad =
         verification.status === "missing" || verification.status === "invalid" || verification.status === "stale";
       if (structurallyBad && !task.verificationNotRequired) {
+        if (task.state === "paused") return;
         await this.#recreateWorkLock(workspace, "verification-gate");
+        if (task.state === "paused") return;
         const nudge = buildVerificationNudgePrompt(task, verification);
-        await this.#injectPrompt(sessionIdFor(workspace, "worker"), nudge, workspace);
+        if (!(await this.#injectPrompt(sessionIdFor(workspace, "worker"), nudge, workspace))) return;
+        if (task.state === "paused") return;
         this.#setTaskState(task, "running");
         log.info("attached task: verification record not ready, nudged Primary", {
           workspaceId,
@@ -3951,8 +3982,9 @@ export class AgentTaskRunner {
     task.companionEvaluationAttempt = evaluationAttempt;
     task.companionVerdictHandledAttempt = undefined;
     await clearVerdict(workspace.cwd, task.taskId);
-    await this.#clearSessionContext(judgeSessionId, workspace);
-    await this.#injectPrompt(judgeSessionId, prompt, workspace);
+    if (!(await this.#clearSessionContext(judgeSessionId, workspace))) return;
+    if (!(await this.#injectPrompt(judgeSessionId, prompt, workspace))) return;
+    if (task.state === "paused") return;
     this.#setTaskState(task, "judge-evaluating");
     log.info("companion evaluation requested", { workspaceId, phase, round, evaluationAttempt });
     void this.#logTaskEvent(
@@ -4015,7 +4047,7 @@ export class AgentTaskRunner {
           task.judgeNudged = true;
           const dir = taskDirRel(task.taskId);
           const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} now — a schemaVersion 1 JSON object with ${identity}. Write the file now.`;
-          await this.#injectPrompt(judgeSessionId, nudge, workspace);
+          if (!(await this.#injectPrompt(judgeSessionId, nudge, workspace))) return;
           void this.#logTaskEvent(
             workspace,
             "companion-nudged",
@@ -4077,7 +4109,7 @@ Cross-field rules the schema above cannot express: "complete" needs empty blocki
           const nudge = `${detail}
 
 Write the corrected file, then stop.`;
-          await this.#injectPrompt(judgeSessionId, nudge, workspace);
+          if (!(await this.#injectPrompt(judgeSessionId, nudge, workspace))) return;
           void this.#logTaskEvent(
             workspace,
             "companion-verdict-repair",
@@ -4227,7 +4259,7 @@ Write the corrected file, then stop.`;
       // standard worker path, it is NEVER cleared between rounds. Clearing it
       // would wipe the user's live conversation, which the whole feature
       // exists to preserve.
-      await this.#injectPrompt(workerSessionId, feedbackPrompt, workspace);
+      if (!(await this.#injectPrompt(workerSessionId, feedbackPrompt, workspace))) return;
       this.#setTaskState(task, "running");
       if (lastRound) lastRound.action = "re-prompted";
       task.currentRound += 1;
@@ -4297,11 +4329,15 @@ Write the corrected file, then stop.`;
     // freshness gate this method exists to enforce.
     await writeVerificationTemplate(workspace.cwd, task.taskId, round, log);
     task.companionLastFeedbackAt = new Date().toISOString();
-    await this.#injectPrompt(
-      sessionIdFor(workspace, "worker"),
-      buildCompletionEvidencePrompt(task, verdict),
-      workspace,
-    );
+    if (
+      !(await this.#injectPrompt(
+        sessionIdFor(workspace, "worker"),
+        buildCompletionEvidencePrompt(task, verdict),
+        workspace,
+      ))
+    )
+      return;
+    if (task.state === "paused") return;
     this.#setTaskState(task, "running");
 
     log.info("companion completion withheld: no fresh verification evidence", {
@@ -4453,7 +4489,7 @@ Write the corrected file, then stop.`;
     const prompt = buildCompanionAnswerPrompt(task, pending, trimmed);
     const workerSessionId = sessionIdFor(workspace, "worker");
     try {
-      await this.#injectPrompt(workerSessionId, prompt, workspace);
+      if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return false;
     } catch (err: unknown) {
       // Everything that would strand the user is deferred until the Primary has
       // actually received the answer: the questions stay pending and the task
@@ -4576,18 +4612,23 @@ Do NOT continue working on the task — only write the handoff summary.`;
       log.error("shower mode: failed to write handoff request", { workspaceId, err: (err as Error)?.message });
       return false;
     }
+    if (workspace.task.state === "paused") return false;
 
     // Step 2: Inject short directive to worker.
     // Krok 11 — route through #injectPrompt so the directive uses the
     // per-provider injection strategy and the verified submit + retry (Krok 1),
     // instead of a raw write + fixed 200ms Enter that can drop the Enter.
     const directive = `Read ${relDir}/SHOWER_REQUEST.md and follow it now. Write the handoff summary to ${relDir}/${HANDOFF_FILE}. After the file is written, stop and wait.`;
-    await this.#injectPrompt(workerSessionId, directive, workspace);
+    if (!(await this.#injectPrompt(workerSessionId, directive, workspace))) return false;
 
     log.debug("shower mode: handoff directive sent, waiting for handoff file", { workspaceId });
 
     // Step 3: Wait for handoff file (poll with timeout)
+    const injection = this.#injectionAbortControllers.get(workerSessionId);
     const handoffWritten = await waitForFile(handoffPath, 120_000); // 2 min timeout
+    if (!injection || !this.#isCurrentInjection(workerSessionId, injection) || workspace.task.state === "paused") {
+      return false;
+    }
 
     if (!handoffWritten) {
       log.warn("shower mode: handoff file not written within timeout, skipping shower", { workspaceId });
@@ -4759,18 +4800,23 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Returns a promise that resolves after a short delay to allow the
    * command to be processed before injecting the next prompt.
    */
-  async #clearSessionContext(sessionId: string, workspace: TaskWorkspaceState): Promise<void> {
-    if (!this.#writeToSession) return;
+  async #clearSessionContext(sessionId: string, workspace: TaskWorkspaceState): Promise<boolean> {
+    if (!this.#writeToSession) return true;
+    if (this.#disposed) return false;
+    const generation = this.#beginSessionInjection(sessionId);
+    const signal = generation.signal;
     const strategy = this.#resolveInjectionStrategy(sessionId, workspace);
     log.debug("clearing session context", {
       sessionId,
       style: strategy.style,
       clearSettleMs: strategy.clearSettleMs,
     });
-    await this.#writeAndSubmit(sessionId, "/clear", strategy);
+    await this.#writeAndSubmit(sessionId, "/clear", strategy, generation, signal);
+    if (!this.#isCurrentInjection(sessionId, generation)) return false;
     if (strategy.clearSettleMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, strategy.clearSettleMs));
+      if (!(await this.#waitForInjectionDelay(sessionId, generation, strategy.clearSettleMs))) return false;
     }
+    return true;
   }
 
   /**
@@ -4781,11 +4827,14 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Inspired by codex-runner's pattern of writing prompts to files and injecting
    * "Read {file} and follow it now" directives via tmux send_keys.
    */
-  async #injectPrompt(sessionId: string, text: string, workspace: TaskWorkspaceState | null): Promise<void> {
-    if (!this.#writeToSession) {
+  async #injectPrompt(sessionId: string, text: string, workspace: TaskWorkspaceState | null): Promise<boolean> {
+    if (!this.#writeToSession || this.#disposed) {
       log.warn("injectPrompt: writeToSession not available", { sessionId });
-      return;
+      return false;
     }
+
+    const generation = this.#beginSessionInjection(sessionId);
+    const injectionSignal = generation.signal;
 
     // Remember the last thing we told this session so the manual "Resend"
     // buttons and the dropout auto-restart can re-send it verbatim.
@@ -4807,7 +4856,8 @@ Do NOT continue working on the task — only write the handoff summary.`;
       const promptPath = path.join(taskDir(workspace.cwd, workspace.task.taskId), promptFile);
       const relPromptPath = `${taskDirRel(workspace.task.taskId)}/${promptFile}`;
       try {
-        await writeFile(promptPath, text, "utf8");
+        await writeFile(promptPath, text, { encoding: "utf8", signal: injectionSignal });
+        if (!this.#isCurrentInjection(sessionId, generation)) return false;
         injection = `Read ${relPromptPath} and follow the instructions in it now.`;
         log.info("prompt written to file for injection", {
           sessionId,
@@ -4815,6 +4865,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
           originalLength: text.length,
         });
       } catch (err: unknown) {
+        if (!this.#isCurrentInjection(sessionId, generation)) return false;
         // Fall back to direct paste if file write fails
         log.warn("failed to write prompt file, falling back to direct paste", {
           sessionId,
@@ -4844,35 +4895,40 @@ Do NOT continue working on the task — only write the handoff summary.`;
     // fire-and-forget behaviour (no wait, no retry).
     const hookCapable = this.#isSessionHookCapable?.(sessionId) ?? false;
     if (!hookCapable) {
-      await this.#writeAndSubmit(sessionId, injection, strategy);
+      await this.#writeAndSubmit(sessionId, injection, strategy, generation, injectionSignal);
+      if (!this.#isCurrentInjection(sessionId, generation)) return false;
       log.debug("prompt injected (unverified — no hooks)", {
         sessionId,
         length: injection.length,
         originalLength: text.length,
         style: strategy.style,
       });
-      return;
+      return true;
     }
 
     const SUBMIT_CONFIRM_TIMEOUT_MS = AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS;
     const MAX_RESUBMITS = AgentTaskRunner.MAX_RESUBMITS;
     for (let attempt = 0; attempt <= MAX_RESUBMITS; attempt++) {
+      if (!this.#isCurrentInjection(sessionId, generation)) return false;
       const confirmed = this.#waitForSubmitConfirmation(sessionId, SUBMIT_CONFIRM_TIMEOUT_MS);
       if (attempt === 0) {
-        await this.#writeAndSubmit(sessionId, injection, strategy);
+        await this.#writeAndSubmit(sessionId, injection, strategy, generation, injectionSignal);
       } else {
+        if (!this.#isCurrentInjection(sessionId, generation)) return false;
         // Text is already in the composer — just re-send Enter.
         log.warn("injectPrompt: submit not confirmed, re-sending Enter", { sessionId, attempt });
-        this.#writeToSession!(sessionId, "\r");
+        this.#writeToSession!(sessionId, "\r", injectionSignal);
       }
-      if (await confirmed) {
+      const didConfirm = await confirmed;
+      if (!this.#isCurrentInjection(sessionId, generation)) return false;
+      if (didConfirm) {
         log.debug("prompt injected (submit confirmed)", {
           sessionId,
           attempt,
           length: injection.length,
           style: strategy.style,
         });
-        return;
+        return true;
       }
     }
     log.warn("injectPrompt: submit unconfirmed after retries", { sessionId });
@@ -4883,6 +4939,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
         `Provider did not confirm prompt submission for ${sessionId.split(":").pop()} after ${MAX_RESUBMITS} re-sends.`,
       );
     }
+    return true;
   }
 
   /**
@@ -4920,6 +4977,75 @@ Do NOT continue working on the task — only write the handoff summary.`;
     for (const waiter of list) waiter();
   }
 
+  #beginSessionInjection(sessionId: string): AbortController {
+    const existing = this.#injectionAbortControllers.get(sessionId);
+    if (existing && !existing.signal.aborted) return existing;
+    const controller = new AbortController();
+    this.#injectionAbortControllers.set(sessionId, controller);
+    return controller;
+  }
+
+  #isCurrentInjection(sessionId: string, controller: AbortController): boolean {
+    return this.#injectionAbortControllers.get(sessionId) === controller && !controller.signal.aborted;
+  }
+
+  #cancelSessionInjection(sessionId: string): void {
+    if (
+      !this.#injectionAbortControllers.has(sessionId) &&
+      !this.#injectionCancels.has(sessionId) &&
+      !this.#submitWaiters.has(sessionId)
+    )
+      return;
+    const controller = this.#injectionAbortControllers.get(sessionId);
+    this.#injectionAbortControllers.delete(sessionId);
+    controller?.abort();
+    const cancels = this.#injectionCancels.get(sessionId);
+    if (cancels) for (const cancel of [...cancels]) cancel();
+    const waiters = this.#submitWaiters.get(sessionId);
+    if (waiters) {
+      this.#submitWaiters.delete(sessionId);
+      for (const waiter of waiters) waiter();
+    }
+  }
+
+  cancelPendingInput(sessionId: string): void {
+    this.#cancelSessionInjection(sessionId);
+  }
+
+  #waitForInjectionDelay(sessionId: string, controller: AbortController, delayMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = (completed: boolean) => {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        const list = this.#injectionCancels.get(sessionId);
+        list?.delete(cancel);
+        if (list?.size === 0) this.#injectionCancels.delete(sessionId);
+        resolve(completed && this.#isCurrentInjection(sessionId, controller));
+      };
+      const cancel = () => finish(false);
+      const cancels = this.#injectionCancels.get(sessionId) ?? new Set<() => void>();
+      cancels.add(cancel);
+      this.#injectionCancels.set(sessionId, cancels);
+      timer = setTimeout(() => finish(true), delayMs);
+    });
+  }
+
+  #cancelTaskInjections(workspace: TaskWorkspaceState): void {
+    this.#cancelSessionInjection(sessionIdFor(workspace, "worker"));
+    this.#cancelSessionInjection(sessionIdFor(workspace, "judge"));
+  }
+
+  dispose(): void {
+    this.#disposed = true;
+    const sessionIds = new Set([
+      ...this.#injectionAbortControllers.keys(),
+      ...this.#injectionCancels.keys(),
+      ...this.#submitWaiters.keys(),
+    ]);
+    for (const sessionId of sessionIds) this.#cancelSessionInjection(sessionId);
+  }
+
   /**
    * Stream a prompt character-by-character, then send Enter. Used for TUIs
    * that misclassify fast bulk writes as a paste event (Copilot).
@@ -4928,40 +5054,94 @@ Do NOT continue working on the task — only write the handoff summary.`;
     sessionId: string,
     text: string,
     { typingGapMs, submitDelayMs }: { typingGapMs: number; submitDelayMs: number },
+    generation: AbortController,
+    signal: AbortSignal,
   ): Promise<void> {
     return new Promise((resolve) => {
       let index = 0;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = () => {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        const list = this.#injectionCancels.get(sessionId);
+        list?.delete(cancel);
+        if (list?.size === 0) this.#injectionCancels.delete(sessionId);
+        resolve();
+      };
+      const cancel = () => finish();
+      const cancels = this.#injectionCancels.get(sessionId) ?? new Set<() => void>();
+      cancels.add(cancel);
+      this.#injectionCancels.set(sessionId, cancels);
       const typeNext = () => {
+        if (!this.#isCurrentInjection(sessionId, generation)) {
+          finish();
+          return;
+        }
         if (index >= text.length) {
-          setTimeout(() => {
+          timer = setTimeout(() => {
+            timer = null;
+            if (!this.#isCurrentInjection(sessionId, generation)) {
+              finish();
+              return;
+            }
             log.trace("typeAndSubmit: sending Enter after type complete", { sessionId });
-            this.#writeToSession!(sessionId, "\r");
-            resolve();
+            this.#writeToSession!(sessionId, "\r", signal);
+            finish();
           }, submitDelayMs);
           return;
         }
-        this.#writeToSession!(sessionId, text[index]);
+        this.#writeToSession!(sessionId, text[index], signal);
         index += 1;
-        setTimeout(typeNext, typingGapMs);
+        timer = setTimeout(() => {
+          timer = null;
+          typeNext();
+        }, typingGapMs);
       };
       typeNext();
     });
   }
 
+  #injectionCancels = new Map<string, Set<() => void>>();
+
   /**
    * Send text to a PTY using the provider's preferred strategy and resolve only
    * after the final Enter has been written.
    */
-  #writeAndSubmit(sessionId: string, text: string, strategy: InjectionStrategy): Promise<void> {
+  #writeAndSubmit(
+    sessionId: string,
+    text: string,
+    strategy: InjectionStrategy,
+    generation = this.#beginSessionInjection(sessionId),
+    signal = generation.signal,
+  ): Promise<void> {
     if (strategy.style === "type") {
-      return this.#typeAndSubmit(sessionId, text, strategy);
+      return this.#typeAndSubmit(sessionId, text, strategy, generation, signal);
     }
-    this.#writeToSession!(sessionId, text);
+    if (!this.#isCurrentInjection(sessionId, generation)) return Promise.resolve();
+    this.#writeToSession!(sessionId, text, signal);
     return new Promise((resolve) => {
-      setTimeout(() => {
-        log.trace("writeAndSubmit: sending Enter", { sessionId, submitDelay: strategy.submitDelayMs });
-        this.#writeToSession!(sessionId, "\r");
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = () => {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        const list = this.#injectionCancels.get(sessionId);
+        list?.delete(cancel);
+        if (list?.size === 0) this.#injectionCancels.delete(sessionId);
         resolve();
+      };
+      const cancel = () => finish();
+      const cancels = this.#injectionCancels.get(sessionId) ?? new Set<() => void>();
+      cancels.add(cancel);
+      this.#injectionCancels.set(sessionId, cancels);
+      timer = setTimeout(() => {
+        timer = null;
+        if (!this.#isCurrentInjection(sessionId, generation)) {
+          finish();
+          return;
+        }
+        log.trace("writeAndSubmit: sending Enter", { sessionId, submitDelay: strategy.submitDelayMs });
+        this.#writeToSession!(sessionId, "\r", signal);
+        finish();
       }, strategy.submitDelayMs);
     });
   }

@@ -588,6 +588,7 @@ describe("remote token client profile context", () => {
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setRemoteClientRegistry: (registry: any) => {
@@ -670,6 +671,7 @@ describe("remote token client profile context", () => {
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
       // Both return the full global payload; the server must compose per-client.
@@ -749,6 +751,7 @@ describe("remote token client profile context", () => {
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
     };
@@ -882,6 +885,7 @@ describe("workspace delete endpoint validation", () => {
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
       deleteWorkspace: async () => payload,
@@ -1059,6 +1063,7 @@ describe("DETAIL_ROUTES / slotAwareRoute — built once per server instance, not
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
     };
@@ -1122,6 +1127,7 @@ describe("API_ROUTES table — representative route coverage", () => {
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
     };
@@ -1334,6 +1340,7 @@ describe("malformed request body handling — must respond, never hang", () => {
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
       saveWorkspace: async () => payload,
@@ -1420,6 +1427,7 @@ describe("sendCoreCatchUp resilience — a rejecting getInitialState() must not 
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
     };
@@ -1477,6 +1485,7 @@ describe("sendCoreCatchUp resilience — a rejecting getInitialState() must not 
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
     };
@@ -1734,6 +1743,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         return () => undefined;
       },
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
       // A mutation-shaped result: a runtime method that wraps the full payload
@@ -3503,6 +3513,7 @@ describe("GET /api/approvals/audit-log", () => {
         listRemoteUrls: () => [],
         on: () => () => undefined,
         writeToSession: () => undefined,
+        submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3800,6 +3811,7 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
       listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: (value: RemoteClientRegistry) => {
         registry = value;
@@ -4177,6 +4189,7 @@ describe("mobile device revoke closes remote sessions", () => {
         listRemoteUrls: () => [],
         on: () => () => undefined,
         writeToSession: () => undefined,
+        submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
         // The origins this server answers on. A ticket is bound to one of them, so a server that
@@ -4313,6 +4326,7 @@ describe("the ticket-bootstrap limiter on the relay's loopback origin", () => {
         listRemoteUrls: () => [],
         on: () => () => undefined,
         writeToSession: () => undefined,
+        submitToSession: () => undefined,
         resizeSession: () => undefined,
         addRemoteClientRegistry: () => () => undefined,
         isMobileSessionStillAuthorized: () => true,
@@ -4389,6 +4403,7 @@ describe("the ticket-bootstrap limiter on the relay's loopback origin", () => {
         listRemoteUrls: () => [],
         on: () => () => undefined,
         writeToSession: () => undefined,
+        submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
         consumeMobileWebSessionTicket: () => null,
@@ -4451,6 +4466,7 @@ describe("the mobile session cookie's attributes", () => {
         listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
         on: () => () => undefined,
         writeToSession: () => undefined,
+        submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
         isMobileSessionStillAuthorized: () => true,
@@ -4592,6 +4608,7 @@ describe("a mobile session is finite", () => {
         listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
         on: () => () => undefined,
         writeToSession: () => undefined,
+        submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
         isMobileSessionStillAuthorized: (deviceId: string) => authorized.has(deviceId),
@@ -4872,6 +4889,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         writeToSession: (sessionId: string, data: string) => {
           written.push({ sessionId, data });
         },
+        submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
         isMobileSessionStillAuthorized: () => true,
@@ -5355,6 +5373,7 @@ describe("the managed relay's loopback-only internal origin", () => {
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => {
         calls.setRemoteClientRegistry += 1;
@@ -5513,6 +5532,7 @@ describe("the WebSocket keep-alive is tolerant, and still reaps", () => {
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
     };
@@ -5613,6 +5633,7 @@ describe("the master token in payload.remoteAccess.urls, per transport", () => {
       listMobileTicketOrigins: () => [RELAY_ORIGIN],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
       addRemoteClientRegistry: () => () => undefined,
@@ -5722,6 +5743,7 @@ describe("the relay's loopback origin requires the device the relay verified (E2
       listRemoteUrls: () => [],
       on: () => () => undefined,
       writeToSession: () => undefined,
+      submitToSession: () => undefined,
       resizeSession: () => undefined,
       addRemoteClientRegistry: () => () => undefined,
       isMobileSessionStillAuthorized: () => true,

@@ -85,6 +85,19 @@
             </div>
             <div class="workspace-attachments__actions" @click.stop>
               <button
+                v-if="nativeOpenAvailable"
+                type="button"
+                class="workspace-attachments__open"
+                :aria-label="`Open attachment ${attachment.name}`"
+                :title="`Open ${attachment.name} with the default app`"
+                @click.stop="openAttachment(attachment)"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                  <path d="M1.5 10s3.1-5.5 8.5-5.5 8.5 5.5 8.5 5.5-3.1 5.5-8.5 5.5S1.5 10 1.5 10Z" />
+                  <circle cx="10" cy="10" r="2.5" />
+                </svg>
+              </button>
+              <button
                 type="button"
                 class="workspace-attachments__menu-trigger"
                 data-role="attachment-menu-trigger"
@@ -185,6 +198,9 @@ let mounted = false;
 
 const nativeClipboardAvailable = computed(
   () => api?.isRemote === false && typeof api.fileClipboardCopy === "function" && Boolean(props.workspaceRoot),
+);
+const nativeOpenAvailable = computed(
+  () => api?.isRemote === false && typeof api.openTerminalPath === "function" && Boolean(props.workspaceRoot),
 );
 function uploadDate(attachment: AttachmentRecord): Date | null {
   const timestamp = attachment.uploadedAt;
@@ -296,6 +312,27 @@ async function copyFileIntoClipboard(path: string): Promise<void> {
     showFeedback("File copied into clipboard");
   } catch {
     showFeedback("Unable to copy file into clipboard", true);
+  }
+}
+
+async function openAttachment(attachment: AttachmentRecord): Promise<void> {
+  if (!nativeOpenAvailable.value || !api?.openTerminalPath) {
+    showFeedback("Opening attachments is available on the desktop only", true);
+    return;
+  }
+  try {
+    const result = await api.openTerminalPath({
+      path: attachment.path,
+      workspaceCwd: props.workspaceRoot,
+      forceSystem: true,
+    });
+    if (!result?.ok) {
+      showFeedback(result?.error || "Unable to open attachment", true);
+      return;
+    }
+    showFeedback(`Opened ${attachment.name}`);
+  } catch {
+    showFeedback("Unable to open attachment", true);
   }
 }
 
@@ -483,7 +520,8 @@ onUnmounted(() => {
   background: var(--panel);
 }
 .workspace-attachments__refresh,
-.workspace-attachments__menu-trigger {
+.workspace-attachments__menu-trigger,
+.workspace-attachments__open {
   display: inline-grid;
   width: 24px;
   height: 24px;
@@ -497,6 +535,8 @@ onUnmounted(() => {
 }
 .workspace-attachments__refresh:hover,
 .workspace-attachments__refresh:focus-visible,
+.workspace-attachments__open:hover,
+.workspace-attachments__open:focus-visible,
 .workspace-attachments__menu-trigger:hover,
 .workspace-attachments__menu-trigger:focus-visible {
   border-color: var(--border-color, rgba(255, 255, 255, 0.18));
@@ -594,7 +634,19 @@ onUnmounted(() => {
 }
 .workspace-attachments__actions {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 3px;
   flex: 0 0 auto;
+}
+.workspace-attachments__open svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .workspace-attachments__menu {
   z-index: 5;

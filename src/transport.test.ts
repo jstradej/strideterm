@@ -822,6 +822,7 @@ describe("remote transport endpoint routing", () => {
     const resumed = MockWebSocket.instances.at(-1)!;
     expect(resumed.url).toContain("rev=46");
     transport.writeTerminal("ws1:a", "draft");
+    transport.submitTerminal("ws1:a", "draft", "ws1");
     resumed.open();
     resumed.message({ type: "state:updated", payload: { coreRevision: 47 } });
     await vi.runAllTimersAsync();
@@ -833,6 +834,7 @@ describe("remote transport endpoint routing", () => {
       expect.arrayContaining([
         { type: "terminal:subscribe", sessionIds: ["ws1:a"] },
         { type: "terminal:input", sessionId: "ws1:a", data: "draft" },
+        { type: "terminal:submit", sessionId: "ws1:a", text: "draft", originWorkspaceId: "ws1" },
       ]),
     );
   });

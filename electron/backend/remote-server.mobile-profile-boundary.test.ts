@@ -404,13 +404,15 @@ describe("WebSocket writes are held to the caller's profile", () => {
   const settle = () => new Promise((r) => setTimeout(r, 250));
   const send = (ws: WebSocket, message: unknown) => ws.send(JSON.stringify(message));
 
-  test("a bound client's terminal:input and terminal:resize for another profile's session are dropped", async () => {
+  test("a bound client's terminal writes and resize for another profile's session are dropped", async () => {
     const f = await startFixture();
     const ws = await connect(f, { clientId: "home-tab", profileId: "home" });
     send(ws, { type: "terminal:input", sessionId: "ws-work:a", data: "rm -rf ~\n" });
+    send(ws, { type: "terminal:submit", sessionId: "ws-work:a", text: "rm -rf ~" });
     send(ws, { type: "terminal:resize", sessionId: "ws-work:a", cols: 80, rows: 24 });
     await settle();
     expect(f.called("writeToSession")).toEqual([]);
+    expect(f.called("submitToSession")).toEqual([]);
     expect(f.called("resizeSession")).toEqual([]);
     ws.close();
   });
@@ -419,9 +421,11 @@ describe("WebSocket writes are held to the caller's profile", () => {
     const f = await startFixture();
     const ws = await connect(f, { clientId: "home-tab", profileId: "home" });
     send(ws, { type: "terminal:input", sessionId: "ws-home:a", data: "ls\n" });
+    send(ws, { type: "terminal:submit", sessionId: "ws-home:a", text: "echo hi" });
     send(ws, { type: "terminal:resize", sessionId: "ws-home:a", cols: 100, rows: 30 });
     await settle();
     expect(f.called("writeToSession")).toHaveLength(1);
+    expect(f.called("submitToSession")).toHaveLength(1);
     expect(f.called("resizeSession")).toHaveLength(1);
     ws.close();
   });
@@ -430,10 +434,21 @@ describe("WebSocket writes are held to the caller's profile", () => {
     const f = await startFixture();
     const ws = await connect(f, {});
     send(ws, { type: "terminal:input", sessionId: "ssh-test:private", data: "whoami\n" });
+    send(ws, { type: "terminal:submit", sessionId: "ssh-test:private", text: "whoami" });
     send(ws, { type: "terminal:resize", sessionId: "ssh-test:private", cols: 80, rows: 24 });
     await settle();
     expect(f.called("writeToSession")).toEqual([]);
+    expect(f.called("submitToSession")).toEqual([]);
     expect(f.called("resizeSession")).toEqual([]);
+    ws.close();
+  });
+
+  test("terminal:submit drops invalid payloads", async () => {
+    const f = await startFixture();
+    const ws = await connect(f, {});
+    send(ws, { type: "terminal:submit", sessionId: "ws-home:a", text: 7 });
+    await settle();
+    expect(f.called("submitToSession")).toEqual([]);
     ws.close();
   });
 
@@ -441,10 +456,13 @@ describe("WebSocket writes are held to the caller's profile", () => {
     const f = await startFixture();
     const ws = await connect(f, { cookie: await f.mobileCookie() });
     send(ws, { type: "terminal:input", sessionId: "ws-work:a", data: "\u0003" });
+    send(ws, { type: "terminal:submit", sessionId: "ws-work:a", text: "blocked" });
     send(ws, { type: "terminal:resize", sessionId: "ws-work:a", cols: 80, rows: 24 });
     send(ws, { type: "terminal:input", sessionId: "ws-home:a", data: "pwd\n" });
+    send(ws, { type: "terminal:submit", sessionId: "ws-home:a", text: "allowed" });
     await settle();
     expect(f.called("writeToSession").map((c) => c.args[0])).toEqual(["ws-home:a"]);
+    expect(f.called("submitToSession").map((c) => c.args[0])).toEqual(["ws-home:a"]);
     expect(f.called("resizeSession")).toEqual([]);
     ws.close();
   });

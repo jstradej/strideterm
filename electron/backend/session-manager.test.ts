@@ -7,6 +7,7 @@ let spawnError: Error | null = null;
 class FakePtyHandle {
   dataHandlers: Array<(data: string) => void> = [];
   exitHandlers: Array<(info: { exitCode: number }) => void> = [];
+  writes: string[] = [];
 
   onData(handler: (data: string) => void): void {
     this.dataHandlers.push(handler);
@@ -18,7 +19,9 @@ class FakePtyHandle {
 
   resize(): void {}
 
-  write(): void {}
+  write(data: string): void {
+    this.writes.push(data);
+  }
 
   kill(exitCode = 0): void {
     queueMicrotask(() => {
@@ -90,6 +93,99 @@ describe("SessionManager", () => {
     expect(handles).toHaveLength(2);
     expect(restarted?.status).toBe("running");
     expect(manager.sessions.get("workspace-a:shell")?.status).toBe("running");
+  });
+
+  test("submit batches text and Enter ahead of queued raw writes and cancels on restart", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new SessionManager();
+      const state = createState() as Parameters<typeof manager.ensureSession>[0];
+      manager.ensureSession(state, "workspace-a:shell");
+      manager.submitToSession("workspace-a:shell", "prompt");
+      manager.writeToSession("workspace-a:shell", "manual");
+      expect(handles[0]!.writes).toEqual(["prompt"]);
+      await vi.advanceTimersByTimeAsync(199);
+      expect(handles[0]!.writes).toEqual(["prompt"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(handles[0]!.writes).toEqual(["prompt", "\r", "manual"]);
+
+      manager.submitToSession("workspace-a:shell", "stale");
+      await manager.restartSession(state, "workspace-a:shell");
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[1]!.writes).not.toContain("\r");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("bare Enter is immediate and independent sessions do not wait", () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new SessionManager();
+      const state = createState() as Parameters<typeof manager.ensureSession>[0];
+      state.workspaces[0]!.panels.push({ id: "second", title: "Second", command: "", startup: "default" });
+      manager.ensureSession(state, "workspace-a:shell");
+      manager.ensureSession(state, "workspace-a:second");
+      manager.submitToSession("workspace-a:shell", "busy");
+      manager.writeToSession("workspace-a:second", "free");
+      manager.submitToSession("workspace-a:second", "");
+      expect(handles[0]!.writes).toEqual(["busy"]);
+      expect(handles[1]!.writes).toEqual(["free", "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("aborted automated writes queued behind manual submission are skipped", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new SessionManager();
+      manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+      const controller = new AbortController();
+      manager.submitToSession("workspace-a:shell", "manual");
+      manager.writeToSession("workspace-a:shell", "ghost", controller.signal);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[0]!.writes).toEqual(["manual", "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("multiple submits stay atomic and teardown cancels pending Enter timers", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+      const manager = new SessionManager();
+      manager.ensureSession(state, "workspace-a:shell");
+      manager.submitToSession("workspace-a:shell", "one");
+      manager.submitToSession("workspace-a:shell", "two");
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[0]!.writes).toEqual(["one", "\r", "two"]);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[0]!.writes).toEqual(["one", "\r", "two", "\r"]);
+
+      manager.submitToSession("workspace-a:shell", "natural-exit");
+      handles[0]!.exitHandlers.forEach((handler) => handler({ exitCode: 0 }));
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[0]!.writes).toEqual(["one", "\r", "two", "\r", "natural-exit"]);
+
+      const second = new SessionManager();
+      second.ensureSession(state, "workspace-a:shell");
+      second.submitToSession("workspace-a:shell", "removed");
+      second.removeSession("workspace-a:shell");
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[1]!.writes).toEqual(["removed"]);
+
+      const third = new SessionManager();
+      third.ensureSession(state, "workspace-a:shell");
+      third.submitToSession("workspace-a:shell", "shutdown");
+      third.stopAll();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[2]!.writes).toEqual(["shutdown"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("emits terminal:spawned on every new process generation, incl. implicit respawn", async () => {

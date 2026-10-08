@@ -91,6 +91,7 @@ import {
   dockerPruneSchema,
   dockerVolumeBrowseSchema,
   terminalResizeSchema,
+  terminalSubmitSchema,
   terminalSessionSchema,
   profileSchema,
   workspaceReorderSchema,
@@ -2640,9 +2641,6 @@ export function registerIpc(
 
   on("terminal:input", (event, sessionId, data, originWorkspaceId) => {
     if (typeof sessionId === "string" && typeof data === "string") {
-      // Pass the caller window as the viewer so the input lease can detect
-      // two windows typing into the same PTY. A blocked write notifies the
-      // sender, which shows the "Take control?" prompt.
       const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
       const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
       if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId) return;
@@ -2654,20 +2652,22 @@ export function registerIpc(
       // `originWorkspaceId` is the workspace whose UI the user typed in; the
       // runtime validates it before crediting that workspace with work.
       const origin = typeof originWorkspaceId === "string" ? originWorkspaceId : undefined;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = runtime.writeToSession(sessionId, data, windowId || undefined, origin) as any;
-      if (result?.blocked && windowId) {
-        emitToWindow?.(windowId, "terminal:input-blocked", {
-          sessionId,
-          ownerLabel: String(result.ownerLabel || "another window"),
-        });
-      }
+      runtime.writeToSession(sessionId, data, windowId || undefined, origin);
     }
   });
 
-  handle("session:take-control", (event, sessionId) => {
+  on("terminal:submit", (event, sessionId, text, originWorkspaceId) => {
+    const parsed = terminalSubmitSchema.safeParse([sessionId, text, originWorkspaceId]);
+    if (!parsed.success) return;
+    const [validSessionId, validText, validOrigin] = parsed.data;
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
-    return runtime.takeSessionControl(String(sessionId || ""), windowId);
+    const ownerWindowId = runtime.sshTestSessionOwner(validSessionId);
+    if (runtime.isPrivateSshOperationSessionId(validSessionId) && !ownerWindowId) return;
+    if (ownerWindowId) {
+      if (windowId === ownerWindowId) runtime.sshTestWrite(validSessionId, `${validText}\r`, ownerWindowId);
+      return;
+    }
+    runtime.submitToSession(validSessionId, validText, windowId || undefined, validOrigin);
   });
 
   // Renderer-side diagnostics (e.g. WebGL pre-flight result) routed into the

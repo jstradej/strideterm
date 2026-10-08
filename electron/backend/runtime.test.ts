@@ -489,6 +489,10 @@ class FakeSessionManager extends EventEmitter {
     this.writeCalls.push({ sessionId, data });
   }
 
+  submitToSession(sessionId: string, text: string) {
+    this.writeCalls.push({ sessionId, data: text });
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   syncWithState(state: any) {
     this.syncedStates.push(structuredClone(state));
@@ -12010,127 +12014,36 @@ describe("provider connections — profile ownership across viewers", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Terminal input lease — multiple viewers of one PTY session
+// Shared terminal input
 // ---------------------------------------------------------------------------
 
-describe("terminal input lease", () => {
-  function makeLeaseState() {
+describe("shared terminal input", () => {
+  test("different authorized viewers can alternate terminal input", async () => {
     const base = makeProfileSwitchState();
-    return {
-      ...base,
-      windowSlots: [
-        {
-          id: "win-1",
-          profileId: "profile-a",
-          activeWorkspaceId: "ws-a1",
-          activeSessionId: "ws-a1:shell",
-          bounds: { x: 0, y: 0, width: 1280, height: 800 },
-          lastFocusedAt: 1000,
-        },
-        {
-          id: "win-2",
-          profileId: "profile-a",
-          activeWorkspaceId: "ws-a1",
-          activeSessionId: "ws-a1:shell",
-          bounds: { x: 40, y: 40, width: 1280, height: 800 },
-          lastFocusedAt: 2000,
-        },
-      ],
-    };
-  }
-
-  test("second viewer typing into a leased session is blocked with the owner label", async () => {
-    const fixture = await createFixture({ initialState: makeLeaseState() });
+    const fixture = await createFixture({ initialState: base });
     fixtures.push(fixture);
-
-    // Window 1 types — acquires the lease.
-    const first = fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
-    expect(first).toMatchObject({ ok: true });
-
-    // Window 2 types — blocked, owner identified for the prompt.
-    const second = fixture.runtime.writeToSession("ws-a1:shell", "echo hi\r", "win-2");
-    expect(second).toMatchObject({ blocked: true, ownerViewerId: "win-1", ownerLabel: "Window 1" });
-    // The blocked keystrokes never reached the PTY.
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "a", "win-1")).toEqual({ ok: true });
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "b", "win-2")).toEqual({ ok: true });
     const written = fixture.sessionManager.writeCalls.filter(
       (w: { sessionId: string }) => w.sessionId === "ws-a1:shell",
     );
-    expect(written.map((w: { data: string }) => w.data)).toEqual(["ls\r"]);
+    expect(written.map((w: { data: string }) => w.data)).toEqual(["a", "b"]);
   });
 
-  test("same viewer keeps renewing its own lease", async () => {
-    const fixture = await createFixture({ initialState: makeLeaseState() });
+  test("submit records viewer activity and preserves the workspace origin, including bare Enter", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
+    expect(fixture.runtime.submitToSession("ws-a1:shell", "draft", "win-2", "ws-a1")).toEqual({ ok: true });
+    expect(fixture.sessionManager.writeCalls.at(-1)).toEqual({ sessionId: "ws-a1:shell", data: "draft" });
+    await fixture.store.flush();
+    expect(fixture.store.getState().projects.find((workspace) => workspace.id === "ws-a1")?.lastWorkedAt).toBeDefined();
 
-    expect(fixture.runtime.writeToSession("ws-a1:shell", "a", "win-1")).toMatchObject({ ok: true });
-    expect(fixture.runtime.writeToSession("ws-a1:shell", "b", "win-1")).toMatchObject({ ok: true });
-  });
-
-  test("expired lease lets another viewer take over silently", async () => {
-    const fixture = await createFixture({ initialState: makeLeaseState() });
-    fixtures.push(fixture);
-
-    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
-    // Force-expire the lease.
-    const leases = fixture.runtime._sessionInputLeasesForTest();
-    const lease = leases.get("ws-a1:shell")!;
-    leases.set("ws-a1:shell", { ...lease, expiresAt: Date.now() - 1 });
-
-    const result = fixture.runtime.writeToSession("ws-a1:shell", "echo hi\r", "win-2");
-    expect(result).toMatchObject({ ok: true });
-    expect(leases.get("ws-a1:shell")?.viewerId).toBe("win-2");
-  });
-
-  test("takeSessionControl transfers the lease so the new owner can type", async () => {
-    const fixture = await createFixture({ initialState: makeLeaseState() });
-    fixtures.push(fixture);
-
-    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
-    expect(fixture.runtime.writeToSession("ws-a1:shell", "x", "win-2")).toMatchObject({ blocked: true });
-
-    expect(fixture.runtime.takeSessionControl("ws-a1:shell", "win-2")).toEqual({ ok: true });
-    expect(fixture.runtime.writeToSession("ws-a1:shell", "x", "win-2")).toMatchObject({ ok: true });
-    // Now the ORIGINAL owner is the one that gets blocked.
-    expect(fixture.runtime.writeToSession("ws-a1:shell", "y", "win-1")).toMatchObject({
-      blocked: true,
-      ownerLabel: "Window 2",
-    });
-  });
-
-  test("mouse-reporting escapes neither grab nor get blocked by the lease (watch-only viewers)", async () => {
-    const fixture = await createFixture({ initialState: makeLeaseState() });
-    fixtures.push(fixture);
-
-    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
-    // Window 2 clicks into the pane to watch — mouse escape sequence only.
-    const result = fixture.runtime.writeToSession("ws-a1:shell", "\x1b[<0;10;5M", "win-2");
-    expect(result).toMatchObject({ ok: true });
-    // Lease still belongs to win-1.
-    expect(fixture.runtime._sessionInputLeasesForTest().get("ws-a1:shell")?.viewerId).toBe("win-1");
-  });
-
-  test("internal writers (no viewerId — task runner) bypass the lease", async () => {
-    const fixture = await createFixture({ initialState: makeLeaseState() });
-    fixtures.push(fixture);
-
-    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
-    const result = fixture.runtime.writeToSession("ws-a1:shell", "injected prompt\r");
-    expect(result).toMatchObject({ ok: true });
-  });
-
-  test("remote viewers participate in the lease with a friendly label", async () => {
-    const fixture = await createFixture({ initialState: makeLeaseState() });
-    fixtures.push(fixture);
-
-    const registry = new RemoteClientRegistry();
-    fixture.runtime.setRemoteClientRegistry(registry);
-    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
-
-    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "remote:mobile-1");
-    const blocked = fixture.runtime.writeToSession("ws-a1:shell", "x", "win-1");
-    expect(blocked).toMatchObject({ blocked: true, ownerLabel: "a remote client" });
+    const emptyFixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(emptyFixture);
+    expect(emptyFixture.runtime.submitToSession("ws-a1:shell", "", "win-2", "ws-a1")).toEqual({ ok: true });
+    expect(emptyFixture.sessionManager.writeCalls.at(-1)).toEqual({ sessionId: "ws-a1:shell", data: "" });
   });
 });
-
 // ---------------------------------------------------------------------------
 // Profile delete with running task agents — explicit decision required
 // ---------------------------------------------------------------------------
@@ -12804,8 +12717,7 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     await fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-a2");
     await fixture.runtime.activateWorkspaceForRemoteClient("mobile-1", "ws-a1");
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ws = fixture.store.getState().workspaces.find((w: any) => w.id === "ws-a1") as Record<string, unknown>;
+    const ws = fixture.store.getState().workspaces.find((w) => w.id === "ws-a1")!;
     expect(ws.activeViewId).toBe("ws-a1:logs");
     expect(ws.activePanelId).toBe("logs");
     expect(workedAt(fixture, "ws-a1")).toBeUndefined();
@@ -12883,18 +12795,18 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     expect(workedAt(fixture, "ws-a1")).toBe(firstStamp);
   });
 
-  test("input blocked by another viewer's lease stamps nothing", async () => {
+  test("typing from another viewer remains accepted and respects the stamp throttle", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
 
-    // win-1 owns the lease; its own typing stamps.
+    // The first viewer types and stamps the workspace.
     fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
     await fixture.store.flush();
     const stampedAt = workedAt(fixture, "ws-a1");
 
-    // A second viewer is blocked — those keystrokes never reached the PTY, so
-    // they are not "the user working here" either.
-    expect(fixture.runtime.writeToSession("ws-a1:shell", "x", "win-2")).toMatchObject({ blocked: true });
+    // A second viewer's keystroke is accepted; the existing throttle avoids
+    // another persist for the same workspace.
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "x", "win-2")).toMatchObject({ ok: true });
     await fixture.store.flush();
 
     expect(workedAt(fixture, "ws-a1")).toBe(stampedAt);

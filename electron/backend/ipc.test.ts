@@ -158,7 +158,9 @@ describe("registerIpc teardown", () => {
     const dispose = registerIpc(makeRuntimeStub(), () => {});
 
     const registeredListenerChannels = new Set(onRegistry.keys());
-    expect(registeredListenerChannels).toEqual(new Set(["terminal:resize", "terminal:input", "log:renderer"]));
+    expect(registeredListenerChannels).toEqual(
+      new Set(["terminal:resize", "terminal:input", "terminal:submit", "log:renderer"]),
+    );
 
     dispose();
 
@@ -501,12 +503,64 @@ describe("SSH test IPC ownership and event privacy", () => {
       await expect(call(channel, payload)).rejects.toThrow("another window");
     }
     const input = [...(onRegistry.get("terminal:input") || [])][0] as (...args: unknown[]) => void;
+    const submit = [...(onRegistry.get("terminal:submit") || [])][0] as (...args: unknown[]) => void;
     const resize = [...(onRegistry.get("terminal:resize") || [])][0] as (...args: unknown[]) => void;
     input(event, "ssh-test:live", "pwd\r");
+    submit(event, "ssh-test:live", "pwd");
     resize(event, "ssh-test:live", { cols: 90, rows: 30 });
     expect(writes).toEqual([]);
     expect(sizes).toEqual([]);
     expect(answers).toEqual([]);
+    dispose();
+  });
+
+  test("terminal:submit forwards validated text, origin, and viewer", () => {
+    const submitted: unknown[][] = [];
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop === "on") return callable;
+          if (prop === "sshTestSessionOwner") return () => undefined;
+          if (prop === "isPrivateSshOperationSessionId") return () => false;
+          if (prop === "submitToSession") return (...args: unknown[]) => submitted.push(args);
+          return callable;
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: (id) => (id === 7 ? "window-a" : "window-b"),
+    });
+    const submit = [...(onRegistry.get("terminal:submit") || [])][0] as (...args: unknown[]) => void;
+    submit({ sender: { id: 7 } }, "ws-a:panel", "hello", "ws-task");
+    submit({ sender: { id: 7 } }, "ws-a:panel", 4, "ws-task");
+    expect(submitted).toEqual([["ws-a:panel", "hello", "window-a", "ws-task"]]);
+    dispose();
+  });
+
+  test("terminal:submit allows a private SSH submit only from its owner", () => {
+    const writes: unknown[][] = [];
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop === "on") return callable;
+          if (prop === "sshTestSessionOwner") return () => "window-a";
+          if (prop === "isPrivateSshOperationSessionId") return () => true;
+          if (prop === "sshTestWrite") return (...args: unknown[]) => writes.push(args);
+          return callable;
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: (id) => (id === 7 ? "window-a" : "window-b"),
+    });
+    const submit = [...(onRegistry.get("terminal:submit") || [])][0] as (...args: unknown[]) => void;
+    submit({ sender: { id: 8 } }, "ssh-test:private", "denied");
+    submit({ sender: { id: 7 } }, "ssh-test:private", "accepted");
+    expect(writes).toEqual([["ssh-test:private", "accepted\r", "window-a"]]);
     dispose();
   });
 

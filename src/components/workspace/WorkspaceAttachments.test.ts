@@ -154,6 +154,45 @@ describe("WorkspaceAttachments", () => {
     expect(fileClipboardCopy).toHaveBeenCalledWith({ rootPath: "C:\\repo", relativePath: attachment.path });
   });
 
+  it("opens an attachment with the desktop system app without copying the row path", async () => {
+    const writeText = mockClipboard();
+    const openTerminalPath = vi.fn().mockResolvedValue({ ok: true });
+    const wrapper = mountPanel(
+      { attachmentList: vi.fn().mockResolvedValue([attachment]), openTerminalPath, isRemote: false },
+      { workspaceRoot: "C:\\repo" },
+    );
+    await wrapper.get("button").trigger("click");
+    await flushPromises();
+
+    const openButton = wrapper.get("[aria-label='Open attachment photo.png']");
+    expect(openButton.attributes("title")).toContain("default app");
+    await openButton.trigger("click");
+
+    expect(openTerminalPath).toHaveBeenCalledWith({
+      path: attachment.path,
+      workspaceCwd: "C:\\repo",
+      forceSystem: true,
+    });
+    expect(writeText).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("Opened photo.png");
+    wrapper.unmount();
+  });
+
+  it("shows errors returned by the desktop opener", async () => {
+    const openTerminalPath = vi.fn().mockResolvedValue({ ok: false, error: "File not found" });
+    const wrapper = mountPanel(
+      { attachmentList: vi.fn().mockResolvedValue([attachment]), openTerminalPath, isRemote: false },
+      { workspaceRoot: "/repo" },
+    );
+    await wrapper.get("button").trigger("click");
+    await flushPromises();
+    await wrapper.get("[aria-label='Open attachment photo.png']").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".workspace-attachments__feedback--error").text()).toBe("File not found");
+    wrapper.unmount();
+  });
+
   it("does not call the remote native clipboard no-op and closes its menu on Escape", async () => {
     const fileClipboardCopy = vi.fn().mockResolvedValue({ ok: true });
     const wrapper = mountPanel(

@@ -477,6 +477,14 @@ interface StartRecord {
 }
 
 export class SessionManager extends EventEmitter {
+  #terminalWriteQueues = new Map<
+    string,
+    {
+      session: RuntimeSession;
+      pending: Array<{ data: string; submit: boolean; signal?: AbortSignal }>;
+      timer: NodeJS.Timeout | null;
+    }
+  >();
   sessions: Map<string, RuntimeSession>;
   startingSessions: Map<string, StartRecord>;
   suppressedExits: Map<string, number>;
@@ -609,6 +617,7 @@ export class SessionManager extends EventEmitter {
    * here — a chained successor keeps its own, independent record.
    */
   private discardCanceledStart(sessionId: string, session: RuntimeSession | null, reason: StartCancelReason): void {
+    this.cancelTerminalWrites(sessionId);
     const live = session ?? this.sessions.get(sessionId) ?? null;
     if (live) {
       if (live.kind === "ssh") {
@@ -679,6 +688,7 @@ export class SessionManager extends EventEmitter {
    * teardown (restart, workspace removal).
    */
   private stopSshIntentional(sessionId: string): Promise<void> {
+    this.cancelTerminalWrites(sessionId);
     const session = this.sessions.get(sessionId);
     if (session?.kind === "ssh") (session as SshSession).intentionalExit = true;
     return this.sshManager?.stop(sessionId).catch(() => {}) ?? Promise.resolve();
@@ -951,6 +961,7 @@ export class SessionManager extends EventEmitter {
     });
 
     processHandle.onExit(({ exitCode }) => {
+      if (this.sessions.get(session.id) === session) this.cancelTerminalWrites(session.id);
       session.status = "exited";
       session.processHandle = null;
       const intentional = this.consumeSuppressedExit(session.id);
@@ -1010,8 +1021,8 @@ export class SessionManager extends EventEmitter {
       if (sourceCmd) {
         setTimeout(
           () => {
-            if (session.status === "running" && session.processHandle) {
-              session.processHandle.write(`${sourceCmd}\r`);
+            if (session.status === "running" && session.processHandle && this.sessions.get(session.id) === session) {
+              this.writeToSession(session.id, `${sourceCmd}\r`);
             }
           },
           Math.max(APP_CONFIG.session.shellLaunchDelayMs - 10, 10),
@@ -1021,8 +1032,8 @@ export class SessionManager extends EventEmitter {
 
     if (!launchOverride?.skipCommandInjection && injectedCommand) {
       setTimeout(() => {
-        if (session.status === "running" && session.processHandle) {
-          session.processHandle.write(`${injectedCommand}\r`);
+        if (session.status === "running" && session.processHandle && this.sessions.get(session.id) === session) {
+          this.writeToSession(session.id, `${injectedCommand}\r`);
         }
       }, APP_CONFIG.session.shellLaunchDelayMs);
     }
@@ -1056,6 +1067,7 @@ export class SessionManager extends EventEmitter {
     });
 
     processHandle.onExit(({ exitCode }) => {
+      if (this.sessions.get(session.id) === session) this.cancelTerminalWrites(session.id);
       session.status = "exited";
       session.processHandle = null;
       const intentional = this.consumeSuppressedExit(session.id);
@@ -1358,6 +1370,7 @@ export class SessionManager extends EventEmitter {
       rows: session.rows,
       onData: (data: string) => this.emit("terminal:data", { sessionId, data }),
       onExit: ({ exitCode }: { exitCode: number }) => {
+        if (this.sessions.get(sessionId) === session) this.cancelTerminalWrites(sessionId);
         session.status = "exited";
         // Pure ssh2 sessions have no PTY handle and are torn down via
         // sshManager.stop(), so they never arm the PTY suppressNextExit counter.
@@ -1439,9 +1452,80 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  writeToSession(sessionId: string, data: string): void {
+  writeToSession(sessionId: string, data: string, signal?: AbortSignal): void {
+    if (signal?.aborted) return;
+    const queue = this.#terminalWriteQueues.get(sessionId);
+    if (queue) {
+      queue.pending.push({ data, submit: false, signal });
+      return;
+    }
+    this.#writeNow(sessionId, data);
+  }
+
+  submitToSession(sessionId: string, text: string): void {
+    if (!text) {
+      this.writeToSession(sessionId, "\r");
+      return;
+    }
     const session = this.sessions.get(sessionId);
-    if (!session || session.status !== "running") {
+    if (!session || session.status !== "running") return;
+    let queue = this.#terminalWriteQueues.get(sessionId);
+    if (!queue) {
+      queue = { session, pending: [], timer: null };
+      this.#terminalWriteQueues.set(sessionId, queue);
+    }
+    queue.pending.push({ data: text, submit: true });
+    this.#drainTerminalWriteQueue(sessionId, queue);
+  }
+
+  #drainTerminalWriteQueue(
+    sessionId: string,
+    queue: {
+      session: RuntimeSession;
+      pending: Array<{ data: string; submit: boolean; signal?: AbortSignal }>;
+      timer: NodeJS.Timeout | null;
+    },
+  ): void {
+    while (!queue.timer && this.#terminalWriteQueues.get(sessionId) === queue) {
+      const operation = queue.pending.shift();
+      if (!operation) {
+        this.#terminalWriteQueues.delete(sessionId);
+        return;
+      }
+      if (operation.signal?.aborted) continue;
+      try {
+        this.#writeNow(sessionId, operation.data, queue.session);
+      } catch (error) {
+        this.cancelTerminalWrites(sessionId);
+        log.warn("queued terminal write failed", { sessionId, err: (error as Error)?.message || String(error) });
+        return;
+      }
+      if (operation.submit) {
+        queue.timer = setTimeout(() => {
+          queue.timer = null;
+          if (this.#terminalWriteQueues.get(sessionId) !== queue) return;
+          try {
+            this.#writeNow(sessionId, "\r", queue.session);
+            this.#drainTerminalWriteQueue(sessionId, queue);
+          } catch (error) {
+            this.cancelTerminalWrites(sessionId);
+            log.warn("queued terminal submit failed", { sessionId, err: (error as Error)?.message || String(error) });
+          }
+        }, 200);
+      }
+    }
+  }
+
+  cancelTerminalWrites(sessionId: string): void {
+    const queue = this.#terminalWriteQueues.get(sessionId);
+    if (!queue) return;
+    if (queue.timer) clearTimeout(queue.timer);
+    this.#terminalWriteQueues.delete(sessionId);
+  }
+
+  #writeNow(sessionId: string, data: string, expectedSession?: RuntimeSession): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status !== "running" || (expectedSession && session !== expectedSession)) {
       return;
     }
 
@@ -1457,6 +1541,7 @@ export class SessionManager extends EventEmitter {
   }
 
   async restartSession(state: AppState, sessionId: string): Promise<RuntimeSession | null> {
+    this.cancelTerminalWrites(sessionId);
     const current = this.sessions.get(sessionId);
     if (current?.kind === "ssh") {
       await this.stopSshIntentional(sessionId);
@@ -1497,6 +1582,7 @@ export class SessionManager extends EventEmitter {
   }
 
   removeSession(sessionId: string): void {
+    this.cancelTerminalWrites(sessionId);
     // A start still in flight has not inserted its session yet; tombstone its
     // record so the connect is torn down when it resolves instead of resurrecting
     // a session the user just asked to disconnect. "disconnected", not "removed":
@@ -1550,6 +1636,7 @@ export class SessionManager extends EventEmitter {
       if (session.workspaceId !== workspaceId) {
         continue;
       }
+      this.cancelTerminalWrites(sessionId);
 
       if (session.kind === "ssh") {
         exitPromises.push(this.stopSshIntentional(sessionId));
@@ -1614,6 +1701,7 @@ export class SessionManager extends EventEmitter {
       if (validSessionIds.has(sessionId)) {
         continue;
       }
+      this.cancelTerminalWrites(sessionId);
 
       if (session.kind === "ssh") {
         void this.stopSshIntentional(sessionId);
@@ -1655,6 +1743,7 @@ export class SessionManager extends EventEmitter {
   }
 
   stopAll(): void {
+    for (const sessionId of this.#terminalWriteQueues.keys()) this.cancelTerminalWrites(sessionId);
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.kind === "ssh") {
         void this.stopSshIntentional(sessionId);
