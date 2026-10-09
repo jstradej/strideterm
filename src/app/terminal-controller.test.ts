@@ -186,6 +186,7 @@ afterEach(() => {
   document.documentElement.classList.remove("native-keyboard-viewport");
   document.documentElement.style.removeProperty("--strideterm-keyboard-bottom");
   document.documentElement.style.removeProperty("--strideterm-keyboard-pan");
+  delete window.StridetermViewport;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (document as any).fonts;
 });
@@ -625,7 +626,12 @@ describe("the existing touch gestures survive the long-press arbitration", () =>
     built.length = 0;
   });
 
-  function setup(hooks: { onOverscrollRefresh?: () => void } = {}) {
+  function setup(
+    hooks: {
+      onOverscrollRefresh?: () => void;
+      onTextSelectionRequested?: (_sessionId: string) => void;
+    } = {},
+  ) {
     vi.useFakeTimers();
     const instance = buildTouchController({ onTextSelectionRequested: vi.fn(), ...hooks });
     built.push(instance);
@@ -680,6 +686,130 @@ describe("the existing touch gestures survive the long-press arbitration", () =>
     mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
     mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
     expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b[A");
+  });
+
+  test("a native keyboard viewport class with zero overlap still scrolls and requests fresh metrics", () => {
+    const { mount, term } = setup();
+    const postMessage = vi.fn();
+    window.StridetermViewport = { postMessage };
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "0px");
+    root.style.setProperty("--strideterm-keyboard-pan", "0px");
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledWith("refresh");
+    expect(term.scrollLines).toHaveBeenCalled();
+  });
+
+  test("a detached native viewport channel cannot cancel terminal scrolling", () => {
+    const { mount, term } = setup();
+    window.StridetermViewport = {
+      postMessage: vi.fn(() => {
+        throw new Error("WebView bridge detached");
+      }),
+    };
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "0px");
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+
+    expect(term.scrollLines).toHaveBeenCalled();
+  });
+
+  test("closing the keyboard mid-swipe rebases into normal scrolling without a jump", () => {
+    const { mount, term, writeTerminal } = setup();
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "280px");
+    root.style.setProperty("--strideterm-keyboard-pan", "280px");
+    Object.defineProperty(mount, "clientHeight", { value: 500, configurable: true });
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+    expect(term.scrollLines).not.toHaveBeenCalled();
+
+    // The IME closes while this finger is still down. This move only changes
+    // modes; the distance before the transition must not become a scroll.
+    root.style.setProperty("--strideterm-keyboard-bottom", "0px");
+    root.style.setProperty("--strideterm-keyboard-pan", "0px");
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 180]]));
+    expect(term.scrollLines).not.toHaveBeenCalled();
+    expect(writeTerminal).not.toHaveBeenCalled();
+
+    // Subsequent movement is a fresh scroll delta from the transition point.
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 220]]));
+    expect(term.scrollLines).toHaveBeenCalled();
+    expect(writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("a keyboard transition cancels long-press timing across the scroll rebase", () => {
+    const onTextSelectionRequested = vi.fn();
+    const { mount } = setup({ onTextSelectionRequested });
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "280px");
+    root.style.setProperty("--strideterm-keyboard-pan", "280px");
+    Object.defineProperty(mount, "clientHeight", { value: 500, configurable: true });
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 108]]));
+    root.style.setProperty("--strideterm-keyboard-bottom", "0px");
+    root.style.setProperty("--strideterm-keyboard-pan", "0px");
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 108]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 116]]));
+    vi.advanceTimersByTime(500);
+
+    expect(onTextSelectionRequested).not.toHaveBeenCalled();
+  });
+
+  test("closing the keyboard mid-swipe over an alternate screen emits no transition key", () => {
+    const { mount, term, writeTerminal } = setup();
+    term.buffer.active.type = "alternate";
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "280px");
+    root.style.setProperty("--strideterm-keyboard-pan", "280px");
+    Object.defineProperty(mount, "clientHeight", { value: 500, configurable: true });
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+    root.style.setProperty("--strideterm-keyboard-bottom", "0px");
+    root.style.setProperty("--strideterm-keyboard-pan", "0px");
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 180]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(term.scrollLines).not.toHaveBeenCalled();
+  });
+
+  test("opening the keyboard mid-swipe over an alternate screen switches to pan without key input", () => {
+    const { mount, term, writeTerminal } = setup();
+    term.buffer.active.type = "alternate";
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "0px");
+    root.style.setProperty("--strideterm-keyboard-pan", "0px");
+    Object.defineProperty(mount, "clientHeight", { value: 500, configurable: true });
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    root.style.setProperty("--strideterm-keyboard-bottom", "280px");
+    root.style.setProperty("--strideterm-keyboard-pan", "280px");
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 130]]));
+    expect(root.style.getPropertyValue("--strideterm-keyboard-pan")).toBe("280px");
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(term.scrollLines).not.toHaveBeenCalled();
+
+    // Once rebased, the visible keyboard pan follows only the remaining drag.
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+    expect(root.style.getPropertyValue("--strideterm-keyboard-pan")).toBe("250px");
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(term.scrollLines).not.toHaveBeenCalled();
   });
 
   test("a swipe in the alternate buffer still sends arrow keys to the PTY", () => {
@@ -745,7 +875,11 @@ describe("the existing touch gestures survive the long-press arbitration", () =>
 
   test("the pull-to-refresh overscroll still fires", () => {
     const onOverscrollRefresh = vi.fn();
-    const { mount } = setup({ onOverscrollRefresh });
+    const calls: string[] = [];
+    onOverscrollRefresh.mockImplementation(() => calls.push("remote"));
+    const { mount, term, writeTerminal } = setup({ onOverscrollRefresh });
+    const before = { ...term.buffer.active };
+    term.refresh.mockImplementation(() => calls.push("local"));
 
     // Swipe toward newer content while the mock buffer refuses to advance —
     // exactly the "already at the bottom" case the gesture is for.
@@ -754,6 +888,55 @@ describe("the existing touch gestures survive the long-press arbitration", () =>
     mount.dispatchEvent(touchEvent("touchend", mount, []));
 
     expect(onOverscrollRefresh).toHaveBeenCalledTimes(1);
+    expect(term.refresh).toHaveBeenCalledWith(0, term.rows - 1);
+    expect(calls).toEqual(["local", "remote"]);
+    expect(term.buffer.active).toEqual(before);
+    expect(term.reset).not.toHaveBeenCalled();
+    expect(term.resize).not.toHaveBeenCalled();
+    expect(writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("normal scroll progress does not trigger the pull-to-refresh", () => {
+    const onOverscrollRefresh = vi.fn();
+    const { mount, term } = setup({ onOverscrollRefresh });
+    term.buffer.active.baseY = 10;
+    term.scrollLines.mockImplementation((amount: number) => {
+      term.buffer.active.viewportY = Math.max(
+        0,
+        Math.min(term.buffer.active.baseY, term.buffer.active.viewportY + amount),
+      );
+    });
+
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 300]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 260]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+
+    expect(term.buffer.active.viewportY).toBeGreaterThan(0);
+    expect(onOverscrollRefresh).not.toHaveBeenCalled();
+    expect(term.refresh).not.toHaveBeenCalled();
+  });
+
+  test("no-op scrolling away from the bottom and at the top does not trigger refresh", () => {
+    const onOverscrollRefresh = vi.fn();
+    const { mount, term } = setup({ onOverscrollRefresh });
+    term.buffer.active.baseY = 10;
+    term.buffer.active.viewportY = 5;
+
+    // A no-op toward newer content below baseY is not evidence of bottom
+    // overscroll either.
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 300]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 140]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+    expect(onOverscrollRefresh).not.toHaveBeenCalled();
+
+    term.buffer.active.viewportY = 0;
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 260]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+
+    expect(term.buffer.active.viewportY).toBe(0);
+    expect(onOverscrollRefresh).not.toHaveBeenCalled();
+    expect(term.refresh).not.toHaveBeenCalled();
   });
 });
 

@@ -1290,6 +1290,14 @@ export function createTerminalController({
       return Math.min(bottom, Math.max(0, mount.clientHeight - 32));
     }
 
+    function requestNativeViewportMetrics(): void {
+      try {
+        window.StridetermViewport?.postMessage?.("refresh");
+      } catch {
+        // A detached WebView bridge must not cancel the touch gesture.
+      }
+    }
+
     function keyboardPan(): number {
       const pan = Number.parseFloat(document.documentElement.style.getPropertyValue("--strideterm-keyboard-pan")) || 0;
       return Math.min(pan, keyboardOverlap());
@@ -1400,6 +1408,7 @@ export function createTerminalController({
           touch.blocked = false;
           touch.maxMoveX = 0;
           touch.maxMoveY = 0;
+          requestNativeViewportMetrics();
           touch.mode = keyboardOverlap() > 0 ? "keyboard-pan" : "scroll";
           touch.startPan = keyboardPan();
           touch.lastY = e.touches[0].clientY;
@@ -1443,11 +1452,40 @@ export function createTerminalController({
           if (touch.maxMoveX > LONG_PRESS_MOVE_PX || touch.maxMoveY > LONG_PRESS_MOVE_PX) cancelLongPress();
         }
         if (touch.consumed) return;
+        if (e.touches.length === 1) {
+          const currentY = e.touches[0].clientY;
+          const overlap = keyboardOverlap();
+          if (touch.mode === "keyboard-pan" && overlap <= 0) {
+            // IME geometry can change during a drag. Rebase at the transition
+            // so the remaining finger travel scrolls normally without replaying
+            // the pan distance as a sudden scroll jump.
+            cancelLongPress();
+            touch.mode = "scroll";
+            touch.lastY = currentY;
+            touch.startY = currentY;
+            touch.scrollAccum = 0;
+            touch.overscrollAccum = 0;
+            document.documentElement.style.setProperty("--strideterm-keyboard-pan", "0px");
+          } else if (touch.mode === "scroll" && overlap > 0) {
+            // Fresh native metrics can report an IME opening during a scroll
+            // gesture. Rebase there too, so pre-keyboard movement never becomes
+            // terminal input or an artificial pan jump.
+            cancelLongPress();
+            touch.mode = "keyboard-pan";
+            touch.startPan = keyboardPan();
+            touch.lastY = currentY;
+            touch.startY = currentY;
+            touch.scrollAccum = 0;
+            touch.overscrollAccum = 0;
+          }
+        }
         if (touch.mode === "keyboard-pan" && e.touches.length >= 1) {
-          const pan = touch.startPan - (e.touches[0].clientY - touch.startY);
+          const currentY = e.touches[0].clientY;
+          const overlap = keyboardOverlap();
+          const pan = touch.startPan - (currentY - touch.startY);
           document.documentElement.style.setProperty(
             "--strideterm-keyboard-pan",
-            `${Math.max(0, Math.min(keyboardOverlap(), pan))}px`,
+            `${Math.max(0, Math.min(overlap, pan))}px`,
           );
         } else if (touch.mode === "scroll" && e.touches.length >= 1) {
           const currentY = e.touches[0].clientY;
@@ -1497,7 +1535,7 @@ export function createTerminalController({
               // Reset on any successful scroll or any swipe in the opposite
               // direction, so a normal scroll back-and-forth never triggers
               // refresh by accident.
-              if (dir > 0 && oldViewportY === newViewportY) {
+              if (dir > 0 && oldViewportY === newViewportY && newViewportY === term.buffer.active.baseY) {
                 touch.overscrollAccum += lines * lineHeight;
               } else {
                 touch.overscrollAccum = 0;
@@ -1531,9 +1569,15 @@ export function createTerminalController({
         // scroll buffer by more than the threshold during this gesture,
         // fire the refresh callback instead of (and before) any other
         // touchend interpretation.
-        if (touch.overscrollAccum >= OVERSCROLL_REFRESH_PX && onOverscrollRefresh) {
+        if (
+          touch.overscrollAccum >= OVERSCROLL_REFRESH_PX &&
+          term.buffer.active.type === "normal" &&
+          term.buffer.active.viewportY === term.buffer.active.baseY &&
+          onOverscrollRefresh
+        ) {
           touch.overscrollAccum = 0;
           touch.mode = "none";
+          term.refresh(0, term.rows - 1);
           onOverscrollRefresh();
           return;
         }
