@@ -98,17 +98,20 @@ function onContextMenu(event: MouseEvent, entry: any) {
 
 <style scoped>
 .file-list {
+  --fm-file-columns: minmax(0, 1fr) 80px 120px 90px;
   display: flex;
   flex-direction: column;
   min-height: 0;
   height: 100%;
   overflow: hidden;
   border-bottom: 1px solid var(--border);
+  container-name: file-list;
+  container-type: inline-size;
 }
 
 .file-list__header {
   display: grid;
-  grid-template-columns: 1fr 80px 120px 70px;
+  grid-template-columns: var(--fm-file-columns);
   gap: 4px;
   padding: 4px 10px;
   font-size: 11px;
@@ -122,6 +125,17 @@ function onContextMenu(event: MouseEvent, entry: any) {
 .file-list__col {
   cursor: pointer;
   white-space: nowrap;
+}
+
+.file-list__col--name,
+.file-list__fname {
+  min-width: 0;
+}
+
+.file-list__row--parent .file-list__col--name {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
 }
 
 .file-list__col--size,
@@ -138,7 +152,7 @@ function onContextMenu(event: MouseEvent, entry: any) {
 
 .file-list__row--parent {
   display: grid;
-  grid-template-columns: 1fr 80px 120px 70px;
+  grid-template-columns: var(--fm-file-columns);
   gap: 4px;
   padding: 2px 10px;
   font-size: 12px;
@@ -155,8 +169,21 @@ function onContextMenu(event: MouseEvent, entry: any) {
 }
 
 .file-list__fname {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container file-list (max-width: 420px) {
+  .file-list__header,
+  .file-list__row--parent {
+    --fm-file-columns: minmax(96px, 1fr) 60px 92px;
+  }
+
+  .file-list__col--type {
+    display: none;
+  }
 }
 
 .file-list__loading,

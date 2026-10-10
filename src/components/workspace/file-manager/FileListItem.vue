@@ -164,7 +164,7 @@ async function onDrop() {
 /* List mode */
 .fli--list {
   display: grid;
-  grid-template-columns: 1fr 80px 120px 90px;
+  grid-template-columns: var(--fm-file-columns, minmax(0, 1fr) 80px 120px 90px);
   gap: 4px;
   padding: 2px 10px;
   font-size: 12px;
@@ -221,6 +221,7 @@ async function onDrop() {
   align-items: center;
   gap: 6px;
   overflow: hidden;
+  min-width: 0;
 }
 
 .fli__icon {
@@ -231,9 +232,21 @@ async function onDrop() {
 }
 
 .fli__fname {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@container file-list (max-width: 420px) {
+  .fli--list {
+    --fm-file-columns: minmax(96px, 1fr) 60px 92px;
+  }
+
+  .fli__col--type {
+    display: none;
+  }
 }
 
 .fli__status-dot {
