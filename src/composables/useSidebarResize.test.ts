@@ -25,8 +25,12 @@ function stubWidth(el: HTMLElement, width: number) {
   el.getBoundingClientRect = () => ({ width }) as DOMRect;
 }
 
-function dispatchOn(target: EventTarget, type: string, init: MouseEventInit = {}) {
-  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
+function dispatchPointer(target: EventTarget, type: string, init: PointerEventInit = {}) {
+  target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, ...init }));
+}
+
+function dispatchOn(target: EventTarget, type: string) {
+  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
 }
 
 function buildHarness() {
@@ -61,17 +65,17 @@ describe("useSidebarResize", () => {
     const { frameEl, handleEl, sidebarEl } = buildHarness();
     stubWidth(sidebarEl, 300);
 
-    dispatchOn(handleEl, "mousedown", { clientX: 100 });
-    dispatchOn(window, "mousemove", { clientX: 40 }); // 300 - 60 = 240, within [180, 600]
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100, pointerType: "mouse", button: 0 });
+    dispatchPointer(window, "pointermove", { clientX: 40, pointerType: "mouse" }); // 300 - 60 = 240, within [180, 600]
     expect(frameEl.style.getPropertyValue("--sidebar-width")).toBe("240px");
 
     // 300 - 150 = 150: below SIDEBAR_MIN(180) but still above COLLAPSE_THRESHOLD(100),
     // so it clamps to the min instead of triggering the collapse branch.
-    dispatchOn(window, "mousemove", { clientX: -50 });
+    dispatchPointer(window, "pointermove", { clientX: -50, pointerType: "mouse" });
     expect(frameEl.style.getPropertyValue("--sidebar-width")).toBe("180px");
 
     stubWidth(sidebarEl, 180);
-    dispatchOn(window, "mouseup");
+    dispatchPointer(window, "pointerup", { pointerType: "mouse" });
     expect(window.localStorage.getItem("strideterm-sidebar-width")).toBe("180");
   });
 
@@ -80,8 +84,8 @@ describe("useSidebarResize", () => {
     expect(store.sidebarCollapsed).toBe(false);
     const { frameEl, handleEl } = buildHarness();
 
-    dispatchOn(handleEl, "mousedown", { clientX: 500 });
-    dispatchOn(window, "mousemove", { clientX: 150 }); // 300 - 350 = -50, below threshold(100)
+    dispatchPointer(handleEl, "pointerdown", { clientX: 500 });
+    dispatchPointer(window, "pointermove", { clientX: 150 }); // 300 - 350 = -50, below threshold(100)
 
     expect(store.sidebarCollapsed).toBe(true);
     expect(frameEl.style.getPropertyValue("--sidebar-width")).toBe("");
@@ -92,10 +96,10 @@ describe("useSidebarResize", () => {
     store.sidebarCollapsed = true;
     const { frameEl, handleEl } = buildHarness();
 
-    dispatchOn(handleEl, "mousedown", { clientX: 500 });
+    dispatchPointer(handleEl, "pointerdown", { clientX: 500 });
     // startWidth falls back to collapsedFallbackWidth(84) since collapse.get() is true
     // and the frame has no --sidebar-collapsed-width computed style in jsdom.
-    dispatchOn(window, "mousemove", { clientX: 700 }); // 84 + 200 = 284, above threshold(100)
+    dispatchPointer(window, "pointermove", { clientX: 700 }); // 84 + 200 = 284, above threshold(100)
 
     expect(store.sidebarCollapsed).toBe(false);
     expect(frameEl.style.getPropertyValue("--sidebar-width")).toBe("284px");

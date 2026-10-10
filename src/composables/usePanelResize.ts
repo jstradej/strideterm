@@ -38,7 +38,7 @@ export interface UsePanelResizeOptions {
   getMeasureEl: () => Element | null | undefined;
   /** Persist the resolved width (e.g. to localStorage). */
   writeWidth: (px: number) => void;
-  /** Gate on whether a mousedown on the handle may start a drag. Defaults to always-true. */
+  /** Gate on whether a pointerdown on the handle may start a drag. Defaults to always-true. */
   canResize?: () => boolean;
   /** Collapse-below-threshold behavior; omit for panels with no collapsed state. */
   collapse?: PanelCollapseOptions;
@@ -69,15 +69,18 @@ export function usePanelResize(options: UsePanelResizeOptions) {
   }
 
   let resizing = false;
+  let activePointerId: number | null = null;
   let startX = 0;
   let startWidth = 0;
 
-  function onMousedown(event: MouseEvent) {
+  function onPointerdown(event: PointerEvent) {
     const handle = (event.target as Element | null)?.closest(handleSelector);
     if (!handle) return;
+    if (resizing || (event.pointerType === "mouse" && event.button !== 0)) return;
     if (!canResize()) return;
     event.preventDefault();
     resizing = true;
+    activePointerId = event.pointerId;
     startX = event.clientX;
     const frame = frameRef.value;
     startWidth = collapse?.get()
@@ -86,10 +89,17 @@ export function usePanelResize(options: UsePanelResizeOptions) {
       : getMeasureEl()?.getBoundingClientRect().width || defaultWidth;
     frame?.classList.add("frame--resizing");
     handle.classList.add(activeClass);
+    if ("setPointerCapture" in handle) {
+      try {
+        (handle as HTMLElement).setPointerCapture(event.pointerId);
+      } catch {
+        // Window listeners remain the fallback if capture is unavailable.
+      }
+    }
   }
 
-  function onMousemove(event: MouseEvent) {
-    if (!resizing) return;
+  function onPointermove(event: PointerEvent) {
+    if (!resizing || event.pointerId !== activePointerId) return;
     const delta = invert ? startX - event.clientX : event.clientX - startX;
     const rawWidth = startWidth + delta;
     const frame = frameRef.value;
@@ -103,9 +113,10 @@ export function usePanelResize(options: UsePanelResizeOptions) {
     frame?.style.setProperty(cssVar, `${clampedWidth}px`);
   }
 
-  function onMouseup() {
-    if (!resizing) return;
+  function onPointerEnd(event: PointerEvent) {
+    if (!resizing || event.pointerId !== activePointerId) return;
     resizing = false;
+    activePointerId = null;
     const frame = frameRef.value;
     frame?.classList.remove("frame--resizing");
     document.querySelectorAll(handleSelector).forEach((h) => h.classList.remove(activeClass));
@@ -113,6 +124,14 @@ export function usePanelResize(options: UsePanelResizeOptions) {
       const measureEl = getMeasureEl();
       if (measureEl) writeWidth(Math.round(measureEl.getBoundingClientRect().width));
     }
+  }
+
+  function cancelActiveDrag() {
+    if (!resizing) return;
+    resizing = false;
+    activePointerId = null;
+    frameRef.value?.classList.remove("frame--resizing");
+    document.querySelectorAll(handleSelector).forEach((h) => h.classList.remove(activeClass));
   }
 
   function onDoubleClick(event: MouseEvent) {
@@ -139,18 +158,21 @@ export function usePanelResize(options: UsePanelResizeOptions) {
   }
 
   onMounted(() => {
-    document.addEventListener("mousedown", onMousedown);
+    document.addEventListener("pointerdown", onPointerdown);
     document.addEventListener("dblclick", onDoubleClick);
-    window.addEventListener("mousemove", onMousemove);
-    window.addEventListener("mouseup", onMouseup);
+    window.addEventListener("pointermove", onPointermove);
+    window.addEventListener("pointerup", onPointerEnd);
+    window.addEventListener("pointercancel", onPointerEnd);
     window.addEventListener("resize", onWindowResize);
   });
 
   onBeforeUnmount(() => {
-    document.removeEventListener("mousedown", onMousedown);
+    cancelActiveDrag();
+    document.removeEventListener("pointerdown", onPointerdown);
     document.removeEventListener("dblclick", onDoubleClick);
-    window.removeEventListener("mousemove", onMousemove);
-    window.removeEventListener("mouseup", onMouseup);
+    window.removeEventListener("pointermove", onPointermove);
+    window.removeEventListener("pointerup", onPointerEnd);
+    window.removeEventListener("pointercancel", onPointerEnd);
     window.removeEventListener("resize", onWindowResize);
   });
 

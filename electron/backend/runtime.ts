@@ -123,6 +123,7 @@ import {
 } from "./mobile/mobile-relay-manager.js";
 import { createMobileRegistrationOnboarding } from "./mobile/registration-onboarding.js";
 import { createMobileSystemChannel } from "./mobile/mobile-system-channel.js";
+import type { RelayReason } from "./mobile/mobile-relay-protocol.js";
 import { createCachedMobileSystemPayloadSource } from "./mobile/mobile-system-channel-source.js";
 import { projectMobileWorkspaces } from "./mobile/mobile-workspace-projection.js";
 import {
@@ -624,7 +625,7 @@ export async function createRuntime({
   // afterwards), so MobileManager.revokeDevice() reaches it through this
   // mutable indirection instead of a direct reference — same forward-
   // reference shape as `_rt` above.
-  let _mobileRemoteSessionRevoker: ((deviceId: string) => void) | null = null;
+  const _mobileRemoteSessionRevokers = new Set<(deviceId: string, reason?: string) => void>();
   let _remoteBrowserSessionController: {
     list(): RemoteBrowserSession[];
     revoke(payload: RemoteSessionRevoke): { revoked: number };
@@ -2113,17 +2114,21 @@ export async function createRuntime({
     // Stable wrapper closure over the mutable _mobileRemoteSessionRevoker ref
     // (set later by startRemoteServer) — same forward-reference trick as
     // mobileRuntimeAdapter's _rt calls above.
-    revokeRemoteSessions: (deviceId: string) => {
-      _mobileRemoteSessionRevoker?.(deviceId);
+    revokeRemoteSessions: (deviceId: string, reason?: string) => {
+      for (const revoke of _mobileRemoteSessionRevokers) revoke(deviceId, reason);
       // The relay is a second place a revoked device may still have a live session: the relay's own
       // loopback origin, and the relay's record of the device. Both end here.
-      mobileRelayManager?.revokeDevice(deviceId);
+      if (!reason || reason === "revoked") mobileRelayManager?.revokeDevice(deviceId);
     },
     // The derived relay keys and the connector's open e2e streams for this device end with its
     // revocation, rather than at the keys' TTL.
     revokeRelayE2eSession: (deviceId: string) => {
       mobileRelayE2eSessionStore.delete(deviceId);
       mobileRelayManager?.endDeviceStreams(deviceId);
+    },
+    endRemoteUiStreams: (deviceId: string, reason?: RelayReason) => {
+      mobileRelayE2eSessionStore.delete(deviceId);
+      mobileRelayManager?.endRemoteUiStreams(deviceId, reason);
     },
   });
 
@@ -8326,8 +8331,13 @@ export async function createRuntime({
     isMobileSessionStillAuthorized(deviceId: string, profileId: string): boolean {
       const device = mobileDeviceStore.getDevice(deviceId);
       if (!isMobileDeviceUsable(device)) return false;
+      if (getState().settings.remoteAccess.paused || device.remoteUiPaused) return false;
       if (!mobileDeviceHasCapability(device, "remote.webSession")) return false;
       return mobileDeviceAllowsProfile(device, profileId);
+    },
+
+    isMobileSessionPaused(deviceId: string): boolean {
+      return getState().settings.remoteAccess.paused || mobileDeviceStore.getDevice(deviceId)?.remoteUiPaused === true;
     },
 
     /**
@@ -8360,8 +8370,9 @@ export async function createRuntime({
       };
     },
 
-    setMobileRemoteSessionRevoker(fn: (deviceId: string) => void): void {
-      _mobileRemoteSessionRevoker = fn;
+    addMobileRemoteSessionRevoker(fn: (deviceId: string, reason?: string) => void): () => void {
+      _mobileRemoteSessionRevokers.add(fn);
+      return () => _mobileRemoteSessionRevokers.delete(fn);
     },
 
     setRemoteBrowserSessionController(controller: typeof _remoteBrowserSessionController): void {
@@ -8743,6 +8754,12 @@ export async function createRuntime({
       update: { capabilities?: string[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
     ) {
       await mobileManager.updateDeviceAllowlist(deviceId, update);
+      broadcastState();
+      return getPayload();
+    },
+
+    async setMobileDeviceRemoteUiPaused(deviceId: string, paused: boolean) {
+      await mobileManager.setRemoteUiPaused(deviceId, paused);
       broadcastState();
       return getPayload();
     },
@@ -9928,6 +9945,13 @@ export async function createRuntime({
       const remoteAccessChanged = JSON.stringify(previousConfig) !== JSON.stringify(nextConfig);
       const tunnelTargetChanged = previousConfig.port !== nextConfig.port || previousConfig.host !== nextConfig.host;
       if (previousConfig.paused && !nextConfig.paused) autoTunnelBootstrapped = false;
+      if (!previousConfig.paused && nextConfig.paused) {
+        for (const device of mobileDeviceStore.listDevices()) {
+          for (const revoke of _mobileRemoteSessionRevokers) revoke(device.deviceId, "temporarily-paused");
+          mobileRelayE2eSessionStore.delete(device.deviceId);
+          mobileRelayManager?.endRemoteUiStreams(device.deviceId, "unauthorized");
+        }
+      }
       if (remoteAccessChanged) {
         events.emit("remote:config-changed", clone(nextConfig));
       }

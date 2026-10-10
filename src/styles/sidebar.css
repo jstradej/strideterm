@@ -166,12 +166,14 @@
 .sidebar-resize-handle {
   position: absolute;
   top: 0;
-  right: 0;
   bottom: 0;
-  width: 6px;
+  width: 20px;
+  right: -7px;
   cursor: col-resize;
   z-index: 50;
   background: transparent;
+  touch-action: none;
+  user-select: none;
   transition: background 0.15s;
 }
 

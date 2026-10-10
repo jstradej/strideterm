@@ -2239,6 +2239,19 @@ export const useAppStore = defineStore("app", () => {
     await refreshMobileDevices();
   }
 
+  async function setMobileDeviceRemoteUiPaused(deviceId: string, paused: boolean): Promise<void> {
+    const api = getApi() as CallableTransport;
+    if (typeof api?.setMobileDeviceRemoteUiPaused !== "function") {
+      throw new Error("Pausing a phone's remote UI is only available in the desktop app.");
+    }
+    const result = await api.setMobileDeviceRemoteUiPaused({ deviceId, paused });
+    if (result) {
+      payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(result as StatePayload) as AnyApi) as StatePayload;
+      _cacheCurrentWorkspace();
+    }
+    await refreshMobileDevices();
+  }
+
   async function setMobileEnabled(enabled: boolean): Promise<void> {
     const api = getApi() as CallableTransport;
     if (typeof api?.setMobileEnabled !== "function") {
@@ -2396,6 +2409,7 @@ export const useAppStore = defineStore("app", () => {
     rejectMobileDevice,
     refreshMobileDevicesAwaitingApproval,
     updateMobileDeviceAllowlist,
+    setMobileDeviceRemoteUiPaused,
     setMobileEnabled,
     mobileRelayEnabled,
     mobileRelayRequireE2e,

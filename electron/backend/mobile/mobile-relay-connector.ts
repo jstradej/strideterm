@@ -379,6 +379,7 @@ export interface RelayConnector {
    * running until its next frame happened to fail, which for an idle WebSocket can be never.
    */
   endDeviceStreams(mobileDeviceId: string): void;
+  endRemoteUiStreams(mobileDeviceId: string, reason?: RelayReason): void;
   /** Diagnostics for the local harness and the debug UI — counts and states only, never payload. */
   stats(): {
     state: RelayConnectorState;
@@ -2187,6 +2188,13 @@ export function createRelayConnector(options: RelayConnectorOptions): RelayConne
       options.systemChannel?.revokeDevice?.(mobileDeviceId);
       for (const [outerId, owner] of [...e2eOuterDeviceId]) {
         if (owner.deviceId === mobileDeviceId) endE2eOuterStreamAndNotify(outerId, "unauthorized");
+      }
+      e2eDeviceSessions.delete(mobileDeviceId);
+      e2eExhaustedDevices.delete(mobileDeviceId);
+    },
+    endRemoteUiStreams(mobileDeviceId: string, reason: RelayReason = "unauthorized") {
+      for (const [outerId, owner] of [...e2eOuterDeviceId]) {
+        if (owner.deviceId === mobileDeviceId) endE2eOuterStreamAndNotify(outerId, reason);
       }
       e2eDeviceSessions.delete(mobileDeviceId);
       e2eExhaustedDevices.delete(mobileDeviceId);

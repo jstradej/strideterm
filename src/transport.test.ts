@@ -1623,6 +1623,8 @@ describe("remote transport API parity — no method silently missing its remote 
     "closeTerminal",
     "listPlugins",
     "getPluginWorkspaceTemplate",
+    // A paired phone can request its UI session, but only the local desktop user may pause or resume it.
+    "setMobileDeviceRemoteUiPaused",
     // Electron multi-window management — a remote client is a single browser
     // tab, there is no OS-level window to create/close/focus.
     "getWindowId",
@@ -2035,7 +2037,7 @@ describe("remote transport failure messages", () => {
 describe("host connection-state dedupe and session-lost reason", () => {
   let originalFetch: typeof globalThis.fetch;
   let originalWebSocket: typeof globalThis.WebSocket;
-  type Bridge = { suspend(): void; resume(): void; isSuspended(): boolean };
+  type Bridge = { suspend(): void; resume(): void; isSuspended(): boolean; isSessionLost(): boolean };
   const bridge = () => (window as unknown as Record<string, Bridge>).__stridetermRemote;
 
   beforeEach(() => {
@@ -2105,6 +2107,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
     ["absolute-expired", "expired"],
     ["session expired", "expired"],
     ["unauthorized", "unauthorized"],
+    ["temporarily-paused", "temporarily-paused"],
     ["some other server text with /secret/path", "unknown"],
   ])("reports a server close reason %j to the host as the allowlisted %s", (closeReason, expected) => {
     const posted: string[] = [];
@@ -2116,5 +2119,52 @@ describe("host connection-state dedupe and session-lost reason", () => {
     MockWebSocket.instances[0].open();
     MockWebSocket.instances[0].close(1008, closeReason);
     expect(hostMessages(posted, "session-lost")).toEqual([{ type: "session-lost", reason: expected }]);
+  });
+
+  it("shows a temporary pause message to the remote renderer", () => {
+    const states: Array<{ connected: boolean; message?: string }> = [];
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => states.push(state));
+    MockWebSocket.instances[0].open();
+    MockWebSocket.instances[0].close(1008, "temporarily-paused");
+    expect(states.at(-1)).toMatchObject({
+      connected: false,
+      message: "Remote UI access is temporarily paused on the desktop.",
+    });
+  });
+
+  it("latches an HTTP temporary-pause denial and reports its stable host reason", async () => {
+    vi.useFakeTimers();
+    const posted: string[] = [];
+    const states: Array<{ connected: boolean; message?: string }> = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(message),
+    };
+    globalThis.fetch = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          status: 423,
+          text: async () => "Remote UI access is temporarily paused on the desktop.",
+        }) as Response,
+    );
+    const transport = createRemoteTransport();
+    transport.onConnectionState((state) => states.push(state));
+    MockWebSocket.instances[0].open();
+
+    await expect(transport.getState()).rejects.toThrow("Remote UI access is temporarily paused on the desktop.");
+
+    expect(bridge().isSessionLost()).toBe(true);
+    expect(hostMessages(posted, "session-lost")).toEqual([{ type: "session-lost", reason: "temporarily-paused" }]);
+    expect(states.at(-1)).toMatchObject({
+      connected: false,
+      message: "Remote UI access is temporarily paused on the desktop.",
+    });
+    const socketCount = MockWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances).toHaveLength(socketCount);
+    expect(posted.map((message) => JSON.parse(message)).filter((message) => message.type === "session-lost")).toEqual([
+      { type: "session-lost", reason: "temporarily-paused" },
+    ]);
   });
 });

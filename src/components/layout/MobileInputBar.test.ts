@@ -132,7 +132,8 @@ describe("MobileInputBar", () => {
       expect(input.attributes("inputmode")).toBe("text");
       expect(wrapper.get(".mobile-input-bar").classes()).toContain("mobile-input-bar--system");
       expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
-      await wrapper.get(".mobile-input-bar__keyboard-mode").trigger("click");
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      await wrapper.get("[data-role='mobile-input-bar-keyboard-mode']").trigger("click");
       expect(input.attributes("inputmode")).toBe("none");
       await input.setValue("ac");
       input.element.setSelectionRange(1, 1);
@@ -146,7 +147,8 @@ describe("MobileInputBar", () => {
       await nextTick();
       expect(input.element.value).toBe("ac");
       expect(writeTerminal).not.toHaveBeenCalled();
-      await wrapper.get(".mobile-input-bar__keyboard-mode").trigger("click");
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      await wrapper.get("[data-role='mobile-input-bar-keyboard-mode']").trigger("click");
       expect(input.attributes("inputmode")).toBe("text");
       expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
       portrait = true;
@@ -227,6 +229,73 @@ describe("MobileInputBar", () => {
       wrapper.unmount();
       media.mockRestore();
       screenOrientation.restore();
+    }
+  });
+
+  it("opens the system input at a wide landscape viewport and preserves an explicit keyboard choice", async () => {
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query === "(any-pointer: coarse)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const screenOrientation = mockScreenOrientation("landscape-primary");
+    const { wrapper } = mountBar();
+    try {
+      await nextTick();
+      expect(wrapper.find(".mobile-input-bar--landscape").exists()).toBe(false);
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
+
+      document.documentElement.classList.add("native-session-rail");
+      window.dispatchEvent(new Event("strideterm:focus-composer"));
+      await flushPromises();
+
+      expect(wrapper.find(".mobile-input-bar--system").exists()).toBe(true);
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
+      expect(wrapper.get("[data-role='mobile-input-bar-input']").attributes("inputmode")).toBe("text");
+
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      await wrapper.get("[data-role='mobile-input-bar-keyboard-mode']").trigger("click");
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(true);
+      expect(wrapper.get("[data-role='mobile-input-bar-input']").attributes("inputmode")).toBe("none");
+
+      window.dispatchEvent(new Event("strideterm:focus-composer"));
+      await flushPromises();
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(true);
+      expect(wrapper.get("[data-role='mobile-input-bar-input']").attributes("inputmode")).toBe("none");
+
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      await wrapper.get("[data-role='mobile-input-bar-keyboard-mode']").trigger("click");
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
+      expect(wrapper.get("[data-role='mobile-input-bar-input']").attributes("inputmode")).toBe("text");
+    } finally {
+      wrapper.unmount();
+      document.documentElement.classList.remove("native-session-rail");
+      screenOrientation.restore();
+      media.mockRestore();
+    }
+  });
+
+  it("does not switch a wide desktop with touch support into mobile landscape mode", async () => {
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query === "(any-pointer: coarse)" || query === "(orientation: landscape)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const screenOrientation = mockScreenOrientation("landscape-primary");
+    const { wrapper } = mountBar();
+    try {
+      await nextTick();
+      expect(wrapper.find(".mobile-input-bar--landscape").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+      screenOrientation.restore();
+      media.mockRestore();
     }
   });
 

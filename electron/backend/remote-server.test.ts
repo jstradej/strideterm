@@ -4177,11 +4177,23 @@ describe("mobile device revoke closes remote sessions", () => {
       },
     };
     const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    let paused = false;
+    let authorized = true;
+    let registry: { get(sessionId: string): unknown } | null = null;
+    let revokeSessions: ((deviceId: string, reason?: string) => void) | null = null;
     return {
       payload,
       seedTicket(ticketId: string, secret: string, deviceId: string) {
         tickets.set(`${ticketId}:${secret}`, { deviceId, pairId: "pair-1", profileId: "default" });
       },
+      setPaused(value: boolean) {
+        paused = value;
+      },
+      setAuthorized(value: boolean) {
+        authorized = value;
+      },
+      registry: () => registry,
+      revoke: (deviceId: string, reason?: string) => revokeSessions?.(deviceId, reason),
       runtime: {
         getPayload: () => payload,
         getInitialState: async () => payload,
@@ -4191,7 +4203,23 @@ describe("mobile device revoke closes remote sessions", () => {
         writeToSession: () => undefined,
         submitToSession: () => undefined,
         resizeSession: () => undefined,
-        setRemoteClientRegistry: () => undefined,
+        setRemoteClientRegistry: (value: { get(sessionId: string): unknown }) => {
+          registry = value;
+        },
+        addRemoteClientRegistry: (value: { get(sessionId: string): unknown }) => {
+          registry = value;
+          return () => {
+            registry = null;
+          };
+        },
+        addMobileRemoteSessionRevoker: (fn: (deviceId: string, reason?: string) => void) => {
+          revokeSessions = fn;
+          return () => {
+            revokeSessions = null;
+          };
+        },
+        isMobileSessionPaused: () => paused,
+        isMobileSessionStillAuthorized: () => authorized && !paused,
         // The origins this server answers on. A ticket is bound to one of them, so a server that
         // reports none can redeem nothing — which is the new invariant, not an artefact of the fake.
         listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
@@ -4231,7 +4259,7 @@ describe("mobile device revoke closes remote sessions", () => {
 
   test("revoking a device removes its session and closes its open WebSocket; a subsequent request with the old cookie is unauthorized", async () => {
     const port = await getFreePort();
-    const { seedTicket, runtime } = makeMobileRuntime(port);
+    const { seedTicket, runtime, setPaused, registry, revoke } = makeMobileRuntime(port);
     seedTicket("t1", "s1", "dev-1");
     const server = await startRemoteServer({
       runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
@@ -4250,25 +4278,69 @@ describe("mobile device revoke closes remote sessions", () => {
       // the Cookie header, same as a browser would).
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: cookieValue } });
       let closeCode: number | null = null;
+      let closeReason = "";
       const opened = new Promise<void>((resolve, reject) => {
         ws.on("open", () => resolve());
         ws.on("error", reject);
       });
       const closed = new Promise<void>((resolve) => {
-        ws.on("close", (code: number) => {
+        ws.on("close", (code: number, reason: Buffer) => {
           closeCode = code;
+          closeReason = reason.toString();
           resolve();
         });
       });
       await opened;
 
       expect(server.revokeMobileSessionsForDevice).toBeDefined();
-      server.revokeMobileSessionsForDevice!("dev-1");
+      setPaused(true);
+      seedTicket("t2", "s2", "dev-1");
+      revoke("dev-1", "temporarily-paused");
       await closed;
       expect(closeCode).toBe(1008);
+      expect(closeReason).toBe("temporarily-paused");
+      expect(registry()?.get(cookieValue.split("=")[1])).toBeUndefined();
 
       const afterRevoke = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } });
-      expect(afterRevoke.status).toBe(401);
+      expect(afterRevoke.status).toBe(423);
+      expect(await afterRevoke.text()).toMatch(/temporarily paused/i);
+
+      const freshTicketDenied = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "t2", secret: "s2" }),
+      });
+      expect(freshTicketDenied.status).toBe(423);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("restoring a device grant requires a fresh ticket and bootstrap after the old session is denied", async () => {
+    const port = await getFreePort();
+    const { seedTicket, runtime, setAuthorized } = makeMobileRuntime(port);
+    seedTicket("t1", "s1", "dev-1");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const oldCookie = await bootstrapSession(baseUrl, "t1", "s1");
+      expect(oldCookie).toContain("strideterm_session=");
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: oldCookie } })).status).toBe(200);
+
+      setAuthorized(false);
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: oldCookie } })).status).toBe(401);
+
+      setAuthorized(true);
+      // Restoring rights does not resurrect the session that was deleted on denial.
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: oldCookie } })).status).toBe(401);
+
+      seedTicket("t2", "s2", "dev-1");
+      const freshCookie = await bootstrapSession(baseUrl, "t2", "s2");
+      expect(freshCookie).toContain("strideterm_session=");
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: freshCookie } })).status).toBe(200);
     } finally {
       await server.close();
     }
@@ -5360,7 +5432,8 @@ describe("the managed relay's loopback-only internal origin", () => {
     const calls = {
       setRemoteInfo: 0,
       setRemoteClientRegistry: 0,
-      setMobileRemoteSessionRevoker: 0,
+      addMobileRemoteSessionRevoker: 0,
+      releasedMobileRemoteSessionRevoker: 0,
       addRemoteClientRegistry: 0,
       releasedRemoteClientRegistry: 0,
     };
@@ -5384,8 +5457,11 @@ describe("the managed relay's loopback-only internal origin", () => {
           calls.releasedRemoteClientRegistry += 1;
         };
       },
-      setMobileRemoteSessionRevoker: () => {
-        calls.setMobileRemoteSessionRevoker += 1;
+      addMobileRemoteSessionRevoker: () => {
+        calls.addMobileRemoteSessionRevoker += 1;
+        return () => {
+          calls.releasedMobileRemoteSessionRevoker += 1;
+        };
       },
     };
     return { runtime, calls };
@@ -5402,23 +5478,25 @@ describe("the managed relay's loopback-only internal origin", () => {
       expect(server.address?.host).toBe("127.0.0.1");
       expect(server.address!.port).toBeGreaterThan(0);
       // Nothing the PRIMARY server owns: not the URLs the settings UI shows, not the registry the
-      // desktop windows and the LAN browser use, not the revoke hook. What it DOES do is add its own
+      // desktop windows and the LAN browser use. It registers its own revoke hook and adds its own
       // registry alongside — without that the runtime cannot resolve a relay viewer at all, so its
       // workspace switch fails and its profile guard silently does not apply.
       expect(calls).toEqual({
         setRemoteInfo: 0,
         setRemoteClientRegistry: 0,
-        setMobileRemoteSessionRevoker: 0,
+        addMobileRemoteSessionRevoker: 1,
+        releasedMobileRemoteSessionRevoker: 0,
         addRemoteClientRegistry: 1,
         releasedRemoteClientRegistry: 0,
       });
-      // Its own revoke hook is handed back instead, for the relay manager to wire up.
+      // Its own hook remains directly callable for relay-specific cleanup.
       expect(typeof server.revokeMobileSessionsForDevice).toBe("function");
     } finally {
       await server.close();
     }
     // And closing it takes the registry back out, so a stopped relay leaves no viewer behind.
     expect(calls.releasedRemoteClientRegistry).toBe(1);
+    expect(calls.releasedMobileRemoteSessionRevoker).toBe(1);
   });
 
   test("answers only a caller presenting the guard, on HTTP and on the WebSocket upgrade alike", async () => {
@@ -5637,7 +5715,7 @@ describe("the master token in payload.remoteAccess.urls, per transport", () => {
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
       addRemoteClientRegistry: () => () => undefined,
-      setMobileRemoteSessionRevoker: () => undefined,
+      addMobileRemoteSessionRevoker: () => () => undefined,
       isMobileSessionStillAuthorized: () => true,
       consumeMobileWebSessionTicket: (ticketId: string, secret: string) =>
         ticketId === "t1" && secret === "s1"

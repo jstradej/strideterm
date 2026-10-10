@@ -19,8 +19,8 @@ function stubWidth(el: HTMLElement, width: number) {
   el.getBoundingClientRect = () => ({ width }) as DOMRect;
 }
 
-function dispatchOn(target: EventTarget, type: string, init: MouseEventInit = {}) {
-  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
+function dispatchPointer(target: EventTarget, type: string, init: PointerEventInit = {}) {
+  target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, ...init }));
 }
 
 function buildHarness(overrides: Partial<UsePanelResizeOptions> = {}) {
@@ -71,16 +71,16 @@ describe("usePanelResize", () => {
   test("mousedown on the handle starts a drag; mousemove writes the clamped width to the CSS var", () => {
     const { frameEl, handleEl } = buildHarness();
 
-    dispatchOn(handleEl, "mousedown", { clientX: 100 });
-    dispatchOn(window, "mousemove", { clientX: 140 }); // startWidth(300) + 40
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100, pointerType: "mouse", button: 0 });
+    dispatchPointer(window, "pointermove", { clientX: 140, pointerType: "mouse" }); // startWidth(300) + 40
 
     expect(frameEl.style.getPropertyValue("--test-width")).toBe("340px");
   });
 
-  test("mousemove before any mousedown is a no-op", () => {
+  test("pointermove before any pointerdown is a no-op", () => {
     const { frameEl } = buildHarness();
 
-    dispatchOn(window, "mousemove", { clientX: 500 });
+    dispatchPointer(window, "pointermove", { clientX: 500 });
 
     expect(frameEl.style.getPropertyValue("--test-width")).toBe("");
   });
@@ -88,8 +88,8 @@ describe("usePanelResize", () => {
   test("clamps the resolved width to the configured minimum", () => {
     const { frameEl, handleEl } = buildHarness({ min: 150 });
 
-    dispatchOn(handleEl, "mousedown", { clientX: 100 });
-    dispatchOn(window, "mousemove", { clientX: -100 }); // 300 - 200 = 100, below min(150)
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100 });
+    dispatchPointer(window, "pointermove", { clientX: -100 }); // 300 - 200 = 100, below min(150)
 
     expect(frameEl.style.getPropertyValue("--test-width")).toBe("150px");
   });
@@ -97,8 +97,8 @@ describe("usePanelResize", () => {
   test("clamps the resolved width to the configured maximum", () => {
     const { frameEl, handleEl } = buildHarness({ max: 400 });
 
-    dispatchOn(handleEl, "mousedown", { clientX: 100 });
-    dispatchOn(window, "mousemove", { clientX: 900 }); // 300 + 800 = 1100, above max(400)
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100 });
+    dispatchPointer(window, "pointermove", { clientX: 900 }); // 300 + 800 = 1100, above max(400)
 
     expect(frameEl.style.getPropertyValue("--test-width")).toBe("400px");
   });
@@ -106,8 +106,8 @@ describe("usePanelResize", () => {
   test("invert:true grows the panel when dragging toward negative X", () => {
     const { frameEl, handleEl } = buildHarness({ invert: true });
 
-    dispatchOn(handleEl, "mousedown", { clientX: 200 });
-    dispatchOn(window, "mousemove", { clientX: 150 }); // startX(200) - clientX(150) = 50 => 300+50
+    dispatchPointer(handleEl, "pointerdown", { clientX: 200 });
+    dispatchPointer(window, "pointermove", { clientX: 150 }); // startX(200) - clientX(150) = 50 => 300+50
 
     expect(frameEl.style.getPropertyValue("--test-width")).toBe("350px");
   });
@@ -115,19 +115,19 @@ describe("usePanelResize", () => {
   test("mouseup ends the drag and persists the currently measured (rounded) width", () => {
     const { handleEl, measureEl, writeWidth } = buildHarness();
 
-    dispatchOn(handleEl, "mousedown", { clientX: 100 });
-    dispatchOn(window, "mousemove", { clientX: 140 });
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100 });
+    dispatchPointer(window, "pointermove", { clientX: 140 });
     // Simulate layout having caught up to the CSS var by the time mouseup fires.
     stubWidth(measureEl, 340.6);
-    dispatchOn(window, "mouseup");
+    dispatchPointer(window, "pointerup");
 
     expect(writeWidth).toHaveBeenCalledWith(341);
   });
 
-  test("mouseup with no active drag does not persist anything", () => {
+  test("pointerup with no active drag does not persist anything", () => {
     const { writeWidth } = buildHarness();
 
-    dispatchOn(window, "mouseup");
+    dispatchPointer(window, "pointerup");
 
     expect(writeWidth).not.toHaveBeenCalled();
   });
@@ -135,17 +135,17 @@ describe("usePanelResize", () => {
   test("double-click resets to the default width and persists it", () => {
     const { frameEl, handleEl, writeWidth } = buildHarness({ defaultWidth: 275 });
 
-    dispatchOn(handleEl, "dblclick");
+    handleEl.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
 
     expect(frameEl.style.getPropertyValue("--test-width")).toBe("275px");
     expect(writeWidth).toHaveBeenCalledWith(275);
   });
 
-  test("canResize() gates mousedown — a false gate blocks the drag entirely", () => {
+  test("canResize() gates pointerdown — a false gate blocks the drag entirely", () => {
     const { frameEl, handleEl } = buildHarness({ canResize: () => false });
 
-    dispatchOn(handleEl, "mousedown", { clientX: 100 });
-    dispatchOn(window, "mousemove", { clientX: 500 });
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100 });
+    dispatchPointer(window, "pointermove", { clientX: 500 });
 
     expect(frameEl.style.getPropertyValue("--test-width")).toBe("");
   });
@@ -164,11 +164,51 @@ describe("usePanelResize", () => {
       },
     });
 
-    dispatchOn(handleEl, "mousedown", { clientX: 100 });
-    dispatchOn(window, "mousemove", { clientX: -250 }); // 300 - 350 = -50, below threshold(100)
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100 });
+    dispatchPointer(window, "pointermove", { clientX: -250 }); // 300 - 350 = -50, below threshold(100)
 
     expect(collapsed).toBe(true);
     expect(frameEl.style.getPropertyValue("--test-width")).toBe("");
+  });
+
+  test("touch pointer resizes and pointercancel ends the drag without losing the final width", () => {
+    const { frameEl, handleEl, measureEl, writeWidth } = buildHarness();
+    const capture = vi.fn();
+    handleEl.setPointerCapture = capture;
+
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100, pointerType: "touch" });
+    dispatchPointer(window, "pointermove", { clientX: 160, pointerType: "touch" });
+    expect(capture).toHaveBeenCalledWith(1);
+    expect(frameEl.style.getPropertyValue("--test-width")).toBe("360px");
+    expect(frameEl.classList.contains("frame--resizing")).toBe(true);
+
+    stubWidth(measureEl, 360);
+    dispatchPointer(window, "pointercancel", { clientX: 160, pointerType: "touch" });
+    expect(frameEl.classList.contains("frame--resizing")).toBe(false);
+    expect(handleEl.classList.contains("test-resize-handle--active")).toBe(false);
+    expect(writeWidth).toHaveBeenCalledWith(360);
+  });
+
+  test("events from another pointer cannot move or end the active drag", () => {
+    const { frameEl, handleEl, writeWidth } = buildHarness();
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100, pointerId: 1 });
+    dispatchPointer(window, "pointermove", { clientX: 500, pointerId: 2 });
+    dispatchPointer(window, "pointerup", { pointerId: 2 });
+
+    expect(frameEl.style.getPropertyValue("--test-width")).toBe("");
+    expect(frameEl.classList.contains("frame--resizing")).toBe(true);
+    expect(writeWidth).not.toHaveBeenCalled();
+  });
+
+  test("unmounting during a drag clears active resize state", () => {
+    const { frameEl, handleEl } = buildHarness();
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100 });
+    expect(frameEl.classList.contains("frame--resizing")).toBe(true);
+
+    liveWrappers[0].unmount();
+
+    expect(frameEl.classList.contains("frame--resizing")).toBe(false);
+    expect(handleEl.classList.contains("test-resize-handle--active")).toBe(false);
   });
 
   test("max is additionally capped by maxViewportRatio via effectiveMax()", () => {

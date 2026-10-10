@@ -1285,6 +1285,9 @@ export function createTerminalController({
 
     function keyboardOverlap(): number {
       if (!document.documentElement.classList.contains("native-keyboard-viewport")) return 0;
+      if (mount.closest(".workspace-main")?.querySelector(".mobile-input-bar--landscape.mobile-input-bar--system")) {
+        return 0;
+      }
       const bottom =
         Number.parseFloat(document.documentElement.style.getPropertyValue("--strideterm-keyboard-bottom")) || 0;
       return Math.min(bottom, Math.max(0, mount.clientHeight - 32));

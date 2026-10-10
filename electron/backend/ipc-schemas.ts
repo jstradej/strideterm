@@ -1437,6 +1437,13 @@ export const mobileUpdateDeviceAllowlistSchema = z.object({
 });
 export type MobileUpdateDeviceAllowlist = z.infer<typeof mobileUpdateDeviceAllowlistSchema>;
 
+/** Desktop-only, reversible gate for a paired phone's remote UI access. */
+export const mobileSetRemoteUiPausedSchema = z.object({
+  deviceId: nonEmptyString,
+  paused: z.boolean(),
+});
+export type MobileSetRemoteUiPaused = z.infer<typeof mobileSetRemoteUiPausedSchema>;
+
 /** `mobile:audit-log:query` payload — mirrors azureAuditLogQuerySchema's shape, scoped to MobileAuditLogFilters' fields. */
 export const mobileAuditLogQuerySchema = z.object({
   from: z.string().optional(),

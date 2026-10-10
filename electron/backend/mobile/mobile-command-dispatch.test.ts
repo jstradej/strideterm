@@ -116,6 +116,7 @@ function makeDevice(overrides: Partial<MobileDeviceRecord> = {}): MobileDeviceRe
     lastSeenAt: 1000,
     revoked: false,
     revokedAt: null,
+    remoteUiPaused: false,
     pairingId: "pairing-1",
     grantCommitment: "grant-commitment",
     keyProof: "k".repeat(43),
@@ -1035,6 +1036,32 @@ describe("tunnel safety gates", () => {
     expect(runtime.calls).not.toContain("createCloudflareTunnel");
   });
 
+  test("remote.endpoint.request reports a temporary denial while global or device pause is active", async () => {
+    const pausedSettings = {
+      remoteAccess: {
+        enabled: true,
+        paused: true,
+        host: "0.0.0.0",
+        port: 4756,
+        token: MASTER_TOKEN,
+        customPublicUrl: "",
+        cloudflaredPath: "",
+        autoTunnel: true,
+      },
+    } as AppState["settings"];
+    const command = makeCommand({ type: "remote.endpoint.request", payload: {} });
+    const global = await createFixture({ settings: pausedSettings });
+    expect(await global.dispatcher.dispatch(command, makeDevice({ capabilities: ["remote.request"] }))).toMatchObject({
+      status: "failed",
+      errorCode: "temporarily-paused",
+    });
+
+    const local = await createFixture();
+    expect(
+      await local.dispatcher.dispatch(command, makeDevice({ capabilities: ["remote.request"], remoteUiPaused: true })),
+    ).toMatchObject({ status: "failed", errorCode: "temporarily-paused" });
+  });
+
   test("remote.tunnel.reconnect is allowed (delegates to the tunnel manager) when remote access + autoTunnel were already approved", async () => {
     const { dispatcher, runtime } = await createFixture();
     const device = makeDevice({ capabilities: ["remote.request"] });
@@ -1169,6 +1196,94 @@ describe("remote.webSession.issue", () => {
     });
     const result = await dispatcher.dispatch(command, device);
     expect(result).toMatchObject({ status: "failed", errorCode: "tunnel-not-approved" });
+  });
+
+  test.each([
+    ["desktop global pause", true, false, true, "temporarily-paused"],
+    ["paired-device pause", false, true, true, "temporarily-paused"],
+    ["saved access grant removed", false, false, false, "capability-missing"],
+  ])("does not mint a ticket during %s", async (_label, globalPaused, devicePaused, hasCapability, errorCode) => {
+    const settings = {
+      remoteAccess: {
+        enabled: true,
+        paused: globalPaused,
+        host: "0.0.0.0",
+        port: 4756,
+        token: MASTER_TOKEN,
+        customPublicUrl: "",
+        cloudflaredPath: "",
+        autoTunnel: true,
+      },
+    } as AppState["settings"];
+    const { dispatcher } = await createFixture(
+      { settings },
+      { enabled: true, state: "ready", relayOrigin: "https://relay.test.invalid" },
+      null,
+      {
+        currentDevice: () =>
+          makeDevice({ capabilities: hasCapability ? ["remote.webSession"] : [], remoteUiPaused: devicePaused }),
+      },
+    );
+    const device = makeDevice({ capabilities: ["remote.webSession"] });
+    const command = makeCommand({
+      type: "remote.webSession.issue",
+      payload: { workspaceId: "ws-1", allowedOrigin: "https://relay.test.invalid" },
+    });
+
+    const result = await dispatcher.dispatch(command, device);
+
+    expect(result).toMatchObject({ status: "failed", errorCode, data: null });
+  });
+
+  test("a fresh ticket can be issued after its grant returns, but not after the pairing is revoked", async () => {
+    let currentDevice = makeDevice({ capabilities: ["remote.webSession"] });
+    const { dispatcher, ticketStore } = await createFixture(
+      {},
+      { enabled: true, state: "ready", relayOrigin: "https://relay.test.invalid" },
+      null,
+      { currentDevice: () => currentDevice },
+    );
+    const command = makeCommand({
+      type: "remote.webSession.issue",
+      payload: { workspaceId: "ws-1", allowedOrigin: "https://relay.test.invalid" },
+    });
+
+    currentDevice = makeDevice({ capabilities: [] });
+    const denied = await dispatcher.dispatch(command, makeDevice({ capabilities: [] }));
+    expect(denied).toMatchObject({ status: "failed", errorCode: "missing-capability", data: null });
+
+    const raceDenied = await dispatcher.dispatch(
+      { ...command, commandId: "cmd-race-denied", idempotencyKey: "idem-race-denied" } as Command,
+      makeDevice({ capabilities: ["remote.webSession"] }),
+    );
+    expect(raceDenied).toMatchObject({ status: "failed", errorCode: "capability-missing", data: null });
+
+    currentDevice = makeDevice({ capabilities: ["remote.webSession"] });
+    const restored = await dispatcher.dispatch(
+      { ...command, commandId: "cmd-restored", idempotencyKey: "idem-restored" } as Command,
+      makeDevice({ capabilities: ["remote.webSession"] }),
+    );
+    expect(restored).toMatchObject({ status: "succeeded" });
+    const issued = restored.data as { ticketId: string; ticketSecret: string };
+    expect(
+      ticketStore.consumeTicket(issued.ticketId, issued.ticketSecret, {
+        transport: "relay",
+        origins: ["https://relay.test.invalid"],
+      }),
+    ).not.toBeNull();
+
+    currentDevice = makeDevice({ capabilities: ["remote.webSession"], revoked: true, revokedAt: Date.now() });
+    const revokedRace = await dispatcher.dispatch(
+      { ...command, commandId: "cmd-revoked", idempotencyKey: "idem-revoked" } as Command,
+      makeDevice({ capabilities: ["remote.webSession"] }),
+    );
+    expect(revokedRace).toMatchObject({ status: "failed", errorCode: "device-not-active", data: null });
+
+    const revoked = await dispatcher.dispatch(
+      { ...command, commandId: "cmd-already-revoked", idempotencyKey: "idem-already-revoked" } as Command,
+      makeDevice({ capabilities: ["remote.webSession"], revoked: true, revokedAt: Date.now() }),
+    );
+    expect(revoked).toMatchObject({ status: "failed", errorCode: "device-revoked", data: null });
   });
 
   test("refused when no tunnel is currently connected", async () => {

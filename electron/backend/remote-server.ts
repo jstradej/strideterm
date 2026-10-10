@@ -455,7 +455,7 @@ interface Runtime {
   listMobileTicketOrigins?(): string[];
   on(channel: string, handler: AnyFn): () => void;
   /** Wires this server's session-revoke function back into the runtime (see MobileManager.revokeDevice). */
-  setMobileRemoteSessionRevoker?(fn: (deviceId: string) => void): void;
+  addMobileRemoteSessionRevoker?(fn: (deviceId: string, reason?: string) => void): () => void;
   setRemoteBrowserSessionController?(
     controller: {
       list(): RemoteBrowserSession[];
@@ -492,6 +492,8 @@ interface Runtime {
    * device store every other authorization reads.
    */
   isMobileSessionStillAuthorized?(deviceId: string, profileId: string): boolean;
+  /** True when a paired session is blocked by a reversible desktop pause. */
+  isMobileSessionPaused?(deviceId: string): boolean;
   /**
    * Appends a `session.*` row to the local mobile audit log (and its `mobile-audit.log` mirror) for
    * a session minted from a mobile ticket. Metadata only — callers never pass typed bytes or file
@@ -2583,6 +2585,30 @@ export async function startRemoteServer({
   >();
   // Failures from a live cookie session are counted against that session, never the address.
   const sessionAuthFailures = new Map<string, { windowStart: number; count: number }>();
+  const temporaryPauseDenials = new Map<string, number>();
+  const temporaryPauseDenialTtlMs = 15 * 60_000;
+
+  function rememberTemporaryPause(sessionId: string): void {
+    const now = Date.now();
+    for (const [id, expiresAt] of temporaryPauseDenials) {
+      if (expiresAt <= now) temporaryPauseDenials.delete(id);
+    }
+    while (temporaryPauseDenials.size >= 512) {
+      temporaryPauseDenials.delete(temporaryPauseDenials.keys().next().value as string);
+    }
+    temporaryPauseDenials.set(sessionId, now + temporaryPauseDenialTtlMs);
+  }
+
+  function isTemporarilyPausedSession(sessionId: string | null | undefined): boolean {
+    if (!sessionId) return false;
+    const expiresAt = temporaryPauseDenials.get(sessionId);
+    if (!expiresAt) return false;
+    if (expiresAt <= Date.now()) {
+      temporaryPauseDenials.delete(sessionId);
+      return false;
+    }
+    return true;
+  }
 
   function authOrigin(request: IncomingMessage): { address: string; scope: "tunnel" | "direct" } {
     const socketAddress = request.socket?.remoteAddress || "unknown";
@@ -2956,10 +2982,11 @@ export async function startRemoteServer({
   function mobileSessionExpiry(
     record: MobileSessionRecord,
     now: number,
-  ): "live" | "absolute-expired" | "idle-expired" | "unauthorized" {
+  ): "live" | "absolute-expired" | "idle-expired" | "unauthorized" | "temporarily-paused" {
     if (record.expiresAt === null) return "live";
     if (record.expiresAt <= now) return "absolute-expired";
     if (record.idleExpiresAt !== null && record.idleExpiresAt <= now) return "idle-expired";
+    if (record.deviceId && runtime.isMobileSessionPaused?.(record.deviceId)) return "temporarily-paused";
     // The device's CURRENT authorization, not the one that produced the ticket. A capability or
     // profile change is not a revoke, so nothing pushes it; asking here is what makes it take effect.
     if (record.deviceId && runtime.isMobileSessionStillAuthorized) {
@@ -2979,6 +3006,7 @@ export async function startRemoteServer({
     const record = activeSessions.get(sessionId);
     activeSessions.delete(sessionId);
     sessionAuthFailures.delete(sessionId);
+    if (reason === "temporarily-paused") rememberTemporaryPause(sessionId);
     auditMobileSessionEnded(record, reason);
     closeSessionSockets(sessionId, reason);
     registry.remove(sessionId);
@@ -3652,19 +3680,32 @@ export async function startRemoteServer({
       }
 
       if (isApiRoute && !isAuthorized(requestUrl, request.headers)) {
-        const blocked = failedAuthentication(request, "api", url.pathname);
-        writeHead(response, blocked ? 429 : 401, { "Content-Type": "text/plain; charset=utf-8" });
-        response.end(blocked ? "Too many failed authentication attempts" : "Unauthorized");
+        const rejectedCookie = getSessionFromRequest(request.headers);
+        const temporarilyPaused = isTemporarilyPausedSession(rejectedCookie);
+        const blocked = temporarilyPaused ? false : failedAuthentication(request, "api", url.pathname);
+        const statusCode = blocked ? 429 : temporarilyPaused ? 423 : 401;
+        writeHead(response, statusCode, {
+          "Content-Type": "text/plain; charset=utf-8",
+          ...(temporarilyPaused
+            ? { "Set-Cookie": `${SESSION_COOKIE_NAME}=; ${buildSessionCookieAttrs(request.headers, 0)}` }
+            : {}),
+        });
+        response.end(
+          blocked
+            ? "Too many failed authentication attempts"
+            : temporarilyPaused
+              ? "Remote UI access is temporarily paused on the desktop."
+              : "Unauthorized",
+        );
         // WHY it was rejected, not just that it was. Three booleans separate three very different
         // failures that all look like this line: a client that sent no credential at all, one whose
         // session cookie names a session this server does not have (restarted, or swept), and one
         // whose session exists but has run out of time. Diagnosing a mobile viewer that authenticated
         // successfully and then got 401 on every call took a packet-level guess without them.
-        const rejectedCookie = getSessionFromRequest(request.headers);
         audit.warn("api request rejected", {
           method: request.method,
           path: url.pathname,
-          statusCode: 401,
+          statusCode,
           remoteAddress: request.socket?.remoteAddress,
           hasCookie: Boolean(rejectedCookie),
           cookieKnown: Boolean(rejectedCookie && activeSessions.has(rejectedCookie)),
@@ -4038,24 +4079,18 @@ export async function startRemoteServer({
 
   /**
    * Called when a mobile device is revoked (MobileManager.revokeDevice, via
-   * runtime.setMobileRemoteSessionRevoker below): removes every session this
+   * runtime.addMobileRemoteSessionRevoker below): removes every session this
    * device bootstrapped so the next request bearing its cookie is treated as
    * unauthenticated, and closes any of its open WebSocket(s).
    */
-  function revokeMobileSessionsForDevice(deviceId: string): void {
-    let ended = false;
+  function revokeMobileSessionsForDevice(deviceId: string, reason = "revoked"): void {
     for (const [sessionId, record] of activeSessions) {
       if (record.deviceId === deviceId) {
-        activeSessions.delete(sessionId);
-        auditMobileSessionEnded(record, "revoked");
-        closeSessionSockets(sessionId);
-        audit.info("mobile device revoked: session closed", { sessionRef: remoteSessionRef(sessionId) });
-        ended = true;
+        endMobileSession(sessionId, reason);
       }
     }
-    if (ended) publishMobileSessions();
   }
-  if (!isLoopbackOrigin) runtime.setMobileRemoteSessionRevoker?.(revokeMobileSessionsForDevice);
+  const unregisterMobileRemoteSessionRevoker = runtime.addMobileRemoteSessionRevoker?.(revokeMobileSessionsForDevice);
 
   // Minimal in-memory rate limiter scoped to the mobile ticket-bootstrap
   // route only (no general rate-limiting middleware exists elsewhere in this
@@ -4227,6 +4262,16 @@ export async function startRemoteServer({
       audit.warn("mobile session bootstrap rejected", { remoteAddress });
       writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Unauthorized");
+      return;
+    }
+    if (runtime.isMobileSessionPaused?.(ticket.deviceId)) {
+      audit.warn("mobile session bootstrap rejected", {
+        remoteAddress,
+        deviceRef: remoteSessionRef(ticket.deviceId),
+        reason: "temporarily-paused",
+      });
+      writeHead(response, 423, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Remote UI access is temporarily paused on the desktop.");
       return;
     }
     // AND THE PRESENTER HAS TO BE THE DEVICE THE TICKET NAMES, when the relay is in a position to say
@@ -4944,12 +4989,21 @@ export async function startRemoteServer({
     // renderer's `new WebSocket(url)` call no longer needs the token
     // in the URL once the user has bootstrapped.
     if (url.pathname !== "/ws" || !isAuthorized(request.url || "/", request.headers)) {
-      const blocked = url.pathname === "/ws" ? failedAuthentication(request, "ws") : false;
+      const rejectedCookie = getSessionFromRequest(request.headers);
+      const temporarilyPaused = url.pathname === "/ws" && isTemporarilyPausedSession(rejectedCookie);
+      const blocked = url.pathname === "/ws" && !temporarilyPaused ? failedAuthentication(request, "ws") : false;
       log.warn("WebSocket upgrade rejected: unauthorized", {
         path: url.pathname,
         remoteAddress: request.socket?.remoteAddress,
+        ...(temporarilyPaused ? { reason: "temporarily-paused" } : {}),
       });
-      socket.write(`HTTP/1.1 ${blocked ? "429 Too Many Requests" : "401 Unauthorized"}\r\n\r\n`);
+      socket.write(
+        `HTTP/1.1 ${blocked ? "429 Too Many Requests" : temporarilyPaused ? "423 Locked" : "401 Unauthorized"}\r\n${
+          temporarilyPaused
+            ? `Set-Cookie: ${SESSION_COOKIE_NAME}=; ${buildSessionCookieAttrs(request.headers, 0)}\r\n`
+            : ""
+        }\r\n`,
+      );
       socket.destroy();
       return;
     }
@@ -5469,6 +5523,7 @@ export async function startRemoteServer({
   return {
     address: { host, port: boundPort },
     async close() {
+      unregisterMobileRemoteSessionRevoker?.();
       clearInterval(heartbeat);
       clearInterval(stallSweep);
       clearInterval(telemetryLog);
@@ -5526,7 +5581,7 @@ export async function startRemoteServer({
     // slotAwareRoute are built once (module/closure scope) rather than
     // rebuilt on every request.
     _debugRouteMapsIdentity: () => ({ detailRoutes: DETAIL_ROUTES, slotAwareRoute }),
-    // Exposed directly (in addition to runtime.setMobileRemoteSessionRevoker
+    // Exposed directly (in addition to runtime.addMobileRemoteSessionRevoker
     // above) so tests can drive a device revoke without needing a real
     // MobileManager/runtime wired up.
     revokeMobileSessionsForDevice,

@@ -152,6 +152,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   rejectMobileDevice: (payload) => ipcRenderer.invoke("mobile:device:reject", payload),
   listMobileDevicesAwaitingApproval: () => ipcRenderer.invoke("mobile:device:awaiting-approval"),
   updateMobileDeviceAllowlist: (payload) => ipcRenderer.invoke("mobile:device:update-allowlist", payload),
+  setMobileDeviceRemoteUiPaused: (payload) => ipcRenderer.invoke("mobile:device:set-remote-ui-paused", payload),
   setMobileEnabled: (enabled) => ipcRenderer.invoke("mobile:set-enabled", enabled),
   setMobileRelayEnabled: (enabled) => ipcRenderer.invoke("mobile:relay:set-enabled", enabled),
   setMobileRelayRequireE2e: (requireE2e) => ipcRenderer.invoke("mobile:relay:set-require-e2e", requireE2e),

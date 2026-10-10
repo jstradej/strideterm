@@ -1225,6 +1225,8 @@ export const MobileDeviceRecordSchema = z.object({
   lastSeenAt: z.number().int().min(0),
   revoked: z.boolean(),
   revokedAt: z.number().int().min(0).nullable(),
+  /** Desktop-local reversible block for this device's remote UI sessions. Never synced as a grant. */
+  remoteUiPaused: z.boolean().default(false),
   notificationFilter: MobileNotificationFilterSchema,
   /**
    * The invitation this device claimed, and the server's digest of the grants that invitation

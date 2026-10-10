@@ -416,7 +416,7 @@ export function createRemoteTransport(): Transport {
   const mobileHost = (window as unknown as Record<string, unknown>).StridetermHost as
     { postMessage?: (message: string) => void } | undefined;
 
-  type SessionLostReason = "expired" | "revoked" | "superseded" | "unauthorized" | "unknown";
+  type SessionLostReason = "expired" | "revoked" | "superseded" | "unauthorized" | "temporarily-paused" | "unknown";
   let lastPostedConnectionState = "";
   function emitConnectionState(payload: ConnectionStatePayload): void {
     listeners.connectionState.forEach((handler) => handler(payload));
@@ -511,6 +511,9 @@ export function createRemoteTransport(): Transport {
     } else if (statusCode === 403) {
       message = normalizedMessage || "The desktop refused that.";
       hint = "This phone may not be approved for it. Check the pairing on the desktop.";
+    } else if (statusCode === 423 && /temporarily paused/i.test(normalizedMessage)) {
+      message = "Remote UI access is temporarily paused on the desktop.";
+      hint = "Ask someone at the desktop to resume access.";
     } else if (statusCode === 530 || /origin has been unregistered from argo tunnel/i.test(normalizedMessage)) {
       message = "Cloudflare tunnel is no longer connected to the desktop app.";
       hint = "Recreate the tunnel from the desktop app.";
@@ -741,6 +744,7 @@ export function createRemoteTransport(): Transport {
     if (/superseded/i.test(text)) return "superseded";
     if (/expired/i.test(text)) return "expired";
     if (/unauthori[sz]ed/i.test(text)) return "unauthorized";
+    if (/temporarily-paused/i.test(text)) return "temporarily-paused";
     return "unknown";
   }
 
@@ -1296,7 +1300,12 @@ export function createRemoteTransport(): Transport {
     emitConnectionState({
       connected: false,
       reconnecting: false,
-      message: hosted ? SESSION_LOST_HOSTED_MESSAGE : SESSION_LOST_MESSAGE,
+      message:
+        reason === "temporarily-paused"
+          ? "Remote UI access is temporarily paused on the desktop."
+          : hosted
+            ? SESSION_LOST_HOSTED_MESSAGE
+            : SESSION_LOST_MESSAGE,
     });
   }
 
@@ -1567,6 +1576,16 @@ export function createRemoteTransport(): Transport {
       if (response.status === 401) {
         reportSessionLost("unauthorized");
         throw error;
+      }
+      if (response.status === 423 && /temporarily paused/i.test(rawMessage)) {
+        const pausedError = createRemoteIssue({
+          kind: "http",
+          statusCode: response.status,
+          rawMessage,
+          recoverable: false,
+        });
+        reportSessionLost("temporarily-paused");
+        throw pausedError;
       }
       if (options.emitConnectionState !== false) {
         emitConnectionState({

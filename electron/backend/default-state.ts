@@ -1292,6 +1292,7 @@ export function normalizeState(
       lastSeenAt: Number(device?.lastSeenAt) || 0,
       revoked: device?.revoked === true,
       revokedAt: typeof device?.revokedAt === "number" ? device.revokedAt : null,
+      remoteUiPaused: device?.remoteUiPaused === true,
       notificationFilter: {
         minPriority: validPriority,
         mutedKinds: Array.isArray(rawFilter.mutedKinds) ? rawFilter.mutedKinds.map(String) : [],

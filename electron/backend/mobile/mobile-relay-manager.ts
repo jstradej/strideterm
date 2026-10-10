@@ -19,6 +19,7 @@
  * its port — the relay neither starts one nor stops one.
  */
 import { randomBytes } from "node:crypto";
+import type { RelayReason } from "./mobile-relay-protocol.js";
 
 import { getLogger } from "../logger.js";
 import { classifyNetworkError } from "../net/network-error.js";
@@ -168,6 +169,7 @@ export interface MobileRelayManager {
   revokeDevice(deviceId: string): void;
   /** Ends every live e2e stream of a device now (its keys were just withdrawn). */
   endDeviceStreams(deviceId: string): void;
+  endRemoteUiStreams(deviceId: string, reason?: RelayReason): void;
   /** The origin the WebView must be pointed at, or "" when the relay is not running. */
   relayOrigin(): string;
 }
@@ -409,6 +411,9 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
     },
     endDeviceStreams(deviceId: string) {
       connector?.endDeviceStreams(deviceId);
+    },
+    endRemoteUiStreams(deviceId: string, reason: RelayReason = "unauthorized") {
+      connector?.endRemoteUiStreams(deviceId, reason);
     },
     relayOrigin: () => relayOrigin,
   };

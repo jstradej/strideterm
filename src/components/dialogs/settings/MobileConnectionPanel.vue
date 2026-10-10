@@ -595,7 +595,10 @@
                   :title="'Holds a live session since ' + formatTimestamp(connectedSince(device.deviceId) ?? 0)"
                   >Connected</span
                 >
-                <span v-else :title="'Last seen: ' + formatTimestamp(device.lastSeenAt)"
+                <span v-if="device.remoteUiPaused" class="device-item__paused" role="status">Remote UI paused</span>
+                <span
+                  v-if="connectedSince(device.deviceId) === null && !device.remoteUiPaused"
+                  :title="'Last seen: ' + formatTimestamp(device.lastSeenAt)"
                   >last seen {{ formatTimestamp(device.lastSeenAt) }}</span
                 >
                 <span :title="profileAccessTitle">
@@ -607,6 +610,26 @@
               </div>
 
               <div v-if="!device.revoked" class="device-item__actions">
+                <button
+                  v-if="device.state === 'active'"
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="paused || remoteUiBusyId === device.deviceId"
+                  :title="
+                    device.remoteUiPaused
+                      ? 'Restore this phone’s remote UI access. Its pairing and other permissions are unchanged.'
+                      : 'Immediately disconnect this phone’s remote UI. Pairing and other permissions are unchanged.'
+                  "
+                  @click="toggleRemoteUiPause(device)"
+                >
+                  {{
+                    remoteUiBusyId === device.deviceId
+                      ? "Updating…"
+                      : device.remoteUiPaused
+                        ? "Resume UI access"
+                        : "Pause UI access"
+                  }}
+                </button>
                 <button
                   type="button"
                   class="button button--ghost"
@@ -643,6 +666,9 @@
               </p>
               <p v-if="revokeError[device.deviceId]" class="device-item__test-result" role="alert">
                 {{ revokeError[device.deviceId] }}
+              </p>
+              <p v-if="remoteUiError[device.deviceId]" class="device-item__test-result" role="alert">
+                {{ remoteUiError[device.deviceId] }}
               </p>
               <p v-if="reviewError.get(device.deviceId)" class="mobile-tab__error" role="alert">
                 {{ reviewError.get(device.deviceId) }}
@@ -1595,6 +1621,20 @@ async function saveAllowlist(device: { deviceId: string }) {
   }
 }
 
+const remoteUiBusyId = ref<string | null>(null);
+const remoteUiError = reactive<Record<string, string>>({});
+async function toggleRemoteUiPause(device: { deviceId: string; remoteUiPaused: boolean }) {
+  remoteUiBusyId.value = device.deviceId;
+  delete remoteUiError[device.deviceId];
+  try {
+    await appStore.setMobileDeviceRemoteUiPaused(device.deviceId, !device.remoteUiPaused);
+  } catch (error) {
+    remoteUiError[device.deviceId] = mobileErrorCopy(error, "relay");
+  } finally {
+    remoteUiBusyId.value = null;
+  }
+}
+
 // --- Revoke ---
 async function confirmRevoke(device: { deviceId: string; label: string }) {
   const confirmed = await appStore.confirmInApp({
@@ -2490,6 +2530,11 @@ onBeforeUnmount(() => {
 
 .device-item__connected {
   color: var(--success-fg, var(--success));
+  font-weight: 600;
+}
+
+.device-item__paused {
+  color: var(--warning-fg, var(--warning));
   font-weight: 600;
 }
 

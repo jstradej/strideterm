@@ -204,6 +204,7 @@ async function createFixture(
 
   const revokeRemoteSessions = vi.fn();
   const revokeRelayE2eSession = vi.fn();
+  const endRemoteUiStreams = vi.fn();
   const externalNotificationEvents = new EventEmitter();
   const notificationOrigins = createMobileNotificationOriginStore();
   const manager = new MobileManager({
@@ -219,6 +220,7 @@ async function createFixture(
     notificationOrigins,
     revokeRemoteSessions,
     revokeRelayE2eSession,
+    endRemoteUiStreams,
     now: overrides.now,
     getProfileIds: overrides.getProfileIds,
     getCatalogSignature: overrides.getCatalogSignature,
@@ -244,6 +246,7 @@ async function createFixture(
     notificationOrigins,
     revokeRemoteSessions,
     revokeRelayE2eSession,
+    endRemoteUiStreams,
   };
 }
 
@@ -1263,6 +1266,55 @@ describe("MobileManager.revokeDevice", () => {
 
     expect(ticketStore.consumeTicket(issued.ticketId, issued.secret, TICKET_CONTEXT)).toBeNull();
     expect(revokeRemoteSessions).toHaveBeenCalledWith(deviceId);
+  });
+
+  test("pausing remote UI invalidates only WebView access and resumes without changing pairing", async () => {
+    const { manager, deviceStore, ticketStore, revokeRemoteSessions, revokeRelayE2eSession, endRemoteUiStreams } =
+      await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const issued = ticketStore.issueTicket({
+      deviceId,
+      pairId: OWN_DEVICE_ID,
+      profileId: "default",
+      allowedOrigin: "https://example.trycloudflare.com",
+      transport: "legacy",
+    });
+
+    await manager.setRemoteUiPaused(deviceId, true);
+
+    expect(deviceStore.getDevice(deviceId)).toMatchObject({ state: "active", revoked: false, remoteUiPaused: true });
+    expect(ticketStore.consumeTicket(issued.ticketId, issued.secret, TICKET_CONTEXT)).toBeNull();
+    expect(revokeRemoteSessions).toHaveBeenCalledWith(deviceId, "temporarily-paused");
+    expect(endRemoteUiStreams).toHaveBeenCalledWith(deviceId, "unauthorized");
+    expect(revokeRelayE2eSession).not.toHaveBeenCalled();
+
+    await manager.setRemoteUiPaused(deviceId, false);
+    expect(deviceStore.getDevice(deviceId)).toMatchObject({ state: "active", revoked: false, remoteUiPaused: false });
+  });
+
+  test("saving an allowlist without remote.webSession revokes tickets and active sessions", async () => {
+    const { manager, deviceStore, ticketStore, revokeRemoteSessions, endRemoteUiStreams, revokeRelayE2eSession } =
+      await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    const issued = ticketStore.issueTicket({
+      deviceId,
+      pairId: OWN_DEVICE_ID,
+      profileId: "default",
+      allowedOrigin: "https://example.trycloudflare.com",
+      transport: "legacy",
+    });
+    const capabilities = deviceStore
+      .getDevice(deviceId)!
+      .capabilities.filter((capability) => capability !== "remote.webSession");
+
+    await manager.updateDeviceAllowlist(deviceId, { capabilities });
+
+    expect(deviceStore.getDevice(deviceId)).toMatchObject({ state: "active", revoked: false, remoteUiPaused: false });
+    expect(deviceStore.getDevice(deviceId)?.capabilities).not.toContain("remote.webSession");
+    expect(ticketStore.consumeTicket(issued.ticketId, issued.secret, TICKET_CONTEXT)).toBeNull();
+    expect(revokeRemoteSessions).toHaveBeenCalledWith(deviceId, "unauthorized");
+    expect(endRemoteUiStreams).toHaveBeenCalledWith(deviceId, "unauthorized");
+    expect(revokeRelayE2eSession).not.toHaveBeenCalled();
   });
 
   test("revoking a device withdraws its relay e2e keys and ends its e2e streams (E2E 3.8)", async () => {
@@ -2448,7 +2500,7 @@ describe("default profile access and live synchronization", () => {
     try {
       await manager.syncProfileAccess();
       await manager.updateDeviceAllowlist(deviceId, { excludedProfileIds: ["private"] });
-      expect(revokeRemoteSessions).toHaveBeenCalledWith(deviceId);
+      expect(revokeRemoteSessions).toHaveBeenCalledWith(deviceId, "unauthorized");
       profiles = [...profiles, "new"];
       await manager.syncProfileAccess();
       expect(deviceStore.getDevice(deviceId)).toMatchObject({

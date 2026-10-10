@@ -7,7 +7,7 @@
  * actual origin, rewrites exactly the headers it claims to, refuses to be pointed anywhere else,
  * and ends bounded when a stream misbehaves.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import zlib from "node:zlib";
@@ -2698,6 +2698,16 @@ describe("withdrawing a device's keys (E2E 3.8)", () => {
     );
     expect(closed.has("outer-stays")).toBe(false);
     expect(connector!.stats().liveHttpStreams).toBe(0);
+  });
+
+  test("endRemoteUiStreams leaves the authenticated system channel alone", async () => {
+    const revokeSystemChannelDevice = vi.fn();
+    await awaitConnectorReady(
+      startConnector({ systemChannel: { open: () => null, revokeDevice: revokeSystemChannelDevice } }),
+    );
+    connector!.endRemoteUiStreams(DEVICE, "unauthorized");
+    expect(revokeSystemChannelDevice).not.toHaveBeenCalled();
+    expect(relay.frames.some((frame) => frame.header.t === "conn.revoke" && frame.header.d === DEVICE)).toBe(false);
   });
 
   test("once the store no longer holds a device's keys, its next frame is refused, never decrypted", async () => {

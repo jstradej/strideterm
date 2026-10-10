@@ -129,6 +129,8 @@ function makeHarness(
         state: () => "ready",
         revokeDevice: (deviceId: string) => state.revokedDevices.push(`connector:${deviceId}`),
         endDeviceStreams: (deviceId: string) => state.revokedDevices.push(`streams:${deviceId}`),
+        endRemoteUiStreams: (deviceId: string, reason?: string) =>
+          state.revokedDevices.push(`ui-streams:${deviceId}:${reason ?? "unauthorized"}`),
         stats: () => ({
           state: "ready",
           connects: 1,
@@ -283,6 +285,14 @@ describe("the managed relay's lifecycle", () => {
     await harness.manager.reconfigure();
     harness.manager.endDeviceStreams("mobile-device-xyz");
     expect(harness.revokedDevices).toEqual(["streams:mobile-device-xyz"]);
+  });
+
+  test("pausing remote UI ends only UI streams and does not revoke the device at the relay", async () => {
+    const harness = makeHarness();
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+    harness.manager.endRemoteUiStreams("mobile-device-xyz", "unauthorized");
+    expect(harness.revokedDevices).toEqual(["ui-streams:mobile-device-xyz:unauthorized"]);
   });
 
   test("the grant names this installation and the key it will have to prove it holds", async () => {

@@ -697,6 +697,8 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         return succeeded(sanitizeRemoteStatus(deps.runtime.getPayload()));
       }
       case "remote.endpoint.request": {
+        if (state.settings.remoteAccess.paused === true) return failed("temporarily-paused");
+        if (device.remoteUiPaused === true) return failed("temporarily-paused");
         const target = checkRemoteTarget(state, command.profileId, command.payload.workspaceId);
         if (!target.ok) return failed(target.reason);
         // The managed relay is a THIRD transport, not a replacement (relay plan §2.2). When one is
@@ -760,6 +762,8 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         });
       }
       case "remote.tunnel.reconnect": {
+        if (state.settings.remoteAccess.paused === true) return failed("temporarily-paused");
+        if (device.remoteUiPaused === true) return failed("temporarily-paused");
         const workspace = findWorkspace(state, command.payload.workspaceId);
         if (!workspace || (workspace.profileId || "default") !== command.profileId) {
           return failed("cross-profile-workspace");
@@ -772,6 +776,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         return succeeded(sanitizeRemoteStatus(deps.runtime.getPayload()));
       }
       case "remote.webSession.issue": {
+        if (state.settings.remoteAccess.paused === true) return failed("temporarily-paused");
         const target = checkRemoteTarget(state, command.profileId, command.payload.workspaceId);
         if (!target.ok) return failed(target.reason);
         // THE AUTHORITATIVE RE-READ, immediately before the mint (production hardening §5 "Ticket" 5).
@@ -782,6 +787,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         // allowlist. Without it, a revoke landing in that window produced a usable session.
         const fresh = deps.currentDevice?.(device.deviceId) ?? device;
         if (!isDeviceUsable(fresh)) return failed("device-not-active");
+        if (fresh.remoteUiPaused === true) return failed("temporarily-paused");
         if (!deviceHasCapability(fresh, REMOTE_WEB_SESSION_CAPABILITY)) return failed("capability-missing");
         if (!deviceAllowsProfile(fresh, command.profileId)) return failed("profile-not-allowed");
         const payload = deps.runtime.getPayload();

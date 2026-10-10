@@ -176,6 +176,8 @@ export interface MobileDeviceRecord {
   lastSeenAt: number;
   revoked: boolean;
   revokedAt: number | null;
+  /** Desktop-local reversible block for remote UI sessions; pairing and other grants stay intact. */
+  remoteUiPaused: boolean;
   notificationFilter: MobileNotificationFilter;
   /**
    * When THIS desktop verified the claim's cryptographic key proof, or null while it has not.

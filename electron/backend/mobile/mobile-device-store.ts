@@ -131,6 +131,7 @@ export function addDevice(devices: MobileDeviceRecord[], input: NewDeviceInput):
     lastSeenAt: input.now,
     revoked: false,
     revokedAt: null,
+    remoteUiPaused: false,
     notificationFilter: { minPriority: "low", mutedKinds: [] },
     verifiedAt: input.state === "keyProven" ? input.now : null,
     activatedAt: null,
@@ -151,6 +152,14 @@ export function revokeDevice(devices: MobileDeviceRecord[], deviceId: string, no
 
 export function touchLastSeen(devices: MobileDeviceRecord[], deviceId: string, now: number): MobileDeviceRecord[] {
   return devices.map((d) => (d.deviceId === deviceId ? { ...d, lastSeenAt: now } : d));
+}
+
+export function setRemoteUiPaused(
+  devices: MobileDeviceRecord[],
+  deviceId: string,
+  paused: boolean,
+): MobileDeviceRecord[] {
+  return devices.map((d) => (d.deviceId === deviceId ? { ...d, remoteUiPaused: paused } : d));
 }
 
 /**
@@ -441,6 +450,9 @@ export function createMobileDeviceStore(deps: MobileDeviceStoreDeps) {
     },
     async touchLastSeen(deviceId: string, now = Date.now()): Promise<void> {
       await deps.mutateDevices((devices) => touchLastSeen(devices, deviceId, now));
+    },
+    async setRemoteUiPaused(deviceId: string, paused: boolean): Promise<void> {
+      await deps.mutateDevices((devices) => setRemoteUiPaused(devices, deviceId, paused));
     },
     async renameDevice(deviceId: string, label: string): Promise<void> {
       await deps.mutateDevices((devices) => renameDevice(devices, deviceId, label));

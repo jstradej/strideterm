@@ -32,20 +32,10 @@
       {{ landscape ? "⌨" : "⌨ Input bar ▴" }}
     </button>
     <template v-else>
-      <button
-        v-if="landscape"
-        type="button"
-        class="mobile-input-bar__keyboard-mode"
-        :title="systemKeyboard ? 'Use compact keyboard' : 'Use system keyboard'"
-        :aria-label="systemKeyboard ? 'Use compact keyboard' : 'Use system keyboard'"
-        @click="toggleKeyboardMode"
-      >
-        {{ systemKeyboard ? "⌨" : "System keyboard" }}
-      </button>
       <CompactTerminalKeyboard v-if="compactKeyboard" @insert="insertCompact" @backspace="insertCompact('', true)" />
       <div class="mobile-input-bar__keys">
         <button
-          v-for="key in accessoryKeys"
+          v-for="key in landscape ? landscapeQuickKeys : accessoryKeys"
           :key="key.label"
           type="button"
           class="mobile-input-bar__key"
@@ -57,6 +47,7 @@
           {{ landscape && key.label === "⇧Tab" ? "⇤" : key.label }}
         </button>
         <button
+          v-if="!landscape"
           type="button"
           class="mobile-input-bar__key mobile-input-bar__key--slash"
           title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎."
@@ -66,6 +57,7 @@
           /
         </button>
         <button
+          v-if="!landscape"
           type="button"
           class="mobile-input-bar__key mobile-input-bar__key--paste"
           title="Paste the clipboard into the field — review or edit the text, then send it with ⏎. If the browser blocks clipboard access, long-press the field and paste from its menu instead."
@@ -75,7 +67,7 @@
           📋
         </button>
         <button
-          v-if="hostAvailable"
+          v-if="!landscape && hostAvailable"
           type="button"
           class="mobile-input-bar__key mobile-input-bar__key--attachment"
           title="Attach a file and insert its path into this draft"
@@ -102,6 +94,18 @@
           <template v-if="menuOpen">
             <div class="mobile-input-bar__menu-backdrop" @mousedown.prevent @click="menuOpen = false"></div>
             <div class="mobile-input-bar__menu" @mousedown.prevent>
+              <button
+                v-if="landscape"
+                type="button"
+                class="mobile-input-bar__menu-item"
+                data-role="mobile-input-bar-keyboard-mode"
+                @click="toggleKeyboardMode"
+              >
+                {{ systemKeyboard ? "Use compact keyboard" : "Use system keyboard" }}
+              </button>
+              <button v-if="landscape" type="button" class="mobile-input-bar__menu-item" @click="collapse">
+                Hide input bar
+              </button>
               <button
                 type="button"
                 class="mobile-input-bar__menu-item"
@@ -161,6 +165,7 @@
           </template>
         </div>
         <button
+          v-if="!landscape"
           type="button"
           class="mobile-input-bar__key mobile-input-bar__key--collapse"
           title="Collapse the input bar to a slim handle so the terminal gets the vertical space back. Tap the handle to bring it back."
@@ -262,11 +267,12 @@ const draft = ref("");
 const collapsed = ref(readMobileInputBarCollapsed());
 const inputRef = ref<HTMLInputElement | null>(null);
 const { isMobile, isPortrait, hasCoarsePointer } = useIsNarrow();
+const nativeSessionRail = ref(document.documentElement.classList.contains("native-session-rail"));
 const devicePortrait = ref(readDevicePortrait());
 const orientationPortrait = computed(() =>
   hasCoarsePointer.value && devicePortrait.value !== null ? devicePortrait.value : isPortrait.value,
 );
-const landscape = computed(() => isMobile.value && !orientationPortrait.value);
+const landscape = computed(() => (isMobile.value || nativeSessionRail.value) && !orientationPortrait.value);
 
 function readDevicePortrait(): boolean | null {
   const orientationType = window.screen.orientation?.type;
@@ -311,6 +317,7 @@ watch(landscape, () => {
   inputRef.value?.blur();
 });
 async function toggleKeyboardMode() {
+  menuOpen.value = false;
   inputRef.value?.blur();
   systemKeyboard.value = !systemKeyboard.value;
   await nextTick();
@@ -396,7 +403,9 @@ function restoreDraft(sessionId: string | null): void {
 // one check once the fill window has passed is enough.
 async function focusComposer() {
   if (!targetSessionId.value) return;
-  expand();
+  nativeSessionRail.value = document.documentElement.classList.contains("native-session-rail");
+  await nextTick();
+  await expand();
   await nextTick();
   inputRef.value?.focus({ preventScroll: true });
 }
@@ -515,6 +524,7 @@ const accessoryKeys: AccessoryKey[] = [
     title: "Send Arrow Down — next shell history entry, or move down in TUI menus.",
   },
 ];
+const landscapeQuickKeys = accessoryKeys.filter((key) => ["Esc", "Tab", "↑", "↓"].includes(key.label));
 
 // Secondary keys live in the ⋯ menu — the left/right arrows moved here to free
 // space on the top row, alongside less-frequent line-editing and control keys.
@@ -980,7 +990,6 @@ function collapse(): void {
 
 async function expand(): Promise<void> {
   if (landscape.value) {
-    if (document.documentElement.classList.contains("native-session-rail")) systemKeyboard.value = false;
     landscapeExpanded.value = true;
     await nextTick();
     if (systemKeyboard.value) inputRef.value?.focus({ preventScroll: true });

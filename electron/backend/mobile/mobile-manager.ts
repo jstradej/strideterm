@@ -65,6 +65,7 @@ import type {
 import type { MobileAuditLogEntry, MobileAuditLogFilters, MobileAuditLogStore } from "./mobile-audit-log-store.js";
 import type { MobileCommandDispatcher } from "./mobile-command-dispatch.js";
 import type { MobileNotificationOriginStore } from "./mobile-notification-origin-store.js";
+import type { RelayReason } from "./mobile-relay-protocol.js";
 import { isDeviceUsable, type MobileDeviceStore } from "./mobile-device-store.js";
 import type {
   CreateInvitationOptions,
@@ -206,7 +207,7 @@ export interface MobileManagerDeps {
    * reference — same reasoning as ticketStore above, optional for callers
    * that don't need it.
    */
-  revokeRemoteSessions?: (deviceId: string) => void;
+  revokeRemoteSessions?: (deviceId: string, reason?: string) => void;
   /**
    * Withdraws a device's relay end-to-end keys and ends its live e2e streams (plan 2026-09-23). The
    * keys sit in memory for up to the relay session's lifetime; without this a revoked phone's
@@ -214,6 +215,7 @@ export interface MobileManagerDeps {
    * closed the viewer socket.
    */
   revokeRelayE2eSession?: (deviceId: string) => void;
+  endRemoteUiStreams?: (deviceId: string, reason?: RelayReason) => void;
   /**
    * Same shared instance mobile-command-dispatch.ts reads acknowledgements against. An event's
    * origin is recorded here on the way out so that `notification.acknowledge` — whose payload is
@@ -271,8 +273,9 @@ export class MobileManager extends EventEmitter {
   private stopPromise: Promise<void> | null = null;
   private ownPrivateKey: KeyObject;
   private ticketStore: { revokeForDevice(deviceId: string): void } | undefined;
-  private revokeRemoteSessions: ((deviceId: string) => void) | undefined;
+  private revokeRemoteSessions: ((deviceId: string, reason?: string) => void) | undefined;
   private revokeRelayE2eSession: ((deviceId: string) => void) | undefined;
+  private endRemoteUiStreams: ((deviceId: string, reason?: RelayReason) => void) | undefined;
   private notificationOrigins: MobileNotificationOriginStore | undefined;
   private now: () => number;
 
@@ -311,6 +314,7 @@ export class MobileManager extends EventEmitter {
     this.ticketStore = deps.ticketStore;
     this.revokeRemoteSessions = deps.revokeRemoteSessions;
     this.revokeRelayE2eSession = deps.revokeRelayE2eSession;
+    this.endRemoteUiStreams = deps.endRemoteUiStreams;
     this.notificationOrigins = deps.notificationOrigins;
     this.now = deps.now || (() => Date.now());
 
@@ -878,7 +882,8 @@ export class MobileManager extends EventEmitter {
         : {}),
     });
     this.ticketStore?.revokeForDevice(deviceId);
-    this.revokeRemoteSessions?.(deviceId);
+    this.revokeRemoteSessions?.(deviceId, "unauthorized");
+    this.endRemoteUiStreams?.(deviceId, "unauthorized");
     this.syncedAccess.delete(deviceId);
     this.profileSyncRetryAt = 0;
     if (profileIds) await this.syncProfileAccess();
@@ -900,6 +905,27 @@ export class MobileManager extends EventEmitter {
       action: "device.allowlist-updated",
       status: "success",
     });
+  }
+
+  async setRemoteUiPaused(deviceId: string, paused: boolean): Promise<void> {
+    const device = this.deviceStore.getDevice(deviceId);
+    if (!isDeviceUsable(device)) throw new Error("This phone is not active.");
+    if (device.remoteUiPaused === paused) return;
+
+    await this.deviceStore.setRemoteUiPaused(deviceId, paused);
+    if (paused) {
+      this.ticketStore?.revokeForDevice(deviceId);
+      this.revokeRemoteSessions?.(deviceId, "temporarily-paused");
+      this.endRemoteUiStreams?.(deviceId, "unauthorized");
+    }
+    this.auditLogStore.logEntry({
+      deviceId,
+      pairId: this.ownDeviceId,
+      actor: "desktop",
+      action: paused ? "device.remote-ui-paused" : "device.remote-ui-resumed",
+      status: "success",
+    });
+    this.emit("mobile:device-access-changed", { deviceId, remoteUiPaused: paused });
   }
 
   syncProfileAccess(): Promise<void> {

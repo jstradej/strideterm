@@ -602,18 +602,14 @@
   }
 }
 
-/* A side composer preserves terminal rows on a landscape phone. Native viewport
-   geometry stays at full height even when the optional system IME opens. */
+/* Landscape composition stays inside the terminal stage, clear of the sidebar. */
 .workspace-main:has(> .mobile-input-bar--landscape) {
-  --composer-width: min(42vw, 340px);
-  grid-template-columns: minmax(0, 1fr) var(--composer-width);
+  position: relative;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr);
 }
 .workspace-main:has(> .mobile-input-bar--landscape) > :not(.mobile-input-bar) {
   grid-column: 1;
-}
-.workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed) {
-  --composer-width: 48px;
 }
 .native-session-rail {
   --native-session-rail-supported: 1;
@@ -622,95 +618,223 @@
   display: none;
 }
 .mobile-input-bar.mobile-input-bar--landscape {
-  grid-column: 2;
-  grid-row: 1 / 4;
+  position: absolute;
+  inset: auto 0 var(--strideterm-keyboard-bottom, 0px);
   display: flex;
-  min-height: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
   min-width: 0;
-  height: calc(100% - var(--strideterm-keyboard-bottom, 0px));
-  overflow: auto;
-  padding: 6px;
-  border-top: none;
-  border-left: 1px solid var(--border);
-  top: 0;
+  min-height: 48px;
+  height: auto;
+  overflow: visible;
+  padding: 4px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  z-index: 20;
   box-sizing: border-box;
+}
+.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape {
+  position: absolute;
+  inset: auto 0 var(--strideterm-keyboard-bottom, 0px);
 }
 .mobile-input-bar--landscape > * {
   flex-shrink: 0;
 }
-.mobile-input-bar--landscape .mobile-input-bar__row {
-  order: 1;
-}
 .mobile-input-bar--landscape .mobile-input-bar__keys {
-  order: 2;
-  flex-wrap: nowrap;
+  order: 0;
+  display: flex;
+  flex: 0 0 auto;
   gap: 3px;
 }
+.mobile-input-bar--landscape .mobile-input-bar__keys > .mobile-input-bar__key,
+.mobile-input-bar--landscape .mobile-input-bar__more {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+}
+.mobile-input-bar--landscape .mobile-input-bar__more {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.mobile-input-bar--landscape .mobile-input-bar__more > .mobile-input-bar__key {
+  width: 100%;
+  height: 100%;
+}
 .mobile-input-bar--landscape .mobile-input-bar__key {
-  flex: 1;
   min-width: 0;
   padding: 0;
-  font-size: 12px;
-  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mobile-input-bar--landscape .mobile-input-bar__key:active,
+.mobile-input-bar--landscape .mobile-input-bar__key--active {
+  background: rgba(var(--tint), 0.18);
+}
+.mobile-input-bar--landscape .mobile-input-bar__row {
+  order: 1;
+  display: flex;
+  flex: 1 1 220px;
+  gap: 6px;
+  min-width: 180px;
+  width: auto;
+}
+.mobile-input-bar--landscape .mobile-input-bar__input {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  min-height: 40px;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+}
+.mobile-input-bar--landscape .mobile-input-bar__send {
+  flex: 0 0 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.1);
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
 }
 .mobile-input-bar--landscape .mobile-input-bar__menu {
   position: fixed;
-  top: 8px;
-  bottom: auto;
-  left: auto;
+  z-index: 131;
+  top: auto;
   right: 8px;
-  max-height: calc(100% - var(--strideterm-keyboard-bottom, 0px) - 16px);
+  bottom: calc(var(--strideterm-keyboard-bottom, 0px) + 52px);
+  left: auto;
+  width: min(320px, calc(100vw - 16px));
+  max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 64px);
   overflow: auto;
-}
-.mobile-input-bar--landscape .mobile-input-bar__input {
-  width: 0;
-  min-height: 40px;
-}
-.mobile-input-bar--landscape .mobile-input-bar__expand {
-  padding: 0;
-  min-height: 48px;
-  font-size: 22px;
-}
-.mobile-input-bar__keyboard-mode {
-  align-self: flex-end;
-  order: 0;
-  min-height: 32px;
-  padding: 4px 10px;
-  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
   border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-elevated);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.mobile-input-bar--landscape .mobile-input-bar__menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  background: transparent;
+}
+.mobile-input-bar--landscape .mobile-input-bar__menu-item {
+  display: block;
+  width: 100%;
+  min-height: 40px;
+  padding: 10px 12px;
+  border: none;
   border-radius: 4px;
+  background: none;
   color: var(--text);
+  font-size: 14px;
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
 }
-.compact-terminal-keyboard {
-  order: 3;
+.mobile-input-bar--landscape .mobile-input-bar__menu-item:active {
+  background: rgba(var(--tint), 0.14);
+}
+.mobile-input-bar--landscape .compact-terminal-keyboard {
+  order: 2;
+  flex: 0 0 100%;
   display: grid;
+  width: 100%;
+  margin-top: 0;
+  align-content: start;
+  grid-auto-rows: max-content;
   gap: 4px;
-  margin-top: 4px;
 }
-.compact-terminal-keyboard__row {
+.mobile-input-bar--landscape .compact-terminal-keyboard__row {
   display: flex;
   gap: 3px;
+  width: 100%;
+  min-width: 0;
 }
-.compact-terminal-keyboard button {
+.mobile-input-bar--landscape .compact-terminal-keyboard button {
   flex: 1;
   min-width: 0;
-  height: clamp(26px, calc((100dvh - 154px) / 4), 38px);
+  height: clamp(36px, calc((100dvh - 240px) / 4), 48px);
   padding: 0;
-  background: var(--panel-raised, var(--panel));
-  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 5px;
+  background: var(--panel-raised, var(--panel));
+  color: var(--text);
   font-size: 16px;
   touch-action: manipulation;
 }
-.compact-terminal-keyboard button:active,
-.compact-terminal-keyboard button[aria-pressed="true"] {
+.mobile-input-bar--landscape .compact-terminal-keyboard button:active,
+.mobile-input-bar--landscape .compact-terminal-keyboard button[aria-pressed="true"] {
   background: rgba(var(--tint), 0.2);
 }
-.compact-terminal-keyboard .compact-terminal-keyboard__space {
+.mobile-input-bar--landscape .compact-terminal-keyboard .compact-terminal-keyboard__space {
   flex: 3;
 }
-
+.mobile-input-bar--landscape.mobile-input-bar--collapsed {
+  inset: auto auto var(--strideterm-keyboard-bottom, 0px) 0;
+  width: 48px;
+  min-height: 48px;
+  padding: 4px;
+}
+.mobile-input-bar--landscape .mobile-input-bar__expand {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 20px;
+  cursor: pointer;
+}
+.mobile-input-bar--system .compact-terminal-keyboard {
+  display: none;
+}
+.mobile-input-bar--system .mobile-input-bar__input,
+.mobile-input-bar--system .mobile-input-bar__send,
+.mobile-input-bar--system .mobile-input-bar__key {
+  min-height: 0;
+  height: 40px;
+}
+.mobile-input-bar--system .mobile-input-bar__send {
+  flex-basis: 40px;
+}
+html.native-keyboard-viewport
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system)
+  .workspace-pane__body--terminal {
+  clip-path: none;
+}
+html.native-keyboard-viewport
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system)
+  .workspace-pane__body--terminal
+  .terminal-host {
+  transform: none;
+}
+.workspace-main:has(> .mobile-input-bar--landscape) .mobile-keyboard-btn {
+  display: none;
+}
 .workspace-main:has(> .mobile-input-bar--landscape) > [data-role="workspace-hero"] > :not(.workspace-remote-alert) {
   display: none;
 }
@@ -727,52 +851,12 @@
   > :not(.mobile-input-bar):not([data-role="workspace-hero"]):not(.terminal-toolbar) {
   grid-row: 3;
 }
-[data-controls-side="left"] .workspace-main:has(> .mobile-input-bar--landscape) {
-  grid-template-columns: var(--composer-width) minmax(0, 1fr);
-}
-[data-controls-side="left"] .workspace-main:has(> .mobile-input-bar--landscape) > :not(.mobile-input-bar) {
-  grid-column: 2;
-}
-[data-controls-side="left"] .mobile-input-bar.mobile-input-bar--landscape {
-  grid-column: 1;
-  border-left: none;
-  border-right: 1px solid var(--border);
-}
-[data-controls-side="left"] .mobile-input-bar--landscape .mobile-input-bar__menu {
-  left: 8px;
-  right: auto;
-}
-.native-session-rail .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed),
-.native-session-rail[data-controls-side="left"]
-  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed) {
-  grid-template-columns: minmax(0, 1fr);
-}
-.native-session-rail
-  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed)
-  > :not(.mobile-input-bar),
-.native-session-rail[data-controls-side="left"]
-  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed)
-  > :not(.mobile-input-bar) {
-  grid-column: 1;
-}
-
-.mobile-input-bar--landscape .mobile-input-bar__more {
-  flex: 1;
-  min-width: 0;
-}
-.mobile-input-bar--landscape .mobile-input-bar__more > .mobile-input-bar__key {
-  width: 100%;
-}
-.workspace-main:has(> .mobile-input-bar--landscape) .mobile-keyboard-btn {
-  display: none;
-}
-
 /* The phone IME owns the lower screen; keep its editor in one row above it. */
 .workspace-main:has(> .mobile-input-bar--system) {
   position: relative;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr);
-  padding-bottom: 48px;
+  padding-bottom: calc(48px + var(--strideterm-keyboard-bottom, 0px));
 }
 [data-controls-side] .workspace-main:has(> .mobile-input-bar--system) {
   grid-template-columns: minmax(0, 1fr);
@@ -786,8 +870,7 @@
 .mobile-input-bar.mobile-input-bar--system {
   position: absolute;
   inset: auto 0 var(--strideterm-keyboard-bottom, 0px);
-  --system-composer-height: clamp(32px, calc((100dvh - var(--strideterm-keyboard-bottom, 0px)) * 0.4), 48px);
-  height: var(--system-composer-height);
+  height: 48px;
   width: 100%;
   flex-direction: row;
   align-items: center;
@@ -805,27 +888,8 @@
 .mobile-input-bar--system .mobile-input-bar__keys {
   flex: 0 0 auto;
 }
-.mobile-input-bar--system .mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--collapse) {
-  display: none;
-}
-.mobile-input-bar--system .mobile-input-bar__more,
-.mobile-input-bar--system .mobile-input-bar__key--collapse {
-  flex: 0 0 36px;
-}
-.mobile-input-bar--system .mobile-input-bar__keyboard-mode {
-  order: 3;
-  align-self: center;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  font-size: 20px;
-}
-.mobile-input-bar--system .mobile-input-bar__input {
-  min-height: 40px;
-}
 .mobile-input-bar--system .mobile-input-bar__menu {
   max-height: calc(100% - var(--strideterm-keyboard-bottom, 0px) - 8px);
-  top: 4px;
 }
 
 [data-controls-side] .mobile-input-bar.mobile-input-bar--system,
@@ -833,12 +897,4 @@
   grid-area: auto;
   border-left: 0;
   border-right: 0;
-}
-
-.mobile-input-bar--system .mobile-input-bar__input,
-.mobile-input-bar--system .mobile-input-bar__send,
-.mobile-input-bar--system .mobile-input-bar__key,
-.mobile-input-bar--system .mobile-input-bar__keyboard-mode {
-  min-height: 0;
-  height: calc(var(--system-composer-height) - 8px);
 }

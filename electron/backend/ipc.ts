@@ -144,6 +144,7 @@ import {
   mobileRejectDeviceSchema,
   mobileRenameDeviceSchema,
   mobileUpdateDeviceAllowlistSchema,
+  mobileSetRemoteUiPausedSchema,
   mobileAuditLogQuerySchema,
   workspaceIdSchema,
   workspaceDeleteOptionsSchema,
@@ -1313,6 +1314,16 @@ export function registerIpc(
     );
     return withOperationPromise({ opId: "mobile:device:update-allowlist" }, () =>
       runtime.updateMobileDeviceAllowlist(deviceId, { capabilities, profileAllowlist, excludedProfileIds }),
+    );
+  });
+  handle("mobile:device:set-remote-ui-paused", async (_event, payload) => {
+    const { deviceId, paused } = validateIpc(
+      mobileSetRemoteUiPausedSchema,
+      payload,
+      "mobile:device:set-remote-ui-paused",
+    );
+    return withOperationPromise({ opId: "mobile:device:set-remote-ui-paused" }, () =>
+      runtime.setMobileDeviceRemoteUiPaused(deviceId, paused),
     );
   });
   handle("mobile:set-enabled", async (_event, enabled) =>

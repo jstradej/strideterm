@@ -27,8 +27,8 @@ function stubWidth(el: HTMLElement, width: number) {
   el.getBoundingClientRect = () => ({ width }) as DOMRect;
 }
 
-function dispatchOn(target: EventTarget, type: string, init: MouseEventInit = {}) {
-  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
+function dispatchPointer(target: EventTarget, type: string, init: PointerEventInit = {}) {
+  target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, ...init }));
 }
 
 function buildHarness() {
@@ -64,8 +64,8 @@ describe("useNotificationDockResize", () => {
     store.pinned = false;
     const { frameEl, handleEl } = buildHarness();
 
-    dispatchOn(handleEl, "mousedown", { clientX: 100 });
-    dispatchOn(window, "mousemove", { clientX: 500 });
+    dispatchPointer(handleEl, "pointerdown", { clientX: 100 });
+    dispatchPointer(window, "pointermove", { clientX: 500 });
 
     expect(frameEl.style.getPropertyValue("--notif-dock-width")).toBe("");
   });
@@ -75,13 +75,13 @@ describe("useNotificationDockResize", () => {
     store.pinned = true;
     const { frameEl, handleEl, panelEl } = buildHarness();
 
-    dispatchOn(handleEl, "mousedown", { clientX: 200 });
+    dispatchPointer(handleEl, "pointerdown", { clientX: 200 });
     // invert:true => startX(200) - clientX(150) = 50 => 300 + 50 = 350
-    dispatchOn(window, "mousemove", { clientX: 150 });
+    dispatchPointer(window, "pointermove", { clientX: 150 });
     expect(frameEl.style.getPropertyValue("--notif-dock-width")).toBe("350px");
 
     stubWidth(panelEl, 350);
-    dispatchOn(window, "mouseup");
+    dispatchPointer(window, "pointerup");
     expect(window.localStorage.getItem("strideterm-notif-dock-width")).toBe("350");
   });
 

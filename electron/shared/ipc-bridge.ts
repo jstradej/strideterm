@@ -107,6 +107,7 @@ import type {
   MobileRejectDevice,
   MobileRenameDevice,
   MobileUpdateDeviceAllowlist,
+  MobileSetRemoteUiPaused,
   MobileAuditLogQuery,
   SettingsPayload,
 } from "../backend/ipc-schemas.js";
@@ -408,6 +409,7 @@ export interface StridetermAPI {
   /** Devices waiting for that decision, so a restart can re-present the prompt rather than lose it. */
   listMobileDevicesAwaitingApproval: () => Promise<unknown>;
   updateMobileDeviceAllowlist: (payload: MobileUpdateDeviceAllowlist) => Promise<unknown>;
+  setMobileDeviceRemoteUiPaused: (payload: MobileSetRemoteUiPaused) => Promise<unknown>;
   setMobileEnabled: (enabled: boolean) => Promise<unknown>;
   /** The managed relay's own flag — independent of `setMobileEnabled` (relay plan §10). */
   setMobileRelayEnabled: (enabled: boolean) => Promise<unknown>;

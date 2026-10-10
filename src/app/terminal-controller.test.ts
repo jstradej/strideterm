@@ -688,6 +688,49 @@ describe("the existing touch gestures survive the long-press arbitration", () =>
     expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b[A");
   });
 
+  test("a reserved landscape system composer leaves native terminal swipes on scrollback", () => {
+    const { mount, term, writeTerminal } = setup();
+    const workspace = document.createElement("section");
+    workspace.className = "workspace-main";
+    const composer = document.createElement("div");
+    composer.className = "mobile-input-bar--landscape mobile-input-bar--system";
+    mount.replaceWith(workspace);
+    workspace.append(mount, composer);
+
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "230px");
+    root.style.setProperty("--strideterm-keyboard-pan", "230px");
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+
+    expect(term.scrollLines).toHaveBeenCalled();
+    expect(root.style.getPropertyValue("--strideterm-keyboard-pan")).toBe("230px");
+    expect(writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("a collapsed landscape composer keeps native keyboard pan available", () => {
+    const { mount } = setup();
+    const workspace = document.createElement("section");
+    workspace.className = "workspace-main";
+    const composer = document.createElement("div");
+    composer.className = "mobile-input-bar--landscape mobile-input-bar--collapsed";
+    mount.replaceWith(workspace);
+    workspace.append(mount, composer);
+    Object.defineProperty(mount, "clientHeight", { value: 500, configurable: true });
+
+    const root = document.documentElement;
+    root.classList.add("native-keyboard-viewport");
+    root.style.setProperty("--strideterm-keyboard-bottom", "230px");
+    root.style.setProperty("--strideterm-keyboard-pan", "230px");
+    mount.dispatchEvent(touchEvent("touchstart", mount, [[100, 100]]));
+    mount.dispatchEvent(touchEvent("touchmove", mount, [[100, 160]]));
+    mount.dispatchEvent(touchEvent("touchend", mount, []));
+
+    expect(root.style.getPropertyValue("--strideterm-keyboard-pan")).toBe("170px");
+  });
+
   test("a native keyboard viewport class with zero overlap still scrolls and requests fresh metrics", () => {
     const { mount, term } = setup();
     const postMessage = vi.fn();

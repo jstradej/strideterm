@@ -79,6 +79,7 @@ function makeTransport(payload: AnyApi, overrides: AnyApi = {}) {
     rejectMobileDevice: vi.fn(async () => ({})),
     listMobileDevicesAwaitingApproval: vi.fn(async () => []),
     updateMobileDeviceAllowlist: vi.fn(async () => ({})),
+    setMobileDeviceRemoteUiPaused: vi.fn(async () => payload),
     setMobileEnabled: vi.fn(async () => payload),
     setMobileRelayEnabled: vi.fn(async () => payload),
     getMobileRelayStatus: vi.fn(async () => ({
@@ -533,6 +534,22 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).not.toContain("awaiting your confirmation");
     expect(wrapper.text()).not.toContain("proving key");
     expect(wrapper.text()).toContain("revoked");
+  });
+
+  test("desktop can pause and resume remote UI without changing the pairing", async () => {
+    const setRemoteUiPaused = vi.fn(async () => makePayload({ enabled: true, devices: [] }));
+    const { wrapper } = await mountTab({
+      setMobileDeviceRemoteUiPaused: setRemoteUiPaused,
+      listMobileDevices: vi.fn(async () => [{ ...SAMPLE_DEVICE, remoteUiPaused: true }]),
+    });
+
+    expect(wrapper.text()).toContain("Remote UI paused");
+    const resume = wrapper.findAll("button").find((button) => button.text() === "Resume UI access");
+    expect(resume).toBeDefined();
+    await resume!.trigger("click");
+    await flushPromises();
+
+    expect(setRemoteUiPaused).toHaveBeenCalledWith({ deviceId: SAMPLE_DEVICE.deviceId, paused: false });
   });
 
   // The list only ever grew: nothing anywhere removed a row from it. The cross is housekeeping and
