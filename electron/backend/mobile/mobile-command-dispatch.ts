@@ -444,31 +444,17 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
     return { ok: true, workspace };
   }
 
-  /**
-   * Checks the workspace a remote command named, or that the profile has one at all.
-   *
-   * `workspaceId` is optional on `remote.endpoint.request` and `remote.webSession.issue` (review 1
-   * finding 2): a phone that has just picked this desktop and a profile in its own picker knows no
-   * workspace, and while the field was required there was no way for it to ask — which is why the
-   * remote screen was reachable only from a notification that happened to name one. Named, it is
-   * still held to belonging to `profileId`. Absent, the profile itself must have at least one
-   * workspace, because a session opened onto a profile with nothing in it is a blank screen the user
-   * cannot act on and the desktop is the side that knows.
-   *
-   * What this never becomes is a cross-profile hole: with no workspace named there is nothing to
-   * cross, and the profile is `command.profileId`, which the caller was already authorised for
-   * against the device record's own allowlist.
-   */
+  /** Checks that the selected profile exists and that any named workspace belongs to it. */
   function checkRemoteTarget(
     state: AppState,
     profileId: string,
     workspaceId: string | undefined,
   ): { ok: true } | { ok: false; reason: string } {
-    const profileOf = (workspace: { profileId?: string }): string => workspace.profileId || "default";
-    if (workspaceId === undefined) {
-      const any = state.workspaces.some((workspace) => profileOf(workspace) === profileId);
-      return any ? { ok: true } : { ok: false, reason: "profile-has-no-workspace" };
+    if (!state.profiles.some((profile) => profile.id === profileId)) {
+      return { ok: false, reason: "profile-not-found" };
     }
+    const profileOf = (workspace: { profileId?: string }): string => workspace.profileId || "default";
+    if (workspaceId === undefined) return { ok: true };
     const workspace = findWorkspace(state, workspaceId);
     if (!workspace || profileOf(workspace) !== profileId) {
       return { ok: false, reason: "cross-profile-workspace" };

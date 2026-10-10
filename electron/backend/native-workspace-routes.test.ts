@@ -13,6 +13,65 @@ async function getFreePort(): Promise<number> {
 }
 
 describe("mobile native workspace routes", () => {
+  test("an authenticated empty-profile session receives an empty scoped core and can create its first workspace", async () => {
+    const port = await getFreePort();
+    const calls: Call[] = [];
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "master-token" } },
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "other", name: "Other", workspaceIds: ["ws-other"] },
+        ],
+        workspaces: [{ id: "ws-other", name: "Other workspace", profileId: "other", panels: [] }],
+        windowSlots: [{ id: "other-window", profileId: "other", activeWorkspaceId: "ws-other" }],
+      },
+    };
+    const runtime = makeRuntime(payload, calls);
+    const server = await startRemoteServer({ runtime: runtime as never, staticRoot: process.cwd() });
+    const base = `http://127.0.0.1:${port}`;
+
+    try {
+      const cookie = await bootstrap(base, runtime, "default");
+      const stateResponse = await fetch(`${base}/api/state`, { headers: { Cookie: cookie } });
+      expect(stateResponse.status).toBe(200);
+      const core = (await stateResponse.json()) as {
+        stateProtocol: number;
+        appState: { workspaces: Array<{ id: string }> };
+        remoteClient: { profileId: string; activeWorkspaceId: string };
+      };
+      expect(core.stateProtocol).toBe(2);
+      expect(core.remoteClient).toMatchObject({ profileId: "default", activeWorkspaceId: "" });
+      expect(core.appState.workspaces).toEqual([]);
+
+      const create = (profileId: string) =>
+        fetch(`${base}/api/mobile/workspaces/create`, {
+          method: "POST",
+          headers: { "content-type": "application/json", Cookie: cookie },
+          body: JSON.stringify({ profileId, requestId: "create-first", path: "C:/Projects/First", name: "First" }),
+        });
+      expect((await create("other")).status).toBe(403);
+      expect(calls).toEqual([]);
+
+      const created = await create("default");
+      expect(created.status).toBe(200);
+      expect(await created.json()).toEqual({
+        name: "First",
+        path: "C:/Projects/First",
+        profileId: "default",
+        workspaceId: "ws-created",
+      });
+      expect(calls).toEqual([
+        {
+          method: "createWorkspaceFromDirectory",
+          args: ["default", "C:/Projects/First", "First", expect.stringMatching(/^remote:/)],
+        },
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
   test("authenticates and forwards all native workspace operations with the session profile", async () => {
     const port = await getFreePort();
     const calls: Call[] = [];

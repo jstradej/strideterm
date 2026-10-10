@@ -67,7 +67,10 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
       },
     } as AppState["settings"],
     tabTemplates: [],
-    profiles: [],
+    profiles: [
+      { id: "default", name: "Default", color: "#123456", workspaceIds: ["ws-1"] },
+      { id: "other", name: "Other", color: "#654321", workspaceIds: ["ws-other-profile"] },
+    ],
     workspaces: [
       {
         id: "ws-1",
@@ -1012,6 +1015,32 @@ describe("tunnel safety gates", () => {
     expect(result.data).toMatchObject({ transport: "cloudflare" });
   });
 
+  test("remote.endpoint.request answers for an existing empty profile", async () => {
+    const { dispatcher } = await createFixture({
+      profiles: [{ id: "empty", name: "Empty", color: "#123456", workspaceIds: [] }],
+      workspaces: [],
+    });
+    const device = makeDevice({ profileAllowlist: ["empty"], capabilities: ["remote.request"] });
+    const command = makeCommand({ type: "remote.endpoint.request", payload: {}, profileId: "empty" });
+
+    const result = await dispatcher.dispatch(command, device);
+
+    expect(result).toMatchObject({ status: "succeeded", data: { transport: "cloudflare" } });
+  });
+
+  test("remote.endpoint.request refuses a profile missing from runtime state", async () => {
+    const { dispatcher } = await createFixture({
+      profiles: [],
+      workspaces: [],
+    });
+    const device = makeDevice({ profileAllowlist: ["missing"], capabilities: ["remote.request"] });
+    const command = makeCommand({ type: "remote.endpoint.request", payload: {}, profileId: "missing" });
+
+    const result = await dispatcher.dispatch(command, device);
+
+    expect(result).toMatchObject({ status: "failed", errorCode: "profile-not-found", data: null });
+  });
+
   test("remote.endpoint.request is refused when remote access itself is disabled", async () => {
     const { dispatcher, runtime } = await createFixture({
       settings: {
@@ -1333,11 +1362,12 @@ describe("remote.webSession.issue", () => {
     });
   });
 
-  test("but a profile with nothing in it is refused rather than opened onto a blank screen", async () => {
-    // The one thing the desktop still has to decide when no workspace is named: whether the profile
-    // the phone picked exists here at all. Only the desktop knows.
-    const { dispatcher } = await createFixture();
-    const device = makeDevice({ profileAllowlist: ["default", "empty"], capabilities: ["remote.webSession"] });
+  test("issues a profile-scoped ticket for an existing empty profile", async () => {
+    const { dispatcher, ticketStore } = await createFixture({
+      profiles: [{ id: "empty", name: "Empty", color: "#123456", workspaceIds: [] }],
+      workspaces: [],
+    });
+    const device = makeDevice({ profileAllowlist: ["empty"], capabilities: ["remote.webSession"] });
     const command = makeCommand({
       type: "remote.webSession.issue",
       payload: { allowedOrigin: TUNNEL_ORIGIN },
@@ -1346,7 +1376,26 @@ describe("remote.webSession.issue", () => {
 
     const result = await dispatcher.dispatch(command, device);
 
-    expect(result).toMatchObject({ status: "failed", errorCode: "profile-has-no-workspace" });
+    expect(result.status).toBe("succeeded");
+    const data = result.data as { ticketId: string; ticketSecret: string };
+    expect(ticketStore.consumeTicket(data.ticketId, data.ticketSecret, TICKET_CONTEXT)).toMatchObject({
+      profileId: "empty",
+      allowedOrigin: TUNNEL_ORIGIN,
+    });
+  });
+
+  test("does not issue a ticket when the selected profile no longer exists", async () => {
+    const { dispatcher } = await createFixture({ profiles: [], workspaces: [] });
+    const device = makeDevice({ profileAllowlist: ["missing"], capabilities: ["remote.webSession"] });
+    const command = makeCommand({
+      type: "remote.webSession.issue",
+      payload: { allowedOrigin: TUNNEL_ORIGIN },
+      profileId: "missing",
+    });
+
+    const result = await dispatcher.dispatch(command, device);
+
+    expect(result).toMatchObject({ status: "failed", errorCode: "profile-not-found", data: null });
   });
 
   test("fails closed for a cross-profile workspace, same as the other remote.* commands", async () => {

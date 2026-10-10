@@ -164,6 +164,48 @@ describe("remote transport endpoint routing", () => {
     });
   });
 
+  it("reports an empty-profile selection with a null workspace instead of waiting for one", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const payload = { remoteClient: { profileId: "empty", activeWorkspaceId: "" } };
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrls.push(String(url));
+      try {
+        capturedBodies.push(JSON.parse(String(init?.body || "{}")));
+      } catch {
+        capturedBodies.push({});
+      }
+      return { ok: true, json: async () => payload } as Response;
+    });
+    const transport = createRemoteTransport();
+    const updated = vi.fn();
+    transport.onStateUpdated(updated);
+    const bridge = (
+      window as unknown as {
+        __stridetermRemote: {
+          selectTarget(profile: string, workspace: string | null, request: number): Promise<void>;
+        };
+      }
+    ).__stridetermRemote;
+
+    await bridge.selectTarget("empty", null, 13);
+
+    expect(updated).toHaveBeenCalledWith(payload);
+    expect(capturedUrls).toHaveLength(1);
+    expect(capturedUrls[0]).toContain("/api/remote-client/profile/activate");
+    expect(capturedUrls.some((url) => url.includes("/api/remote-client/workspace/activate"))).toBe(false);
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "selection-changed",
+      profileId: "empty",
+      workspaceId: null,
+    });
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "selection-result",
+      requestId: 13,
+      ok: true,
+    });
+  });
+
   it("reports the active panel id and title when the renderer selection changes", async () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
