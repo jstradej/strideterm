@@ -11,12 +11,13 @@ test.use({ launchOptions: { args: ["--disable-webgl"] } });
 /**
  * Mobile composer input bar (MobileInputBar.vue) — the workaround for the
  * upstream xterm.js Android IME bug (xtermjs/xterm.js#3600). On mobile
- * remote clients a plain <input> row is pinned under the terminal; lines
- * composed there are pushed to the PTY over the same `terminal:input` WS
- * channel that xterm's onData uses, so predictive keyboards never touch
- * xterm's hidden textarea.
+ * remote clients a plain <input> row is pinned under the terminal; a
+ * composed line goes out as one `terminal:submit` WS frame (the backend
+ * writes the text and its Enter as a single queued operation), while the
+ * accessory keys use the same `terminal:input` channel as xterm's onData,
+ * so predictive keyboards never touch xterm's hidden textarea.
  *
- * The mock server records every `terminal:input` frame in
+ * The mock server records those frames in `mock.terminalSubmits` and
  * `mock.terminalInputs`, which is what the send assertions read.
  */
 
@@ -44,6 +45,7 @@ test.describe("Mobile composer input bar", () => {
   });
   test.beforeEach(() => {
     mock.terminalInputs.length = 0;
+    mock.terminalSubmits.length = 0;
   });
 
   test("is visible on a mobile viewport and hidden on desktop", async ({ page }) => {
@@ -61,7 +63,7 @@ test.describe("Mobile composer input bar", () => {
     assertNoErrors(page);
   });
 
-  test("sends the composed line, then Enter as a separate frame", async ({ page }) => {
+  test("sends the composed line as one submit operation", async ({ page }) => {
     await page.setViewportSize(MOBILE_VIEWPORT);
     await openApp(page, mock);
 
@@ -69,15 +71,12 @@ test.describe("Mobile composer input bar", () => {
     await input.fill("echo from-mobile-composer");
     await page.locator(".mobile-input-bar__send").click();
 
-    // Text first, Enter as its own delayed frame — a \r in the same chunk as
-    // the text would be swallowed by agent TUIs' paste detection (same
-    // pattern as #writeAndSubmit in agent-task-runner.ts).
+    // Text and Enter travel together; the backend splits them into two
+    // queued writes so agent TUIs' paste detection does not swallow the \r.
     await expect
-      .poll(() => mock.terminalInputs, { timeout: 5_000 })
-      .toEqual([
-        { sessionId: ACTIVE_SESSION_ID, data: "echo from-mobile-composer" },
-        { sessionId: ACTIVE_SESSION_ID, data: "\r" },
-      ]);
+      .poll(() => mock.terminalSubmits, { timeout: 5_000 })
+      .toEqual([{ sessionId: ACTIVE_SESSION_ID, text: "echo from-mobile-composer" }]);
+    expect(mock.terminalInputs).toEqual([]);
     // The field clears after sending so the next command starts fresh.
     await expect(input).toHaveValue("");
 
@@ -93,11 +92,8 @@ test.describe("Mobile composer input bar", () => {
     await input.press("Enter");
 
     await expect
-      .poll(() => mock.terminalInputs, { timeout: 5_000 })
-      .toEqual([
-        { sessionId: ACTIVE_SESSION_ID, data: "ls -la" },
-        { sessionId: ACTIVE_SESSION_ID, data: "\r" },
-      ]);
+      .poll(() => mock.terminalSubmits, { timeout: 5_000 })
+      .toEqual([{ sessionId: ACTIVE_SESSION_ID, text: "ls -la" }]);
 
     assertNoErrors(page);
   });
@@ -116,11 +112,11 @@ test.describe("Mobile composer input bar", () => {
     await page.locator(".mobile-input-bar__send").click();
 
     await expect
-      .poll(() => mock.terminalInputs, { timeout: 5_000 })
-      .toContainEqual({ sessionId: "ws-frontend:panel-claude", data: "pwd" });
-    expect(mock.terminalInputs).not.toContainEqual({
+      .poll(() => mock.terminalSubmits, { timeout: 5_000 })
+      .toContainEqual({ sessionId: "ws-frontend:panel-claude", text: "pwd" });
+    expect(mock.terminalSubmits).not.toContainEqual({
       sessionId: "ws-frontend:panel-claude",
-      data: "do not forward",
+      text: "do not forward",
     });
 
     assertNoErrors(page);
@@ -132,9 +128,10 @@ test.describe("Mobile composer input bar", () => {
 
     await page.locator(".mobile-input-bar__send").click();
 
+    // An empty submit is written as a lone "\r" by the backend.
     await expect
-      .poll(() => mock.terminalInputs, { timeout: 5_000 })
-      .toContainEqual({ sessionId: ACTIVE_SESSION_ID, data: "\r" });
+      .poll(() => mock.terminalSubmits, { timeout: 5_000 })
+      .toContainEqual({ sessionId: ACTIVE_SESSION_ID, text: "" });
 
     assertNoErrors(page);
   });
@@ -173,6 +170,7 @@ test.describe("Mobile composer input bar", () => {
     await expect(page.locator(INPUT)).toHaveValue("echo from-clipboard");
     // Nothing reaches the terminal until the user hits send.
     expect(mock.terminalInputs).toEqual([]);
+    expect(mock.terminalSubmits).toEqual([]);
 
     assertNoErrors(page);
   });

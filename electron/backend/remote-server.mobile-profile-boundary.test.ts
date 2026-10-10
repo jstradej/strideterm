@@ -70,6 +70,8 @@ function makeRuntime(port: number) {
     isPrivateSshOperationSessionId: (sessionId: unknown) =>
       typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:)/.test(sessionId),
     isMobileSessionStillAuthorized: () => true,
+    isMobileSessionPaused: () => false,
+    addMobileRemoteSessionRevoker: () => () => undefined,
     consumeMobileWebSessionTicket: (ticketId: string, secret: string) =>
       ticketId === "ticket-home" && secret === "secret"
         ? {

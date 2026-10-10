@@ -148,6 +148,8 @@ export interface MockServerHandle {
   browserUrl: string;
   /** Every `terminal:input` WS message received from clients, in arrival order. */
   terminalInputs: Array<{ sessionId: string; data: string }>;
+  /** Every `terminal:submit` WS message (text + Enter as one operation), in arrival order. */
+  terminalSubmits: Array<{ sessionId: string; text: string }>;
   close(): Promise<void>;
 }
 
@@ -198,6 +200,7 @@ export async function startMockServer({
   const TOKEN = "test-token";
   const sockets = new Set<WebSocket>();
   const terminalInputs: Array<{ sessionId: string; data: string }> = [];
+  const terminalSubmits: Array<{ sessionId: string; text: string }> = [];
   // Per-socket detail interests (resource keys the client's mounted panes render)
   // so state broadcasts can push resource:invalidate the same way remote-server
   // does. Keyed by the WebSocket instance.
@@ -674,6 +677,8 @@ export async function startMockServer({
             const msg = JSON.parse(String(raw));
             if (msg?.type === "terminal:input" && typeof msg.sessionId === "string") {
               terminalInputs.push({ sessionId: msg.sessionId, data: String(msg.data ?? "") });
+            } else if (msg?.type === "terminal:submit" && typeof msg.sessionId === "string") {
+              terminalSubmits.push({ sessionId: msg.sessionId, text: String(msg.text ?? "") });
             } else if (msg?.type === "resource:interest" && Array.isArray(msg.resources)) {
               const interests = new Set<string>(
                 msg.resources.filter((r: unknown): r is string => typeof r === "string"),
@@ -748,6 +753,7 @@ export async function startMockServer({
     wsUrl: `ws://127.0.0.1:${actualPort}/ws?token=${TOKEN}`,
     browserUrl: `http://127.0.0.1:${actualPort}/?token=${TOKEN}`,
     terminalInputs,
+    terminalSubmits,
     async close() {
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
