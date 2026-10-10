@@ -68,6 +68,39 @@ vi.mock("./logger.js", async (importOriginal) => {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 describe("native workspace and scratchpad lifecycle", () => {
+  test("classifies malformed and missing browse paths while listing a valid directory", async () => {
+    const fixture = await createFixture({
+      initialState: { profiles: [{ id: "default", name: "Default", workspaceIds: [] }], workspaces: [] },
+    });
+    fixtures.push(fixture);
+    const browseRoot = await fs.mkdtemp(path.join(os.tmpdir(), "native-browse-paths-"));
+    tempPaths.push(browseRoot);
+    await fs.mkdir(path.join(browseRoot, "child"));
+
+    await expect(fixture.runtime.listWorkspaceDirectories("default", browseRoot)).resolves.toMatchObject({
+      path: browseRoot,
+      entries: [{ name: "child", path: path.join(browseRoot, "child") }],
+    });
+    await expect(
+      fixture.runtime.listWorkspaceDirectories("default", path.join(browseRoot, "missing")),
+    ).rejects.toMatchObject({ name: "NativeWorkspaceError", code: "directory-not-found" });
+    await expect(fixture.runtime.listWorkspaceDirectories("default", "relative-folder")).rejects.toMatchObject({
+      name: "NativeWorkspaceError",
+      code: "invalid-directory-path",
+    });
+
+    await expect(fixture.runtime.createWorkspaceDirectory("default", browseRoot, "created")).resolves.toMatchObject({
+      path: path.join(browseRoot, "created"),
+    });
+    await expect(fixture.runtime.createWorkspaceDirectory("default", browseRoot, "created")).rejects.toMatchObject({
+      name: "NativeWorkspaceError",
+      code: "directory-already-exists",
+    });
+    await expect(fixture.runtime.createWorkspaceDirectory("default", browseRoot, "invalid/name")).rejects.toMatchObject(
+      { name: "NativeWorkspaceError", code: "invalid-directory-name" },
+    );
+  });
+
   test("creates a non-default workspace, keeps a renamed scratchpad, and moves files safely", async () => {
     const fixture = await createFixture({
       initialState: {

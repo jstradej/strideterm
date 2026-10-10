@@ -34,6 +34,7 @@ import {
 } from "../shared/mobile-session-events.js";
 import { filterConnectionsByOpenProfiles } from "./shared/runtime-provider-guards.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
+import { NativeWorkspaceError, nativeWorkspaceFs } from "./native-workspace-errors.js";
 import {
   REMOTE_ACCESS_TOKEN_REF,
   connectionSecretRef,
@@ -7860,12 +7861,19 @@ export async function createRuntime({
       const state = getState();
       assertProfileExists(state, profileId);
       const home = await realpath(os.homedir()).catch(() => path.resolve(os.homedir()));
-      const target = requestedPath ? assertNativePath(requestedPath) : path.resolve(home);
-      const info = await lstat(target).catch(() => null);
-      if (!info?.isDirectory() || info.isSymbolicLink()) throw new Error("Directory not found");
-      const directoryEntries = (await readdir(target, { withFileTypes: true })).filter(
-        (entry) => entry.isDirectory() && !entry.isSymbolicLink(),
+      let target: string;
+      try {
+        target = requestedPath ? assertNativePath(requestedPath) : path.resolve(home);
+      } catch {
+        throw new NativeWorkspaceError("invalid-directory-path");
+      }
+      const info = await nativeWorkspaceFs(() => lstat(target), "directory-not-found");
+      if (!info?.isDirectory() || info.isSymbolicLink()) throw new NativeWorkspaceError("directory-not-found");
+      const listedEntries = await nativeWorkspaceFs(
+        () => readdir(target, { withFileTypes: true }),
+        "directory-not-found",
       );
+      const directoryEntries = listedEntries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink());
       const query = options.query?.toLocaleLowerCase() || "";
       const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
       const matchingEntries = directoryEntries
@@ -7917,9 +7925,14 @@ export async function createRuntime({
     async createWorkspaceFromDirectory(profileId: string, cwd: string, name?: string, viewerId?: string) {
       const state = getState();
       assertProfileExists(state, profileId);
-      const resolved = assertNativePath(cwd);
-      const info = await lstat(resolved).catch(() => null);
-      if (!info?.isDirectory() || info.isSymbolicLink()) throw new Error("Directory not found");
+      let resolved: string;
+      try {
+        resolved = assertNativePath(cwd);
+      } catch {
+        throw new NativeWorkspaceError("invalid-directory-path");
+      }
+      const info = await nativeWorkspaceFs(() => lstat(resolved), "directory-not-found");
+      if (!info?.isDirectory() || info.isSymbolicLink()) throw new NativeWorkspaceError("directory-not-found");
       const panelId = `panel-${randomUUID()}`;
       const workspace = {
         id: `workspace-${randomUUID()}`,
@@ -7946,18 +7959,17 @@ export async function createRuntime({
     },
     async createWorkspaceDirectory(profileId: string, parentPath: string, name: string) {
       assertProfileExists(getState(), profileId);
-      if (!isValidNativeDirectoryName(name)) throw new Error("Invalid directory name");
-      const parent = assertNativePath(parentPath);
-      const info = await lstat(parent).catch(() => null);
-      if (!info?.isDirectory() || info.isSymbolicLink()) throw new Error("Parent directory not found");
+      if (!isValidNativeDirectoryName(name)) throw new NativeWorkspaceError("invalid-directory-name");
+      let parent: string;
+      try {
+        parent = assertNativePath(parentPath);
+      } catch {
+        throw new NativeWorkspaceError("invalid-directory-path");
+      }
+      const info = await nativeWorkspaceFs(() => lstat(parent), "parent-directory-not-found");
+      if (!info?.isDirectory() || info.isSymbolicLink()) throw new NativeWorkspaceError("parent-directory-not-found");
       const target = path.join(parent, name);
-      if (
-        await access(target)
-          .then(() => true)
-          .catch(() => false)
-      )
-        throw new Error("Directory already exists");
-      await mkdir(target);
+      await nativeWorkspaceFs(() => mkdir(target), "parent-directory-not-found", "directory-already-exists");
       return { path: target };
     },
     async listScratchpadWorkspaces(profileId: string) {

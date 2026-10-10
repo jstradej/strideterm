@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import net from "node:net";
 import { startRemoteServer } from "./remote-server.js";
+import { NativeWorkspaceError } from "./native-workspace-errors.js";
 
 type Call = { method: string; args: unknown[] };
 
@@ -13,6 +14,63 @@ async function getFreePort(): Promise<number> {
 }
 
 describe("mobile native workspace routes", () => {
+  test("returns a typed safe refusal for an unavailable directory and preserves unexpected errors", async () => {
+    const port = await getFreePort();
+    const calls: Call[] = [];
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "master-token" } },
+        profiles: [{ id: "default", name: "Default", workspaceIds: [] }],
+        workspaces: [],
+        windowSlots: [],
+      },
+    };
+    const runtime = makeRuntime(payload, calls);
+    runtime.listWorkspaceDirectories = async () => {
+      throw new NativeWorkspaceError("directory-not-found");
+    };
+    const server = await startRemoteServer({ runtime: runtime as never, staticRoot: process.cwd() });
+    const base = `http://127.0.0.1:${port}`;
+
+    try {
+      const cookie = await bootstrap(base, runtime, "default");
+      const response = await post(
+        base,
+        "/api/mobile/workspaces/directories/list",
+        { profileId: "default", path: "C:/private/. Private" },
+        { Cookie: cookie },
+      );
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ code: "directory-not-found" });
+
+      runtime.listWorkspaceDirectories = async () => {
+        throw new Error("unexpected filesystem failure");
+      };
+      const unexpected = await post(
+        base,
+        "/api/mobile/workspaces/directories/list",
+        { profileId: "default", path: "C:/private/. Private" },
+        { Cookie: cookie },
+      );
+      expect(unexpected.status).toBe(400);
+      expect(await unexpected.json()).toEqual({ error: "Workspace operation failed" });
+
+      runtime.listWorkspaceDirectories = async () => {
+        throw Object.assign(new Error("private filesystem path"), { code: "EIO" });
+      };
+      const ioFailure = await post(
+        base,
+        "/api/mobile/workspaces/directories/list",
+        { profileId: "default", path: "C:/private/. Private" },
+        { Cookie: cookie },
+      );
+      expect(ioFailure.status).toBe(500);
+      expect(await ioFailure.json()).toEqual({ error: "Workspace operation failed" });
+    } finally {
+      await server.close();
+    }
+  });
+
   test("an authenticated empty-profile session receives an empty scoped core and can create its first workspace", async () => {
     const port = await getFreePort();
     const calls: Call[] = [];

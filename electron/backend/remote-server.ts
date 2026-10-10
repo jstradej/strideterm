@@ -85,6 +85,7 @@ import {
 } from "./mobile/mobile-relay-protocol.js";
 import { parseRemoteViewerId, remoteViewerId } from "./viewer-id.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
+import { NativeWorkspaceError } from "./native-workspace-errors.js";
 import { classifyMobileRoute, evaluateMobileRoute } from "./mobile-session-route-policy.js";
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
 import type { RemoteBrowserSession, RemoteSessionRevoke } from "../shared/remote-access.js";
@@ -2277,7 +2278,14 @@ async function handleApiRequest(
           }
         }
       } catch (error) {
-        json(response, 400, { error: (error as Error).message || "Workspace operation failed" });
+        if (error instanceof NativeWorkspaceError) {
+          json(response, 400, { code: error.code });
+        } else {
+          const errorCode =
+            error !== null && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
+          const status = typeof errorCode === "string" && /^E[A-Z0-9]+$/.test(errorCode) ? 500 : 400;
+          json(response, status, { error: "Workspace operation failed" });
+        }
         return;
       }
     }
