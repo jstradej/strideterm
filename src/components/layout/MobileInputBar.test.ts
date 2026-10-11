@@ -278,6 +278,113 @@ describe("MobileInputBar", () => {
     }
   });
 
+  it("keeps the native landscape composer visible without opening the keyboard on rotation", async () => {
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query === "(any-pointer: coarse)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    window.localStorage.setItem(COLLAPSED_KEY, "1");
+    window.localStorage.setItem("strideterm.mobile.hideKeyboardAfterSend", "true");
+    const screenOrientation = mockScreenOrientation("portrait-primary");
+    const { wrapper } = mountBar();
+    try {
+      await nextTick();
+      document.body.appendChild(wrapper.element);
+      document.documentElement.classList.add("native-session-rail");
+      await flushPromises();
+      screenOrientation.setType("landscape-primary");
+      await nextTick();
+
+      const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input").element;
+      expect(wrapper.find(".mobile-input-bar--landscape").exists()).toBe(true);
+      expect(wrapper.find(".mobile-input-bar__expand").exists()).toBe(false);
+      expect(document.activeElement).not.toBe(input);
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      expect(wrapper.text()).toContain("Hide keyboard");
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+
+      await wrapper.get(".mobile-input-bar__input").setValue("echo sent");
+      await wrapper.get(".mobile-input-bar__row").trigger("submit");
+      await nextTick();
+      expect(wrapper.find(".mobile-input-bar__expand").exists()).toBe(false);
+      expect(wrapper.find(".mobile-input-bar__input").exists()).toBe(true);
+      expect(document.activeElement).not.toBe(input);
+
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      await wrapper.get("[data-role='mobile-input-bar-keyboard-mode']").trigger("click");
+      expect(input.inputMode).toBe("none");
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(true);
+
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+      await flushPromises();
+      expect(document.activeElement).toBe(input);
+      expect(wrapper.find(".mobile-input-bar__expand").exists()).toBe(false);
+      expect(input.inputMode).toBe("text");
+      expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
+      const focusEvents: string[] = [];
+      input.addEventListener("blur", () => focusEvents.push("blur"));
+      input.addEventListener("focus", () => focusEvents.push("focus"));
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+      await flushPromises();
+      expect(document.activeElement).toBe(input);
+      expect(focusEvents).toEqual(["blur", "focus"]);
+
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: false } }));
+      expect(document.activeElement).not.toBe(input);
+      expect(wrapper.find(".mobile-input-bar__expand").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+      document.documentElement.classList.remove("native-session-rail");
+      media.mockRestore();
+      screenOrientation.restore();
+    }
+  });
+
+  it("cancels pending keyboard shows on a later hide, rotation, or unmount", async () => {
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query === "(any-pointer: coarse)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const screenOrientation = mockScreenOrientation("landscape-primary");
+    document.documentElement.classList.add("native-session-rail");
+    const { wrapper } = mountBar();
+    try {
+      await nextTick();
+      document.body.appendChild(wrapper.element);
+      const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input").element;
+
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: false } }));
+      await flushPromises();
+      expect(document.activeElement).not.toBe(input);
+
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+      screenOrientation.setType("portrait-primary");
+      await flushPromises();
+      expect(document.activeElement).not.toBe(input);
+
+      screenOrientation.setType("landscape-primary");
+      await nextTick();
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+      wrapper.unmount();
+      await flushPromises();
+      expect(document.activeElement).not.toBe(input);
+    } finally {
+      wrapper.unmount();
+      document.documentElement.classList.remove("native-session-rail");
+      media.mockRestore();
+      screenOrientation.restore();
+    }
+  });
+
   it("does not switch a wide desktop with touch support into mobile landscape mode", async () => {
     const media = vi.spyOn(window, "matchMedia").mockImplementation(
       (query) =>

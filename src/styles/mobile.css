@@ -613,6 +613,7 @@
 }
 .native-session-rail {
   --native-session-rail-supported: 1;
+  --native-session-rail-keyboard-toggle-supported: 1;
 }
 .native-session-rail .mobile-input-bar--landscape.mobile-input-bar--collapsed {
   display: none;
@@ -864,7 +865,7 @@ html.native-keyboard-viewport
 [data-controls-side] .workspace-main:has(> .mobile-input-bar--system) > :not(.mobile-input-bar) {
   grid-column: 1;
 }
-.workspace-main:has(> .mobile-input-bar--system) > .terminal-toolbar {
+.workspace-main:has(> .mobile-input-bar--system:not(.mobile-input-bar--landscape)) > .terminal-toolbar {
   display: none;
 }
 .mobile-input-bar.mobile-input-bar--system {

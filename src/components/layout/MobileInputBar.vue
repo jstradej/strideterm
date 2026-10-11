@@ -104,7 +104,7 @@
                 {{ systemKeyboard ? "Use compact keyboard" : "Use system keyboard" }}
               </button>
               <button v-if="landscape" type="button" class="mobile-input-bar__menu-item" @click="collapse">
-                Hide input bar
+                {{ nativeSessionRail ? "Hide keyboard" : "Hide input bar" }}
               </button>
               <button
                 type="button"
@@ -273,6 +273,8 @@ const orientationPortrait = computed(() =>
   hasCoarsePointer.value && devicePortrait.value !== null ? devicePortrait.value : isPortrait.value,
 );
 const landscape = computed(() => (isMobile.value || nativeSessionRail.value) && !orientationPortrait.value);
+let keyboardFocusGeneration = 0;
+watch([landscape, nativeSessionRail, targetSessionId], () => keyboardFocusGeneration++, { flush: "sync" });
 
 function readDevicePortrait(): boolean | null {
   const orientationType = window.screen.orientation?.type;
@@ -288,7 +290,9 @@ function updateDeviceOrientation(): void {
   devicePortrait.value = readDevicePortrait();
 }
 const landscapeExpanded = ref(false);
-const panelCollapsed = computed(() => (landscape.value ? !landscapeExpanded.value : collapsed.value));
+const panelCollapsed = computed(() =>
+  landscape.value ? !nativeSessionRail.value && !landscapeExpanded.value : collapsed.value,
+);
 const systemKeyboard = ref(true);
 const hideAfterSend = ref(readHideAfterSend());
 function readHideAfterSend(): boolean {
@@ -317,6 +321,7 @@ watch(landscape, () => {
   inputRef.value?.blur();
 });
 async function toggleKeyboardMode() {
+  keyboardFocusGeneration++;
   menuOpen.value = false;
   inputRef.value?.blur();
   systemKeyboard.value = !systemKeyboard.value;
@@ -409,11 +414,37 @@ async function focusComposer() {
   await nextTick();
   inputRef.value?.focus({ preventScroll: true });
 }
+async function toggleSystemKeyboard(event: Event) {
+  const sessionId = targetSessionId.value;
+  if (!sessionId) return;
+  const show = (event as CustomEvent<{ show?: boolean }>).detail?.show === true;
+  const generation = ++keyboardFocusGeneration;
+  const requestIsCurrent = () => generation === keyboardFocusGeneration && sessionId === targetSessionId.value;
+  if (!show) {
+    inputRef.value?.blur();
+    return;
+  }
+  systemKeyboard.value = true;
+  await nextTick();
+  if (!requestIsCurrent()) return;
+  inputRef.value?.blur();
+  await nextTick();
+  if (!requestIsCurrent()) return;
+  inputRef.value?.focus({ preventScroll: true });
+}
+function updateNativeSessionRail() {
+  nativeSessionRail.value = document.documentElement.classList.contains("native-session-rail");
+}
+let nativeSessionRailObserver: MutationObserver | undefined;
 onUnmounted(() => {
+  keyboardFocusGeneration++;
   window.screen.orientation?.removeEventListener("change", updateDeviceOrientation);
   window.removeEventListener("orientationchange", updateDeviceOrientation);
   postKeyboardAvailability(false);
   window.removeEventListener("strideterm:focus-composer", focusComposer);
+  window.removeEventListener("strideterm:toggle-system-keyboard", toggleSystemKeyboard);
+  window.removeEventListener("strideterm:native-session-rail-change", updateNativeSessionRail);
+  nativeSessionRailObserver?.disconnect();
   window.removeEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
@@ -421,8 +452,13 @@ onUnmounted(() => {
 onMounted(() => {
   window.screen.orientation?.addEventListener("change", updateDeviceOrientation);
   window.addEventListener("orientationchange", updateDeviceOrientation);
+  updateNativeSessionRail();
   postKeyboardAvailability(!!api?.isRemote && !!targetSessionId.value);
   window.addEventListener("strideterm:focus-composer", focusComposer);
+  window.addEventListener("strideterm:toggle-system-keyboard", toggleSystemKeyboard);
+  window.addEventListener("strideterm:native-session-rail-change", updateNativeSessionRail);
+  nativeSessionRailObserver = new MutationObserver(updateNativeSessionRail);
+  nativeSessionRailObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
   window.addEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.addEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.addEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
@@ -978,6 +1014,7 @@ function handleCompositionEnd(event: CompositionEvent): void {
 }
 
 function collapse(): void {
+  keyboardFocusGeneration++;
   inputRef.value?.blur();
   menuOpen.value = false;
   if (landscape.value) {
