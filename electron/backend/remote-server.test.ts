@@ -48,7 +48,9 @@ describe("static asset HTTP caching", () => {
   test("revalidates content assets, changes validators with content, and never caches HTML", async () => {
     const staticRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-static-cache-"));
     const assetPath = path.join(staticRoot, "app.js");
+    const fixedMtime = new Date("2025-01-01T00:00:00.000Z");
     await fs.writeFile(assetPath, "console.log('v1')");
+    await fs.utimes(assetPath, fixedMtime, fixedMtime);
     await fs.writeFile(path.join(staticRoot, "index.html"), "<!doctype html><title>remote</title>");
     const port = await getFreePort();
     const server = await startRemoteServer({
@@ -80,6 +82,7 @@ describe("static asset HTTP caching", () => {
       expect(unchanged.headers.get("etag")).toBe(firstEtag);
 
       await fs.writeFile(assetPath, "console.log('v2')");
+      await fs.utimes(assetPath, fixedMtime, fixedMtime);
       const changed = await fetch(`${baseUrl}/app.js`, { headers: { "If-None-Match": firstEtag! } });
       expect(changed.status).toBe(200);
       expect(await changed.text()).toBe("console.log('v2')");
@@ -89,6 +92,11 @@ describe("static asset HTTP caching", () => {
       expect(html.status).toBe(200);
       expect(html.headers.get("cache-control")).toBe("no-store");
       expect(html.headers.get("etag")).toBeNull();
+
+      const deniedApi = await fetch(`${baseUrl}/api/state`, { headers: { "If-None-Match": firstEtag! } });
+      expect(deniedApi.status).toBe(401);
+      expect(deniedApi.headers.get("cache-control")).toBe("no-store");
+      expect(deniedApi.headers.get("etag")).toBeNull();
     } finally {
       await server.close();
       await fs.rm(staticRoot, { recursive: true, force: true });
