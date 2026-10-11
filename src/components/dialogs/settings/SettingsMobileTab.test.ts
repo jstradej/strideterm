@@ -543,9 +543,11 @@ describe("SettingsMobileTab", () => {
       listMobileDevices: vi.fn(async () => [{ ...SAMPLE_DEVICE, remoteUiPaused: true }]),
     });
 
-    expect(wrapper.text()).toContain("Remote UI paused");
-    const resume = wrapper.findAll("button").find((button) => button.text() === "Resume UI access");
+    expect(wrapper.text()).toContain("Device paused");
+    const resume = wrapper.findAll("button").find((button) => button.text().includes("Resume device"));
     expect(resume).toBeDefined();
+    const testPush = wrapper.findAll("button").find((button) => button.text().includes("Send test push"));
+    expect(testPush?.attributes("disabled")).toBeDefined();
     await resume!.trigger("click");
     await flushPromises();
 

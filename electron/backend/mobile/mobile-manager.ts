@@ -1045,6 +1045,7 @@ export class MobileManager extends EventEmitter {
   async sendTestPush(deviceId: string): Promise<{ ok: boolean; reason?: string }> {
     const device = this.deviceStore.getDevice(deviceId);
     if (!device || device.revoked) return { ok: false, reason: "device-not-found" };
+    if (device.remoteUiPaused) return { ok: false, reason: "device-paused" };
     const testEvent: ExternalNotificationEvent = {
       eventId: randomUUID(),
       profileId: device.profileAllowlist[0] || "default",
@@ -1284,6 +1285,9 @@ export class MobileManager extends EventEmitter {
     event: ExternalNotificationEvent,
     isTest = false,
   ): Promise<void> {
+    const currentDevice = this.deviceStore.getDevice(device.deviceId);
+    if (!currentDevice || !isDeviceUsable(currentDevice) || currentDevice.remoteUiPaused) return;
+    device = currentDevice;
     const pairId = this.ownDeviceId;
     // The recipient is a path segment now (v2/pairs/{pairId}/events/{deviceId}/{eventId}), so the
     // eventId no longer has to carry it: the `${eventId}:${deviceId}` suffix existed only to keep

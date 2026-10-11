@@ -9033,6 +9033,17 @@ describe("runtime integration", () => {
       const result = await fixture.runtime.sendMobileTestPush("no-such-device");
       expect(result).toEqual({ ok: false, reason: "device-not-found" });
     });
+
+    test("sendMobileTestPush is rejected while all remote access is paused", async () => {
+      const fixture = await createMobileFixture();
+      fixtures.push(fixture);
+      await fixture.runtime.setMobileEnabled(true);
+      await fixture.runtime.updateSettings({ remoteAccess: { paused: true } });
+
+      const result = await fixture.runtime.sendMobileTestPush("mobile-1");
+
+      expect(result).toEqual({ ok: false, reason: "temporarily-paused" });
+    });
   });
 
   test("completion-hook-capable agent session does NOT raise T3 silence alert", async () => {

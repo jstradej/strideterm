@@ -30,6 +30,8 @@ const KNOWN_REASONS = new Map<string, string>([
     "fingerprint-mismatch",
     "The pairing details could not be verified. Create a new pairing invitation and scan it again.",
   ],
+  ["device-paused", "This device is paused. Resume it before sending notifications."],
+  ["temporarily-paused", "Remote access is paused. Resume it before sending notifications."],
   ["malformed", "The pairing invitation is invalid. Create a new invitation and scan it again."],
   ["device-not-found", "This phone is no longer available. Refresh the phone list and try again."],
   ["device-revoked", "This phone has been revoked. Pair it again to restore access."],

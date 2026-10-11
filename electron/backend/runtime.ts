@@ -8835,6 +8835,7 @@ export async function createRuntime({
 
     /** Same outbox path a real push uses, visibly flagged as a test, counted against the same quota (plan §10.5). */
     async sendMobileTestPush(deviceId: string) {
+      if (getState().settings.remoteAccess.paused) return { ok: false, reason: "temporarily-paused" };
       return mobileManager.sendTestPush(deviceId);
     },
 

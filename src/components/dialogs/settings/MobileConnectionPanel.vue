@@ -595,7 +595,7 @@
                   :title="'Holds a live session since ' + formatTimestamp(connectedSince(device.deviceId) ?? 0)"
                   >Connected</span
                 >
-                <span v-if="device.remoteUiPaused" class="device-item__paused" role="status">Remote UI paused</span>
+                <span v-if="device.remoteUiPaused" class="device-item__paused" role="status">Device paused</span>
                 <span
                   v-if="connectedSince(device.deviceId) === null && !device.remoteUiPaused"
                   :title="'Last seen: ' + formatTimestamp(device.lastSeenAt)"
@@ -613,22 +613,32 @@
                 <button
                   v-if="device.state === 'active'"
                   type="button"
-                  class="button button--ghost"
+                  :class="[
+                    'button',
+                    'button--ghost',
+                    device.remoteUiPaused ? 'device-item__resume' : 'device-item__pause',
+                  ]"
                   :disabled="paused || remoteUiBusyId === device.deviceId"
                   :title="
                     device.remoteUiPaused
-                      ? 'Restore this phone’s remote UI access. Its pairing and other permissions are unchanged.'
-                      : 'Immediately disconnect this phone’s remote UI. Pairing and other permissions are unchanged.'
+                      ? 'Restore this phone’s remote UI access and push notifications.'
+                      : 'Immediately disconnect this phone’s remote UI and pause push notifications.'
                   "
                   @click="toggleRemoteUiPause(device)"
                 >
-                  {{
-                    remoteUiBusyId === device.deviceId
-                      ? "Updating…"
-                      : device.remoteUiPaused
-                        ? "Resume UI access"
-                        : "Pause UI access"
-                  }}
+                  <span v-if="remoteUiBusyId === device.deviceId">Updating…</span>
+                  <template v-else-if="device.remoteUiPaused">
+                    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                      <path d="M5 3.5v9l7-4.5z" fill="currentColor" />
+                    </svg>
+                    Resume device
+                  </template>
+                  <template v-else>
+                    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                      <path d="M4 3h3v10H4zm5 0h3v10H9z" fill="currentColor" />
+                    </svg>
+                    Pause device
+                  </template>
                 </button>
                 <button
                   type="button"
@@ -643,8 +653,12 @@
                   v-if="device.state === 'active'"
                   type="button"
                   class="button button--ghost"
-                  :disabled="paused || testPushBusyId === device.deviceId"
-                  title="Send a notification visibly labeled as a test — goes through the same delivery path and quota as a real push."
+                  :disabled="paused || device.remoteUiPaused || testPushBusyId === device.deviceId"
+                  :title="
+                    device.remoteUiPaused
+                      ? 'Resume this device to send test push notifications.'
+                      : 'Send a notification visibly labeled as a test — goes through the same delivery path and quota as a real push.'
+                  "
                   @click="sendTestPush(device)"
                 >
                   {{ testPushBusyId === device.deviceId ? "Sending…" : "Send test push" }}
@@ -2542,6 +2556,31 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.device-item__pause {
+  color: var(--status-paused, #f0c028);
+  border-color: var(--status-paused, #f0c028);
+}
+
+.device-item__pause:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-paused, #f0c028) 12%, transparent);
+}
+
+.device-item__resume {
+  color: var(--success-fg, var(--success));
+  border-color: var(--success, #4caf50);
+}
+
+.device-item__resume:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success, #4caf50) 12%, transparent);
+}
+
+.device-item__actions button svg {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  margin-right: 4px;
 }
 
 .device-item__test-result {

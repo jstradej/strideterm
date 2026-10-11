@@ -901,6 +901,23 @@ describe("MobileManager outbox: ExternalNotificationEvent -> encrypted per-devic
     manager.stop();
   });
 
+  test("a paused device receives no external notifications until resumed", async () => {
+    const { manager, transport, deviceStore, externalNotificationEvents } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore, { profileAllowlist: ["default"], minPriority: "low" });
+
+    await manager.setRemoteUiPaused(deviceId, true);
+    manager.start();
+    externalNotificationEvents.emit("event", makeExternalEvent());
+    await flush();
+    expect(transport.getSentEvents(OWN_DEVICE_ID)).toHaveLength(0);
+
+    await manager.setRemoteUiPaused(deviceId, false);
+    externalNotificationEvents.emit("event", makeExternalEvent({ eventId: "evt-after-resume" }));
+    await flush();
+    expect(transport.getSentEvents(OWN_DEVICE_ID)).toHaveLength(1);
+    manager.stop();
+  });
+
   test("an event's title/detail are only recoverable by decrypting with the target device's own session key", async () => {
     const { manager, transport, deviceStore, desktopKeyPair, externalNotificationEvents } = await createFixture();
     const { deviceId, keyPair } = await addMobileDevice(deviceStore);
@@ -1903,6 +1920,17 @@ describe("MobileManager.queryAuditLog", () => {
 });
 
 describe("MobileManager.sendTestPush", () => {
+  test("does not send test push while the device is paused", async () => {
+    const { manager, transport, deviceStore } = await createFixture();
+    const { deviceId } = await addMobileDevice(deviceStore);
+    await manager.setRemoteUiPaused(deviceId, true);
+
+    const result = await manager.sendTestPush(deviceId);
+
+    expect(result).toEqual({ ok: false, reason: "device-paused" });
+    expect(transport.getSentEvents(OWN_DEVICE_ID)).toHaveLength(0);
+  });
+
   test("sends a test push through the same outbox path, visibly flagged in the decrypted plaintext, and counts toward the quota", async () => {
     const { manager, transport, deviceStore, desktopKeyPair } = await createFixture();
     const { deviceId, keyPair } = await addMobileDevice(deviceStore);
