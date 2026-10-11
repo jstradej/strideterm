@@ -103,6 +103,18 @@ export const BADGE_ICONS = [
   "\u{1F31F}",
   "\u{1F4A5}",
   "\u{1F4A3}",
+  "\u{1F4BD}",
+  "\u{1F4BF}",
+  "\u{1F4C0}",
+  "\u{1F50B}",
+  "\u{1FAAB}",
+  "\u{1F9F0}",
+  "\u{1F9EE}",
+  "\u{1F5B3}",
+  "\u{1F39B}",
+  "\u{1F39A}",
+  "\u{1F4F6}",
+  "\u{1F6F0}",
 ];
 
 const LEADING_ICON_RE = /^([\p{Emoji}\p{S}])\s*/u;
