@@ -22,11 +22,13 @@ describe("App — the sidebar activate chain closes the mobile drawer", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+    document.documentElement.classList.remove("native-keyboard-viewport");
+    document.documentElement.style.removeProperty("--strideterm-keyboard-bottom");
   });
 
   /** Any `api.onX(cb)` subscription App.vue makes during setup is a no-op. */
-  function stubApi(): AnyApi {
-    const base: AnyApi = { isRemote: false };
+  function stubApi(isRemote = false): AnyApi {
+    const base: AnyApi = { isRemote };
     return new Proxy(base, {
       get(target, prop) {
         if (prop in target) return target[prop as keyof typeof target];
@@ -36,7 +38,7 @@ describe("App — the sidebar activate chain closes the mobile drawer", () => {
     });
   }
 
-  function mountApp() {
+  function mountApp(isRemote = false, attachTo?: Element) {
     const store = useAppStore();
     store.payload = {
       appState: {
@@ -52,8 +54,9 @@ describe("App — the sidebar activate chain closes the mobile drawer", () => {
       },
     } as AnyApi;
     return mount(App, {
+      attachTo,
       shallow: true,
-      global: { provide: { [apiKey as unknown as symbol]: stubApi() } },
+      global: { provide: { [apiKey as unknown as symbol]: stubApi(isRemote) } },
     });
   }
 
@@ -82,5 +85,60 @@ describe("App — the sidebar activate chain closes the mobile drawer", () => {
 
     expect(wrapper.findComponent(WorkspaceStage).exists()).toBe(true);
     expect(wrapper.findComponent(WorkspaceAttachments).exists()).toBe(false);
+  });
+
+  it("toggles the remote keyboard and tracks native IME inset changes in its label", async () => {
+    const wrapper = mountApp(true);
+    const keyboardEvents: boolean[] = [];
+    const onToggle = (event: Event) => keyboardEvents.push((event as CustomEvent<{ show: boolean }>).detail.show);
+    window.addEventListener("strideterm:toggle-system-keyboard", onToggle);
+    try {
+      const button = wrapper.get(".mobile-keyboard-btn");
+      expect(button.attributes("aria-label")).toBe("Show keyboard");
+      await button.trigger("click");
+      expect(keyboardEvents).toEqual([true]);
+
+      document.documentElement.classList.add("native-keyboard-viewport");
+      document.documentElement.style.setProperty("--strideterm-keyboard-bottom", "280px");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await wrapper.vm.$nextTick();
+      expect(button.attributes("aria-label")).toBe("Hide keyboard");
+      expect(button.attributes("title")).toContain("Hide the on-screen keyboard");
+
+      await button.trigger("click");
+      expect(keyboardEvents).toEqual([true, false]);
+      document.documentElement.style.setProperty("--strideterm-keyboard-bottom", "0px");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await wrapper.vm.$nextTick();
+      expect(button.attributes("aria-label")).toBe("Show keyboard");
+    } finally {
+      window.removeEventListener("strideterm:toggle-system-keyboard", onToggle);
+      wrapper.unmount();
+    }
+  });
+
+  it("keeps the remote keyboard toggle state when the toolbar button receives focus", async () => {
+    const wrapper = mountApp(true, document.body);
+    const keyboardEvents: boolean[] = [];
+    const onToggle = (event: Event) => keyboardEvents.push((event as CustomEvent<{ show: boolean }>).detail.show);
+    window.addEventListener("strideterm:toggle-system-keyboard", onToggle);
+    const focusedComposer = document.createElement("input");
+    focusedComposer.className = "mobile-input-bar__input";
+    document.body.append(focusedComposer);
+    try {
+      const button = wrapper.get<HTMLButtonElement>(".mobile-keyboard-btn");
+      focusedComposer.focus();
+      button.element.focus();
+      await wrapper.vm.$nextTick();
+      expect(button.attributes("aria-label")).toBe("Hide keyboard");
+
+      await button.trigger("click");
+      expect(keyboardEvents).toEqual([false]);
+      expect(button.attributes("aria-label")).toBe("Show keyboard");
+    } finally {
+      focusedComposer.remove();
+      window.removeEventListener("strideterm:toggle-system-keyboard", onToggle);
+      wrapper.unmount();
+    }
   });
 });

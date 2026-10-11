@@ -200,7 +200,7 @@
           </div>
           <div v-if="mobileTabOpen" class="mobile-tab-picker__backdrop" @click="mobileTabOpen = false"></div>
 
-          <!-- Mobile: explicit "show keyboard" button. The tap-to-focus path
+          <!-- Mobile: explicit keyboard show/hide control. The tap-to-focus path
                in the terminal touch handler can miss when the synthesized
                click is suppressed by preventDefault, leaving the user with a
                visible terminal but no way to type. This button is a
@@ -210,9 +210,9 @@
           <button
             type="button"
             class="mobile-keyboard-btn"
-            title="Open the on-screen keyboard and focus the active terminal — use when the keyboard doesn't appear after tapping the terminal."
-            aria-label="Show keyboard"
-            @click="showMobileKeyboard"
+            :title="mobileKeyboardButtonTitle"
+            :aria-label="mobileKeyboardButtonLabel"
+            @click="toggleMobileKeyboard"
           >
             ⌨
           </button>
@@ -363,6 +363,15 @@ const sidebarRef = ref<HTMLElement | null>(null);
 const sidebarOpen = ref(false);
 const mobileTabOpen = ref(false);
 const tabPickerAnchor = ref<DOMRect | null>(null);
+const mobileKeyboardVisible = ref(false);
+let mobileKeyboardObserver: MutationObserver | undefined;
+
+const mobileKeyboardButtonLabel = computed(() => (mobileKeyboardVisible.value ? "Hide keyboard" : "Show keyboard"));
+const mobileKeyboardButtonTitle = computed(() =>
+  mobileKeyboardVisible.value
+    ? "Hide the on-screen keyboard while keeping the terminal composer available."
+    : "Open the on-screen keyboard and focus the active terminal or mobile composer.",
+);
 
 const sidebarCollapseLabel = computed(() => (store.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"));
 
@@ -436,9 +445,35 @@ function closeSidebar(): void {
 // xterm helper textarea by DOM query and focuses it directly — that
 // always brings up the IME because the focus call happens inside a real
 // `click` event handler, which counts as a user gesture.
-function showMobileKeyboard(): void {
+function readMobileKeyboardVisible(): boolean {
+  const root = document.documentElement;
+  if (root.classList.contains("native-keyboard-viewport")) {
+    return (Number.parseFloat(root.style.getPropertyValue("--strideterm-keyboard-bottom")) || 0) > 0;
+  }
+  return document.activeElement?.matches(".mobile-input-bar__input, .xterm-helper-textarea") ?? false;
+}
+
+function updateMobileKeyboardVisible(): void {
+  mobileKeyboardVisible.value = readMobileKeyboardVisible();
+}
+
+function onMobileKeyboardFocusOut(event: FocusEvent): void {
+  if (event.relatedTarget instanceof Element && event.relatedTarget.matches(".mobile-keyboard-btn")) return;
+  updateMobileKeyboardVisible();
+}
+
+function onMobileKeyboardFocusIn(event: FocusEvent): void {
+  if (event.target instanceof Element && event.target.matches(".mobile-keyboard-btn")) return;
+  updateMobileKeyboardVisible();
+}
+
+function toggleMobileKeyboard(): void {
+  const show = !mobileKeyboardVisible.value;
   if (api?.isRemote) {
-    window.dispatchEvent(new Event("strideterm:focus-composer"));
+    window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show } }));
+    if (!document.documentElement.classList.contains("native-keyboard-viewport")) {
+      mobileKeyboardVisible.value = show;
+    }
     return;
   }
   // Only act when the active pane actually has a terminal in it. Falling
@@ -449,6 +484,11 @@ function showMobileKeyboard(): void {
   // (Files, Docker, Git, Azure, etc.) the button is a no-op.
   const active = document.querySelector<HTMLTextAreaElement>(".workspace-pane--active .xterm-helper-textarea");
   if (!active) return;
+  if (!show) {
+    active.blur();
+    mobileKeyboardVisible.value = false;
+    return;
+  }
   // scrollIntoView is harmless here and helps when the keyboard slides up
   // and would otherwise cover the cursor.
   try {
@@ -457,6 +497,7 @@ function showMobileKeyboard(): void {
     // Older WebViews — ignore.
   }
   active.focus({ preventScroll: false });
+  mobileKeyboardVisible.value = true;
 }
 
 function onEditWorkspace(workspaceId: string): void {
@@ -526,6 +567,11 @@ function onManualRefreshEvent(): void {
 }
 
 onMounted(() => {
+  updateMobileKeyboardVisible();
+  mobileKeyboardObserver = new MutationObserver(updateMobileKeyboardVisible);
+  mobileKeyboardObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
+  window.addEventListener("focusin", onMobileKeyboardFocusIn);
+  window.addEventListener("focusout", onMobileKeyboardFocusOut);
   const savedWidth = readSidebarWidth();
   if (savedWidth && frameRef.value) {
     frameRef.value.style.setProperty("--sidebar-width", `${savedWidth}px`);
@@ -587,6 +633,9 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  mobileKeyboardObserver?.disconnect();
+  window.removeEventListener("focusin", onMobileKeyboardFocusIn);
+  window.removeEventListener("focusout", onMobileKeyboardFocusOut);
   window.removeEventListener("open-tab-picker", onOpenTabPickerEvent);
   window.removeEventListener("strideterm:manual-refresh", onManualRefreshEvent);
   window.clearTimeout(refreshBannerTimer);

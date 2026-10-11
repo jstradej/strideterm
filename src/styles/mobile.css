@@ -32,6 +32,9 @@
 .mobile-input-bar {
   display: none;
 }
+.mobile-input-bar__keys {
+  touch-action: none;
+}
 
 .sidebar-backdrop {
   display: none;
@@ -615,6 +618,20 @@
   --native-session-rail-supported: 1;
   --native-session-rail-keyboard-toggle-supported: 1;
 }
+.native-session-rail .mobile-keyboard-btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
 .native-session-rail .mobile-input-bar--landscape.mobile-input-bar--collapsed {
   display: none;
 }
@@ -884,9 +901,6 @@ html.native-keyboard-viewport
   .terminal-host {
   transform: none;
 }
-.workspace-main:has(> .mobile-input-bar--landscape) .mobile-keyboard-btn {
-  display: none;
-}
 .workspace-main:has(> .mobile-input-bar--landscape) > [data-role="workspace-hero"] > :not(.workspace-remote-alert) {
   display: none;
 }
@@ -954,6 +968,37 @@ html.native-keyboard-viewport
 html.native-keyboard-viewport .remote-card--compact,
 html.native-keyboard-viewport .sidebar-footer {
   display: none;
+}
+.mobile-input-bar__key-help {
+  position: fixed;
+  z-index: 132;
+  right: 8px;
+  bottom: calc(var(--strideterm-keyboard-bottom, 0px) + 104px);
+  display: flex;
+  align-items: start;
+  gap: 12px;
+  max-width: min(360px, calc(100vw - 16px));
+  max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 120px);
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-elevated);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  line-height: 1.35;
+  pointer-events: auto;
+}
+.mobile-input-bar__key-help button {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 20px;
 }
 
 /* Keep the landscape quick-key rail beside the terminal body, above the editor. */
@@ -1097,6 +1142,49 @@ html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobi
     .terminal-host {
     transform: translateY(calc(-1 * min(var(--strideterm-keyboard-pan, 0px), max(0px, calc(100% - 32px)))));
   }
+}
+
+/* Keep rail shortcuts aligned with the 44px editor action. The editor stops
+   at the active pane's outer border, measured with the rail geometry. */
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__keys {
+  grid-template-columns: 44px;
+  padding-right: 6px;
+  padding-left: 6px;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__keys > .mobile-input-bar__key,
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__more {
+  flex: 0 0 44px;
+  width: 44px;
+  min-width: 44px;
+  touch-action: none;
+}
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__row {
+  right: 6px;
+  left: var(--mobile-editor-left, 0px);
+  width: auto;
+  gap: var(--mobile-editor-gap, 6px);
+}
+.mobile-input-bar--rail .mobile-input-bar__menu,
+.mobile-input-bar--rail .mobile-input-bar__menu-backdrop {
+  pointer-events: auto;
+}
+.mobile-input-bar.mobile-input-bar--landscape .mobile-input-bar__menu {
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+.mobile-input-bar__key,
+.mobile-input-bar__menu-item--key {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.mobile-input-bar__key-help--landscape {
+  right: calc(var(--mobile-rail-width, 56px) + 8px);
+  bottom: calc(var(--strideterm-keyboard-bottom, 0px) + 56px);
+  max-width: min(360px, calc(100vw - 72px));
+  max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 64px);
 }
 
 .mobile-input-bar.mobile-input-bar--landscape .mobile-input-bar__keys > .mobile-input-bar__key,

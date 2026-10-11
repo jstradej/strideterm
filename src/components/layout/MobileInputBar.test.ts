@@ -234,6 +234,72 @@ describe("MobileInputBar", () => {
     }
   });
 
+  it("shows quick-key help on touch long-press without sending, then preserves short taps", async () => {
+    vi.useFakeTimers();
+    const { wrapper, writeTerminal } = mountBar();
+    try {
+      const escape = wrapper.get(".mobile-input-bar__key");
+      const pointer = (type: string, clientX = 20, clientY = 30) => {
+        const event = new Event(type, { bubbles: true });
+        Object.defineProperties(event, {
+          pointerType: { value: "touch" },
+          pointerId: { value: 7 },
+          clientX: { value: clientX },
+          clientY: { value: clientY },
+        });
+        escape.element.dispatchEvent(event);
+      };
+      pointer("pointerdown");
+      await vi.advanceTimersByTimeAsync(501);
+      expect(document.body.querySelector('[role="tooltip"]')?.textContent).toContain("Send Escape");
+      expect(escape.attributes("aria-describedby")).toBe("mobile-input-bar-key-help");
+      pointer("pointerup");
+      await escape.trigger("click");
+      expect(writeTerminal).not.toHaveBeenCalled();
+
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Dismiss key help"]')?.click();
+      await nextTick();
+      expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+      await escape.trigger("click");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b", ORIGIN_WS);
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels touch help when a finger moves and still recovers the next tap", async () => {
+    vi.useFakeTimers();
+    const { wrapper, writeTerminal } = mountBar();
+    try {
+      const escape = wrapper.get(".mobile-input-bar__key");
+      const pointer = (type: string, clientX: number, clientY: number) => {
+        const event = new Event(type, { bubbles: true });
+        Object.defineProperties(event, {
+          pointerType: { value: "touch" },
+          pointerId: { value: 9 },
+          clientX: { value: clientX },
+          clientY: { value: clientY },
+        });
+        escape.element.dispatchEvent(event);
+      };
+      pointer("pointerdown", 20, 30);
+      pointer("pointermove", 38, 30);
+      await vi.advanceTimersByTimeAsync(501);
+      expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+      pointer("pointerup", 38, 30);
+      // A fresh touch clears a stale suppression even if the browser omitted
+      // the swipe's synthesized click.
+      pointer("pointerdown", 20, 30);
+      pointer("pointerup", 20, 30);
+      await escape.trigger("click");
+      expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "\x1b", ORIGIN_WS);
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it("opens the system input at a wide landscape viewport and preserves an explicit keyboard choice", async () => {
     const media = vi.spyOn(window, "matchMedia").mockImplementation(
       (query) =>
@@ -343,6 +409,40 @@ describe("MobileInputBar", () => {
       document.documentElement.classList.remove("native-session-rail");
       media.mockRestore();
       screenOrientation.restore();
+    }
+  });
+
+  it("expands a collapsed native portrait composer before showing the system keyboard", async () => {
+    window.localStorage.setItem(COLLAPSED_KEY, "1");
+    document.documentElement.classList.add("native-session-rail");
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query === "(any-pointer: coarse)" || query === "(orientation: portrait)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const screenOrientation = mockScreenOrientation("portrait-primary");
+    const { wrapper } = mountBar({ attachTo: document.body });
+    try {
+      await nextTick();
+      expect(wrapper.find(".mobile-input-bar__expand").exists()).toBe(true);
+
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+      await flushPromises();
+      const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input").element;
+      expect(wrapper.find(".mobile-input-bar__expand").exists()).toBe(false);
+      expect(document.activeElement).toBe(input);
+
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: false } }));
+      expect(document.activeElement).not.toBe(input);
+      expect(wrapper.find(".mobile-input-bar__input").exists()).toBe(true);
+    } finally {
+      wrapper.unmount();
+      document.documentElement.classList.remove("native-session-rail");
+      screenOrientation.restore();
+      media.mockRestore();
     }
   });
 

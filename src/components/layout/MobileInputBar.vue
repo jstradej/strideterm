@@ -44,8 +44,14 @@
           class="mobile-input-bar__key"
           :title="key.title"
           :aria-label="key.label"
+          :aria-describedby="helpKey?.label === key.label ? 'mobile-input-bar-key-help' : undefined"
           @mousedown.prevent
-          @click="sendKey(key)"
+          @pointerdown="startKeyHelp(key, $event)"
+          @pointermove="moveKeyHelp($event)"
+          @pointerup="endKeyHelp"
+          @pointercancel="cancelKeyHelp"
+          @contextmenu.prevent
+          @click="onKeyClick(key)"
         >
           {{ landscape && key.label === "⇧Tab" ? "⇤" : key.label }}
         </button>
@@ -94,78 +100,6 @@
           >
             ⋯
           </button>
-          <template v-if="menuOpen">
-            <div class="mobile-input-bar__menu-backdrop" @mousedown.prevent @click="menuOpen = false"></div>
-            <div class="mobile-input-bar__menu" @mousedown.prevent>
-              <button
-                v-if="landscape"
-                type="button"
-                class="mobile-input-bar__menu-item"
-                data-role="mobile-input-bar-keyboard-mode"
-                @click="toggleKeyboardMode"
-              >
-                {{ systemKeyboard ? "Use compact keyboard" : "Use system keyboard" }}
-              </button>
-              <button v-if="landscape" type="button" class="mobile-input-bar__menu-item" @click="collapse">
-                {{ nativeSessionRail ? "Hide keyboard" : "Hide input bar" }}
-              </button>
-              <button
-                type="button"
-                class="mobile-input-bar__menu-item"
-                role="menuitemcheckbox"
-                :aria-checked="hideAfterSend"
-                @click="toggleHideAfterSend"
-              >
-                {{ hideAfterSend ? "✓ " : "" }}Hide keyboard after sending
-              </button>
-              <button
-                type="button"
-                class="mobile-input-bar__menu-item"
-                title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎."
-                @click="insertSlash"
-              >
-                /&nbsp;&nbsp;Slash command
-              </button>
-              <button
-                v-for="cmd in slashCommands"
-                :key="cmd"
-                type="button"
-                class="mobile-input-bar__menu-item mobile-input-bar__menu-item--cmd"
-                :title="`Put ${cmd} in the field, ready to send with ⏎ (or add arguments first).`"
-                @click="setSlashCommand(cmd)"
-              >
-                {{ cmd }}
-              </button>
-              <div class="mobile-input-bar__menu-sep" role="separator"></div>
-              <button
-                type="button"
-                class="mobile-input-bar__menu-item"
-                title="Copy the text currently visible in the terminal to the clipboard — usually the agent's latest answer."
-                @click="copyScreen"
-              >
-                📄&nbsp;&nbsp;Copy screen
-              </button>
-              <button
-                type="button"
-                class="mobile-input-bar__menu-item"
-                data-role="mobile-input-bar-select-text"
-                title="Open a snapshot of the visible screen you can select by hand — long-press a word, drag the handles, then copy just that part. The terminal keeps running behind it."
-                @click="selectText"
-              >
-                ✂️&nbsp;&nbsp;Select text
-              </button>
-              <button
-                v-for="key in landscape ? landscapeOverflowKeys : menuKeys"
-                :key="key.label"
-                type="button"
-                class="mobile-input-bar__menu-item"
-                :title="key.title"
-                @click="sendMenuKey(key)"
-              >
-                {{ key.menuLabel || key.label }}
-              </button>
-            </div>
-          </template>
         </div>
         <button
           v-if="!landscape"
@@ -178,6 +112,99 @@
           {{ landscape ? "×" : "▾" }}
         </button>
       </div>
+      <template v-if="menuOpen">
+        <div class="mobile-input-bar__menu-backdrop" @mousedown.prevent @click="menuOpen = false"></div>
+        <div class="mobile-input-bar__menu" @mousedown.prevent>
+          <button
+            v-if="landscape"
+            type="button"
+            class="mobile-input-bar__menu-item"
+            data-role="mobile-input-bar-keyboard-mode"
+            @click="toggleKeyboardMode"
+          >
+            {{ systemKeyboard ? "Use compact keyboard" : "Use system keyboard" }}
+          </button>
+          <button v-if="landscape" type="button" class="mobile-input-bar__menu-item" @click="collapse">
+            {{ nativeSessionRail ? "Hide keyboard" : "Hide input bar" }}
+          </button>
+          <button
+            type="button"
+            class="mobile-input-bar__menu-item"
+            role="menuitemcheckbox"
+            :aria-checked="hideAfterSend"
+            @click="toggleHideAfterSend"
+          >
+            {{ hideAfterSend ? "✓ " : "" }}Hide keyboard after sending
+          </button>
+          <button
+            type="button"
+            class="mobile-input-bar__menu-item"
+            title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎."
+            @click="insertSlash"
+          >
+            /&nbsp;&nbsp;Slash command
+          </button>
+          <button
+            v-for="cmd in slashCommands"
+            :key="cmd"
+            type="button"
+            class="mobile-input-bar__menu-item mobile-input-bar__menu-item--cmd"
+            :title="`Put ${cmd} in the field, ready to send with ⏎ (or add arguments first).`"
+            @click="setSlashCommand(cmd)"
+          >
+            {{ cmd }}
+          </button>
+          <div class="mobile-input-bar__menu-sep" role="separator"></div>
+          <button
+            type="button"
+            class="mobile-input-bar__menu-item"
+            title="Copy the text currently visible in the terminal to the clipboard — usually the agent's latest answer."
+            @click="copyScreen"
+          >
+            📄&nbsp;&nbsp;Copy screen
+          </button>
+          <button
+            type="button"
+            class="mobile-input-bar__menu-item"
+            data-role="mobile-input-bar-select-text"
+            title="Open a snapshot of the visible screen you can select by hand — long-press a word, drag the handles, then copy just that part. The terminal keeps running behind it."
+            @click="selectText"
+          >
+            ✂️&nbsp;&nbsp;Select text
+          </button>
+          <button
+            v-for="key in landscape ? landscapeOverflowKeys : menuKeys"
+            :key="key.label"
+            type="button"
+            class="mobile-input-bar__menu-item mobile-input-bar__menu-item--key"
+            :title="key.title"
+            :aria-label="key.label"
+            :aria-describedby="helpKey?.label === key.label ? 'mobile-input-bar-key-help' : undefined"
+            @pointerdown="startKeyHelp(key, $event)"
+            @pointermove="moveKeyHelp($event)"
+            @pointerup="endKeyHelp"
+            @pointercancel="cancelKeyHelp"
+            @contextmenu.prevent
+            @click="onMenuKeyClick(key)"
+          >
+            {{ key.menuLabel || key.label }}
+          </button>
+        </div>
+      </template>
+      <Teleport to="body">
+        <div
+          v-if="helpKey"
+          id="mobile-input-bar-key-help"
+          class="mobile-input-bar__key-help"
+          :class="{ 'mobile-input-bar__key-help--landscape': landscape }"
+          role="tooltip"
+        >
+          <span
+            ><strong>{{ helpKey.menuLabel || helpKey.label }}</strong> — {{ helpKey.title }}</span
+          >
+          <button type="button" aria-label="Dismiss key help" @click="dismissKeyHelp">×</button>
+        </div>
+      </Teleport>
       <!-- Chromium maps autocomplete="off" on the input to Android NO_SUGGESTIONS.
            Keep prediction enabled, with form/vendor password-manager opt-outs and
            dropAutofilledValue() guarding unsolicited values. -->
@@ -277,7 +304,15 @@ const orientationPortrait = computed(() =>
 );
 const landscape = computed(() => (isMobile.value || nativeSessionRail.value) && !orientationPortrait.value);
 let keyboardFocusGeneration = 0;
-watch([landscape, nativeSessionRail, targetSessionId], () => keyboardFocusGeneration++, { flush: "sync" });
+watch(
+  [landscape, nativeSessionRail, targetSessionId],
+  () => {
+    keyboardFocusGeneration++;
+    cancelKeyHelp();
+    dismissKeyHelp();
+  },
+  { flush: "sync" },
+);
 
 function readDevicePortrait(): boolean | null {
   const orientationType = window.screen.orientation?.type;
@@ -429,6 +464,7 @@ async function toggleSystemKeyboard(event: Event) {
     return;
   }
   systemKeyboard.value = true;
+  if (!landscape.value && panelCollapsed.value) await expand();
   await nextTick();
   if (!requestIsCurrent()) return;
   inputRef.value?.blur();
@@ -442,6 +478,7 @@ function updateNativeSessionRail() {
 }
 let nativeSessionRailObserver: MutationObserver | undefined;
 onUnmounted(() => {
+  cancelKeyHelp();
   keyboardFocusGeneration++;
   window.screen.orientation?.removeEventListener("change", updateDeviceOrientation);
   window.removeEventListener("orientationchange", updateDeviceOrientation);
@@ -659,8 +696,9 @@ const menuKeys: AccessoryKey[] = [
 ];
 
 const menuOpen = ref(false);
+const helpKey = ref<AccessoryKey | null>(null);
 const barRef = ref<HTMLElement | null>(null);
-const railMetrics = ref({ width: 0, top: 0, height: 0 });
+const railMetrics = ref({ width: 0, top: 0, height: 0, editorLeft: 0, editorGap: 6 });
 const RAIL_CELL = 48;
 const RAIL_GAP = 4;
 const INLINE_KEY_WIDTH = 44;
@@ -707,30 +745,140 @@ const railStyle = computed(() => ({
   "--mobile-rail-height": `${railRows.value * RAIL_CELL - RAIL_GAP}px`,
   "--mobile-rail-rows": String(railRows.value),
   "--mobile-rail-width": `${RAIL_WIDTH}px`,
+  "--mobile-editor-left": `${railMetrics.value.editorLeft}px`,
+  "--mobile-editor-gap": `${railMetrics.value.editorGap}px`,
 }));
 
 function updateRailMetrics(): void {
   const bar = barRef.value;
   const workspace = bar?.parentElement;
+  const pane =
+    workspace?.querySelector<HTMLElement>(".workspace-pane--active:has(.workspace-pane__body--terminal)") ??
+    workspace?.querySelector<HTMLElement>(".workspace-pane:has(.workspace-pane__body--terminal)");
   const terminal =
     workspace?.querySelector<HTMLElement>(".workspace-pane--active .workspace-pane__body--terminal") ??
     workspace?.querySelector<HTMLElement>(".workspace-pane__body--terminal");
   if (!bar || !workspace || !terminal) {
-    railMetrics.value = { width: 0, top: 0, height: 0 };
+    railMetrics.value = { width: 0, top: 0, height: 0, editorLeft: 0, editorGap: 6 };
     return;
   }
   const workspaceRect = workspace.getBoundingClientRect();
   const terminalRect = terminal.getBoundingClientRect();
+  const paneRect = pane?.getBoundingClientRect() ?? terminalRect;
   const barRect = bar.getBoundingClientRect();
   const top = Math.max(0, terminalRect.top - barRect.top);
   const editorTop =
     barRect.bottom - (bar.querySelector(".mobile-input-bar__row")?.getBoundingClientRect().height ?? 48);
   const end = Math.min(terminalRect.bottom, editorTop - RAIL_GAP);
+  const railKeyLeft = workspaceRect.right - 6 - 44;
   railMetrics.value = {
     width: workspaceRect.width,
     top,
     height: Math.max(0, end - terminalRect.top),
+    editorLeft: Math.max(0, paneRect.left - workspaceRect.left),
+    editorGap: Math.max(6, railKeyLeft - paneRect.right),
   };
+}
+
+const KEY_HELP_HOLD_MS = 500;
+const KEY_HELP_MOVE_TOLERANCE = 10;
+let keyHelpTimer: ReturnType<typeof setTimeout> | undefined;
+let keyHelpPointerId: number | undefined;
+let keyHelpStart: { x: number; y: number } | undefined;
+let keyHelpKey: AccessoryKey | undefined;
+let suppressKeyClick = false;
+let suppressClickTimer: ReturnType<typeof setTimeout> | undefined;
+
+function clearKeyHelpHold(): void {
+  if (keyHelpTimer) clearTimeout(keyHelpTimer);
+  keyHelpTimer = undefined;
+  keyHelpPointerId = undefined;
+  keyHelpStart = undefined;
+  keyHelpKey = undefined;
+}
+
+function startKeyHelp(key: AccessoryKey, event: PointerEvent): void {
+  if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+  clearKeyHelpHold();
+  if (suppressClickTimer) clearTimeout(suppressClickTimer);
+  suppressClickTimer = undefined;
+  suppressKeyClick = false;
+  keyHelpPointerId = event.pointerId;
+  keyHelpStart = { x: event.clientX, y: event.clientY };
+  keyHelpKey = key;
+  keyHelpTimer = setTimeout(() => {
+    if (keyHelpPointerId === event.pointerId && keyHelpKey === key) {
+      helpKey.value = key;
+      suppressKeyClick = true;
+    }
+    keyHelpTimer = undefined;
+  }, KEY_HELP_HOLD_MS);
+}
+
+function moveKeyHelp(event: PointerEvent): void {
+  if (event.pointerId !== keyHelpPointerId || !keyHelpStart) return;
+  if (
+    Math.abs(event.clientX - keyHelpStart.x) > KEY_HELP_MOVE_TOLERANCE ||
+    Math.abs(event.clientY - keyHelpStart.y) > KEY_HELP_MOVE_TOLERANCE
+  ) {
+    if (keyHelpKey && helpKey.value?.label === keyHelpKey.label) dismissKeyHelp();
+    if (keyHelpTimer) clearTimeout(keyHelpTimer);
+    keyHelpTimer = undefined;
+    keyHelpStart = undefined;
+    keyHelpKey = undefined;
+    suppressKeyClick = true;
+  }
+}
+
+function armSuppressedClickExpiry(): void {
+  if (suppressClickTimer) clearTimeout(suppressClickTimer);
+  suppressClickTimer = setTimeout(() => {
+    suppressKeyClick = false;
+    suppressClickTimer = undefined;
+  }, 800);
+}
+
+function endKeyHelp(event: PointerEvent): void {
+  if (event.pointerId !== keyHelpPointerId) return;
+  clearKeyHelpHold();
+  if (suppressKeyClick) armSuppressedClickExpiry();
+}
+
+function cancelKeyHelp(event?: PointerEvent): void {
+  if (event && event.pointerId !== keyHelpPointerId) return;
+  const preserveSuppression = event?.type === "pointercancel" && suppressKeyClick;
+  if (event?.type === "pointercancel") dismissKeyHelp();
+  clearKeyHelpHold();
+  if (suppressClickTimer) clearTimeout(suppressClickTimer);
+  suppressClickTimer = undefined;
+  if (preserveSuppression) armSuppressedClickExpiry();
+  else suppressKeyClick = false;
+}
+
+function onKeyClick(key: AccessoryKey): void {
+  if (suppressKeyClick) {
+    suppressKeyClick = false;
+    if (suppressClickTimer) clearTimeout(suppressClickTimer);
+    suppressClickTimer = undefined;
+    return;
+  }
+  dismissKeyHelp();
+  sendKey(key);
+}
+
+function onMenuKeyClick(key: AccessoryKey): void {
+  if (suppressKeyClick) {
+    suppressKeyClick = false;
+    if (suppressClickTimer) clearTimeout(suppressClickTimer);
+    suppressClickTimer = undefined;
+    return;
+  }
+  dismissKeyHelp();
+  sendMenuKey(key);
+}
+
+function dismissKeyHelp(): void {
+  helpKey.value = null;
 }
 
 let railResizeObserver: ResizeObserver | undefined;
@@ -944,6 +1092,7 @@ function handleAttachmentComposeCancel(event: Event): void {
   if (detail?.requestId === attachmentPending.value?.requestId) attachmentPending.value = null;
 }
 function toggleMenu(): void {
+  dismissKeyHelp();
   menuOpen.value = !menuOpen.value;
   if (menuOpen.value && landscape.value && systemKeyboard.value) inputRef.value?.blur();
 }
