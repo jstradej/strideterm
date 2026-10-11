@@ -381,8 +381,6 @@ describe("MobileInputBar", () => {
       }) as DOMRect;
     const setRect = (element: HTMLElement, getRect: () => DOMRect) =>
       Object.defineProperty(element, "getBoundingClientRect", { configurable: true, value: getRect });
-    setRect(workspaceMain, () => rect(0, 390, 400));
-    setRect(terminal, () => rect(100, 350, 296));
     let inset = 0;
     setRect(workspaceMain, () => rect(0, 390 - inset, inset ? 320 : 400));
     setRect(terminal, () => rect(100, 350 - inset, inset ? 316 : 296));
@@ -401,19 +399,28 @@ describe("MobileInputBar", () => {
       expect(wrapper.get(".mobile-input-bar").classes()).toContain("mobile-input-bar--rail");
       expect(
         wrapper.findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)"),
-      ).toHaveLength(9);
+      ).toHaveLength(4);
 
       await wrapper.get(".mobile-input-bar__key--more").trigger("click");
       const visible = wrapper
         .findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)")
         .map((button) => button.attributes("aria-label"));
       const overflow = wrapper.findAll('.mobile-input-bar__menu-item[title^="Send"]').map((button) => button.text());
-      expect(visible).toEqual(["Esc", "Tab", "↑", "↓", "⇧Tab", "⌥↑", "←", "→", "Home"]);
-      expect(overflow).toHaveLength(7);
+      expect(visible).toEqual(["Esc", "Tab", "↑", "↓"]);
+      expect(overflow).toHaveLength(12);
       expect(overflow.join(" ")).toContain("Ctrl+C");
       expect(wrapper.findAll('.mobile-input-bar__menu-item[title^="Send Ctrl+C"]')).toHaveLength(1);
 
       await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      inset = 142;
+      document.documentElement.style.setProperty("--strideterm-keyboard-bottom", "142px");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await nextTick();
+      expect(wrapper.get(".mobile-input-bar").classes()).toContain("mobile-input-bar--rail");
+      expect(
+        wrapper.findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)"),
+      ).toHaveLength(1);
+
       inset = 180;
       document.documentElement.style.setProperty("--strideterm-keyboard-bottom", "180px");
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -428,6 +435,9 @@ describe("MobileInputBar", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       await nextTick();
       expect(wrapper.get(".mobile-input-bar").classes()).toContain("mobile-input-bar--rail");
+      expect(
+        wrapper.findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)"),
+      ).toHaveLength(4);
       wrapper.unmount();
       expect(observerDisconnect).toHaveBeenCalled();
     } finally {

@@ -656,7 +656,7 @@
   top: var(--mobile-rail-top, 0px);
   right: 0;
   display: grid;
-  grid-template-columns: repeat(var(--mobile-rail-columns, 1), minmax(44px, 1fr));
+  grid-template-columns: minmax(44px, 1fr);
   grid-auto-rows: 44px;
   align-content: start;
   gap: 4px;
@@ -674,6 +674,7 @@
 }
 .mobile-input-bar--rail .mobile-input-bar__more {
   min-width: 44px;
+  grid-row: var(--mobile-rail-rows);
 }
 .mobile-input-bar--rail .mobile-input-bar__row {
   position: absolute;
@@ -1124,10 +1125,6 @@ html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobi
 }
 :is(html, [data-controls-side])
   .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system.mobile-input-bar--rail) {
-  grid-template-columns: minmax(0, 1fr) 104px;
-}
-:is(html, [data-controls-side])
-  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system.mobile-input-bar--rail-single) {
   grid-template-columns: minmax(0, 1fr) 56px;
 }
 :is(html, [data-controls-side])

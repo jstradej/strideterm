@@ -21,7 +21,6 @@
       'mobile-input-bar--landscape': landscape,
       'mobile-input-bar--system': landscape && systemKeyboard && !panelCollapsed,
       'mobile-input-bar--rail': sideRailActive && !panelCollapsed,
-      'mobile-input-bar--rail-single': sideRailActive && railColumns === 1 && !panelCollapsed,
     }"
     :style="sideRailActive ? railStyle : undefined"
     data-role="mobile-input-bar"
@@ -670,6 +669,8 @@ const INLINE_MORE_WIDTH = 44;
 const INLINE_COMPOSER_MIN_WIDTH = 180;
 const INLINE_BAR_GAP = 4;
 const INLINE_HORIZONTAL_PADDING = 8;
+const RAIL_WIDTH = 56;
+const RAIL_MIN_VISIBLE_KEYS = 1;
 const LANDSCAPE_KEYS = [
   accessoryKeys[0],
   accessoryKeys[1],
@@ -678,14 +679,9 @@ const LANDSCAPE_KEYS = [
   accessoryKeys[2],
   ...menuKeys,
 ];
-const railColumns = computed(() => {
-  if (railMetrics.value.width >= 360) return 2;
-  if (railMetrics.value.width >= 300) return 1;
-  return 0;
-});
 const railRows = computed(() => Math.floor((railMetrics.value.height + RAIL_GAP) / RAIL_CELL));
-const railKeyCapacity = computed(() => Math.max(0, railRows.value * railColumns.value - 1));
-const railLayout = computed(() => railKeyCapacity.value >= (railColumns.value === 2 ? 3 : 2));
+const railKeyCapacity = computed(() => Math.max(0, railRows.value - 1));
+const railLayout = computed(() => railMetrics.value.width >= 300 && railKeyCapacity.value >= RAIL_MIN_VISIBLE_KEYS);
 const sideRailActive = computed(() => landscape.value && systemKeyboard.value && railLayout.value);
 const inlineKeyCapacity = computed(() =>
   Math.max(
@@ -709,8 +705,8 @@ const landscapeOverflowKeys = computed(() => LANDSCAPE_KEYS.filter((key) => !lan
 const railStyle = computed(() => ({
   "--mobile-rail-top": `${railMetrics.value.top}px`,
   "--mobile-rail-height": `${railRows.value * RAIL_CELL - RAIL_GAP}px`,
-  "--mobile-rail-columns": String(railColumns.value),
-  "--mobile-rail-width": `${railColumns.value * RAIL_CELL + RAIL_GAP * 2}px`,
+  "--mobile-rail-rows": String(railRows.value),
+  "--mobile-rail-width": `${RAIL_WIDTH}px`,
 }));
 
 function updateRailMetrics(): void {
