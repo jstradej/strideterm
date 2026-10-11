@@ -232,6 +232,8 @@
      minmax(0, 1fr) row absorbs the shrink). safe-area inset keeps the row
      clear of the iPhone home indicator. */
   .mobile-input-bar {
+    /* Anchors the ⋯ menu, a direct child of the bar, above the bar. */
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 4px;
