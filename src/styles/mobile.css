@@ -901,9 +901,6 @@ html.native-keyboard-viewport
   .terminal-host {
   transform: none;
 }
-.workspace-main:has(> .mobile-input-bar--landscape) > [data-role="workspace-hero"] > :not(.workspace-remote-alert) {
-  display: none;
-}
 .workspace-main:has(> .mobile-input-bar--landscape) > [data-role="workspace-hero"] {
   grid-row: 1;
 }

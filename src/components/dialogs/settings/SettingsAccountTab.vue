@@ -2399,6 +2399,9 @@ function focusAuthPanel(): void {
 .account-bootstrap code {
   overflow-wrap: anywhere;
 }
+.account-bootstrap .account-actions {
+  margin-top: 8px;
+}
 .account-confirm--danger {
   border-color: var(--danger, #c0392b);
 }

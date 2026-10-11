@@ -1111,6 +1111,58 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).not.toContain("key-proof-not-attested");
   });
 
+  test("Enter shows activation progress, prevents duplicate approval, and restores actions on failure", async () => {
+    let rejectApproval!: (error: Error) => void;
+    const approveMobileDevice = vi.fn(
+      () =>
+        new Promise<{ ok: boolean; reason?: string }>((_resolve, reject) => {
+          rejectApproval = reject;
+        }),
+    );
+    const { wrapper, transport } = await mountTab({ approveMobileDevice });
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+    const input = wrapper.get('[data-testid="pairing-sas-input"]');
+    await input.setValue("1234 5678");
+
+    await input.trigger("keyup.enter");
+    await input.trigger("keyup.enter");
+
+    expect(approveMobileDevice).toHaveBeenCalledTimes(1);
+    expect((input.element as HTMLInputElement).disabled).toBe(true);
+    const activate = wrapper.findAll("button").find((button) => button.text().includes("Activating"));
+    expect(activate).toBeDefined();
+    expect(activate!.attributes("disabled")).toBeDefined();
+    expect(activate!.find(".mobile-tab__spinner").exists()).toBe(true);
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text().includes("Mismatch"))
+        ?.attributes("disabled"),
+    ).toBeDefined();
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text().includes("Decide later"))
+        ?.attributes("disabled"),
+    ).toBeDefined();
+
+    rejectApproval(new Error("temporary failure"));
+    await flushPromises();
+
+    expect(wrapper.find(".pairing-sas__error").text()).toContain("Could not activate this phone");
+    expect((input.element as HTMLInputElement).disabled).toBe(false);
+    const retry = wrapper.findAll("button").find((button) => button.text() === "Activate");
+    expect(retry?.attributes("disabled")).toBeUndefined();
+    expect(wrapper.findAll("button").some((button) => button.find(".mobile-tab__spinner").exists())).toBe(false);
+  });
+
   test("a claim whose SAS could not be derived shows no code rather than a placeholder", async () => {
     // MobileManager reports `sasReady: false` when either public key is unusable. There is then no code
     // to type a phone's value against, and a prompt that could never be satisfied — or worse, could be

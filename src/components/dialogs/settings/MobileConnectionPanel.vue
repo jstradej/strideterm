@@ -349,7 +349,8 @@
                   title="Activate this device. Enabled once you have typed all 8 digits of the code the phone shows."
                   @click="submitTypedSas"
                 >
-                  Activate
+                  <span v-if="approvalBusy" class="mobile-tab__spinner" aria-hidden="true"></span>
+                  {{ approvalBusy ? "Activating…" : "Activate" }}
                 </button>
                 <button
                   type="button"
