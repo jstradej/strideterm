@@ -59,7 +59,8 @@ function mockPhysicalScreenSize(width: number, height: number) {
 function mountBar({
   isRemote = true,
   sessionId = SESSION_ID as string | null,
-}: { isRemote?: boolean; sessionId?: string | null } = {}): {
+  attachTo,
+}: { isRemote?: boolean; sessionId?: string | null; attachTo?: Element } = {}): {
   wrapper: VueWrapper;
   writeTerminal: Mock;
   submitTerminal: Mock;
@@ -70,6 +71,7 @@ function mountBar({
   const writeTerminal = vi.fn();
   const submitTerminal = vi.fn();
   const wrapper = mount(MobileInputBar, {
+    attachTo,
     global: {
       provide: { [apiKey]: { isRemote, writeTerminal, submitTerminal } as AnyApi },
     },
@@ -341,6 +343,101 @@ describe("MobileInputBar", () => {
       document.documentElement.classList.remove("native-session-rail");
       media.mockRestore();
       screenOrientation.restore();
+    }
+  });
+
+  it("shows fitting landscape keys in the side rail and moves every other key into the menu", async () => {
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query === "(any-pointer: coarse)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const screenOrientation = mockScreenOrientation("landscape-primary");
+    document.documentElement.classList.add("native-session-rail");
+    const workspace = document.createElement("div");
+    const terminal = document.createElement("div");
+    terminal.className = "workspace-pane__body--terminal";
+    document.body.appendChild(workspace);
+    const observerDisconnect = vi.spyOn(MutationObserver.prototype, "disconnect");
+    const { wrapper } = mountBar({ attachTo: workspace });
+    const componentRoot = wrapper.get(".mobile-input-bar").element;
+    const workspaceMain = componentRoot.parentElement!;
+    workspaceMain.className = "workspace-main";
+    workspaceMain.append(terminal);
+    const rect = (top: number, bottom: number, width: number): DOMRect =>
+      ({
+        x: 0,
+        y: top,
+        left: 0,
+        top,
+        right: width,
+        bottom,
+        width,
+        height: bottom - top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const setRect = (element: HTMLElement, getRect: () => DOMRect) =>
+      Object.defineProperty(element, "getBoundingClientRect", { configurable: true, value: getRect });
+    setRect(workspaceMain, () => rect(0, 390, 400));
+    setRect(terminal, () => rect(100, 350, 296));
+    let inset = 0;
+    setRect(workspaceMain, () => rect(0, 390 - inset, inset ? 320 : 400));
+    setRect(terminal, () => rect(100, 350 - inset, inset ? 316 : 296));
+    setRect(componentRoot, () =>
+      componentRoot.classList.contains("mobile-input-bar--rail")
+        ? rect(0, 390 - inset, inset ? 320 : 400)
+        : rect(342, 390, inset ? 320 : 400),
+    );
+    setRect(wrapper.get(".mobile-input-bar__row").element, () => rect(342, 390, 400));
+    try {
+      await flushPromises();
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+      await flushPromises();
+      window.dispatchEvent(new Event("resize"));
+      await nextTick();
+      expect(wrapper.get(".mobile-input-bar").classes()).toContain("mobile-input-bar--rail");
+      expect(
+        wrapper.findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)"),
+      ).toHaveLength(9);
+
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      const visible = wrapper
+        .findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)")
+        .map((button) => button.attributes("aria-label"));
+      const overflow = wrapper.findAll('.mobile-input-bar__menu-item[title^="Send"]').map((button) => button.text());
+      expect(visible).toEqual(["Esc", "Tab", "↑", "↓", "⇧Tab", "⌥↑", "←", "→", "Home"]);
+      expect(overflow).toHaveLength(7);
+      expect(overflow.join(" ")).toContain("Ctrl+C");
+      expect(wrapper.findAll('.mobile-input-bar__menu-item[title^="Send Ctrl+C"]')).toHaveLength(1);
+
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      inset = 180;
+      document.documentElement.style.setProperty("--strideterm-keyboard-bottom", "180px");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await nextTick();
+      expect(wrapper.get(".mobile-input-bar").classes()).not.toContain("mobile-input-bar--rail");
+      expect(
+        wrapper.findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)"),
+      ).toHaveLength(1);
+
+      inset = 0;
+      document.documentElement.style.removeProperty("--strideterm-keyboard-bottom");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await nextTick();
+      expect(wrapper.get(".mobile-input-bar").classes()).toContain("mobile-input-bar--rail");
+      wrapper.unmount();
+      expect(observerDisconnect).toHaveBeenCalled();
+    } finally {
+      wrapper.unmount();
+      observerDisconnect.mockRestore();
+      workspace.remove();
+      document.documentElement.style.removeProperty("--strideterm-keyboard-bottom");
+      document.documentElement.classList.remove("native-session-rail");
+      screenOrientation.restore();
+      media.mockRestore();
     }
   });
 

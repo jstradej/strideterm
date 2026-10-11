@@ -14,12 +14,16 @@
        terminal still works — the bar is additive, not a replacement. -->
   <div
     v-if="api?.isRemote && targetSessionId"
+    ref="barRef"
     class="mobile-input-bar"
     :class="{
       'mobile-input-bar--collapsed': panelCollapsed,
       'mobile-input-bar--landscape': landscape,
       'mobile-input-bar--system': landscape && systemKeyboard && !panelCollapsed,
+      'mobile-input-bar--rail': sideRailActive && !panelCollapsed,
+      'mobile-input-bar--rail-single': sideRailActive && railColumns === 1 && !panelCollapsed,
     }"
+    :style="sideRailActive ? railStyle : undefined"
     data-role="mobile-input-bar"
   >
     <button
@@ -35,7 +39,7 @@
       <CompactTerminalKeyboard v-if="compactKeyboard" @insert="insertCompact" @backspace="insertCompact('', true)" />
       <div class="mobile-input-bar__keys">
         <button
-          v-for="key in landscape ? landscapeQuickKeys : accessoryKeys"
+          v-for="key in landscape ? landscapeVisibleKeys : accessoryKeys"
           :key="key.label"
           type="button"
           class="mobile-input-bar__key"
@@ -152,7 +156,7 @@
                 ✂️&nbsp;&nbsp;Select text
               </button>
               <button
-                v-for="key in landscape && systemKeyboard ? [...accessoryKeys, ...menuKeys] : menuKeys"
+                v-for="key in landscape ? landscapeOverflowKeys : menuKeys"
                 :key="key.label"
                 type="button"
                 class="mobile-input-bar__menu-item"
@@ -315,6 +319,7 @@ function finishSending() {
   if (hideAfterSend.value) collapse();
 }
 const compactKeyboard = computed(() => landscape.value && !systemKeyboard.value);
+
 watch(landscape, () => {
   landscapeExpanded.value = false;
   systemKeyboard.value = true;
@@ -434,6 +439,7 @@ async function toggleSystemKeyboard(event: Event) {
 }
 function updateNativeSessionRail() {
   nativeSessionRail.value = document.documentElement.classList.contains("native-session-rail");
+  updateRailMetrics();
 }
 let nativeSessionRailObserver: MutationObserver | undefined;
 onUnmounted(() => {
@@ -445,11 +451,19 @@ onUnmounted(() => {
   window.removeEventListener("strideterm:toggle-system-keyboard", toggleSystemKeyboard);
   window.removeEventListener("strideterm:native-session-rail-change", updateNativeSessionRail);
   nativeSessionRailObserver?.disconnect();
+  railResizeObserver?.disconnect();
+  window.removeEventListener("resize", updateRailMetrics);
+  window.visualViewport?.removeEventListener("resize", updateRailMetrics);
+  window.visualViewport?.removeEventListener("scroll", updateRailMetrics);
   window.removeEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
 });
 onMounted(() => {
+  observeRailGeometry();
+  window.addEventListener("resize", updateRailMetrics);
+  window.visualViewport?.addEventListener("resize", updateRailMetrics);
+  window.visualViewport?.addEventListener("scroll", updateRailMetrics);
   window.screen.orientation?.addEventListener("change", updateDeviceOrientation);
   window.addEventListener("orientationchange", updateDeviceOrientation);
   updateNativeSessionRail();
@@ -458,7 +472,10 @@ onMounted(() => {
   window.addEventListener("strideterm:toggle-system-keyboard", toggleSystemKeyboard);
   window.addEventListener("strideterm:native-session-rail-change", updateNativeSessionRail);
   nativeSessionRailObserver = new MutationObserver(updateNativeSessionRail);
-  nativeSessionRailObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  nativeSessionRailObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class", "style"],
+  });
   window.addEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.addEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.addEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
@@ -560,8 +577,6 @@ const accessoryKeys: AccessoryKey[] = [
     title: "Send Arrow Down — next shell history entry, or move down in TUI menus.",
   },
 ];
-const landscapeQuickKeys = accessoryKeys.filter((key) => ["Esc", "Tab", "↑", "↓"].includes(key.label));
-
 // Secondary keys live in the ⋯ menu — the left/right arrows moved here to free
 // space on the top row, alongside less-frequent line-editing and control keys.
 const menuKeys: AccessoryKey[] = [
@@ -645,6 +660,105 @@ const menuKeys: AccessoryKey[] = [
 ];
 
 const menuOpen = ref(false);
+const barRef = ref<HTMLElement | null>(null);
+const railMetrics = ref({ width: 0, top: 0, height: 0 });
+const RAIL_CELL = 48;
+const RAIL_GAP = 4;
+const INLINE_KEY_WIDTH = 44;
+const INLINE_KEY_GAP = 3;
+const INLINE_MORE_WIDTH = 44;
+const INLINE_COMPOSER_MIN_WIDTH = 180;
+const INLINE_BAR_GAP = 4;
+const INLINE_HORIZONTAL_PADDING = 8;
+const LANDSCAPE_KEYS = [
+  accessoryKeys[0],
+  accessoryKeys[1],
+  accessoryKeys[3],
+  accessoryKeys[4],
+  accessoryKeys[2],
+  ...menuKeys,
+];
+const railColumns = computed(() => {
+  if (railMetrics.value.width >= 360) return 2;
+  if (railMetrics.value.width >= 300) return 1;
+  return 0;
+});
+const railRows = computed(() => Math.floor((railMetrics.value.height + RAIL_GAP) / RAIL_CELL));
+const railKeyCapacity = computed(() => Math.max(0, railRows.value * railColumns.value - 1));
+const railLayout = computed(() => railKeyCapacity.value >= (railColumns.value === 2 ? 3 : 2));
+const sideRailActive = computed(() => landscape.value && systemKeyboard.value && railLayout.value);
+const inlineKeyCapacity = computed(() =>
+  Math.max(
+    0,
+    Math.floor(
+      (railMetrics.value.width -
+        INLINE_COMPOSER_MIN_WIDTH -
+        INLINE_BAR_GAP -
+        INLINE_HORIZONTAL_PADDING -
+        INLINE_MORE_WIDTH) /
+        (INLINE_KEY_WIDTH + INLINE_KEY_GAP),
+    ),
+  ),
+);
+const landscapeVisibleKeys = computed(() =>
+  sideRailActive.value
+    ? LANDSCAPE_KEYS.slice(0, railKeyCapacity.value)
+    : LANDSCAPE_KEYS.slice(0, inlineKeyCapacity.value),
+);
+const landscapeOverflowKeys = computed(() => LANDSCAPE_KEYS.filter((key) => !landscapeVisibleKeys.value.includes(key)));
+const railStyle = computed(() => ({
+  "--mobile-rail-top": `${railMetrics.value.top}px`,
+  "--mobile-rail-height": `${railRows.value * RAIL_CELL - RAIL_GAP}px`,
+  "--mobile-rail-columns": String(railColumns.value),
+  "--mobile-rail-width": `${railColumns.value * RAIL_CELL + RAIL_GAP * 2}px`,
+}));
+
+function updateRailMetrics(): void {
+  const bar = barRef.value;
+  const workspace = bar?.parentElement;
+  const terminal =
+    workspace?.querySelector<HTMLElement>(".workspace-pane--active .workspace-pane__body--terminal") ??
+    workspace?.querySelector<HTMLElement>(".workspace-pane__body--terminal");
+  if (!bar || !workspace || !terminal) {
+    railMetrics.value = { width: 0, top: 0, height: 0 };
+    return;
+  }
+  const workspaceRect = workspace.getBoundingClientRect();
+  const terminalRect = terminal.getBoundingClientRect();
+  const barRect = bar.getBoundingClientRect();
+  const top = Math.max(0, terminalRect.top - barRect.top);
+  const editorTop =
+    barRect.bottom - (bar.querySelector(".mobile-input-bar__row")?.getBoundingClientRect().height ?? 48);
+  const end = Math.min(terminalRect.bottom, editorTop - RAIL_GAP);
+  railMetrics.value = {
+    width: workspaceRect.width,
+    top,
+    height: Math.max(0, end - terminalRect.top),
+  };
+}
+
+let railResizeObserver: ResizeObserver | undefined;
+function observeRailGeometry(): void {
+  railResizeObserver?.disconnect();
+  if (!barRef.value || typeof ResizeObserver === "undefined") {
+    updateRailMetrics();
+    return;
+  }
+  railResizeObserver = new ResizeObserver(updateRailMetrics);
+  railResizeObserver.observe(barRef.value);
+  const workspace = barRef.value.parentElement;
+  const terminal =
+    workspace?.querySelector<HTMLElement>(".workspace-pane--active .workspace-pane__body--terminal") ??
+    workspace?.querySelector<HTMLElement>(".workspace-pane__body--terminal");
+  if (workspace) railResizeObserver.observe(workspace);
+  if (terminal) railResizeObserver.observe(terminal);
+  updateRailMetrics();
+}
+
+watch([landscape, targetSessionId], async () => {
+  await nextTick();
+  observeRailGeometry();
+});
 
 type AttachmentComposeRequest = {
   requestId: string;

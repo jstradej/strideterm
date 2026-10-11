@@ -638,6 +638,56 @@
   z-index: 20;
   box-sizing: border-box;
 }
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail {
+  position: absolute;
+  inset: 0 0 var(--strideterm-keyboard-bottom, 0px);
+  display: block;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+.mobile-input-bar--rail .mobile-input-bar__keys {
+  position: absolute;
+  top: var(--mobile-rail-top, 0px);
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--mobile-rail-columns, 1), minmax(44px, 1fr));
+  grid-auto-rows: 44px;
+  align-content: start;
+  gap: 4px;
+  width: var(--mobile-rail-width, 52px);
+  height: var(--mobile-rail-height, auto);
+  padding: 0 4px;
+  box-sizing: border-box;
+  pointer-events: auto;
+}
+.mobile-input-bar--rail .mobile-input-bar__keys > .mobile-input-bar__key,
+.mobile-input-bar--rail .mobile-input-bar__more {
+  width: auto;
+  height: 44px;
+  min-height: 44px;
+}
+.mobile-input-bar--rail .mobile-input-bar__more {
+  min-width: 44px;
+}
+.mobile-input-bar--rail .mobile-input-bar__row {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  pointer-events: auto;
+}
+.mobile-input-bar--rail .mobile-input-bar__input,
+.mobile-input-bar--rail .mobile-input-bar__send {
+  min-height: 44px;
+  height: 44px;
+}
 .native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape {
   position: absolute;
   inset: auto 0 var(--strideterm-keyboard-bottom, 0px);
@@ -898,4 +948,208 @@ html.native-keyboard-viewport
   grid-area: auto;
   border-left: 0;
   border-right: 0;
+}
+
+html.native-keyboard-viewport .remote-card--compact,
+html.native-keyboard-viewport .sidebar-footer {
+  display: none;
+}
+
+/* Keep the landscape quick-key rail beside the terminal body, above the editor. */
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__keys {
+  display: grid;
+  flex: none;
+  gap: 4px;
+}
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__keys > .mobile-input-bar__key,
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__more {
+  flex: 0 0 auto;
+  width: auto;
+  height: 44px;
+  min-height: 44px;
+}
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__more {
+  min-width: 44px;
+}
+html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail {
+  inset: 0 0 var(--strideterm-keyboard-bottom, 0px);
+}
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__menu {
+  max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 64px);
+}
+
+/* Native tablet portrait also uses the mobile composer, outside the phone media query. */
+@media (min-width: 769px) and (min-height: 501px) {
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) {
+    position: relative;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    z-index: 20;
+    transform: translate3d(0, calc(-1 * var(--strideterm-keyboard-bottom, 0px)), 0);
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape):has(.mobile-input-bar__menu) {
+    top: calc(-1 * var(--strideterm-keyboard-bottom, 0px));
+    transform: none;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__keys {
+    display: flex;
+    gap: 4px;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__key {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__more {
+    flex: 0 0 44px;
+    min-width: 44px;
+    position: relative;
+    display: flex;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__expand {
+    min-height: 44px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__row {
+    display: flex;
+    gap: 6px;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__input,
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__send {
+    min-height: 44px;
+    height: 44px;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__send {
+    flex: 0 0 48px;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__menu {
+    position: fixed;
+    right: 8px;
+    bottom: calc(var(--strideterm-keyboard-bottom, 0px) + 52px);
+    z-index: 131;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: min(320px, calc(100vw - 16px));
+    max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 112px);
+    overflow-y: auto;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-elevated);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 130;
+    background: transparent;
+  }
+
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__menu-item {
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 12px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--text);
+    font-size: 14px;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  html.native-keyboard-viewport
+    .workspace-main:has(> .mobile-input-bar:not(.mobile-input-bar--landscape))
+    .workspace-pane__body--terminal {
+    clip-path: inset(0 0 min(var(--strideterm-keyboard-bottom, 0px), max(0px, calc(100% - 32px))) 0);
+  }
+
+  html.native-keyboard-viewport
+    .workspace-main:has(> .mobile-input-bar:not(.mobile-input-bar--landscape))
+    .terminal-host {
+    transform: translateY(calc(-1 * min(var(--strideterm-keyboard-pan, 0px), max(0px, calc(100% - 32px)))));
+  }
+}
+
+.mobile-input-bar.mobile-input-bar--landscape .mobile-input-bar__keys > .mobile-input-bar__key,
+.mobile-input-bar.mobile-input-bar--landscape .mobile-input-bar__more {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+}
+.mobile-input-bar.mobile-input-bar--landscape .mobile-input-bar__more {
+  min-width: 44px;
+}
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__input,
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__send {
+  min-height: 44px;
+  height: 44px;
+}
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__send {
+  flex-basis: 44px;
+}
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__menu {
+  max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 64px);
+}
+.mobile-input-bar.mobile-input-bar--landscape .mobile-input-bar__menu-item {
+  min-height: 44px;
+}
+:is(html, [data-controls-side])
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system.mobile-input-bar--rail) {
+  grid-template-columns: minmax(0, 1fr) 104px;
+}
+:is(html, [data-controls-side])
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system.mobile-input-bar--rail-single) {
+  grid-template-columns: minmax(0, 1fr) 56px;
+}
+:is(html, [data-controls-side])
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system.mobile-input-bar--rail)
+  > .terminal-toolbar,
+:is(html, [data-controls-side])
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system.mobile-input-bar--rail)
+  > [data-role="workspace-hero"] {
+  grid-column: 1 / -1;
+}
+:is(html, [data-controls-side])
+  .workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--system.mobile-input-bar--rail)
+  > :not(.mobile-input-bar):not(.terminal-toolbar):not([data-role="workspace-hero"]) {
+  grid-column: 1;
+}
+
+html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__menu {
+  max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 96px);
+}
+
+@media (min-width: 769px) and (min-height: 501px) {
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__menu {
+    max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 112px);
+  }
 }
