@@ -56,7 +56,7 @@
 
 | Platform | Format                                                                            |
 | -------- | --------------------------------------------------------------------------------- |
-| Windows  | NSIS installer (`.exe`) + portable                                                |
+| Windows  | NSIS installer (`.exe`) + portable; Store AppX when configured                    |
 | macOS    | DMG (`.dmg`) — `-mac-arm64` for Apple Silicon (M1/M2/M3/M4), `-mac-x64` for Intel |
 | Linux    | AppImage (`.AppImage`) + Debian package (`.deb`)                                  |
 
@@ -64,7 +64,13 @@ Nightly builds from the latest `master` are also published on the [Releases page
 
 > **macOS — pick the right architecture:** Apple Silicon Macs (M1, M2, M3, M4) need the `-mac-arm64.dmg`; Intel Macs need the `-mac-x64.dmg`. The arm64 binary runs natively on Apple Silicon; the x64 binary runs through Rosetta 2 translation, which adds noticeable latency to the WebGL terminal renderer (laggy scroll, sluggish redraws). If you're not sure which Mac you have: **Apple menu → About This Mac → "Chip"** says "Apple M…" for arm64 or "Intel" for x64. To verify a running install: open Activity Monitor, find `strIDEterm`, and check the **Kind** column — `Apple` means native, `Intel` means Rosetta.
 
-> **Code signing:** the Windows installer is code-signed. macOS DMGs and Linux artifacts are not currently signed/notarized — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine strIDEterm.app`), and Linux package managers may warn about the unsigned `.deb`.
+> **Code signing:** Windows Authenticode signing depends on release signing credentials. The Store AppX is built unsigned; Microsoft signs packages accepted through Store submission. macOS DMGs and Linux artifacts are not currently signed/notarized — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine strIDEterm.app`), and Linux package managers may warn about the unsigned `.deb`.
+
+The release workflow adds a Windows Store AppX artifact after the existing Windows build when all three repository variables `MS_STORE_IDENTITY_NAME`, `MS_STORE_PUBLISHER`, and `MS_STORE_PUBLISHER_DISPLAY_NAME` contain the exact identity shown in Partner Center. If all three are absent, the standard cross-platform release continues and the workflow reports that the Store package was skipped; a partial identity configuration fails the release. Confirm the product is configured for MSIX/AppX submission before setting these variables.
+
+For a local Store package, first run `npm run dist:win`, then set those three variables and run `npm run dist:store`. The package is written under `release/store-appx/`; this command reuses `release/win-unpacked` and does not rebuild the app.
+
+The dedicated [Store AppX workflow](.github/workflows/store-appx.yml) runs on `build/store-*` branches and can be manually dispatched after the workflow is present on the default branch. Branch runs build with a clearly marked temporary validation identity and upload only a validation artifact. Manual `store` mode requires the three repository variables and uploads an AppX as a GitHub Actions artifact; it never submits the package to Partner Center.
 
 ### Quick install
 

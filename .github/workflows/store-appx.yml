@@ -1,0 +1,77 @@
+name: Store AppX
+
+on:
+  push:
+    branches:
+      - "build/store-*"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build a validation-only package or use the configured Partner Center identity
+        required: true
+        type: choice
+        options:
+          - validation
+          - store
+        default: validation
+
+permissions:
+  contents: read
+
+jobs:
+  build-appx:
+    name: Build Windows AppX
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Drop cpu-features (NaN/V8 incompat with Electron 42)
+        run: node -e "require('node:fs').rmSync('node_modules/cpu-features',{recursive:true,force:true})"
+
+      - name: Build unpacked Windows application
+        run: npx electron-builder --win --dir --publish never
+
+      - name: Build validation-only AppX
+        if: github.event_name == 'push' || inputs.mode == 'validation'
+        run: npm run dist:store -- --prepackaged release/win-unpacked --output release/store-appx-validation
+        env:
+          MS_STORE_IDENTITY_NAME: strIDEterm.BuildValidation
+          MS_STORE_PUBLISHER: CN=strIDEterm Build Validation
+          MS_STORE_PUBLISHER_DISPLAY_NAME: strIDEterm Build Validation
+          MS_STORE_REQUIRE_IDENTITY: "true"
+          MS_STORE_BUILD_PURPOSE: validation
+
+      - name: Build AppX with Partner Center identity
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'store'
+        run: npm run dist:store -- --prepackaged release/win-unpacked --output release/store-appx
+        env:
+          MS_STORE_IDENTITY_NAME: ${{ vars.MS_STORE_IDENTITY_NAME }}
+          MS_STORE_PUBLISHER: ${{ vars.MS_STORE_PUBLISHER }}
+          MS_STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.MS_STORE_PUBLISHER_DISPLAY_NAME }}
+          MS_STORE_REQUIRE_IDENTITY: "true"
+          MS_STORE_BUILD_PURPOSE: store
+
+      - name: Upload validation-only AppX artifact
+        if: github.event_name == 'push' || inputs.mode == 'validation'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-appx-validation-${{ github.sha }}
+          path: release/store-appx-validation/*.appx
+          if-no-files-found: error
+
+      - name: Upload Store AppX artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'store'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-appx-${{ github.sha }}
+          path: release/store-appx/*.appx
+          if-no-files-found: error

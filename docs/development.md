@@ -208,10 +208,13 @@ npm run audit:package-age # Flag stale npm dependencies
 npm run build            # vue-tsc + Vite + tsc backend → dist/ + dist-electron/
 npm run dist             # Build + electron-builder (current platform)
 npm run dist:win         # Windows installer + portable
+npm run dist:store       # Store AppX from release/win-unpacked; requires all three MS_STORE_* variables
 npm run dist:mac         # macOS DMG (x64 + arm64)
 npm run dist:linux       # Linux AppImage + .deb
 npm run smoke            # Build + headless startup test
 ```
+
+`dist:store` packages the already built Windows payload without rebuilding the app. Set `MS_STORE_IDENTITY_NAME`, `MS_STORE_PUBLISHER`, and `MS_STORE_PUBLISHER_DISPLAY_NAME` to the exact Partner Center values. All absent means the Store build is skipped; partial configuration fails. The output is unsigned for Store submission.
 
 Single test file:
 
