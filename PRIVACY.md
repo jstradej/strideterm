@@ -1,26 +1,25 @@
 # strIDEterm — Privacy Policy
 
-_Last updated: 25 September 2026_
+_Last updated: 12 October 2026_
 
 This policy explains what personal data the **strIDEterm desktop app** (Windows, macOS and Linux,
 including the version distributed through the Microsoft Store) and its **remote web client** access,
 store and transmit, why, who receives it, and what control you have over it.
 
-The strIDEterm Mobile app and the hosted services it shares with the desktop app are also covered by
-the [strIDEterm Mobile Privacy Policy](https://strideterm.com/mobile/privacy/). Where this policy
-describes the hosted services (account, subscription, phone pairing, managed relay), the two policies
-say the same thing.
+The strIDEterm Mobile app has its own [Privacy Policy](https://strideterm.com/mobile/privacy/). Read it
+alongside this policy when using Mobile; it covers the mobile app and hosted-service details that
+apply to it.
 
 ## Summary
 
-- strIDEterm is a local developer tool. **Your terminals, files, workspaces, notes, settings and
-  credentials stay on your computer.**
-- The app contains **no analytics, no telemetry, no advertising and no automatic crash reporting.**
-- Without any configuration, the only connection the app makes on its own is an anonymous check for
-  a new version on GitHub, at most once a day.
-- Everything else that leaves your computer does so only because you turned on a feature: the
-  strIDEterm account and phone integration, the managed relay, a Telegram bot, a Cloudflare tunnel,
-  or connections to GitHub or Azure DevOps.
+- strIDEterm stores workspaces, settings, files and credentials on your computer by default. Optional
+  hosted features and integrations can transmit the specific data described below.
+- The desktop app does not send product-usage analytics or automatic crash reports. Hosted services
+  process account-usage counters and security events if you sign in. The app does not show ads.
+- The app checks GitHub for a new version at most once a day. GitHub receives the request's IP address
+  and app version.
+- Other transfers happen when you use hosted account and phone features, configure an integration,
+  or connect to hosts through Git, SSH, Docker, the built-in browser or a terminal command.
 - We do not sell your data or share it for advertising.
 
 ## Who we are
@@ -30,30 +29,34 @@ Czech Republic ("we", "us").
 
 Contact for all privacy matters: **support@strideterm.com**
 
-## Data stored only on your computer
+## Data stored locally by the desktop
 
 The app keeps its data in a folder in your user profile — `%USERPROFILE%\.strideterm` on Windows and
-`~/.strideterm` on macOS and Linux (or the folder you choose with `--data-dir`). We have no access to
-it. It contains:
+`~/.strideterm` on macOS and Linux (or the folder you choose with `--data-dir`). This folder is not
+automatically uploaded to us; optional features can transmit the data described below. It contains:
 
 - **Workspaces and settings**: workspace names, project folders, notes, layout, profiles, SSH host
   entries and their key fingerprints, paired phones (name, type, public key, when last seen), and
   Telegram chat identifiers.
 - **Credentials**: access tokens you enter (GitHub, Azure DevOps, Telegram bot), SSH keys, passwords
   and passphrases, and the app's own device keys and account sign-in token. They are stored in
-  `credentials.json`, encrypted with your operating system's secure storage (Windows DPAPI, macOS
-  Keychain, Linux Secret Service). If that storage is not available, the app warns you and — except
-  for SSH secrets — stores them only encoded, not encrypted.
-- **Logs**: technical logs of the app, rotated by size. Tokens, passwords, sign-in links and similar
-  secrets are removed before a line is written. When remote access is on, a separate log records each
-  remote request with its time, path, result and the IP address of the device that made it.
+  `credentials.json`. When available, your operating system's secure storage protects them (Windows
+  DPAPI, macOS Keychain, Linux Secret Service). If secure storage is unavailable, the app warns you
+  and some credentials may be stored as base64 text, which is not encryption. SSH credentials are
+  refused by default without secure storage, but can be explicitly allowed in configuration; Mobile
+  integration keys require secure storage.
+- **Logs**: technical logs of the app, rotated by size. The logger redacts recognized patterns for
+  common secrets, such as authorization tokens and credential fields. Redaction may not catch every
+  sensitive value. When remote access is on, a separate log records each remote request with its
+  time, path, result and the IP address of the device that made it.
 - **Activity records**: local databases of recent Git, GitHub, Azure DevOps, Telegram, phone and
-  AI-agent permission-approval activity, so you can review what happened. They are deleted
-  automatically after 30 days, and you can delete them earlier in the app.
+  AI-agent permission-approval activity, so you can review what happened. The app prunes records
+  older than 30 days at startup; you can delete them earlier in the app.
 - **Pull-request review data**: pull requests, comments and drafts you work on in the review panel,
   kept until you remove them.
 - **Files you transfer** from the remote or mobile client, saved in the project's `.strideterm`
-  folder. Unfinished transfers are removed after 24 hours.
+  folder. Unfinished transfers become eligible for cleanup after 24 hours; cleanup runs when a later
+  transfer starts.
 - **Browser tab data**: the built-in browser tab stores cookies and site data of the pages you open,
   like any browser.
 - **Terminal output** is held in memory while the app runs so that it can be shown again after a
@@ -63,7 +66,7 @@ it. It contains:
 Claude Code, Codex, Gemini CLI, GitHub Copilot CLI or OpenCode) in Settings, the app adds a hook entry
 to that agent's configuration file in your user profile, and keeps a small routing file in
 `~/.strideterm-hooks`. The agent's hook messages (for example the tool it wants to use and a short
-summary of the command) are sent only to the app on your own computer (`127.0.0.1`).
+summary of the command) are sent to the app on your own computer (`127.0.0.1`).
 
 **Plugins.** Plugins run with the same access as the app. Plugins bundled with strIDEterm make no
 network connections. If you install a third-party plugin, its data practices are the responsibility
@@ -74,8 +77,8 @@ of its author.
 ### Version check (always on)
 
 About 10 seconds after start, and at most once every 24 hours, the app asks GitHub
-(`api.github.com`) for the list of strIDEterm releases. The request contains no personal data or
-identifiers; GitHub sees your IP address and the app's version, as with any web request. The app
+(`api.github.com`) for the list of strIDEterm releases. The request does not include your account
+details; GitHub receives your IP address and the app's version, as with any web request. The app
 does not update itself — it only tells you that a new version exists.
 
 ### strIDEterm account and hosted services (only if you sign in)
@@ -84,8 +87,8 @@ The account, subscription, free trial, phone pairing, push notifications and the
 optional hosted services. They are off until you sign in.
 
 - **Sign-in**: you sign in with your **email address** and a one-time link we email to you. The
-  sign-in service (`auth.strideterm.com`) keeps your email address and the one-time code only for the
-  few minutes the sign-in takes; our provider's recovery copies may hold them for up to 30 days.
+  sign-in service (`auth.strideterm.com`) uses the email address and one-time code for the sign-in
+  flow, which expires within minutes. Provider recovery copies may retain data for up to 30 days.
 - **Account data**: email address, account and installation identifiers, the name of your computer
   (its hostname, used as the desktop's name in your device list), device public keys and
   fingerprints, when a device was registered and last online, and your subscription status, plan and
@@ -107,7 +110,8 @@ optional hosted services. They are off until you sign in.
   your web browser; the app never sees your card details. We give Paddle your email address so it can
   sell and manage your subscription.
 - **Free trial**: to prevent repeated trials we keep a pseudonymous record that an installation has
-  already used its trial. It does not contain your name or email address.
+  already used its trial, including after account deletion. It does not contain your name or email
+  address.
 - **Security**: we process usage counters and security events to protect the service and enforce
   fair-use limits.
 
@@ -116,7 +120,9 @@ optional hosted services. They are off until you sign in.
 In **Settings → Mobile → Account** you can send us a diagnostics report. The app shows you the report
 before it is sent, and you can save it to a file instead. It contains event codes, status, durations,
 shortened identifiers, the app version, your operating system and its version, and your optional
-note — no file paths, terminal output, tokens or email address. We keep it for 14 days.
+note. The collected diagnostic fields do not include file paths, terminal output, tokens or your
+email address. Review your note before sending. Reports have a 14-day retention period; removal is
+handled through service cleanup and the backup handling described below.
 
 ### Integrations you configure
 
@@ -179,17 +185,21 @@ Commission's Standard Contractual Clauses.
 
 ## How long we keep data
 
-- **On your computer**: until you delete it. Activity records are deleted after 30 days, unfinished
-  file transfers after 24 hours.
+- **On your computer**: until you delete it. The app prunes activity records older than 30 days at
+  startup. Unfinished file transfers older than 24 hours are cleaned up when a later transfer starts.
+  These records and files may remain longer while the app or relevant feature is inactive.
 - **Account data**: for as long as your account exists.
-- **Short-lived service data**: pairing invitations are deleted after 2 minutes, commands and their
-  results after 24 hours, undelivered notifications after 7 days, sign-in requests within minutes.
-- **Diagnostics reports**: 14 days.
+- **Short-lived service data**: pairing invitations expire after 2 minutes; commands and their
+  results have expiry windows of up to 24 hours; undelivered notifications expire after up to 7 days;
+  sign-in requests expire within minutes. Expired records are subject to service cleanup; physical
+  deletion may happen later.
+- **Diagnostics reports**: a 14-day retention period, with removal through service cleanup.
 - **Security records**: for as long as needed to protect the service and to establish or defend legal
   claims.
 - **Billing records**: for as long as needed to manage your subscription, handle refunds and disputes,
   and meet legal obligations.
-- **The free-trial record**: kept to prevent repeated trials, also after your account is deleted.
+- **The free-trial record**: retained after account deletion to prevent the same installation from
+  starting another trial; it does not contain your name or email address.
 - **Backups**, including our providers' recovery copies: kept for a limited period for disaster
   recovery. Deleted data can remain in backups until they expire.
 
@@ -198,8 +208,10 @@ Commission's Standard Contractual Clauses.
 - Connections to our services, GitHub, Telegram and Paddle use TLS.
 - Phone notifications, commands and managed-relay sessions are end-to-end encrypted (X25519 key
   agreement, AES-256-GCM) where both devices support it.
-- Stored credentials are encrypted with your operating system's secure storage.
-- Secrets are removed from logs.
+- Stored credentials use your operating system's secure storage when available. If it is unavailable,
+  see the credential-storage note above.
+- The logger redacts recognized patterns for common secrets; it may not identify every sensitive
+  value.
 - Remote access is off by default and protected by an access token.
 
 No system is completely secure. Keep the pairing QR code and the remote-access token private: anyone
@@ -210,11 +222,13 @@ who has them can try to connect. To report a security problem, see [SECURITY.md]
 - **Use the app without an account.** Hosted features stay off until you sign in.
 - **Turn features off** in Settings: the phone integration, the managed relay, remote access, the
   Cloudflare tunnel, Telegram, GitHub and Azure DevOps connections, and AI agent hooks. Turning a
-  feature off stops the data flows it causes.
-- **Unpair a phone** in Settings → Mobile. It loses access immediately and its push token is deleted.
-- **Delete your account** in **Settings → Mobile → Account → Delete account**, or write to
-  support@strideterm.com. Your subscription is cancelled and your account data is deleted, except for
-  the data described above as kept after deletion.
+  feature off stops future transfers initiated by that feature; data already sent remains subject to
+  the retention periods above.
+- **Unpair a phone** in Settings → Mobile to revoke its pairing and remove its registered push token.
+- **Request account deletion** in **Settings → Mobile → Account → Delete account**, or write to
+  support@strideterm.com. The hosted service processes the deletion request and may need additional
+  time to complete subscription cancellation with the payment provider. Data described above as
+  retained after account deletion is not removed with the account.
 - **Delete local data** by deleting the `.strideterm` folder in your user profile. Uninstalling the
   app, including through the Microsoft Store, does not remove this folder, so that your workspaces
   survive a reinstall. Hook entries added for AI agents stay in those agents' configuration files
@@ -244,6 +258,5 @@ significant effects on you.
 
 ## Changes to this policy
 
-We update this policy when the app's data practices change. The current version is always published
-in this file with its date. If we make significant changes, we will let you know in an appropriate
-way, for example in the app or in the release notes.
+Updates to this policy are published here with a revised date. We provide additional notices where
+required by applicable law.
