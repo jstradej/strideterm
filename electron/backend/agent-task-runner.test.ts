@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { describe, expect, test, vi, beforeEach } from "vitest";
 import {
   AgentTaskRunner,
@@ -58,13 +59,21 @@ function createMockDeps(workspaces: any[] = []): any {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const alerts: any[] = [];
   let broadcastCount = 0;
+  let currentWorkspaces = workspaces;
 
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     writeToSession: vi.fn((sessionId: any, data: any, signal?: AbortSignal) =>
       written.push({ sessionId, data, signal }),
     ),
-    getState: () => ({ workspaces, activeProfileId: "default" }),
+    getState: () => ({ workspaces: currentWorkspaces, activeProfileId: "default" }),
+    replaceStateSnapshot: () => {
+      currentWorkspaces = structuredClone(currentWorkspaces);
+      return currentWorkspaces;
+    },
+    get workspaces() {
+      return currentWorkspaces;
+    },
     broadcastState: vi.fn(() => broadcastCount++),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     raiseAlert: vi.fn((alert: any) => alerts.push(alert)),
@@ -1813,6 +1822,151 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
     await waitFor(() => ws.task.judgeNudged === true);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(deps.written.some((w: any) => w.sessionId === judgeSessionId)).toBe(true);
+  });
+
+  test("worker evaluation keeps judge phase and processes Stop after the task snapshot is cloned during injection", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-clone-judge-"));
+    let restoreReadFile: (() => void) | undefined;
+    try {
+      const runner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(runner, { cwd: tmp });
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, TODO_FILE),
+        "# TODO\n\n## To Do\n\n## In Progress\n\n## Blocked\n\n## Done\n",
+        "utf8",
+      );
+
+      const deps = createMockDeps([ws]);
+      const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+      const originalWrite = deps.writeToSession;
+      let cloned = false;
+      deps.writeToSession = vi.fn((sessionId: string, data: string, signal?: AbortSignal) => {
+        const result = originalWrite(sessionId, data, signal);
+        if (sessionId === judgeSessionId && data !== "/clear" && data !== "\r" && !cloned) {
+          cloned = true;
+          deps.replaceStateSnapshot();
+        }
+        return result;
+      });
+      runner.init(deps);
+      ws.task.state = "running";
+      ws.task.promptSent = true;
+      ws.task.currentRound = 1;
+
+      runner.onAgentIdle(`${ws.id}:${ws.task.workerPanelId}`, "hook:stop");
+      await waitFor(() => deps.workspaces[0].task.state === "judge-evaluating", { timeoutMs: 8000 });
+      expect(deps.workspaces[0].task.rounds.at(-1).action).toBe("judge-requested");
+      await fs.writeFile(
+        path.join(dir, VERDICT_FILE),
+        JSON.stringify({ verdict: "complete", reason: "Verified" }),
+        "utf8",
+      );
+      const originalReadFile = fs.readFile.bind(fs);
+      const readSpy = vi.spyOn(fs, "readFile");
+      let verdictReadCloned = false;
+      restoreReadFile = () => readSpy.mockRestore();
+      readSpy.mockImplementation((...args) =>
+        originalReadFile(...args).then((contents) => {
+          if (String(args[0]).endsWith(VERDICT_FILE)) {
+            verdictReadCloned = true;
+            deps.replaceStateSnapshot();
+          }
+          return contents;
+        }),
+      );
+      syncBuiltinESMExports();
+      runner.onAgentIdle(judgeSessionId, "hook:stop");
+      await waitFor(() => deps.workspaces[0].task.state === "completed");
+      restoreReadFile();
+      restoreReadFile = undefined;
+      syncBuiltinESMExports();
+
+      expect(cloned).toBe(true);
+      expect(verdictReadCloned).toBe(true);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(deps.alerts.some((alert: any) => alert.kind === "completed")).toBe(true);
+    } finally {
+      restoreReadFile?.();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("worker evaluation does not inject a judge prompt after pause while judge clear is pending", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-pause-judge-"));
+    try {
+      const runner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(runner, { cwd: tmp });
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, TODO_FILE),
+        "# TODO\n\n## To Do\n\n## In Progress\n\n## Blocked\n\n## Done\n",
+        "utf8",
+      );
+      const deps = createMockDeps([ws]);
+      const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+      const pendingWrites: Array<{ sessionId: string; data: string }> = [];
+      deps.writeToSession = vi.fn((sessionId: string, data: string) => {
+        pendingWrites.push({ sessionId, data });
+        if (sessionId === judgeSessionId && data === "/clear") {
+          deps.replaceStateSnapshot();
+          runner.pauseTask(ws.id);
+        }
+      });
+      runner.init(deps);
+      ws.task.state = "running";
+      ws.task.promptSent = true;
+      runner.onAgentIdle(`${ws.id}:${ws.task.workerPanelId}`, "hook:stop");
+      await waitFor(() => pendingWrites.some((w) => w.sessionId === judgeSessionId && w.data === "/clear"));
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+
+      expect(deps.workspaces[0].task.state).toBe("paused");
+      expect(pendingWrites.some((w) => w.sessionId === judgeSessionId && w.data !== "/clear")).toBe(false);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("worker evaluation does not continue into a reset task after an awaited judge clear", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-reset-judge-"));
+    try {
+      const runner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(runner, { cwd: tmp });
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, TODO_FILE),
+        "# TODO\n\n## To Do\n\n## In Progress\n\n## Blocked\n\n## Done\n",
+        "utf8",
+      );
+      const deps = createMockDeps([ws]);
+      const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+      const pendingWrites: Array<{ sessionId: string; data: string }> = [];
+      let resetPromise: Promise<boolean> | undefined;
+      deps.writeToSession = vi.fn((sessionId: string, data: string) => {
+        pendingWrites.push({ sessionId, data });
+        if (sessionId === judgeSessionId && data === "/clear") {
+          deps.replaceStateSnapshot();
+          runner.pauseTask(ws.id);
+          resetPromise = runner.resetTask(ws.id);
+        }
+      });
+      runner.init(deps);
+      ws.task.state = "running";
+      ws.task.promptSent = true;
+      runner.onAgentIdle(`${ws.id}:${ws.task.workerPanelId}`, "hook:stop");
+      await waitFor(() => !!resetPromise);
+      expect(await resetPromise).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+
+      expect(deps.workspaces[0].task.state).toBe("idle");
+      expect(deps.workspaces[0].task.rounds).toEqual([]);
+      expect(pendingWrites.some((w) => w.sessionId === judgeSessionId && w.data !== "/clear")).toBe(false);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 
   // Krok 9 — judge rate-limit handling.

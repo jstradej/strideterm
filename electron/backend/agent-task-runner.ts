@@ -271,6 +271,8 @@ export function sessionIdFor(workspace: TaskWorkspaceState, role: TaskBindingRol
 export class AgentTaskRunner {
   /** workspaceIds currently being evaluated (re-entrance guard) */
   #evaluating = new Set<string>();
+  /** Invalidates standard-task async continuations when the user pauses/resets. */
+  #standardTaskRunGeneration = new Map<string, number>();
   /** workspaceIds whose companion verdict is being handled right now — the
    *  attached-mode counterpart of #evaluating. #handleCompanionVerdict awaits
    *  a disk read and (on "continue") a work-lock recreate and a template write
@@ -844,6 +846,7 @@ export class AgentTaskRunner {
   stopTask(workspaceId: string): boolean {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
+    this.#invalidateStandardTaskRun(workspaceId);
     this.#cancelTaskInjections(workspace);
 
     // Krok 4 — record where we paused from so Continue resumes to the right
@@ -872,6 +875,8 @@ export class AgentTaskRunner {
     )
       return false;
 
+    this.#invalidateStandardTaskRun(workspaceId);
+
     this.#cancelTaskInjections(workspace);
 
     // Krok 4 — capture the pre-pause state for a correct Continue.
@@ -882,6 +887,38 @@ export class AgentTaskRunner {
     void this.#logTaskEvent(workspace, "task-paused");
     this.#broadcastState!();
     return true;
+  }
+
+  #invalidateStandardTaskRun(workspaceId: string): void {
+    this.#standardTaskRunGeneration.set(workspaceId, (this.#standardTaskRunGeneration.get(workspaceId) || 0) + 1);
+    this.#evaluating.delete(workspaceId);
+    this.#programmaticJudges.delete(workspaceId);
+  }
+
+  #beginStandardTaskRun(workspaceId: string): number {
+    this.#invalidateStandardTaskRun(workspaceId);
+    return this.#standardTaskRunGeneration.get(workspaceId)!;
+  }
+
+  #getCurrentStandardTask(
+    workspaceId: string,
+    taskId: string,
+    currentRound: number,
+    generation: number,
+    expectedStates: ReadonlySet<string>,
+  ): TaskWorkspaceState | null {
+    if ((this.#standardTaskRunGeneration.get(workspaceId) ?? 0) !== generation) return null;
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (
+      !workspace ||
+      workspace.task.mode === "attached" ||
+      workspace.task.taskId !== taskId ||
+      workspace.task.currentRound !== currentRound ||
+      !expectedStates.has(workspace.task.state)
+    ) {
+      return null;
+    }
+    return workspace;
   }
 
   /**
@@ -1146,6 +1183,8 @@ export class AgentTaskRunner {
       );
       return false;
     }
+
+    this.#invalidateStandardTaskRun(workspaceId);
 
     this.#setTaskState(task, "idle");
     task.currentRound = 0;
@@ -2346,10 +2385,11 @@ export class AgentTaskRunner {
   // Ensures task.useWorkerFile reflects what's on disk. Probes once per task
   // lifetime — once we know the format we cache it on the task object so
   // subsequent prompt builds in the same round trip skip the fs.access.
-  async #ensureFormatFlag(task: TaskState, workspace: TaskWorkspaceState): Promise<void> {
+  async #ensureFormatFlag(task: TaskState, workspace: TaskWorkspaceState): Promise<boolean> {
     if (task.useWorkerFile === undefined) {
       task.useWorkerFile = await taskHasWorkerFile(workspace.cwd, task.taskId);
     }
+    return task.useWorkerFile;
   }
 
   async #recreateWorkLock(workspace: TaskWorkspaceState, context: string): Promise<boolean> {
@@ -2717,6 +2757,7 @@ export class AgentTaskRunner {
       (task.state === "judge-evaluating" && isJudgeInput);
 
     if (shouldPause) {
+      this.#invalidateStandardTaskRun(workspaceId);
       task.pausedFromState = task.state;
       this.#setTaskState(task, "paused");
       this.#evaluating.delete(workspaceId);
@@ -2958,6 +2999,8 @@ export class AgentTaskRunner {
     // starts fresh, not accumulating retries from earlier rounds.
     this.#clearRateLimitCtx(workspaceId);
 
+    const generation = this.#beginStandardTaskRun(workspaceId);
+
     // Effect.acquireRelease ensures #evaluating is always cleared even on
     // unexpected errors — replaces the manual try/finally pattern.
     await runEffect(
@@ -2965,23 +3008,33 @@ export class AgentTaskRunner {
         Effect.acquireRelease(
           Effect.sync(() => {
             this.#evaluating.add(workspaceId);
-            return workspaceId;
+            return { workspaceId, generation };
           }),
-          (id) =>
+          ({ workspaceId: id, generation: runGeneration }) =>
             Effect.sync(() => {
-              this.#evaluating.delete(id);
-              this.#programmaticJudges.delete(id);
+              if (this.#standardTaskRunGeneration.get(id) === runGeneration) {
+                this.#evaluating.delete(id);
+                this.#programmaticJudges.delete(id);
+              }
             }),
-        ).pipe(Effect.flatMap(() => Effect.promise(() => this.#evaluateWorkerBody(workspace)))),
+        ).pipe(Effect.flatMap(() => Effect.promise(() => this.#evaluateWorkerBody(workspace, generation)))),
       ),
     ).catch((err: unknown) => {
       log.error("evaluateWorker failed", { workspaceId, err: (err as Error)?.message });
       // Krok 4 — capture the state we fell from (evaluating/judge-evaluating) so
       // a later Continue resumes to the right place.
-      task.pausedFromState = task.state;
-      this.#setTaskState(task, "paused");
+      const current = this.#getCurrentStandardTask(
+        workspaceId,
+        task.taskId,
+        task.currentRound,
+        generation,
+        new Set(["evaluating", "judge-evaluating"]),
+      );
+      if (!current) return;
+      current.task.pausedFromState = current.task.state;
+      this.#setTaskState(current.task, "paused");
       void this.#logTaskEvent(
-        workspace,
+        current,
         "evaluation-error",
         `Evaluation failed: ${(err as Error)?.message || "unknown"}`,
       );
@@ -2989,11 +3042,32 @@ export class AgentTaskRunner {
     });
   }
 
-  async #evaluateWorkerBody(workspace: TaskWorkspaceState): Promise<void> {
-    const task = workspace.task;
+  async #evaluateWorkerBody(initialWorkspace: TaskWorkspaceState, generation: number): Promise<void> {
+    let workspace = initialWorkspace;
+    let task = workspace.task;
     const workspaceId = workspace.id;
+    const taskId = task.taskId;
+    const runRound = task.currentRound;
+    const roundNumber = runRound || 1;
+    let round: TaskRound;
+    const refresh = (states: ReadonlySet<string>): boolean => {
+      const fresh = this.#getCurrentStandardTask(workspaceId, taskId, runRound, generation, states);
+      if (!fresh) return false;
+      const freshRound = (fresh.task.rounds as unknown as TaskRound[]).find(
+        (candidate) => candidate.round === roundNumber,
+      );
+      if (!freshRound) return false;
+      workspace = fresh;
+      task = fresh.task;
+      round = freshRound;
+      return true;
+    };
 
     const evalStart = Date.now();
+    const initial = this.#getCurrentStandardTask(workspaceId, taskId, runRound, generation, new Set([task.state]));
+    if (!initial) return;
+    workspace = initial;
+    task = initial.task;
     this.#setTaskState(task, "evaluating");
     this.#broadcastState!();
 
@@ -3001,7 +3075,7 @@ export class AgentTaskRunner {
     // startTask / onAgentIdle first inject / re-prompt / shower). Reuse it
     // so the chip's identity doesn't change between "currently working" and
     // "being evaluated" — only the action label updates.
-    const round = this.#ensureRunningRound(task);
+    round = this.#ensureRunningRound(task);
     round.action = "evaluating";
     round.checks = [];
     round.judgeVerdict = null;
@@ -3009,6 +3083,12 @@ export class AgentTaskRunner {
 
     // Built-in checks: WORK_LOCK + TODO.md sections (always run, cheap)
     const builtInChecks = await runBuiltInChecks(workspace.cwd, task.taskId, { execCommand, log });
+    if (!refresh(new Set(["evaluating"]))) return;
+    round = this.#ensureRunningRound(task);
+    round.action = "evaluating";
+    round.checks = [];
+    round.judgeVerdict = null;
+    round.judgeReason = "";
     round.checks.push(...(builtInChecks as CheckResult[]));
     this.#broadcastState!(); // Stream built-in results to UI
     for (const c of builtInChecks) {
@@ -3016,7 +3096,7 @@ export class AgentTaskRunner {
     }
 
     // Bail out if user paused/reset during built-in checks
-    if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
+    if (!refresh(new Set(["evaluating"]))) {
       log.info("evaluation interrupted after built-in checks", { workspaceId });
       return;
     }
@@ -3052,7 +3132,7 @@ export class AgentTaskRunner {
     );
 
     // Final interruption check before acting on results
-    if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
+    if (!refresh(new Set(["evaluating"]))) {
       log.info("evaluation interrupted before acting on results", { workspaceId });
       return;
     }
@@ -3078,6 +3158,7 @@ export class AgentTaskRunner {
         );
         this.#broadcastState!();
         const showerOk = await this.#performShower(workspace);
+        if (!refresh(new Set(["refreshing"]))) return;
         if (showerOk) {
           this.#setTaskState(task, "running");
           round.action = "running";
@@ -3086,21 +3167,24 @@ export class AgentTaskRunner {
         } else {
           log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
           void this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
-          await this.#ensureFormatFlag(task, workspace);
-          if (task.state === "paused") return;
+          const useWorkerFile = await this.#ensureFormatFlag(task, workspace);
+          if (!refresh(new Set(["refreshing"]))) return;
+          task.useWorkerFile ??= useWorkerFile;
           const prompt = buildRePrompt(task, round);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return;
+          if (!refresh(new Set(["refreshing"]))) return;
           this.#setTaskState(task, "running");
           round.action = "running";
         }
       } else {
-        await this.#ensureFormatFlag(task, workspace);
-        if (task.state === "paused") return;
+        const useWorkerFile = await this.#ensureFormatFlag(task, workspace);
+        if (!refresh(new Set(["evaluating"]))) return;
+        task.useWorkerFile ??= useWorkerFile;
         const prompt = buildRePrompt(task, round);
         const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
         if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return;
-        if (task.state === "paused") return;
+        if (!refresh(new Set(["evaluating"]))) return;
         this.#setTaskState(task, "running");
         round.action = "running";
         log.info("worker re-prompted", { workspaceId, round: task.currentRound });
@@ -3123,6 +3207,8 @@ export class AgentTaskRunner {
       // as a backstop, log the discarded verdict's reason so an hour of judge
       // work doesn't vanish silently (incident A step 6).
       const staleVerdict = await readVerdict(workspace.cwd, task.taskId, log);
+      if (!refresh(new Set(["evaluating"]))) return;
+      round.action = "judge-requested";
       if (staleVerdict.reason !== "Judge did not produce a verdict file.") {
         log.warn("evaluateWorkerBody: discarding unconsumed verdict before fresh judge run", {
           workspaceId,
@@ -3136,16 +3222,20 @@ export class AgentTaskRunner {
       }
       // Clear old verdict and nudge flag for fresh judge evaluation
       await clearVerdict(workspace.cwd, task.taskId);
+      if (!refresh(new Set(["evaluating"]))) return;
       task.judgeNudged = false;
 
       // Gather git context so the judge can see actual repo changes
       const gitContext = await getGitContext(workspace.cwd, { execCommand, log });
+      if (!refresh(new Set(["evaluating"]))) return;
       const gitContextMs = Date.now() - judgeSetupStart;
 
       const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
-      await this.#ensureFormatFlag(task, workspace);
+      const useWorkerFile = await this.#ensureFormatFlag(task, workspace);
+      if (!refresh(new Set(["evaluating"]))) return;
+      task.useWorkerFile ??= useWorkerFile;
       const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
-      if (task.state === "paused") return;
+      if (!refresh(new Set(["evaluating"]))) return;
       if (shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)) {
         this.#setTaskState(task, "judge-evaluating");
         this.#programmaticJudges.add(workspaceId);
@@ -3156,6 +3246,7 @@ export class AgentTaskRunner {
           `All checks passed. Running Copilot judge in programmatic mode on Windows (git: ${gitContextMs}ms)`,
         );
         const judgeResult = await this.#runProgrammaticCopilotJudge(workspace, judgePrompt);
+        if (!refresh(new Set(["judge-evaluating"]))) return;
         const totalJudgeMs = Date.now() - judgeSetupStart;
         const judgeSummaryTail = tailLines(judgeResult.stderr || judgeResult.stdout, MAX_OUTPUT_TAIL);
         if (judgeResult.exitCode !== 0) {
@@ -3174,20 +3265,17 @@ export class AgentTaskRunner {
             judgeResult.exitCode !== 0 && judgeSummaryTail ? ` — ${judgeSummaryTail}` : ""
           }`,
         );
-        if (this.#wasInterrupted(workspaceId, new Set(["judge-evaluating"]))) {
-          log.info("programmatic judge interrupted before verdict handling", { workspaceId });
-          return;
-        }
         task.judgeNudged = true;
         await this.#handleJudgeVerdict(workspace, "programmatic");
-        this.#programmaticJudges.delete(workspaceId);
         return;
       }
 
       // Clear judge context for independent evaluation, then inject prompt
       if (!(await this.#clearSessionContext(judgeSessionId, workspace))) return;
+      if (!refresh(new Set(["evaluating"]))) return;
       if (!(await this.#injectPrompt(judgeSessionId, judgePrompt, workspace))) return;
-      if (task.state === "paused") return;
+      if (!refresh(new Set(["evaluating"]))) return;
+      round.action = "judge-requested";
       const totalSetupMs = Date.now() - judgeSetupStart;
       this.#setTaskState(task, "judge-evaluating");
       log.info("judge evaluation requested", { workspaceId, round: task.currentRound, gitContextMs, totalSetupMs });
@@ -3208,6 +3296,9 @@ export class AgentTaskRunner {
   async #handleJudgeVerdict(workspace: TaskWorkspaceState, source = "manual"): Promise<void> {
     const task = workspace.task;
     const workspaceId = workspace.id;
+    const taskId = task.taskId;
+    const currentRound = task.currentRound;
+    const generation = this.#standardTaskRunGeneration.get(workspaceId) ?? 0;
     const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
     // Krok 2 — an idle_prompt Notification (Claude's 60s "waiting for input")
     // is NOT proof the turn ended: our prompt may just be sitting unsubmitted in
@@ -3216,6 +3307,14 @@ export class AgentTaskRunner {
 
     try {
       const verdict = await readVerdict(workspace.cwd, task.taskId, log);
+      let current = this.#getCurrentStandardTask(
+        workspaceId,
+        taskId,
+        currentRound,
+        generation,
+        new Set(["judge-evaluating"]),
+      );
+      if (!current) return;
       const verdictMissing = verdict.reason === "Judge did not produce a verdict file.";
 
       if (verdictMissing) {
@@ -3236,8 +3335,8 @@ export class AgentTaskRunner {
 
         // First real idle without a verdict: nudge once. LLMs sometimes print
         // the verdict as text instead of writing the file.
-        if (!task.judgeNudged) {
-          task.judgeNudged = true;
+        if (!current.task.judgeNudged) {
+          current.task.judgeNudged = true;
           const dir = taskDirRel(task.taskId);
           // Krok 10 — the example shows "continue", not "complete": a fresh judge
           // with no context tends to copy the example verbatim, and "bias toward
@@ -3246,7 +3345,23 @@ export class AgentTaskRunner {
           const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} as a JSON file now. Use the Write tool or cat/heredoc. Example:\n\n{"verdict": "continue", "reason": "Describe what still needs work."}\n\nWrite the file now.`;
           log.info("judge verdict file missing, sending nudge", { workspaceId });
           void this.#logTaskEvent(workspace, "judge-nudged", "Verdict file missing — reminded Judge to write it");
-          if (!(await this.#injectPrompt(judgeSessionId, nudge, workspace))) return;
+          current = this.#getCurrentStandardTask(
+            workspaceId,
+            taskId,
+            currentRound,
+            generation,
+            new Set(["judge-evaluating"]),
+          );
+          if (!current) return;
+          if (!(await this.#injectPrompt(judgeSessionId, nudge, current))) return;
+          current = this.#getCurrentStandardTask(
+            workspaceId,
+            taskId,
+            currentRound,
+            generation,
+            new Set(["judge-evaluating"]),
+          );
+          if (!current) return;
           this.#broadcastState!();
           return; // Wait for next judge idle — will re-enter #handleJudgeVerdict
         }
@@ -3260,16 +3375,16 @@ export class AgentTaskRunner {
         }
 
         // Nudged + a real Stop + not busy + still no verdict → give up.
-        log.warn("judge verdict file missing after nudge", { workspaceId, round: task.currentRound });
-        task.pausedFromState = "judge-evaluating"; // Krok 4 — resume reads the verdict
-        this.#setTaskState(task, "paused");
+        log.warn("judge verdict file missing after nudge", { workspaceId, round: current.task.currentRound });
+        current.task.pausedFromState = "judge-evaluating"; // Krok 4 — resume reads the verdict
+        this.#setTaskState(current.task, "paused");
         void this.#logTaskEvent(
-          workspace,
+          current,
           "judge-give-up",
           "Judge produced no verdict after nudge + Stop (not busy) — pausing.",
         ); // Krok 2/7
         this.#broadcastState!();
-        this.#raiseTaskAlert(workspace, "failed", "Judge did not produce a verdict file");
+        this.#raiseTaskAlert(current, "failed", "Judge did not produce a verdict file");
         return;
       }
 
@@ -3285,12 +3400,18 @@ export class AgentTaskRunner {
       // Bail out if user paused/reset while reading verdict.
       // Note: #wasInterrupted checks #evaluating set which is only used by
       // #evaluateWorker, so we check the task state directly here.
-      if (task.state !== "judge-evaluating") {
-        log.info("judge verdict handling interrupted (state changed)", { workspaceId, taskState: task.state });
-        return;
-      }
+      current = this.#getCurrentStandardTask(
+        workspaceId,
+        taskId,
+        currentRound,
+        generation,
+        new Set(["judge-evaluating"]),
+      );
+      if (!current) return;
+      const liveTask = current.task;
+      const liveWorkspace = current;
 
-      const rounds = task.rounds as unknown as TaskRound[];
+      const rounds = liveTask.rounds as unknown as TaskRound[];
       const lastRound = rounds[rounds.length - 1];
       if (lastRound) {
         lastRound.judgeVerdict = verdict.verdict;
@@ -3298,61 +3419,103 @@ export class AgentTaskRunner {
       }
 
       if (verdict.verdict === "complete") {
-        this.#setTaskState(task, "completed");
+        this.#setTaskState(liveTask, "completed");
         if (lastRound) lastRound.action = "completed";
         log.info("task completed by judge verdict", { workspaceId, rounds: task.currentRound });
-        void this.#logTaskEvent(workspace, "task-completed", verdict.reason || "Judge approved");
-        this.#raiseTaskAlert(workspace, "completed", verdict.reason ? `Judge: ${verdict.reason}` : undefined);
+        void this.#logTaskEvent(liveWorkspace, "task-completed", verdict.reason || "Judge approved");
+        this.#raiseTaskAlert(liveWorkspace, "completed", verdict.reason ? `Judge: ${verdict.reason}` : undefined);
         // Tell the Worker to stop — otherwise Claude Code continues autonomously
-        this.#notifyWorkerTaskEnded(workspace, "completed");
+        this.#notifyWorkerTaskEnded(liveWorkspace, "completed");
       } else {
         // "continue" — re-prompt worker with judge feedback
         // Preserve judge instructions for shower mode (survives session restart)
         if (verdict.reason) {
-          task.lastJudgeInstructions = verdict.reason;
+          liveTask.lastJudgeInstructions = verdict.reason;
           log.debug("stored judge instructions for potential shower", {
             workspaceId,
             reasonLength: verdict.reason.length,
           });
         }
 
-        if (task.currentRound >= task.maxRounds) {
-          this.#setTaskState(task, "failed");
+        if (liveTask.currentRound >= liveTask.maxRounds) {
+          this.#setTaskState(liveTask, "failed");
           if (lastRound) lastRound.action = "failed";
           log.info("task failed: max rounds after judge", { workspaceId, rounds: task.currentRound });
-          void this.#logTaskEvent(workspace, "task-failed", `Max rounds after judge. ${verdict.reason || ""}`);
-          this.#raiseTaskAlert(workspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
-          this.#notifyWorkerTaskEnded(workspace, "failed");
+          void this.#logTaskEvent(liveWorkspace, "task-failed", `Max rounds after judge. ${verdict.reason || ""}`);
+          this.#raiseTaskAlert(liveWorkspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
+          this.#notifyWorkerTaskEnded(liveWorkspace, "failed");
         } else {
           // Judge sent the worker back — this starts a new round. The worker
           // removed WORK_LOCK at the end of the previous round (that's how it
           // signaled completion), so put it back BEFORE injecting the prompt.
           // Otherwise the worker reads an absent lock and mistakes the next
           // round for "task already done", refusing to do further work.
-          await this.#recreateWorkLock(workspace, "judgeVerdict-continue");
+          await this.#recreateWorkLock(current, "judgeVerdict-continue");
+          current = this.#getCurrentStandardTask(
+            workspaceId,
+            taskId,
+            currentRound,
+            generation,
+            new Set(["judge-evaluating"]),
+          );
+          if (!current) return;
 
-          await this.#ensureFormatFlag(task, workspace);
+          const useWorkerFile = await this.#ensureFormatFlag(current.task, current);
+          current = this.#getCurrentStandardTask(
+            workspaceId,
+            taskId,
+            currentRound,
+            generation,
+            new Set(["judge-evaluating"]),
+          );
+          if (!current) return;
+          current.task.useWorkerFile ??= useWorkerFile;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const prompt = buildJudgeFeedbackPrompt(task, verdict as any);
+          const prompt = buildJudgeFeedbackPrompt(current.task, verdict as any);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           // Clear worker context before each new round so the agent starts fresh
           // without accumulating stale context from prior rounds.
           try {
-            if (!(await this.#clearSessionContext(workerSessionId, workspace))) return;
+            if (!(await this.#clearSessionContext(workerSessionId, current))) return;
+            current = this.#getCurrentStandardTask(
+              workspaceId,
+              taskId,
+              currentRound,
+              generation,
+              new Set(["judge-evaluating"]),
+            );
+            if (!current) return;
           } catch (err: unknown) {
             log.warn("worker context clear before new round failed (proceeding)", {
               workspaceId,
               err: (err as Error)?.message,
             });
           }
-          if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return;
-          this.#setTaskState(task, "running");
-          if (lastRound) lastRound.action = "re-prompted";
-          task.currentRound += 1;
-          this.#ensureRunningRound(task);
-          log.info("worker re-prompted with judge feedback", { workspaceId, round: task.currentRound });
+          current = this.#getCurrentStandardTask(
+            workspaceId,
+            taskId,
+            currentRound,
+            generation,
+            new Set(["judge-evaluating"]),
+          );
+          if (!current) return;
+          if (!(await this.#injectPrompt(workerSessionId, prompt, current))) return;
+          current = this.#getCurrentStandardTask(
+            workspaceId,
+            taskId,
+            currentRound,
+            generation,
+            new Set(["judge-evaluating"]),
+          );
+          if (!current) return;
+          this.#setTaskState(current.task, "running");
+          const currentLastRound = (current.task.rounds as unknown as TaskRound[]).at(-1);
+          if (currentLastRound) currentLastRound.action = "re-prompted";
+          current.task.currentRound += 1;
+          this.#ensureRunningRound(current.task);
+          log.info("worker re-prompted with judge feedback", { workspaceId, round: current.task.currentRound });
           void this.#logTaskEvent(
-            workspace,
+            current,
             "worker-reprompted",
             `Judge feedback: ${verdict.reason || "continue working"}`,
           );
@@ -3362,11 +3525,19 @@ export class AgentTaskRunner {
       this.#broadcastState!();
     } catch (err: unknown) {
       log.error("handleJudgeVerdict failed", { workspaceId, err: (err as Error)?.message });
+      const current = this.#getCurrentStandardTask(
+        workspaceId,
+        taskId,
+        currentRound,
+        generation,
+        new Set(["judge-evaluating"]),
+      );
+      if (!current) return;
       // Krok 4 — resume should re-read the verdict, so record judge-evaluating.
-      task.pausedFromState = "judge-evaluating";
-      this.#setTaskState(task, "paused");
+      current.task.pausedFromState = "judge-evaluating";
+      this.#setTaskState(current.task, "paused");
       void this.#logTaskEvent(
-        workspace,
+        current,
         "judge-error",
         `Verdict handling failed: ${(err as Error)?.message || "unknown"}`,
       );
@@ -5038,6 +5209,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
 
   dispose(): void {
     this.#disposed = true;
+    this.#standardTaskRunGeneration.clear();
     const sessionIds = new Set([
       ...this.#injectionAbortControllers.keys(),
       ...this.#injectionCancels.keys(),
