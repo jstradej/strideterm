@@ -377,6 +377,7 @@ export class AgentTaskRunner {
   /** Krok 9 — per-role rate-limit hold expiry for the judge (worker hold is
    * task.rateLimitedUntil). Keyed by workspaceId. */
   #judgeRateLimitedUntil = new Map<string, number>();
+  #judgeRateLimitResumeOwners = new Map<string, number>();
   /** Krok 9c — detection-independent backstop: timestamp of the last prompt
    * injected into the worker session, and the count of consecutive turns that
    * ended almost instantly after it. A run of these is the "Cogitated/Worked
@@ -962,6 +963,7 @@ export class AgentTaskRunner {
     this.#handlingCompanionVerdict.delete(workspaceId);
     this.#companionVerdictOwners.delete(workspaceId);
     this.#pendingCompanionVerdict.delete(workspaceId);
+    this.#judgeRateLimitResumeOwners.delete(workspaceId);
     this.#rejectingVerdict.delete(workspaceId);
     this.#rejectOwners.delete(workspaceId);
     log.debug("task lifecycle advanced", { workspaceId, lifecycleEpoch: epoch, reason });
@@ -2352,6 +2354,7 @@ export class AgentTaskRunner {
       round: true,
       evaluationAttempt: task.mode === "attached",
     });
+    this.#judgeRateLimitResumeOwners.set(workspaceId, operation.id);
     this.#judgeRateLimitedUntil.delete(workspaceId);
     void this.#logTaskEvent(workspace, "judge-rate-limit-resumed", "Judge rate-limit window expired.");
     this.#broadcastState!();
@@ -2381,6 +2384,11 @@ export class AgentTaskRunner {
         await this.#handleCompanionVerdict(fresh, "judge-rate-limit-resume");
         return;
       }
+      if (
+        this.#judgeRateLimitResumeOwners.get(workspaceId) !== operation.id ||
+        this.#judgeRateLimitedUntil.has(workspaceId)
+      )
+        return;
       await this.#injectPrompt(judgeSessionId, resumePrompt, fresh);
       return;
     }
@@ -2393,6 +2401,11 @@ export class AgentTaskRunner {
       await this.#handleJudgeVerdict(fresh, "judge-rate-limit-resume");
       return;
     }
+    if (
+      this.#judgeRateLimitResumeOwners.get(workspaceId) !== operation.id ||
+      this.#judgeRateLimitedUntil.has(workspaceId)
+    )
+      return;
     await this.#injectPrompt(judgeSessionId, resumePrompt, fresh);
   }
 
@@ -2865,8 +2878,17 @@ export class AgentTaskRunner {
   /**
    * Called when a session exits — if it's a worker session, pause the task.
    */
-  onSessionExit(sessionId: string): void {
+  onSessionExit(sessionId: string, intentional = false): void {
+    const managedRestart = (this.#managedSessionRestarts.get(sessionId) || 0) > 0;
+    if (intentional && managedRestart) {
+      this.#cancelSessionInjection(sessionId);
+      log.debug("managed task restart exited its previous session generation", { sessionId });
+      return;
+    }
     this.cancelPendingInput(sessionId);
+    if (managedRestart) {
+      this.#sessionIncarnations.set(sessionId, (this.#sessionIncarnations.get(sessionId) || 0) + 1);
+    }
     const binding = this.#resolveTaskBinding(sessionId);
     if (!binding) return;
     const { workspace, task, role } = binding;
@@ -5903,6 +5925,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
     this.#periodicWorkLockProbeTimers.clear();
     this.#rateLimitCtx.clear();
     this.#judgeRateLimitedUntil.clear();
+    this.#judgeRateLimitResumeOwners.clear();
     this.#dropoutCtx.clear();
     this.#standardTaskRunGeneration.clear();
     this.#taskLifecycleEpoch.clear();

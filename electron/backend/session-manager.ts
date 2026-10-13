@@ -73,6 +73,7 @@ interface PtySession extends SessionBase {
   cleanupFn?: () => Promise<void>;
   wslDistro?: string | null;
   sshHostId?: string;
+  intentionalExit?: boolean;
 }
 
 interface SshSession extends SessionBase {
@@ -80,13 +81,8 @@ interface SshSession extends SessionBase {
   processHandle: null;
   sshHostId: string | null;
   sshInline: boolean;
-  // Set by an intentional teardown (restart / disconnect / removal / prune /
-  // canceled-start discard) so this session's own onExit reports intentional.
-  // A per-object flag — NOT the shared suppressedExits counter used for PTYs:
-  // sshManager.stop() may fire no onExit at all for an already-dead session, so
-  // an armed counter would go stale and wrongly swallow a LATER unexpected exit
-  // under the same id. A fresh reconnect gets a new object that never inherits
-  // this flag, so it cannot leak across generations.
+  // Teardown intent belongs to this session object so it cannot leak into a
+  // later reconnect under the same id.
   intentionalExit?: boolean;
 }
 
@@ -487,7 +483,6 @@ export class SessionManager extends EventEmitter {
   >();
   sessions: Map<string, RuntimeSession>;
   startingSessions: Map<string, StartRecord>;
-  suppressedExits: Map<string, number>;
   /**
    * Session ids whose PTY spawn FAILED (surfaced as terminal:data + null, never
    * inserted into `sessions`). The runtime still records the failure message in
@@ -510,7 +505,6 @@ export class SessionManager extends EventEmitter {
     super();
     this.sessions = new Map();
     this.startingSessions = new Map();
-    this.suppressedExits = new Map();
     this.failedSpawns = new Set();
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
     this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
@@ -628,7 +622,7 @@ export class SessionManager extends EventEmitter {
       } else {
         const ptySession = live as PtySession;
         if (ptySession.processHandle) {
-          this.suppressNextExit(sessionId);
+          ptySession.intentionalExit = true;
           ptySession.processHandle.kill();
         }
       }
@@ -658,31 +652,12 @@ export class SessionManager extends EventEmitter {
     return this.sessions.has(sessionId);
   }
 
-  suppressNextExit(sessionId: string): void {
-    this.suppressedExits.set(sessionId, (this.suppressedExits.get(sessionId) || 0) + 1);
-  }
-
-  consumeSuppressedExit(sessionId: string): boolean {
-    const current = this.suppressedExits.get(sessionId) || 0;
-    if (current <= 0) {
-      return false;
-    }
-
-    if (current === 1) {
-      this.suppressedExits.delete(sessionId);
-    } else {
-      this.suppressedExits.set(sessionId, current - 1);
-    }
-
-    return true;
-  }
-
   /**
    * Stop a pure ssh2 session (`kind: "ssh"`) as an INTENTIONAL teardown so its
    * onExit reports `intentional: true` — the runtime then clears the replay
    * instead of appending a spurious `[process exited]` line and possibly
    * raising an unexpected-exit alert. Centralizes the marking the PTY path gets
-   * from suppressNextExit(): the flag lives on the session object, so it can't
+   * from PTY teardown: the flag lives on the session object, so it can't
    * go stale if stop() fires no onExit, and never bleeds into a later reconnect
    * (which is a fresh object). Returns the stop() promise for callers that await
    * teardown (restart, workspace removal).
@@ -957,14 +932,18 @@ export class SessionManager extends EventEmitter {
     };
 
     processHandle.onData((data) => {
+      const current = this.sessions.get(session.id);
+      if (current && current !== session) return;
       this.emit("terminal:data", { sessionId: session.id, data });
     });
 
     processHandle.onExit(({ exitCode }) => {
-      if (this.sessions.get(session.id) === session) this.cancelTerminalWrites(session.id);
+      const current = this.sessions.get(session.id);
       session.status = "exited";
       session.processHandle = null;
-      const intentional = this.consumeSuppressedExit(session.id);
+      const intentional = session.intentionalExit === true;
+      if (current && current !== session) return;
+      if (current === session) this.cancelTerminalWrites(session.id);
       log.debug("session exited", { sessionId: session.id, exitCode, intentional });
       this.emit("terminal:exit", {
         sessionId: session.id,
@@ -1063,14 +1042,23 @@ export class SessionManager extends EventEmitter {
     };
 
     processHandle.onData((data) => {
+      const current = this.sessions.get(session.id);
+      if (current && current !== session) return;
       this.emit("terminal:data", { sessionId: session.id, data });
     });
 
     processHandle.onExit(({ exitCode }) => {
-      if (this.sessions.get(session.id) === session) this.cancelTerminalWrites(session.id);
+      const current = this.sessions.get(session.id);
       session.status = "exited";
       session.processHandle = null;
-      const intentional = this.consumeSuppressedExit(session.id);
+      const intentional = session.intentionalExit === true;
+      if (meta.cleanupFn) {
+        meta
+          .cleanupFn()
+          .catch((err: unknown) => log.warn("ssh key cleanup error", { err: (err as Error)?.message || String(err) }));
+      }
+      if (current && current !== session) return;
+      if (current === session) this.cancelTerminalWrites(session.id);
       log.debug("session exited", { sessionId: session.id, exitCode, intentional });
       this.emit("terminal:exit", {
         sessionId: session.id,
@@ -1084,11 +1072,6 @@ export class SessionManager extends EventEmitter {
           status: "disconnected",
           connected: false,
         });
-      }
-      if (meta.cleanupFn) {
-        meta
-          .cleanupFn()
-          .catch((err: unknown) => log.warn("ssh key cleanup error", { err: (err as Error)?.message || String(err) }));
       }
     });
 
@@ -1373,9 +1356,7 @@ export class SessionManager extends EventEmitter {
         if (this.sessions.get(sessionId) === session) this.cancelTerminalWrites(sessionId);
         session.status = "exited";
         // Pure ssh2 sessions have no PTY handle and are torn down via
-        // sshManager.stop(), so they never arm the PTY suppressNextExit counter.
-        // The teardown marks this session object directly instead (see
-        // stopSshIntentional); anything else is a genuine unexpected exit.
+        // sshManager.stop(); anything else is a genuine unexpected exit.
         const intentional = session.intentionalExit === true;
         this.emit("terminal:exit", { sessionId, exitCode, intentional });
       },
@@ -1549,7 +1530,7 @@ export class SessionManager extends EventEmitter {
       const ptySession = current as PtySession;
       if (ptySession.processHandle) {
         const processHandle = ptySession.processHandle;
-        this.suppressNextExit(sessionId);
+        ptySession.intentionalExit = true;
         // IPty does not extend EventEmitter so we can't use `once()`.
         // Register an onExit listener and wait; fall back on a 5 s timeout.
         await new Promise<void>((resolve) => {
@@ -1623,7 +1604,7 @@ export class SessionManager extends EventEmitter {
     } else {
       const ptySession = session as PtySession;
       if (ptySession.processHandle) {
-        this.suppressNextExit(sessionId);
+        ptySession.intentionalExit = true;
         ptySession.processHandle.kill();
       }
     }
@@ -1643,7 +1624,7 @@ export class SessionManager extends EventEmitter {
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {
-          this.suppressNextExit(sessionId);
+          ptySession.intentionalExit = true;
           const handle = ptySession.processHandle;
           exitPromises.push(
             new Promise<void>((resolve) => {
@@ -1708,7 +1689,7 @@ export class SessionManager extends EventEmitter {
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {
-          this.suppressNextExit(sessionId);
+          ptySession.intentionalExit = true;
           ptySession.processHandle.kill();
         }
       }
@@ -1750,7 +1731,7 @@ export class SessionManager extends EventEmitter {
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {
-          this.suppressNextExit(sessionId);
+          ptySession.intentionalExit = true;
           ptySession.processHandle.kill();
         }
       }
@@ -1765,6 +1746,5 @@ export class SessionManager extends EventEmitter {
       this.sshManager?.stop(sessionId).catch(() => {});
     }
     this.sessions.clear();
-    this.suppressedExits.clear();
   }
 }

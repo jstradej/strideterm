@@ -73,6 +73,210 @@ afterEach(async () => {
 });
 
 describe("task runner callback freshness", () => {
+  test("a newer expired judge resume owns the only fallback injection", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const { cwd, runner, workspace, deps } = await makeRunner();
+    const dir = taskDir(cwd, workspace.task.taskId);
+    await fs.mkdir(dir, { recursive: true });
+    workspace.task.state = "judge-evaluating";
+    workspace.task.currentRound = 1;
+    workspace.task.rounds = [
+      { round: 1, judgeVerdict: null, checks: [], action: "judge-requested" },
+    ] as unknown as typeof workspace.task.rounds;
+
+    const verdictPath = path.join(dir, VERDICT_FILE);
+    const firstEntered = deferred<void>();
+    const secondEntered = deferred<void>();
+    const firstGate = deferred<string>();
+    const secondGate = deferred<string>();
+    const originalReadFile = fs.readFile.bind(fs);
+    let verdictReadCount = 0;
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation(((filePath: nodeFs.PathLike, ...args: unknown[]) => {
+      if (String(filePath) === verdictPath) {
+        verdictReadCount += 1;
+        if (verdictReadCount === 1) {
+          firstEntered.resolve();
+          return firstGate.promise;
+        }
+        secondEntered.resolve();
+        return secondGate.promise;
+      }
+      return (originalReadFile as AnyApi)(filePath, ...args);
+    }) as AnyApi);
+    syncBuiltinESMExports();
+
+    const previousMargin = AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS;
+    AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = 1;
+    try {
+      const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
+      const expiredLimit = () =>
+        runner.onAgentRateLimited(
+          sessionId,
+          { resetAt: new Date(Date.now() - 1000), needsConfirm: false, providerHint: "claude" },
+          "expired-window",
+        );
+      expiredLimit();
+      await vi.advanceTimersByTimeAsync(1);
+      await firstEntered.promise;
+
+      expiredLimit();
+      await vi.advanceTimersByTimeAsync(1);
+      await secondEntered.promise;
+      firstGate.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+      secondGate.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const fallbackPrompts = deps.written.filter(
+        (entry) => entry.sessionId === sessionId && entry.data.includes("previous attempt was rate-limited"),
+      );
+      expect(fallbackPrompts).toHaveLength(1);
+    } finally {
+      AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = previousMargin;
+      firstGate.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+      secondGate.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+      readSpy.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
+  test("a valid verdict from the old read still runs while a newer judge hold is pending", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const { cwd, runner, workspace } = await makeRunner();
+    const dir = taskDir(cwd, workspace.task.taskId);
+    await fs.mkdir(dir, { recursive: true });
+    workspace.task.state = "judge-evaluating";
+    workspace.task.currentRound = 1;
+    workspace.task.rounds = [
+      {
+        round: 1,
+        startedAt: "",
+        checks: [],
+        judgeVerdict: null,
+        judgeReason: "",
+        action: "judge-requested",
+      },
+    ] as unknown as typeof workspace.task.rounds;
+    const verdictContent = JSON.stringify({ verdict: "complete", reason: "verified" });
+    const verdictPath = path.join(dir, VERDICT_FILE);
+    await fs.writeFile(verdictPath, verdictContent, "utf8");
+
+    const entered = deferred<void>();
+    const gate = deferred<string>();
+    const secondReadCompleted = deferred<unknown>();
+    const originalReadFile = fs.readFile.bind(fs);
+    let verdictReadCount = 0;
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation(((filePath: nodeFs.PathLike, ...args: unknown[]) => {
+      if (String(filePath) === verdictPath) {
+        verdictReadCount += 1;
+        if (verdictReadCount === 1) {
+          entered.resolve();
+          return gate.promise;
+        }
+        return (originalReadFile as AnyApi)(filePath, ...args)
+          .then((value: unknown) => {
+            secondReadCompleted.resolve(value);
+            return value;
+          })
+          .catch((error: unknown) => {
+            secondReadCompleted.reject(error);
+            throw error;
+          });
+      }
+      return (originalReadFile as AnyApi)(filePath, ...args);
+    }) as AnyApi);
+    syncBuiltinESMExports();
+
+    const previousMargin = AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS;
+    AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = 1;
+    try {
+      const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
+      runner.onAgentRateLimited(
+        sessionId,
+        { resetAt: new Date(Date.now() - 1000), needsConfirm: false, providerHint: "claude" },
+        "first-window",
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      await entered.promise;
+      runner.onAgentRateLimited(
+        sessionId,
+        { resetAt: new Date(Date.now() + 60_000), needsConfirm: false, providerHint: "claude" },
+        "second-window",
+      );
+
+      gate.resolve(verdictContent);
+      const secondReadValue = await secondReadCompleted.promise;
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      expect(verdictReadCount).toBeGreaterThanOrEqual(2);
+      expect(secondReadValue).toBe(verdictContent);
+      expect(workspace.task.state).toBe("completed");
+      expect(workspace.task.rounds.at(-1)?.judgeVerdict).toBe("complete");
+    } finally {
+      AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = previousMargin;
+      gate.resolve(verdictContent);
+      readSpy.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
+  test.each([60_000, -1_000])(
+    "an expired judge hold cannot inject after a newer rate-limit hold arrives during verdict I/O (%i ms reset)",
+    async (nextResetInMs) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+      const { cwd, runner, workspace, deps } = await makeRunner();
+      const dir = taskDir(cwd, workspace.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      workspace.task.state = "judge-evaluating";
+      workspace.task.currentRound = 1;
+      workspace.task.rounds = [
+        { round: 1, judgeVerdict: null, checks: [], action: "judge-requested" },
+      ] as unknown as typeof workspace.task.rounds;
+
+      const verdictPath = path.join(dir, VERDICT_FILE);
+      const entered = deferred<void>();
+      const gate = deferred<string>();
+      const originalReadFile = fs.readFile.bind(fs);
+      const readSpy = vi.spyOn(fs, "readFile").mockImplementation(((filePath: nodeFs.PathLike, ...args: unknown[]) => {
+        if (String(filePath) === verdictPath) {
+          entered.resolve();
+          return gate.promise;
+        }
+        return (originalReadFile as AnyApi)(filePath, ...args);
+      }) as AnyApi);
+      syncBuiltinESMExports();
+
+      const previousMargin = AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS;
+      AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = 1;
+      try {
+        const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
+        runner.onAgentRateLimited(
+          sessionId,
+          { resetAt: new Date(Date.now() - 1000), needsConfirm: false, providerHint: "claude" },
+          "first-window",
+        );
+        await vi.advanceTimersByTimeAsync(1);
+        await entered.promise;
+
+        runner.onAgentRateLimited(
+          sessionId,
+          { resetAt: new Date(Date.now() + nextResetInMs), needsConfirm: false, providerHint: "claude" },
+          "second-window",
+        );
+        gate.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(workspace.task.state).toBe("judge-evaluating");
+        expect(deps.writeToSession).not.toHaveBeenCalled();
+      } finally {
+        AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS = previousMargin;
+        gate.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+        readSpy.mockRestore();
+        syncBuiltinESMExports();
+      }
+    },
+  );
+
   test("judge rate-limit read cannot inject into a task paused while verdict I/O is pending", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     const { cwd, runner, workspace, deps } = await makeRunner();

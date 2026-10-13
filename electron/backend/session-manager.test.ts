@@ -95,6 +95,81 @@ describe("SessionManager", () => {
     expect(manager.sessions.get("workspace-a:shell")?.status).toBe("running");
   });
 
+  test("late exit from a timed-out PTY restart cannot affect the replacement", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new SessionManager();
+      const state = createState() as Parameters<typeof manager.ensureSession>[0];
+      const exits: unknown[] = [];
+      const output: unknown[] = [];
+      manager.on("terminal:exit", (payload) => exits.push(payload));
+      manager.on("terminal:data", (payload) => output.push(payload));
+      manager.ensureSession(state, "workspace-a:shell");
+      const oldHandle = handles[0]!;
+      oldHandle.kill = () => {};
+
+      const restart = manager.restartSession(state, "workspace-a:shell");
+      await vi.advanceTimersByTimeAsync(5000);
+      const replacement = await restart;
+      expect(replacement).toBe(manager.sessions.get("workspace-a:shell"));
+      output.length = 0;
+
+      oldHandle.exitHandlers.forEach((handler) => handler({ exitCode: 0 }));
+      oldHandle.dataHandlers.forEach((handler) => handler("stale"));
+      expect(exits).toEqual([]);
+      expect(output).toEqual([]);
+      expect(replacement?.status).toBe("running");
+
+      handles[1]!.dataHandlers.forEach((handler) => handler("current"));
+      expect(output).toEqual([{ sessionId: "workspace-a:shell", data: "current" }]);
+      handles[1]!.exitHandlers.forEach((handler) => handler({ exitCode: 7 }));
+      expect(exits).toEqual([{ sessionId: "workspace-a:shell", exitCode: 7, intentional: false }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("stale registered PTY exit still cleans its resources without emitting events", async () => {
+    const manager = new SessionManager();
+    const state = createState() as Parameters<typeof manager.ensureSession>[0];
+    const workspace = state.workspaces[0]!;
+    const panel = workspace.panels[0]!;
+    const exits: unknown[] = [];
+    const connectionStates: unknown[] = [];
+    const cleanup = vi.fn(async () => {});
+    const oldHandle = new FakePtyHandle();
+    manager.on("terminal:exit", (payload) => exits.push(payload));
+    manager.on("ssh:connection-state", (payload) => connectionStates.push(payload));
+
+    await manager.registerProcessSession("workspace-a:shell", workspace, panel, oldHandle as never, {
+      kind: "ssh-system",
+      sshHostId: "host-a",
+      cleanupFn: cleanup,
+    });
+    manager.sessions.delete("workspace-a:shell");
+    manager.ensureSession(state, "workspace-a:shell");
+    connectionStates.length = 0;
+
+    oldHandle.exitHandlers.forEach((handler) => handler({ exitCode: 1 }));
+    await Promise.resolve();
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(exits).toEqual([]);
+    expect(connectionStates).toEqual([]);
+    expect(manager.sessions.get("workspace-a:shell")?.status).toBe("running");
+  });
+
+  test("ordinary PTY exits remain unexpected", () => {
+    const manager = new SessionManager();
+    const exits: unknown[] = [];
+    manager.on("terminal:exit", (payload) => exits.push(payload));
+    manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+
+    handles[0]!.exitHandlers.forEach((handler) => handler({ exitCode: 3 }));
+
+    expect(exits).toEqual([{ sessionId: "workspace-a:shell", exitCode: 3, intentional: false }]);
+  });
+
   test("submit batches text and Enter ahead of queued raw writes and cancels on restart", async () => {
     vi.useFakeTimers();
     try {

@@ -5674,7 +5674,7 @@ export async function createRuntime({
       intentional: payload.intentional,
     });
     // Notify task runner of session exit
-    taskRunner.onSessionExit(payload.sessionId);
+    taskRunner.onSessionExit(payload.sessionId, payload.intentional === true);
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
     const project = descriptor ? (findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null) : null;

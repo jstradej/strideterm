@@ -7,7 +7,7 @@ import { describe, expect, test, vi } from "vitest";
 import { AgentTaskRunner, sessionIdFor } from "./agent-task-runner.js";
 import { createStore } from "./store.js";
 import { CodexProvider } from "./providers/codex-provider.js";
-import { CONTEXT_FILE, HANDOFF_FILE, taskDir, WORK_LOCK_FILE } from "./agent-task-utils.js";
+import { CONTEXT_FILE, HANDOFF_FILE, taskDir, VERIFICATION_FILE, WORK_LOCK_FILE } from "./agent-task-utils.js";
 import type { WorkspaceState } from "../shared/types/state.js";
 
 type TestStore = Awaited<ReturnType<typeof createStore>>;
@@ -863,6 +863,176 @@ describe("AgentTaskRunner lifecycle freshness", () => {
       liveRunner?.dispose();
       releaseRead.resolve();
       readSpy.mockRestore();
+      syncBuiltinESMExports();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test.each(["normalized clone", "reset lifecycle"] as const)(
+    "send-back rollback respects a %s while verification staging is held",
+    async (interleave) => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-lifecycle-reject-"));
+      let liveRunner: AgentTaskRunner | undefined;
+      let templateWriteStarted = false;
+      const releaseTemplateWrite = deferred();
+      let restoreWriteSpy: (() => void) | undefined;
+      try {
+        const builder = new AgentTaskRunner();
+        const source = sourceWorkspace(cwd);
+        const companion = builder.createCompanionTaskWorkspace({
+          state: { workspaces: [source] },
+          workerWorkspaceId: source.id,
+          workerPanelId: "primary",
+          companionRole: "reviewer",
+          companionProvider: { providerId: "codex", model: "gpt-5.5" },
+          maxRounds: 3,
+        });
+        await builder.writeCompanionFiles(cwd, companion.task);
+        companion.task.state = "completed";
+        companion.task.currentRound = 1;
+        companion.task.companionEvidence = { status: "fresh", mtimeIso: new Date().toISOString(), round: 1 };
+        companion.task.rounds = [testRound(1, "completed", { judgeVerdict: "complete" })];
+        const originalVerification = "Primary evidence from the completed round";
+        const verificationPath = path.join(taskDir(cwd, companion.task.taskId), VERIFICATION_FILE);
+        await fs.writeFile(verificationPath, originalVerification, "utf8");
+
+        const runtime = await setupStoreRunner([source, companion]);
+        liveRunner = runtime.runner;
+        const { deps, store } = runtime;
+        const live = () => taskWorkspace(deps.getState, companion.id);
+        const originalWriteFile = fs.writeFile.bind(fs);
+        const writeSpy = vi
+          .spyOn(fs, "writeFile")
+          .mockImplementation(async (...[file, data, options]: Parameters<typeof fs.writeFile>) => {
+            if (String(file).includes(VERIFICATION_FILE)) {
+              templateWriteStarted = true;
+              await releaseTemplateWrite.promise;
+              if (interleave === "normalized clone") throw new Error("template staging failed");
+            }
+            return originalWriteFile(file, data, options);
+          });
+        restoreWriteSpy = () => writeSpy.mockRestore();
+        syncBuiltinESMExports();
+
+        const sendingBack = liveRunner.rejectTaskVerdict(companion.id, "Add the missing regression.");
+        await waitFor(() => templateWriteStarted);
+        if (interleave === "normalized clone") await replaceStoreRoot(store);
+        else {
+          expect(await liveRunner.pauseTask(companion.id)).toBe(true);
+          expect(await liveRunner.resetTask(companion.id)).toBe(true);
+        }
+        releaseTemplateWrite.resolve();
+        expect(await sendingBack).toBe(false);
+
+        if (interleave === "normalized clone") {
+          expect(live().task.state).toBe("completed");
+          expect(live().task.currentRound).toBe(1);
+          expect(roundAction(live())).toBe("completed");
+          await expect(fs.readFile(verificationPath, "utf8")).resolves.toBe(originalVerification);
+        } else {
+          expect(live().task.state).toBe("idle");
+          expect(live().task.currentRound).toBe(0);
+          expect(live().task.rounds).toEqual([]);
+        }
+        expect(deps.written).toHaveLength(0);
+      } finally {
+        liveRunner?.dispose();
+        releaseTemplateWrite.resolve();
+        restoreWriteSpy?.();
+        syncBuiltinESMExports();
+        await fs.rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("completion evidence continuation does not re-prompt Primary after pause", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-lifecycle-evidence-pause-"));
+    let liveRunner: AgentTaskRunner | undefined;
+    let lockWriteStarted = false;
+    let lockWriteSettled = false;
+    let interceptLockWrite = false;
+    let verificationWriteCount = 0;
+    const releaseLockWrite = deferred();
+    let restoreWriteSpy: (() => void) | undefined;
+    try {
+      const builder = new AgentTaskRunner();
+      const source = sourceWorkspace(cwd);
+      const companion = builder.createCompanionTaskWorkspace({
+        state: { workspaces: [source] },
+        workerWorkspaceId: source.id,
+        workerPanelId: "primary",
+        companionRole: "reviewer",
+        companionProvider: { providerId: "codex", model: "gpt-5.5" },
+        maxRounds: 3,
+      });
+      await builder.writeCompanionFiles(cwd, companion.task);
+      companion.task.state = "judge-evaluating";
+      companion.task.currentRound = 1;
+      companion.task.companionPhase = "baseline";
+      companion.task.companionEvaluationAttempt = 1;
+      companion.task.companionEvidence = { status: "not-provided", mtimeIso: null, round: null };
+      companion.task.rounds = [testRound(1, "running")];
+      await fs.writeFile(
+        path.join(taskDir(cwd, companion.task.taskId), "verdict.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          role: "reviewer",
+          phase: "baseline",
+          round: 1,
+          evaluationAttempt: 1,
+          verdict: "complete",
+          reason: "done",
+          verificationReview: { recordStatus: "missing", evidenceReviewed: [], workerActionsRequired: [] },
+          roleAnalysis: {
+            type: "reviewer",
+            requirementAudit: [{ requirement: "R1", status: "verified", evidence: ["src/a.ts:1"] }],
+          },
+          blockingFindings: [],
+          advisories: [],
+          questions: [],
+        }),
+        "utf8",
+      );
+      const runtime = await setupStoreRunner([source, companion]);
+      liveRunner = runtime.runner;
+      const { deps, store } = runtime;
+      const live = () => taskWorkspace(deps.getState, companion.id);
+      await store.mutate((draft) => {
+        const task = draft.workspaces.find((workspace) => workspace.id === companion.id)?.task;
+        if (!task) throw new Error("Companion task missing from state");
+        task.state = "judge-evaluating";
+      });
+      const originalWriteFile = fs.writeFile.bind(fs);
+      const writeSpy = vi
+        .spyOn(fs, "writeFile")
+        .mockImplementation(async (...[file, data, options]: Parameters<typeof fs.writeFile>) => {
+          if (interceptLockWrite && String(file).endsWith(WORK_LOCK_FILE)) {
+            const result = await originalWriteFile(file, data, options);
+            lockWriteStarted = true;
+            await releaseLockWrite.promise;
+            lockWriteSettled = true;
+            return result;
+          }
+          if (interceptLockWrite && String(file).includes(VERIFICATION_FILE)) verificationWriteCount += 1;
+          return originalWriteFile(file, data, options);
+        });
+      restoreWriteSpy = () => writeSpy.mockRestore();
+      syncBuiltinESMExports();
+      interceptLockWrite = true;
+      expect(liveRunner.onAgentIdle(sessionIdFor(live(), "judge"), "test")).toBe(true);
+      await waitFor(() => lockWriteStarted);
+      expect(liveRunner.pauseTask(companion.id)).toBe(true);
+      releaseLockWrite.resolve();
+      await waitFor(() => lockWriteSettled);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(live().task.state).toBe("paused");
+      expect(deps.written.filter((entry) => entry.sessionId === sessionIdFor(live(), "worker"))).toHaveLength(0);
+      expect(verificationWriteCount).toBe(0);
+    } finally {
+      liveRunner?.dispose();
+      releaseLockWrite.resolve();
+      restoreWriteSpy?.();
       syncBuiltinESMExports();
       await fs.rm(cwd, { recursive: true, force: true });
     }
