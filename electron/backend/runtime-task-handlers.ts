@@ -177,22 +177,46 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
    */
   async function commitRecoveryResume(
     workspaceId: string,
+    expectedTaskId: string,
     staged: { promptSent?: boolean; showerResumePrompt: string },
-  ): Promise<"resumed" | "active-after-throw" | "refused"> {
+  ): Promise<"resumed" | "active-after-throw" | "refused" | "stale"> {
     // Read the fields to restore BEFORE the mutation rather than inside it —
     // there is nothing to roll back to once the draft has been applied.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const before = findWorkspace(getState(), workspaceId) as any;
-    const previousPromptSent = !!before?.task?.promptSent;
-    const previousResumePrompt = String(before?.task?.showerResumePrompt || "");
+    if (before?.task?.taskId !== expectedTaskId) return "stale";
+    if (before.task.state !== "paused") return "refused";
+    const previousPromptSent = !!before.task.promptSent;
+    const previousResumePrompt = String(before.task.showerResumePrompt || "");
+    let stagedOnExpectedTask = false;
 
     await store.mutate((draft: AppState) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const dws = draft.workspaces.find((w: any) => w.id === workspaceId);
-      if (!dws?.task) return;
+      if (dws?.task?.taskId !== expectedTaskId || dws.task.state !== "paused") return;
       if (staged.promptSent !== undefined) dws.task.promptSent = staged.promptSent;
       dws.task.showerResumePrompt = staged.showerResumePrompt;
+      stagedOnExpectedTask = true;
     });
+    if (!stagedOnExpectedTask) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const current = findWorkspace(getState(), workspaceId) as any;
+      return current?.task?.taskId === expectedTaskId ? "refused" : "stale";
+    }
+
+    // Persistence inside mutate can yield. Do not let a decision that was
+    // staged for one paused task resume a replacement or a task another
+    // action has already activated.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stagedWorkspace = findWorkspace(getState(), workspaceId) as any;
+    if (
+      stagedWorkspace?.task?.taskId !== expectedTaskId ||
+      stagedWorkspace.task.state !== "paused" ||
+      stagedWorkspace.task.showerResumePrompt !== staged.showerResumePrompt ||
+      (staged.promptSent !== undefined && stagedWorkspace.task.promptSent !== staged.promptSent)
+    ) {
+      return "stale";
+    }
 
     let thrown: Error | null = null;
     try {
@@ -203,7 +227,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const after = findWorkspace(getState(), workspaceId) as any;
-    if (TASK_ACTIVE_STATES.has(String(after?.task?.state || ""))) {
+    if (after?.task?.taskId === expectedTaskId && TASK_ACTIVE_STATES.has(String(after.task.state || ""))) {
       log.warn("resolveTaskRecovery: resumeTask failed but the task is already active — keeping the staged prompt", {
         workspaceId,
         state: String(after?.task?.state || ""),
@@ -216,10 +240,23 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       workspaceId,
       err: thrown?.message,
     });
+    if (
+      after?.task?.taskId !== expectedTaskId ||
+      after.task.state !== "paused" ||
+      after.task.showerResumePrompt !== staged.showerResumePrompt ||
+      (staged.promptSent !== undefined && after.task.promptSent !== staged.promptSent)
+    )
+      return "stale";
     await store.mutate((draft: AppState) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const dws = draft.workspaces.find((w: any) => w.id === workspaceId);
-      if (!dws?.task) return;
+      if (
+        dws?.task?.taskId !== expectedTaskId ||
+        dws.task.state !== "paused" ||
+        dws.task.showerResumePrompt !== staged.showerResumePrompt ||
+        (staged.promptSent !== undefined && dws.task.promptSent !== staged.promptSent)
+      )
+        return;
       dws.task.promptSent = previousPromptSent;
       dws.task.showerResumePrompt = previousResumePrompt;
     });
@@ -244,7 +281,13 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
    * nudge — scheduled only once the resume has actually committed — is what
    * drives the injection.
    */
-  function scheduleDeferredIdleNudge(workspaceId: string, idleSessionId: string, role: string): void {
+  function scheduleDeferredIdleNudge(
+    workspaceId: string,
+    taskId: string,
+    idleSessionId: string,
+    role: "worker" | "judge",
+    expectedPrompt: string,
+  ): void {
     log.info("resolveTaskRecovery: scheduling deferred idle nudge", {
       workspaceId,
       role,
@@ -252,6 +295,22 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       delayMs: 5000,
     });
     setTimeout(() => {
+      // The recovery queue is already released by the time this timer fires.
+      // Its idle signal is only useful while the exact staged prompt still
+      // belongs to the same task, role session and active role state.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = findWorkspace(getState(), workspaceId) as any;
+      const task = workspace?.task;
+      const expectedState = role === "judge" ? "judge-evaluating" : "running";
+      if (
+        task?.taskId !== taskId ||
+        task.state !== expectedState ||
+        task.showerResumePrompt !== expectedPrompt ||
+        sessionIdFor(workspace, role) !== idleSessionId
+      ) {
+        log.info("resolveTaskRecovery: deferred idle nudge is stale", { workspaceId, taskId, idleSessionId });
+        return;
+      }
       log.info("resolveTaskRecovery: firing deferred onAgentIdle", { workspaceId, idleSessionId });
       try {
         const handled = taskRunner.onAgentIdle(idleSessionId, "recovery-deferred");
@@ -356,6 +415,14 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         log.warn("resolveTaskRecovery: task workspace no longer exists", { workspaceId, hasWs: !!ws });
         return "failed";
       }
+      if (ws.task.taskId !== candidate.taskId) {
+        log.info("resolveTaskRecovery: candidate no longer matches the task", {
+          workspaceId,
+          candidateTaskId: candidate.taskId,
+          currentTaskId: ws.task.taskId,
+        });
+        return "stale";
+      }
 
       if (ws.task.mode === "attached") {
         const attachedTask = ws.task;
@@ -397,10 +464,13 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
             ? buildAttachedPrimaryRecoveryPrompt(attachedTask, candidate.currentRound)
             : buildAttachedCompanionRecoveryPrompt(attachedTask, candidate.currentRound);
 
-        const committed = await commitRecoveryResume(workspaceId, { showerResumePrompt: attachedPrompt });
+        const committed = await commitRecoveryResume(workspaceId, candidate.taskId, {
+          showerResumePrompt: attachedPrompt,
+        });
+        if (committed === "stale") return "stale";
         if (committed === "refused") return "failed";
 
-        scheduleDeferredIdleNudge(workspaceId, idleSessionId, role);
+        scheduleDeferredIdleNudge(workspaceId, candidate.taskId, idleSessionId, role, attachedPrompt);
         return "continued";
       }
 
@@ -448,10 +518,11 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         round: candidate.currentRound,
         taskId: candidate.taskId,
       });
-      const committed = await commitRecoveryResume(workspaceId, {
+      const committed = await commitRecoveryResume(workspaceId, candidate.taskId, {
         promptSent: false,
         showerResumePrompt: recoveryPrompt,
       });
+      if (committed === "stale") return "stale";
       if (committed === "refused") return "failed";
 
       // Best-effort pre-warm of the other role's PTY, after the commit:
@@ -465,7 +536,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         });
       }
 
-      scheduleDeferredIdleNudge(workspaceId, idleSessionId, role);
+      scheduleDeferredIdleNudge(workspaceId, candidate.taskId, idleSessionId, role, recoveryPrompt);
       return "continued";
     } catch (err) {
       // A candidate that threw used to be logged and then counted as part

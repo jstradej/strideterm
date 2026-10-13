@@ -490,10 +490,9 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
       }
     });
 
-    // The auto-start goes through the same refusal gate the Start button does,
-    // so a Primary that disappeared mid-capture must leave the task in the
-    // ordinary manual gate rather than stranded in a working state.
-    test("autoStartAfterCapture falls back to brief-ready when the Primary is gone", async () => {
+    // A Primary that disappears during capture pauses the active task; a later
+    // idle signal must not approve the captured context or start the loop.
+    test("autoStartAfterCapture pauses when the Primary disappears during capture", async () => {
       const { tmp, source, deps, runner, companionWorkspace } = await setupAttached({ autoStartAfterCapture: true });
       try {
         await runner.startTask(companionWorkspace.id);
@@ -504,8 +503,10 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
 
         const writesBefore = deps.written.length;
         runner.onAgentIdle(`${source.id}:${source.panels[0].id}`, "test");
-        await waitFor(() => companionWorkspace.task.state === "brief-ready");
+        await waitFor(() => companionWorkspace.task.state === "paused");
         expect(companionWorkspace.task.contextApprovedAt).toBeUndefined();
+        expect(companionWorkspace.task.primaryMissing).toBe(true);
+        expect(companionWorkspace.task.pausedFromState).toBe("capturing-context");
         expect(deps.written.length).toBe(writesBefore);
       } finally {
         await cleanup(tmp);

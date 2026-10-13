@@ -4918,6 +4918,7 @@ export async function createRuntime({
     panelTitle: string;
     suspectedAt: number;
     lastOutputAt: number;
+    isTaskOperationCurrent: (() => boolean) | null;
     timer: ReturnType<typeof setTimeout>;
   }
   const rateLimitSuspicions = new Map<string, RateLimitSuspicion>();
@@ -4963,6 +4964,14 @@ export async function createRuntime({
           const s = rateLimitSuspicions.get(sessionId);
           if (!s) return;
           rateLimitSuspicions.delete(sessionId);
+          const taskOperationIsCurrent = () => !s.isTaskOperationCurrent || s.isTaskOperationCurrent();
+          if (!taskOperationIsCurrent()) {
+            log.debug("rate-limit suspicion dropped: task operation is stale", {
+              sessionId,
+              workspaceId: s.workspaceId,
+            });
+            return;
+          }
           const trailingMs = s.lastOutputAt - s.suspectedAt;
           if (trailingMs > RATE_LIMIT_TRAILING_TOLERANCE_MS) {
             log.debug("rate-limit suspicion dropped: agent kept working past silence window", {
@@ -4987,6 +4996,13 @@ export async function createRuntime({
             const taskState = taskRunner.getTaskState(s.workspaceId);
             const isWorkerPanel = !taskState || s.panelId === taskState.workerPanelId;
             if (isWorkerPanel && (await taskRunner.isWorkerCompleted(s.workspaceId))) {
+              if (!taskOperationIsCurrent()) {
+                log.debug("rate-limit suspicion dropped: task operation is stale after WORK_LOCK probe", {
+                  sessionId,
+                  workspaceId: s.workspaceId,
+                });
+                return;
+              }
               log.warn("rate-limit suspicion overridden by WORK_LOCK absence on confirm", {
                 sessionId,
                 providerHint: s.match.providerHint,
@@ -5003,6 +5019,14 @@ export async function createRuntime({
             });
           }
 
+          if (!taskOperationIsCurrent()) {
+            log.debug("rate-limit suspicion dropped: task operation is stale after WORK_LOCK probe", {
+              sessionId,
+              workspaceId: s.workspaceId,
+            });
+            return;
+          }
+
           log.warn("rate-limit confirmed after silence window", {
             sessionId,
             trailingMs,
@@ -5015,7 +5039,7 @@ export async function createRuntime({
           // the dialog and sets a judge-specific hold. Deferring this is the whole
           // point of the two-stage check — premature handoff is what blocks
           // the judge when the original match was a false positive.
-          taskRunner.onAgentRateLimited(sessionId, s.match, "output-detect-confirmed");
+          if (taskOperationIsCurrent()) taskRunner.onAgentRateLimited(sessionId, s.match, "output-detect-confirmed");
         } catch (err) {
           log.warn("rate-limit confirm-timer failed", {
             sessionId,
@@ -5033,6 +5057,7 @@ export async function createRuntime({
       panelTitle,
       suspectedAt: now,
       lastOutputAt: now,
+      isTaskOperationCurrent: taskRunner.captureSessionTaskOperation(sessionId, "rate-limit-suspicion-confirm"),
       timer,
     });
     log.debug("rate-limit suspected, waiting for confirmation", {

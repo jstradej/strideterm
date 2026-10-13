@@ -192,6 +192,54 @@ describe("recovery concurrency — one workspace is decided by exactly one reque
     expect(task("ws-task").state).toBe("running");
   });
 
+  test("a deferred recovery idle nudge cannot wake a replacement task", async () => {
+    const { runtime, task } = await oneTask();
+
+    const result = await runtime.resolveTaskRecovery({ "ws-task": "continue" }, "win-A");
+    expect(result.outcomes).toEqual({ "ws-task": "continued" });
+
+    // Simulate a new lifecycle in the same workspace before the old recovery
+    // nudge fires. A stale nudge must not inject into this task's worker.
+    Object.assign(task("ws-task"), {
+      taskId: "t-replacement",
+      state: "running",
+      pausedFromState: "",
+      promptSent: false,
+      showerResumePrompt: "",
+      currentRound: 1,
+      rounds: [],
+      description: "Replacement task",
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(task("ws-task").promptSent).toBe(false);
+  });
+
+  test("a candidate cannot resume a replacement task after session preflight", async () => {
+    const gate = deferred();
+    const { runtime, task } = await oneTask(gate.promise);
+
+    const decision = runtime.resolveTaskRecovery({ "ws-task": "continue" }, "win-A");
+    await Promise.resolve();
+    expect(task("ws-task").taskId).toBe("t-ws-task");
+
+    Object.assign(task("ws-task"), {
+      taskId: "t-replacement",
+      state: "paused",
+      pausedFromState: "running",
+      showerResumePrompt: "",
+    });
+    gate.resolve();
+
+    const result = await decision;
+
+    expect(result.outcomes).toEqual({ "ws-task": "stale" });
+    expect(task("ws-task").taskId).toBe("t-replacement");
+    expect(task("ws-task").state).toBe("paused");
+    expect(task("ws-task").showerResumePrompt).toBe("");
+  });
+
   test("a Continue racing a Skip: the first holder decides, the second is `stale`", async () => {
     const gate = deferred();
     const { runtime, remainingCandidates, task } = await oneTask(gate.promise);

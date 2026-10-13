@@ -12541,6 +12541,54 @@ describe("suspectRateLimit — confirm-timer failures are caught, not unhandled"
       vi.useRealTimers();
     }
   });
+
+  test("does not deliver a pending confirmation to a replacement task after WORK_LOCK probe", async () => {
+    const fixture = await createFixture({
+      initialState: { workspaces: [makeTaskWorkspace({ id: "ws-rate", taskId: "task-old", state: "running" })] },
+    });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.store.mutate((draft: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = draft.workspaces.find((item: any) => item.id === "ws-rate");
+      workspace.task.state = "running";
+    });
+
+    vi.useFakeTimers();
+    let finishWorkLockProbe!: (completed: boolean) => void;
+    const isWorkerCompletedSpy = vi.spyOn(AgentTaskRunner.prototype, "isWorkerCompleted").mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishWorkLockProbe = resolve;
+        }),
+    );
+    const onAgentRateLimitedSpy = vi.spyOn(AgentTaskRunner.prototype, "onAgentRateLimited");
+    try {
+      fixture.sessionManager.emit("terminal:data", {
+        sessionId: "ws-rate:panel-worker",
+        data: "Error: HTTP 429 Too Many Requests\r\n",
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(finishWorkLockProbe).toBeTypeOf("function");
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await fixture.store.mutate((draft: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const workspace = draft.workspaces.find((item: any) => item.id === "ws-rate");
+        workspace.task.taskId = "task-replacement";
+      });
+      finishWorkLockProbe(false);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(onAgentRateLimitedSpy).not.toHaveBeenCalled();
+      expect(fixture.runtime.getPayload().attention.byWorkspace["ws-rate"]?.alerts || []).toHaveLength(0);
+    } finally {
+      isWorkerCompletedSpy.mockRestore();
+      onAgentRateLimitedSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("dispatchAgentHookEvent call sites — an async rejection is logged via log.warn, not unhandled", () => {

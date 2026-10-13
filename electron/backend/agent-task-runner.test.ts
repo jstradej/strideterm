@@ -18,6 +18,7 @@ import {
   extractTaskDescription,
   taskDir,
 } from "./agent-task-utils.js";
+import type { WorkspaceState } from "../shared/types/state.js";
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -29,6 +30,12 @@ async function waitFor(
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(`waitFor: predicate did not become true within ${timeoutMs}ms`);
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
 }
 
 // Read TASK_LOG.jsonl events for a task dir, tolerating an absent/partial file.
@@ -1918,6 +1925,7 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
       runner.init(deps);
       ws.task.state = "running";
       ws.task.promptSent = true;
+      ws.task.currentRound = 1;
       runner.onAgentIdle(`${ws.id}:${ws.task.workerPanelId}`, "hook:stop");
       await waitFor(() => pendingWrites.some((w) => w.sessionId === judgeSessionId && w.data === "/clear"));
       await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -1925,6 +1933,68 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
       expect(deps.workspaces[0].task.state).toBe("paused");
       expect(pendingWrites.some((w) => w.sessionId === judgeSessionId && w.data !== "/clear")).toBe(false);
     } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("a stale evaluation finalizer cannot release a newer evaluation owner", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-evaluation-owner-"));
+    const gates = [deferred(), deferred()];
+    const readSpyOriginal = fs.readFile.bind(fs);
+    const readSpy = vi.spyOn(fs, "readFile");
+    let runner: AgentTaskRunner | undefined;
+    let restoreReadFile: (() => void) | undefined;
+    let todoReads = 0;
+    try {
+      runner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(runner, { cwd: tmp });
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, TODO_FILE),
+        "# TODO\n\n## To Do\n\n## In Progress\n\n## Blocked\n\n## Done\n",
+        "utf8",
+      );
+      const deps = createMockDeps([ws]);
+      runner.init(deps);
+      ws.task.state = "running";
+      ws.task.promptSent = true;
+      ws.task.currentRound = 1;
+      readSpy.mockImplementation((...args) =>
+        readSpyOriginal(...args).then(async (contents) => {
+          if (String(args[0]).endsWith(TODO_FILE)) {
+            todoReads += 1;
+            if (todoReads <= gates.length) await gates[todoReads - 1].promise;
+          }
+          return contents;
+        }),
+      );
+      restoreReadFile = () => readSpy.mockRestore();
+      syncBuiltinESMExports();
+
+      const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+      runner.onAgentIdle(workerSessionId, "hook:stop");
+      await waitFor(() => todoReads === 1);
+
+      expect(runner.pauseTask(ws.id)).toBe(true);
+      ws.task.state = "running";
+      ws.task.promptSent = true;
+      runner.onAgentIdle(workerSessionId, "hook:stop");
+      await waitFor(() => todoReads === 2);
+      gates[0].resolve();
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      ws.task.state = "running";
+      runner.onAgentIdle(workerSessionId, "hook:stop");
+      ws.task.state = "evaluating";
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      expect(todoReads).toBe(2);
+
+      gates[1].resolve();
+    } finally {
+      gates.forEach((gate) => gate.resolve());
+      restoreReadFile?.();
+      syncBuiltinESMExports();
+      runner?.dispose();
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
@@ -1956,6 +2026,7 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
       runner.init(deps);
       ws.task.state = "running";
       ws.task.promptSent = true;
+      ws.task.currentRound = 1;
       runner.onAgentIdle(`${ws.id}:${ws.task.workerPanelId}`, "hook:stop");
       await waitFor(() => !!resetPromise);
       expect(await resetPromise).toBe(true);
@@ -1968,6 +2039,130 @@ describe("Plan 3 — reliability (verified inject, judge cycle, judge rate-limit
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test("disposed runner ignores a judge verdict read that completes later", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-dispose-verdict-"));
+    const readGate = deferred();
+    const readEntered = deferred();
+    const originalReadFile = fs.readFile.bind(fs);
+    const readSpy = vi.spyOn(fs, "readFile");
+    let runner: AgentTaskRunner | undefined;
+    let restoreReadFile: (() => void) | undefined;
+    try {
+      runner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(runner, { cwd: tmp });
+      await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+      await fs.writeFile(
+        path.join(taskDir(tmp, ws.task.taskId), VERDICT_FILE),
+        JSON.stringify({ verdict: "complete" }),
+        "utf8",
+      );
+      const deps = createMockDeps([ws]);
+      runner.init(deps);
+      ws.task.state = "judge-evaluating";
+      ws.task.currentRound = 1;
+      readSpy.mockImplementation((...args) =>
+        originalReadFile(...args).then(async (contents) => {
+          if (String(args[0]).endsWith(VERDICT_FILE)) {
+            readEntered.resolve();
+            await readGate.promise;
+          }
+          return contents;
+        }),
+      );
+      restoreReadFile = () => readSpy.mockRestore();
+      syncBuiltinESMExports();
+
+      const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+      runner.onAgentIdle(judgeSessionId, "hook:stop");
+      await readEntered.promise;
+      runner.dispose();
+      readGate.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(deps.workspaces[0].task.state).toBe("judge-evaluating");
+      expect(deps.alerts).toHaveLength(0);
+      expect(deps.written).toHaveLength(0);
+    } finally {
+      readGate.resolve();
+      restoreReadFile?.();
+      syncBuiltinESMExports();
+      runner?.dispose();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("duplicate Stop hooks serialize handling of the same standard verdict", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-verdict-coalesce-"));
+    const readGate = deferred();
+    const readEntered = deferred();
+    const originalReadFile = fs.readFile.bind(fs);
+    const readSpy = vi.spyOn(fs, "readFile");
+    let runner: AgentTaskRunner | undefined;
+    let restoreReadFile: (() => void) | undefined;
+    let verdictReads = 0;
+    try {
+      runner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(runner, { cwd: tmp });
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, TODO_FILE),
+        "# TODO\n\n## To Do\n\n## In Progress\n\n## Blocked\n\n## Done\n",
+        "utf8",
+      );
+      const deps = createMockDeps([ws]);
+      runner.init(deps);
+      ws.task.state = "running";
+      ws.task.promptSent = true;
+      ws.task.currentRound = 1;
+      runner.onAgentIdle(`${ws.id}:${ws.task.workerPanelId}`, "hook:stop");
+      await waitFor(() => deps.workspaces[0].task.state === "judge-evaluating", { timeoutMs: 8000 });
+
+      readSpy.mockImplementation((...args) =>
+        originalReadFile(...args).then(async (contents) => {
+          if (String(args[0]).endsWith(VERDICT_FILE)) {
+            verdictReads += 1;
+            if (verdictReads === 1) {
+              readEntered.resolve();
+              await readGate.promise;
+            }
+          }
+          return contents;
+        }),
+      );
+      restoreReadFile = () => readSpy.mockRestore();
+      syncBuiltinESMExports();
+
+      await fs.writeFile(
+        path.join(dir, VERDICT_FILE),
+        JSON.stringify({ verdict: "continue", reason: "Add a regression test" }),
+        "utf8",
+      );
+      const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+      runner.onAgentIdle(judgeSessionId, "hook:stop");
+      await readEntered.promise;
+      runner.onAgentIdle(judgeSessionId, "hook:stop");
+      await Promise.resolve();
+      expect(verdictReads).toBe(1);
+      readGate.resolve();
+      await waitFor(() => deps.workspaces[0].task.currentRound === 2, { timeoutMs: 5000 });
+
+      expect(deps.workspaces[0].task.state).toBe("running");
+      expect(
+        deps.written.filter(
+          (write: { sessionId: string; data: string }) =>
+            write.sessionId === `${ws.id}:${ws.task.workerPanelId}` && write.data !== "/clear",
+        ),
+      ).toHaveLength(3);
+    } finally {
+      readGate.resolve();
+      restoreReadFile?.();
+      syncBuiltinESMExports();
+      runner?.dispose();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   // Krok 9 — judge rate-limit handling.
   test("judge rate-limit presses Enter on the dialog and holds verdict reading", async () => {
@@ -2767,7 +2962,7 @@ describe("attached capture readiness", () => {
         cwd: tmp,
         profileId: "default",
         panels: [{ id: "primary-panel", cwd: tmp, command: "claude" }],
-      };
+      } as unknown as WorkspaceState;
       const ws = runner.createCompanionTaskWorkspace({
         state: { workspaces: [primary] },
         workerWorkspaceId: primary.id,

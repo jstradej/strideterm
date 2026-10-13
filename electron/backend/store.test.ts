@@ -38,6 +38,40 @@ afterEach(async () => {
 });
 
 describe("store", () => {
+  test("a synchronous mutation does not overwrite a runner write queued on current state", async () => {
+    const store = await createStore(await createTempStatePath());
+    const state = structuredClone(store.getState());
+    state.workspaces.push({
+      id: "task-workspace",
+      kind: "task",
+      panels: [
+        { id: "dashboard", title: "Dashboard", command: "__task-dashboard__" },
+        { id: "worker", title: "Worker", command: "claude" },
+        { id: "judge", title: "Judge", command: "claude" },
+      ],
+      task: {
+        taskId: "task-id",
+        description: "Task",
+        workerPanelId: "worker",
+        judgePanelId: "judge",
+        state: "running",
+        currentRound: 1,
+        rounds: [],
+      },
+    } as unknown as (typeof state.workspaces)[number]);
+    await store.replace(state);
+
+    const mutation = store.mutate((draft) => {
+      draft.settings.sidebarWidth += 1;
+      queueMicrotask(() => {
+        store.getState().workspaces[0].task!.state = "completed";
+      });
+    });
+    await mutation;
+
+    expect(store.getState().workspaces[0].task!.state).toBe("completed");
+  });
+
   test("serializes concurrent mutations", async () => {
     const store = await createStore(await createTempStatePath());
 
@@ -55,6 +89,24 @@ describe("store", () => {
     expect(store.getState().settings.theme).toBe("light");
     expect(store.getState().settings.remoteAccess.port).toBe(50001);
     expect(store.getState().settings.sidebarWidth).toBe(360);
+  });
+
+  test("awaits a thenable mutation result before normalizing its draft", async () => {
+    const store = await createStore(await createTempStatePath());
+
+    await store.mutate(
+      (draft) =>
+        ({
+          then(resolve: (_value: void) => void) {
+            queueMicrotask(() => {
+              draft.settings.sidebarWidth = 361;
+              resolve(undefined);
+            });
+          },
+        }) as unknown as Promise<void>,
+    );
+
+    expect(store.getState().settings.sidebarWidth).toBe(361);
   });
 
   test("restores in-memory state when persistence fails", async () => {

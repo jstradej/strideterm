@@ -517,8 +517,14 @@ export async function createStore(statePath: string) {
     return enqueue(label, async () => {
       const previousState = state;
       const draft = structuredClone(state);
-      const result = await mutator(draft);
-      const nextState = normalizeState(result || draft, { seedRestoreIdsFromSlots: false });
+      const result = mutator(draft);
+      const resolvedResult =
+        result !== null &&
+        (typeof result === "object" || typeof result === "function") &&
+        typeof (result as PromiseLike<AppState | void>).then === "function"
+          ? await result
+          : result;
+      const nextState = normalizeState(resolvedResult || draft, { seedRestoreIdsFromSlots: false });
       state = nextState;
       try {
         await persist(label);
