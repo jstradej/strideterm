@@ -60,6 +60,50 @@ jobs:
           MS_STORE_REQUIRE_IDENTITY: "true"
           MS_STORE_BUILD_PURPOSE: store
 
+      - name: Verify packaged AppX icons
+        shell: pwsh
+        env:
+          APPX_OUTPUT: ${{ (github.event_name == 'push' || inputs.mode == 'validation') && 'release/store-appx-validation' || 'release/store-appx' }}
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $icons = @('StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.png', 'Wide310x150Logo.png')
+          $packages = @(Get-ChildItem -LiteralPath $env:APPX_OUTPUT -Filter '*.appx' -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected one AppX package under $env:APPX_OUTPUT; found $($packages.Count)."
+          }
+
+          $package = [System.IO.Compression.ZipFile]::OpenRead($packages[0].FullName)
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            if ($package.Entries.FullName -match '^assets/SampleAppx\.') {
+              throw 'AppX package contains electron-builder SampleAppx artwork.'
+            }
+
+            foreach ($name in $icons) {
+              $sourcePath = Join-Path 'assets/appx' $name
+              $entry = $package.GetEntry("assets/$name")
+              if ($null -eq $entry) {
+                throw "AppX package is missing assets/$name."
+              }
+
+              $expectedHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+              $stream = $entry.Open()
+              try {
+                $actualHash = [Convert]::ToHexString($sha256.ComputeHash($stream))
+              } finally {
+                $stream.Dispose()
+              }
+
+              if ($actualHash -ne $expectedHash) {
+                throw "Packaged assets/$name does not match $sourcePath."
+              }
+              Write-Host "$name $actualHash"
+            }
+          } finally {
+            $sha256.Dispose()
+            $package.Dispose()
+          }
+
       - name: Upload validation-only AppX artifact
         if: github.event_name == 'push' || inputs.mode == 'validation'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

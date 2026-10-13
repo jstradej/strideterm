@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Arch, build, Platform } from "electron-builder";
 
 import { readStoreIdentity } from "./store-appx-config.mjs";
+import { validateStoreAppxIcons } from "./store-appx-icons.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = new Map();
@@ -50,6 +51,8 @@ async function main() {
     return;
   }
 
+  await validateStoreAppxIcons(path.join(repoRoot, "assets", "appx"));
+
   if (!existsSync(path.join(appDir, "strIDEterm.exe")) || !existsSync(path.join(appDir, "resources", "app.asar"))) {
     throw new Error(`Windows app payload not found at ${appDir}. Run the standard Windows release build first.`);
   }
@@ -65,7 +68,7 @@ async function main() {
     prepackaged: appDir,
     targets: Platform.WINDOWS.createTarget("appx", Arch.x64),
     config: {
-      directories: { output: outputDir },
+      directories: { buildResources: "assets", output: outputDir },
       appx: {
         identityName: storeConfig.identity.identityName,
         publisher: storeConfig.identity.publisher,

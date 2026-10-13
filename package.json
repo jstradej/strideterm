@@ -38,7 +38,7 @@
     "test": "npm run test:ui && npm run test:backend && npm run test:store-appx-config",
     "test:ui": "vitest run --config vite.config.ts",
     "test:backend": "vitest run --config vitest.backend.config.ts",
-    "test:store-appx-config": "node --test test/store-appx-config.test.mjs",
+    "test:store-appx-config": "node --test test/store-appx-config.test.mjs test/store-appx-icons.test.mjs",
     "test:e2e": "npx playwright test",
     "test:e2e:electron": "npm run build && npx playwright test --config playwright.config.electron.js",
     "test:e2e:electron:visual": "npx playwright test --config playwright.config.electron.js --grep @visual",
