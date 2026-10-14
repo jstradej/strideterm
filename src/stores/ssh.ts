@@ -49,6 +49,13 @@ async function notifyOpError(title: string, msg: string): Promise<void> {
   }
 }
 
+/**
+ * The capability probe already on its way, shared by every caller that asks meanwhile. Startup asks
+ * from several places (App.vue, dialogs mounting) before the first answer is back; each used to start
+ * its own multi-second probe.
+ */
+let capabilitiesRequest: Promise<SshRuntimeCapabilities> | null = null;
+
 interface SshAuthPrompt {
   sessionId: string;
   promptId: string;
@@ -95,16 +102,15 @@ export const useSshStore = defineStore("ssh", {
     async load(refreshCapabilities = false): Promise<void> {
       if (!_api) return;
       this.error = null;
+      // The capability probe runs BESIDE the lists, never in front of them: it spawns processes on
+      // the desktop and can take seconds, while the hosts, keys and certificates are a lookup. Joined
+      // in one Promise.all, every list waited for the slowest probe.
+      const capabilities =
+        (refreshCapabilities || !this.capabilities) && typeof t().sshCapabilitiesGet === "function"
+          ? this.loadCapabilities(refreshCapabilities)
+          : Promise.resolve();
       try {
-        const [capabilities, hosts, keys, certs] = await Promise.all([
-          (refreshCapabilities || !this.capabilities) && typeof t().sshCapabilitiesGet === "function"
-            ? t().sshCapabilitiesGet()
-            : Promise.resolve(this.capabilities),
-          t().sshHostsList(),
-          t().sshKeysList(),
-          t().sshCertsList(),
-        ]);
-        this.capabilities = capabilities;
+        const [hosts, keys, certs] = await Promise.all([t().sshHostsList(), t().sshKeysList(), t().sshCertsList()]);
         this.hosts = (hosts as SshHost[]) || [];
         this.keys = (keys as SshKey[]) || [];
         this.certificates = (certs as SshCert[]) || [];
@@ -112,6 +118,31 @@ export const useSshStore = defineStore("ssh", {
         const msg = (err as Error)?.message || "Failed to load SSH data";
         this.error = msg;
         await notifyOpError("Load SSH data failed", msg);
+      }
+      await capabilities;
+    },
+
+    /** `refresh`: the user asked for a fresh check, so the desktop's cached preflight is skipped. */
+    async loadCapabilities(refresh = false): Promise<void> {
+      const pending = capabilitiesRequest;
+      if (pending) {
+        try {
+          this.capabilities = await pending;
+        } catch {
+          // The caller that started this request reports its failure; a second toast says nothing new.
+        }
+        return;
+      }
+      const request: Promise<SshRuntimeCapabilities> = t().sshCapabilitiesGet(refresh ? { refresh: true } : undefined);
+      capabilitiesRequest = request;
+      try {
+        this.capabilities = await request;
+      } catch (err) {
+        const msg = (err as Error)?.message || "Failed to check SSH capabilities";
+        this.error = msg;
+        await notifyOpError("Load SSH data failed", msg);
+      } finally {
+        if (capabilitiesRequest === request) capabilitiesRequest = null;
       }
     },
 

@@ -45,7 +45,10 @@ export interface SshRuntimeCapabilities {
     installed: boolean;
     distros: string[];
     default?: string;
+    /** Only distributions whose answer is KNOWN. A name absent here is unknown, not unavailable. */
     sshAvailableByDistro: Record<string, boolean>;
+    /** Stopped (asking would boot them) or their probe timed out; the connect itself will tell. */
+    sshUnknownDistros?: string[];
     error?: string;
   } | null;
   permissions: { canManageHosts: boolean; reason?: string };

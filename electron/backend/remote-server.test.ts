@@ -2109,12 +2109,82 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
-  test("subscribing to a profile-inaccessible session is rejected as a whole", async () => {
+  test("a stale id is refused on its own: the rest of the subscription replays and streams", async () => {
+    // One panel removed while the client's set was in flight used to reject the WHOLE set, so every
+    // other visible terminal of that client got no replay and no frames — and a phone whose readiness
+    // waits for that replay sat on "connecting" until its deadline rebuilt the session.
+    await withServer("tok-stale", async ({ port, runtime }) => {
+      const c = connectWs(port, "tok-stale", "stale-aa", "p1");
+      await c.opened;
+      runtime._setReplay("ws1:a", "STILL-HERE", 4);
+      c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a", "ws1:gone"] }));
+      expect(await waitUntil(() => c.messages.some((m) => m.type === "terminal:replay"))).toBe(true);
+      runtime._emit("terminal:data", { sessionId: "ws1:a", data: "LIVE-A", seq: 5 });
+      runtime._emit("terminal:data", { sessionId: "ws1:gone", data: "GHOST", seq: 1 });
+      expect(await waitUntil(() => terminalFrames(c).some((m) => framePayload(m).data === "LIVE-A"))).toBe(true);
+      await delay(50);
+      const replays = c.messages.filter((m) => m.type === "terminal:replay").map((m) => framePayload(m));
+      expect(replays).toEqual([{ sessionId: "ws1:a", data: "STILL-HERE", throughSeq: 4 }]);
+      expect(terminalFrames(c).some((m) => framePayload(m).data === "GHOST")).toBe(false);
+      c.ws.close();
+    });
+  });
+
+  test("an id outside the caller's profile is refused on its own and leaks nothing", async () => {
+    await withServer("tok-mixed", async ({ port, runtime }) => {
+      // Bound to p1; ws2 belongs to p2.
+      const c = connectWs(port, "tok-mixed", "mixed-aa", "p1");
+      await c.opened;
+      runtime._setReplay("ws1:a", "MINE", 2);
+      runtime._setReplay("ws2:a", "SECRET", 1);
+      c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws2:a", "ws1:a"] }));
+      expect(await waitUntil(() => c.messages.some((m) => m.type === "terminal:replay"))).toBe(true);
+      runtime._emit("terminal:data", { sessionId: "ws2:a", data: "SECRET-LIVE", seq: 2 });
+      runtime._emit("terminal:data", { sessionId: "ws1:a", data: "MINE-LIVE", seq: 3 });
+      expect(await waitUntil(() => terminalFrames(c).some((m) => framePayload(m).data === "MINE-LIVE"))).toBe(true);
+      await delay(50);
+      expect(JSON.stringify(c.messages)).not.toContain("SECRET");
+      expect(c.messages.filter((m) => m.type === "terminal:replay").map((m) => framePayload(m).sessionId)).toEqual([
+        "ws1:a",
+      ]);
+      c.ws.close();
+    });
+  });
+
+  test("an explicit replay request re-sends the snapshot of an id the socket already streams", async () => {
+    // The renderer asks for this when it lost its proof of having parsed the replay while the socket
+    // stayed up (src/remote-terminal-readiness.test.ts holds the transport to sending exactly this
+    // message). Without it an already-subscribed id is never replayed again on that socket.
+    await withServer("tok-rereplay", async ({ port, runtime }) => {
+      const c = connectWs(port, "tok-rereplay", "rereplay", "p1");
+      await c.opened;
+      runtime._setReplay("ws1:a", "FIRST", 1);
+      c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
+      expect(await waitUntil(() => c.messages.filter((m) => m.type === "terminal:replay").length === 1)).toBe(true);
+
+      runtime._setReplay("ws1:a", "AGAIN", 9);
+      // A replay for an id the same message does not subscribe is ignored.
+      c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"], replay: ["ws1:b"] }));
+      await delay(60);
+      expect(c.messages.filter((m) => m.type === "terminal:replay")).toHaveLength(1);
+
+      c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"], replay: ["ws1:a"] }));
+      expect(await waitUntil(() => c.messages.filter((m) => m.type === "terminal:replay").length === 2)).toBe(true);
+      const replays = c.messages.filter((m) => m.type === "terminal:replay");
+      expect(framePayload(replays[1])).toEqual({ sessionId: "ws1:a", data: "AGAIN", throughSeq: 9 });
+      // And the session keeps streaming: the routing set did not move.
+      runtime._emit("terminal:data", { sessionId: "ws1:a", data: "AFTER", seq: 10 });
+      expect(await waitUntil(() => terminalFrames(c).some((m) => framePayload(m).data === "AFTER"))).toBe(true);
+      c.ws.close();
+    });
+  });
+
+  test("subscribing to a profile-inaccessible session is refused", async () => {
     await withServer("tok-authz", async ({ port, runtime }) => {
       // Token client with no profileId → bound to the first open desktop profile (p1).
       const c = connectWs(port, "tok-authz", "authz-aa");
       await c.opened;
-      // ws2 belongs to p2 → inaccessible. The whole request is rejected: the
+      // ws2 belongs to p2 → inaccessible, and the only id asked for: the
       // socket stays filtered with an empty set, so no replay and no live frames.
       runtime._setReplay("ws2:a", "SECRET", 1);
       c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws2:a"] }));
@@ -2151,7 +2221,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       runtime._emit("terminal:removed", { sessionId: "ws1:a" });
       runtime._emit("terminal:data", { sessionId: "ws1:a", data: "GHOST-LIVE", seq: 2 });
 
-      // Re-requesting the removed id is rejected as a whole → no new replay.
+      // Re-requesting the removed id is refused → no new replay.
       c.ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: ["ws1:a"] }));
       await delay(80);
       expect(c.messages.filter((m) => m.type === "terminal:replay")).toHaveLength(1); // only the baseline

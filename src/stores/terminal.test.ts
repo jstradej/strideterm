@@ -30,7 +30,7 @@ vi.mock("../app/terminal-controller.js", () => ({
   }),
 }));
 
-import { useTerminalStore } from "./terminal.js";
+import { TERMINAL_READY_TARGET_GRACE_MS, useTerminalStore } from "./terminal.js";
 import { useAppStore } from "./app.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -325,10 +325,15 @@ describe("useTerminalStore — terminal event wiring (production path)", () => {
     (handleTerminalReplayMock.mock.calls.at(-1)?.[0] as { onParsed?: () => void }).onParsed?.();
     expect(respond).toHaveBeenCalledWith(true, "terminal");
 
-    // A target the server does not hold is refused, even though it is the panel on screen.
+    // A target the server does not hold is refused, even though it is the panel on screen — once the
+    // grace for a lagging payload has run out (the transport re-dispatches a held request every 300 ms).
+    vi.useFakeTimers();
     const local = vi.fn();
     readyRequest(42, { profileId: "p1", workspaceId: "ws1", panelId: "p1" }, local);
-    expect(local).toHaveBeenCalledWith(false, "empty-state");
+    expect(local).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(TERMINAL_READY_TARGET_GRACE_MS);
+    readyRequest(42, { profileId: "p1", workspaceId: "ws1", panelId: "p1" }, local);
+    expect(local).toHaveBeenCalledWith(false, "empty-state", "target-mismatch");
   });
 
   test("terminal readiness after the active tab closed, when the server still names the closed panel", () => {

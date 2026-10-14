@@ -734,8 +734,8 @@ export function registerIpc(
   handle("ssh:hosts:list", async () =>
     withOperationPromise({ opId: "ssh:hosts:list" }, () => runtime["ssh:hosts:list"]()),
   );
-  handle("ssh:capabilities:get", async () =>
-    withOperationPromise({ opId: "ssh:capabilities:get" }, () => runtime["ssh:capabilities:get"]()),
+  handle("ssh:capabilities:get", async (_event, payload) =>
+    withOperationPromise({ opId: "ssh:capabilities:get" }, () => runtime["ssh:capabilities:get"](payload)),
   );
   handle("ssh:hosts:create", async (_event, payload) =>
     withOperationPromise({ opId: "ssh:hosts:create" }, () => runtime["ssh:hosts:create"](payload)),

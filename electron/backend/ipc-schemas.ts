@@ -1048,6 +1048,10 @@ export type WsTerminalResize = z.infer<typeof wsTerminalResizeSchema>;
 export const wsTerminalSubscribeSchema = z.object({
   type: z.literal("terminal:subscribe"),
   sessionIds: z.array(nonEmptyString).max(256),
+  // Ids of `sessionIds` to replay again even though this socket already streams
+  // them — the client lost its proof of having rendered them. Ignored for an id
+  // the same message does not subscribe.
+  replay: z.array(nonEmptyString).max(256).optional(),
 });
 export type WsTerminalSubscribe = z.infer<typeof wsTerminalSubscribeSchema>;
 

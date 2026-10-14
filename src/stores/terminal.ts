@@ -10,7 +10,7 @@ import {
   safeFilenamePart,
   shortcutTabDirection,
 } from "../app/helpers.js";
-import { resolveRemoteSelection, type Transport } from "../transport.js";
+import { resolveRemoteSelection, type TerminalReadyReason, type Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { useAppStore } from "./app.js";
 import { resolveInputOriginWorkspaceId, resolveTerminalTextSelectionTarget } from "../app/selectors.js";
@@ -33,8 +33,19 @@ interface TerminalReadyChallenge {
   openAttempt: number;
   connectionGeneration: number;
   target: { profileId: string; workspaceId: string | null; panelId: string | null };
-  respond: (ready: boolean, viewKind: "terminal" | "nonterminal" | "empty-state") => void;
+  respond: (ready: boolean, viewKind: "terminal" | "nonterminal" | "empty-state", reason?: TerminalReadyReason) => void;
+  /** Tells the transport why the request is being held; it re-dispatches every 300 ms regardless. */
+  waiting?: (reason: TerminalReadyReason) => void;
 }
+
+/**
+ * How long a challenge whose target this renderer's payload does not name yet is held before it is
+ * answered `false`. The transport validated the target against the server's own selection before
+ * dispatching; the app store can apply that same selection a moment later (it drops out-of-order
+ * snapshots and holds a payload while a workspace activation is pending), and an immediate "no" for
+ * that lag was a final answer: the phone does not ask again until something else changes.
+ */
+export const TERMINAL_READY_TARGET_GRACE_MS = 2_000;
 
 let remoteReadyRequestListener: ((event: Event) => void) | null = null;
 let terminalViewDisposedListener: ((event: Event) => void) | null = null;
@@ -83,6 +94,15 @@ export const useTerminalStore = defineStore("terminal", () => {
     }
     const pendingReady = new Map<number, TerminalReadyChallenge>();
     const parsedReplayGenerationBySession = new Map<string, number>();
+    // Proofs a dropped-connection report erased, with the generation they were for. That report can
+    // come from one failed HTTP request while the socket stays up, and the server replays an id only
+    // on the subscribe that adds it, so on that same socket nothing would ever prove the view again.
+    const lostReplayProofBySession = new Map<string, number>();
+    // `${generation}:${sessionId}` already re-requested, so one lost proof costs one replay, not one
+    // per 300 ms dispatch.
+    const replayRequested = new Set<string>();
+    // requestId -> when this renderer first saw the challenge's target disagree with its payload.
+    const targetMismatchSince = new Map<number, number>();
     let currentConnectionGeneration = 0;
 
     const completeTerminalReadyForReplay = (sessionId: string, generation: number) => {
@@ -91,11 +111,9 @@ export const useTerminalStore = defineStore("terminal", () => {
       parsedReplayGenerationBySession.set(sessionId, generation);
       for (const [requestId, challenge] of pendingReady) {
         if (challenge.connectionGeneration !== generation) continue;
-        if (!targetMatches(challenge.target, getPayload())) {
-          pendingReady.delete(requestId);
-          challenge.respond(false, "empty-state");
-          continue;
-        }
+        // A payload that has not caught up with the target yet is the next dispatch's to judge, with
+        // its grace period, not a "no" here.
+        if (!targetMatches(challenge.target, getPayload())) continue;
         if (getActiveSessionId() !== sessionId) continue;
         pendingReady.delete(requestId);
         challenge.respond(true, "terminal");
@@ -126,7 +144,7 @@ export const useTerminalStore = defineStore("terminal", () => {
         for (const [requestId, challenge] of pendingReady) {
           if (targetMatches(challenge.target, state)) continue;
           pendingReady.delete(requestId);
-          challenge.respond(false, "empty-state");
+          challenge.respond(false, "empty-state", "target-changed");
         }
       }
       lastTargetKey = key;
@@ -207,6 +225,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     api.onTerminalReplay?.(({ sessionId, data, throughSeq, connectionGeneration }) => {
       const replaySessionId = sessionId || "";
       parsedReplayGenerationBySession.delete(replaySessionId);
+      lostReplayProofBySession.delete(replaySessionId);
       controller!.handleTerminalReplay({
         sessionId: replaySessionId,
         data,
@@ -224,16 +243,20 @@ export const useTerminalStore = defineStore("terminal", () => {
 
     api.onConnectionState?.((connection) => {
       if (typeof connection?.connectionGeneration === "number") {
+        if (connection.connectionGeneration !== currentConnectionGeneration) replayRequested.clear();
         currentConnectionGeneration = connection.connectionGeneration;
       }
-      if (!connection?.connected) parsedReplayGenerationBySession.clear();
       if (!connection?.connected) {
-        for (const challenge of pendingReady.values()) challenge.respond(false, "empty-state");
+        for (const [sessionId, generation] of parsedReplayGenerationBySession) {
+          lostReplayProofBySession.set(sessionId, generation);
+        }
+        parsedReplayGenerationBySession.clear();
+        for (const challenge of pendingReady.values()) challenge.respond(false, "empty-state", "disconnected");
         pendingReady.clear();
-      }
-      if (!connection?.connected || !connection.reconnected) {
+        targetMismatchSince.clear();
         return;
       }
+      if (!connection.reconnected) return;
       controller?.scheduleAllVisibleResize();
       window.clearTimeout(reconnectFitTimer);
       reconnectFitTimer = window.setTimeout(() => controller?.scheduleAllVisibleResize(), 150);
@@ -244,28 +267,58 @@ export const useTerminalStore = defineStore("terminal", () => {
         const challenge = (event as CustomEvent<TerminalReadyChallenge>).detail;
         if (!challenge || typeof challenge.respond !== "function") return;
         if (!targetMatches(challenge.target, getPayload())) {
-          challenge.respond(false, "empty-state");
+          // The transport re-dispatches a held request every 300 ms, so holding it IS the retry.
+          const now = Date.now();
+          const since = targetMismatchSince.get(challenge.requestId) ?? now;
+          if (now - since < TERMINAL_READY_TARGET_GRACE_MS) {
+            if (!targetMismatchSince.has(challenge.requestId)) {
+              const oldest = targetMismatchSince.keys().next();
+              if (targetMismatchSince.size >= 8 && !oldest.done) targetMismatchSince.delete(oldest.value);
+              targetMismatchSince.set(challenge.requestId, since);
+            }
+            challenge.waiting?.("target-mismatch");
+            return;
+          }
+          targetMismatchSince.delete(challenge.requestId);
+          pendingReady.delete(challenge.requestId);
+          challenge.respond(false, "empty-state", "target-mismatch");
           return;
         }
+        targetMismatchSince.delete(challenge.requestId);
         const activeSessionId = getActiveSessionId();
         if (challenge.connectionGeneration > currentConnectionGeneration) {
           currentConnectionGeneration = challenge.connectionGeneration;
         }
-        if (challenge.connectionGeneration !== currentConnectionGeneration) return;
+        if (challenge.connectionGeneration !== currentConnectionGeneration) {
+          challenge.waiting?.("stale-generation");
+          return;
+        }
         if (activeSessionId) {
           const replayedGeneration = parsedReplayGenerationBySession.get(activeSessionId);
           if (replayedGeneration === challenge.connectionGeneration) {
+            pendingReady.delete(challenge.requestId);
             challenge.respond(true, "terminal");
             return;
+          }
+          // The proof was erased while this very socket stayed up, and the server will not replay an
+          // id it already streams unless asked: ask, once.
+          const replayKey = `${challenge.connectionGeneration}:${activeSessionId}`;
+          if (
+            lostReplayProofBySession.get(activeSessionId) === challenge.connectionGeneration &&
+            !replayRequested.has(replayKey) &&
+            api.requestTerminalReplay?.(activeSessionId)
+          ) {
+            replayRequested.add(replayKey);
           }
           if (pendingReady.size >= 8 && !pendingReady.has(challenge.requestId)) {
             const oldest = pendingReady.values().next().value;
             if (oldest) {
               pendingReady.delete(oldest.requestId);
-              oldest.respond(false, "empty-state");
+              oldest.respond(false, "empty-state", "superseded");
             }
           }
           pendingReady.set(challenge.requestId, challenge);
+          challenge.waiting?.("replay-pending");
           return;
         }
         const viewKind = challenge.target.panelId ? "nonterminal" : "empty-state";

@@ -778,3 +778,38 @@ describe("registerIpc — every failing handler is logged", () => {
     dispose();
   });
 });
+
+describe("registerIpc — ssh:capabilities:get", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+  });
+
+  test("forwards the explicit refresh the preload sends, so Settings → SSH is not answered from the cache", async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, method: string) =>
+          method === "on"
+            ? callable
+            : (...args: unknown[]) => {
+                calls.push({ method, args });
+                return {};
+              },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {});
+    const listener = handleRegistry.get("ssh:capabilities:get") as (event: unknown, ...args: unknown[]) => unknown;
+
+    // preload.cts: `sshCapabilitiesGet: (payload) => ipcRenderer.invoke("ssh:capabilities:get", payload)`.
+    await listener({ sender: { id: 1 } }, { refresh: true });
+    await listener({ sender: { id: 1 } }, undefined);
+
+    expect(calls.filter((call) => call.method === "ssh:capabilities:get").map((call) => call.args[0])).toEqual([
+      { refresh: true },
+      undefined,
+    ]);
+    dispose();
+  });
+});

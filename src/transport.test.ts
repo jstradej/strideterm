@@ -558,6 +558,17 @@ describe("remote transport endpoint routing", () => {
     );
   });
 
+  it("sshCapabilitiesGet sends Settings → SSH's refresh to /api/ssh/capabilities, and only then", async () => {
+    // remote-api-refusals.test.ts holds the real server to forwarding exactly this body.
+    const transport = createRemoteTransport();
+    await transport.sshCapabilitiesGet!({ refresh: true });
+    await transport.sshCapabilitiesGet!();
+    const sent = capturedUrls
+      .map((url, index) => ({ url, body: capturedBodies[index] }))
+      .filter(({ url }) => url.includes("/api/ssh/capabilities"));
+    expect(sent.map(({ body }) => body)).toEqual([{ refresh: true }, {}]);
+  });
+
   it("activateSession calls /api/remote-client/session/activate, derives workspaceId from sessionId", async () => {
     const transport = createRemoteTransport();
     await transport.activateSession!("ws1:panel1").catch(() => {});
@@ -1466,13 +1477,14 @@ describe("remote transport endpoint routing", () => {
     await vi.advanceTimersByTimeAsync(25_000);
 
     expect(posted.filter((message) => message.type === "terminal-ready" && message.requestId === 21)).toEqual([
-      expect.objectContaining({ ready: false, viewKind: "empty-state" }),
+      expect.objectContaining({ ready: false, viewKind: "empty-state", reason: "timeout" }),
     ]);
     expect(logRenderer).toHaveBeenCalledTimes(1);
     expect(logRenderer).toHaveBeenCalledWith("warn", "remote terminal readiness timed out", {
       requestId: 21,
       connectionGeneration: 1,
       attempts: 83,
+      reason: "timeout",
     });
   });
 
@@ -2466,18 +2478,23 @@ describe("remote transport failure messages", () => {
     expect(failure.message).toBe("Remote connection failed.");
   });
 
-  it("carries the hint to the connection-state listeners the banner reads", async () => {
+  it("carries the hint to the request-issue listeners the banner reads, without reporting a disconnect", async () => {
     respondWith(403, '{"error":"Mobile sessions cannot switch profiles"}');
     const transport = createRemoteTransport();
     const states: Array<{ connected: boolean; message?: string; hint?: string }> = [];
+    const issues: Array<{ message: string; hint: string; code: number }> = [];
     transport.onConnectionState((state) => states.push(state));
+    transport.onRequestIssue!((issue) => issues.push(issue));
     await transport.getState().catch(() => {});
 
-    const failed = states.find((state) => !state.connected);
-    expect(failed?.message).toBe("This session is tied to one profile.");
     // The store reads the hint from here — a message that arrived without one would leave the
     // banner saying what happened and not what to do, which is where this started.
-    expect(failed?.hint).toContain("strIDEterm app");
+    expect(issues).toEqual([
+      { message: "This session is tied to one profile.", hint: expect.stringContaining("strIDEterm app"), code: 403 },
+    ]);
+    // A refusal is the desktop answering: the connection is fine, and saying otherwise cleared the
+    // terminal's readiness proof and told the phone its transport had dropped.
+    expect(states.filter((state) => !state.connected)).toEqual([]);
   });
 });
 

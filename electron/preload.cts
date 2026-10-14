@@ -371,7 +371,7 @@ contextBridge.exposeInMainWorld("strideterm", {
     ipcRenderer.on("mobile:pairing-progress", (_event, payload) => handler(payload)),
   onMobileDeviceRevoked: (handler) => ipcRenderer.on("mobile:device-revoked", (_event, payload) => handler(payload)),
   // --- SSH actions ---
-  sshCapabilitiesGet: () => ipcRenderer.invoke("ssh:capabilities:get"),
+  sshCapabilitiesGet: (payload?: { refresh?: boolean }) => ipcRenderer.invoke("ssh:capabilities:get", payload),
   sshHostsList: () => ipcRenderer.invoke("ssh:hosts:list"),
   sshHostsCreate: (payload) => ipcRenderer.invoke("ssh:hosts:create", payload),
   sshHostsUpdate: (payload) => ipcRenderer.invoke("ssh:hosts:update", payload),

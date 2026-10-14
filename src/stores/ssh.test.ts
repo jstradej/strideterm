@@ -287,6 +287,81 @@ describe("ssh store", () => {
     expect(api.sshHostsList).toHaveBeenCalled();
   });
 
+  // The capability probe spawns processes on the desktop and took 2.6–4 s per call; joined with the
+  // lists in one Promise.all it held the hosts, keys and certificates back for that long, and every
+  // caller that asked while it ran started a probe of its own.
+  describe("capabilities beside the lists", () => {
+    function slowCapabilities() {
+      let answer: (value: unknown) => void = () => undefined;
+      let fail: (error: Error) => void = () => undefined;
+      const sshCapabilitiesGet = vi.fn(
+        () =>
+          new Promise((resolve, reject) => {
+            answer = resolve;
+            fail = reject;
+          }),
+      );
+      return { sshCapabilitiesGet, answer: (value: unknown) => answer(value), fail: (error: Error) => fail(error) };
+    }
+
+    it("the lists land without waiting for the capability probe", async () => {
+      const probe = slowCapabilities();
+      const { api } = makeFakeApi({ sshCapabilitiesGet: probe.sshCapabilitiesGet });
+      const store = useSshStore();
+      store.init(api as never);
+
+      const loading = store.load();
+      await vi.waitFor(() => expect(store.hosts).toEqual([{ id: "h1", name: "box" }]));
+      expect(store.keys).toEqual([{ id: "k1", label: "laptop" }]);
+      expect(store.capabilities).toBeNull();
+
+      probe.answer({ platform: "win32", systemSsh: true });
+      await loading;
+      expect(store.capabilities).toEqual({ platform: "win32", systemSsh: true });
+    });
+
+    it("loads that overlap share one capability request", async () => {
+      const probe = slowCapabilities();
+      const { api } = makeFakeApi({ sshCapabilitiesGet: probe.sshCapabilitiesGet });
+      const store = useSshStore();
+      store.init(api as never);
+
+      const loads = [store.load(), store.load(), store.load(true)];
+      probe.answer({ platform: "linux" });
+      await Promise.all(loads);
+      expect(probe.sshCapabilitiesGet).toHaveBeenCalledTimes(1);
+      expect(store.capabilities).toEqual({ platform: "linux" });
+    });
+
+    it("Settings → SSH's load(true) asks the desktop to skip its cached preflight; other loads do not", async () => {
+      const sshCapabilitiesGet = vi.fn(async () => ({ platform: "win32" }));
+      const { api } = makeFakeApi({ sshCapabilitiesGet });
+      const store = useSshStore();
+      store.init(api as never);
+
+      await store.load();
+      await store.load(true);
+      expect(sshCapabilitiesGet.mock.calls).toEqual([[undefined], [{ refresh: true }]]);
+    });
+
+    it("a failed capability probe is reported once and leaves the lists alone", async () => {
+      const probe = slowCapabilities();
+      const { api } = makeFakeApi({ sshCapabilitiesGet: probe.sshCapabilitiesGet });
+      const store = useSshStore();
+      store.init(api as never);
+      const notifications = useNotificationStore();
+      const showError = vi.spyOn(notifications, "showError");
+
+      const loads = [store.load(), store.load()];
+      probe.fail(new Error("preflight failed"));
+      await Promise.all(loads);
+      expect(store.hosts).toEqual([{ id: "h1", name: "box" }]);
+      expect(store.error).toBe("preflight failed");
+      expect(showError).toHaveBeenCalledTimes(1);
+      expect(showError).toHaveBeenCalledWith("Load SSH data failed", "preflight failed");
+    });
+  });
+
   // Regression coverage for review-code-quality-2026-07.md finding 1: load()
   // and the store's other mutating actions had no error handling at all —
   // a rejected /api/ssh/* call left hosts/keys/certs permanently empty with

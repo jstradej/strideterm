@@ -394,12 +394,27 @@ export function createRemoteTelemetry(now: () => number = () => Date.now()) {
   };
 }
 
+// Every extension `serveStatic` revalidates has a real type here. One that fell through to
+// `application/octet-stream` was not only mislabelled: the relay connector compresses by type, so the
+// 2.4 MB terminal font crossed the relay uncompressed.
 const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".ico": "image/x-icon",
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1306,10 +1321,18 @@ function requestBootstrapRevision(requestUrl: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-type ResponseWithCtx = ServerResponse & { __remoteCtx?: RemoteAdaptContext };
+type ResponseWithCtx = ServerResponse & {
+  __remoteCtx?: RemoteAdaptContext;
+  /** The `{error}` sentence a failed API response carried, for the strideterm.log line. */
+  __errorMessage?: string;
+};
 
 function json(response: ServerResponse, statusCode: number, body: unknown): void {
   const ctx = (response as ResponseWithCtx).__remoteCtx;
+  const errorMessage = (body as { error?: unknown } | null)?.error;
+  if (statusCode >= 400 && typeof errorMessage === "string") {
+    (response as ResponseWithCtx).__errorMessage = errorMessage.slice(0, 300);
+  }
   const adapted = ctx ? adaptRemoteResponse(body, ctx) : stripSecretsForRemote(body);
   const raw = JSON.stringify(adapted);
   const headers: Record<string, string> = { "Content-Type": "application/json; charset=utf-8" };
@@ -1504,6 +1527,47 @@ const REVALIDATED_STATIC_EXTENSIONS = new Set([
   ".ico",
 ]);
 
+/**
+ * Cache policy for a content-hashed production chunk (`assets/<name>-<hash>.<ext>`).
+ *
+ * Its bytes can never change under that name, so the WebView may keep it for good and never ask
+ * again — over the relay every revalidation was a full round trip per asset on every page load.
+ * `private`, not `public`: these responses do not depend on the session cookie, but nothing is gained
+ * by letting a shared cache (Cloudflare's edge in front of a tunnel hostname) hold the remote UI, and
+ * `immutable` is honoured by the private cache that is the only one that matters here.
+ */
+const IMMUTABLE_ASSET_CACHE_CONTROL = "private, max-age=31536000, immutable";
+/** Vite's `[name]-[hash]` output: an 8-character base64url hash right before the extension. */
+const HASHED_ASSET_NAME = /-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
+/** The production entry chunk index.html loads; the watch build's is the unhashed `assets/index.js`. */
+const HASHED_ENTRY_SCRIPT = /<script\b[^>]*\bsrc="[^"]*\bassets\/index-[A-Za-z0-9_-]{8}\.js"/;
+const hashedBuildByRoot = new Map<string, { mtimeMs: number; hashed: boolean }>();
+
+/**
+ * Whether the build being served names its chunks by content hash.
+ *
+ * A file name alone cannot say so: `dev.ps1`'s watch build (`VITE_BUILD_WATCH=1`) emits UNHASHED
+ * names that are rewritten in place on every rebuild, and some of those look hashed (`wsl-launcher.js`
+ * ends in eight word characters). Marking one of them immutable would pin a stale chunk in a live
+ * phone's cache for a year. So the deciding fact is the build's own entry point: a production
+ * `index.html` loads `assets/index-<hash>.js`, a watch build loads `assets/index.js`. A watch build
+ * over an old production dist rewrites index.html, so every file is revalidated again. Re-read only
+ * when index.html changes.
+ */
+async function isContentHashedBuild(staticRoot: string): Promise<boolean> {
+  const indexPath = path.join(staticRoot, "index.html");
+  try {
+    const { mtimeMs } = await fs.stat(indexPath);
+    const cached = hashedBuildByRoot.get(staticRoot);
+    if (cached && cached.mtimeMs === mtimeMs) return cached.hashed;
+    const hashed = HASHED_ENTRY_SCRIPT.test(await fs.readFile(indexPath, "utf8"));
+    hashedBuildByRoot.set(staticRoot, { mtimeMs, hashed });
+    return hashed;
+  } catch {
+    return false;
+  }
+}
+
 function etagMatches(ifNoneMatch: string | string[] | undefined, etag: string): boolean {
   const raw = Array.isArray(ifNoneMatch) ? ifNoneMatch.join(",") : ifNoneMatch;
   if (!raw) return false;
@@ -1562,7 +1626,12 @@ async function serveStatic(
     if (REVALIDATED_STATIC_EXTENSIONS.has(extension)) {
       const etag = `"${createHash("sha256").update(buffer).digest("base64")}"`;
       headers.ETag = etag;
-      headers["Cache-Control"] = "private, no-cache";
+      const immutable =
+        finalPath === resolvedPath &&
+        url.pathname.startsWith("/assets/") &&
+        HASHED_ASSET_NAME.test(url.pathname) &&
+        (await isContentHashedBuild(staticRoot));
+      headers["Cache-Control"] = immutable ? IMMUTABLE_ASSET_CACHE_CONTROL : "private, no-cache";
       if (etagMatches(requestHeaders["if-none-match"], etag)) {
         writeHead(response, 304, headers);
         response.end();
@@ -1879,8 +1948,8 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   "/api/file/open-in-editor": () => ({ ok: true }),
 
   // --- SSH (remote is read-only per plan §14) ---
-  "/api/ssh/capabilities": async (runtime) => {
-    const capabilities = await runtime["ssh:capabilities:get"]();
+  "/api/ssh/capabilities": async (runtime, body) => {
+    const capabilities = await runtime["ssh:capabilities:get"]({ refresh: body?.refresh === true });
     return {
       ...capabilities,
       permissions: {
@@ -2712,6 +2781,43 @@ export async function startRemoteServer({
     releaseRegistry = runtime.addRemoteClientRegistry?.(registry) ?? releaseRegistry;
   } else {
     runtime.setRemoteClientRegistry?.(registry);
+  }
+
+  /**
+   * A remote request the desktop refused or failed, in strideterm.log.
+   *
+   * A remote page cannot write strideterm.log itself (`rlog` is a no-op there), and a refused request
+   * is a failed user action as often as not — inside the native app its toast is the only other trace.
+   * The API audit log records every request, but it is not the log anyone reads first. Once a minute
+   * per method + route + status, the same throttle the IPC wrapper uses, so a background route that
+   * keeps being refused cannot flood it.
+   */
+  const failedApiRequestLoggedAt = new Map<string, number>();
+  function logFailedApiRequest({
+    method,
+    path: pathname,
+    statusCode,
+    error,
+    sessionId,
+  }: {
+    method: string | undefined;
+    path: string;
+    statusCode: number;
+    error: string | undefined;
+    sessionId: string;
+  }): void {
+    const key = `${method} ${pathname} ${statusCode}`;
+    const now = Date.now();
+    if (now - (failedApiRequestLoggedAt.get(key) ?? -Infinity) < 60_000) return;
+    if (failedApiRequestLoggedAt.size >= 500) failedApiRequestLoggedAt.clear();
+    failedApiRequestLoggedAt.set(key, now);
+    log.warn("remote API request failed", {
+      method,
+      path: pathname,
+      statusCode,
+      ...(error ? { error } : {}),
+      ...(sessionId ? { sessionRef: remoteSessionRef(sessionId) } : {}),
+    });
   }
 
   /** Constant-time compare of the connector guard header against this server's own secret. */
@@ -3739,6 +3845,16 @@ export async function startRemoteServer({
             durationMs: Date.now() - startedAt,
             remoteAddress,
           });
+          if (response.statusCode >= 400) {
+            logFailedApiRequest({
+              method: request.method,
+              path: url.pathname,
+              statusCode: response.statusCode,
+              error: (response as ResponseWithCtx).__errorMessage,
+              // Resolved just below, before any route runs; `finish` is always later.
+              sessionId: apiSessionId,
+            });
+          }
         });
 
         // Bump TTL and get session for per-client endpoints.
@@ -4693,6 +4809,7 @@ export async function startRemoteServer({
     socket: import("ws").WebSocket,
     clientSessionId: string,
     requestedRaw: string[],
+    replayRaw: string[] = [],
   ): void {
     // A well-formed subscribe means a capable client → filtered mode, even if
     // the request is ultimately rejected, so it never falls back to broadcast.
@@ -4738,22 +4855,38 @@ export async function startRemoteServer({
     }
     const client = clientSessionId ? registry.get(clientSessionId) : undefined;
 
-    // Reject the WHOLE request if any id is inaccessible OR names a non-existent
-    // panel; keep the prior set so a partial/ambiguous subscription is never
-    // applied.
+    // Refuse each id that is inaccessible OR names a non-existent panel, and
+    // accept the rest. Refusing the whole request used to let ONE stale id — a
+    // panel removed while the client's set was in flight — leave every visible
+    // terminal of that client unstreamed and unreplayed. Per-id refusal keeps
+    // the profile confinement exactly as strict: a refused id never enters the
+    // live set, so no replay and no frame of it ever reaches this socket.
+    const accepted: string[] = [];
+    let unknown = 0;
+    let outsideProfile = 0;
     for (const id of requested) {
-      if (!validSessionIds.has(id) || !canAccessTerminalSession(client, workspaceProfiles, id)) {
-        log.warn("WebSocket terminal subscribe rejected: inaccessible or unknown session", {
-          sessionRef: remoteSessionRef(clientSessionId),
-        });
-        return;
-      }
+      if (!validSessionIds.has(id)) unknown += 1;
+      else if (!canAccessTerminalSession(client, workspaceProfiles, id)) outsideProfile += 1;
+      else accepted.push(id);
     }
+    if (unknown || outsideProfile) {
+      log.warn("WebSocket terminal subscribe: refused inaccessible or unknown sessions", {
+        sessionRef: remoteSessionRef(clientSessionId),
+        accepted: accepted.length,
+        unknown,
+        outsideProfile,
+      });
+    }
+    // An explicit replay request re-sends the snapshot of an id this socket
+    // already streams: the client lost its proof of having rendered it (it was
+    // told the connection dropped) while the socket itself stayed up, and an
+    // already-subscribed id is otherwise never replayed again.
+    const replayRequested = new Set(replayRaw);
 
     // --- critical section: no await between snapshot and set-add ---
-    const nextSet = new Set(requested);
+    const nextSet = new Set(accepted);
     for (const id of nextSet) {
-      if (routing.sessions.has(id)) continue; // already subscribed — don't re-replay
+      if (routing.sessions.has(id) && !replayRequested.has(id)) continue; // already subscribed — don't re-replay
       const snapshot = runtime.getTerminalReplaySnapshot(id);
       checkedSend(
         socket,
@@ -5268,8 +5401,9 @@ export async function startRemoteServer({
               log.debug("WebSocket terminal subscribe", {
                 sessionRef: remoteSessionRef(wsSessionId),
                 count: parsed.data.sessionIds.length,
+                ...(parsed.data.replay?.length ? { replay: parsed.data.replay.length } : {}),
               });
-              handleTerminalSubscribe(ws, wsSessionId, parsed.data.sessionIds);
+              handleTerminalSubscribe(ws, wsSessionId, parsed.data.sessionIds, parsed.data.replay);
             } else {
               log.warn("WebSocket terminal subscribe rejected: invalid payload", {
                 sessionRef: remoteSessionRef(wsSessionId),

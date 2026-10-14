@@ -742,7 +742,8 @@ export interface StridetermAPI {
   saveFile: (options?: Record<string, unknown>) => Promise<unknown>;
 
   // SSH
-  sshCapabilitiesGet: () => Promise<SshRuntimeCapabilities>;
+  /** `refresh`: the user asked — skip the runtime's cached preflight (a running probe is still shared). */
+  sshCapabilitiesGet: (payload?: { refresh?: boolean }) => Promise<SshRuntimeCapabilities>;
   sshHostsList: () => Promise<unknown>;
   sshHostsCreate: (payload: SshHostCreate) => Promise<unknown>;
   sshHostsUpdate: (payload: SshHostUpdate) => Promise<unknown>;

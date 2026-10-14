@@ -21,7 +21,7 @@ import {
 } from "../ipc-schemas.js";
 import { generateKey } from "./ssh-keygen.js";
 import { parseCertificate } from "./ssh-cert.js";
-import { runPlatformPreflight } from "./ssh-platform.js";
+import { runPlatformPreflight, type PlatformCapabilities } from "./ssh-platform.js";
 
 const { utils } = ssh2;
 
@@ -37,9 +37,64 @@ interface SshHandlersCtx {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   credentialStore: any;
   broadcastState: () => void;
+  /** Clock for the capability cache; tests pin it. */
+  now?: () => number;
 }
 
-export function createSshHandlers({ sshManager, store, credentialStore, broadcastState }: SshHandlersCtx) {
+/**
+ * How long one platform preflight answers every caller.
+ *
+ * The preflight spawns several processes (wsl, tasklist, ssh-keygen, ssh) and took 2.6–4 s, while
+ * the renderer asks for it from several places at startup — every one of them used to pay the full
+ * price, and over the relay that blocked the SSH lists behind it. What it reports (installed binaries,
+ * a running agent) changes on a human time scale; a minute bounds how stale it can get, and any
+ * change to `settings.ssh` (a new ssh path, a new agent path) misses the cache at once.
+ */
+export const SSH_CAPABILITIES_TTL_MS = 60_000;
+
+export function createSshHandlers({
+  sshManager,
+  store,
+  credentialStore,
+  broadcastState,
+  now = Date.now,
+}: SshHandlersCtx) {
+  // Keyed by everything the probe depends on, so a settings change is a miss, not a stale hit.
+  let capabilitiesCache: { key: string; at: number; value: PlatformCapabilities } | null = null;
+  // Concurrent callers share the probe that is already running instead of spawning their own.
+  let capabilitiesProbe: { key: string; promise: Promise<PlatformCapabilities> } | null = null;
+
+  /**
+   * `refresh` is the user asking (Settings → SSH): someone who just installed OpenSSH or started an
+   * agent must not be shown the minute-old answer. It skips the cached value, never a probe that is
+   * already running — that one started after the cached value and answers for both.
+   */
+  async function platformCapabilities(refresh: boolean): Promise<PlatformCapabilities> {
+    const settings = store.getState().settings?.ssh || {};
+    const safeStorageAvailable = credentialStore.isEncryptionAvailable?.() !== false;
+    const key = JSON.stringify({ settings, safeStorageAvailable });
+    if (!refresh && capabilitiesCache?.key === key && now() - capabilitiesCache.at < SSH_CAPABILITIES_TTL_MS) {
+      return capabilitiesCache.value;
+    }
+    if (capabilitiesProbe?.key === key) return capabilitiesProbe.promise;
+    const probe = {
+      key,
+      promise: runPlatformPreflight({
+        safeStorageAvailable,
+        systemSshPath: settings.systemSshPath || "",
+        wslSshExec: settings.wslSshExec || "ssh",
+        agentPath: settings.agentPath || "",
+      }).then((result) => result.capabilities),
+    };
+    capabilitiesProbe = probe;
+    try {
+      const value = await probe.promise;
+      if (capabilitiesProbe === probe) capabilitiesCache = { key, at: now(), value };
+      return value;
+    } finally {
+      if (capabilitiesProbe === probe) capabilitiesProbe = null;
+    }
+  }
   function countReferences(keyId: string) {
     const state = store.getState();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,15 +105,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
   }
 
   return {
-    async "ssh:capabilities:get"() {
-      const settings = store.getState().settings?.ssh || {};
-      const result = await runPlatformPreflight({
-        safeStorageAvailable: credentialStore.isEncryptionAvailable?.() !== false,
-        systemSshPath: settings.systemSshPath || "",
-        wslSshExec: settings.wslSshExec || "ssh",
-        agentPath: settings.agentPath || "",
-      });
-      return result.capabilities;
+    async "ssh:capabilities:get"(payload?: unknown) {
+      return platformCapabilities((payload as { refresh?: unknown } | undefined)?.refresh === true);
     },
     async "ssh:hosts:list"() {
       return sshManager.listHosts();

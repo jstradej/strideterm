@@ -1794,6 +1794,31 @@ export const useAppStore = defineStore("app", () => {
           (connection as AnyApi).reconnectAt,
         );
     });
+    // A request the server refused while the connection is fine: same banner, same hint, but none of
+    // the disconnect handling above — the revision baseline and the socket are still good.
+    //
+    // Inside the native app that banner is not rendered (WorkspaceHero hides it: the app has its own
+    // connection status), so a refused action whose caller shows no toast of its own would end in
+    // silence. There the refusal is a short toast instead — not the dock, which a caller's own error
+    // toast already feeds, and once per message per window so a background route that keeps being
+    // refused cannot flood the screen. The desktop logs every refused request in strideterm.log
+    // (remote-server.ts, `remote API request failed`); this page cannot write there itself.
+    const REFUSAL_TOAST_WINDOW_MS = 10_000;
+    const refusalToastAt = new Map<string, number>();
+    api.onRequestIssue?.((issue) => {
+      if (!issue.message) return;
+      setRemoteConnectionIssue(issue.message, issue.hint);
+      if (typeof (window as AnyApi).StridetermHost?.postMessage !== "function") return;
+      const now = Date.now();
+      if (now - (refusalToastAt.get(issue.message) ?? -Infinity) < REFUSAL_TOAST_WINDOW_MS) return;
+      refusalToastAt.set(issue.message, now);
+      useNotificationStore().pushEphemeralToast({
+        title: issue.message,
+        body: issue.hint,
+        kind: "error",
+        durationMs: 6_000,
+      });
+    });
 
     // Mobile (plan §10.5/§10.3 "mobile:* runtime events pouze pro renderer
     // status/pairing UI"). Absent entirely on the remote transport (Electron-

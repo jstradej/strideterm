@@ -162,12 +162,20 @@ const COMPRESSIBLE_ESSENCES = new Set([
   "application/font-sfnt",
 ]);
 
+/**
+ * Font formats that are compressed containers already — WOFF2 is Brotli inside, WOFF zlib. Deflating
+ * them again spends CPU on both ends to make the body slightly larger.
+ */
+const PRECOMPRESSED_FONT_ESSENCES = new Set(["font/woff", "font/woff2", "application/font-woff"]);
+
 function isCompressibleResponse(response: IncomingMessage): boolean {
   if (response.headers["content-encoding"]) return false;
   const contentType = response.headers["content-type"];
   const essence = (Array.isArray(contentType) ? contentType[0] : contentType)?.split(";")[0]?.trim().toLowerCase();
   if (!essence) return false;
-  // Every `font/*` subtype: listing them one by one is how one gets missed.
+  if (PRECOMPRESSED_FONT_ESSENCES.has(essence)) return false;
+  // Every other `font/*` subtype (ttf, otf, sfnt, collection): listing them one by one is how one gets
+  // missed.
   return essence.startsWith("font/") || COMPRESSIBLE_ESSENCES.has(essence);
 }
 

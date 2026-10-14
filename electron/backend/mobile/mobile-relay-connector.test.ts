@@ -2108,6 +2108,125 @@ describe("relay end-to-end encryption", () => {
       expect(head.h).toContainEqual(["content-encoding", "deflate"]);
     });
 
+    // The fixture origin above labels `/face.ttf` `font/ttf` by hand; the desktop's own server used to
+    // label it `application/octet-stream`, so the 2.4 MB terminal font crossed the relay raw. This one
+    // puts the REAL remote server behind the connector, exactly as MobileRelayManager does
+    // (`startRemoteServer({ loopbackOrigin })`), serving a real TTF from the app's dependencies.
+    test("the desktop's own server's fonts: TTF is deflated, WOFF2 is passed through as it is", async () => {
+      const { startRemoteServer } = await import("../remote-server.js");
+      const fsp = await import("node:fs/promises");
+      const nodePath = await import("node:path");
+      const os = await import("node:os");
+      const staticRoot = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "strideterm-relay-dist-"));
+      const ttf = await fsp.readFile(
+        nodePath.join(process.cwd(), "node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.ttf"),
+      );
+      // WOFF2 is Brotli inside: incompressible bytes stand in for it faithfully.
+      const woff2 = Buffer.concat([Buffer.from("wOF2"), randomBytes(16 * 1024)]);
+      await fsp.mkdir(nodePath.join(staticRoot, "assets"));
+      await fsp.writeFile(
+        nodePath.join(staticRoot, "index.html"),
+        '<script type="module" src="./assets/index-AbCd1234.js"></script>',
+      );
+      await fsp.writeFile(nodePath.join(staticRoot, "assets/codicon-DF1abBS2.ttf"), ttf);
+      await fsp.writeFile(nodePath.join(staticRoot, "assets/face-Q1w2E3r4.woff2"), woff2);
+      const runtime = {
+        getPayload: () => ({
+          appState: {
+            settings: { remoteAccess: { enabled: false, host: "127.0.0.1", port: 0, token: "" } },
+            profiles: [{ id: "default" }],
+            workspaces: [],
+            windowSlots: [],
+          },
+        }),
+        getInitialState: async () => ({}),
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        on: () => () => undefined,
+        off: () => undefined,
+      };
+      const desktop = await startRemoteServer({
+        runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+        staticRoot,
+        loopbackOrigin: { host: "127.0.0.1", port: 0, guardToken: GUARD_TOKEN, publicOrigin: relay.origin },
+      });
+      try {
+        const store = createRelayE2eSessionStore();
+        const keys = makeE2eKeys();
+        store.put(DEVICE_ID, keys, 60_000);
+        await awaitConnectorReady(
+          startConnector({
+            e2eSessionStore: store,
+            internalOrigin: { host: desktop.address!.host, port: desktop.address!.port, guardToken: GUARD_TOKEN },
+          }),
+        );
+        const phone = fakePhone(keys);
+
+        async function fetchThroughRelay(outerId: string, url: string) {
+          relay.send({
+            v: RELAY_PROTOCOL_VERSION,
+            t: "e2e.open",
+            src: "viewer",
+            dst: "connector",
+            s: "x",
+            id: outerId,
+            d: DEVICE_ID,
+          });
+          for (const header of [
+            { t: "http.request.start" as const, m: "GET" as const, u: url, h: [] as [string, string][] },
+            { t: "http.request.end" as const },
+          ]) {
+            const sealed = phone.sealToConnector(outerId, "x", {
+              v: RELAY_PROTOCOL_VERSION,
+              src: "viewer",
+              dst: "connector",
+              s: "inner-session",
+              id: `inner-${outerId}`,
+              ...header,
+            });
+            relay.send(sealed.header, sealed.payload);
+          }
+          const start = phone.open(
+            await relay.waitFor(
+              (frame) =>
+                frame.header.t === "e2e.data" &&
+                frame.header.id === outerId &&
+                phone.open(frame).header.t === "http.response.start",
+            ),
+          );
+          await relay.waitFor(
+            (frame) =>
+              frame.header.t === "e2e.data" &&
+              frame.header.id === outerId &&
+              phone.open(frame).header.t === "http.response.end",
+          );
+          const body = Buffer.concat(
+            relay.frames
+              .filter((frame) => frame.header.t === "e2e.data" && frame.header.id === outerId)
+              .map((frame) => phone.open(frame))
+              .filter((inner) => inner.header.t === "http.response.body")
+              .map((inner) => inner.payload as Buffer),
+          );
+          return { headers: start.header.h ?? [], body };
+        }
+
+        const font = await fetchThroughRelay("outer-real-ttf", "/assets/codicon-DF1abBS2.ttf");
+        expect(font.headers).toContainEqual(["content-type", "font/ttf"]);
+        expect(font.headers).toContainEqual(["content-encoding", "deflate"]);
+        expect(font.headers).toContainEqual(["cache-control", "private, max-age=31536000, immutable"]);
+        expect(font.body.length).toBeLessThan(ttf.length);
+        expect(zlib.inflateRawSync(font.body).equals(ttf)).toBe(true);
+
+        const packed = await fetchThroughRelay("outer-real-woff2", "/assets/face-Q1w2E3r4.woff2");
+        expect(packed.headers).toContainEqual(["content-type", "font/woff2"]);
+        expect(packed.headers.some(([name]) => name === "content-encoding")).toBe(false);
+        expect(packed.body.equals(woff2)).toBe(true);
+      } finally {
+        await desktop.close();
+        await fsp.rm(staticRoot, { recursive: true, force: true });
+      }
+    });
+
     test.each(["/data.json", "/problem.json", "/index.html", "/note.txt"])(
       "the dynamic response %s is NEVER compressed before encryption",
       async (path) => {

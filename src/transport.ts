@@ -88,10 +88,66 @@ interface RemoteTerminalReadyRequest {
   connectionGeneration: number;
 }
 
+/**
+ * Why a readiness answer is `ready:false` — or, for `replay-pending`, why the renderer is still
+ * holding the request. An allowlisted token, never free text: it crosses to the native host, and on a
+ * remote page `rlog` is a no-op, so this field is the only diagnosis the phone can log.
+ *
+ * COMPATIBILITY. `reason` is an EXTRA field on the existing `terminal-ready` message. The phone build
+ * in the field decodes that message by reading named keys (`remote_page_bridge.dart`,
+ * `decodeHostMessage`, case 'terminal-ready') and validates only those, so an unknown key is ignored.
+ * `terminalReadyProtocol` stays 1: the phone treats anything else as a legacy desktop.
+ */
+export type TerminalReadyReason =
+  | "target-mismatch"
+  | "target-changed"
+  | "socket-connecting"
+  | "socket-closed"
+  | "stale-generation"
+  | "disconnected"
+  | "reconnecting"
+  | "superseded"
+  | "replay-pending"
+  | "replay-timeout"
+  | "timeout";
+
+const TERMINAL_READY_REASONS: ReadonlySet<string> = new Set<TerminalReadyReason>([
+  "target-mismatch",
+  "target-changed",
+  "socket-connecting",
+  "socket-closed",
+  "stale-generation",
+  "disconnected",
+  "reconnecting",
+  "superseded",
+  "replay-pending",
+  "replay-timeout",
+  "timeout",
+]);
+
+function terminalReadyReason(value: unknown): TerminalReadyReason | undefined {
+  return typeof value === "string" && TERMINAL_READY_REASONS.has(value) ? (value as TerminalReadyReason) : undefined;
+}
+
 interface RemoteTerminalReadyResult extends RemoteTerminalReadyRequest {
   ready: boolean;
   viewKind: "terminal" | "nonterminal" | "empty-state";
+  /** Sent only with `ready:false`. */
+  reason?: TerminalReadyReason;
 }
+
+/** A request the server refused while the connection itself is fine (any 4xx but 401, a 500…). */
+export interface RemoteRequestIssue {
+  message: string;
+  hint: string;
+  code: number;
+}
+
+/**
+ * Statuses that mean the desktop is not reachable rather than that it refused: the relay's or the
+ * tunnel's gateway answering for an origin that is down or still syncing.
+ */
+const UNREACHABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504, 530]);
 
 // Keep the renderer-side bounded wait aligned with the native 25-second
 // readiness deadline, leaving a small margin for the explicit false reply.
@@ -194,6 +250,7 @@ interface EventHub {
   notificationTargetRemoved: Set<Handler<NotificationTargetRemoved>>;
   approvalRecorded: Set<Handler<ApprovalRecorded>>;
   azureClosedPrCleanupFinished: Set<Handler<AzureClosedPrCleanupFinished>>;
+  requestIssue: Set<Handler<RemoteRequestIssue>>;
 }
 
 /** Extended transport interface covering both Electron and remote modes.
@@ -206,7 +263,7 @@ export interface Transport extends Partial<
 > {
   isRemote: boolean;
   /** Runtime platform and SSH administration capabilities. */
-  sshCapabilitiesGet?: () => Promise<SshRuntimeCapabilities>;
+  sshCapabilitiesGet?: (payload?: { refresh?: boolean }) => Promise<SshRuntimeCapabilities>;
   sshTestStart?: (payload: { profileId: string; draft: Record<string, unknown> }) => Promise<{
     sessionId: string;
     mode: SshTestStatePayload["mode"];
@@ -241,6 +298,12 @@ export interface Transport extends Partial<
   /** Declare the complete set of terminal sessions this client renders.
    *  Idempotent; remote-only (a no-op on the Electron transport). */
   subscribeTerminals: (sessionIds: string[]) => void;
+  /** Ask the server to replay one already-subscribed session again on the current socket. Remote-only;
+   *  false when the session is not subscribed or the socket is not open (nothing was sent). */
+  requestTerminalReplay?: (sessionId: string) => boolean;
+  /** A request the server refused while the connection is fine (remote-only). Not a disconnect: the
+   *  socket, the terminal readiness and the host's connection state are untouched. */
+  onRequestIssue?: (handler: Handler<RemoteRequestIssue>) => void;
   /** Declare the complete set of slim-core DETAIL resources this client renders
    *  (mounted git/docker/inbox/review panes). Idempotent; remote-only. The
    *  server pushes resource:invalidate for changed/new ones. */
@@ -322,6 +385,7 @@ function createEventHub(): EventHub {
     notificationTargetRemoved: new Set(),
     approvalRecorded: new Set(),
     azureClosedPrCleanupFinished: new Set(),
+    requestIssue: new Set(),
   };
 }
 
@@ -504,11 +568,13 @@ export function createRemoteTransport(): Transport {
   let connectionGeneration = 0;
   const pendingTerminalReady = new Map<number, RemoteTerminalReadyRequest>();
   const terminalReadyDispatchAttempts = new Map<number, number>();
+  /** What the renderer last said it is still waiting for, per pending request — names a timeout. */
+  const terminalReadyWaitReasons = new Map<number, TerminalReadyReason>();
   let selectedRemoteTarget: RemoteTerminalReadyRequest["target"] | null = null;
   /** A readiness request was refused only because the current socket had not opened yet. */
   let terminalReadyAwaitingSocket = false;
   function emitConnectionState(payload: ConnectionStatePayload): void {
-    if (!payload.connected) invalidateTerminalReady();
+    if (!payload.connected) invalidateTerminalReady("disconnected");
     const currentPayload = { ...payload, connectionGeneration };
     listeners.connectionState.forEach((handler) => handler(currentPayload));
     const hostPayload = {
@@ -735,15 +801,40 @@ export function createRemoteTransport(): Transport {
   }
 
   function postTerminalReady(result: RemoteTerminalReadyResult): void {
-    postHost({ type: "terminal-ready", ...result });
+    const { reason, ...answer } = result;
+    postHost({ type: "terminal-ready", ...answer, ...(!answer.ready && reason ? { reason } : {}) });
   }
 
-  function invalidateTerminalReady(): void {
+  function forgetTerminalReady(requestId: number): void {
+    pendingTerminalReady.delete(requestId);
+    terminalReadyDispatchAttempts.delete(requestId);
+    terminalReadyWaitReasons.delete(requestId);
+  }
+
+  function invalidateTerminalReady(reason: TerminalReadyReason): void {
     for (const request of pendingTerminalReady.values()) {
-      postTerminalReady({ ...request, ready: false, viewKind: "empty-state" });
+      postTerminalReady({ ...request, ready: false, viewKind: "empty-state", reason });
     }
     pendingTerminalReady.clear();
     terminalReadyDispatchAttempts.clear();
+    terminalReadyWaitReasons.clear();
+  }
+
+  /** Why this transport cannot vouch for `request` right now, or null when it can. */
+  function terminalReadyRefusal(request: RemoteTerminalReadyRequest): TerminalReadyReason | null {
+    if (request.connectionGeneration !== connectionGeneration) return "stale-generation";
+    if (ws?.readyState !== WebSocket.OPEN) {
+      return ws?.readyState === WebSocket.CONNECTING ? "socket-connecting" : "socket-closed";
+    }
+    if (
+      !selectedRemoteTarget ||
+      selectedRemoteTarget.profileId !== request.target.profileId ||
+      selectedRemoteTarget.workspaceId !== request.target.workspaceId ||
+      selectedRemoteTarget.panelId !== request.target.panelId
+    ) {
+      return "target-mismatch";
+    }
+    return null;
   }
 
   function dispatchTerminalReadyRequest(request: RemoteTerminalReadyRequest): void {
@@ -751,22 +842,31 @@ export function createRemoteTransport(): Transport {
     const attempts = (terminalReadyDispatchAttempts.get(request.requestId) || 0) + 1;
     terminalReadyDispatchAttempts.set(request.requestId, attempts);
     if (attempts > TERMINAL_READY_MAX_DISPATCH_ATTEMPTS) {
-      pendingTerminalReady.delete(request.requestId);
-      terminalReadyDispatchAttempts.delete(request.requestId);
+      const reason =
+        terminalReadyWaitReasons.get(request.requestId) === "replay-pending" ? "replay-timeout" : "timeout";
+      forgetTerminalReady(request.requestId);
       rlog("warn", "remote terminal readiness timed out", {
         requestId: request.requestId,
         connectionGeneration: request.connectionGeneration,
         attempts: attempts - 1,
+        reason,
       });
-      postTerminalReady({ ...request, ready: false, viewKind: "empty-state" });
+      postTerminalReady({ ...request, ready: false, viewKind: "empty-state", reason });
       return;
     }
     window.dispatchEvent(
       new CustomEvent("strideterm:remote-terminal-ready-request", {
         detail: {
           ...request,
-          respond: (ready: boolean, viewKind: RemoteTerminalReadyResult["viewKind"]) =>
-            acceptTerminalReadyResult({ ...request, ready, viewKind }),
+          respond: (ready: boolean, viewKind: RemoteTerminalReadyResult["viewKind"], reason?: TerminalReadyReason) =>
+            acceptTerminalReadyResult({ ...request, ready, viewKind, reason }),
+          // The renderer is holding the request on purpose; the next dispatch asks again.
+          waiting: (reason: TerminalReadyReason) => {
+            const known = terminalReadyReason(reason);
+            if (known && pendingTerminalReady.get(request.requestId) === request) {
+              terminalReadyWaitReasons.set(request.requestId, known);
+            }
+          },
         },
       }),
     );
@@ -799,17 +899,15 @@ export function createRemoteTransport(): Transport {
       return;
     const pending = pendingTerminalReady.get(result.requestId);
     if (!pending || !sameTerminalReadyRequest(pending, result)) return;
-    const ready =
-      result.ready &&
-      connectionGeneration === pending.connectionGeneration &&
-      ws?.readyState === WebSocket.OPEN &&
-      !!selectedRemoteTarget &&
-      selectedRemoteTarget.profileId === pending.target.profileId &&
-      selectedRemoteTarget.workspaceId === pending.target.workspaceId &&
-      selectedRemoteTarget.panelId === pending.target.panelId;
-    pendingTerminalReady.delete(result.requestId);
-    terminalReadyDispatchAttempts.delete(result.requestId);
-    postTerminalReady({ ...pending, ready, viewKind: result.viewKind });
+    const refusal = result.ready ? terminalReadyRefusal(pending) : null;
+    const ready = result.ready && !refusal;
+    forgetTerminalReady(result.requestId);
+    postTerminalReady({
+      ...pending,
+      ready,
+      viewKind: result.viewKind,
+      ...(ready ? {} : { reason: refusal ?? terminalReadyReason((value as { reason?: unknown }).reason) }),
+    });
   }
 
   function noteCoreRevision(state: unknown): void {
@@ -832,7 +930,7 @@ export function createRemoteTransport(): Transport {
         selectedRemoteTarget.workspaceId !== nextTarget.workspaceId ||
         selectedRemoteTarget.panelId !== nextTarget.panelId)
     ) {
-      invalidateTerminalReady();
+      invalidateTerminalReady("target-changed");
     }
     selectedRemoteTarget = nextTarget;
     if (selection?.profileId)
@@ -1079,7 +1177,7 @@ export function createRemoteTransport(): Transport {
   }
 
   function connectWebSocket(): void {
-    invalidateTerminalReady();
+    invalidateTerminalReady("reconnecting");
     connectionGeneration += 1;
     const socketGeneration = connectionGeneration;
     const nextWs = new WebSocket(buildWsUrl());
@@ -1494,30 +1592,20 @@ export function createRemoteTransport(): Transport {
         if (!isTerminalReadyRequest(request)) return;
         const prior = pendingTerminalReady.get(request.requestId);
         if (prior) {
-          pendingTerminalReady.delete(request.requestId);
-          terminalReadyDispatchAttempts.delete(request.requestId);
-          postTerminalReady({ ...prior, ready: false, viewKind: "empty-state" });
+          forgetTerminalReady(request.requestId);
+          postTerminalReady({ ...prior, ready: false, viewKind: "empty-state", reason: "superseded" });
         }
-        if (
-          request.connectionGeneration !== connectionGeneration ||
-          ws?.readyState !== WebSocket.OPEN ||
-          !selectedRemoteTarget ||
-          selectedRemoteTarget.profileId !== request.target.profileId ||
-          selectedRemoteTarget.workspaceId !== request.target.workspaceId ||
-          selectedRemoteTarget.panelId !== request.target.panelId
-        ) {
-          if (request.connectionGeneration === connectionGeneration && ws?.readyState === WebSocket.CONNECTING) {
-            terminalReadyAwaitingSocket = true;
-          }
-          postTerminalReady({ ...request, ready: false, viewKind: "empty-state" });
+        const refusal = terminalReadyRefusal(request);
+        if (refusal) {
+          if (refusal === "socket-connecting") terminalReadyAwaitingSocket = true;
+          postTerminalReady({ ...request, ready: false, viewKind: "empty-state", reason: refusal });
           return;
         }
         if (pendingTerminalReady.size >= 8 && !pendingTerminalReady.has(request.requestId)) {
           const oldest = pendingTerminalReady.values().next().value as RemoteTerminalReadyRequest | undefined;
           if (oldest) {
-            pendingTerminalReady.delete(oldest.requestId);
-            terminalReadyDispatchAttempts.delete(oldest.requestId);
-            postTerminalReady({ ...oldest, ready: false, viewKind: "empty-state" });
+            forgetTerminalReady(oldest.requestId);
+            postTerminalReady({ ...oldest, ready: false, viewKind: "empty-state", reason: "superseded" });
           }
         }
         pendingTerminalReady.set(request.requestId, request);
@@ -1632,7 +1720,10 @@ export function createRemoteTransport(): Transport {
   // notify server. 2 s window dedupes them without delaying a genuine
   // resume probe perceptibly.
   const PROBE_THROTTLE_MS = 2_000;
-  let lastProbeAt = 0;
+  // A transport that was just created is not resuming anything: its socket and its bootstrap
+  // `/api/state` are both brand new. Claiming the window at construction keeps a `focus` that the
+  // page load itself fires from sending a second `/api/state` right behind the bootstrap one.
+  let lastProbeAt = Date.now();
   function probeAfterResume(): void {
     if (typeof document === "undefined") return;
     if (document.visibilityState !== "visible") return;
@@ -1673,8 +1764,13 @@ export function createRemoteTransport(): Transport {
   }
   if (typeof window !== "undefined") {
     // pageshow fires on bfcache restore — visibilitychange may NOT fire in
-    // that path on some browsers, so we listen to both.
-    window.addEventListener("pageshow", probeAfterResume);
+    // that path on some browsers, so we listen to both. Only a RESTORE
+    // (`persisted`): every ordinary page load also fires pageshow, right after
+    // the load event, and probing then sent every mobile page load a second
+    // /api/state ~200 ms after the bootstrap one.
+    window.addEventListener("pageshow", (event) => {
+      if ((event as PageTransitionEvent).persisted) probeAfterResume();
+    });
     // focus event covers desktop alt-tab back to a stale tab.
     window.addEventListener("focus", probeAfterResume);
   }
@@ -1709,6 +1805,22 @@ export function createRemoteTransport(): Transport {
   function emitFetchConnected(): void {
     if (suspended) return;
     emitConnectionState({ connected: true, message: "" });
+  }
+
+  /**
+   * The server answered, and refused or failed THIS request. That says nothing about the connection:
+   * the socket is still up and still streaming. Reporting it as `connected:false` (as every non-OK
+   * reply once was) told the native host the transport had dropped, cleared the terminal's readiness
+   * proof — which the server never re-sends on a socket that stays subscribed — and so turned one
+   * refused route into a phone stuck on "connecting". The banner still shows it: same message, same
+   * hint, through a channel that does not claim a disconnect.
+   */
+  function reportRequestIssue(error: RemoteError): void {
+    safeDispatch(
+      listeners.requestIssue,
+      { message: error.message, hint: error.hint, code: error.statusCode },
+      "requestIssue",
+    );
   }
 
   async function fetchJson(
@@ -1801,12 +1913,18 @@ export function createRemoteTransport(): Transport {
         throw pausedError;
       }
       if (options.emitConnectionState !== false) {
-        emitConnectionState({
-          connected: false,
-          message: error.message,
-          hint: error.hint,
-          code: response.status,
-        });
+        // Only a gateway answering for an unreachable desktop is a lost connection; any other status
+        // is the desktop itself answering this one request (see `reportRequestIssue`).
+        if (UNREACHABLE_STATUSES.has(response.status)) {
+          emitConnectionState({
+            connected: false,
+            message: error.message,
+            hint: error.hint,
+            code: response.status,
+          });
+        } else {
+          reportRequestIssue(error);
+        }
       }
       throw error;
     }
@@ -1822,6 +1940,8 @@ export function createRemoteTransport(): Transport {
         kind: "invalid-response",
         rawMessage: "The remote server returned an invalid JSON response.",
       });
+      // Not the desktop's API answering: in practice a proxy or captive-portal page stood in for it,
+      // so this request did not reach the desktop at all.
       if (options.emitConnectionState !== false) {
         emitConnectionState({ connected: false, message: error.message, hint: error.hint, code: response.status });
       }
@@ -2269,7 +2389,10 @@ export function createRemoteTransport(): Transport {
     fileCommitFiles: (p) => fetchJson("/api/file/commit-files", p),
     fileCommitDiff: (p) => fetchJson("/api/file/commit-diff", p),
 
-    sshCapabilitiesGet: () => fetchJson("/api/ssh/capabilities", {}).then((result) => result as SshRuntimeCapabilities),
+    sshCapabilitiesGet: (payload) =>
+      fetchJson("/api/ssh/capabilities", payload?.refresh ? { refresh: true } : {}).then(
+        (result) => result as SshRuntimeCapabilities,
+      ),
     sshHostsList: () => fetchJson("/api/ssh/hosts/list", {}),
     sshHostsCreate: (payload) => fetchJson("/api/ssh/hosts/create", payload),
     sshHostsUpdate: (payload) => fetchJson("/api/ssh/hosts/update", payload),
@@ -2337,6 +2460,20 @@ export function createRemoteTransport(): Transport {
       // If not open, the connectWebSocket open handler re-sends the remembered
       // set — no need to queue it (and re-queuing would double-send).
     },
+    requestTerminalReplay: (sessionId: string): boolean => {
+      // The server replays an id once per socket, on the subscribe that adds it. A renderer that lost
+      // its proof of having parsed that replay to a dropped-connection report the socket itself
+      // survived would otherwise wait for a replay that never comes. The same subscription is re-sent
+      // unchanged, so nothing else about the routing moves.
+      const current = ws;
+      if (!sessionId || !hasSubscribedTerminals || !lastTerminalSubscription.includes(sessionId)) return false;
+      if (current?.readyState !== WebSocket.OPEN) return false;
+      current.send(
+        JSON.stringify({ type: "terminal:subscribe", sessionIds: lastTerminalSubscription, replay: [sessionId] }),
+      );
+      return true;
+    },
+    onRequestIssue: (handler: Handler<RemoteRequestIssue>) => listeners.requestIssue.add(handler),
     subscribeResources: (resources: string[]) => {
       // Idempotence at the source (panes recompute their interest set on every
       // mount/unmount/grid change): an unchanged set is not re-sent. Reconnects

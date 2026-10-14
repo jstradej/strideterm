@@ -47,3 +47,29 @@ export async function detectWslDistros(): Promise<WslDistros | null> {
     return { installed: false, distros: [], error: (err as Error).message };
   }
 }
+
+/**
+ * The distributions that are running right now, or null when WSL cannot say.
+ *
+ * `wsl -l --running -q` prints bare names, so this reads the same in every Windows display language
+ * (the STATE column of `wsl -l -v` is localized). The capability probe asks only running
+ * distributions whether they have ssh: `wsl -d <distro> -- …` BOOTS a stopped one, which takes
+ * seconds and is a side effect nobody asked for by opening a dialog.
+ */
+export async function listRunningWslDistros(): Promise<string[] | null> {
+  if (process.platform !== "win32") return null;
+  try {
+    const { stdout } = await execFileAsync("wsl.exe", ["-l", "--running", "-q"], {
+      env: { ...process.env, WSL_UTF8: "1" },
+      timeout: 5000,
+      windowsHide: true,
+    });
+    return stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/\0/g, ""))
+      .filter(Boolean);
+  } catch {
+    // Older WSL builds exit non-zero when nothing runs; either way nothing is known to be running.
+    return null;
+  }
+}
