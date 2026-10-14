@@ -9,3 +9,20 @@ export interface ErrResult {
 }
 
 export type IpcResult<T> = OkResult<T> | ErrResult;
+export interface AzureClosedPrCleanupSkipped {
+  workspaceId: string;
+  name: string;
+  reason: string;
+}
+
+export interface AzureClosedPrCleanupError {
+  workspaceId: string;
+  name: string;
+  error: string;
+}
+
+export interface AzureClosedPrCleanupResult {
+  deleted: number;
+  skipped: AzureClosedPrCleanupSkipped[];
+  errors: AzureClosedPrCleanupError[];
+}

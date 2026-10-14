@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   saveAzureConnection: (connection) => ipcRenderer.invoke("azure:save-connection", connection),
   deleteAzureConnection: (connectionId) => ipcRenderer.invoke("azure:delete-connection", connectionId),
   refreshAzure: () => ipcRenderer.invoke("azure:refresh"),
+  cleanupAzureClosedPullRequests: (parentWorkspaceId) =>
+    ipcRenderer.invoke("azure:workspace:cleanup-closed-prs", { parentWorkspaceId }),
   queryAzureAuditLog: (filters) => ipcRenderer.invoke("azure:audit-log:query", filters),
   getAzureAuditStats: (filters) => ipcRenderer.invoke("azure:audit-log:stats", filters),
   queryApprovalAuditLog: (filters) => ipcRenderer.invoke("approvals:audit-log:query", filters),

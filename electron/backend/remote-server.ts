@@ -49,6 +49,7 @@ import {
   gitStashListSchema,
   gitSquashSchema,
   mobileSessionBootstrapSchema,
+  azureClosedPrCleanupSchema,
   mobileAttachmentEnvelopeSchema,
   mobileAttachmentOperationSchema,
   taskUpdateDescriptionSchema,
@@ -3179,6 +3180,10 @@ export async function startRemoteServer({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (body: any, windowId: string) => Promise<unknown>
   > = {
+    "/api/azure/workspace/cleanup-closed-prs": (body, windowId) => {
+      const parsed = validateIpc(azureClosedPrCleanupSchema, body, "POST /api/azure/workspace/cleanup-closed-prs");
+      return runtime.cleanupAzureClosedPullRequests(parsed.parentWorkspaceId, windowId);
+    },
     "/api/azure/pull-request/open": (body, windowId) => runtime.openAzurePullRequest(body, windowId),
     "/api/github/pull-request/open": (body, windowId) => runtime.openGitHubPullRequest(body, windowId),
     // Per-PR review mutations post externally-visible side effects (a comment

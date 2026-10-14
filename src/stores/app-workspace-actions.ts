@@ -12,7 +12,7 @@ import {
   isBrowserViewId,
   isTaskDashboardViewId,
 } from "../app/helpers.js";
-import type { Ref, ShallowRef, ComputedRef } from "vue";
+import { ref, type Ref, type ShallowRef, type ComputedRef } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-display.js";
 import { isCompanionPrimaryViewId } from "../../electron/shared/companion-primary.js";
@@ -90,6 +90,26 @@ interface WorkspaceActionsCtx {
  *   workspaceTabs, getApi, adoptPayload, withSuppressedBroadcast
  */
 export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
+  const azureClosedPrCleanupBusy = ref<Record<string, boolean>>({});
+
+  function isAzureClosedPrCleanupBusy(workspaceId: string): boolean {
+    return !!azureClosedPrCleanupBusy.value[workspaceId];
+  }
+
+  async function cleanupAzureClosedPullRequests(parentWorkspaceId: string) {
+    if (isAzureClosedPrCleanupBusy(parentWorkspaceId)) {
+      throw new Error("Closed pull request cleanup is already running for this Azure workspace.");
+    }
+    azureClosedPrCleanupBusy.value = { ...azureClosedPrCleanupBusy.value, [parentWorkspaceId]: true };
+    try {
+      return await (ctx.getApi() as CallableTransport).cleanupAzureClosedPullRequests(parentWorkspaceId);
+    } finally {
+      const next = { ...azureClosedPrCleanupBusy.value };
+      delete next[parentWorkspaceId];
+      azureClosedPrCleanupBusy.value = next;
+    }
+  }
+
   // --- Workspace CRUD ----------------------------------------------------
 
   function confirmInApp({
@@ -792,6 +812,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
   return {
     confirmInApp,
+    cleanupAzureClosedPullRequests,
+    isAzureClosedPrCleanupBusy,
     saveWorkspace,
     detachWorkspaceReview,
     confirmAndDetachWorkspaceReview,

@@ -1,4 +1,5 @@
 import type { StatePayload, RecoveryResult } from "./types/state.js";
+import type { AzureClosedPrCleanupResult } from "./types/ipc-results.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
@@ -228,6 +229,7 @@ export interface StridetermAPI {
   saveAzureConnection: (connection: AzureConnectionPayload) => Promise<unknown>;
   deleteAzureConnection: (connectionId: string) => Promise<unknown>;
   refreshAzure: () => Promise<unknown>;
+  cleanupAzureClosedPullRequests: (parentWorkspaceId: string) => Promise<AzureClosedPrCleanupResult>;
   queryAzureAuditLog: (filters: AzureAuditLogQuery) => Promise<unknown>;
   getAzureAuditStats: (filters: AzureAuditLogStats) => Promise<unknown>;
   queryApprovalAuditLog: (filters: ApprovalAuditLogQuery) => Promise<unknown>;

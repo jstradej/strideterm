@@ -8,6 +8,7 @@ import type {
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
+import type { AzureClosedPrCleanupResult } from "../electron/shared/types/ipc-results.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type {
   SshAuthRequest,
@@ -2007,6 +2008,10 @@ export function createRemoteTransport(): Transport {
     saveAzureConnection: (connection) => fetchJson("/api/azure/save-connection", { connection }),
     deleteAzureConnection: (connectionId) => fetchJson("/api/azure/delete-connection", { connectionId }),
     refreshAzure: () => fetchJson("/api/azure/refresh", {}),
+    cleanupAzureClosedPullRequests: (parentWorkspaceId) =>
+      fetchJson("/api/azure/workspace/cleanup-closed-prs", {
+        parentWorkspaceId,
+      }) as Promise<AzureClosedPrCleanupResult>,
     queryAzureAuditLog: (filters) => fetchJson("/api/azure/audit-log/query", filters),
     getAzureAuditStats: (filters) => fetchJson("/api/azure/audit-log/stats", filters),
     // Read-only, hence remote-reachable — unlike the setting that produces the

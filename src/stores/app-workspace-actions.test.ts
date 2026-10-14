@@ -61,7 +61,7 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
     () => [] as { id: string; type: string; title: string; status: string; tone: string }[],
   );
 
-  const api = {
+  const api: AnyApi = {
     deleteWorkspace: vi.fn(async () => initialPayload),
     ...apiOverrides,
   };
@@ -412,6 +412,29 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     expect(toast.body).toContain("ECONNREFUSED");
     expect(toast.copyPath).toBe("");
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
+  });
+});
+
+describe("createWorkspaceActions.cleanupAzureClosedPullRequests", () => {
+  it("keeps per-parent busy state through the async request and clears it afterward", async () => {
+    const initial = { appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" } };
+    let finishRequest: () => void = () => {};
+    const request = new Promise<AnyApi>((resolve) => {
+      finishRequest = () => resolve({ deleted: 1, skipped: [], errors: [] });
+    });
+    const cleanupAzureClosedPullRequests = vi.fn(() => request);
+    const { ctx } = makeCtx(initial, { cleanupAzureClosedPullRequests });
+    const actions = createWorkspaceActions(ctx);
+
+    const finished = actions.cleanupAzureClosedPullRequests("ws-A");
+    expect(actions.isAzureClosedPrCleanupBusy("ws-A")).toBe(true);
+    expect(actions.isAzureClosedPrCleanupBusy("ws-B")).toBe(false);
+    await expect(actions.cleanupAzureClosedPullRequests("ws-A")).rejects.toThrow("already running");
+    expect(cleanupAzureClosedPullRequests).toHaveBeenCalledOnce();
+
+    finishRequest();
+    await expect(finished).resolves.toEqual({ deleted: 1, skipped: [], errors: [] });
+    expect(actions.isAzureClosedPrCleanupBusy("ws-A")).toBe(false);
   });
 });
 

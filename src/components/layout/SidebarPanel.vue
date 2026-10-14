@@ -261,6 +261,21 @@
         &#x2715; Delete
       </button>
       <button
+        v-if="wsMenu.ws.kind === 'azure'"
+        type="button"
+        class="context-menu__item context-menu__item--danger"
+        :disabled="store.isAzureClosedPrCleanupBusy(String(wsMenu.ws.id))"
+        title="Delete review workspaces for all completed or abandoned Azure DevOps pull requests. External checkouts are skipped."
+        @click="onMenuAction('cleanup-closed-prs')"
+      >
+        <span aria-hidden="true">&#x1F5D1;</span>
+        <span>{{
+          store.isAzureClosedPrCleanupBusy(String(wsMenu.ws.id))
+            ? "Cleaning closed PRs…"
+            : "Delete closed PR workspaces"
+        }}</span>
+      </button>
+      <button
         type="button"
         class="context-menu__item"
         title="Remove only the sidebar entry — leaves files on disk untouched. Use when a regular Delete couldn't finish (locked files, missing directory, manually deleted worktree) so the orphan entry sticks around."
@@ -376,7 +391,7 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
   if (!payload) return [];
   const azureDevops = payload.azureDevops as AzureDevopsWithPrs | undefined;
   const github = payload.github as AzureDevopsWithPrs | undefined;
-  return buildWorkspaceCards({
+  const cards = buildWorkspaceCards({
     workspaces: store.filteredWorkspaces,
     activeWorkspaceId: store.myActiveWorkspaceId || "",
     // Sidebar cards read only the six light git fields — pull from gitSummaries
@@ -421,6 +436,10 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
       return null;
     },
   }) as WorkspaceCardData[];
+  return cards.map((card) => ({
+    ...card,
+    cleanupBusy: card.kind === "azure" && store.isAzureClosedPrCleanupBusy(card.id),
+  }));
 });
 
 const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
@@ -1391,6 +1410,65 @@ function onMenuAction(action: string): void {
     openInGrid(ws.id as string);
   } else if (action === "detach-review") {
     void detachReview(ws.id as string);
+  } else if (action === "cleanup-closed-prs") {
+    void cleanupClosedPullRequests(ws.id as string, String(ws.name || "Azure DevOps"));
+  }
+}
+
+async function cleanupClosedPullRequests(parentWorkspaceId: string, parentName: string): Promise<void> {
+  const confirmed = await store.confirmInApp({
+    title: "Delete closed PR workspaces?",
+    message: `Delete the review workspaces and their owned checkout directories for every completed or abandoned Azure DevOps pull request under “${parentName}”? External or unmanaged checkout directories will be skipped and left untouched. This runs in the background; other workspaces remain available.`,
+    confirmLabel: "Delete closed PRs",
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  try {
+    const result = await store.cleanupAzureClosedPullRequests(parentWorkspaceId);
+    const skippedCount = result.skipped.length;
+    const skipCategories = new Map<string, number>();
+    for (const entry of result.skipped) {
+      const reason = entry.reason.toLowerCase();
+      const category = reason.includes("external or unmanaged checkout")
+        ? "external or unmanaged checkouts"
+        : reason.includes("still active")
+          ? "active PRs"
+          : reason.includes("status could not be verified") || reason.includes("status is not closed")
+            ? "unverified PR statuses"
+            : reason.includes("missing or unsafe") || reason.includes("not a pr child")
+              ? "missing or unsafe checkouts"
+              : "other reasons";
+      skipCategories.set(category, (skipCategories.get(category) || 0) + 1);
+    }
+    const skipSummary = [...skipCategories].map(([category, count]) => `${count} ${category}`).join(", ");
+    const errorLines = result.errors.map((entry) => `${entry.name || entry.workspaceId}: ${entry.error}`);
+    const details = [
+      `Deleted ${result.deleted} closed PR workspace${result.deleted === 1 ? "" : "s"}.`,
+      `Skipped ${skippedCount} workspace${skippedCount === 1 ? "" : "s"}${skipSummary ? `: ${skipSummary}` : ""}.`,
+      ...(errorLines.length ? [`Errors (${errorLines.length}):`, ...errorLines.map((line) => `• ${line}`)] : []),
+    ].join("\n");
+    if (errorLines.length) {
+      notifications.pushPersistentToast({
+        title: "Closed PR cleanup finished with errors",
+        body: details,
+        kind: "error",
+      });
+    } else {
+      notifications.pushEphemeralToast({
+        title: "Closed PR cleanup finished",
+        body: details,
+        kind: skippedCount ? "info" : "success",
+        durationMs: 7000,
+      });
+    }
+  } catch (err) {
+    notifications.pushEphemeralToast({
+      title: "Closed PR cleanup failed",
+      body: (err as Error)?.message || "Could not clean up closed Azure DevOps pull request workspaces.",
+      kind: "error",
+      durationMs: 8000,
+    });
   }
 }
 

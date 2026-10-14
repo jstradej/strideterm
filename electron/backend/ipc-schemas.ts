@@ -937,6 +937,9 @@ export type WorkspaceReorder = z.infer<typeof workspaceReorderSchema>;
 export const workspaceIdSchema = z.string().min(1);
 export type WorkspaceId = z.infer<typeof workspaceIdSchema>;
 
+export const azureClosedPrCleanupSchema = z.object({ parentWorkspaceId: nonEmptyString }).strict();
+export type AzureClosedPrCleanup = z.infer<typeof azureClosedPrCleanupSchema>;
+
 export const workspaceDeleteOptionsSchema = z
   .object({
     deleteFromDisk: z.boolean().optional(),

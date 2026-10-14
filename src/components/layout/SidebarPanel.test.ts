@@ -414,6 +414,64 @@ describe("SidebarPanel — detach from PR review menu entry", () => {
   });
 });
 
+describe("SidebarPanel — Azure closed PR cleanup", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+  });
+
+  it("shows one destructive confirmation, runs cleanup, and reports skipped workspaces", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: [{ ...BASE_WORKSPACES[0], kind: "azure" }, BASE_WORKSPACES[1]] });
+    const confirm = vi.spyOn(store, "confirmInApp").mockResolvedValue(true);
+    const cleanup = vi.spyOn(store, "cleanupAzureClosedPullRequests").mockResolvedValue({
+      deleted: 2,
+      skipped: [
+        {
+          workspaceId: "external",
+          name: "External checkout",
+          reason: "Workspace is linked to an external or unmanaged checkout.",
+        },
+      ],
+      errors: [],
+    });
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
+    await wrapper.find('[data-workspace-id="ws-A"] .workspace-card__action--menu').trigger("click");
+    const button = [...document.querySelectorAll(".context-menu .context-menu__item")].find((el) =>
+      (el.textContent || "").includes("Delete closed PR workspaces"),
+    ) as HTMLElement;
+    button.click();
+    await flushPromises();
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(confirm.mock.calls[0][0]).toMatchObject({ danger: true, confirmLabel: "Delete closed PRs" });
+    expect(confirm.mock.calls[0][0].message).toContain("External or unmanaged checkout directories will be skipped");
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledWith("ws-A");
+    const toast = useNotificationStore().persistentToasts.at(-1);
+    expect(toast?.body).toContain("Deleted 2 closed PR workspaces.");
+    expect(toast?.body).toContain("Skipped 1 workspace: 1 external or unmanaged checkouts.");
+    wrapper.unmount();
+  });
+
+  it("shows a parent spinner and disables the cleanup menu item while busy", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: [{ ...BASE_WORKSPACES[0], kind: "azure" }] });
+    vi.spyOn(store, "isAzureClosedPrCleanupBusy").mockImplementation((id) => id === "ws-A");
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
+
+    expect(
+      wrapper.find('[data-workspace-id="ws-A"] .workspace-card__cleanup-spinner').attributes("aria-label"),
+    ).toContain("Cleaning closed Azure DevOps");
+    await wrapper.find('[data-workspace-id="ws-A"] .workspace-card__action--menu').trigger("click");
+    const button = [...document.querySelectorAll(".context-menu .context-menu__item")].find((el) =>
+      (el.textContent || "").includes("Cleaning closed PRs"),
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    wrapper.unmount();
+  });
+});
+
 describe("SidebarPanel — remote profile fallback", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

@@ -28,6 +28,13 @@
         :title="statusDot.label"
       ></span>
       <span
+        v-if="workspace.cleanupBusy"
+        class="workspace-card__cleanup-spinner"
+        role="status"
+        aria-label="Cleaning closed Azure DevOps pull request workspaces"
+        title="Cleaning closed pull request workspaces…"
+      ></span>
+      <span
         v-if="workspace.slotIndex"
         class="workspace-card__slot"
         :title="`Grid slot ${workspace.slotIndex}${workspace.slotIndex <= 4 ? ` — focus with Alt+${workspace.slotIndex}` : ''}`"
@@ -153,6 +160,7 @@ interface WorkspaceCardData {
   relativeAge?: string;
   lastActivity?: string;
   lastActivityTitle?: string;
+  cleanupBusy?: boolean;
 }
 
 const props = defineProps<{

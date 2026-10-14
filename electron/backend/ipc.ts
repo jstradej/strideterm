@@ -21,6 +21,7 @@ import {
   settingsSchema,
   remoteSessionRevokeSchema,
   azureConnectionSchema,
+  azureClosedPrCleanupSchema,
   azureCommentSchema,
   azureVoteSchema,
   azureThreadStatusSchema,
@@ -588,6 +589,14 @@ export function registerIpc(
   handle("azure:refresh", async () =>
     withOperationPromise({ opId: "azure:refresh" }, () => runtime.refreshAzureState()),
   );
+  handle("azure:workspace:cleanup-closed-prs", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    const validated = validateIpc(azureClosedPrCleanupSchema, payload, "azure:workspace:cleanup-closed-prs");
+    return withOperationPromise(
+      { workspaceId: validated.parentWorkspaceId, opId: "azure:workspace:cleanup-closed-prs" },
+      () => runtime.cleanupAzureClosedPullRequests(validated.parentWorkspaceId, windowId),
+    );
+  });
   handle("azure:audit-log:query", async (_event, payload) =>
     withOperationPromise({ opId: "azure:audit-log:query" }, () =>
       runtime.queryAzureAuditLog(validateIpc(azureAuditLogQuerySchema, payload, "azure:audit-log:query")),

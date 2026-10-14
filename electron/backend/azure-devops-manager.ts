@@ -287,6 +287,24 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return { connection: result.connection as AzureConnection, token: result.token };
   }
 
+  async getPullRequestStatus(
+    connectionId: string,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ): Promise<string> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const pullRequest = (await this.azureApi.getPullRequestById(
+      connection,
+      token,
+      projectName,
+      repositoryId,
+      pullRequestId,
+    )) as { status?: unknown };
+    return String(pullRequest?.status || "").toLowerCase();
+  }
+
   constructor(
     {
       credentialStore,

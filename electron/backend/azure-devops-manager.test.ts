@@ -103,6 +103,9 @@ function createFetchStub() {
         }),
       };
     }
+    if (/\/pullRequests\/[^/?]+\?/.test(href)) {
+      return { ok: true, json: async () => ({ status: "completed" }) };
+    }
     if (href.includes("/threads?")) {
       return {
         ok: true,
@@ -256,6 +259,22 @@ const connection = {
 };
 
 describe("AzureDevOpsManager", () => {
+  test("fetches one PR status directly without loading its threads", async () => {
+    const { manager, fetchImpl } = createManager();
+    manager.setSnapshot({
+      connections: [{ ...connection, profileId: "default" }],
+      reviewActivity: [],
+      pullRequests: {},
+      trackedPullRequests: {},
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+      sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+    });
+
+    await expect(manager.getPullRequestStatus("ado-main", "Platform", "repo-1", 123)).resolves.toBe("completed");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).toContain("/Platform/_apis/git/repositories/repo-1/pullRequests/123");
+  });
+
   test("verifies a connection by listing projects", async () => {
     const { manager } = createManager();
 

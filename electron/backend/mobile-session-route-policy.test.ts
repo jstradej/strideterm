@@ -154,6 +154,7 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/azure/refresh": "guarded",
   "/api/azure/rerun-check": "guarded",
   "/api/azure/workspace/fetch": "guarded",
+  "/api/azure/workspace/cleanup-closed-prs": "guarded",
   "/api/azure/workspace/push": "guarded",
   "/api/azure/workspace/rebase": "guarded",
   "/api/azure/workspace/sync": "guarded",

@@ -17,7 +17,9 @@ import { strayStatePayloadKeys } from "./remote-core.js";
 import { normalizeCwd } from "./notify-url-registry.js";
 import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
+import { shortPathKey } from "./azure-devops-utils.js";
 import { REMOTE_ACCESS_TOKEN_REF } from "./shared/connection-secret.js";
+import type { WorkspaceState } from "../shared/types/state.js";
 import { readFileContent, withCallerProfile } from "./file-manager.js";
 import { createInMemoryMobileFirebaseTransport } from "./mobile/mobile-firebase-transport.js";
 import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
@@ -13326,6 +13328,198 @@ describe("session activityStartedAt — run-start stamp for elapsed", () => {
     const done = stampOf(fixture)!;
     expect(typeof done.activityStartedAt).toBe("number");
     expect(done.activityStartedAt).toBe(0);
+  });
+});
+
+describe("Azure closed PR workspace cleanup", () => {
+  type CleanupChildSpec = { id: string; prId: string; name?: string; cwd?: string; rootPath?: string; mode?: string };
+
+  function fakeAzureManager(statusFor: (prId: string) => Promise<string>) {
+    return class extends EventEmitter {
+      snapshot = {
+        connections: [],
+        inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+        trackedPullRequests: {},
+        pullRequests: {},
+        sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+      };
+      getSnapshot() {
+        return structuredClone(this.snapshot);
+      }
+      async sync() {
+        return this.getSnapshot();
+      }
+      async getPullRequestStatus(_connectionId: string, _projectName: string, _repositoryId: string, prId: string) {
+        return statusFor(prId);
+      }
+      stopPolling() {}
+      configurePolling() {}
+    };
+  }
+
+  async function makeAzureCleanupFixture(statusFor: (prId: string) => Promise<string>, children: CleanupChildSpec[]) {
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-ado-cleanup-"));
+    tempPaths.push(parentRoot);
+    const connectionId = "ado-cleanup";
+    const ownedRoot = path.join(parentRoot, "reviews", shortPathKey(connectionId, "connection"));
+    const parent = {
+      id: "azure-root",
+      name: "Azure DevOps",
+      kind: "azure",
+      connectionId,
+      cwd: parentRoot,
+      profileId: "default",
+      panels: [],
+    };
+    const workspaces = [
+      parent,
+      ...children.map((child: CleanupChildSpec) => ({
+        id: child.id,
+        name: child.name || child.id,
+        kind: "terminal",
+        cwd: child.cwd || path.join(ownedRoot, `pr-${child.prId}`),
+        profileId: "default",
+        panels: [],
+        review: {
+          provider: "azure-devops",
+          parentWorkspaceId: "azure-root",
+          connectionId,
+          prKey: `${connectionId}:repo-1:${child.prId}`,
+          project: { id: "project-1", name: "Platform" },
+          repository: { id: "repo-1", name: "web-app" },
+          pullRequest: { id: Number(child.prId), status: "completed" },
+          checkout: {
+            mode: child.mode || "managed-worktree",
+            rootPath: child.rootPath || path.join(ownedRoot, `pr-${child.prId}`),
+            cacheRepoPath: parentRoot,
+          },
+        },
+      })),
+    ];
+    const fixture = await createFixture({
+      initialState: {
+        workspaces,
+        activeWorkspaceId: "azure-root",
+        profiles: [{ id: "default", name: "Default" }],
+        windowSlots: [{ id: "win-1", profileId: "default", activeWorkspaceId: "azure-root" }],
+        settings: {
+          integrations: {
+            azureDevops: {
+              enabled: true,
+              reviewRoot: parentRoot,
+              defaultPollSeconds: 120,
+              connections: [{ id: connectionId, profileId: "default", enabled: true, tokenRef: "cred:ado-cleanup" }],
+            },
+          },
+        },
+      },
+      dependencies: {
+        AzureDevOpsManager: fakeAzureManager(statusFor),
+        rmPath: (dirPath: string) => fs.rm(dirPath, { recursive: true, force: true }),
+      },
+    });
+    fixtures.push(fixture);
+    return { fixture, parentRoot, ownedRoot, children: workspaces.slice(1) };
+  }
+
+  test("preflights ownership, rechecks after PTY teardown, and removes a completed managed checkout", async () => {
+    const { fixture, ownedRoot, children } = await makeAzureCleanupFixture(
+      async () => "completed",
+      [{ id: "pr-123", prId: "123" }],
+    );
+    const diskPath = children[0].cwd;
+    await fs.mkdir(diskPath, { recursive: true });
+    await fs.writeFile(path.join(diskPath, "file.txt"), "owned");
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result).toEqual({ deleted: 1, skipped: [], errors: [] });
+    expect(fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-123")).toBe(
+      false,
+    );
+    await expect(fs.access(diskPath)).rejects.toThrow();
+    expect(ownedRoot).toContain("reviews");
+  });
+
+  test("skips linked external checkouts without removing their workspace", async () => {
+    const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-ado-external-"));
+    tempPaths.push(externalRoot);
+    const { fixture, children } = await makeAzureCleanupFixture(async () => {
+      throw new Error("must not query an external checkout");
+    }, [{ id: "pr-external", prId: "123", cwd: externalRoot, rootPath: externalRoot }]);
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result.deleted).toBe(0);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({ workspaceId: "pr-external", reason: expect.stringContaining("external or unmanaged") }),
+    ]);
+    expect(
+      fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-external"),
+    ).toBe(true);
+    await expect(fs.access(externalRoot)).resolves.toBeUndefined();
+  });
+
+  test("does not inspect or delete a matching review workspace from another profile", async () => {
+    const statusCalls: string[] = [];
+    const { fixture, children, ownedRoot } = await makeAzureCleanupFixture(
+      async (prId) => {
+        statusCalls.push(prId);
+        return "completed";
+      },
+      [{ id: "pr-default", prId: "201" }],
+    );
+    await fs.mkdir(children[0].cwd, { recursive: true });
+    const otherProfilePath = path.join(ownedRoot, "other-profile-pr");
+    await fs.mkdir(otherProfilePath, { recursive: true });
+    fixture.store.getState().profiles.push({ id: "other", name: "Other", color: "#123456", workspaceIds: [] });
+    const defaultChild = children[0] as unknown as WorkspaceState;
+    if (!defaultChild.review?.checkout) throw new Error("Expected a managed review checkout.");
+    const otherProfileWorkspace: WorkspaceState = {
+      ...defaultChild,
+      id: "pr-other-profile",
+      profileId: "other",
+      cwd: otherProfilePath,
+      review: { ...defaultChild.review, checkout: { ...defaultChild.review.checkout, rootPath: otherProfilePath } },
+    };
+    fixture.store.getState().workspaces.push(otherProfileWorkspace);
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result).toEqual({ deleted: 1, skipped: [], errors: [] });
+    expect(statusCalls).toEqual(["201"]);
+    expect(
+      fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-other-profile"),
+    ).toBe(true);
+    await expect(fs.access(otherProfilePath)).resolves.toBeUndefined();
+  });
+
+  test("continues after a PR status API error and aggregates it with later successes", async () => {
+    const { fixture, ownedRoot, children } = await makeAzureCleanupFixture(
+      async (prId) => {
+        if (prId === "101") throw new Error("Azure unavailable");
+        return "abandoned";
+      },
+      [
+        { id: "pr-101", prId: "101" },
+        { id: "pr-102", prId: "102" },
+      ],
+    );
+    for (const child of children) await fs.mkdir(child.cwd, { recursive: true });
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result.deleted).toBe(1);
+    expect(result.errors).toEqual([
+      expect.objectContaining({ workspaceId: "pr-101", error: expect.stringContaining("Azure unavailable") }),
+    ]);
+    expect(fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-101")).toBe(
+      true,
+    );
+    expect(fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-102")).toBe(
+      false,
+    );
+    await expect(fs.access(path.join(ownedRoot, "pr-102"))).rejects.toThrow();
   });
 });
 

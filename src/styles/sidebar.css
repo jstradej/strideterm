@@ -1384,6 +1384,25 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   line-height: 1;
 }
 
+.workspace-card__cleanup-spinner {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--panel);
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  border-radius: 50%;
+  animation: workspace-cleanup-spin 0.8s linear infinite;
+}
+
+@keyframes workspace-cleanup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .project__meta,
 .workspace-card__meta {
   display: grid;
