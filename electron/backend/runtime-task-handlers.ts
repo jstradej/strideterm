@@ -280,28 +280,35 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
    * straight through for a paused task without consuming anything, and this
    * nudge — scheduled only once the resume has actually committed — is what
    * drives the injection.
+   *
+   * `expectedState` is the state the resume committed, read right after it —
+   * not one derived from the role. `resumeTask` restores an attached task
+   * paused mid-capture to `capturing-context`, where the nudge is what
+   * re-checks capture readiness; a role-derived `running` dropped it as stale.
    */
   function scheduleDeferredIdleNudge(
     workspaceId: string,
     taskId: string,
     idleSessionId: string,
     role: "worker" | "judge",
+    expectedState: string,
     expectedPrompt: string,
   ): void {
     log.info("resolveTaskRecovery: scheduling deferred idle nudge", {
       workspaceId,
       role,
       idleSessionId,
+      expectedState,
       delayMs: 5000,
     });
     setTimeout(() => {
       // The recovery queue is already released by the time this timer fires.
       // Its idle signal is only useful while the exact staged prompt still
-      // belongs to the same task, role session and active role state.
+      // belongs to the same task, role session and the state the resume
+      // committed.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const workspace = findWorkspace(getState(), workspaceId) as any;
       const task = workspace?.task;
-      const expectedState = role === "judge" ? "judge-evaluating" : "running";
       if (
         task?.taskId !== taskId ||
         task.state !== expectedState ||
@@ -470,7 +477,9 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         if (committed === "stale") return "stale";
         if (committed === "refused") return "failed";
 
-        scheduleDeferredIdleNudge(workspaceId, candidate.taskId, idleSessionId, role, attachedPrompt);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const resumedState = String((findWorkspace(getState(), workspaceId) as any)?.task?.state || "");
+        scheduleDeferredIdleNudge(workspaceId, candidate.taskId, idleSessionId, role, resumedState, attachedPrompt);
         return "continued";
       }
 
@@ -524,6 +533,10 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       });
       if (committed === "stale") return "stale";
       if (committed === "refused") return "failed";
+      // Read before the pre-warm await below, so it is the state the resume
+      // committed and not whatever the task moved on to meanwhile.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resumedState = String((findWorkspace(getState(), workspaceId) as any)?.task?.state || "");
 
       // Best-effort pre-warm of the other role's PTY, after the commit:
       // losing it costs a cold start at the next handover, nothing more.
@@ -536,7 +549,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         });
       }
 
-      scheduleDeferredIdleNudge(workspaceId, candidate.taskId, idleSessionId, role, recoveryPrompt);
+      scheduleDeferredIdleNudge(workspaceId, candidate.taskId, idleSessionId, role, resumedState, recoveryPrompt);
       return "continued";
     } catch (err) {
       // A candidate that threw used to be logged and then counted as part
