@@ -1,0 +1,121 @@
+name: Store AppX
+
+on:
+  push:
+    branches:
+      - "build/store-*"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build a validation-only package or use the configured Partner Center identity
+        required: true
+        type: choice
+        options:
+          - validation
+          - store
+        default: validation
+
+permissions:
+  contents: read
+
+jobs:
+  build-appx:
+    name: Build Windows AppX
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Drop cpu-features (NaN/V8 incompat with Electron 42)
+        run: node -e "require('node:fs').rmSync('node_modules/cpu-features',{recursive:true,force:true})"
+
+      - name: Build unpacked Windows application
+        run: npx electron-builder --win --dir --publish never
+
+      - name: Build validation-only AppX
+        if: github.event_name == 'push' || inputs.mode == 'validation'
+        run: npm run dist:store -- --prepackaged release/win-unpacked --output release/store-appx-validation
+        env:
+          MS_STORE_IDENTITY_NAME: strIDEterm.BuildValidation
+          MS_STORE_PUBLISHER: CN=strIDEterm Build Validation
+          MS_STORE_PUBLISHER_DISPLAY_NAME: strIDEterm Build Validation
+          MS_STORE_REQUIRE_IDENTITY: "true"
+          MS_STORE_BUILD_PURPOSE: validation
+
+      - name: Build AppX with Partner Center identity
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'store'
+        run: npm run dist:store -- --prepackaged release/win-unpacked --output release/store-appx
+        env:
+          MS_STORE_IDENTITY_NAME: ${{ vars.MS_STORE_IDENTITY_NAME }}
+          MS_STORE_PUBLISHER: ${{ vars.MS_STORE_PUBLISHER }}
+          MS_STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.MS_STORE_PUBLISHER_DISPLAY_NAME }}
+          MS_STORE_REQUIRE_IDENTITY: "true"
+          MS_STORE_BUILD_PURPOSE: store
+
+      - name: Verify packaged AppX icons
+        shell: pwsh
+        env:
+          APPX_OUTPUT: ${{ (github.event_name == 'push' || inputs.mode == 'validation') && 'release/store-appx-validation' || 'release/store-appx' }}
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $icons = @('StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.png', 'Wide310x150Logo.png')
+          $packages = @(Get-ChildItem -LiteralPath $env:APPX_OUTPUT -Filter '*.appx' -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected one AppX package under $env:APPX_OUTPUT; found $($packages.Count)."
+          }
+
+          $package = [System.IO.Compression.ZipFile]::OpenRead($packages[0].FullName)
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            if ($package.Entries.FullName -match '^assets/SampleAppx\.') {
+              throw 'AppX package contains electron-builder SampleAppx artwork.'
+            }
+
+            foreach ($name in $icons) {
+              $sourcePath = Join-Path 'assets/appx' $name
+              $entry = $package.GetEntry("assets/$name")
+              if ($null -eq $entry) {
+                throw "AppX package is missing assets/$name."
+              }
+
+              $expectedHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+              $stream = $entry.Open()
+              try {
+                $actualHash = [Convert]::ToHexString($sha256.ComputeHash($stream))
+              } finally {
+                $stream.Dispose()
+              }
+
+              if ($actualHash -ne $expectedHash) {
+                throw "Packaged assets/$name does not match $sourcePath."
+              }
+              Write-Host "$name $actualHash"
+            }
+          } finally {
+            $sha256.Dispose()
+            $package.Dispose()
+          }
+
+      - name: Upload validation-only AppX artifact
+        if: github.event_name == 'push' || inputs.mode == 'validation'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-appx-validation-${{ github.sha }}
+          path: release/store-appx-validation/*.appx
+          if-no-files-found: error
+
+      - name: Upload Store AppX artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'store'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: store-appx-${{ github.sha }}
+          path: release/store-appx/*.appx
+          if-no-files-found: error
