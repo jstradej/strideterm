@@ -12,12 +12,18 @@ import {
   isBrowserViewId,
   isTaskDashboardViewId,
 } from "../app/helpers.js";
-import { ref, type Ref, type ShallowRef, type ComputedRef } from "vue";
+import type { Ref, ShallowRef, ComputedRef } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-display.js";
 import { isCompanionPrimaryViewId } from "../../electron/shared/companion-primary.js";
 import type { Transport, CallableTransport } from "../transport.js";
 import { APP_CONFIG } from "../../config/app-config.js";
+import {
+  azureClosedPrCleanupFinishedSchema,
+  type AzureClosedPrCleanupFinished,
+} from "../../electron/shared/azure-closed-pr-cleanup-events.js";
+import { useNotificationStore } from "./notifications.js";
+import { fireNotificationAlert } from "../composables/useNotificationSound.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -83,6 +89,64 @@ interface WorkspaceActionsCtx {
 }
 
 /**
+ * Which summary category a skip reason (worded by runtime.ts
+ * cleanupAzureClosedPullRequests) belongs to. "Could not inspect" comes before
+ * the local-work wording because "Could not inspect the checkout for nested
+ * worktrees" is not local work.
+ */
+function azureCleanupSkipCategory(reason: string): string {
+  const r = reason.toLowerCase();
+  if (r.includes("external or unmanaged checkout")) return "external or unmanaged checkouts";
+  if (r.includes("pull request details")) return "workspaces with incomplete PR details";
+  if (r.includes("during cleanup")) return "workspaces changed during cleanup";
+  if (r.includes("still active")) return "active PRs";
+  if (r.includes("status could not be verified") || r.includes("status is not closed")) return "unverified PR statuses";
+  if (r.includes("could not inspect")) return "checkouts that could not be inspected";
+  if (
+    r.includes("uncommitted changes") ||
+    r.includes("not on the remote") ||
+    r.includes("nested worktrees") ||
+    r.includes("is used by workspace")
+  )
+    return "checkouts with local work";
+  if (r.includes("no longer exists")) return "PRs no longer on Azure DevOps";
+  if (r.includes("missing or unsafe") || r.includes("not a pr child")) return "missing or unsafe checkouts";
+  return "other reasons";
+}
+
+/** Title and body of a finished run's Notification Center entry. `failed`: any error at all. */
+function describeAzureClosedPrCleanupRun(run: AzureClosedPrCleanupFinished): {
+  title: string;
+  body: string;
+  failed: boolean;
+} {
+  if ("error" in run) {
+    return {
+      title: "Closed PR cleanup stopped unexpectedly",
+      body: `${run.error}\nWorkspaces deleted before it stopped stay deleted; run the cleanup again to process the rest.`,
+      failed: true,
+    };
+  }
+  const result = run.result;
+  const skippedCount = result.skipped.length;
+  const skipCategories = new Map<string, number>();
+  for (const entry of result.skipped) {
+    const category = azureCleanupSkipCategory(entry.reason);
+    skipCategories.set(category, (skipCategories.get(category) || 0) + 1);
+  }
+  const skipSummary = [...skipCategories].map(([category, count]) => `${count} ${category}`).join(", ");
+  const errorLines = result.errors.map((entry) => `${entry.name || entry.workspaceId}: ${entry.error}`);
+  const body = [
+    `Deleted ${result.deleted} closed PR workspace${result.deleted === 1 ? "" : "s"}.`,
+    `Skipped ${skippedCount} workspace${skippedCount === 1 ? "" : "s"}${skipSummary ? `: ${skipSummary}` : ""}.`,
+    ...(errorLines.length ? [`Errors (${errorLines.length}):`, ...errorLines.map((line) => `• ${line}`)] : []),
+  ].join("\n");
+  return errorLines.length
+    ? { title: "Closed PR cleanup finished with errors", body, failed: true }
+    : { title: "Closed PR cleanup finished", body, failed: false };
+}
+
+/**
  * Factory for workspace-management actions (CRUD, tabs, layout, panels).
  *
  * @param ctx  Shared refs and helpers injected by the app store.
@@ -90,23 +154,78 @@ interface WorkspaceActionsCtx {
  *   workspaceTabs, getApi, adoptPayload, withSuppressedBroadcast
  */
 export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
-  const azureClosedPrCleanupBusy = ref<Record<string, boolean>>({});
-
+  /** Backend state, not a local flag: a cleanup started from the phone spins on the desktop too. */
   function isAzureClosedPrCleanupBusy(workspaceId: string): boolean {
-    return !!azureClosedPrCleanupBusy.value[workspaceId];
+    return !!ctx.payload.value?.azureClosedPrCleanup?.parentWorkspaceIds?.includes(workspaceId);
   }
 
+  /** Starts the cleanup; the summary arrives later as `azure:closed-pr-cleanup:finished`. */
   async function cleanupAzureClosedPullRequests(parentWorkspaceId: string) {
     if (isAzureClosedPrCleanupBusy(parentWorkspaceId)) {
       throw new Error("Closed pull request cleanup is already running for this Azure workspace.");
     }
-    azureClosedPrCleanupBusy.value = { ...azureClosedPrCleanupBusy.value, [parentWorkspaceId]: true };
-    try {
-      return await (ctx.getApi() as CallableTransport).cleanupAzureClosedPullRequests(parentWorkspaceId);
-    } finally {
-      const next = { ...azureClosedPrCleanupBusy.value };
-      delete next[parentWorkspaceId];
-      azureClosedPrCleanupBusy.value = next;
+    return (ctx.getApi() as CallableTransport).cleanupAzureClosedPullRequests(parentWorkspaceId);
+  }
+
+  /**
+   * Runs this renderer has already turned into a Notification Center entry.
+   * The first, in-memory line of defence (every broadcast carries `lastRuns`
+   * again); `addAlertEvent`'s `sourceAlertId` search over the persisted
+   * history is the second, and the one that survives a reload.
+   */
+  const reportedAzureCleanupRunIds = new Set<string>();
+
+  /**
+   * One finished cleanup run → one Notification Center entry, whether it came
+   * live (`azure:closed-pr-cleanup:finished`) or later as the parent's last run
+   * in the payload (a phone that was locked, a client that reconnected). Shown
+   * by every client viewing the parent's profile: the phone that started it may
+   * be gone, and the desktop did not ask. The backend has already logged every
+   * per-PR error and any unexpected failure to strideterm.log.
+   */
+  function reportAzureClosedPrCleanupFinished(run: AzureClosedPrCleanupFinished): void {
+    if (reportedAzureCleanupRunIds.has(run.runId)) return;
+    // Not marked as reported: a window on another profile reports it once the
+    // user switches to the run's profile.
+    if (run.profileId !== ctx.myActiveProfileId.value) return;
+    reportedAzureCleanupRunIds.add(run.runId);
+    const notifications = useNotificationStore();
+    const { title, body, failed } = describeAzureClosedPrCleanupRun(run);
+    const urgency = failed ? "urgent" : "normal";
+    const parent = ctx.payload.value?.appState?.workspaces?.find((ws) => ws.id === run.parentWorkspaceId);
+    const sourceAlertId = `azure-closed-pr-cleanup:${run.runId}`;
+    const { event: entry, inserted } = notifications.addAlertEvent({
+      title,
+      body,
+      kind: failed ? "error" : "completed",
+      tier: 2,
+      urgency,
+      workspaceId: run.parentWorkspaceId,
+      workspaceName: parent?.name || "Azure DevOps",
+      category: "azure-cleanup",
+      meta: { profileId: run.profileId, runId: run.runId },
+      sourceAlertId,
+      occurredAt: run.finishedAt,
+    });
+    // Already in this history (a reload, the live event before this payload):
+    // nothing new to show or sound.
+    if (!inserted) return;
+    // The entry's own arrival toast — the same thing the dock shows, not a second message.
+    if (!notifications.pinned) notifications.pushToast({ ...entry, category: "azure-cleanup" });
+    fireNotificationAlert(entry.title, entry.body, {
+      tier: 2,
+      urgency,
+      sessionKey: `azure-closed-pr-cleanup:${run.parentWorkspaceId}`,
+      dedupeKey: sourceAlertId,
+    });
+  }
+
+  /** The runs a payload carries (`azureClosedPrCleanup.lastRuns`), each reported at most once. */
+  function reportAzureClosedPrCleanupRuns(runs: unknown): void {
+    if (!Array.isArray(runs)) return;
+    for (const run of runs) {
+      const parsed = azureClosedPrCleanupFinishedSchema.safeParse(run);
+      if (parsed.success) reportAzureClosedPrCleanupFinished(parsed.data);
     }
   }
 
@@ -814,6 +933,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     confirmInApp,
     cleanupAzureClosedPullRequests,
     isAzureClosedPrCleanupBusy,
+    reportAzureClosedPrCleanupFinished,
+    reportAzureClosedPrCleanupRuns,
     saveWorkspace,
     detachWorkspaceReview,
     confirmAndDetachWorkspaceReview,

@@ -2,6 +2,7 @@ import type { TaskState } from "./task.js";
 import type { SshHost, SshKey, SshCert } from "./ssh.js";
 import type { SshConnectionSettings } from "../ssh-connection.js";
 import type { Alert } from "./notifications.js";
+import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-events.js";
 
 // Re-export for convenience
 export type { Alert };
@@ -1099,6 +1100,19 @@ export interface GitSummary {
  */
 export type RemoteResourceRevisions = Record<string, string>;
 
+/**
+ * Runtime-only, never persisted: the Azure DevOps workspaces whose closed-PR
+ * cleanup is running right now, and the last finished run of each. In the
+ * payload rather than renderer state so every client — the phone that started
+ * it, the desktop, one that connects mid-run or after the end — shows the same
+ * spinner and learns the same outcome.
+ */
+export interface AzureClosedPrCleanupState {
+  parentWorkspaceIds: string[];
+  /** At most one per parent: the outcome its last run delivered as `azure:closed-pr-cleanup:finished`. */
+  lastRuns: AzureClosedPrCleanupFinished[];
+}
+
 // ------- Full payload broadcast to frontend -------
 
 export interface StatePayload {
@@ -1115,6 +1129,7 @@ export interface StatePayload {
   environment: Record<string, unknown>;
   remoteAccess: RemoteAccessState;
   taskRunner: Record<string, unknown>;
+  azureClosedPrCleanup: AzureClosedPrCleanupState;
   /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
   remoteClient?: RemoteClientContext;
 }
@@ -1202,6 +1217,8 @@ export interface RemoteStateV2 {
   workspace: WorkspaceState | null;
   attention: AttentionState;
   taskRunner: Record<string, unknown>;
+  /** Only the client's profile's parents and runs. */
+  azureClosedPrCleanup: AzureClosedPrCleanupState;
   plugins: unknown[];
   environment: Record<string, unknown>;
   /** Share-URL surface only (token blanked). */

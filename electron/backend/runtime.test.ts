@@ -15,7 +15,13 @@ import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { execFileText } from "./process-utils.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
-import { strayStatePayloadKeys } from "./remote-core.js";
+import { buildRemoteCore, strayStatePayloadKeys } from "./remote-core.js";
+import {
+  AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
+  azureClosedPrCleanupFinishedSchema,
+  type AzureClosedPrCleanupFinished,
+} from "../shared/azure-closed-pr-cleanup-events.js";
+import type { AzureClosedPrCleanupResult } from "../shared/types/ipc-results.js";
 import { normalizeCwd } from "./notify-url-registry.js";
 import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
@@ -13481,6 +13487,240 @@ describe("Azure closed PR workspace cleanup", () => {
     return { fixture, parentRoot, ownedRoot, children: workspaces.slice(1) };
   }
 
+  type CleanupFixture = Awaited<ReturnType<typeof makeAzureCleanupFixture>>["fixture"];
+
+  /** The next finished event, held to the schema the transports validate it with. */
+  function nextCleanupFinished(fixture: CleanupFixture): Promise<AzureClosedPrCleanupFinished> {
+    return new Promise((resolve) => {
+      fixture.runtime.on(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, (event: unknown) =>
+        resolve(azureClosedPrCleanupFinishedSchema.parse(event)),
+      );
+    });
+  }
+
+  /** Starts the cleanup the way a client does and waits for its summary, which arrives as an event. */
+  async function runCleanup(fixture: CleanupFixture): Promise<AzureClosedPrCleanupResult> {
+    const finished = nextCleanupFinished(fixture);
+    await expect(fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1")).resolves.toEqual({
+      started: true,
+    });
+    const event = await finished;
+    if (!("result" in event)) throw new Error(`Cleanup failed unexpectedly: ${event.error}`);
+    return event.result;
+  }
+
+  /** A PR status query that does not answer until the test says so. */
+  function gatedStatus(status: string): { statusFor: StatusFor; release: () => void } {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return {
+      statusFor: async () => {
+        await gate;
+        return status;
+      },
+      release: () => release(),
+    };
+  }
+
+  // A phone asks over the relay, which cancels a request whose response has not
+  // started within 30 s; one closed PR takes 1–2 s. So the start answers before
+  // the work, and every client learns the outcome from state + event instead.
+  test("answers before the run finishes, shows the parent in-flight in the payload until the finished event", async () => {
+    const { statusFor, release } = gatedStatus("completed");
+    const { fixture, children } = await makeAzureCleanupFixture(statusFor, [{ id: "pr-slow", prId: "901" }]);
+    await initCheckout(children[0].cwd);
+    const broadcasts: Array<{ azureClosedPrCleanup?: unknown }> = [];
+    fixture.runtime.on("state:updated", (payload: { azureClosedPrCleanup?: unknown }) => broadcasts.push(payload));
+    const finished = nextCleanupFinished(fixture);
+
+    await expect(fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1")).resolves.toEqual({
+      started: true,
+    });
+
+    // Parked on the PR status query: answered, nothing deleted yet.
+    expect(fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-slow")).toBe(
+      true,
+    );
+    const running = { parentWorkspaceIds: ["azure-root"], lastRuns: [] };
+    expect(fixture.runtime.getPayload().azureClosedPrCleanup).toEqual(running);
+    await vi.waitFor(() => expect(broadcasts.at(-1)?.azureClosedPrCleanup).toEqual(running));
+    await expect(fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1")).rejects.toThrow(
+      "already running",
+    );
+
+    release();
+    const event = await finished;
+    expect(event).toEqual({
+      runId: expect.any(String),
+      parentWorkspaceId: "azure-root",
+      profileId: "default",
+      finishedAt: expect.any(String),
+      result: { deleted: 1, skipped: [], errors: [] },
+    });
+    // The outcome stays in the payload for a client that missed the event.
+    const done = { parentWorkspaceIds: [], lastRuns: [event] };
+    expect(fixture.runtime.getPayload().azureClosedPrCleanup).toEqual(done);
+    await vi.waitFor(() => expect(broadcasts.at(-1)?.azureClosedPrCleanup).toEqual(done));
+    expect(fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-slow")).toBe(
+      false,
+    );
+    await expect(fs.access(children[0].cwd)).rejects.toThrow();
+  });
+
+  test("keeps only each parent's last run, every run under its own id", async () => {
+    const { fixture } = await makeAzureCleanupFixture(async () => "active", [{ id: "pr-open", prId: "904" }]);
+
+    const first = nextCleanupFinished(fixture);
+    await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const firstRun = await first;
+    const second = nextCleanupFinished(fixture);
+    await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const secondRun = await second;
+
+    expect(secondRun.runId).not.toBe(firstRun.runId);
+    expect(fixture.runtime.getPayload().azureClosedPrCleanup.lastRuns).toEqual([secondRun]);
+  });
+
+  test("started from a phone, in-flight parents and last runs reach only remote cores bound to its profile", async () => {
+    const { statusFor, release } = gatedStatus("completed");
+    const { fixture, children } = await makeAzureCleanupFixture(statusFor, [{ id: "pr-phone", prId: "902" }]);
+    await initCheckout(children[0].cwd);
+    fixture.store.getState().profiles.push({ id: "other", name: "Other", color: "#123456", workspaceIds: [] });
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("phone-default", fixture.store.getState(), "default");
+    registry.getOrCreate("phone-other", fixture.store.getState(), "other");
+    // What the server sends a protocol-2 client (every mobile session is one).
+    const coreFor = (clientId: string) =>
+      buildRemoteCore(registry.composePayload(clientId, fixture.runtime.getPayload()) as Record<string, unknown>);
+    const finished = nextCleanupFinished(fixture);
+
+    await expect(fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "remote:phone-default")).resolves.toEqual(
+      { started: true },
+    );
+
+    expect(coreFor("phone-default").azureClosedPrCleanup).toEqual({ parentWorkspaceIds: ["azure-root"], lastRuns: [] });
+    expect(coreFor("phone-other").azureClosedPrCleanup).toEqual({ parentWorkspaceIds: [], lastRuns: [] });
+
+    release();
+    const event = await finished;
+    expect(event).toMatchObject({ profileId: "default", result: { deleted: 1, skipped: [], errors: [] } });
+    expect(coreFor("phone-default").azureClosedPrCleanup).toEqual({ parentWorkspaceIds: [], lastRuns: [event] });
+    expect(coreFor("phone-other").azureClosedPrCleanup).toEqual({ parentWorkspaceIds: [], lastRuns: [] });
+  });
+
+  // The caller is authorized once, at the start. What it does afterwards is no
+  // reason to stop — and "the active profile changed" was untrue when a phone
+  // session had simply ended.
+  test("a phone session that ends mid-run does not stop the run", async () => {
+    const { statusFor, release } = gatedStatus("completed");
+    const { fixture, children } = await makeAzureCleanupFixture(statusFor, [{ id: "pr-left", prId: "905" }]);
+    await initCheckout(children[0].cwd);
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("phone-default", fixture.store.getState(), "default");
+    const finished = nextCleanupFinished(fixture);
+
+    await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "remote:phone-default");
+    // What remote-server.ts endMobileSession does when the session expires or is revoked.
+    registry.remove("phone-default");
+    release();
+
+    expect(await finished).toMatchObject({ result: { deleted: 1, skipped: [], errors: [] } });
+    await expect(fs.access(children[0].cwd)).rejects.toThrow();
+  });
+
+  test("a desktop window that switches profile mid-run does not stop the run", async () => {
+    const { statusFor, release } = gatedStatus("completed");
+    const { fixture, children } = await makeAzureCleanupFixture(statusFor, [{ id: "pr-switch", prId: "906" }]);
+    await initCheckout(children[0].cwd);
+    fixture.store.getState().profiles.push({ id: "other", name: "Other", color: "#123456", workspaceIds: [] });
+    const finished = nextCleanupFinished(fixture);
+
+    await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    await fixture.runtime.activateProfileInWindow("other", "win-1");
+    expect(fixture.store.getState().windowSlots.find((slot: { id: string }) => slot.id === "win-1")?.profileId).toBe(
+      "other",
+    );
+    release();
+
+    expect(await finished).toMatchObject({ result: { deleted: 1, skipped: [], errors: [] } });
+    await expect(fs.access(children[0].cwd)).rejects.toThrow();
+  });
+
+  test("an unexpected failure ends the run with an error event and an error log line", async () => {
+    const logs = captureLogCalls();
+    try {
+      // Every failure the run anticipates is caught per workspace. A PR status
+      // that is not a string is not anticipated: formatting the skip reason
+      // throws outside those catches.
+      const malformedStatus = {
+        status: {
+          [Symbol.toPrimitive]: () => {
+            throw new Error("malformed PR status");
+          },
+        },
+        lastMergeSourceCommitId: "",
+      } as unknown as PrState;
+      const { fixture, children } = await makeAzureCleanupFixture(
+        async () => malformedStatus,
+        [{ id: "pr-odd", prId: "903" }],
+      );
+      await initCheckout(children[0].cwd);
+      const finished = nextCleanupFinished(fixture);
+
+      await expect(fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1")).resolves.toEqual({
+        started: true,
+      });
+
+      const event = await finished;
+      expect(event).toEqual({
+        runId: expect.any(String),
+        parentWorkspaceId: "azure-root",
+        profileId: "default",
+        finishedAt: expect.any(String),
+        error: "malformed PR status",
+      });
+      expect(fixture.runtime.getPayload().azureClosedPrCleanup).toEqual({ parentWorkspaceIds: [], lastRuns: [event] });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: "error",
+          message: "azure closed PR cleanup failed unexpectedly",
+          meta: expect.objectContaining({ parentWorkspaceId: "azure-root", err: "malformed PR status" }),
+        }),
+      );
+      expect(fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-odd")).toBe(
+        true,
+      );
+    } finally {
+      logCallCapture.current = null;
+    }
+  });
+
+  test("names a review with incomplete PR details as such, not as an external checkout", async () => {
+    const { fixture, children } = await makeAzureCleanupFixture(async () => {
+      throw new Error("must not query a PR whose details are incomplete");
+    }, [{ id: "pr-partial", prId: "907" }]);
+    await initCheckout(children[0].cwd);
+    const partial = fixture.store
+      .getState()
+      .workspaces.find((workspace: WorkspaceState) => workspace.id === "pr-partial") as WorkspaceState;
+    partial.review!.project = null;
+
+    const result = await runCleanup(fixture);
+
+    expect(result.skipped).toEqual([
+      {
+        workspaceId: "pr-partial",
+        name: "pr-partial",
+        reason: "Workspace's pull request details are missing or inconsistent.",
+      },
+    ]);
+    await expect(fs.access(children[0].cwd)).resolves.toBeUndefined();
+  });
+
   test("preflights ownership, rechecks after PTY teardown, and removes a completed managed checkout", async () => {
     const { fixture, ownedRoot, children } = await makeAzureCleanupFixture(
       async () => "completed",
@@ -13491,7 +13731,7 @@ describe("Azure closed PR workspace cleanup", () => {
     await fs.writeFile(path.join(diskPath, "file.txt"), "owned");
     await initCheckout(diskPath);
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result).toEqual({ deleted: 1, skipped: [], errors: [] });
     expect(fixture.store.getState().workspaces.some((workspace: { id: string }) => workspace.id === "pr-123")).toBe(
@@ -13515,7 +13755,7 @@ describe("Azure closed PR workspace cleanup", () => {
     );
     for (const child of children) await initCheckout(child.cwd);
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result).toEqual({ deleted: 2, skipped: [], errors: [] });
     expect(statusCalls).toEqual(["ado-cleanup:301", "ado-second:302"]);
@@ -13528,7 +13768,7 @@ describe("Azure closed PR workspace cleanup", () => {
     }, [{ id: "pr-orphan", prId: "401", connectionId: "ado-removed" }]);
     await fs.mkdir(children[0].cwd, { recursive: true });
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result.deleted).toBe(0);
     expect(result.errors).toEqual([]);
@@ -13545,7 +13785,7 @@ describe("Azure closed PR workspace cleanup", () => {
       throw new Error("must not query an external checkout");
     }, [{ id: "pr-external", prId: "123", cwd: externalRoot, rootPath: externalRoot }]);
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result.deleted).toBe(0);
     expect(result.skipped).toEqual([
@@ -13581,7 +13821,7 @@ describe("Azure closed PR workspace cleanup", () => {
     };
     fixture.store.getState().workspaces.push(otherProfileWorkspace);
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result).toEqual({ deleted: 1, skipped: [], errors: [] });
     expect(statusCalls).toEqual(["201"]);
@@ -13604,7 +13844,7 @@ describe("Azure closed PR workspace cleanup", () => {
     );
     for (const child of children) await initCheckout(child.cwd);
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result.deleted).toBe(1);
     expect(result.errors).toEqual([
@@ -13642,7 +13882,7 @@ describe("Azure closed PR workspace cleanup", () => {
       review: null,
     });
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result.deleted).toBe(0);
     expect(result.errors).toEqual([]);
@@ -13662,7 +13902,7 @@ describe("Azure closed PR workspace cleanup", () => {
     );
     head = await initCheckout(children[0].cwd, { pushed: false });
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result).toEqual({ deleted: 1, skipped: [], errors: [] });
     await expect(fs.access(children[0].cwd)).rejects.toThrow();
@@ -13695,7 +13935,7 @@ describe("Azure closed PR workspace cleanup", () => {
       await initCheckout(workspace.cwd);
     }
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result).toEqual({ deleted: 1, skipped: [], errors: [] });
     expect(statusCalls).toEqual(["701"]);
@@ -13710,7 +13950,7 @@ describe("Azure closed PR workspace cleanup", () => {
     );
     await initCheckout(children[0].cwd);
 
-    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const result = await runCleanup(fixture);
 
     expect(result.deleted).toBe(0);
     expect(result.errors).toEqual([]);

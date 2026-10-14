@@ -116,6 +116,10 @@ vi.mock("electron", () => ({
 // resolves "electron" to the mock even though this import appears first
 // in source order.
 import { registerIpc } from "./ipc.js";
+import {
+  AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
+  azureClosedPrCleanupFinishedSchema,
+} from "../shared/azure-closed-pr-cleanup-events.js";
 
 /**
  * Minimal runtime stub: every property access returns a callable that
@@ -405,6 +409,27 @@ describe("notification:target-removed IPC forwarding", () => {
     handlers.get("notification:target-removed")!(event);
 
     expect(emitted).toContainEqual({ channel: "notification:target-removed", payload: event });
+
+    dispose();
+  });
+
+  test("forwards a finished closed-PR cleanup to every renderer window", () => {
+    // Every window of the profile shows the summary, not only the one that asked
+    // — a cleanup started from the phone has no desktop window waiting for it.
+    const { runtime, handlers } = makeSubscribableRuntime();
+    const emitted: Array<{ channel: string; payload: unknown }> = [];
+    const dispose = registerIpc(runtime, (channel, payload) => emitted.push({ channel, payload }));
+
+    const event = azureClosedPrCleanupFinishedSchema.parse({
+      runId: "run-1",
+      parentWorkspaceId: "azure-root",
+      profileId: "default",
+      finishedAt: "2026-10-14T10:00:00.000Z",
+      result: { deleted: 2, skipped: [], errors: [] },
+    });
+    handlers.get(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL)!(event);
+
+    expect(emitted).toContainEqual({ channel: AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, payload: event });
 
     dispose();
   });

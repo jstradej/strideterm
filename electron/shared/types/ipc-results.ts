@@ -26,3 +26,8 @@ export interface AzureClosedPrCleanupResult {
   skipped: AzureClosedPrCleanupSkipped[];
   errors: AzureClosedPrCleanupError[];
 }
+
+/** The cleanup was started; its result arrives as `azure:closed-pr-cleanup:finished`. */
+export interface AzureClosedPrCleanupStarted {
+  started: true;
+}

@@ -8,7 +8,12 @@ import type {
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
-import type { AzureClosedPrCleanupResult } from "../electron/shared/types/ipc-results.js";
+import type { AzureClosedPrCleanupStarted } from "../electron/shared/types/ipc-results.js";
+import {
+  AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
+  azureClosedPrCleanupFinishedSchema,
+  type AzureClosedPrCleanupFinished,
+} from "../electron/shared/azure-closed-pr-cleanup-events.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type {
   SshAuthRequest,
@@ -188,6 +193,7 @@ interface EventHub {
   resourceInvalidate: Set<Handler<ResourceInvalidate>>;
   notificationTargetRemoved: Set<Handler<NotificationTargetRemoved>>;
   approvalRecorded: Set<Handler<ApprovalRecorded>>;
+  azureClosedPrCleanupFinished: Set<Handler<AzureClosedPrCleanupFinished>>;
 }
 
 /** Extended transport interface covering both Electron and remote modes.
@@ -266,6 +272,8 @@ export interface Transport extends Partial<
   /** strIDEterm approved a permission prompt on the user's behalf. Validated at
    *  this boundary too, so a handler only ever sees a well-formed payload. */
   onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => void;
+  /** A background closed-PR cleanup finished (result or unexpected error). Validated at this boundary. */
+  onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => void;
   /** A paired phone opened a session (desktop only). Validated at this boundary. */
   onMobileSessionStarted?: (handler: Handler<MobileSessionStarted>) => void;
   onRemoteAuthFailures?: (handler: Handler<RemoteAuthFailures>) => void;
@@ -313,6 +321,7 @@ function createEventHub(): EventHub {
     resourceInvalidate: new Set(),
     notificationTargetRemoved: new Set(),
     approvalRecorded: new Set(),
+    azureClosedPrCleanupFinished: new Set(),
   };
 }
 
@@ -420,6 +429,16 @@ function bindElectronTransport(): Transport {
         const parsed = approvalRecordedSchema.safeParse(payload);
         if (!parsed.success) {
           rlog("warn", "approval:recorded ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
+    onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => {
+      window.strideterm.onAzureClosedPrCleanupFinished?.((payload: unknown) => {
+        const parsed = azureClosedPrCleanupFinishedSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "azure:closed-pr-cleanup:finished ignored: malformed payload");
           return;
         }
         handler(parsed.data);
@@ -991,6 +1010,14 @@ export function createRemoteTransport(): Transport {
         safeDispatch(listeners.approvalRecorded, parsed.data, "approvalRecorded");
       } else {
         rlog("warn", "approval:recorded ignored: malformed payload");
+      }
+    }
+    if (message.type === AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL) {
+      const parsed = azureClosedPrCleanupFinishedSchema.safeParse(message.payload);
+      if (parsed.success) {
+        safeDispatch(listeners.azureClosedPrCleanupFinished, parsed.data, "azureClosedPrCleanupFinished");
+      } else {
+        rlog("warn", "azure:closed-pr-cleanup:finished ignored: malformed payload");
       }
     }
     if (message.type === "ssh:auth-prompt") {
@@ -2026,7 +2053,7 @@ export function createRemoteTransport(): Transport {
     cleanupAzureClosedPullRequests: (parentWorkspaceId) =>
       fetchJson("/api/azure/workspace/cleanup-closed-prs", {
         parentWorkspaceId,
-      }) as Promise<AzureClosedPrCleanupResult>,
+      }) as Promise<AzureClosedPrCleanupStarted>,
     queryAzureAuditLog: (filters) => fetchJson("/api/azure/audit-log/query", filters),
     getAzureAuditStats: (filters) => fetchJson("/api/azure/audit-log/stats", filters),
     // Read-only, hence remote-reachable — unlike the setting that produces the
@@ -2348,6 +2375,9 @@ export function createRemoteTransport(): Transport {
     },
     onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => {
       listeners.approvalRecorded.add(handler);
+    },
+    onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => {
+      listeners.azureClosedPrCleanupFinished.add(handler);
     },
     getRemoteToken: () => token,
     setRemoteToken: (nextToken: string) => {

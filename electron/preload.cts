@@ -362,6 +362,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   onNotificationTargetRemoved: (handler) =>
     ipcRenderer.on("notification:target-removed", (_event, payload) => handler(payload)),
   onApprovalRecorded: (handler) => ipcRenderer.on("approval:recorded", (_event, payload) => handler(payload)),
+  onAzureClosedPrCleanupFinished: (handler) =>
+    ipcRenderer.on("azure:closed-pr-cleanup:finished", (_event, payload) => handler(payload)),
   onMobileStatus: (handler) => ipcRenderer.on("mobile:status", (_event, payload) => handler(payload)),
   onMobileSessionStarted: (handler) => ipcRenderer.on("mobile:session-started", (_event, payload) => handler(payload)),
   onRemoteAuthFailures: (handler) => ipcRenderer.on("remote:auth-failures", (_event, payload) => handler(payload)),

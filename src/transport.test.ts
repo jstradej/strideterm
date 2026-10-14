@@ -2299,6 +2299,81 @@ describe("notification:target-removed — transport boundary validation", () => 
   });
 });
 
+describe("azure:closed-pr-cleanup:finished — transport boundary validation", () => {
+  // The two shapes runtime.ts cleanupAzureClosedPullRequests emits.
+  const finished = {
+    runId: "run-1",
+    parentWorkspaceId: "azure-root",
+    profileId: "default",
+    finishedAt: "2026-10-14T10:00:00.000Z",
+    result: {
+      deleted: 1,
+      skipped: [{ workspaceId: "pr-2", name: "PR 2", reason: "PR is still active." }],
+      errors: [{ workspaceId: "pr-3", name: "PR 3", error: "Could not verify PR status: Azure unavailable" }],
+    },
+  };
+  const failed = {
+    runId: "run-2",
+    parentWorkspaceId: "azure-root",
+    profileId: "default",
+    finishedAt: "2026-10-14T10:00:01.000Z",
+    error: "malformed PR status",
+  };
+  const malformed = [
+    { parentWorkspaceId: "azure-root", profileId: "default" },
+    { ...failed, runId: "" },
+    { ...failed, finishedAt: undefined },
+    { parentWorkspaceId: "", profileId: "default", error: "x" },
+    { ...finished, result: { deleted: 1, skipped: [] } },
+    null,
+  ];
+
+  it("remote transport dispatches both outcomes and drops a malformed one", () => {
+    const originalWebSocket = globalThis.WebSocket;
+    const originalFetch = globalThis.fetch;
+    MockWebSocket.instances.length = 0;
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
+    try {
+      const transport = createRemoteTransport();
+      const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+      socket.open();
+      const seen: unknown[] = [];
+      transport.onAzureClosedPrCleanupFinished((event) => seen.push(event));
+
+      for (const payload of [finished, failed, ...malformed]) {
+        socket.message({ type: "azure:closed-pr-cleanup:finished", payload });
+      }
+
+      expect(seen).toEqual([finished, failed]);
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("electron transport subscribes through the preload bridge with the same validation", () => {
+    let bridged: ((payload: unknown) => void) | null = null;
+    (window as unknown as Record<string, unknown>).strideterm = {
+      onAzureClosedPrCleanupFinished: (handler: (payload: unknown) => void) => {
+        bridged = handler;
+      },
+    };
+    const emitFromMain = (payload: unknown) => bridged?.(payload);
+    try {
+      const transport = createTransport();
+      const seen: unknown[] = [];
+      transport.onAzureClosedPrCleanupFinished((event) => seen.push(event));
+
+      for (const payload of [finished, failed, ...malformed]) emitFromMain(payload);
+
+      expect(seen).toEqual([finished, failed]);
+    } finally {
+      delete (window as unknown as Record<string, unknown>).strideterm;
+    }
+  });
+});
+
 /**
  * What a failed remote request actually says to the person holding the phone.
  *

@@ -1763,6 +1763,17 @@ export const useAppStore = defineStore("app", () => {
           notifications.removeByViewId(event.workspaceId, event.viewId);
         }
       });
+      // Same guard: a second init() must not register these twice. The live
+      // event covers a client that is connected when a closed-PR cleanup ends;
+      // the payload's `lastRuns` covers one that was not (a locked phone, a
+      // reload) and a window that switches to the run's profile later. Both
+      // name the run by its runId, which is what makes it one entry.
+      api.onAzureClosedPrCleanupFinished?.((event) => workspaceActions.reportAzureClosedPrCleanupFinished(event));
+      watch(
+        () => [(payload.value as AnyApi)?.azureClosedPrCleanup?.lastRuns, myActiveProfileId.value],
+        ([runs]) => workspaceActions.reportAzureClosedPrCleanupRuns(runs),
+        { immediate: true },
+      );
     }
 
     api.onConnectionState?.((connection) => {

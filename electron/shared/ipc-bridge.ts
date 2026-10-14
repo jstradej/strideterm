@@ -1,5 +1,5 @@
 import type { StatePayload, RecoveryResult } from "./types/state.js";
-import type { AzureClosedPrCleanupResult } from "./types/ipc-results.js";
+import type { AzureClosedPrCleanupStarted } from "./types/ipc-results.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
@@ -229,7 +229,8 @@ export interface StridetermAPI {
   saveAzureConnection: (connection: AzureConnectionPayload) => Promise<unknown>;
   deleteAzureConnection: (connectionId: string) => Promise<unknown>;
   refreshAzure: () => Promise<unknown>;
-  cleanupAzureClosedPullRequests: (parentWorkspaceId: string) => Promise<AzureClosedPrCleanupResult>;
+  /** Starts the cleanup and resolves at once; the outcome arrives via `onAzureClosedPrCleanupFinished`. */
+  cleanupAzureClosedPullRequests: (parentWorkspaceId: string) => Promise<AzureClosedPrCleanupStarted>;
   queryAzureAuditLog: (filters: AzureAuditLogQuery) => Promise<unknown>;
   getAzureAuditStats: (filters: AzureAuditLogStats) => Promise<unknown>;
   queryApprovalAuditLog: (filters: ApprovalAuditLogQuery) => Promise<unknown>;
@@ -804,6 +805,8 @@ export interface StridetermAPI {
    */
   onNotificationTargetRemoved: (handler: (payload: unknown) => void) => void;
   onApprovalRecorded: (handler: (payload: unknown) => void) => void;
+  /** A background closed-PR cleanup finished. UNVALIDATED here; parsed at the transport boundary. */
+  onAzureClosedPrCleanupFinished: (handler: (payload: unknown) => void) => void;
   onMobileStatus: (
     handler: (
       payload:

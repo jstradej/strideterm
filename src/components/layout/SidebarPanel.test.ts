@@ -420,22 +420,11 @@ describe("SidebarPanel — Azure closed PR cleanup", () => {
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
   });
 
-  it("shows one destructive confirmation, runs cleanup, and reports skipped workspaces", async () => {
+  it("shows one destructive confirmation and starts the cleanup; the summary waits for the finished event", async () => {
     const store = useAppStore();
     store.payload = makePayload({ workspaces: [{ ...BASE_WORKSPACES[0], kind: "azure" }, BASE_WORKSPACES[1]] });
     const confirm = vi.spyOn(store, "confirmInApp").mockResolvedValue(true);
-    const cleanup = vi.spyOn(store, "cleanupAzureClosedPullRequests").mockResolvedValue({
-      deleted: 2,
-      skipped: [
-        {
-          workspaceId: "external",
-          name: "External checkout",
-          reason: "Workspace is linked to an external or unmanaged checkout.",
-        },
-        { workspaceId: "dirty", name: "Dirty checkout", reason: "Checkout has uncommitted changes." },
-      ],
-      errors: [],
-    });
+    const cleanup = vi.spyOn(store, "cleanupAzureClosedPullRequests").mockResolvedValue({ started: true });
     const wrapper = mount(SidebarPanel, { attachTo: document.body });
     await wrapper.find('[data-workspace-id="ws-A"] .workspace-card__action--menu').trigger("click");
     const button = [...document.querySelectorAll(".context-menu .context-menu__item")].find((el) =>
@@ -450,18 +439,43 @@ describe("SidebarPanel — Azure closed PR cleanup", () => {
     expect(confirm.mock.calls[0][0].message).toContain("uncommitted changes, unpushed commits or other workspaces");
     expect(cleanup).toHaveBeenCalledOnce();
     expect(cleanup).toHaveBeenCalledWith("ws-A");
-    const toast = useNotificationStore().persistentToasts.at(-1);
-    expect(toast?.body).toContain("Deleted 2 closed PR workspaces.");
-    expect(toast?.body).toContain(
-      "Skipped 2 workspaces: 1 external or unmanaged checkouts, 1 checkouts with local work.",
-    );
+    expect(useNotificationStore().persistentToasts).toEqual([]);
     wrapper.unmount();
   });
 
-  it("shows a parent spinner and disables the cleanup menu item while busy", async () => {
+  it("reports a start the backend refuses as an error toast that says it did not start", async () => {
     const store = useAppStore();
     store.payload = makePayload({ workspaces: [{ ...BASE_WORKSPACES[0], kind: "azure" }] });
-    vi.spyOn(store, "isAzureClosedPrCleanupBusy").mockImplementation((id) => id === "ws-A");
+    vi.spyOn(store, "confirmInApp").mockResolvedValue(true);
+    vi.spyOn(store, "cleanupAzureClosedPullRequests").mockRejectedValue(
+      new Error("Closed Azure DevOps PR cleanup is already running for this workspace."),
+    );
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
+    await wrapper.find('[data-workspace-id="ws-A"] .workspace-card__action--menu').trigger("click");
+    (
+      [...document.querySelectorAll(".context-menu .context-menu__item")].find((el) =>
+        (el.textContent || "").includes("Delete closed PR workspaces"),
+      ) as HTMLElement
+    ).click();
+    await flushPromises();
+
+    expect(useNotificationStore().persistentToasts).toEqual([
+      expect.objectContaining({
+        title: "Closed PR cleanup could not start",
+        kind: "error",
+        body: "Closed Azure DevOps PR cleanup is already running for this workspace.",
+      }),
+    ]);
+    wrapper.unmount();
+  });
+
+  it("shows a parent spinner and disables the cleanup menu item while the payload reports it running", async () => {
+    const store = useAppStore();
+    // The runtime-only field runtime.ts getPayload() broadcasts while a cleanup runs.
+    store.payload = {
+      ...makePayload({ workspaces: [{ ...BASE_WORKSPACES[0], kind: "azure" }] }),
+      azureClosedPrCleanup: { parentWorkspaceIds: ["ws-A"], lastRuns: [] },
+    } as AnyApi;
     const wrapper = mount(SidebarPanel, { attachTo: document.body });
 
     expect(

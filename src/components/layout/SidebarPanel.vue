@@ -265,7 +265,7 @@
         type="button"
         class="context-menu__item context-menu__item--danger"
         :disabled="store.isAzureClosedPrCleanupBusy(String(wsMenu.ws.id))"
-        title="Delete review workspaces for all completed or abandoned Azure DevOps pull requests. External checkouts are skipped."
+        title="Delete review workspaces for all completed or abandoned Azure DevOps pull requests. External checkouts and checkouts holding local work are skipped."
         @click="onMenuAction('cleanup-closed-prs')"
       >
         <span aria-hidden="true">&#x1F5D1;</span>
@@ -1418,63 +1418,20 @@ function onMenuAction(action: string): void {
 async function cleanupClosedPullRequests(parentWorkspaceId: string, parentName: string): Promise<void> {
   const confirmed = await store.confirmInApp({
     title: "Delete closed PR workspaces?",
-    message: `Delete the review workspaces and their owned checkout directories for every completed or abandoned Azure DevOps pull request under “${parentName}”? External or unmanaged checkout directories will be skipped and left untouched, and so will checkouts holding uncommitted changes, unpushed commits or other workspaces. This runs in the background; other workspaces remain available.`,
+    message: `Delete the review workspaces and their owned checkout directories for every completed or abandoned Azure DevOps pull request under “${parentName}”? External or unmanaged checkout directories will be skipped and left untouched, and so will checkouts holding uncommitted changes, unpushed commits or other workspaces. This runs in the background and reports to the Notification Center when it finishes; other workspaces remain available.`,
     confirmLabel: "Delete closed PRs",
     danger: true,
   });
   if (!confirmed) return;
 
+  // Only the start is awaited: the summary arrives as an event when the
+  // background run finishes (store.reportAzureClosedPrCleanupFinished).
   try {
-    const result = await store.cleanupAzureClosedPullRequests(parentWorkspaceId);
-    const skippedCount = result.skipped.length;
-    const skipCategories = new Map<string, number>();
-    for (const entry of result.skipped) {
-      const reason = entry.reason.toLowerCase();
-      const category = reason.includes("external or unmanaged checkout")
-        ? "external or unmanaged checkouts"
-        : reason.includes("still active")
-          ? "active PRs"
-          : reason.includes("status could not be verified") || reason.includes("status is not closed")
-            ? "unverified PR statuses"
-            : reason.includes("uncommitted changes") ||
-                reason.includes("not on the remote") ||
-                reason.includes("nested worktrees") ||
-                reason.includes("is used by workspace")
-              ? "checkouts with local work"
-              : reason.includes("no longer exists")
-                ? "PRs no longer on Azure DevOps"
-                : reason.includes("missing or unsafe") ||
-                    reason.includes("not a pr child") ||
-                    reason.includes("could not inspect")
-                  ? "missing or unsafe checkouts"
-                  : "other reasons";
-      skipCategories.set(category, (skipCategories.get(category) || 0) + 1);
-    }
-    const skipSummary = [...skipCategories].map(([category, count]) => `${count} ${category}`).join(", ");
-    const errorLines = result.errors.map((entry) => `${entry.name || entry.workspaceId}: ${entry.error}`);
-    const details = [
-      `Deleted ${result.deleted} closed PR workspace${result.deleted === 1 ? "" : "s"}.`,
-      `Skipped ${skippedCount} workspace${skippedCount === 1 ? "" : "s"}${skipSummary ? `: ${skipSummary}` : ""}.`,
-      ...(errorLines.length ? [`Errors (${errorLines.length}):`, ...errorLines.map((line) => `• ${line}`)] : []),
-    ].join("\n");
-    if (errorLines.length) {
-      notifications.pushPersistentToast({
-        title: "Closed PR cleanup finished with errors",
-        body: details,
-        kind: "error",
-      });
-    } else {
-      notifications.pushEphemeralToast({
-        title: "Closed PR cleanup finished",
-        body: details,
-        kind: skippedCount ? "info" : "success",
-        durationMs: 7000,
-      });
-    }
+    await store.cleanupAzureClosedPullRequests(parentWorkspaceId);
   } catch (err) {
     notifications.pushEphemeralToast({
-      title: "Closed PR cleanup failed",
-      body: (err as Error)?.message || "Could not clean up closed Azure DevOps pull request workspaces.",
+      title: "Closed PR cleanup could not start",
+      body: (err as Error)?.message || "Could not start the closed Azure DevOps pull request cleanup.",
       kind: "error",
       durationMs: 8000,
     });

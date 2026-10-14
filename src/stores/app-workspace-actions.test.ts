@@ -416,24 +416,27 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
 });
 
 describe("createWorkspaceActions.cleanupAzureClosedPullRequests", () => {
-  it("keeps per-parent busy state through the async request and clears it afterward", async () => {
-    const initial = { appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" } };
-    let finishRequest: () => void = () => {};
-    const request = new Promise<AnyApi>((resolve) => {
-      finishRequest = () => resolve({ deleted: 1, skipped: [], errors: [] });
-    });
-    const cleanupAzureClosedPullRequests = vi.fn(() => request);
-    const { ctx } = makeCtx(initial, { cleanupAzureClosedPullRequests });
+  // `azureClosedPrCleanup` is what runtime.ts getPayload() broadcasts: the
+  // parents whose background cleanup is running right now.
+  it("takes busy state from the broadcast payload and refuses a start while the backend reports one running", async () => {
+    const appState = { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" };
+    const initial = { appState, azureClosedPrCleanup: { parentWorkspaceIds: [], lastRuns: [] } };
+    const cleanupAzureClosedPullRequests = vi.fn(async () => ({ started: true }));
+    const { ctx, payload } = makeCtx(initial, { cleanupAzureClosedPullRequests });
     const actions = createWorkspaceActions(ctx);
 
-    const finished = actions.cleanupAzureClosedPullRequests("ws-A");
+    await expect(actions.cleanupAzureClosedPullRequests("ws-A")).resolves.toEqual({ started: true });
+    expect(cleanupAzureClosedPullRequests).toHaveBeenCalledWith("ws-A");
+    // Answered at once; the spinner is the backend's to turn on.
+    expect(actions.isAzureClosedPrCleanupBusy("ws-A")).toBe(false);
+
+    payload.value = { appState, azureClosedPrCleanup: { parentWorkspaceIds: ["ws-A"], lastRuns: [] } };
     expect(actions.isAzureClosedPrCleanupBusy("ws-A")).toBe(true);
     expect(actions.isAzureClosedPrCleanupBusy("ws-B")).toBe(false);
     await expect(actions.cleanupAzureClosedPullRequests("ws-A")).rejects.toThrow("already running");
     expect(cleanupAzureClosedPullRequests).toHaveBeenCalledOnce();
 
-    finishRequest();
-    await expect(finished).resolves.toEqual({ deleted: 1, skipped: [], errors: [] });
+    payload.value = { appState, azureClosedPrCleanup: { parentWorkspaceIds: [], lastRuns: [] } };
     expect(actions.isAzureClosedPrCleanupBusy("ws-A")).toBe(false);
   });
 });

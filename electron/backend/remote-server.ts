@@ -91,6 +91,7 @@ import { classifyMobileRoute, evaluateMobileRoute } from "./mobile-session-route
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
 import type { RemoteBrowserSession, RemoteSessionRevoke } from "../shared/remote-access.js";
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
+import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
 import {
   buildRemoteCore,
   buildResourceDetail,
@@ -4945,6 +4946,21 @@ export async function startRemoteServer({
       const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
       if (!eventProfileId) return;
       const serialized = JSON.stringify({ type: APPROVAL_RECORDED_CHANNEL, payload });
+      for (const socket of sockets) {
+        const clientSessionId = socketSession.get(socket);
+        if (!clientSessionId) continue;
+        if (registry.get(clientSessionId)?.profileId !== eventProfileId) continue;
+        checkedSend(socket, serialized);
+      }
+    }),
+    // The result of a background closed-PR cleanup: to every client bound to the
+    // profile that owns the Azure workspace — the phone that started it may not
+    // be the one still watching — and to no other. A mobile session is confined
+    // to its profile, so it never learns another profile's workspace names.
+    runtime.on(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, (payload: unknown) => {
+      const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
+      if (!eventProfileId) return;
+      const serialized = JSON.stringify({ type: AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, payload });
       for (const socket of sockets) {
         const clientSessionId = socketSession.get(socket);
         if (!clientSessionId) continue;

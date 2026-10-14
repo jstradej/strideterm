@@ -10,7 +10,11 @@ import { readFile, writeFile, mkdir, readdir, access, rm, rename, lstat, realpat
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import type { AzureClosedPrCleanupResult } from "../shared/types/ipc-results.js";
+import type { AzureClosedPrCleanupResult, AzureClosedPrCleanupStarted } from "../shared/types/ipc-results.js";
+import {
+  AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
+  type AzureClosedPrCleanupFinished,
+} from "../shared/azure-closed-pr-cleanup-events.js";
 import { createStore } from "./store.js";
 import * as fm from "./file-manager.js";
 import { SessionManager, type SshTestPtySpawn } from "./session-manager.js";
@@ -4365,6 +4369,10 @@ export async function createRuntime({
         tunnel: tunnel.getSnapshot(),
       },
       taskRunner: taskRunner.getTaskSnapshot(),
+      azureClosedPrCleanup: {
+        parentWorkspaceIds: [...azureClosedPrCleanupInFlight],
+        lastRuns: [...azureClosedPrCleanupLastRuns.values()],
+      },
       // Surface OS-keychain availability so Settings can show a banner when
       // we're falling back to base64-on-disk for credentials. The user
       // needs to *see* the downgrade — a one-shot log warning isn't enough,
@@ -5858,6 +5866,8 @@ export async function createRuntime({
 
   const pendingWorktreeDeletions = new Set(); // paths being deleted — skip in syncWorktrees
   const azureClosedPrCleanupInFlight = new Set<string>();
+  /** parent workspace id → its last finished run. Runtime-only; one entry per Azure parent. */
+  const azureClosedPrCleanupLastRuns = new Map<string, AzureClosedPrCleanupFinished>();
   const nativeWorkspaceOperations = new Map<string, Promise<unknown>>();
   function withNativeWorkspaceLock<T>(workspaceId: string, operation: () => Promise<T>): Promise<T> {
     const previous = nativeWorkspaceOperations.get(workspaceId) || Promise.resolve();
@@ -9771,15 +9781,21 @@ export async function createRuntime({
     async cleanupAzureClosedPullRequests(
       parentWorkspaceId: string,
       windowId?: string,
-    ): Promise<AzureClosedPrCleanupResult> {
+    ): Promise<AzureClosedPrCleanupStarted> {
       const startedAt = Date.now();
       const initialState = getState();
       const parent = initialState.workspaces.find((workspace) => workspace.id === parentWorkspaceId);
       if (!parent || parent.kind !== "azure") throw new Error("Azure DevOps workspace was not found.");
       assertWorkspaceInViewerProfile(parentWorkspaceId, windowId);
       const profileId = parent.profileId || "default";
+      // The caller is authorized here, once. The run below must not depend on it:
+      // a phone session that ends or a window that switches profile mid-run is no
+      // reason to stop deleting what the user asked to delete.
       const callerProfileId = getWindowProfileId(windowId);
-      if (windowId && (!callerProfileId || callerProfileId !== profileId)) {
+      if (windowId && !callerProfileId) {
+        throw new Error("Could not determine the profile of the window or session that asked for the cleanup.");
+      }
+      if (windowId && callerProfileId !== profileId) {
         throw new Error("The Azure DevOps workspace is not in the active profile.");
       }
       if (azureClosedPrCleanupInFlight.has(parentWorkspaceId)) {
@@ -9827,248 +9843,294 @@ export async function createRuntime({
         log.warn("azure closed PR cleanup workspace failed", { parentWorkspaceId, workspaceId, error });
       };
 
-      try {
-        const parentRoot = path.resolve(parent.cwd);
-        const prepared: Array<{
-          workspace: WorkspaceState;
-          connectionId: string;
-          ownedRoot: string;
-          projectName: string;
-          repositoryId: string;
-          pullRequestId: string;
-          diskPath: string;
-        }> = [];
+      // Answered before the work runs. The cleanup checks every closed PR against
+      // Azure DevOps (1–2 s each), and a phone asks over the mobile relay, which
+      // cancels a request whose response has not started within 30 s while the
+      // desktop keeps deleting. The in-flight set rides the state payload, so every
+      // client shows the spinner; the outcome reaches every client of the profile
+      // as AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL and stays in the payload as
+      // the parent's last run for a client that was not connected at the time.
+      const runId = randomUUID();
+      const run = async (): Promise<AzureClosedPrCleanupResult> => {
+        try {
+          const parentRoot = path.resolve(parent.cwd);
+          const prepared: Array<{
+            workspace: WorkspaceState;
+            connectionId: string;
+            ownedRoot: string;
+            projectName: string;
+            repositoryId: string;
+            pullRequestId: string;
+            diskPath: string;
+          }> = [];
 
-        for (const workspace of candidates) {
-          const review = workspace.review;
-          const connectionId = String(review?.connectionId || "");
-          const pullRequestId = String(review?.pullRequest?.id || "");
-          const projectName = String(review?.project?.name || "");
-          const repositoryId = String(review?.repository?.id || "");
-          const connectionKey = shortPathKey(connectionId, "connection");
-          // A review checkout lives at reviews/<connection>/pr-<id>; a quick fix
-          // promoted to a PR keeps its checkout at quickfix/<connection>/<repo>/<branch>.
-          let ownedRoot = path.join(parentRoot, "reviews", connectionKey);
-          let expectedPath = path.join(ownedRoot, `pr-${pullRequestId}`);
-          const quickfixRoot = path.join(parentRoot, "quickfix", connectionKey);
-          const quickfixRelative = review?.checkout?.rootPath
-            ? path.relative(quickfixRoot, path.resolve(review.checkout.rootPath))
-            : "";
-          const quickfixSegments = quickfixRelative.split(path.sep);
-          if (
-            quickfixRelative &&
-            !path.isAbsolute(quickfixRelative) &&
-            quickfixSegments.length === 2 &&
-            quickfixSegments.every((segment) => segment && segment !== "..")
-          ) {
-            ownedRoot = quickfixRoot;
-            expectedPath = path.join(quickfixRoot, ...quickfixSegments);
-          }
-          if (
-            !connectionId ||
-            !pullRequestId ||
-            !projectName ||
-            !repositoryId ||
-            !review ||
-            review.checkout?.mode !== "managed-worktree" ||
-            review.prKey !== `${connectionId}:${repositoryId}:${pullRequestId}` ||
-            !review.checkout.rootPath ||
-            path.resolve(review.checkout.rootPath) !== path.resolve(expectedPath) ||
-            path.resolve(workspace.cwd || "") !== path.resolve(expectedPath)
-          ) {
-            skip(workspace, "Workspace is linked to an external or unmanaged checkout.");
-            continue;
-          }
-          if (!profileConnectionIds.has(connectionId)) {
-            skip(workspace, "PR status could not be verified: its Azure DevOps connection is no longer configured.");
-            continue;
-          }
-
-          try {
-            const realParentRoot = await realpath(parentRoot);
-            const reviewsInfo = await lstat(path.dirname(ownedRoot));
-            const rootInfo = await lstat(ownedRoot);
-            const targetInfo = await lstat(expectedPath);
+          for (const workspace of candidates) {
+            const review = workspace.review;
+            const connectionId = String(review?.connectionId || "");
+            const pullRequestId = String(review?.pullRequest?.id || "");
+            const projectName = String(review?.project?.name || "");
+            const repositoryId = String(review?.repository?.id || "");
+            const connectionKey = shortPathKey(connectionId, "connection");
+            // A review checkout lives at reviews/<connection>/pr-<id>; a quick fix
+            // promoted to a PR keeps its checkout at quickfix/<connection>/<repo>/<branch>.
+            let ownedRoot = path.join(parentRoot, "reviews", connectionKey);
+            let expectedPath = path.join(ownedRoot, `pr-${pullRequestId}`);
+            const quickfixRoot = path.join(parentRoot, "quickfix", connectionKey);
+            const quickfixRelative = review?.checkout?.rootPath
+              ? path.relative(quickfixRoot, path.resolve(review.checkout.rootPath))
+              : "";
+            const quickfixSegments = quickfixRelative.split(path.sep);
             if (
-              reviewsInfo.isSymbolicLink() ||
-              !reviewsInfo.isDirectory() ||
-              rootInfo.isSymbolicLink() ||
-              !rootInfo.isDirectory() ||
-              targetInfo.isSymbolicLink() ||
-              !targetInfo.isDirectory()
+              quickfixRelative &&
+              !path.isAbsolute(quickfixRelative) &&
+              quickfixSegments.length === 2 &&
+              quickfixSegments.every((segment) => segment && segment !== "..")
             ) {
+              ownedRoot = quickfixRoot;
+              expectedPath = path.join(quickfixRoot, ...quickfixSegments);
+            }
+            if (review?.checkout?.mode !== "managed-worktree") {
+              skip(workspace, "Workspace is linked to an external or unmanaged checkout.");
+              continue;
+            }
+            if (
+              !review ||
+              !connectionId ||
+              !pullRequestId ||
+              !projectName ||
+              !repositoryId ||
+              review.prKey !== `${connectionId}:${repositoryId}:${pullRequestId}`
+            ) {
+              skip(workspace, "Workspace's pull request details are missing or inconsistent.");
+              continue;
+            }
+            if (
+              !review.checkout?.rootPath ||
+              path.resolve(review.checkout.rootPath) !== path.resolve(expectedPath) ||
+              path.resolve(workspace.cwd || "") !== path.resolve(expectedPath)
+            ) {
+              skip(workspace, "Workspace is linked to an external or unmanaged checkout.");
+              continue;
+            }
+            if (!profileConnectionIds.has(connectionId)) {
+              skip(workspace, "PR status could not be verified: its Azure DevOps connection is no longer configured.");
+              continue;
+            }
+
+            try {
+              const realParentRoot = await realpath(parentRoot);
+              const reviewsInfo = await lstat(path.dirname(ownedRoot));
+              const rootInfo = await lstat(ownedRoot);
+              const targetInfo = await lstat(expectedPath);
+              if (
+                reviewsInfo.isSymbolicLink() ||
+                !reviewsInfo.isDirectory() ||
+                rootInfo.isSymbolicLink() ||
+                !rootInfo.isDirectory() ||
+                targetInfo.isSymbolicLink() ||
+                !targetInfo.isDirectory()
+              ) {
+                skip(workspace, "Managed review directory is missing or unsafe.");
+                continue;
+              }
+              const realOwnedRoot = await realpath(ownedRoot);
+              assertContainedPath(realParentRoot, realOwnedRoot);
+              const realTarget = await realpath(expectedPath);
+              assertContainedPath(realOwnedRoot, realTarget);
+              if (path.relative(realTarget, realOwnedRoot) === "") {
+                skip(workspace, "Managed review directory is not a PR child directory.");
+                continue;
+              }
+            } catch {
               skip(workspace, "Managed review directory is missing or unsafe.");
               continue;
             }
-            const realOwnedRoot = await realpath(ownedRoot);
-            assertContainedPath(realParentRoot, realOwnedRoot);
-            const realTarget = await realpath(expectedPath);
-            assertContainedPath(realOwnedRoot, realTarget);
-            if (path.relative(realTarget, realOwnedRoot) === "") {
-              skip(workspace, "Managed review directory is not a PR child directory.");
+            prepared.push({
+              workspace,
+              connectionId,
+              ownedRoot,
+              projectName,
+              repositoryId,
+              pullRequestId,
+              diskPath: expectedPath,
+            });
+          }
+
+          // Query each represented PR immediately before deleting it. These are
+          // direct PR reads and do not fetch threads/comments or the whole inbox.
+          for (const candidate of prepared) {
+            const currentParent = getState().workspaces.find((workspace) => workspace.id === parentWorkspaceId);
+            const currentWorkspace = getState().workspaces.find((workspace) => workspace.id === candidate.workspace.id);
+            if (
+              !currentParent ||
+              (currentParent.profileId || "default") !== profileId ||
+              path.resolve(currentParent.cwd || "") !== parentRoot ||
+              !currentWorkspace ||
+              (currentWorkspace.profileId || "default") !== profileId ||
+              currentWorkspace.review?.parentWorkspaceId !== parentWorkspaceId
+            ) {
+              skip(candidate.workspace, "Workspace or its Azure DevOps parent was changed or removed during cleanup.");
               continue;
             }
-          } catch {
-            skip(workspace, "Managed review directory is missing or unsafe.");
-            continue;
-          }
-          prepared.push({
-            workspace,
-            connectionId,
-            ownedRoot,
-            projectName,
-            repositoryId,
-            pullRequestId,
-            diskPath: expectedPath,
-          });
-        }
 
-        // Query each represented PR immediately before deleting it. These are
-        // direct PR reads and do not fetch threads/comments or the whole inbox.
-        for (const candidate of prepared) {
-          const currentCallerProfile = getWindowProfileId(windowId);
-          if (windowId && currentCallerProfile !== profileId) {
-            fail(parentWorkspaceId, parent.name, "Cleanup stopped because the active profile changed.");
-            break;
-          }
-          const currentParent = getState().workspaces.find((workspace) => workspace.id === parentWorkspaceId);
-          const currentWorkspace = getState().workspaces.find((workspace) => workspace.id === candidate.workspace.id);
-          if (
-            !currentParent ||
-            (currentParent.profileId || "default") !== profileId ||
-            path.resolve(currentParent.cwd || "") !== parentRoot ||
-            !currentWorkspace ||
-            (currentWorkspace.profileId || "default") !== profileId ||
-            currentWorkspace.review?.parentWorkspaceId !== parentWorkspaceId
-          ) {
-            skip(candidate.workspace, "Workspace or profile changed during cleanup.");
-            continue;
-          }
-
-          let status = "";
-          let lastMergeSourceCommitId = "";
-          try {
-            ({ status, lastMergeSourceCommitId } = await azure.getPullRequestStatus(
-              candidate.connectionId,
-              candidate.projectName,
-              candidate.repositoryId,
-              candidate.pullRequestId,
-            ));
-          } catch (error) {
-            fail(
-              candidate.workspace.id,
-              candidate.workspace.name,
-              `Could not verify PR status: ${(error as Error)?.message || String(error)}`,
-            );
-            continue;
-          }
-          if (status === "not-found") {
-            skip(
-              candidate.workspace,
-              "PR no longer exists on Azure DevOps; delete the workspace manually if it is unused.",
-            );
-            continue;
-          }
-          if (status !== "completed" && status !== "abandoned") {
-            skip(
-              candidate.workspace,
-              status === "active" ? "PR is still active." : `PR status is not closed (${status || "unknown"}).`,
-            );
-            continue;
-          }
-
-          try {
-            const currentReviewsInfo = await lstat(path.dirname(candidate.ownedRoot));
-            const currentRootInfo = await lstat(candidate.ownedRoot);
-            const currentTargetInfo = await lstat(candidate.diskPath);
-            if (
-              currentReviewsInfo.isSymbolicLink() ||
-              currentRootInfo.isSymbolicLink() ||
-              currentTargetInfo.isSymbolicLink() ||
-              !currentReviewsInfo.isDirectory() ||
-              !currentRootInfo.isDirectory() ||
-              !currentTargetInfo.isDirectory()
-            )
-              throw new Error("Managed review directory is unsafe.");
-            const currentRoot = await realpath(candidate.ownedRoot);
-            const currentTarget = await realpath(candidate.diskPath);
-            assertContainedPath(currentRoot, currentTarget);
-            if (path.relative(currentTarget, currentRoot) === "")
-              throw new Error("Managed review directory is not a PR child directory.");
-          } catch (error) {
-            skip(candidate.workspace, (error as Error)?.message || "Managed review directory changed or is unsafe.");
-            continue;
-          }
-
-          const localWork = await findAzureCleanupLocalWork(
-            candidate.workspace.id,
-            candidate.diskPath,
-            lastMergeSourceCommitId,
-          );
-          if (localWork) {
-            skip(candidate.workspace, localWork);
-            continue;
-          }
-
-          const deleteStartedAt = Date.now();
-          try {
-            workspaceDeleteAttempted = true;
-            const payload = await this.deleteWorkspace(
-              candidate.workspace.id,
-              {
-                deleteFromDisk: true,
-                diskPath: candidate.diskPath,
-                skipGitRefresh: true,
-                azureCleanupRoot: candidate.ownedRoot,
-                azureCleanupExpected: {
-                  parentWorkspaceId,
-                  connectionId: candidate.connectionId,
-                  prKey: candidate.workspace.review!.prKey,
-                },
-              },
-              windowId,
-            );
-            const diskError = (payload as { deleteWorkspaceError?: string } | null)?.deleteWorkspaceError;
-            if (diskError)
+            let status = "";
+            let lastMergeSourceCommitId = "";
+            try {
+              ({ status, lastMergeSourceCommitId } = await azure.getPullRequestStatus(
+                candidate.connectionId,
+                candidate.projectName,
+                candidate.repositoryId,
+                candidate.pullRequestId,
+              ));
+            } catch (error) {
               fail(
                 candidate.workspace.id,
                 candidate.workspace.name,
-                `Workspace removed from the list, but disk cleanup failed: ${String(diskError)}`,
+                `Could not verify PR status: ${(error as Error)?.message || String(error)}`,
               );
-            else {
-              result.deleted++;
-              log.info("azure closed PR cleanup deleted workspace", {
-                parentWorkspaceId,
-                workspaceId: candidate.workspace.id,
-                ms: Date.now() - deleteStartedAt,
-              });
+              continue;
             }
-          } catch (error) {
-            fail(candidate.workspace.id, candidate.workspace.name, (error as Error)?.message || String(error));
-          }
-        }
+            if (status === "not-found") {
+              skip(
+                candidate.workspace,
+                "PR no longer exists on Azure DevOps; delete the workspace manually if it is unused.",
+              );
+              continue;
+            }
+            if (status !== "completed" && status !== "abandoned") {
+              skip(
+                candidate.workspace,
+                status === "active" ? "PR is still active." : `PR status is not closed (${status || "unknown"}).`,
+              );
+              continue;
+            }
 
-        if (workspaceDeleteAttempted) {
-          try {
-            await refreshGit(null, { useCache: true });
-          } catch (error) {
-            fail(parentWorkspaceId, parent.name, `Git refresh failed: ${(error as Error)?.message || String(error)}`);
+            try {
+              const currentReviewsInfo = await lstat(path.dirname(candidate.ownedRoot));
+              const currentRootInfo = await lstat(candidate.ownedRoot);
+              const currentTargetInfo = await lstat(candidate.diskPath);
+              if (
+                currentReviewsInfo.isSymbolicLink() ||
+                currentRootInfo.isSymbolicLink() ||
+                currentTargetInfo.isSymbolicLink() ||
+                !currentReviewsInfo.isDirectory() ||
+                !currentRootInfo.isDirectory() ||
+                !currentTargetInfo.isDirectory()
+              )
+                throw new Error("Managed review directory is unsafe.");
+              const currentRoot = await realpath(candidate.ownedRoot);
+              const currentTarget = await realpath(candidate.diskPath);
+              assertContainedPath(currentRoot, currentTarget);
+              if (path.relative(currentTarget, currentRoot) === "")
+                throw new Error("Managed review directory is not a PR child directory.");
+            } catch {
+              // The same wording as the first pass: a raw fs error (ENOENT, …) told
+              // the user less, and fell outside every summary category.
+              skip(candidate.workspace, "Managed review directory is missing or unsafe.");
+              continue;
+            }
+
+            const localWork = await findAzureCleanupLocalWork(
+              candidate.workspace.id,
+              candidate.diskPath,
+              lastMergeSourceCommitId,
+            );
+            if (localWork) {
+              skip(candidate.workspace, localWork);
+              continue;
+            }
+
+            const deleteStartedAt = Date.now();
+            try {
+              workspaceDeleteAttempted = true;
+              const payload = await this.deleteWorkspace(
+                candidate.workspace.id,
+                {
+                  deleteFromDisk: true,
+                  diskPath: candidate.diskPath,
+                  skipGitRefresh: true,
+                  azureCleanupRoot: candidate.ownedRoot,
+                  azureCleanupExpected: {
+                    parentWorkspaceId,
+                    connectionId: candidate.connectionId,
+                    prKey: candidate.workspace.review!.prKey,
+                    profileId,
+                  },
+                },
+                // No viewer: the caller was authorized at the start, and the profile
+                // that matters now is the one recorded then (checked in deleteWorkspace).
+                undefined,
+              );
+              const diskError = (payload as { deleteWorkspaceError?: string } | null)?.deleteWorkspaceError;
+              if (diskError)
+                fail(
+                  candidate.workspace.id,
+                  candidate.workspace.name,
+                  `Workspace removed from the list, but disk cleanup failed: ${String(diskError)}`,
+                );
+              else {
+                result.deleted++;
+                log.info("azure closed PR cleanup deleted workspace", {
+                  parentWorkspaceId,
+                  workspaceId: candidate.workspace.id,
+                  ms: Date.now() - deleteStartedAt,
+                });
+              }
+            } catch (error) {
+              fail(candidate.workspace.id, candidate.workspace.name, (error as Error)?.message || String(error));
+            }
           }
+
+          if (workspaceDeleteAttempted) {
+            try {
+              await refreshGit(null, { useCache: true });
+            } catch (error) {
+              fail(
+                parentWorkspaceId,
+                parent.name,
+                `Workspaces were deleted, but refreshing Git status afterwards failed: ${(error as Error)?.message || String(error)}`,
+              );
+            }
+          }
+          syncTreeDirWatchers();
+          return result;
+        } finally {
+          log.info("azure closed PR cleanup finished", {
+            parentWorkspaceId,
+            profileId,
+            runId,
+            deleted: result.deleted,
+            skipped: result.skipped.length,
+            errors: result.errors.length,
+            totalMs: Date.now() - startedAt,
+          });
         }
-        syncTreeDirWatchers();
-        broadcastState();
-        return result;
-      } finally {
-        azureClosedPrCleanupInFlight.delete(parentWorkspaceId);
-        log.info("azure closed PR cleanup finished", {
+      };
+      // One step: the run leaves the in-flight set and becomes the parent's last
+      // run in the same broadcast, then the live event carries the same object.
+      const finish = (outcome: { result: AzureClosedPrCleanupResult } | { error: string }) => {
+        const finished: AzureClosedPrCleanupFinished = {
+          runId,
           parentWorkspaceId,
           profileId,
-          deleted: result.deleted,
-          skipped: result.skipped.length,
-          errors: result.errors.length,
-          totalMs: Date.now() - startedAt,
-        });
-      }
+          finishedAt: new Date().toISOString(),
+          ...outcome,
+        };
+        azureClosedPrCleanupLastRuns.set(parentWorkspaceId, finished);
+        azureClosedPrCleanupInFlight.delete(parentWorkspaceId);
+        broadcastState();
+        events.emit(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, finished);
+      };
+      run().then(
+        (finished) => finish({ result: finished }),
+        (error: unknown) => {
+          const message = (error as Error)?.message || String(error);
+          log.error("azure closed PR cleanup failed unexpectedly", { parentWorkspaceId, profileId, err: message });
+          finish({ error: message });
+        },
+      );
+      broadcastState();
+      return { started: true };
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -10083,11 +10145,13 @@ export async function createRuntime({
       if (options.azureCleanupRoot && workspace) {
         const cleanupPath = path.resolve(String(options.diskPath || workspace.review?.checkout?.rootPath || "").trim());
         const expected = options.azureCleanupExpected as
-          { parentWorkspaceId: string; connectionId: string; prKey: string } | undefined;
+          { parentWorkspaceId: string; connectionId: string; prKey: string; profileId: string } | undefined;
         if (!expected) throw new Error("Azure cleanup ownership metadata is missing.");
         await assertAzureCleanupPath(workspace, cleanupPath, path.resolve(String(options.azureCleanupRoot)), expected);
-        if (windowId && getWindowProfileId(windowId) !== (workspace.profileId || "default")) {
-          throw new Error("Cleanup stopped because the active profile changed.");
+        // The profile the cleanup was authorized for — not the caller's current
+        // one, which is free to change while a background cleanup runs.
+        if ((workspace.profileId || "default") !== expected.profileId) {
+          throw new Error("Workspace was moved to another profile before deletion.");
         }
       }
 

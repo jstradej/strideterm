@@ -6,6 +6,10 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { WebSocket } from "ws";
 import { getLogDir } from "./logger.js";
+import {
+  AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
+  azureClosedPrCleanupFinishedSchema,
+} from "../shared/azure-closed-pr-cleanup-events.js";
 import * as fm from "./file-manager.js";
 import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
@@ -5887,5 +5891,235 @@ describe("the relay's loopback origin requires the device the relay verified (E2
     const consumed: string[] = [];
     expect(await bootstrap("some-other-phone", consumed)).toBe(401);
     expect(await bootstrap("phone-1", consumed)).toBe(302);
+  });
+});
+
+describe("closed-PR cleanup over the remote server", () => {
+  /**
+   * A runtime with an Azure workspace in each of two profiles, mobile tickets for either profile,
+   * and the cleanup's start contract: record the call and answer `{ started: true }`. The run and its
+   * result belong to the runtime — runtime.test.ts proves the real one answers before the run ends.
+   */
+  function makeCleanupRuntime(port: number, token: string, lastRuns: unknown[] = []) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token } },
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#000", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "azure-p1", name: "Azure DevOps", kind: "azure", profileId: "p1", panels: [] },
+          { id: "azure-p2", name: "Azure DevOps", kind: "azure", profileId: "p2", panels: [] },
+        ],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "azure-p1" }],
+      },
+      // runtime.ts getPayload()'s runtime-only field: both parents running, one finished run each.
+      azureClosedPrCleanup: { parentWorkspaceIds: ["azure-p1", "azure-p2"], lastRuns },
+    };
+    const handlers: Record<string, ((p: unknown) => void)[]> = {};
+    const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    const starts: { parentWorkspaceId: string; windowId?: string }[] = [];
+    return {
+      starts,
+      seedTicket(ticketId: string, secret: string, deviceId: string, profileId: string) {
+        tickets.set(`${ticketId}:${secret}`, { deviceId, pairId: `pair-${deviceId}`, profileId });
+      },
+      emit: (channel: string, p: unknown) => (handlers[channel] || []).forEach((h) => h(p)),
+      runtime: {
+        getPayload: () => payload,
+        getInitialState: async () => payload,
+        setRemoteInfo: () => undefined,
+        listRemoteUrls: () => [],
+        listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
+        on: (channel: string, handler: (p: unknown) => void) => {
+          (handlers[channel] ||= []).push(handler);
+          return () => undefined;
+        },
+        writeToSession: () => undefined,
+        submitToSession: () => undefined,
+        resizeSession: () => undefined,
+        setRemoteClientRegistry: () => undefined,
+        isMobileSessionStillAuthorized: () => true,
+        consumeMobileWebSessionTicket: (
+          ticketId: string,
+          secret: string,
+          context: { transport: "relay" | "legacy"; origins: readonly string[] },
+        ) => {
+          const record = tickets.get(`${ticketId}:${secret}`);
+          if (!record) return null;
+          tickets.delete(`${ticketId}:${secret}`);
+          if (context.transport !== "legacy" || context.origins.length === 0) return null;
+          return {
+            ...record,
+            allowedOrigin: "https://example.trycloudflare.com",
+            transport: "legacy" as const,
+            requiredCapability: "remote.webSession" as const,
+            expiresAt: Date.now() + 60_000,
+          };
+        },
+        cleanupAzureClosedPullRequests: async (parentWorkspaceId: string, windowId?: string) => {
+          starts.push({ parentWorkspaceId, windowId });
+          return { started: true };
+        },
+      },
+    };
+  }
+
+  type Client = { ws: WebSocket; messages: { type: string; payload?: unknown }[] };
+
+  async function openClient(url: string, headers: Record<string, string> = {}): Promise<Client> {
+    const ws = new WebSocket(url, { headers });
+    const messages: Client["messages"] = [];
+    ws.on("message", (raw: Buffer) => {
+      try {
+        messages.push(JSON.parse(raw.toString()));
+      } catch {
+        // ignore non-JSON
+      }
+    });
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", reject);
+    });
+    return { ws, messages };
+  }
+
+  async function bootstrapPhone(baseUrl: string, ticketId: string, secret: string): Promise<string> {
+    const res = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticketId, secret }),
+      redirect: "manual",
+    });
+    return (res.headers.get("set-cookie") || "").split(";")[0]!;
+  }
+
+  const finishedEvents = (client: Client) =>
+    client.messages.filter((m) => m.type === AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL).map((m) => m.payload);
+
+  test("a phone's start is answered at once, and the summary reaches its profile's clients and no other", async () => {
+    const port = await getFreePort();
+    const token = "tok-cleanup";
+    const { runtime, starts, seedTicket, emit } = makeCleanupRuntime(port, token);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const clients: Client[] = [];
+    try {
+      seedTicket("t1", "s1", "phone-p1", "p1");
+      seedTicket("t2", "s2", "phone-p2", "p2");
+      const phoneP1Cookie = await bootstrapPhone(baseUrl, "t1", "s1");
+      const phoneP2Cookie = await bootstrapPhone(baseUrl, "t2", "s2");
+      const phoneP1 = await openClient(`ws://127.0.0.1:${port}/ws`, { Cookie: phoneP1Cookie });
+      const phoneP2 = await openClient(`ws://127.0.0.1:${port}/ws`, { Cookie: phoneP2Cookie });
+      const browserP1 = await openClient(
+        `ws://127.0.0.1:${port}/ws?${new URLSearchParams({ token, clientId: "browser-p1", profileId: "p1" })}`,
+      );
+      clients.push(phoneP1, phoneP2, browserP1);
+
+      const response = await fetch(`${baseUrl}/api/azure/workspace/cleanup-closed-prs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: phoneP1Cookie },
+        body: JSON.stringify({ parentWorkspaceId: "azure-p1" }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ started: true });
+      expect(starts).toEqual([{ parentWorkspaceId: "azure-p1", windowId: expect.stringMatching(/^remote:/) }]);
+
+      // The finished event in the runtime's shape, held to the schema both transports validate with.
+      const finished = azureClosedPrCleanupFinishedSchema.parse({
+        runId: "run-p1",
+        parentWorkspaceId: "azure-p1",
+        profileId: "p1",
+        finishedAt: "2026-10-14T10:00:00.000Z",
+        result: {
+          deleted: 1,
+          skipped: [{ workspaceId: "pr-7", name: "PR 7", reason: "PR is still active." }],
+          errors: [],
+        },
+      });
+      emit(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, finished);
+
+      await vi.waitFor(() => {
+        expect(finishedEvents(phoneP1)).toEqual([finished]);
+        expect(finishedEvents(browserP1)).toEqual([finished]);
+      });
+
+      // The other profile's phone gets its own profile's outcome, and only that.
+      const otherProfile = azureClosedPrCleanupFinishedSchema.parse({
+        runId: "run-p2",
+        parentWorkspaceId: "azure-p2",
+        profileId: "p2",
+        finishedAt: "2026-10-14T10:00:01.000Z",
+        error: "boom",
+      });
+      emit(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, otherProfile);
+      await vi.waitFor(() => expect(finishedEvents(phoneP2)).toEqual([otherProfile]));
+      expect(finishedEvents(phoneP1)).toEqual([finished]);
+      expect(finishedEvents(browserP1)).toEqual([finished]);
+    } finally {
+      for (const client of clients) client.ws.close();
+      await server.close();
+    }
+  });
+
+  test("a phone that connects after a run finished gets its own profile's outcome in the state, and no other", async () => {
+    const port = await getFreePort();
+    const runP1 = azureClosedPrCleanupFinishedSchema.parse({
+      runId: "run-p1",
+      parentWorkspaceId: "azure-p1",
+      profileId: "p1",
+      finishedAt: "2026-10-14T10:00:00.000Z",
+      result: { deleted: 2, skipped: [], errors: [] },
+    });
+    const runP2 = azureClosedPrCleanupFinishedSchema.parse({
+      runId: "run-p2",
+      parentWorkspaceId: "azure-p2",
+      profileId: "p2",
+      finishedAt: "2026-10-14T10:00:01.000Z",
+      error: "boom",
+    });
+    const { runtime, seedTicket } = makeCleanupRuntime(port, "tok-cleanup-late", [runP1, runP2]);
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      seedTicket("t1", "s1", "phone-p1", "p1");
+      const cookie = await bootstrapPhone(baseUrl, "t1", "s1");
+      const state = (await (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).json()) as {
+        azureClosedPrCleanup?: unknown;
+      };
+      expect(state.azureClosedPrCleanup).toEqual({ parentWorkspaceIds: ["azure-p1"], lastRuns: [runP1] });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a phone cannot start the cleanup of another profile's Azure workspace", async () => {
+    const port = await getFreePort();
+    const { runtime, starts, seedTicket } = makeCleanupRuntime(port, "tok-cleanup-guard");
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      seedTicket("t1", "s1", "phone-p1", "p1");
+      const cookie = await bootstrapPhone(baseUrl, "t1", "s1");
+      const response = await fetch(`${baseUrl}/api/azure/workspace/cleanup-closed-prs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ parentWorkspaceId: "azure-p2" }),
+      });
+      expect(response.status).toBe(403);
+      expect(starts).toEqual([]);
+    } finally {
+      await server.close();
+    }
   });
 });

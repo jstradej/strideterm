@@ -157,6 +157,7 @@ import {
 import { shouldShowSystemNotification } from "./notifications/system-notification-dedupe.js";
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
+import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 
@@ -247,6 +248,11 @@ export function registerIpc(
     // Same reasoning: each window keeps its own notification history, and an
     // auto-approval has to show up in all of them.
     runtime.on(APPROVAL_RECORDED_CHANNEL, (payload: unknown) => emitToRenderer(APPROVAL_RECORDED_CHANNEL, payload)),
+    // Every window: the summary belongs to whichever window is viewing the
+    // profile (each renderer filters by its own), not only the one that asked.
+    runtime.on(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, (payload: unknown) =>
+      emitToRenderer(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, payload),
+    ),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:status", (payload: any) => emitToRenderer("mobile:status", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

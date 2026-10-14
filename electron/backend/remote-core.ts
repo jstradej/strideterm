@@ -672,6 +672,16 @@ export function buildRemoteCore(
     ) as RemoteStateV2["workspace"],
     attention: scopeAttention(composed.attention as AnyRecord | undefined, inProfile) as RemoteStateV2["attention"],
     taskRunner: filterByWorkspaceId(composed.taskRunner as Record<string, unknown> | undefined, inProfile),
+    azureClosedPrCleanup: {
+      parentWorkspaceIds: ((composed.azureClosedPrCleanup?.parentWorkspaceIds || []) as string[]).filter((id) =>
+        inProfile.has(id),
+      ),
+      // A run carries the profile it was started in — the same field the live
+      // event is routed by — so a client never learns another profile's outcome.
+      lastRuns: ((composed.azureClosedPrCleanup?.lastRuns || []) as AnyRecord[]).filter((run) =>
+        matchesProfile(run, scope),
+      ) as RemoteStateV2["azureClosedPrCleanup"]["lastRuns"],
+    },
     plugins: composed.plugins || [],
     environment: composed.environment || {},
     remoteAccess: reduceRemoteAccess(composed.remoteAccess),
@@ -728,6 +738,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "environment",
   "remoteAccess",
   "taskRunner",
+  "azureClosedPrCleanup",
   "secureStorage",
   "remoteClient",
 ]);
