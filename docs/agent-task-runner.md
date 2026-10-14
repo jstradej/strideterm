@@ -151,7 +151,7 @@ The Dashboard is the first tab of a task workspace:
 | **Continue** | Task is paused/completed/failed | Resume from current state                                 |
 | **Reset**    | Task is paused/completed/failed | Clear round history, keep files, return to idle for retry |
 
-You can type into the Worker or Judge terminal at any time; typing during an evaluation cycle pauses the task so the two do not collide.
+You can type into the Worker or Judge terminal at any time; the task keeps running. The runner never pauses because of your input: before it writes into a panel you are using, it waits until you have been quiet for 10 s, submits any text you left unsent once the agent has finished its turn (never while a dialog is open), waits for the agent to answer you, and only then writes its own prompt.
 
 ## Shower Mode (Context Refresh)
 

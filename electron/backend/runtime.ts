@@ -7649,7 +7649,7 @@ export async function createRuntime({
       updateCommandClassFromInput(signal, data);
       adaptiveRecordInteraction(sessionId);
     }
-    if (isUserTyping) taskRunner.onUserInput(sessionId);
+    if (isUserTyping) taskRunner.onUserInput(sessionId, data);
     const descriptor = parseSessionId(sessionId);
     if (!descriptor) return;
     if (viewerId && isUserTyping) {

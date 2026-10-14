@@ -76,8 +76,8 @@ workspaces stay individually addressable from the sidebar.
 A session is keyed `workspaceId:panelId`. Activating a workspace starts its `startup: "default"`
 tabs. Any number of authorized viewers may watch and type into one PTY. A mobile composer submits
 text and Enter as one queued operation; competing raw writes wait until that operation finishes.
-Meaningful manual input applies the existing task pause rules and cancels pending automatic prompt
-writes. Browser panels render as webviews and create no PTY.
+Meaningful manual input never pauses a task: it cancels an automatic write in progress, and the task
+runner defers its next write into that panel until the user has been quiet and the agent has answered. Browser panels render as webviews and create no PTY.
 
 ## Managers
 

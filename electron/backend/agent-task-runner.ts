@@ -142,7 +142,188 @@ interface TaskOperationContext {
   readonly evaluationAttempt?: number;
   readonly checksEvaluationAttempt: boolean;
   readonly sessionEpochs: Record<string, number>;
+  /** Which role each `sessionEpochs` key was captured for — diagnostics only. */
+  readonly sessionRoles: Readonly<Record<string, TaskBindingRole>>;
+  /** Date.now() at capture — lets a refusal report how long the step ran. */
+  readonly capturedAt: number;
+  /** Set by an operation that races the hook-driven main line by design. */
+  readonly expectedRefusal?: ExpectedTaskOperationRefusal;
   rejectedLogged: boolean;
+}
+
+/** One identity check a stale task operation failed. Ids, states, counters and
+ * (only for the cwd check) paths — never prompt text or terminal content. */
+interface TaskOperationCheckFailure {
+  readonly check: string;
+  readonly expected: unknown;
+  readonly actual: unknown;
+  readonly sessionId?: string;
+  readonly role?: TaskBindingRole;
+}
+
+/**
+ * A refusal the operation (or one call site) declares normal: a backstop, a
+ * timer or a probe that loses to the step it races. When every failed check is
+ * in `checks` (or `checks` is omitted), the refusal is logged at debug with
+ * `reason` instead of as a possibly stuck task.
+ */
+interface ExpectedTaskOperationRefusal {
+  readonly reason: string;
+  readonly checks?: ReadonlySet<string>;
+}
+
+/**
+ * Checks whose failure means the task itself moved on — disposed runner, a
+ * lifecycle advance (start / resume / reset / reject / pause / complete / fail
+ * all advance it), the workspace or task gone, or a different task. A step
+ * refused for one of these is expected and logs at debug. Any other refusal —
+ * a session incarnation (user input into an agent panel, a respawn, a panel
+ * closed), a moved panel / cwd / mode, or a state or round the task reached
+ * without a lifecycle change — stops the step with nothing else to drive the
+ * task, so it logs at warn. See #reportStaleTaskOperation.
+ */
+const LIFECYCLE_EXPLAINED_CHECKS: ReadonlySet<string> = new Set([
+  "disposed",
+  "lifecycleEpoch",
+  "workspace",
+  "task",
+  "taskId",
+]);
+
+/**
+ * The checks another runner step trips when it advances the task — a forward
+ * transition (running → evaluating → judge-evaluating → running, the attached
+ * equivalents), a new round or a new Companion evaluation attempt. None of them
+ * advances the lifecycle epoch. A main-line step holds the ownership guard for
+ * its phase, so for it such a change is unexpected and stays a warn; only an
+ * operation that races the main line by design (the watcher backstop, the
+ * rate-limit confirm window, a replay queued behind a pass) declares it.
+ */
+const TASK_ADVANCED_CHECKS: ReadonlySet<string> = new Set(["state", "round", "evaluationAttempt"]);
+
+/**
+ * Why a pending injection was cancelled, recorded so the step it belonged to
+ * can say so when it finds its controller gone. Every reason except the
+ * session-level ones is a lifecycle event or a newer injection that takes over.
+ */
+type InjectionCancelReason =
+  | "superseded-by-new-injection"
+  | "task-left-active-state"
+  | "managed-session-restart"
+  | "disposed"
+  | "session-exit"
+  | "session-reset";
+
+const EXPLAINED_INJECTION_CANCELS: ReadonlySet<InjectionCancelReason> = new Set([
+  "superseded-by-new-injection",
+  "task-left-active-state",
+  "managed-session-restart",
+  "disposed",
+]);
+
+/** How one runner write (text + Enter) ended — see #deliverRunnerText. */
+type RunnerWriteOutcome = "submitted" | "interrupted" | "stopped";
+
+/** What a polite runner write is waiting for — see #politeWaitReason. */
+type PoliteWaitReason = "user-typing" | "dialog-open" | "agent-turn" | "agent-answer" | "submit-pending";
+
+/**
+ * What the runner knows about the user's hands in one task session — fed by
+ * the user's terminal input (onUserInput) and the idle / hook signals the
+ * runner already receives. Diagnostics and polite injection only; never task
+ * state, never persisted, never logged as text.
+ */
+interface SessionUserActivity {
+  /** Date.now() of the user's last real keystroke or paste; 0 = never. */
+  lastInputAt: number;
+  /** The composer probably holds text the user has not submitted. */
+  pending: boolean;
+  /** Last input character — a backslash or ESC before Enter makes it a newline. */
+  lastChar: string;
+  /** A turn is running since the last submit seen (the user's, ours, or a hook). */
+  turnActive: boolean;
+  /** …and that turn answers the user (their Enter, or ours sent on their behalf). */
+  userTurn: boolean;
+  turnStartedAt: number;
+  /** A permission / question / elicitation dialog is on screen. */
+  dialogOpen: boolean;
+  /** When the runner's own write was last submitted into this session. */
+  lastRunnerSubmitAt: number;
+  /** The injection whose /clear still waits for its prompt, and when the /clear went in. */
+  clearGeneration: AbortController | null;
+  clearedAt: number;
+}
+
+/** Idle-signal sources that mean a dialog is waiting on the user, not that the turn ended. */
+const DIALOG_IDLE_SOURCES: ReadonlySet<string> = new Set([
+  "hook:permission_prompt",
+  "hook:elicitation_dialog",
+  "hook:elicitation_url_dialog",
+  "hook:agent_needs_input",
+]);
+
+/** Idle-signal sources that end the agent's turn: hooks for hook-capable
+ * providers, the runtime's silence detection for the others. */
+const TURN_END_IDLE_SOURCES: ReadonlySet<string> = new Set([
+  "hook:stop",
+  "hook:idle_prompt",
+  "hook:notification",
+  "silence",
+  "hook-fallback",
+  "osc133",
+]);
+
+const BRACKETED_PASTE_START = "\x1b[200~";
+const BRACKETED_PASTE_END = "\x1b[201~";
+
+/**
+ * Fold one chunk of the user's terminal input into what is known about the
+ * agent's composer. Generic across agent TUIs:
+ *  - printable text and bracketed-paste content → pending;
+ *  - a bare Enter ("\r") → submits it — unless it follows a backslash or ESC,
+ *    the newline forms agents accept (backslash+Enter, Alt/Option+Enter);
+ *  - Ctrl+C → clears it;
+ *  - anything else (arrows, history, editing keys, "\n", CSI-u Shift+Enter,
+ *    unknown sequences) → pending.
+ * When unsure it says "pending": a false pending only costs an Enter on an
+ * empty composer, which agent TUIs ignore, while a false "submitted" would let
+ * the runner glue its prompt onto the user's text. `entered` reports any bare
+ * Enter (it also answers an open dialog); `submitted` one that sent text.
+ */
+export function foldTerminalInput(
+  state: { pending: boolean; lastChar: string },
+  data: string,
+): { pending: boolean; lastChar: string; entered: boolean; submitted: boolean } {
+  let { pending, lastChar } = state;
+  let entered = false;
+  let submitted = false;
+  let index = 0;
+  while (index < data.length) {
+    if (data.startsWith(BRACKETED_PASTE_START, index)) {
+      const end = data.indexOf(BRACKETED_PASTE_END, index + BRACKETED_PASTE_START.length);
+      index = end < 0 ? data.length : end + BRACKETED_PASTE_END.length;
+      pending = true;
+      lastChar = "";
+      continue;
+    }
+    const char = data[index];
+    index += 1;
+    if (char === "\x03") {
+      pending = false;
+      lastChar = "";
+      continue;
+    }
+    if (char === "\r" && lastChar !== "\\" && lastChar !== "\x1b") {
+      entered = true;
+      if (pending) submitted = true;
+      pending = false;
+      lastChar = char;
+      continue;
+    }
+    pending = true;
+    lastChar = char;
+  }
+  return { pending, lastChar, entered, submitted };
 }
 
 type TaskStateKind =
@@ -371,6 +552,14 @@ export class AgentTaskRunner {
   #submitWaiters = new Map<string, Array<() => void>>();
   #injectionAbortControllers = new Map<string, AbortController>();
   #injectionOperations = new Map<string, { operation: TaskOperationContext; expectedState: string } | null>();
+  /** Why each cancelled injection was cancelled — see #reportCancelledInjection. */
+  #cancelledInjections = new WeakMap<
+    AbortController,
+    {
+      reason: InjectionCancelReason;
+      injection: { operation: TaskOperationContext; expectedState: string } | null;
+    }
+  >();
   #disposed = false;
   /** Krok 8 — fs.watch fallback watchers on task dirs, keyed by workspaceId. */
   #taskDirWatchers = new Map<string, { close: () => void }>();
@@ -979,7 +1168,11 @@ export class AgentTaskRunner {
   #captureTaskOperation(
     workspace: TaskWorkspaceState,
     label: string,
-    { round = false, evaluationAttempt = false }: { round?: boolean; evaluationAttempt?: boolean } = {},
+    {
+      round = false,
+      evaluationAttempt = false,
+      expectedRefusal,
+    }: { round?: boolean; evaluationAttempt?: boolean; expectedRefusal?: ExpectedTaskOperationRefusal } = {},
   ): TaskOperationContext {
     const task = workspace.task;
     const workerSessionId = sessionIdFor(workspace, "worker");
@@ -1003,51 +1196,160 @@ export class AgentTaskRunner {
         [workerSessionId]: this.#sessionIncarnations.get(workerSessionId) || 0,
         [judgeSessionId]: this.#sessionIncarnations.get(judgeSessionId) || 0,
       },
+      sessionRoles: { [workerSessionId]: "worker", [judgeSessionId]: "judge" },
+      capturedAt: Date.now(),
+      ...(expectedRefusal ? { expectedRefusal } : {}),
       rejectedLogged: false,
     };
   }
 
+  /**
+   * Re-validate a captured operation after an await. Returns the current
+   * workspace, or null when any identity check fails — the step must stop.
+   * `extraFailures` are checks the caller evaluated itself (the standard run
+   * generation); `expectedRefusal` marks a call site whose refusal is the
+   * normal answer (a probe) rather than a step being stopped.
+   */
   #currentTaskOperation(
     operation: TaskOperationContext,
     expectedStates?: ReadonlySet<string>,
+    {
+      extraFailures = [],
+      expectedRefusal,
+    }: {
+      extraFailures?: readonly TaskOperationCheckFailure[];
+      expectedRefusal?: ExpectedTaskOperationRefusal;
+    } = {},
   ): TaskWorkspaceState | null {
     const workspace = this.#findTaskWorkspace(operation.workspaceId);
-    const task = workspace?.task;
-    const valid =
-      !this.#disposed &&
-      (this.#taskLifecycleEpoch.get(operation.workspaceId) || 0) === operation.lifecycleEpoch &&
-      !!workspace &&
-      !!task &&
-      task.taskId === operation.taskId &&
-      (task.mode || "standard") === operation.mode &&
-      workspace.cwd === operation.cwd &&
-      task.workerPanelId === operation.workerPanelId &&
-      task.judgePanelId === operation.judgePanelId &&
-      (task.workerWorkspaceId || "") === operation.workerWorkspaceId &&
-      (!operation.checksRound || task.currentRound === operation.round) &&
-      (!operation.checksEvaluationAttempt || task.companionEvaluationAttempt === operation.evaluationAttempt) &&
-      Object.entries(operation.sessionEpochs).every(
-        ([sessionId, epoch]) => (this.#sessionIncarnations.get(sessionId) || 0) === epoch,
-      ) &&
-      (!expectedStates || expectedStates.has(task.state));
-    if (!valid) {
-      if (!operation.rejectedLogged) {
-        operation.rejectedLogged = true;
-        log.debug("task operation rejected as stale", {
-          workspaceId: operation.workspaceId,
-          taskId: operation.taskId,
-          operation: operation.label,
-          expectedEpoch: operation.lifecycleEpoch,
-          currentEpoch: this.#taskLifecycleEpoch.get(operation.workspaceId) || 0,
-          expectedState: expectedStates ? [...expectedStates] : undefined,
-          currentState: task?.state,
-          expectedRound: operation.round,
-          currentRound: task?.currentRound,
-        });
-      }
-      return null;
+    const failures = [...this.#staleTaskOperationChecks(operation, workspace, expectedStates), ...extraFailures];
+    if (failures.length === 0) return workspace;
+    this.#reportStaleTaskOperation(operation, workspace, expectedStates, failures, expectedRefusal);
+    return null;
+  }
+
+  /** Every identity check `operation` fails against `workspace`, not just the first. */
+  #staleTaskOperationChecks(
+    operation: TaskOperationContext,
+    workspace: TaskWorkspaceState | null,
+    expectedStates?: ReadonlySet<string>,
+  ): TaskOperationCheckFailure[] {
+    const failures: TaskOperationCheckFailure[] = [];
+    const fail = (check: string, expected: unknown, actual: unknown): void => {
+      failures.push({ check, expected, actual });
+    };
+    if (this.#disposed) fail("disposed", false, true);
+    const lifecycleEpoch = this.#taskLifecycleEpoch.get(operation.workspaceId) || 0;
+    if (lifecycleEpoch !== operation.lifecycleEpoch) fail("lifecycleEpoch", operation.lifecycleEpoch, lifecycleEpoch);
+    if (!workspace) {
+      // #findTaskWorkspace folds "workspace deleted" and "no longer a task
+      // workspace" into one null — tell them apart for the log.
+      const exists = !!this.#getState?.()?.workspaces.some((candidate) => candidate.id === operation.workspaceId);
+      if (exists) fail("task", "present", "missing");
+      else fail("workspace", "present", "missing");
+      return failures;
     }
-    return workspace;
+    const task = workspace.task;
+    if (task.taskId !== operation.taskId) fail("taskId", operation.taskId, task.taskId);
+    const mode = task.mode || "standard";
+    if (mode !== operation.mode) fail("mode", operation.mode, mode);
+    // Paths are logged only here, where they are the failed check itself.
+    if (workspace.cwd !== operation.cwd) fail("cwd", operation.cwd, workspace.cwd);
+    if (task.workerPanelId !== operation.workerPanelId) {
+      fail("workerPanelId", operation.workerPanelId, task.workerPanelId);
+    }
+    if (task.judgePanelId !== operation.judgePanelId) fail("judgePanelId", operation.judgePanelId, task.judgePanelId);
+    const workerWorkspaceId = task.workerWorkspaceId || "";
+    if (workerWorkspaceId !== operation.workerWorkspaceId) {
+      fail("workerWorkspaceId", operation.workerWorkspaceId, workerWorkspaceId);
+    }
+    if (operation.checksRound && task.currentRound !== operation.round) {
+      fail("round", operation.round, task.currentRound);
+    }
+    if (operation.checksEvaluationAttempt && task.companionEvaluationAttempt !== operation.evaluationAttempt) {
+      fail("evaluationAttempt", operation.evaluationAttempt, task.companionEvaluationAttempt);
+    }
+    for (const [sessionId, incarnation] of Object.entries(operation.sessionEpochs)) {
+      const current = this.#sessionIncarnations.get(sessionId) || 0;
+      if (current === incarnation) continue;
+      failures.push({
+        check: "sessionIncarnation",
+        expected: incarnation,
+        actual: current,
+        sessionId,
+        role: operation.sessionRoles[sessionId],
+      });
+    }
+    if (expectedStates && !expectedStates.has(task.state)) fail("state", [...expectedStates], task.state);
+    return failures;
+  }
+
+  /**
+   * Log a refused operation once (`rejectedLogged`), with everything needed to
+   * tell from strideterm.log alone which check stopped which step: debug when
+   * the refusal is explained — the lifecycle moved on, or the operation / call
+   * site declared this refusal normal — and warn otherwise. Ids, states and
+   * counters only; paths only for a failed cwd check.
+   */
+  #reportStaleTaskOperation(
+    operation: TaskOperationContext,
+    workspace: TaskWorkspaceState | null,
+    expectedStates: ReadonlySet<string> | undefined,
+    failures: readonly TaskOperationCheckFailure[],
+    callSiteExpectedRefusal?: ExpectedTaskOperationRefusal,
+    extraExplanation?: string,
+  ): void {
+    if (operation.rejectedLogged) return;
+    operation.rejectedLogged = true;
+    const task = workspace?.task;
+    const expectedRefusal = callSiteExpectedRefusal ?? operation.expectedRefusal;
+    let explainedBy = failures
+      .filter((failure) => LIFECYCLE_EXPLAINED_CHECKS.has(failure.check))
+      .map((failure) => failure.check);
+    if (explainedBy.length === 0 && extraExplanation) explainedBy = [extraExplanation];
+    if (
+      explainedBy.length === 0 &&
+      expectedRefusal &&
+      failures.every((failure) => !expectedRefusal.checks || expectedRefusal.checks.has(failure.check))
+    ) {
+      explainedBy = [expectedRefusal.reason];
+    }
+    const details = {
+      operation: operation.label,
+      operationId: operation.id,
+      ageMs: Date.now() - operation.capturedAt,
+      workspaceId: operation.workspaceId,
+      taskId: operation.taskId,
+      mode: operation.mode,
+      state: task?.state ?? null,
+      pausedFromState: task?.pausedFromState || null,
+      expectedStates: expectedStates ? [...expectedStates] : null,
+      round: { checked: operation.checksRound, expected: operation.round ?? null, current: task?.currentRound ?? null },
+      evaluationAttempt: {
+        checked: operation.checksEvaluationAttempt,
+        expected: operation.evaluationAttempt ?? null,
+        current: task?.companionEvaluationAttempt ?? null,
+      },
+      lifecycleEpoch: {
+        expected: operation.lifecycleEpoch,
+        current: this.#taskLifecycleEpoch.get(operation.workspaceId) || 0,
+      },
+      failedChecks: failures,
+      explainedBy,
+      sessions: Object.entries(operation.sessionEpochs).map(([sessionId, incarnation]) => ({
+        sessionId,
+        role: operation.sessionRoles[sessionId] ?? null,
+        expectedIncarnation: incarnation,
+        currentIncarnation: this.#sessionIncarnations.get(sessionId) || 0,
+      })),
+    };
+    if (explainedBy.length > 0) {
+      log.debug("task operation rejected as stale", details);
+      return;
+    }
+    // Nothing says the task moved on, yet this step stops here — and nothing
+    // else may be left to drive the task out of its current state.
+    log.warn("task operation rejected as stale without a lifecycle change", details);
   }
 
   captureSessionTaskOperation(sessionId: string, label: string): (() => boolean) | null {
@@ -1058,6 +1360,12 @@ export class AgentTaskRunner {
     const operation = this.#captureTaskOperation(workspace, label, {
       round: true,
       evaluationAttempt: task.mode === "attached",
+      // The caller (the runtime's rate-limit confirm window, 60 s) only asks
+      // whether a deferred hand-off still applies. An agent that printed the
+      // limit text and then ended its turn moves the task on through the
+      // ordinary idle path inside that window — the hand-off is moot then,
+      // and the step that advanced the task drives it.
+      expectedRefusal: { reason: "task-advanced-before-deferred-action", checks: TASK_ADVANCED_CHECKS },
     });
     const expectedState = task.state;
     return () => this.#currentTaskOperation(operation, new Set([expectedState])) !== null;
@@ -1083,19 +1391,38 @@ export class AgentTaskRunner {
     expectedStates: ReadonlySet<string>,
     operation?: TaskOperationContext,
   ): TaskWorkspaceState | null {
-    if (this.#disposed || (this.#standardTaskRunGeneration.get(workspaceId) || 0) !== generation) return null;
+    const currentGeneration = this.#standardTaskRunGeneration.get(workspaceId) || 0;
     const workspace = this.#findTaskWorkspace(workspaceId);
-    if (
-      !workspace ||
-      workspace.task.mode === "attached" ||
-      workspace.task.taskId !== taskId ||
-      workspace.task.currentRound !== currentRound ||
-      !expectedStates.has(workspace.task.state)
-    ) {
-      return null;
+    const standardCurrent =
+      !this.#disposed &&
+      currentGeneration === generation &&
+      !!workspace &&
+      workspace.task.mode !== "attached" &&
+      workspace.task.taskId === taskId &&
+      workspace.task.currentRound === currentRound &&
+      expectedStates.has(workspace.task.state);
+    if (!operation) return standardCurrent ? workspace : null;
+    // Run the operation's checks even when the standard ones already failed,
+    // so the refusal is logged. Most standard checks repeat the operation's
+    // own; pass on only those it cannot see.
+    const extraFailures: TaskOperationCheckFailure[] = [];
+    if (currentGeneration !== generation) {
+      extraFailures.push({ check: "standardRunGeneration", expected: generation, actual: currentGeneration });
     }
-    if (operation && this.#currentTaskOperation(operation, expectedStates) !== workspace) return null;
-    return workspace;
+    if (workspace) {
+      const task = workspace.task;
+      if (task.mode === "attached" && operation.mode === "attached") {
+        extraFailures.push({ check: "mode", expected: "standard", actual: task.mode });
+      }
+      if (task.taskId !== taskId && taskId !== operation.taskId) {
+        extraFailures.push({ check: "taskId", expected: taskId, actual: task.taskId });
+      }
+      if (task.currentRound !== currentRound && !(operation.checksRound && operation.round === currentRound)) {
+        extraFailures.push({ check: "round", expected: currentRound, actual: task.currentRound });
+      }
+    }
+    const current = this.#currentTaskOperation(operation, expectedStates, { extraFailures });
+    return standardCurrent && current === workspace ? workspace : null;
   }
 
   /**
@@ -1758,6 +2085,8 @@ export class AgentTaskRunner {
     const workspaceId = workspace.id;
     const isWorker = role === "worker";
     const isJudge = role === "judge";
+    // Before any state branch: the turn ended whatever the task does with it.
+    this.#noteAgentSignal(sessionId, source);
     log.debug("onAgentIdle: task workspace found", {
       sessionId,
       workspaceId,
@@ -2121,7 +2450,7 @@ export class AgentTaskRunner {
     // method's comment for why this divergence is preserved rather than
     // unified: it's an intentional Krok 9b fix for a judge-specific hang).
     if (role === "worker" && match.needsConfirm && this.#writeToSession) {
-      this.#writeToSession(sessionId, "\r");
+      this.#pressDialogEnter(workspace, sessionId);
     }
 
     this.#scheduleRateLimitResume(workspaceId, resetAt, role);
@@ -2339,7 +2668,7 @@ export class AgentTaskRunner {
     source: string,
   ): boolean {
     if (match.needsConfirm && this.#writeToSession) {
-      this.#writeToSession(sessionId, "\r");
+      this.#pressDialogEnter(workspace, sessionId);
     }
     return this.#handleRateLimited(workspace, sessionId, match, source, "judge");
   }
@@ -2435,7 +2764,14 @@ export class AgentTaskRunner {
     if (this.#taskDirWatchers.has(workspaceId)) return; // already watching
     const taskId = workspace.task.taskId;
     const cwd = workspace.cwd;
-    const taskOperation = { ...this.#captureTaskOperation(workspace, "task-dir-watcher-start"), sessionEpochs: {} };
+    const taskOperation = {
+      ...this.#captureTaskOperation(workspace, "task-dir-watcher-start", {
+        // Started on every move into an active state; a task that left the
+        // active states while the dir was probed simply needs no watcher.
+        expectedRefusal: { reason: "task-left-active-state", checks: TASK_ADVANCED_CHECKS },
+      }),
+      sessionEpochs: {},
+    };
     const dir = taskDir(workspace.cwd, workspace.task.taskId);
     try {
       await access(dir);
@@ -2476,6 +2812,11 @@ export class AgentTaskRunner {
       const operation = this.#captureTaskOperation(current, "task-dir-watcher-reconcile", {
         round: true,
         evaluationAttempt: current.task.mode === "attached",
+        // A backstop for a hook that never comes. When the hook does come, the
+        // step it drives advances the task during the grace window, and this
+        // operation is refused — the normal outcome. A session or binding
+        // change still warns: then the backstop is gone too.
+        expectedRefusal: { reason: "hook-handled-first", checks: TASK_ADVANCED_CHECKS },
       });
       void this.#reconcileFromWatcher(operation, armGrace, isCurrent);
     };
@@ -2881,11 +3222,11 @@ export class AgentTaskRunner {
   onSessionExit(sessionId: string, intentional = false): void {
     const managedRestart = (this.#managedSessionRestarts.get(sessionId) || 0) > 0;
     if (intentional && managedRestart) {
-      this.#cancelSessionInjection(sessionId);
+      this.#cancelSessionInjection(sessionId, "managed-session-restart");
       log.debug("managed task restart exited its previous session generation", { sessionId });
       return;
     }
-    this.cancelPendingInput(sessionId);
+    this.cancelPendingInput(sessionId, "session-exit");
     if (managedRestart) {
       this.#sessionIncarnations.set(sessionId, (this.#sessionIncarnations.get(sessionId) || 0) + 1);
     }
@@ -3011,6 +3352,9 @@ export class AgentTaskRunner {
 
     switch (hook) {
       case "Notification":
+        // Recorded before the attached-judge branch below can consume it: an
+        // open dialog must block the runner from pressing Enter for the user.
+        this.#noteAgentSignal(sessionId, subtype ? `hook:${subtype}` : "hook:notification");
         if (subtype === "permission_prompt" && this.#handleJudgePermissionPrompt(sessionId)) return true;
         return this.onAgentIdle(sessionId, subtype ? `hook:${subtype}` : "hook:notification");
       case "Stop":
@@ -3094,6 +3438,18 @@ export class AgentTaskRunner {
     const { workspace } = binding;
 
     log.trace("onUserPromptSubmit: user sent prompt in task workspace", { sessionId });
+    // A new turn starts. With no runner write waiting for this confirmation it
+    // is the user's own message (submitted in some way the input fold did not
+    // recognise as Enter): the composer is empty and the agent answers them.
+    const activity = this.#activityFor(sessionId);
+    const runnerWaiting = (this.#submitWaiters.get(sessionId)?.length ?? 0) > 0;
+    activity.turnActive = true;
+    activity.turnStartedAt = Date.now();
+    activity.dialogOpen = false;
+    if (!runnerWaiting) {
+      activity.userTurn = true;
+      activity.pending = false;
+    }
     // Krok 1 — this hook also fires for prompts WE inject, so it doubles as the
     // submit-confirmation signal: release any waiter parked by #injectPrompt.
     this.#resolveSubmitWaiters(sessionId);
@@ -3104,46 +3460,19 @@ export class AgentTaskRunner {
   }
 
   /**
-   * Called from runtime.writeToSession when user types into a task workspace panel.
-   * Auto-pauses the task runner to avoid conflicts with user input.
+   * Called from runtime's terminal-input path when the user types or pastes
+   * into a task panel (`data` is what they sent; passive terminal reports are
+   * filtered out before this).
    *
-   * Only pauses when input targets the CURRENTLY ACTIVE agent panel:
-   * - evaluating/refreshing → only worker panel input pauses
-   * - judge-evaluating → only judge panel input pauses
-   * This prevents accidental pauses from clicking on the idle panel
-   * (e.g. focus events from xterm.js when switching between panels).
+   * Typing never pauses or stalls a task: it does not touch the task state, the
+   * session's incarnation, or any operation in flight. It only records the
+   * user's activity, which makes the runner's next write into this session
+   * wait politely (see #awaitPoliteWindow) and withholds the Enter of a write
+   * that is going in at this very moment.
    */
-  onUserInput(sessionId: string): void {
-    this.cancelPendingInput(sessionId);
-    const binding = this.#resolveTaskBinding(sessionId);
-    if (!binding) return;
-    const { workspace, task, role } = binding;
-    const workspaceId = workspace.id;
-
-    // Only pause if input targets the panel that the task runner is actively
-    // driving. Attached-only: input into the Primary during capturing-context
-    // also pauses the capture (plan §6.2 manual-input rules) — that state
-    // never occurs for standard tasks, so this is additive, not a behavior
-    // change for them.
-    const isWorkerInput = role === "worker";
-    const isJudgeInput = role === "judge";
-    const shouldPause =
-      ((task.state === "evaluating" || task.state === "refreshing" || task.state === "capturing-context") &&
-        isWorkerInput) ||
-      (task.state === "judge-evaluating" && isJudgeInput);
-
-    if (shouldPause) {
-      task.pausedFromState = task.state;
-      this.#setTaskState(task, "paused");
-      this.#evaluating.delete(workspaceId);
-      log.info("user input detected during evaluation, task paused", {
-        workspaceId,
-        sessionId,
-        role,
-        pausedFromState: task.pausedFromState,
-      });
-      this.#broadcastState!();
-    }
+  onUserInput(sessionId: string, data?: string | Buffer): void {
+    if (!this.#resolveTaskBinding(sessionId)) return;
+    this.#recordUserInput(sessionId, data);
   }
 
   // ---------------------------------------------------------------------------
@@ -3748,8 +4077,18 @@ export class AgentTaskRunner {
         }
 
         // First real idle without a verdict: nudge once. LLMs sometimes print
-        // the verdict as text instead of writing the file.
-        if (!current.task.judgeNudged) {
+        // the verdict as text instead of writing the file. An idle after the
+        // user talked to the Judge may answer THEM, not the evaluation — it
+        // must not spend the nudge (and then the task) on their Q&A.
+        const userInterjected = this.#userInterjected(judgeSessionId);
+        if (!current.task.judgeNudged || userInterjected) {
+          if (current.task.judgeNudged) {
+            log.info("judge verdict missing after the user's own turn — reminding the Judge again", {
+              workspaceId,
+              source,
+              ...this.#politeLogContext(judgeSessionId),
+            });
+          }
           current.task.judgeNudged = true;
           const dir = taskDirRel(task.taskId);
           // Krok 10 — the example shows "continue", not "complete": a fresh judge
@@ -3968,7 +4307,15 @@ export class AgentTaskRunner {
         this.#handlingStandardVerdict.delete(workspaceId);
         const pending = this.#pendingStandardVerdict.get(workspaceId);
         this.#pendingStandardVerdict.delete(workspaceId);
-        const current = this.#currentTaskOperation(taskOperation, new Set(["judge-evaluating"]));
+        // Asked only when a signal was queued — this pass usually just moved
+        // the task on itself (judge-evaluating → running, next round). This
+        // pass held the verdict guard throughout, so a task that advanced was
+        // advanced by it, and the queued signal is moot.
+        const current = pending
+          ? this.#currentTaskOperation(taskOperation, new Set(["judge-evaluating"]), {
+              expectedRefusal: { reason: "verdict-pass-advanced-task", checks: TASK_ADVANCED_CHECKS },
+            })
+          : null;
         if (pending && current) {
           void this.#handleJudgeVerdict(current, pending).catch((err: unknown) => {
             log.error("queued judge verdict handling failed", { workspaceId, err: (err as Error)?.message });
@@ -4430,7 +4777,11 @@ export class AgentTaskRunner {
       return;
     }
 
-    if (!task.captureNudged) {
+    // A reminder already waiting for the user: this idle has nothing to add.
+    if ((this.#politeWaits.get(sessionId) ?? 0) > 0) return;
+    // An idle after the user's own turn with the Primary is not the capture
+    // turn ending incomplete — remind again instead of pausing on their Q&A.
+    if (!task.captureNudged || this.#userInterjected(sessionId)) {
       task.captureNudged = true;
       const staleFiles = [
         validation.contextStale ? CONTEXT_FILE : "",
@@ -4726,9 +5077,11 @@ export class AgentTaskRunner {
       evaluationAttempt: true,
     });
     let task = workspace.task;
-    const refresh = (states?: ReadonlySet<string>): boolean => {
-      const fresh = this.#currentTaskOperation(taskOperation, states);
-      if (!fresh || (parentOperation && !this.#currentTaskOperation(parentOperation, states))) return false;
+    const refresh = (states?: ReadonlySet<string>, expectedRefusal?: ExpectedTaskOperationRefusal): boolean => {
+      const fresh = this.#currentTaskOperation(taskOperation, states, { expectedRefusal });
+      if (!fresh || (parentOperation && !this.#currentTaskOperation(parentOperation, states, { expectedRefusal }))) {
+        return false;
+      }
       workspace = fresh;
       task = fresh.task;
       return true;
@@ -4780,7 +5133,9 @@ export class AgentTaskRunner {
 
       if (result.status === "missing") {
         if (isIdlePromptOnly) return;
-        if (!task.judgeNudged) {
+        // As in the standard loop: an idle after the user's own turn with the
+        // Companion does not spend the nudge.
+        if (!task.judgeNudged || this.#userInterjected(judgeSessionId)) {
           task.judgeNudged = true;
           const dir = taskDirRel(task.taskId);
           const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} now — a schemaVersion 1 JSON object with ${identity}. Write the file now.`;
@@ -4816,9 +5171,12 @@ export class AgentTaskRunner {
         const fingerprint = result.raw ?? "";
         const attempts = task.companionRepairAttempts ?? 0;
         const alreadyAsked = task.companionRepairFingerprint === fingerprint;
-        if (!alreadyAsked && attempts < AgentTaskRunner.MAX_COMPANION_VERDICT_REPAIRS) {
+        // The user talked to the Companion since our last request: this idle
+        // may answer them, so ask again without charging an attempt.
+        const userInterjected = this.#userInterjected(judgeSessionId);
+        if (userInterjected || (!alreadyAsked && attempts < AgentTaskRunner.MAX_COMPANION_VERDICT_REPAIRS)) {
           task.judgeNudged = true;
-          task.companionRepairAttempts = attempts + 1;
+          if (!userInterjected) task.companionRepairAttempts = attempts + 1;
           task.companionRepairFingerprint = fingerprint;
           const dir = taskDirRel(task.taskId);
           // A malformed verdict gets the field-level contract back. Bare zod
@@ -4852,7 +5210,7 @@ Write the corrected file, then stop.`;
           void this.#logTaskEvent(
             workspace,
             "companion-verdict-repair",
-            `Verdict ${result.status} — asked Companion to rewrite it (attempt ${attempts + 1}/${AgentTaskRunner.MAX_COMPANION_VERDICT_REPAIRS}).`,
+            `Verdict ${result.status} — asked Companion to rewrite it (attempt ${task.companionRepairAttempts ?? 0}/${AgentTaskRunner.MAX_COMPANION_VERDICT_REPAIRS}).`,
           );
           this.#broadcastState!();
           return;
@@ -5035,7 +5393,17 @@ Write the corrected file, then stop.`;
       // Consumed unconditionally — a signal that is no longer relevant (the
       // pass that just finished moved the task on) must not be replayed later.
       if (pending && ownsVerdict) this.#pendingCompanionVerdict.delete(workspaceId);
-      if (pending && ownsVerdict && refresh(new Set(["judge-evaluating"]))) {
+      // Same as the standard verdict's queued replay: this pass held the guard,
+      // so if the task left judge-evaluating (or opened a new attempt) this
+      // pass moved it there and the queued signal is moot.
+      if (
+        pending &&
+        ownsVerdict &&
+        refresh(new Set(["judge-evaluating"]), {
+          reason: "verdict-pass-advanced-task",
+          checks: TASK_ADVANCED_CHECKS,
+        })
+      ) {
         log.debug("replaying coalesced companion idle signal", { workspaceId, source: pending });
         // Caught here rather than left to the caller: this runs inside the
         // finally of a pass that already reported its own outcome.
@@ -5451,6 +5819,14 @@ Do NOT continue working on the task — only write the handoff summary.`;
       log.warn("shower mode: restartSession not available, skipping", { workspaceId });
       return false;
     }
+    // The user may be talking to the Worker: the restart would cut them off
+    // mid-turn. Let them finish (and get their answer) first — never a pause.
+    if (
+      this.#politeWaitReason(workerSessionId) !== null &&
+      !(await this.#awaitPoliteWindow(workerSessionId, injection))
+    ) {
+      return false;
+    }
 
     try {
       await this.#restartTaskSession(workerSessionId);
@@ -5620,6 +5996,11 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Send /clear to an agent session to reset its conversation context.
    * Returns a promise that resolves after a short delay to allow the
    * command to be processed before injecting the next prompt.
+   *
+   * Like every runner write it waits for the user (see #awaitPoliteWindow).
+   * The prompt that follows in the same injection re-sends /clear when the
+   * user talks to the agent in between (see #needsReclear), so a Judge still
+   * evaluates from a clean context after the user's own Q&A.
    */
   async #clearSessionContext(sessionId: string, workspace: TaskWorkspaceState): Promise<boolean> {
     if (!this.#writeToSession) return true;
@@ -5633,8 +6014,11 @@ Do NOT continue working on the task — only write the handoff summary.`;
       style: strategy.style,
       clearSettleMs: strategy.clearSettleMs,
     });
-    await this.#writeAndSubmit(sessionId, "/clear", strategy, generation, signal);
+    await this.#writeAndSubmit(sessionId, "/clear", strategy, generation, signal, { startsTurn: false });
     if (!this.#isCurrentInjection(sessionId, generation)) return false;
+    const activity = this.#activityFor(sessionId);
+    activity.clearGeneration = generation;
+    activity.clearedAt = Date.now();
     if (strategy.clearSettleMs > 0) {
       if (!(await this.#waitForInjectionDelay(sessionId, generation, strategy.clearSettleMs))) return false;
     }
@@ -5710,6 +6094,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
       submitDelayMs: strategy.submitDelayMs,
       typingGapMs: strategy.typingGapMs,
     });
+    const writeOptions = { reclear: true, startsTurn: true };
 
     // Krok 1 — verified injection. Hook-capable providers (Claude Code) confirm
     // a submitted prompt by firing UserPromptSubmit; we wait for it and re-send
@@ -5718,7 +6103,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
     // fire-and-forget behaviour (no wait, no retry).
     const hookCapable = this.#isSessionHookCapable?.(sessionId) ?? false;
     if (!hookCapable) {
-      await this.#writeAndSubmit(sessionId, injection, strategy, generation, injectionSignal);
+      await this.#writeAndSubmit(sessionId, injection, strategy, generation, injectionSignal, writeOptions);
       if (!this.#isCurrentInjection(sessionId, generation)) return false;
       log.debug("prompt injected (unverified — no hooks)", {
         sessionId,
@@ -5731,29 +6116,41 @@ Do NOT continue working on the task — only write the handoff summary.`;
 
     const SUBMIT_CONFIRM_TIMEOUT_MS = AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS;
     const MAX_RESUBMITS = AgentTaskRunner.MAX_RESUBMITS;
-    for (let attempt = 0; attempt <= MAX_RESUBMITS; attempt++) {
+    // The confirmation clock starts when the text actually goes in — after any
+    // polite wait, and afresh for a restarted write — so waiting for the user
+    // never reads as a lost Enter.
+    let confirmation: { promise: Promise<boolean>; cancel: () => void } | null = null;
+    await this.#writeAndSubmit(sessionId, injection, strategy, generation, injectionSignal, {
+      ...writeOptions,
+      beforeWrite: () => {
+        confirmation?.cancel();
+        confirmation = this.#startSubmitConfirmation(sessionId, SUBMIT_CONFIRM_TIMEOUT_MS);
+      },
+    });
+    const firstConfirmation = confirmation as { promise: Promise<boolean> } | null;
+    if (!this.#isCurrentInjection(sessionId, generation) || !firstConfirmation) return false;
+    if (await this.#confirmedInjection(sessionId, generation, firstConfirmation.promise, 0, injection, strategy)) {
+      return true;
+    }
+    for (let attempt = 1; attempt <= MAX_RESUBMITS; attempt++) {
       if (!this.#isCurrentInjection(sessionId, generation)) return false;
-      const confirmed = this.#waitForSubmitConfirmation(sessionId, SUBMIT_CONFIRM_TIMEOUT_MS);
-      if (attempt === 0) {
-        await this.#writeAndSubmit(sessionId, injection, strategy, generation, injectionSignal);
-      } else {
-        if (!this.#isCurrentInjection(sessionId, generation)) return false;
-        // Text is already in the composer — just re-send Enter.
-        log.warn("injectPrompt: submit not confirmed, re-sending Enter", { sessionId, attempt });
-        this.#writeToSession!(sessionId, "\r", injectionSignal);
-      }
-      const didConfirm = await confirmed;
-      if (!this.#isCurrentInjection(sessionId, generation)) return false;
-      if (didConfirm) {
-        log.debug("prompt injected (submit confirmed)", {
+      // Text is already in the composer — just re-send Enter. Not once the user
+      // has typed there since our Enter: that Enter would submit THEIR text.
+      if (this.#userTypedSince(sessionId, this.#activityFor(sessionId).lastRunnerSubmitAt)) {
+        log.info("injectPrompt: not re-sending Enter — the user is typing in the session", {
           sessionId,
           attempt,
-          length: injection.length,
-          style: strategy.style,
+          ...this.#politeLogContext(sessionId),
         });
         return true;
       }
+      const confirmed = this.#waitForSubmitConfirmation(sessionId, SUBMIT_CONFIRM_TIMEOUT_MS);
+      log.warn("injectPrompt: submit not confirmed, re-sending Enter", { sessionId, attempt });
+      this.#writeToSession!(sessionId, "\r", injectionSignal);
+      this.#noteRunnerSubmit(sessionId, true);
+      if (await this.#confirmedInjection(sessionId, generation, confirmed, attempt, injection, strategy)) return true;
     }
+    if (!this.#isCurrentInjection(sessionId, generation)) return false;
     log.warn("injectPrompt: submit unconfirmed after retries", { sessionId });
     if (workspace) {
       void this.#logTaskEvent(
@@ -5765,12 +6162,38 @@ Do NOT continue working on the task — only write the handoff summary.`;
     return true;
   }
 
+  async #confirmedInjection(
+    sessionId: string,
+    generation: AbortController,
+    confirmed: Promise<boolean>,
+    attempt: number,
+    injection: string,
+    strategy: InjectionStrategy,
+  ): Promise<boolean> {
+    const didConfirm = await confirmed;
+    if (!this.#isCurrentInjection(sessionId, generation)) return false;
+    if (!didConfirm) return false;
+    log.debug("prompt injected (submit confirmed)", {
+      sessionId,
+      attempt,
+      length: injection.length,
+      style: strategy.style,
+    });
+    return true;
+  }
+
   /**
    * Krok 1 — register a one-shot waiter that resolves when the session's next
    * UserPromptSubmit hook arrives (via onUserPromptSubmit), or false on timeout.
    */
   #waitForSubmitConfirmation(sessionId: string, timeoutMs: number): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
+    return this.#startSubmitConfirmation(sessionId, timeoutMs).promise;
+  }
+
+  /** Same waiter, with a way to withdraw it (a restarted write starts a fresh one). */
+  #startSubmitConfirmation(sessionId: string, timeoutMs: number): { promise: Promise<boolean>; cancel: () => void } {
+    let cancel: () => void = () => {};
+    const promise = new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (confirmed: boolean) => {
         if (settled) return;
@@ -5789,7 +6212,9 @@ Do NOT continue working on the task — only write the handoff summary.`;
       const list = this.#submitWaiters.get(sessionId) ?? [];
       list.push(waiter);
       this.#submitWaiters.set(sessionId, list);
+      cancel = () => finish(false);
     });
+    return { promise, cancel };
   }
 
   /** Krok 1 — resolve all submit waiters for a session (called on UserPromptSubmit). */
@@ -5805,23 +6230,12 @@ Do NOT continue working on the task — only write the handoff summary.`;
     expectedWorkspace: TaskWorkspaceState | null = null,
   ): AbortController | null {
     const binding = this.#resolveTaskBinding(sessionId);
-    if (
-      expectedWorkspace &&
-      (!binding ||
-        binding.workspace.id !== expectedWorkspace.id ||
-        binding.task.taskId !== expectedWorkspace.task.taskId ||
-        (binding.task.mode || "standard") !== (expectedWorkspace.task.mode || "standard") ||
-        binding.workspace.cwd !== expectedWorkspace.cwd ||
-        binding.task.workerPanelId !== expectedWorkspace.task.workerPanelId ||
-        binding.task.judgePanelId !== expectedWorkspace.task.judgePanelId ||
-        (binding.task.workerWorkspaceId || "") !== (expectedWorkspace.task.workerWorkspaceId || ""))
-    ) {
-      log.debug("task injection rejected for stale workspace binding", {
-        workspaceId: expectedWorkspace?.id,
-        taskId: expectedWorkspace?.task.taskId,
-        sessionId,
-      });
-      return null;
+    if (expectedWorkspace) {
+      const bindingFailures = this.#staleInjectionBindingChecks(binding, expectedWorkspace);
+      if (bindingFailures.length > 0) {
+        this.#logStaleInjectionBinding(sessionId, expectedWorkspace, bindingFailures);
+        return null;
+      }
     }
 
     const nextOperation = binding
@@ -5834,22 +6248,134 @@ Do NOT continue working on the task — only write the handoff summary.`;
         }
       : null;
     const existing = this.#injectionAbortControllers.get(sessionId);
-    if (existing && !existing.signal.aborted && this.#isCurrentInjection(sessionId, existing)) return existing;
-    if (existing) this.#cancelSessionInjection(sessionId);
+    // A probe, not a step: may the session's previous injection be reused?
+    // Usually it finished in an earlier state or round, so it is refused and
+    // replaced below — that refusal stops nothing.
+    if (
+      existing &&
+      !existing.signal.aborted &&
+      this.#isCurrentInjection(sessionId, existing, { reason: "replaced-by-new-injection" })
+    )
+      return existing;
+    if (existing) this.#cancelSessionInjection(sessionId, "superseded-by-new-injection");
     const controller = new AbortController();
     this.#injectionAbortControllers.set(sessionId, controller);
     this.#injectionOperations.set(sessionId, nextOperation);
     return controller;
   }
 
-  #isCurrentInjection(sessionId: string, controller: AbortController): boolean {
-    if (this.#disposed || this.#injectionAbortControllers.get(sessionId) !== controller || controller.signal.aborted)
-      return false;
-    const operation = this.#injectionOperations.get(sessionId);
-    return !operation || this.#currentTaskOperation(operation.operation, new Set([operation.expectedState])) !== null;
+  /** Why the session no longer binds to the workspace an injection was made for. */
+  #staleInjectionBindingChecks(binding: TaskBinding | null, expected: TaskWorkspaceState): TaskOperationCheckFailure[] {
+    const failures: TaskOperationCheckFailure[] = [];
+    const fail = (check: string, expectedValue: unknown, actual: unknown): void => {
+      failures.push({ check, expected: expectedValue, actual });
+    };
+    const current = this.#findTaskWorkspace(expected.id);
+    if (!current) {
+      const exists = !!this.#getState?.()?.workspaces.some((candidate) => candidate.id === expected.id);
+      fail(exists ? "task" : "workspace", "present", "missing");
+    }
+    if (!binding) fail("sessionBinding", expected.id, null);
+    else if (binding.workspace.id !== expected.id) fail("sessionBinding", expected.id, binding.workspace.id);
+    // What the session resolves to now — or, when it resolves to nothing, the
+    // task's own current identity, which shows what moved.
+    const subject = binding?.workspace ?? current;
+    if (!subject) return failures;
+    if (subject.task.taskId !== expected.task.taskId) fail("taskId", expected.task.taskId, subject.task.taskId);
+    const mode = subject.task.mode || "standard";
+    if (mode !== (expected.task.mode || "standard")) fail("mode", expected.task.mode || "standard", mode);
+    if (subject.cwd !== expected.cwd) fail("cwd", expected.cwd, subject.cwd);
+    if (subject.task.workerPanelId !== expected.task.workerPanelId) {
+      fail("workerPanelId", expected.task.workerPanelId, subject.task.workerPanelId);
+    }
+    if (subject.task.judgePanelId !== expected.task.judgePanelId) {
+      fail("judgePanelId", expected.task.judgePanelId, subject.task.judgePanelId);
+    }
+    if ((subject.task.workerWorkspaceId || "") !== (expected.task.workerWorkspaceId || "")) {
+      fail("workerWorkspaceId", expected.task.workerWorkspaceId || "", subject.task.workerWorkspaceId || "");
+    }
+    return failures;
   }
 
-  #cancelSessionInjection(sessionId: string): void {
+  #logStaleInjectionBinding(
+    sessionId: string,
+    expected: TaskWorkspaceState,
+    failures: readonly TaskOperationCheckFailure[],
+  ): void {
+    const current = this.#findTaskWorkspace(expected.id);
+    const explainedBy = failures
+      .filter((failure) => LIFECYCLE_EXPLAINED_CHECKS.has(failure.check))
+      .map((failure) => failure.check);
+    const details = {
+      sessionId,
+      workspaceId: expected.id,
+      taskId: expected.task.taskId,
+      mode: expected.task.mode || "standard",
+      state: current?.task.state ?? null,
+      pausedFromState: current?.task.pausedFromState || null,
+      round: { expected: expected.task.currentRound ?? null, current: current?.task.currentRound ?? null },
+      lifecycleEpoch: this.#taskLifecycleEpoch.get(expected.id) || 0,
+      failedChecks: failures,
+      explainedBy,
+    };
+    if (explainedBy.length > 0) {
+      log.debug("task injection rejected for stale workspace binding", details);
+      return;
+    }
+    // The task is still there but the session no longer belongs to it the way
+    // the step expected (a moved panel, cwd or Primary): the injection — and
+    // the step that wanted it — stops here.
+    log.warn("task injection rejected for stale workspace binding", details);
+  }
+
+  #isCurrentInjection(
+    sessionId: string,
+    controller: AbortController,
+    expectedRefusal?: ExpectedTaskOperationRefusal,
+  ): boolean {
+    if (this.#disposed || this.#injectionAbortControllers.get(sessionId) !== controller || controller.signal.aborted) {
+      this.#reportCancelledInjection(sessionId, controller);
+      return false;
+    }
+    const operation = this.#injectionOperations.get(sessionId);
+    return (
+      !operation ||
+      this.#currentTaskOperation(operation.operation, new Set([operation.expectedState]), { expectedRefusal }) !== null
+    );
+  }
+
+  /**
+   * An in-flight injection found its controller cancelled. Recorded at
+   * cancellation (#cancelSessionInjection) and reported only here, by the step
+   * that observes it — a finished injection's leftover controller is cancelled
+   * on every keystroke and must not log anything.
+   */
+  #reportCancelledInjection(sessionId: string, controller: AbortController): void {
+    const cancelled = this.#cancelledInjections.get(controller);
+    if (!cancelled) return;
+    this.#cancelledInjections.delete(controller);
+    const { reason, injection } = cancelled;
+    if (!injection) {
+      log.debug("task injection cancelled", { sessionId, reason });
+      return;
+    }
+    const workspace = this.#findTaskWorkspace(injection.operation.workspaceId);
+    const expectedStates = new Set([injection.expectedState]);
+    const failures = [
+      ...this.#staleTaskOperationChecks(injection.operation, workspace, expectedStates),
+      { check: "injection", expected: "current", actual: reason },
+    ];
+    this.#reportStaleTaskOperation(
+      injection.operation,
+      workspace,
+      expectedStates,
+      failures,
+      undefined,
+      EXPLAINED_INJECTION_CANCELS.has(reason) ? `injection-${reason}` : undefined,
+    );
+  }
+
+  #cancelSessionInjection(sessionId: string, reason: InjectionCancelReason): void {
     if (
       !this.#injectionAbortControllers.has(sessionId) &&
       !this.#injectionOperations.has(sessionId) &&
@@ -5858,6 +6384,12 @@ Do NOT continue working on the task — only write the handoff summary.`;
     )
       return;
     const controller = this.#injectionAbortControllers.get(sessionId);
+    if (controller) {
+      this.#cancelledInjections.set(controller, {
+        reason,
+        injection: this.#injectionOperations.get(sessionId) ?? null,
+      });
+    }
     this.#injectionAbortControllers.delete(sessionId);
     this.#injectionOperations.delete(sessionId);
     controller?.abort();
@@ -5870,9 +6402,23 @@ Do NOT continue working on the task — only write the handoff summary.`;
     }
   }
 
-  cancelPendingInput(sessionId: string): void {
-    this.#cancelSessionInjection(sessionId);
-    if ((this.#managedSessionRestarts.get(sessionId) || 0) === 0) {
+  /**
+   * The session's process was replaced or went away (respawn, restart, retired
+   * panel, exit): cancel whatever the runner was typing into it and cross its
+   * incarnation. User input never comes through here — see onUserInput.
+   * `reason` is diagnostics only: runtime callers leave the default.
+   */
+  cancelPendingInput(sessionId: string, reason: "session-exit" | "session-reset" = "session-reset"): void {
+    const managedRestart = (this.#managedSessionRestarts.get(sessionId) || 0) > 0;
+    // A new process: an empty composer, no turn, no dialog.
+    this.#sessionActivity.delete(sessionId);
+    // The runner's own restart calls back in here; only input or an exit that
+    // arrives during it is something else.
+    this.#cancelSessionInjection(
+      sessionId,
+      managedRestart && reason === "session-reset" ? "managed-session-restart" : reason,
+    );
+    if (!managedRestart) {
       this.#sessionIncarnations.set(sessionId, (this.#sessionIncarnations.get(sessionId) || 0) + 1);
     }
   }
@@ -5900,7 +6446,13 @@ Do NOT continue working on the task — only write the handoff summary.`;
         if (list?.size === 0) this.#injectionCancels.delete(sessionId);
         resolve(completed && this.#isCurrentInjection(sessionId, controller));
       };
-      const cancel = () => finish(false);
+      const cancel = () => {
+        finish(false);
+        // finish(false) never asks #isCurrentInjection, so the step waiting
+        // here would stop without a word. Report once the cancelling call has
+        // finished (a pause or an incarnation crossing lands after the cancel).
+        queueMicrotask(() => this.#reportCancelledInjection(sessionId, controller));
+      };
       const cancels = this.#injectionCancels.get(sessionId) ?? new Set<() => void>();
       cancels.add(cancel);
       this.#injectionCancels.set(sessionId, cancels);
@@ -5909,8 +6461,8 @@ Do NOT continue working on the task — only write the handoff summary.`;
   }
 
   #cancelTaskInjections(workspace: TaskWorkspaceState): void {
-    this.#cancelSessionInjection(sessionIdFor(workspace, "worker"));
-    this.#cancelSessionInjection(sessionIdFor(workspace, "judge"));
+    this.#cancelSessionInjection(sessionIdFor(workspace, "worker"), "task-left-active-state");
+    this.#cancelSessionInjection(sessionIdFor(workspace, "judge"), "task-left-active-state");
   }
 
   dispose(): void {
@@ -5931,6 +6483,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
     this.#taskLifecycleEpoch.clear();
     this.#sessionIncarnations.clear();
     this.#managedSessionRestarts.clear();
+    this.#sessionActivity.clear();
     this.#evaluationOwners.clear();
     this.#companionVerdictOwners.clear();
     this.#rejectOwners.clear();
@@ -5940,7 +6493,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
       ...this.#injectionCancels.keys(),
       ...this.#submitWaiters.keys(),
     ]);
-    for (const sessionId of sessionIds) this.#cancelSessionInjection(sessionId);
+    for (const sessionId of sessionIds) this.#cancelSessionInjection(sessionId, "disposed");
   }
 
   /**
@@ -5953,40 +6506,52 @@ Do NOT continue working on the task — only write the handoff summary.`;
     { typingGapMs, submitDelayMs }: { typingGapMs: number; submitDelayMs: number },
     generation: AbortController,
     signal: AbortSignal,
-  ): Promise<void> {
+    inputMark: number,
+    beforeWrite?: () => void,
+  ): Promise<RunnerWriteOutcome> {
     return new Promise((resolve) => {
       let index = 0;
       let timer: ReturnType<typeof setTimeout> | null = null;
-      const finish = () => {
+      const finish = (outcome: RunnerWriteOutcome) => {
         if (timer !== null) clearTimeout(timer);
         timer = null;
         const list = this.#injectionCancels.get(sessionId);
         list?.delete(cancel);
         if (list?.size === 0) this.#injectionCancels.delete(sessionId);
-        resolve();
+        resolve(outcome);
       };
-      const cancel = () => finish();
+      const cancel = () => finish("stopped");
       const cancels = this.#injectionCancels.get(sessionId) ?? new Set<() => void>();
       cancels.add(cancel);
       this.#injectionCancels.set(sessionId, cancels);
       const typeNext = () => {
         if (!this.#isCurrentInjection(sessionId, generation)) {
-          finish();
+          finish("stopped");
+          return;
+        }
+        // The user typed between two of our characters: stop at this boundary.
+        if (this.#userTypedSince(sessionId, inputMark)) {
+          finish("interrupted");
           return;
         }
         if (index >= text.length) {
           timer = setTimeout(() => {
             timer = null;
             if (!this.#isCurrentInjection(sessionId, generation)) {
-              finish();
+              finish("stopped");
+              return;
+            }
+            if (this.#userTypedSince(sessionId, inputMark)) {
+              finish("interrupted");
               return;
             }
             log.trace("typeAndSubmit: sending Enter after type complete", { sessionId });
             this.#writeToSession!(sessionId, "\r", signal);
-            finish();
+            finish("submitted");
           }, submitDelayMs);
           return;
         }
+        if (index === 0) beforeWrite?.();
         this.#writeToSession!(sessionId, text[index], signal);
         index += 1;
         timer = setTimeout(() => {
@@ -6003,44 +6568,400 @@ Do NOT continue working on the task — only write the handoff summary.`;
   /**
    * Send text to a PTY using the provider's preferred strategy and resolve only
    * after the final Enter has been written.
+   *
+   * Polite: before writing it waits for the user (#prepareRunnerWrite), and if
+   * the user types while the text is going in, the Enter is withheld and the
+   * whole write starts over from that wait — never given up, never a pause.
    */
-  #writeAndSubmit(
+  async #writeAndSubmit(
     sessionId: string,
     text: string,
     strategy: InjectionStrategy,
     generation = this.#beginSessionInjection(sessionId) ?? new AbortController(),
     signal = generation.signal,
+    {
+      reclear = false,
+      startsTurn = true,
+      beforeWrite,
+    }: { reclear?: boolean; startsTurn?: boolean; beforeWrite?: () => void } = {},
   ): Promise<void> {
-    if (strategy.style === "type") {
-      return this.#typeAndSubmit(sessionId, text, strategy, generation, signal);
+    for (let restarts = 0; ; restarts += 1) {
+      // Checked synchronously so a session nobody is typing in is written to in
+      // the same tick, exactly as before polite injection existed.
+      if (
+        this.#runnerWriteNeedsPreparation(sessionId, generation, reclear) &&
+        !(await this.#prepareRunnerWrite(sessionId, generation, strategy, signal, reclear))
+      )
+        return;
+      if (!this.#isCurrentInjection(sessionId, generation)) return;
+      const outcome = await this.#deliverRunnerText(
+        sessionId,
+        text,
+        strategy,
+        generation,
+        signal,
+        startsTurn,
+        beforeWrite,
+      );
+      if (outcome !== "interrupted") {
+        // The prompt this injection's /clear was waiting for is in: nothing left to re-clear for.
+        const activity = this.#activityFor(sessionId);
+        if (outcome === "submitted" && startsTurn && activity.clearGeneration === generation) {
+          activity.clearGeneration = null;
+        }
+        return;
+      }
+      log.info("task injection restarted: the user typed during the runner's write", {
+        sessionId,
+        restarts: restarts + 1,
+        ...this.#politeLogContext(sessionId),
+      });
     }
-    if (!this.#isCurrentInjection(sessionId, generation)) return Promise.resolve();
+  }
+
+  /**
+   * Write `text` and its Enter once. "interrupted" when the user typed while it
+   * went in — the Enter is then withheld, because it would submit the user's
+   * keys glued to ours. Our text stays in their composer and counts as their
+   * pending input from here on.
+   */
+  #deliverRunnerText(
+    sessionId: string,
+    text: string,
+    strategy: InjectionStrategy,
+    generation: AbortController,
+    signal: AbortSignal,
+    startsTurn: boolean,
+    beforeWrite?: () => void,
+  ): Promise<RunnerWriteOutcome> {
+    const inputMark = this.#sessionActivity.get(sessionId)?.lastInputAt ?? 0;
+    const delivered =
+      strategy.style === "type"
+        ? this.#typeAndSubmit(sessionId, text, strategy, generation, signal, inputMark, beforeWrite)
+        : this.#pasteAndSubmit(sessionId, text, strategy, generation, signal, inputMark, beforeWrite);
+    return delivered.then((outcome) => {
+      if (outcome === "submitted") this.#noteRunnerSubmit(sessionId, startsTurn);
+      else if (outcome === "interrupted") this.#activityFor(sessionId).pending = true;
+      return outcome;
+    });
+  }
+
+  #pasteAndSubmit(
+    sessionId: string,
+    text: string,
+    strategy: InjectionStrategy,
+    generation: AbortController,
+    signal: AbortSignal,
+    inputMark: number,
+    beforeWrite?: () => void,
+  ): Promise<RunnerWriteOutcome> {
+    if (!this.#isCurrentInjection(sessionId, generation)) return Promise.resolve("stopped");
+    beforeWrite?.();
     this.#writeToSession!(sessionId, text, signal);
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
-      const finish = () => {
+      const finish = (outcome: RunnerWriteOutcome) => {
         if (timer !== null) clearTimeout(timer);
         timer = null;
         const list = this.#injectionCancels.get(sessionId);
         list?.delete(cancel);
         if (list?.size === 0) this.#injectionCancels.delete(sessionId);
-        resolve();
+        resolve(outcome);
       };
-      const cancel = () => finish();
+      const cancel = () => finish("stopped");
       const cancels = this.#injectionCancels.get(sessionId) ?? new Set<() => void>();
       cancels.add(cancel);
       this.#injectionCancels.set(sessionId, cancels);
       timer = setTimeout(() => {
         timer = null;
         if (!this.#isCurrentInjection(sessionId, generation)) {
-          finish();
+          finish("stopped");
+          return;
+        }
+        if (this.#userTypedSince(sessionId, inputMark)) {
+          finish("interrupted");
           return;
         }
         log.trace("writeAndSubmit: sending Enter", { sessionId, submitDelay: strategy.submitDelayMs });
         this.#writeToSession!(sessionId, "\r", signal);
-        finish();
+        finish("submitted");
       }, strategy.submitDelayMs);
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Polite injection — the user's keystrokes never pause or stall a task
+  // ---------------------------------------------------------------------------
+  //
+  // Typing into a task panel used to pause the task, and (since 3.0.6) to
+  // cross the session's incarnation, which silently killed whatever step was in
+  // flight. Now a keystroke only (1) defers the runner's next write into that
+  // session and (2) withholds the Enter of a write that is going in at that very
+  // moment. Before every runner write into a task session:
+  //   a. wait until the user has left the session alone for USER_QUIET_MS;
+  //   b. if they left text in the composer, submit it for them — only once the
+  //      agent's turn is over and never while a dialog is open;
+  //   c. wait until the agent has answered that message;
+  //   d. write — and start over from (a) if the user types during the write.
+  // Every wait ends at once on a lifecycle change: it sleeps on the injection's
+  // cancel list, which Pause / Stop / Reset / completion / a retired session
+  // all trigger, and re-validates the injection's operation on every tick.
+
+  /** How long the user must have left a session alone before the runner writes into it. */
+  static USER_QUIET_MS = 10_000;
+  /** How often a polite wait re-checks a session while it waits on the agent or a dialog. */
+  static POLITE_POLL_MS = 500;
+  /** A turn with no busy output for this long counts as over even without its idle signal. */
+  static TURN_QUIET_FALLBACK_MS = 30_000;
+
+  #sessionActivity = new Map<string, SessionUserActivity>();
+  /** Sessions with a runner write currently waiting for the user (count per session). */
+  #politeWaits = new Map<string, number>();
+
+  #activityFor(sessionId: string): SessionUserActivity {
+    let activity = this.#sessionActivity.get(sessionId);
+    if (!activity) {
+      activity = {
+        lastInputAt: 0,
+        pending: false,
+        lastChar: "",
+        turnActive: false,
+        userTurn: false,
+        turnStartedAt: 0,
+        dialogOpen: false,
+        lastRunnerSubmitAt: 0,
+        clearGeneration: null,
+        clearedAt: 0,
+      };
+      this.#sessionActivity.set(sessionId, activity);
+    }
+    return activity;
+  }
+
+  #userTypedSince(sessionId: string, mark: number): boolean {
+    const lastInputAt = this.#sessionActivity.get(sessionId)?.lastInputAt ?? 0;
+    return lastInputAt > mark;
+  }
+
+  /** The user typed into this session after the runner's last write to it — an
+   * idle that follows may answer them, not us, so it must not spend a nudge. */
+  #userInterjected(sessionId: string): boolean {
+    const activity = this.#sessionActivity.get(sessionId);
+    return !!activity && activity.lastInputAt > activity.lastRunnerSubmitAt;
+  }
+
+  #noteRunnerSubmit(sessionId: string, startsTurn: boolean): void {
+    const activity = this.#activityFor(sessionId);
+    const now = Date.now();
+    activity.lastRunnerSubmitAt = now;
+    activity.pending = false;
+    activity.lastChar = "\r";
+    // A slash command (/clear) is handled by the CLI itself: no agent turn, no Stop.
+    if (startsTurn) {
+      activity.turnActive = true;
+      activity.userTurn = false;
+      activity.turnStartedAt = now;
+    }
+  }
+
+  /** The agent's current turn is over: its idle signal arrived, or it has shown
+   * no busy output for TURN_QUIET_FALLBACK_MS (a turn the user interrupted ends
+   * without a Stop hook; providers without hooks only ever end this way). */
+  #agentTurnEnded(sessionId: string, activity: SessionUserActivity, now: number): boolean {
+    if (!activity.turnActive) return true;
+    return (
+      now - activity.turnStartedAt >= AgentTaskRunner.TURN_QUIET_FALLBACK_MS &&
+      !(this.#isSessionBusy?.(sessionId) ?? false)
+    );
+  }
+
+  /** What the runner's next write into `sessionId` has to wait for, if anything. */
+  #politeWaitReason(sessionId: string, { quietOnly = false }: { quietOnly?: boolean } = {}): PoliteWaitReason | null {
+    const activity = this.#sessionActivity.get(sessionId);
+    if (!activity || activity.lastInputAt === 0) return null; // the user never typed here
+    const now = Date.now();
+    if (now - activity.lastInputAt < AgentTaskRunner.USER_QUIET_MS) return "user-typing";
+    if (quietOnly) return null;
+    if (activity.pending) {
+      if (activity.dialogOpen) return "dialog-open";
+      if (!this.#agentTurnEnded(sessionId, activity, now)) return "agent-turn";
+      return "submit-pending";
+    }
+    if (activity.turnActive && activity.userTurn && !this.#agentTurnEnded(sessionId, activity, now)) {
+      return "agent-answer";
+    }
+    return null;
+  }
+
+  /** The prompt of an injection whose /clear the user talked over gets a fresh /clear first. */
+  #needsReclear(sessionId: string, generation: AbortController): boolean {
+    const activity = this.#sessionActivity.get(sessionId);
+    return !!activity && activity.clearGeneration === generation && activity.lastInputAt > activity.clearedAt;
+  }
+
+  #runnerWriteNeedsPreparation(sessionId: string, generation: AbortController, reclear: boolean): boolean {
+    return this.#politeWaitReason(sessionId) !== null || (reclear && this.#needsReclear(sessionId, generation));
+  }
+
+  /** (a)–(c) above, plus the repeated /clear. False when the injection stopped being current. */
+  async #prepareRunnerWrite(
+    sessionId: string,
+    generation: AbortController,
+    strategy: InjectionStrategy,
+    signal: AbortSignal,
+    reclear: boolean,
+  ): Promise<boolean> {
+    for (;;) {
+      if (!(await this.#awaitPoliteWindow(sessionId, generation))) return false;
+      if (!reclear || !this.#needsReclear(sessionId, generation)) return true;
+      log.info("task injection: the user talked to the agent after the runner's /clear — clearing again", {
+        sessionId,
+        ...this.#politeLogContext(sessionId),
+      });
+      const outcome = await this.#deliverRunnerText(sessionId, "/clear", strategy, generation, signal, false);
+      if (outcome === "stopped") return false;
+      if (outcome === "submitted") {
+        this.#activityFor(sessionId).clearedAt = Date.now();
+        if (strategy.clearSettleMs > 0) {
+          if (!(await this.#waitForInjectionDelay(sessionId, generation, strategy.clearSettleMs))) return false;
+        }
+      }
+    }
+  }
+
+  /**
+   * Wait until the runner may write into `sessionId` (steps a–c). Resolves true
+   * at once when nothing is in the way; false as soon as the injection stops
+   * being current (Pause, Stop, Reset, completion, a retired session).
+   * `quietOnly` is for a key that answers an on-screen dialog: it needs only
+   * the user's hands off the keyboard, not an idle agent.
+   */
+  async #awaitPoliteWindow(
+    sessionId: string,
+    controller: AbortController,
+    { quietOnly = false }: { quietOnly?: boolean } = {},
+  ): Promise<boolean> {
+    this.#politeWaits.set(sessionId, (this.#politeWaits.get(sessionId) ?? 0) + 1);
+    try {
+      return await this.#politeWaitLoop(sessionId, controller, quietOnly);
+    } finally {
+      const remaining = (this.#politeWaits.get(sessionId) ?? 1) - 1;
+      if (remaining > 0) this.#politeWaits.set(sessionId, remaining);
+      else this.#politeWaits.delete(sessionId);
+    }
+  }
+
+  async #politeWaitLoop(sessionId: string, controller: AbortController, quietOnly: boolean): Promise<boolean> {
+    const startedAt = Date.now();
+    let deferredFor: PoliteWaitReason | null = null;
+    for (;;) {
+      if (!this.#isCurrentInjection(sessionId, controller)) return false;
+      const reason = this.#politeWaitReason(sessionId, { quietOnly });
+      if (reason === null) {
+        if (deferredFor) {
+          log.info("task injection resumed: the user left the session", {
+            sessionId,
+            waitedMs: Date.now() - startedAt,
+            ...this.#politeLogContext(sessionId),
+          });
+        }
+        return true;
+      }
+      if (reason === "submit-pending") {
+        this.#submitPendingInputForUser(sessionId, controller, Date.now() - startedAt);
+        continue;
+      }
+      if (reason !== deferredFor) {
+        log.info("task injection deferred: the user is active in the session", {
+          sessionId,
+          waitingFor: reason,
+          ...this.#politeLogContext(sessionId),
+        });
+        deferredFor = reason;
+      }
+      const activity = this.#activityFor(sessionId);
+      const delay =
+        reason === "user-typing"
+          ? AgentTaskRunner.USER_QUIET_MS - (Date.now() - activity.lastInputAt)
+          : AgentTaskRunner.POLITE_POLL_MS;
+      if (!(await this.#waitForInjectionDelay(sessionId, controller, Math.max(1, delay)))) return false;
+    }
+  }
+
+  /** Step (b): press Enter on the text the user left behind — their message, sent for them. */
+  #submitPendingInputForUser(sessionId: string, controller: AbortController, waitedMs: number): void {
+    const activity = this.#activityFor(sessionId);
+    log.info("task injection: submitted the user's pending input for them", {
+      sessionId,
+      waitedMs,
+      ...this.#politeLogContext(sessionId),
+    });
+    this.#writeToSession!(sessionId, "\r", controller.signal);
+    const now = Date.now();
+    activity.pending = false;
+    activity.lastChar = "\r";
+    activity.turnActive = true;
+    activity.userTurn = true;
+    activity.turnStartedAt = now;
+  }
+
+  /** Ids, states and timings for the polite-injection log lines — never typed or prompt text. */
+  #politeLogContext(sessionId: string): Record<string, unknown> {
+    const binding = this.#resolveTaskBinding(sessionId);
+    const activity = this.#sessionActivity.get(sessionId);
+    const now = Date.now();
+    return {
+      workspaceId: binding?.workspace.id ?? null,
+      taskId: binding?.task.taskId ?? null,
+      role: binding?.role ?? null,
+      state: binding?.task.state ?? null,
+      msSinceUserInput: activity?.lastInputAt ? now - activity.lastInputAt : null,
+      pendingInput: activity?.pending ?? false,
+      turnActive: activity?.turnActive ?? false,
+      userTurn: activity?.userTurn ?? false,
+      dialogOpen: activity?.dialogOpen ?? false,
+    };
+  }
+
+  /** Real keystrokes or a paste the user sent into a task session (see onUserInput). */
+  #recordUserInput(sessionId: string, data: string | Buffer | undefined): void {
+    const activity = this.#activityFor(sessionId);
+    activity.lastInputAt = Date.now();
+    const text = data === undefined ? undefined : typeof data === "string" ? data : data.toString("binary");
+    if (text === undefined) {
+      // No bytes to look at: assume they typed something.
+      activity.pending = true;
+      return;
+    }
+    const folded = foldTerminalInput({ pending: activity.pending, lastChar: activity.lastChar }, text);
+    activity.pending = folded.pending;
+    activity.lastChar = folded.lastChar;
+    if (folded.entered && activity.dialogOpen) {
+      // Enter answered the dialog; the agent carries on with its own turn.
+      activity.dialogOpen = false;
+      return;
+    }
+    if (folded.submitted) {
+      activity.turnActive = true;
+      activity.userTurn = true;
+      activity.turnStartedAt = activity.lastInputAt;
+    }
+  }
+
+  /** Turn and dialog bookkeeping from the idle / hook signals the runner already receives. */
+  #noteAgentSignal(sessionId: string, source: string): void {
+    const activity = this.#sessionActivity.get(sessionId);
+    if (!activity) return;
+    if (DIALOG_IDLE_SOURCES.has(source)) {
+      activity.dialogOpen = true;
+      return;
+    }
+    if (!TURN_END_IDLE_SOURCES.has(source)) return;
+    activity.turnActive = false;
+    activity.userTurn = false;
+    // Silence is not proof a dialog went away — a dialog is silent too. Only a
+    // real end of turn (or the user's Enter, or a new prompt) closes it.
+    if (source === "hook:stop" || source === "osc133") activity.dialogOpen = false;
   }
 
   /**
@@ -6079,10 +7000,27 @@ Do NOT continue working on the task — only write the handoff summary.`;
    */
   #notifyWorkerTaskEnded(workspace: TaskWorkspaceState, kind: "completed" | "failed"): void {
     if (!this.#writeToSession) return;
-    const operation = this.#captureTaskOperation(workspace, `worker-task-${kind}-notice`);
+    const operation = this.#captureTaskOperation(workspace, `worker-task-${kind}-notice`, {
+      // Best-effort courtesy to a task that has already ended: any refusal
+      // (Resume, the user typing into the Worker) makes it moot, and a task in
+      // a terminal state has nothing left to be stranded.
+      expectedRefusal: { reason: "task-already-ended" },
+    });
     const expectedState = new Set([kind]);
     const workerSessionId = sessionIdFor(workspace, "worker");
     if (!this.#currentTaskOperation(operation, expectedState)) return;
+
+    const reason =
+      kind === "completed"
+        ? "The Judge has approved your work. The task is complete."
+        : "The task runner has stopped (max rounds or error).";
+    const message = `\nThe task has ended: ${reason} Do not start new work or continue the previous task. Wait for the user.`;
+    // The user is working in the Worker panel: no Ctrl+C under their hands —
+    // the notice goes in like any other runner write, once they are done.
+    if (this.#politeWaitReason(workerSessionId) !== null) {
+      void this.#deliverTaskEndedNoticePolitely(workspace, workerSessionId, message);
+      return;
+    }
 
     log.info("sending stop signal to Worker", { workspaceId: workspace.id, kind });
 
@@ -6090,21 +7028,69 @@ Do NOT continue working on the task — only write the handoff summary.`;
     this.#writeToSession(workerSessionId, "\x03");
 
     // 2. After pause (agent needs time to cancel and return to prompt), write the stop message
-    const reason =
-      kind === "completed"
-        ? "The Judge has approved your work. The task is complete."
-        : "The task runner has stopped (max rounds or error).";
-    const message = `\nThe task has ended: ${reason} Do not start new work or continue the previous task. Wait for the user.`;
     setTimeout(() => {
       if (!this.#currentTaskOperation(operation, expectedState)) return;
+      if (this.#politeWaitReason(workerSessionId) !== null) {
+        void this.#deliverTaskEndedNoticePolitely(workspace, workerSessionId, message);
+        return;
+      }
+      const inputMark = this.#sessionActivity.get(workerSessionId)?.lastInputAt ?? 0;
       this.#writeToSession!(workerSessionId, message);
       // Send Enter separately after text is written (same pattern as #injectPrompt)
       setTimeout(() => {
         if (!this.#currentTaskOperation(operation, expectedState)) return;
+        // The user typed into our half-written notice: start over politely.
+        if (this.#userTypedSince(workerSessionId, inputMark)) {
+          this.#activityFor(workerSessionId).pending = true;
+          log.info("task injection restarted: the user typed during the runner's write", {
+            sessionId: workerSessionId,
+            restarts: 1,
+            ...this.#politeLogContext(workerSessionId),
+          });
+          void this.#deliverTaskEndedNoticePolitely(workspace, workerSessionId, message);
+          return;
+        }
         this.#writeToSession!(workerSessionId, "\r");
         log.debug("stop message sent to Worker", { workspaceId: workspace.id });
       }, 200);
     }, 2000);
+  }
+
+  async #deliverTaskEndedNoticePolitely(
+    workspace: TaskWorkspaceState,
+    sessionId: string,
+    message: string,
+  ): Promise<void> {
+    const current = this.#findTaskWorkspace(workspace.id);
+    if (!current) return;
+    const generation = this.#beginSessionInjection(sessionId, current);
+    if (!generation) return;
+    const strategy = this.#resolveInjectionStrategy(sessionId, current);
+    await this.#writeAndSubmit(sessionId, message, strategy, generation, generation.signal);
+    if (this.#isCurrentInjection(sessionId, generation)) {
+      log.debug("stop message sent to Worker", { workspaceId: workspace.id });
+    }
+  }
+
+  /**
+   * Answer an on-screen dialog with Enter (Claude's rate-limit options). Only
+   * the user's hands have to be off the keyboard (step a): the agent is not
+   * idle while the dialog is up, so waiting for its turn to end would wait
+   * forever.
+   */
+  #pressDialogEnter(workspace: TaskWorkspaceState, sessionId: string): void {
+    if (!this.#writeToSession) return;
+    if (this.#politeWaitReason(sessionId, { quietOnly: true }) === null) {
+      this.#writeToSession(sessionId, "\r");
+      return;
+    }
+    const generation = this.#beginSessionInjection(sessionId, workspace);
+    if (!generation) return;
+    void this.#awaitPoliteWindow(sessionId, generation, { quietOnly: true }).then((ready) => {
+      if (ready && this.#isCurrentInjection(sessionId, generation)) {
+        this.#writeToSession!(sessionId, "\r", generation.signal);
+      }
+    });
   }
 
   #formatElapsed(ms: number): string {

@@ -84,8 +84,9 @@ async function capturingAttachedTask() {
   } as AnyApi);
 
   let recoveryCandidates = taskRunner.getStartupRecoveryCandidates();
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() };
   const handlers: AnyApi = createTaskHandlers({
-    log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() } as AnyApi,
+    log: log as AnyApi,
     getState: () => store.getState(),
     getPayload: () => ({}),
     broadcastState: vi.fn(),
@@ -115,7 +116,7 @@ async function capturingAttachedTask() {
 
   const onAgentIdle = vi.spyOn(taskRunner, "onAgentIdle");
   const task = () => store.getState().workspaces.find((ws) => ws.id === "ws-task")!.task as AnyApi;
-  return { handlers, taskRunner, onAgentIdle, writeToSession, task, candidates: () => recoveryCandidates };
+  return { handlers, taskRunner, onAgentIdle, writeToSession, task, log, candidates: () => recoveryCandidates };
 }
 
 describe("deferred recovery idle nudge — expected state is the committed resume state", () => {
@@ -155,5 +156,27 @@ describe("deferred recovery idle nudge — expected state is the committed resum
 
     expect(task().state).toBe("paused");
     expect(onAgentIdle).not.toHaveBeenCalledWith("ws-src:panel-primary", "recovery-deferred");
+  });
+
+  test("a nudge dropped because the task was paused says which check failed, at info", async () => {
+    const { handlers, taskRunner, log } = await capturingAttachedTask();
+
+    vi.useFakeTimers();
+    await handlers.resolveTaskRecovery({ "ws-task": "continue" }, "win");
+    expect(taskRunner.pauseTask("ws-task")).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const stale = "resolveTaskRecovery: deferred idle nudge is stale";
+    expect(log.warn).not.toHaveBeenCalledWith(stale, expect.anything());
+    expect(log.info).toHaveBeenCalledWith(stale, {
+      workspaceId: "ws-task",
+      taskId: "t-attached",
+      role: "worker",
+      idleSessionId: "ws-src:panel-primary",
+      expectedState: "capturing-context",
+      state: "paused",
+      pausedFromState: "capturing-context",
+      failedChecks: [{ check: "state", expected: "capturing-context", actual: "paused" }],
+    });
   });
 });

@@ -1114,20 +1114,20 @@ describe("AgentTaskRunner", () => {
   });
 
   describe("onUserInput", () => {
-    test("pauses task during evaluation when input targets worker panel", () => {
+    // Typing never pauses a task any more — it only makes the runner's next
+    // write into that panel wait (see agent-task-runner.polite-input.test.ts).
+    test("does not pause during evaluation when input targets worker panel", () => {
       workspace.task.state = "evaluating";
       const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
-      runner.onUserInput(sessionId);
-      expect(workspace.task.state).toBe("paused");
-      expect(workspace.task.pausedFromState).toBe("evaluating");
+      runner.onUserInput(sessionId, "x");
+      expect(workspace.task.state).toBe("evaluating");
     });
 
-    test("pauses task during judge evaluation when input targets judge panel", () => {
+    test("does not pause during judge evaluation when input targets judge panel", () => {
       workspace.task.state = "judge-evaluating";
       const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
-      runner.onUserInput(sessionId);
-      expect(workspace.task.state).toBe("paused");
-      expect(workspace.task.pausedFromState).toBe("judge-evaluating");
+      runner.onUserInput(sessionId, "x");
+      expect(workspace.task.state).toBe("judge-evaluating");
     });
 
     test("does not pause during running (worker is working)", () => {
@@ -1300,7 +1300,7 @@ describe("startTask - prompt sent tracking", () => {
 });
 
 describe("resumeTask - late prompt delivery", () => {
-  test("manual input cancels a paste before its delayed Enter without affecting another session", async () => {
+  test("manual input withholds a paste's delayed Enter without affecting another session; the prompt follows later", async () => {
     vi.useFakeTimers();
     const runner = new AgentTaskRunner();
     try {
@@ -1331,20 +1331,26 @@ describe("resumeTask - late prompt delivery", () => {
         expect(written.some((w) => w.sessionId === sessionId)).toBe(true);
         expect(written.some((w) => w.sessionId === otherSessionId)).toBe(true);
       });
-      ws.task.state = "evaluating";
-      runner.onUserInput(sessionId);
-      expect(ws.task.state).toBe("paused");
-      expect(written.find((w) => w.sessionId === sessionId)?.signal?.aborted).toBe(true);
+      const prompt = written.find((w) => w.sessionId === sessionId)!.data;
+      runner.onUserInput(sessionId, "x");
       await vi.advanceTimersByTimeAsync(1000);
+      expect(ws.task.state).toBe("running");
       expect(written.some((w) => w.sessionId === sessionId && w.data === "\r")).toBe(false);
       expect(written.some((w) => w.sessionId === otherSessionId && w.data === "\r")).toBe(true);
+      // Not given up: after 10 s of quiet the composer (prompt + "x") is sent
+      // for the user, then — no idle signal here, so the 30 s no-output
+      // fallback — the prompt goes in again with its Enter.
+      await vi.advanceTimersByTimeAsync(60_000);
+      const later = written.filter((w) => w.sessionId === sessionId).map((w) => w.data);
+      expect(later.slice(1)).toEqual(["\r", prompt, "\r"]);
+      expect(ws.task.state).toBe("running");
     } finally {
       runner.dispose();
       vi.useRealTimers();
     }
   });
 
-  test("manual input stops Copilot-style typing at the next character boundary", async () => {
+  test("manual input stops Copilot-style typing at the next character boundary and retypes later", async () => {
     vi.useFakeTimers();
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-type-cancel-"));
     const runner = new AgentTaskRunner();
@@ -1366,10 +1372,15 @@ describe("resumeTask - late prompt delivery", () => {
       const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
       await vi.waitFor(() => expect(written.some((w) => w.sessionId === sessionId)).toBe(true));
       const countAtTakeover = written.filter((w) => w.sessionId === sessionId).length;
-      ws.task.state = "evaluating";
-      runner.onUserInput(sessionId);
+      runner.onUserInput(sessionId, "x");
       await vi.advanceTimersByTimeAsync(2000);
       expect(written.filter((w) => w.sessionId === sessionId)).toHaveLength(countAtTakeover);
+      expect(ws.task.state).toBe("running");
+      // Typed again from the start once the user is done, Enter last.
+      await vi.advanceTimersByTimeAsync(120_000);
+      const after = written.filter((w) => w.sessionId === sessionId).slice(countAtTakeover);
+      expect(after.length).toBeGreaterThan(2);
+      expect(after.at(-1)?.data).toBe("\r");
     } finally {
       runner.dispose();
       vi.useRealTimers();
@@ -1377,7 +1388,7 @@ describe("resumeTask - late prompt delivery", () => {
     }
   });
 
-  test("manual input cancels hook confirmation retries after the first Enter", async () => {
+  test("manual input stops hook confirmation retries after the first Enter", async () => {
     vi.useFakeTimers();
     const prevTimeout = AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS;
     AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS = 10_000;
@@ -1398,10 +1409,11 @@ describe("resumeTask - late prompt delivery", () => {
       await vi.advanceTimersByTimeAsync(250);
       const entersBeforeTakeover = written.filter((w) => w.sessionId === sessionId && w.data === "\r").length;
       expect(entersBeforeTakeover).toBeGreaterThan(0);
-      ws.task.state = "evaluating";
-      runner.onUserInput(sessionId);
+      runner.onUserInput(sessionId, "x");
       await vi.advanceTimersByTimeAsync(20_000);
+      // A re-sent Enter would submit the user's text.
       expect(written.filter((w) => w.sessionId === sessionId && w.data === "\r")).toHaveLength(entersBeforeTakeover);
+      expect(ws.task.state).toBe("running");
     } finally {
       runner.dispose();
       AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS = prevTimeout;
@@ -1437,9 +1449,10 @@ describe("resumeTask - late prompt delivery", () => {
     }
   });
 
-  test("manual input during context clear prevents the new task prompt from starting", async () => {
+  test("manual input during context clear defers the new task prompt; it clears again and starts", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-clear-cancel-"));
-    vi.useFakeTimers();
+    // setImmediate stays real: the loop below yields to real file I/O with it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     const runner = new AgentTaskRunner();
     try {
       await fs.mkdir(path.join(tmp, ".git"));
@@ -1452,10 +1465,22 @@ describe("resumeTask - late prompt delivery", () => {
       const start = runner.startTask(ws.id);
       const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
       await vi.waitFor(() => expect(written.some((w) => w.sessionId === sessionId && w.data === "/clear")).toBe(true));
-      runner.onUserInput(sessionId);
+      runner.onUserInput(sessionId, "x");
       await vi.advanceTimersByTimeAsync(2_000);
-      expect(await start).toBe(false);
-      expect(written.some((w) => w.sessionId === sessionId && w.data !== "/clear")).toBe(false);
+      // The /clear's Enter is withheld — it would have sent "/clearx".
+      expect(written.filter((w) => w.sessionId === sessionId).map((w) => w.data)).toEqual(["/clear"]);
+      let started: boolean | undefined;
+      void start.then((result) => (started = result));
+      for (let i = 0; i < 600 && started === undefined; i += 1) {
+        await vi.advanceTimersByTimeAsync(100);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(started).toBe(true);
+      const sequence = written
+        .filter((w) => w.sessionId === sessionId)
+        .map((w) => (w.data.startsWith("Read ") ? "prompt" : w.data));
+      // Composer sent for the user, a fresh /clear, then the task prompt.
+      expect(sequence).toEqual(["/clear", "\r", "/clear", "\r", "prompt", "\r"]);
     } finally {
       runner.dispose();
       vi.useRealTimers();

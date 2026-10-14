@@ -81,6 +81,49 @@ interface TaskHandlerCtx<Payload> {
   finalizeWorkspaceRemoval: (workspace: { id: string; profileId: string }) => Promise<void>;
 }
 
+/** One expectation a recovery step found broken — ids, states and markers only, never prompt text. */
+interface RecoveryCheckFailure {
+  check: string;
+  expected: unknown;
+  actual: unknown;
+}
+
+/**
+ * Compare a recovery's expectations with the task as it is now. `stagedPrompt`
+ * reports only whether the staged prompt is still the one this recovery put
+ * there — its text never reaches the log.
+ */
+function recoveryCheckFailures(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  workspace: any,
+  expected: { taskId: string; state?: string; stagedPrompt?: string; promptSent?: boolean },
+): RecoveryCheckFailure[] {
+  const task = workspace?.task;
+  if (!workspace) return [{ check: "workspace", expected: "present", actual: "missing" }];
+  if (!task) return [{ check: "task", expected: "present", actual: "missing" }];
+  if (task.taskId !== expected.taskId) return [{ check: "taskId", expected: expected.taskId, actual: task.taskId }];
+  const failures: RecoveryCheckFailure[] = [];
+  if (expected.state !== undefined && task.state !== expected.state) {
+    failures.push({ check: "state", expected: expected.state, actual: task.state });
+  }
+  if (expected.stagedPrompt !== undefined && task.showerResumePrompt !== expected.stagedPrompt) {
+    failures.push({
+      check: "stagedPrompt",
+      expected: "staged",
+      actual: task.showerResumePrompt ? "replaced" : "consumed",
+    });
+  }
+  if (expected.promptSent !== undefined && task.promptSent !== expected.promptSent) {
+    failures.push({ check: "promptSent", expected: expected.promptSent, actual: task.promptSent ?? null });
+  }
+  return failures;
+}
+
+/** The task is gone or is a different task — the recovery has nothing left to act on. */
+function recoveryTaskReplaced(failures: readonly RecoveryCheckFailure[]): boolean {
+  return failures.some((failure) => ["workspace", "task", "taskId"].includes(failure.check));
+}
+
 /**
  * Factory for the task-runner API handlers (recheckClaude, checkProviders,
  * checkIsGitRepo, probeDirectory, createTaskWorkspace, start/stop/pause/
@@ -180,12 +223,48 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
     expectedTaskId: string,
     staged: { promptSent?: boolean; showerResumePrompt: string },
   ): Promise<"resumed" | "active-after-throw" | "refused" | "stale"> {
+    // Every early answer below says why: the user only sees `stale` or
+    // `failed` in the dialog.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const notCommitted = <T extends "refused" | "stale">(outcome: T, stage: string, workspace: any): T => {
+      // The staged fields are an expectation only once they were written.
+      const stagedFields =
+        stage === "after-staging" || stage === "after-refused-resume"
+          ? {
+              stagedPrompt: staged.showerResumePrompt,
+              ...(staged.promptSent !== undefined ? { promptSent: staged.promptSent } : {}),
+            }
+          : {};
+      const expected = { taskId: expectedTaskId, state: "paused", ...stagedFields };
+      const failures = recoveryCheckFailures(workspace, expected);
+      const details = {
+        workspaceId,
+        taskId: expectedTaskId,
+        stage,
+        outcome,
+        state: workspace?.task?.state ?? null,
+        failedChecks: failures,
+      };
+      // `stale` because the task was replaced or left `paused`: another action
+      // (Resume, Reset, a second window) settled it first. `refused` reaches
+      // the user as a failed decision, and a still-paused task whose staged
+      // recovery prompt changed under it has no explanation — both warn.
+      if (
+        outcome === "stale" &&
+        (recoveryTaskReplaced(failures) || failures.some((failure) => failure.check === "state"))
+      ) {
+        log.info("resolveTaskRecovery: recovery resume not committed", details);
+      } else {
+        log.warn("resolveTaskRecovery: recovery resume not committed", details);
+      }
+      return outcome;
+    };
     // Read the fields to restore BEFORE the mutation rather than inside it —
     // there is nothing to roll back to once the draft has been applied.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const before = findWorkspace(getState(), workspaceId) as any;
-    if (before?.task?.taskId !== expectedTaskId) return "stale";
-    if (before.task.state !== "paused") return "refused";
+    if (before?.task?.taskId !== expectedTaskId) return notCommitted("stale", "before-staging", before);
+    if (before.task.state !== "paused") return notCommitted("refused", "before-staging", before);
     const previousPromptSent = !!before.task.promptSent;
     const previousResumePrompt = String(before.task.showerResumePrompt || "");
     let stagedOnExpectedTask = false;
@@ -201,7 +280,9 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
     if (!stagedOnExpectedTask) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const current = findWorkspace(getState(), workspaceId) as any;
-      return current?.task?.taskId === expectedTaskId ? "refused" : "stale";
+      return current?.task?.taskId === expectedTaskId
+        ? notCommitted("refused", "staging", current)
+        : notCommitted("stale", "staging", current);
     }
 
     // Persistence inside mutate can yield. Do not let a decision that was
@@ -215,7 +296,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       stagedWorkspace.task.showerResumePrompt !== staged.showerResumePrompt ||
       (staged.promptSent !== undefined && stagedWorkspace.task.promptSent !== staged.promptSent)
     ) {
-      return "stale";
+      return notCommitted("stale", "after-staging", stagedWorkspace);
     }
 
     let thrown: Error | null = null;
@@ -246,7 +327,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       after.task.showerResumePrompt !== staged.showerResumePrompt ||
       (staged.promptSent !== undefined && after.task.promptSent !== staged.promptSent)
     )
-      return "stale";
+      return notCommitted("stale", "after-refused-resume", after);
     await store.mutate((draft: AppState) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const dws = draft.workspaces.find((w: any) => w.id === workspaceId);
@@ -308,14 +389,36 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       // committed.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const workspace = findWorkspace(getState(), workspaceId) as any;
-      const task = workspace?.task;
-      if (
-        task?.taskId !== taskId ||
-        task.state !== expectedState ||
-        task.showerResumePrompt !== expectedPrompt ||
-        sessionIdFor(workspace, role) !== idleSessionId
-      ) {
-        log.info("resolveTaskRecovery: deferred idle nudge is stale", { workspaceId, taskId, idleSessionId });
+      const failures = recoveryCheckFailures(workspace, { taskId, state: expectedState, stagedPrompt: expectedPrompt });
+      if (!recoveryTaskReplaced(failures)) {
+        const currentSessionId = sessionIdFor(workspace, role);
+        if (currentSessionId !== idleSessionId) {
+          failures.push({ check: "sessionId", expected: idleSessionId, actual: currentSessionId });
+        }
+      }
+      if (failures.length > 0) {
+        const state = workspace?.task?.state ?? null;
+        const details = {
+          workspaceId,
+          taskId,
+          role,
+          idleSessionId,
+          expectedState,
+          state,
+          pausedFromState: workspace?.task?.pausedFromState || null,
+          failedChecks: failures,
+        };
+        // Expected: the task is gone or replaced; the staged prompt was
+        // consumed (the role's own idle delivered it first — what this nudge
+        // is only a fallback for) or re-staged by a newer recovery; or the task
+        // left the active states (paused, reset, finished). Otherwise the
+        // recovery prompt is still waiting and nothing will deliver it.
+        const explained =
+          recoveryTaskReplaced(failures) ||
+          failures.some((failure) => failure.check === "stagedPrompt") ||
+          !TASK_ACTIVE_STATES.has(String(state || ""));
+        if (explained) log.info("resolveTaskRecovery: deferred idle nudge is stale", details);
+        else log.warn("resolveTaskRecovery: deferred idle nudge is stale", details);
         return;
       }
       log.info("resolveTaskRecovery: firing deferred onAgentIdle", { workspaceId, idleSessionId });
