@@ -10,7 +10,7 @@ import {
   safeFilenamePart,
   shortcutTabDirection,
 } from "../app/helpers.js";
-import type { Transport } from "../transport.js";
+import { resolveRemoteSelection, type Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { useAppStore } from "./app.js";
 import { resolveInputOriginWorkspaceId, resolveTerminalTextSelectionTarget } from "../app/selectors.js";
@@ -102,20 +102,10 @@ export const useTerminalStore = defineStore("terminal", () => {
       }
     };
 
+    // The host's challenge names the target the transport reported (selection-changed), so it is
+    // resolved by the transport's own function: the server's selection, never the local view.
     function selectedTarget(state: unknown): TerminalReadyChallenge["target"] {
-      const selection = (state as { remoteClient?: Record<string, unknown> } | null | undefined)?.remoteClient;
-      const profileId = typeof selection?.profileId === "string" ? selection.profileId : "";
-      const workspaceId =
-        typeof selection?.activeWorkspaceId === "string" && selection.activeWorkspaceId
-          ? selection.activeWorkspaceId
-          : null;
-      const activeViewId =
-        (typeof selection?.activeViewId === "string" && selection.activeViewId) ||
-        (typeof selection?.activeSessionId === "string" && selection.activeSessionId) ||
-        "";
-      const panelId =
-        workspaceId && activeViewId.startsWith(`${workspaceId}:`) ? activeViewId.slice(workspaceId.length + 1) : null;
-      return { profileId, workspaceId, panelId };
+      return resolveRemoteSelection(state).target;
     }
 
     function targetMatches(target: TerminalReadyChallenge["target"], state: unknown): boolean {
@@ -253,32 +243,11 @@ export const useTerminalStore = defineStore("terminal", () => {
       remoteReadyRequestListener = (event: Event) => {
         const challenge = (event as CustomEvent<TerminalReadyChallenge>).detail;
         if (!challenge || typeof challenge.respond !== "function") return;
-        const payload = getPayload() as unknown as
-          | {
-              remoteClient?: {
-                profileId?: string;
-                activeWorkspaceId?: string;
-                activeViewId?: string | null;
-                activeSessionId?: string | null;
-              };
-            }
-          | null
-          | undefined;
-        const selection = payload?.remoteClient;
-        const profileId = selection?.profileId || "";
-        const workspaceId = selection?.activeWorkspaceId || null;
-        const activeSessionId = getActiveSessionId();
-        const activeViewId = selection?.activeViewId || selection?.activeSessionId || activeSessionId || "";
-        const panelId =
-          workspaceId && activeViewId.startsWith(`${workspaceId}:`) ? activeViewId.slice(workspaceId.length + 1) : null;
-        if (
-          profileId !== challenge.target.profileId ||
-          workspaceId !== challenge.target.workspaceId ||
-          panelId !== challenge.target.panelId
-        ) {
+        if (!targetMatches(challenge.target, getPayload())) {
           challenge.respond(false, "empty-state");
           return;
         }
+        const activeSessionId = getActiveSessionId();
         if (challenge.connectionGeneration > currentConnectionGeneration) {
           currentConnectionGeneration = challenge.connectionGeneration;
         }

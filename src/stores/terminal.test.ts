@@ -186,17 +186,34 @@ describe("useTerminalStore — terminal event wiring (production path)", () => {
     expect(handleTerminalReplayMock).toHaveBeenCalledWith({ sessionId: "ws1:a", data: "REPLAY", throughSeq: 7 });
   });
 
+  // `remoteClient` exactly as composePayload (electron/backend/remote-client-registry.ts) sends it:
+  // there is no activeViewId, and activeSessionId is the server's record of the selection — "" after a
+  // workspace switch, still the closed panel's id after that tab is closed. Panels are what the
+  // transport checks the selection against before it reports a panel to the host.
+  function serverPayload(activeSessionId: string, panelIds: string[]) {
+    return {
+      remoteClient: { id: "client-1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId, workspaceGrid: null },
+      appState: { workspaces: [{ id: "ws1", profileId: "p1", panels: panelIds.map((id) => ({ id })) }] },
+    };
+  }
+
+  function readyRequest(
+    requestId: number,
+    target: { profileId: string; workspaceId: string | null; panelId: string | null },
+    respond: (ready: boolean, viewKind: string) => void,
+    connectionGeneration = 1,
+  ) {
+    window.dispatchEvent(
+      new CustomEvent("strideterm:remote-terminal-ready-request", {
+        detail: { requestId, documentEpoch: 1, openAttempt: 1, connectionGeneration, target, respond },
+      }),
+    );
+  }
+
   test("terminal readiness waits for the selected session replay callback and rejects stale generations", () => {
     const termStore = useTerminalStore();
     const api = makeApi(true);
-    const payload = {
-      remoteClient: {
-        profileId: "p1",
-        activeWorkspaceId: "ws1",
-        activeViewId: "ws1:p1",
-        activeSessionId: "ws1:p1",
-      },
-    };
+    const payload = serverPayload("ws1:p1", ["p1"]);
     termStore.init(
       api as never,
       {},
@@ -256,17 +273,11 @@ describe("useTerminalStore — terminal event wiring (production path)", () => {
   test("terminal readiness reports a selected nonterminal panel after the renderer tick", async () => {
     const termStore = useTerminalStore();
     const api = makeApi(true);
-    const payload = {
-      // The server session may still remember the prior terminal while the
-      // selected view is a file tab; appStore's activeSessionId is null for
-      // this nonterminal view (getActiveSessionId below models that contract).
-      remoteClient: {
-        profileId: "p1",
-        activeWorkspaceId: "ws1",
-        activeViewId: "ws1:files",
-        activeSessionId: "ws1:shell",
-      },
-    };
+    // The server session still remembers the prior terminal while the selected
+    // view is a file tab, so that terminal is the target the host names;
+    // appStore's activeSessionId is null for this nonterminal view
+    // (getActiveSessionId below models that contract).
+    const payload = serverPayload("ws1:shell", ["shell", "files"]);
     termStore.init(
       api as never,
       {},
@@ -281,7 +292,7 @@ describe("useTerminalStore — terminal event wiring (production path)", () => {
           documentEpoch: 2,
           openAttempt: 4,
           connectionGeneration: 4,
-          target: { profileId: "p1", workspaceId: "ws1", panelId: "files" },
+          target: { profileId: "p1", workspaceId: "ws1", panelId: "shell" },
           respond,
         },
       }),
@@ -289,6 +300,55 @@ describe("useTerminalStore — terminal event wiring (production path)", () => {
     await nextTick();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(respond).toHaveBeenCalledWith(true, "nonterminal");
+  });
+
+  // Regression: the host's target comes from the transport (server selection, panel must exist), and
+  // the store used to resolve its own from the renderer's local view — so these answered "not ready"
+  // for ever, and the phone sat on "connecting" until its 25 s deadline rebuilt the session.
+  test("terminal readiness after a workspace switch, when the server has no session selected", () => {
+    const api = makeApi(true);
+    useTerminalStore().init(
+      api as never,
+      {},
+      {
+        // The renderer restored the workspace's own terminal locally (applyWorkspaceUIStateFromEntry).
+        getActiveSessionId: () => "ws1:p1",
+        getOverlay: () => null,
+        getPayload: () => serverPayload("", ["p1", "p2"]) as never,
+      },
+    );
+    api.emitConnectionState({ connected: true, connectionGeneration: 1 });
+    const respond = vi.fn();
+    readyRequest(41, { profileId: "p1", workspaceId: "ws1", panelId: null }, respond);
+    expect(respond).not.toHaveBeenCalled();
+    api.emitTerminalReplay({ sessionId: "ws1:p1", data: "REPLAY", throughSeq: 3, connectionGeneration: 1 });
+    (handleTerminalReplayMock.mock.calls.at(-1)?.[0] as { onParsed?: () => void }).onParsed?.();
+    expect(respond).toHaveBeenCalledWith(true, "terminal");
+
+    // A target the server does not hold is refused, even though it is the panel on screen.
+    const local = vi.fn();
+    readyRequest(42, { profileId: "p1", workspaceId: "ws1", panelId: "p1" }, local);
+    expect(local).toHaveBeenCalledWith(false, "empty-state");
+  });
+
+  test("terminal readiness after the active tab closed, when the server still names the closed panel", () => {
+    const api = makeApi(true);
+    useTerminalStore().init(
+      api as never,
+      {},
+      {
+        // closeTab moved the renderer to the next terminal locally; the server was never told.
+        getActiveSessionId: () => "ws1:p2",
+        getOverlay: () => null,
+        getPayload: () => serverPayload("ws1:closed", ["p1", "p2"]) as never,
+      },
+    );
+    api.emitConnectionState({ connected: true, connectionGeneration: 1 });
+    api.emitTerminalReplay({ sessionId: "ws1:p2", data: "REPLAY", throughSeq: 3, connectionGeneration: 1 });
+    (handleTerminalReplayMock.mock.calls.at(-1)?.[0] as { onParsed?: () => void }).onParsed?.();
+    const respond = vi.fn();
+    readyRequest(43, { profileId: "p1", workspaceId: "ws1", panelId: null }, respond);
+    expect(respond).toHaveBeenCalledWith(true, "terminal");
   });
 
   test("init forwards seq on terminal data (dedup guard depends on it)", () => {

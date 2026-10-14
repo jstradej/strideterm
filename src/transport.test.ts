@@ -214,11 +214,23 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     const payloads = [
       {
-        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel-a" },
+        remoteClient: {
+          id: "client-1",
+          profileId: "p1",
+          activeWorkspaceId: "ws1",
+          activeSessionId: "ws1:panel-a",
+          workspaceGrid: null,
+        },
         appState: { workspaces: [{ id: "ws1", name: "Project", panels: [{ id: "panel-a", title: "Codex" }] }] },
       },
       {
-        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel-b" },
+        remoteClient: {
+          id: "client-1",
+          profileId: "p1",
+          activeWorkspaceId: "ws1",
+          activeSessionId: "ws1:panel-b",
+          workspaceGrid: null,
+        },
         appState: {
           workspaces: [{ id: "ws1", name: "Project renamed", panels: [{ id: "panel-b", title: "Shell" }] }],
         },
@@ -1364,7 +1376,13 @@ describe("remote transport endpoint routing", () => {
     socket.message({
       type: "state:updated",
       payload: {
-        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel1" },
+        remoteClient: {
+          id: "client-1",
+          profileId: "p1",
+          activeWorkspaceId: "ws1",
+          activeSessionId: "ws1:panel1",
+          workspaceGrid: null,
+        },
         appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }] }] },
       },
     });
@@ -1425,7 +1443,13 @@ describe("remote transport endpoint routing", () => {
     socket.message({
       type: "state:updated",
       payload: {
-        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel1" },
+        remoteClient: {
+          id: "client-1",
+          profileId: "p1",
+          activeWorkspaceId: "ws1",
+          activeSessionId: "ws1:panel1",
+          workspaceGrid: null,
+        },
         appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }] }] },
       },
     });
@@ -1464,7 +1488,13 @@ describe("remote transport endpoint routing", () => {
     socket.message({
       type: "state:updated",
       payload: {
-        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel1" },
+        remoteClient: {
+          id: "client-1",
+          profileId: "p1",
+          activeWorkspaceId: "ws1",
+          activeSessionId: "ws1:panel1",
+          workspaceGrid: null,
+        },
         appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }] }] },
       },
     });
@@ -1482,7 +1512,13 @@ describe("remote transport endpoint routing", () => {
       socket.message({
         type: "state:updated",
         payload: {
-          remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel2" },
+          remoteClient: {
+            id: "client-1",
+            profileId: "p1",
+            activeWorkspaceId: "ws1",
+            activeSessionId: "ws1:panel2",
+            workspaceGrid: null,
+          },
           appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }, { id: "panel2" }] }] },
         },
       });
@@ -1510,7 +1546,13 @@ describe("remote transport endpoint routing", () => {
     socket.message({
       type: "state:updated",
       payload: {
-        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel1" },
+        remoteClient: {
+          id: "client-1",
+          profileId: "p1",
+          activeWorkspaceId: "ws1",
+          activeSessionId: "ws1:panel1",
+          workspaceGrid: null,
+        },
         appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }] }] },
       },
     });
@@ -1540,6 +1582,76 @@ describe("remote transport endpoint routing", () => {
     expect(
       posted.filter((message) => message.type === "terminal-ready" && message.requestId === 20 && message.ready),
     ).toHaveLength(0);
+  });
+
+  // `remoteClient` exactly as composePayload (electron/backend/remote-client-registry.ts) sends it: no
+  // activeViewId, and activeSessionId is the server's record — "" after a workspace switch, and still
+  // the closed panel's id after that tab is closed.
+  function serverState(activeSessionId: string, panelIds: string[]) {
+    return {
+      remoteClient: { id: "client-1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId, workspaceGrid: null },
+      appState: { workspaces: [{ id: "ws1", profileId: "p1", panels: panelIds.map((id) => ({ id })) }] },
+    };
+  }
+
+  it.each([
+    ["a workspace switch cleared the server's session", ""],
+    ["the server still names a closed panel", "ws1:closed"],
+  ])("tells the host no panel is selected when %s", (_case, activeSessionId) => {
+    const posted: Array<Record<string, unknown>> = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(JSON.parse(message)),
+    };
+    createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.message({ type: "state:updated", payload: serverState(activeSessionId, ["panel1", "panel2"]) });
+    expect(posted.filter((message) => message.type === "selection-changed").at(-1)).toEqual({
+      type: "selection-changed",
+      profileId: "p1",
+      workspaceId: "ws1",
+    });
+  });
+
+  it("tells the host the socket opened after refusing readiness while it was still connecting", async () => {
+    vi.useFakeTimers();
+    const posted: Array<Record<string, unknown>> = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(JSON.parse(message)),
+    };
+    globalThis.fetch = vi.fn(
+      async () => ({ ok: true, json: async () => serverState("ws1:panel1", ["panel1"]) }) as Response,
+    );
+    const transport = createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+    const connectedReports = () =>
+      posted.filter((message) => message.type === "connection-state" && message.connected === true);
+    // The HTTP bootstrap answers before the socket opens: the host hears "connected" for this generation.
+    await transport.getState();
+    expect(connectedReports()).toHaveLength(1);
+    const request = (window as unknown as { __stridetermRemote: { requestTerminalReady(value: unknown): void } })
+      .__stridetermRemote.requestTerminalReady;
+    const challenge = {
+      requestId: 31,
+      documentEpoch: 1,
+      openAttempt: 1,
+      target: { profileId: "p1", workspaceId: "ws1", panelId: "panel1" },
+      connectionGeneration: 1,
+    };
+    request(challenge);
+    expect(posted.at(-1)).toMatchObject({ type: "terminal-ready", requestId: 31, ready: false });
+
+    socket.open();
+    // Without a second report the host never asks again: the refusal above stays the last word.
+    expect(connectedReports()).toHaveLength(2);
+    window.addEventListener(
+      "strideterm:remote-terminal-ready-request",
+      (event) =>
+        (event as CustomEvent<{ respond: (ready: boolean, kind: string) => void }>).detail.respond(true, "terminal"),
+      { once: true },
+    );
+    request({ ...challenge, requestId: 32 });
+    expect(posted.at(-1)).toMatchObject({ type: "terminal-ready", requestId: 32, ready: true, viewKind: "terminal" });
   });
 
   it("sends state:sync with the bootstrap revision on first-connect open (closes the [bootstrap, open] window)", async () => {

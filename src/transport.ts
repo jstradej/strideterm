@@ -92,6 +92,50 @@ interface RemoteTerminalReadyResult extends RemoteTerminalReadyRequest {
 // readiness deadline, leaving a small margin for the explicit false reply.
 const TERMINAL_READY_MAX_DISPATCH_ATTEMPTS = 83;
 
+/**
+ * The remote client's selection exactly as the server records it — `remoteClient` as the registry's
+ * `composePayload` sends it (`profileId`, `activeWorkspaceId`, `activeSessionId`; there is no
+ * `activeViewId`). The panel counts only while it still exists: the server keeps a closed panel's
+ * session id. This is the target the host's readiness challenge names (via `selection-changed`), so
+ * the terminal store resolves it through this same function — never from the renderer's local view.
+ */
+export function resolveRemoteSelection(state: unknown): {
+  target: RemoteTerminalReadyRequest["target"];
+  workspaceName?: string;
+  panelName?: string;
+} {
+  const selection = (
+    state as { remoteClient?: { profileId?: unknown; activeWorkspaceId?: unknown; activeSessionId?: unknown } }
+  )?.remoteClient;
+  const profileId = typeof selection?.profileId === "string" ? selection.profileId : "";
+  const workspaceId =
+    typeof selection?.activeWorkspaceId === "string" && selection.activeWorkspaceId
+      ? selection.activeWorkspaceId
+      : null;
+  const appState = (state as { appState?: { workspaces?: unknown } })?.appState;
+  const workspaces = Array.isArray(appState?.workspaces) ? appState.workspaces : [];
+  const activeWorkspace = workspaceId
+    ? (workspaces.find((workspace) => (workspace as { id?: unknown })?.id === workspaceId) as
+        { name?: unknown; panels?: unknown[] } | undefined)
+    : undefined;
+  const sessionId = typeof selection?.activeSessionId === "string" ? selection.activeSessionId : "";
+  const candidatePanelId =
+    workspaceId && sessionId.startsWith(`${workspaceId}:`) ? sessionId.slice(workspaceId.length + 1) : "";
+  const activePanel = candidatePanelId
+    ? (activeWorkspace?.panels?.find((panel) => (panel as { id?: unknown }).id === candidatePanelId) as
+        { title?: unknown } | undefined)
+    : undefined;
+  const workspaceName =
+    typeof activeWorkspace?.name === "string" && activeWorkspace.name.trim() ? activeWorkspace.name.trim() : undefined;
+  const panelName =
+    typeof activePanel?.title === "string" && activePanel.title.trim() ? activePanel.title.trim() : undefined;
+  return {
+    target: { profileId, workspaceId, panelId: activePanel ? candidatePanelId : null },
+    ...(workspaceName ? { workspaceName } : {}),
+    ...(panelName ? { panelName } : {}),
+  };
+}
+
 export interface RemotePanelSelectionDetail {
   profileId: string;
   workspaceId: string;
@@ -442,6 +486,8 @@ export function createRemoteTransport(): Transport {
   const pendingTerminalReady = new Map<number, RemoteTerminalReadyRequest>();
   const terminalReadyDispatchAttempts = new Map<number, number>();
   let selectedRemoteTarget: RemoteTerminalReadyRequest["target"] | null = null;
+  /** A readiness request was refused only because the current socket had not opened yet. */
+  let terminalReadyAwaitingSocket = false;
   function emitConnectionState(payload: ConnectionStatePayload): void {
     if (!payload.connected) invalidateTerminalReady();
     const currentPayload = { ...payload, connectionGeneration };
@@ -748,16 +794,7 @@ export function createRemoteTransport(): Transport {
   }
 
   function noteCoreRevision(state: unknown): void {
-    const selection = (
-      state as {
-        remoteClient?: {
-          profileId?: string;
-          activeWorkspaceId?: string;
-          activeViewId?: string | null;
-          activeSessionId?: string | null;
-        };
-      }
-    )?.remoteClient;
+    const selection = (state as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } })?.remoteClient;
     const nextProfileId = typeof selection?.profileId === "string" && selection.profileId ? selection.profileId : null;
     const nextWorkspaceId =
       typeof selection?.activeWorkspaceId === "string" && selection.activeWorkspaceId
@@ -768,38 +805,8 @@ export function createRemoteTransport(): Transport {
     }
     selectedProfileId = nextProfileId;
     selectedWorkspaceId = nextWorkspaceId;
-    const appState = (state as { appState?: { workspaces?: unknown } })?.appState;
-    const workspaces = Array.isArray(appState?.workspaces) ? appState.workspaces : [];
-    const activeWorkspace = selection?.activeWorkspaceId
-      ? (workspaces.find((workspace) => {
-          const candidate = workspace as { id?: unknown };
-          return candidate?.id === selection.activeWorkspaceId;
-        }) as { name?: unknown; panels?: unknown[] } | undefined)
-      : undefined;
-    const workspaceName =
-      typeof activeWorkspace?.name === "string" && activeWorkspace.name.trim()
-        ? activeWorkspace.name.trim()
-        : undefined;
-    const activeViewId =
-      typeof selection?.activeViewId === "string" && selection.activeViewId
-        ? selection.activeViewId
-        : typeof selection?.activeSessionId === "string"
-          ? selection.activeSessionId
-          : "";
-    const candidatePanelId =
-      nextWorkspaceId && activeViewId.startsWith(`${nextWorkspaceId}:`)
-        ? activeViewId.slice(nextWorkspaceId.length + 1)
-        : "";
-    const activePanel = candidatePanelId
-      ? (activeWorkspace?.panels?.find((panel) => (panel as { id?: unknown }).id === candidatePanelId) as
-          { title?: unknown } | undefined)
-      : undefined;
-    const panelId = activePanel ? candidatePanelId : "";
-    const nextTarget = {
-      profileId: nextProfileId || "",
-      workspaceId: nextWorkspaceId,
-      panelId: panelId || null,
-    };
+    const { target: nextTarget, workspaceName, panelName } = resolveRemoteSelection(state);
+    const panelId = nextTarget.panelId;
     if (
       selectedRemoteTarget &&
       (selectedRemoteTarget.profileId !== nextTarget.profileId ||
@@ -809,8 +816,6 @@ export function createRemoteTransport(): Transport {
       invalidateTerminalReady();
     }
     selectedRemoteTarget = nextTarget;
-    const panelName =
-      typeof activePanel?.title === "string" && activePanel.title.trim() ? activePanel.title.trim() : undefined;
     if (selection?.profileId)
       postHost({
         type: "selection-changed",
@@ -1107,6 +1112,13 @@ export function createRemoteTransport(): Transport {
       consecutiveConnectTimeouts = 0;
       clearStableTimer();
       stableTimer = window.setTimeout(markHealthy, webSocketStableMs);
+      // An HTTP reply may already have told the host this generation is connected, and the host
+      // asked for readiness before the socket could answer. The dedupe would swallow this open as
+      // identical, leaving that refusal as the last word; the host must hear the socket is usable.
+      if (terminalReadyAwaitingSocket) {
+        terminalReadyAwaitingSocket = false;
+        lastPostedConnectionState = "";
+      }
       emitConnectionState({ connected: true, message: "", reconnected });
       flushPendingWsMessages();
       // Re-send the full terminal subscription so the server rebuilds this
@@ -1467,6 +1479,9 @@ export function createRemoteTransport(): Transport {
           selectedRemoteTarget.workspaceId !== request.target.workspaceId ||
           selectedRemoteTarget.panelId !== request.target.panelId
         ) {
+          if (request.connectionGeneration === connectionGeneration && ws?.readyState === WebSocket.CONNECTING) {
+            terminalReadyAwaitingSocket = true;
+          }
           postTerminalReady({ ...request, ready: false, viewKind: "empty-state" });
           return;
         }
