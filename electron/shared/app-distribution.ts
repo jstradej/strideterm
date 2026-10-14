@@ -18,6 +18,18 @@ export interface AppDistributionInput {
   env: Readonly<Record<string, string | undefined>>;
 }
 
+/**
+ * Launcher variables the detection reads. Inherited by every child process, so session-manager.ts
+ * strips them from terminals: a strIDEterm started from one would otherwise take itself for portable
+ * or an AppImage.
+ */
+export const DISTRIBUTION_LAUNCHER_ENV = Object.freeze([
+  "PORTABLE_EXECUTABLE_DIR",
+  "PORTABLE_EXECUTABLE_FILE",
+  "PORTABLE_EXECUTABLE_APP_FILENAME",
+  "APPIMAGE",
+] as const);
+
 export function detectAppDistribution({
   isPackaged,
   platform,

@@ -529,6 +529,37 @@ describe("SessionManager", () => {
     }
   });
 
+  // What electron-builder's portable launcher (templates/nsis/portable.nsi) and the AppImage runtime
+  // set for this launch. A strIDEterm started from the shell must not inherit them, or it would
+  // detect itself as portable / AppImage (electron/shared/app-distribution.ts).
+  test("does not pass this launch's portable or AppImage launcher variables to the shell", () => {
+    const launcherEnv: Record<string, string> = {
+      PORTABLE_EXECUTABLE_DIR: "D:\\Tools",
+      PORTABLE_EXECUTABLE_FILE: "D:\\Tools\\strIDEterm-3.0.6-win-x64.exe",
+      PORTABLE_EXECUTABLE_APP_FILENAME: "strIDEterm",
+      APPIMAGE: "/home/me/Apps/strIDEterm-3.0.6.AppImage",
+      APPDIR: "/tmp/.mount_strIDEabc123",
+    };
+    const prior = Object.fromEntries(Object.keys(launcherEnv).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, launcherEnv);
+    try {
+      const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+      new SessionManager().ensureSession(state, "workspace-a:shell");
+      const env = spawnCalls[0].options.env as Record<string, string>;
+      expect(env.PORTABLE_EXECUTABLE_DIR).toBeUndefined();
+      expect(env.PORTABLE_EXECUTABLE_FILE).toBeUndefined();
+      expect(env.PORTABLE_EXECUTABLE_APP_FILENAME).toBeUndefined();
+      expect(env.APPIMAGE).toBeUndefined();
+      // Only those: the rest of the environment is inherited as before.
+      expect(env.APPDIR).toBe(launcherEnv.APPDIR);
+    } finally {
+      for (const [name, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   test("shows a visible error and does not spawn when opt-in launch setup fails", async () => {
     const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
     state.workspaces[0].panels[0].sshMcpEnabled = true;

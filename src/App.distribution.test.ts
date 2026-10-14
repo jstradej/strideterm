@@ -25,7 +25,7 @@ const tempDirs: string[] = [];
  * is what getPayload() puts in `meta.versionCheck`; its manual result is what `app:check-for-updates`
  * returns.
  */
-async function realUpdateChecker(distribution: AppDistribution, { upToDate = false } = {}) {
+async function realUpdateChecker(distribution: AppDistribution, { upToDate = false, offline = false } = {}) {
   const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-distribution-ui-"));
   tempDirs.push(userDataPath);
   const tags = upToDate ? ["v3.0.6"] : ["v3.0.8", "v3.0.7", "v3.0.6"];
@@ -38,6 +38,8 @@ async function realUpdateChecker(distribution: AppDistribution, { upToDate = fal
     userDataPath,
     fetchImpl: async (url: string) => {
       githubRequests.push(url);
+      // What Node's fetch throws when the host cannot be reached.
+      if (offline) throw new TypeError("fetch failed");
       return {
         ok: true,
         status: 200,
@@ -170,8 +172,13 @@ describe("sidebar footer — the distribution and where its updates come from", 
 });
 
 describe("Settings → About — update status by distribution", () => {
-  /** SettingsDialog with the props openSettingsDialog() builds from the payload, on the About tab. */
-  async function mountAbout(meta: MetaState, checkForUpdates: () => Promise<unknown>) {
+  /**
+   * SettingsDialog with the props openSettingsDialog() builds from the payload, on the About tab.
+   * Without `checkForUpdates` the transport is the remote one, which has no such method.
+   */
+  async function mountAbout(meta: MetaState, checkForUpdates?: () => Promise<unknown>) {
+    const logRenderer = vi.fn();
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" }, logRenderer };
     const store = useAppStore();
     store.payload = { meta, appState: APP_STATE } as AnyApi;
     store.openSettingsDialog({ initialTab: "about" });
@@ -182,10 +189,11 @@ describe("Settings → About — update status by distribution", () => {
       global: {
         provide: {
           [apiKey as symbol]: {
+            isRemote: !checkForUpdates,
             getAgentNotifyHookStatus: async () => ({}),
             getAgentNotifyHookMetrics: async () => null,
             openExternal,
-            checkForUpdates,
+            ...(checkForUpdates ? { checkForUpdates } : {}),
           },
         },
         stubs: { SettingsHookProviderSection: true, CustomSelect: true },
@@ -193,28 +201,50 @@ describe("Settings → About — update status by distribution", () => {
     });
     await flushPromises();
     const banner = () => wrapper.find(".update-banner");
-    const checkButton = () => wrapper.findAll("button").find((b) => b.text() === "Check for updates")!;
-    return { wrapper, banner, checkButton, openExternal };
+    const checkButton = () => wrapper.findAll("button").find((b) => b.text() === "Check for updates");
+    const toast = () => useNotificationStore().latestToast;
+    return { wrapper, banner, checkButton, openExternal, logRenderer, toast };
   }
 
-  test("Microsoft Store: the Store delivers updates, with its link; a manual check never asks GitHub", async () => {
+  const STORE_STATUS_TEXT =
+    "Updates are delivered through the Microsoft Store, automatically unless app updates are turned off in the Store's settings.";
+  const STORE_ANSWER_TEXT =
+    "Updates for this copy come only through the Microsoft Store, which strIDEterm cannot query. Open its Store page to see whether one is waiting.";
+
+  test("Microsoft Store: Check for updates answers that the Store delivers them, with the link, never asking GitHub", async () => {
     const { checker, githubRequests } = await realUpdateChecker("microsoft-store");
-    const { banner, checkButton, openExternal } = await mountAbout(
+    const { banner, checkButton, openExternal, toast } = await mountAbout(
       payloadMeta("microsoft-store", checker.getCachedResult()),
       () => checker.checkForUpdates(true),
     );
 
-    const storeText =
-      "Updates are delivered through the Microsoft Store, automatically unless app updates are turned off in the Store's settings.";
-    expect(banner().get(".update-banner__text").text()).toBe(storeText);
-    await banner().get("a").trigger("click");
-    expect(openExternal).toHaveBeenCalledWith("https://apps.microsoft.com/detail/9PBP826FCHF7");
+    expect(banner().get(".update-banner__text").text()).toBe(STORE_STATUS_TEXT);
     expect(banner().get("a").text()).toBe("Open in Microsoft Store");
 
-    await checkButton().trigger("click");
+    await checkButton()!.trigger("click");
     await flushPromises();
-    expect(banner().get(".update-banner__text").text()).toBe(storeText);
+    expect(banner().get(".update-banner__text").text()).toBe(STORE_ANSWER_TEXT);
+    await banner().get("a").trigger("click");
+    expect(openExternal).toHaveBeenCalledWith("https://apps.microsoft.com/detail/9PBP826FCHF7");
     expect(githubRequests).toEqual([]);
+    expect(toast()).toBeNull();
+  });
+
+  test("Microsoft Store on a remote client: Check for updates still answers, without the desktop", async () => {
+    const { checker } = await realUpdateChecker("microsoft-store");
+    const { banner, checkButton } = await mountAbout(payloadMeta("microsoft-store", checker.getCachedResult()));
+
+    await checkButton()!.trigger("click");
+    await flushPromises();
+    expect(banner().get(".update-banner__text").text()).toBe(STORE_ANSWER_TEXT);
+  });
+
+  test("a remote client of a GitHub build offers no check it cannot run, and still shows the desktop's result", async () => {
+    const { checker } = await realUpdateChecker("windows-installer");
+    const { banner, checkButton } = await mountAbout(payloadMeta("windows-installer", checker.getCachedResult()));
+
+    expect(checkButton()).toBeUndefined();
+    expect(banner().get(".update-banner__text").text()).toBe("You are 2 versions behind. Latest: v3.0.8");
   });
 
   test("Installer: how far behind GitHub's latest release, with the release link", async () => {
@@ -235,9 +265,49 @@ describe("Settings → About — update status by distribution", () => {
     );
 
     expect(banner().get(".update-banner__text").text()).toBe("You are on the latest version.");
-    await checkButton().trigger("click");
+    await checkButton()!.trigger("click");
     await flushPromises();
     expect(githubRequests).toHaveLength(2);
     expect(banner().get(".update-banner__text").text()).toBe("You are on the latest version.");
+  });
+
+  test("a check that fails over IPC tells the user why and lands in strideterm.log", async () => {
+    const { checker } = await realUpdateChecker("windows-installer", { upToDate: true });
+    // How ipcRenderer.invoke rejects when the main-process handler throws.
+    const ipcFailure = new Error(
+      "Error invoking remote method 'app:check-for-updates': Error: EACCES: permission denied, open 'version-check.json'",
+    );
+    const { checkButton, toast, logRenderer } = await mountAbout(
+      payloadMeta("windows-installer", checker.getCachedResult()),
+      () => Promise.reject(ipcFailure),
+    );
+
+    await checkButton()!.trigger("click");
+    await flushPromises();
+    expect(toast()).toMatchObject({
+      title: "Update check failed",
+      body: "EACCES: permission denied, open 'version-check.json'",
+      kind: "error",
+    });
+    expect(logRenderer).toHaveBeenCalledWith("warn", "[toast] Update check failed", { message: ipcFailure.message });
+  });
+
+  test("a check GitHub never answered, with nothing cached, tells the user instead of showing nothing", async () => {
+    const { checker, githubRequests } = await realUpdateChecker("portable", { offline: true });
+    const { banner, checkButton, toast, logRenderer } = await mountAbout(
+      payloadMeta("portable", checker.getCachedResult()),
+      () => checker.checkForUpdates(true),
+    );
+    expect(banner().exists()).toBe(false);
+
+    await checkButton()!.trigger("click");
+    await flushPromises();
+    expect(githubRequests).toHaveLength(2);
+    expect(toast()).toMatchObject({
+      title: "Update check failed",
+      body: "GitHub did not return the release list, and there is no earlier result. Check the network connection and try again.",
+      kind: "error",
+    });
+    expect(logRenderer).toHaveBeenCalledWith("warn", "[toast] Update check failed", expect.anything());
   });
 });

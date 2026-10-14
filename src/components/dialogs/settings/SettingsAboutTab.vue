@@ -17,6 +17,7 @@
     <p v-else-if="checkingUpdate" class="about-version">Checking for updates...</p>
 
     <button
+      v-if="canCheckUpdates"
       type="button"
       class="button button--ghost check-update-btn"
       :disabled="checkingUpdate"
@@ -46,6 +47,7 @@ interface Props {
   appVersion?: string;
   repositoryUrl?: string;
   checkingUpdate?: boolean;
+  canCheckUpdates?: boolean;
   updateInfo?: UpdateInfo | null;
 }
 
@@ -54,6 +56,7 @@ withDefaults(defineProps<Props>(), {
   appVersion: "",
   repositoryUrl: "",
   checkingUpdate: false,
+  canCheckUpdates: true,
   updateInfo: null,
 });
 

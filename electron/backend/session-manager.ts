@@ -20,6 +20,7 @@ import { tryDirectShellSpawn } from "./direct-shell-spawn.js";
 import { applyShellIntegrationLaunch } from "./shell-integration-launch.js";
 import type { SshManager } from "./ssh/ssh-manager.js";
 import { resolveSshLaunchVia } from "../shared/ssh-connection.js";
+import { DISTRIBUTION_LAUNCHER_ENV } from "../shared/app-distribution.js";
 import { detectWslDistros } from "./ssh/ssh-wsl.js";
 
 const log = getLogger("session-mgr");
@@ -883,6 +884,9 @@ export class SessionManager extends EventEmitter {
       // This launch's own backend declaration (main.ts defaults it to prod) must not leak into
       // user shells: a dev.ps1 started from one would otherwise run against prod.
       delete inheritedEnv.STRIDETERM_ENV;
+      // Same for the launcher variables this launch's build detection read: a strIDEterm started
+      // from the shell would take them for its own.
+      for (const name of DISTRIBUTION_LAUNCHER_ENV) delete inheritedEnv[name];
       processHandle = pty.spawn(launcher.file, launcher.args, {
         name: APP_CONFIG.session.termName,
         cols: APP_CONFIG.session.defaultCols,

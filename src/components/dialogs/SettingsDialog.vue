@@ -176,6 +176,7 @@
         :app-version="appVersion"
         :repository-url="repositoryUrl"
         :checking-update="checkingUpdate"
+        :can-check-updates="canCheckForUpdates"
         :update-info="updateInfo"
         @check-updates="handleCheckForUpdates"
       />
@@ -480,13 +481,18 @@ const form = reactive({
 // -- Version check --
 const checkingUpdate = ref(false);
 const manualCheckResult = ref<unknown>(null);
+const storeCheckAnswered = ref(false);
+// A Store install answers without the desktop; anything else needs the desktop's checker, which a
+// remote client's transport does not have — a button there would do nothing.
+const canCheckForUpdates = computed(() => props.distribution === "microsoft-store" || Boolean(api?.checkForUpdates));
 
 const updateInfo = computed(() => {
   if (props.distribution === "microsoft-store") {
     return {
       kind: "update-banner--store",
-      message:
-        "Updates are delivered through the Microsoft Store, automatically unless app updates are turned off in the Store's settings.",
+      message: storeCheckAnswered.value
+        ? "Updates for this copy come only through the Microsoft Store, which strIDEterm cannot query. Open its Store page to see whether one is waiting."
+        : "Updates are delivered through the Microsoft Store, automatically unless app updates are turned off in the Store's settings.",
       url: props.microsoftStoreUrl,
       linkLabel: "Open in Microsoft Store",
     };
@@ -506,12 +512,24 @@ const updateInfo = computed(() => {
 });
 
 async function handleCheckForUpdates() {
+  if (props.distribution === "microsoft-store") {
+    storeCheckAnswered.value = true;
+    return;
+  }
   if (!api?.checkForUpdates) return;
   checkingUpdate.value = true;
   try {
     manualCheckResult.value = await api.checkForUpdates();
-  } catch {
+    // The checker answers null when GitHub could not be read and nothing was cached before.
+    if (!manualCheckResult.value) {
+      notifications.value.showError(
+        "Update check failed",
+        "GitHub did not return the release list, and there is no earlier result. Check the network connection and try again.",
+      );
+    }
+  } catch (err) {
     manualCheckResult.value = null;
+    notifications.value.showError("Update check failed", (err as Error)?.message || String(err));
   } finally {
     checkingUpdate.value = false;
   }
