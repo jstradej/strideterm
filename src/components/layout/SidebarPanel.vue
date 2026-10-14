@@ -1418,7 +1418,7 @@ function onMenuAction(action: string): void {
 async function cleanupClosedPullRequests(parentWorkspaceId: string, parentName: string): Promise<void> {
   const confirmed = await store.confirmInApp({
     title: "Delete closed PR workspaces?",
-    message: `Delete the review workspaces and their owned checkout directories for every completed or abandoned Azure DevOps pull request under “${parentName}”? External or unmanaged checkout directories will be skipped and left untouched. This runs in the background; other workspaces remain available.`,
+    message: `Delete the review workspaces and their owned checkout directories for every completed or abandoned Azure DevOps pull request under “${parentName}”? External or unmanaged checkout directories will be skipped and left untouched, and so will checkouts holding uncommitted changes, unpushed commits or other workspaces. This runs in the background; other workspaces remain available.`,
     confirmLabel: "Delete closed PRs",
     danger: true,
   });
@@ -1436,9 +1436,18 @@ async function cleanupClosedPullRequests(parentWorkspaceId: string, parentName: 
           ? "active PRs"
           : reason.includes("status could not be verified") || reason.includes("status is not closed")
             ? "unverified PR statuses"
-            : reason.includes("missing or unsafe") || reason.includes("not a pr child")
-              ? "missing or unsafe checkouts"
-              : "other reasons";
+            : reason.includes("uncommitted changes") ||
+                reason.includes("not on the remote") ||
+                reason.includes("nested worktrees") ||
+                reason.includes("is used by workspace")
+              ? "checkouts with local work"
+              : reason.includes("no longer exists")
+                ? "PRs no longer on Azure DevOps"
+                : reason.includes("missing or unsafe") ||
+                    reason.includes("not a pr child") ||
+                    reason.includes("could not inspect")
+                  ? "missing or unsafe checkouts"
+                  : "other reasons";
       skipCategories.set(category, (skipCategories.get(category) || 0) + 1);
     }
     const skipSummary = [...skipCategories].map(([category, count]) => `${count} ${category}`).join(", ");

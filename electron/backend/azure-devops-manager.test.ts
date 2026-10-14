@@ -104,7 +104,10 @@ function createFetchStub() {
       };
     }
     if (/\/pullRequests\/[^/?]+\?/.test(href)) {
-      return { ok: true, json: async () => ({ status: "completed" }) };
+      return {
+        ok: true,
+        json: async () => ({ status: "completed", lastMergeSourceCommit: { commitId: "abc123" } }),
+      };
     }
     if (href.includes("/threads?")) {
       return {
@@ -270,9 +273,36 @@ describe("AzureDevOpsManager", () => {
       sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
     });
 
-    await expect(manager.getPullRequestStatus("ado-main", "Platform", "repo-1", 123)).resolves.toBe("completed");
+    await expect(manager.getPullRequestStatus("ado-main", "Platform", "repo-1", 123)).resolves.toEqual({
+      status: "completed",
+      lastMergeSourceCommitId: "abc123",
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0][0])).toContain("/Platform/_apis/git/repositories/repo-1/pullRequests/123");
+  });
+
+  test("reports a PR the server answers 404 for as not-found, and other failures as errors", async () => {
+    const { manager, fetchImpl } = createManager();
+    manager.setSnapshot({
+      connections: [{ ...connection, profileId: "default" }],
+      reviewActivity: [],
+      pullRequests: {},
+      trackedPullRequests: {},
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+      sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+    });
+    // A real HTTP error response, so the status goes through requestJson's own error path.
+    const httpError = (status: number) =>
+      new Response(JSON.stringify({ message: `HTTP ${status}` }), { status }) as unknown as Awaited<
+        ReturnType<typeof fetchImpl>
+      >;
+    fetchImpl.mockImplementationOnce(async () => httpError(404));
+    await expect(manager.getPullRequestStatus("ado-main", "Platform", "repo-1", 404)).resolves.toEqual({
+      status: "not-found",
+      lastMergeSourceCommitId: "",
+    });
+    fetchImpl.mockImplementationOnce(async () => httpError(500));
+    await expect(manager.getPullRequestStatus("ado-main", "Platform", "repo-1", 500)).rejects.toThrow("(500)");
   });
 
   test("verifies a connection by listing projects", async () => {

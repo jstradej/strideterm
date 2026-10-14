@@ -432,6 +432,7 @@ describe("SidebarPanel — Azure closed PR cleanup", () => {
           name: "External checkout",
           reason: "Workspace is linked to an external or unmanaged checkout.",
         },
+        { workspaceId: "dirty", name: "Dirty checkout", reason: "Checkout has uncommitted changes." },
       ],
       errors: [],
     });
@@ -446,11 +447,14 @@ describe("SidebarPanel — Azure closed PR cleanup", () => {
     expect(confirm).toHaveBeenCalledOnce();
     expect(confirm.mock.calls[0][0]).toMatchObject({ danger: true, confirmLabel: "Delete closed PRs" });
     expect(confirm.mock.calls[0][0].message).toContain("External or unmanaged checkout directories will be skipped");
+    expect(confirm.mock.calls[0][0].message).toContain("uncommitted changes, unpushed commits or other workspaces");
     expect(cleanup).toHaveBeenCalledOnce();
     expect(cleanup).toHaveBeenCalledWith("ws-A");
     const toast = useNotificationStore().persistentToasts.at(-1);
     expect(toast?.body).toContain("Deleted 2 closed PR workspaces.");
-    expect(toast?.body).toContain("Skipped 1 workspace: 1 external or unmanaged checkouts.");
+    expect(toast?.body).toContain(
+      "Skipped 2 workspaces: 1 external or unmanaged checkouts, 1 checkouts with local work.",
+    );
     wrapper.unmount();
   });
 

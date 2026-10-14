@@ -292,17 +292,30 @@ export class AzureDevOpsManager extends BaseProviderManager {
     projectName: string,
     repositoryId: string,
     pullRequestId: string | number,
-  ): Promise<string> {
+  ): Promise<{ status: string; lastMergeSourceCommitId: string }> {
     const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
     this.setAuditContext({ connectionId, userInitiated: true });
-    const pullRequest = (await this.azureApi.getPullRequestById(
-      connection,
-      token,
-      projectName,
-      repositoryId,
-      pullRequestId,
-    )) as { status?: unknown };
-    return String(pullRequest?.status || "").toLowerCase();
+    let pullRequest: { status?: unknown; lastMergeSourceCommit?: { commitId?: unknown } };
+    try {
+      pullRequest = (await this.azureApi.getPullRequestById(
+        connection,
+        token,
+        projectName,
+        repositoryId,
+        pullRequestId,
+      )) as typeof pullRequest;
+    } catch (error) {
+      // Same rule as the stale PR check: only a 404/410 means the PR is gone.
+      const statusMatch = ((error as Error)?.message || "").match(/request failed \((\d+)\)/);
+      if (statusMatch && (statusMatch[1] === "404" || statusMatch[1] === "410")) {
+        return { status: "not-found", lastMergeSourceCommitId: "" };
+      }
+      throw error;
+    }
+    return {
+      status: String(pullRequest?.status || "").toLowerCase(),
+      lastMergeSourceCommitId: String(pullRequest?.lastMergeSourceCommit?.commitId || ""),
+    };
   }
 
   constructor(

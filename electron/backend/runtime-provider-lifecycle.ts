@@ -307,7 +307,6 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
               rootPath: paths.rootPath,
               cacheRepoPath: paths.cacheRepoPath,
             },
-            "managed-worktree",
             {
               parentWorkspaceId: paths.parentWorkspaceId || "",
               // Preserve the reviewer's "Enable editing" opt-in. buildReviewMetadata

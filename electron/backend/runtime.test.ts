@@ -11,6 +11,8 @@ import {
 } from "./runtime.js";
 import { isValidNativeDirectoryName } from "./runtime.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
+import { AzureDevOpsManager } from "./azure-devops-manager.js";
+import { execFileText } from "./process-utils.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { strayStatePayloadKeys } from "./remote-core.js";
@@ -1704,25 +1706,11 @@ describe("runtime integration", () => {
         };
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      buildReviewMetadata(summary: any, checkout: any, mode: any, extra: any = {}) {
-        return {
-          provider: "azure-devops",
-          prKey: summary.prKey,
-          connectionId: summary.connectionId,
-          orgUrl: summary.orgUrl,
-          parentWorkspaceId: extra.parentWorkspaceId || "",
-          project: summary.project,
-          repository: summary.repository,
-          pullRequest: summary.pullRequest,
-          role: summary.role,
-          checkout: {
-            mode,
-            rootPath: checkout.rootPath,
-            cacheRepoPath: checkout.cacheRepoPath,
-          },
-        };
-      }
+      // The real implementation, so the test holds the caller to its real
+      // (summary, checkout, extra) signature. A hand-written 4-argument double
+      // used to agree with a caller that passed a stray `mode` argument, which
+      // dropped parentWorkspaceId and "Enable editing" in production.
+      buildReviewMetadata = AzureDevOpsManager.prototype.buildReviewMetadata;
     }
 
     const azureReviewStore = {
@@ -1753,6 +1741,15 @@ describe("runtime integration", () => {
             profileId: "default",
             activePanelId: "shell",
             panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+            // Metadata that lost its parent link but kept the "Enable editing" opt-in.
+            review: {
+              provider: "azure-devops",
+              prKey: "ado-main:repo-1:123",
+              connectionId: "ado-main",
+              parentWorkspaceId: "",
+              writable: true,
+              checkout: { mode: "managed-worktree", rootPath: "C:/reviews/reviews/ado-main/pr-123" },
+            },
           },
         ],
       },
@@ -1769,6 +1766,8 @@ describe("runtime integration", () => {
     expect(repairedWorkspace?.review).toMatchObject({
       provider: "azure-devops",
       parentWorkspaceId: "azure-root",
+      writable: true,
+      checkout: { mode: "managed-worktree", rootPath: "C:/reviews/reviews/ado-main/pr-123" },
     });
     expect(azureReviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith("ado-main:repo-1:123", {
       reviewWorkspaceId: "workspace-review",
@@ -13332,9 +13331,50 @@ describe("session activityStartedAt — run-start stamp for elapsed", () => {
 });
 
 describe("Azure closed PR workspace cleanup", () => {
-  type CleanupChildSpec = { id: string; prId: string; name?: string; cwd?: string; rootPath?: string; mode?: string };
+  type CleanupChildSpec = {
+    id: string;
+    prId: string;
+    name?: string;
+    cwd?: string;
+    rootPath?: string;
+    mode?: string;
+    connectionId?: string;
+    /** A quick fix that has no PR yet (workspace.quickfix set, empty prKey). */
+    quickfix?: boolean;
+  };
+  type PrState = { status: string; lastMergeSourceCommitId: string };
+  type StatusFor = (prId: string, connectionId: string) => Promise<string | PrState>;
 
-  function fakeAzureManager(statusFor: (prId: string) => Promise<string>) {
+  // Real git for the cleanup's local-work inspection: createFixture's default
+  // execFileText answers every command with empty output, which would read
+  // every checkout as clean and pushed.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const gitOnlyExecFileText = (file: string, args: string[], options: any) =>
+    file === "git" ? execFileText(file, args, options) : Promise.resolve({ stdout: "", stderr: "" });
+
+  /**
+   * Make `dir` a real checkout of what is already there. `pushed` also points a
+   * remote-tracking ref at HEAD, as fetching the PR's source branch does.
+   */
+  async function initCheckout(dir: string, { pushed = true } = {}): Promise<string> {
+    await fs.mkdir(dir, { recursive: true });
+    const git = async (...args: string[]) =>
+      (
+        await execFileText(
+          "git",
+          ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args],
+          { cwd: dir },
+        )
+      ).stdout.trim();
+    await git("init", "-q");
+    await git("add", "-A");
+    await git("commit", "-q", "--allow-empty", "-m", "PR head");
+    const head = await git("rev-parse", "HEAD");
+    if (pushed) await git("update-ref", "refs/remotes/origin/pr-source", head);
+    return head;
+  }
+
+  function fakeAzureManager(statusFor: StatusFor) {
     return class extends EventEmitter {
       snapshot = {
         connections: [],
@@ -13349,24 +13389,28 @@ describe("Azure closed PR workspace cleanup", () => {
       async sync() {
         return this.getSnapshot();
       }
-      async getPullRequestStatus(_connectionId: string, _projectName: string, _repositoryId: string, prId: string) {
-        return statusFor(prId);
+      async getPullRequestStatus(connectionId: string, _projectName: string, _repositoryId: string, prId: string) {
+        const state = await statusFor(prId, connectionId);
+        return typeof state === "string" ? { status: state, lastMergeSourceCommitId: "" } : state;
       }
       stopPolling() {}
       configurePolling() {}
     };
   }
 
-  async function makeAzureCleanupFixture(statusFor: (prId: string) => Promise<string>, children: CleanupChildSpec[]) {
+  async function makeAzureCleanupFixture(statusFor: StatusFor, children: CleanupChildSpec[]) {
     const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-ado-cleanup-"));
     tempPaths.push(parentRoot);
     const connectionId = "ado-cleanup";
-    const ownedRoot = path.join(parentRoot, "reviews", shortPathKey(connectionId, "connection"));
+    const ownedRootFor = (id: string) => path.join(parentRoot, "reviews", shortPathKey(id, "connection"));
+    const ownedRoot = ownedRootFor(connectionId);
+    // Like the real one (ensureWorkspace in runtime-provider-lifecycle.ts), the
+    // profile's Azure workspace carries no connectionId: it parents the reviews
+    // of every connection in the profile.
     const parent = {
       id: "azure-root",
       name: "Azure DevOps",
       kind: "azure",
-      connectionId,
       cwd: parentRoot,
       profileId: "default",
       panels: [],
@@ -13377,23 +13421,34 @@ describe("Azure closed PR workspace cleanup", () => {
         id: child.id,
         name: child.name || child.id,
         kind: "terminal",
-        cwd: child.cwd || path.join(ownedRoot, `pr-${child.prId}`),
+        cwd: child.cwd || path.join(ownedRootFor(child.connectionId || connectionId), `pr-${child.prId}`),
         profileId: "default",
         panels: [],
         review: {
           provider: "azure-devops",
           parentWorkspaceId: "azure-root",
-          connectionId,
-          prKey: `${connectionId}:repo-1:${child.prId}`,
+          connectionId: child.connectionId || connectionId,
+          prKey: child.quickfix ? "" : `${child.connectionId || connectionId}:repo-1:${child.prId}`,
           project: { id: "project-1", name: "Platform" },
           repository: { id: "repo-1", name: "web-app" },
           pullRequest: { id: Number(child.prId), status: "completed" },
           checkout: {
             mode: child.mode || "managed-worktree",
-            rootPath: child.rootPath || path.join(ownedRoot, `pr-${child.prId}`),
+            rootPath: child.rootPath || path.join(ownedRootFor(child.connectionId || connectionId), `pr-${child.prId}`),
             cacheRepoPath: parentRoot,
           },
         },
+        quickfix: child.quickfix
+          ? {
+              connectionId: child.connectionId || connectionId,
+              projectName: "Platform",
+              repositoryId: "repo-1",
+              repositoryName: "web-app",
+              remoteUrl: "",
+              baseBranch: "main",
+              parentWorkspaceId: "azure-root",
+            }
+          : null,
       })),
     ];
     const fixture = await createFixture({
@@ -13408,11 +13463,15 @@ describe("Azure closed PR workspace cleanup", () => {
               enabled: true,
               reviewRoot: parentRoot,
               defaultPollSeconds: 120,
-              connections: [{ id: connectionId, profileId: "default", enabled: true, tokenRef: "cred:ado-cleanup" }],
+              connections: [
+                { id: connectionId, profileId: "default", enabled: true, tokenRef: "cred:ado-cleanup" },
+                { id: "ado-second", profileId: "default", enabled: true, tokenRef: "cred:ado-second" },
+              ],
             },
           },
         },
       },
+      execFileTextImpl: gitOnlyExecFileText,
       dependencies: {
         AzureDevOpsManager: fakeAzureManager(statusFor),
         rmPath: (dirPath: string) => fs.rm(dirPath, { recursive: true, force: true }),
@@ -13430,6 +13489,7 @@ describe("Azure closed PR workspace cleanup", () => {
     const diskPath = children[0].cwd;
     await fs.mkdir(diskPath, { recursive: true });
     await fs.writeFile(path.join(diskPath, "file.txt"), "owned");
+    await initCheckout(diskPath);
 
     const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
 
@@ -13439,6 +13499,43 @@ describe("Azure closed PR workspace cleanup", () => {
     );
     await expect(fs.access(diskPath)).rejects.toThrow();
     expect(ownedRoot).toContain("reviews");
+  });
+
+  test("cleans reviews of every connection under the profile's Azure workspace", async () => {
+    const statusCalls: string[] = [];
+    const { fixture, children } = await makeAzureCleanupFixture(
+      async (prId, connectionId) => {
+        statusCalls.push(`${connectionId}:${prId}`);
+        return "completed";
+      },
+      [
+        { id: "pr-first", prId: "301" },
+        { id: "pr-second", prId: "302", connectionId: "ado-second" },
+      ],
+    );
+    for (const child of children) await initCheckout(child.cwd);
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result).toEqual({ deleted: 2, skipped: [], errors: [] });
+    expect(statusCalls).toEqual(["ado-cleanup:301", "ado-second:302"]);
+    for (const child of children) await expect(fs.access(child.cwd)).rejects.toThrow();
+  });
+
+  test("skips a review whose connection is no longer configured without querying or deleting it", async () => {
+    const { fixture, children } = await makeAzureCleanupFixture(async () => {
+      throw new Error("must not query a PR of a removed connection");
+    }, [{ id: "pr-orphan", prId: "401", connectionId: "ado-removed" }]);
+    await fs.mkdir(children[0].cwd, { recursive: true });
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result.deleted).toBe(0);
+    expect(result.errors).toEqual([]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({ workspaceId: "pr-orphan", reason: expect.stringContaining("no longer configured") }),
+    ]);
+    await expect(fs.access(children[0].cwd)).resolves.toBeUndefined();
   });
 
   test("skips linked external checkouts without removing their workspace", async () => {
@@ -13469,7 +13566,7 @@ describe("Azure closed PR workspace cleanup", () => {
       },
       [{ id: "pr-default", prId: "201" }],
     );
-    await fs.mkdir(children[0].cwd, { recursive: true });
+    await initCheckout(children[0].cwd);
     const otherProfilePath = path.join(ownedRoot, "other-profile-pr");
     await fs.mkdir(otherProfilePath, { recursive: true });
     fixture.store.getState().profiles.push({ id: "other", name: "Other", color: "#123456", workspaceIds: [] });
@@ -13505,7 +13602,7 @@ describe("Azure closed PR workspace cleanup", () => {
         { id: "pr-102", prId: "102" },
       ],
     );
-    for (const child of children) await fs.mkdir(child.cwd, { recursive: true });
+    for (const child of children) await initCheckout(child.cwd);
 
     const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
 
@@ -13520,6 +13617,107 @@ describe("Azure closed PR workspace cleanup", () => {
       false,
     );
     await expect(fs.access(path.join(ownedRoot, "pr-102"))).rejects.toThrow();
+  });
+
+  test("leaves a closed PR's checkout that holds uncommitted edits, unpushed commits or another workspace", async () => {
+    const { fixture, children } = await makeAzureCleanupFixture(
+      async () => "completed",
+      [
+        { id: "pr-dirty", prId: "501" },
+        { id: "pr-unpushed", prId: "502" },
+        { id: "pr-nested", prId: "503" },
+      ],
+    );
+    const [dirty, unpushed, nested] = children;
+    await initCheckout(dirty.cwd);
+    await fs.writeFile(path.join(dirty.cwd, "notes.txt"), "work in progress");
+    await initCheckout(unpushed.cwd, { pushed: false });
+    await initCheckout(nested.cwd);
+    // A task worktree created on the review lives inside its checkout.
+    fixture.store.getState().workspaces.push({
+      ...(nested as unknown as WorkspaceState),
+      id: "task-in-review",
+      name: "Address review comments",
+      cwd: path.join(nested.cwd, ".strideterm", "tree", "fix-comments"),
+      review: null,
+    });
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result.deleted).toBe(0);
+    expect(result.errors).toEqual([]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({ workspaceId: "pr-dirty", reason: expect.stringContaining("uncommitted changes") }),
+      expect.objectContaining({ workspaceId: "pr-unpushed", reason: expect.stringContaining("not on the remote") }),
+      expect.objectContaining({ workspaceId: "pr-nested", reason: expect.stringContaining("Address review comments") }),
+    ]);
+    for (const child of children) await expect(fs.access(child.cwd)).resolves.toBeUndefined();
+  });
+
+  test("deletes a merged checkout whose source branch was pruned when HEAD is the PR's last commit", async () => {
+    let head = "";
+    const { fixture, children } = await makeAzureCleanupFixture(
+      async () => ({ status: "completed", lastMergeSourceCommitId: head }),
+      [{ id: "pr-pruned", prId: "601" }],
+    );
+    head = await initCheckout(children[0].cwd, { pushed: false });
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result).toEqual({ deleted: 1, skipped: [], errors: [] });
+    await expect(fs.access(children[0].cwd)).rejects.toThrow();
+  });
+
+  test("removes a quick fix promoted to a PR and leaves quick fixes that have no PR alone", async () => {
+    const statusCalls: string[] = [];
+    const { fixture, parentRoot } = await makeAzureCleanupFixture(
+      async (prId) => {
+        statusCalls.push(prId);
+        return "completed";
+      },
+      [
+        { id: "qf-promoted", prId: "701" },
+        { id: "qf-open", prId: "0", quickfix: true },
+      ],
+    );
+    // createPullRequest promotion keeps the quick fix's own checkout:
+    // quickfix/<connection>/<repo>/<branch>, not reviews/<connection>/pr-<id>.
+    const quickfixDir = (branch: string) =>
+      path.join(parentRoot, "quickfix", shortPathKey("ado-cleanup", "connection"), "web-app", branch);
+    for (const [id, branch] of [
+      ["qf-promoted", "fix-login"],
+      ["qf-open", "fix-logout"],
+    ]) {
+      const workspace = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === id);
+      if (!workspace?.review?.checkout) throw new Error(`Expected a managed checkout for ${id}.`);
+      workspace.cwd = quickfixDir(branch);
+      workspace.review.checkout.rootPath = quickfixDir(branch);
+      await initCheckout(workspace.cwd);
+    }
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result).toEqual({ deleted: 1, skipped: [], errors: [] });
+    expect(statusCalls).toEqual(["701"]);
+    await expect(fs.access(quickfixDir("fix-login"))).rejects.toThrow();
+    await expect(fs.access(quickfixDir("fix-logout"))).resolves.toBeUndefined();
+  });
+
+  test("skips, rather than fails on, a PR Azure DevOps no longer knows", async () => {
+    const { fixture, children } = await makeAzureCleanupFixture(
+      async () => "not-found",
+      [{ id: "pr-gone", prId: "801" }],
+    );
+    await initCheckout(children[0].cwd);
+
+    const result = await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+
+    expect(result.deleted).toBe(0);
+    expect(result.errors).toEqual([]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({ workspaceId: "pr-gone", reason: expect.stringContaining("no longer exists") }),
+    ]);
+    await expect(fs.access(children[0].cwd)).resolves.toBeUndefined();
   });
 });
 
