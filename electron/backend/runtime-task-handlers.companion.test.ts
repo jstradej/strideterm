@@ -90,7 +90,8 @@ function createTestRuntime({
     getState: getState as any,
     getPayload: () => ({ appState: getState() }),
     broadcastState: vi.fn(),
-    store: { mutate: vi.fn(async () => {}) },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store: { mutate: vi.fn(async (fn: (draft: any) => void) => fn(getState())) },
     taskRunner,
     sessions: { hasSession: vi.fn(() => hasLiveSession), ensureSession: vi.fn(async () => null) },
     execFileTextImpl: vi.fn(async () => ({ stdout: "", stderr: "" })),

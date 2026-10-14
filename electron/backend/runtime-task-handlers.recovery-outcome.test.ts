@@ -29,7 +29,7 @@ const CANDIDATE = {
   previousState: "running",
 };
 
-function standardTaskWorkspace(overrides: AnyApi = {}): AnyApi {
+function standardTaskWorkspace({ task, ...overrides }: AnyApi = {}): AnyApi {
   return {
     id: "ws-task",
     name: "Task",
@@ -48,7 +48,7 @@ function standardTaskWorkspace(overrides: AnyApi = {}): AnyApi {
       promptSent: true,
       showerResumePrompt: "",
       pausedFromState: "",
-      ...overrides.task,
+      ...task,
     },
     ...overrides,
   };

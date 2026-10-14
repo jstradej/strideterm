@@ -20,7 +20,13 @@ const TASK_WORKSPACE = {
   cwd: "/tmp/task",
   profileId: "default",
   panels: [{ id: "panel-worker", title: "Worker", command: "claude" }],
-  task: { taskId: "t1", description: "old brief", workerPanelId: "panel-worker", judgePanelId: "panel-judge" },
+  task: {
+    taskId: "t1",
+    state: "paused",
+    description: "old brief",
+    workerPanelId: "panel-worker",
+    judgePanelId: "panel-judge",
+  },
 };
 
 function makeHandlers({
@@ -29,7 +35,7 @@ function makeHandlers({
   callerProfileId = "default",
 }: { accepted?: boolean; recoveryCandidates?: AnyApi[]; callerProfileId?: string } = {}) {
   const recordWorkspaceWork = vi.fn(async (_workspaceId: string, _viewerId?: string) => {});
-  const state = { workspaces: [TASK_WORKSPACE] as AnyApi[], profiles: [{ id: "default" }] };
+  const state = { workspaces: [structuredClone(TASK_WORKSPACE)] as AnyApi[], profiles: [{ id: "default" }] };
   const taskRunner = {
     startTask: vi.fn(async () => accepted),
     resumeTask: vi.fn(() => accepted),
@@ -46,7 +52,7 @@ function makeHandlers({
     getState: (() => state) as AnyApi,
     getPayload: () => ({ appState: state }),
     broadcastState: vi.fn(),
-    store: { mutate: vi.fn(async () => {}) },
+    store: { mutate: vi.fn(async (fn: (draft: AnyApi) => void) => fn(state)) },
     taskRunner,
     sessions: { hasSession: vi.fn(() => true), ensureSession: vi.fn(async () => null) },
     execFileTextImpl: vi.fn(async () => ({ stdout: "", stderr: "" })),
