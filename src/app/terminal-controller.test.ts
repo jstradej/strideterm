@@ -1237,6 +1237,48 @@ describe("terminal pane reattach", () => {
     }
   });
 
+  test("remote: readiness callback runs only after xterm parses the current replay", () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const { controller, views } = buildAttachController({ isRemote: true });
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+      controller.attachTerminalPane(sessionId, paneBody);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId)!;
+      let parsed: (() => void) | undefined;
+      view.term.write.mockImplementation((_data: string, callback?: () => void) => {
+        parsed = callback;
+      });
+      const onParsed = vi.fn();
+      controller.handleTerminalReplay({ sessionId, data: "REPLAY", throughSeq: 5, onParsed });
+      expect(onParsed).not.toHaveBeenCalled();
+      parsed?.();
+      expect(onParsed).toHaveBeenCalledTimes(1);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("remote: disposing an unopened view cancels its staged replay callback", () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const { controller } = buildAttachController({ isRemote: true });
+      const sessionId = "workspace-1:shell-1";
+      controller.ensureTerminal(sessionId);
+      const onParsed = vi.fn();
+      controller.handleTerminalReplay({ sessionId, data: "REPLAY", onParsed });
+      controller.disposeTerminalView(sessionId);
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+      controller.attachTerminalPane(sessionId, paneBody);
+      expect(onParsed).not.toHaveBeenCalled();
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
   test("remote: ignores a live frame with seq <= the replay throughSeq (defensive duplicate)", async () => {
     const resizeObserver = installFakeResizeObserver();
     try {

@@ -70,7 +70,26 @@ interface ConnectionStatePayload {
   attempt?: number;
   /** Epoch ms when the scheduled reconnect attempt will begin. */
   reconnectAt?: number;
+  /** Renderer-local monotonic socket-attempt ID, used by hosted clients to reject stale readiness. */
+  connectionGeneration?: number;
 }
+
+interface RemoteTerminalReadyRequest {
+  requestId: number;
+  documentEpoch: number;
+  openAttempt: number;
+  target: { profileId: string; workspaceId: string | null; panelId: string | null };
+  connectionGeneration: number;
+}
+
+interface RemoteTerminalReadyResult extends RemoteTerminalReadyRequest {
+  ready: boolean;
+  viewKind: "terminal" | "nonterminal" | "empty-state";
+}
+
+// Keep the renderer-side bounded wait aligned with the native 25-second
+// readiness deadline, leaving a small margin for the explicit false reply.
+const TERMINAL_READY_MAX_DISPATCH_ATTEMPTS = 83;
 
 export interface RemotePanelSelectionDetail {
   profileId: string;
@@ -418,16 +437,25 @@ export function createRemoteTransport(): Transport {
 
   type SessionLostReason = "expired" | "revoked" | "superseded" | "unauthorized" | "temporarily-paused" | "unknown";
   let lastPostedConnectionState = "";
+  let connectionGeneration = 0;
+  const pendingTerminalReady = new Map<number, RemoteTerminalReadyRequest>();
+  const terminalReadyDispatchAttempts = new Map<number, number>();
+  let selectedRemoteTarget: RemoteTerminalReadyRequest["target"] | null = null;
   function emitConnectionState(payload: ConnectionStatePayload): void {
-    listeners.connectionState.forEach((handler) => handler(payload));
+    if (!payload.connected) invalidateTerminalReady();
+    const currentPayload = { ...payload, connectionGeneration };
+    listeners.connectionState.forEach((handler) => handler(currentPayload));
     const hostPayload = {
       type: "connection-state",
-      connected: payload.connected,
-      reconnecting: Boolean(payload.reconnecting),
-      ...(typeof payload.attempt === "number" && Number.isFinite(payload.attempt)
-        ? { attempt: Math.max(0, Math.min(1_000, Math.trunc(payload.attempt))) }
+      connected: currentPayload.connected,
+      reconnecting: Boolean(currentPayload.reconnecting),
+      connectionGeneration,
+      ...(typeof currentPayload.attempt === "number" && Number.isFinite(currentPayload.attempt)
+        ? { attempt: Math.max(0, Math.min(1_000, Math.trunc(currentPayload.attempt))) }
         : {}),
-      ...(typeof payload.code === "number" && Number.isFinite(payload.code) ? { code: Math.trunc(payload.code) } : {}),
+      ...(typeof currentPayload.code === "number" && Number.isFinite(currentPayload.code)
+        ? { code: Math.trunc(currentPayload.code) }
+        : {}),
     };
     const serialized = JSON.stringify(hostPayload);
     if (serialized !== lastPostedConnectionState) {
@@ -628,6 +656,96 @@ export function createRemoteTransport(): Transport {
     }
   }
 
+  function sameTerminalReadyRequest(a: RemoteTerminalReadyRequest, b: RemoteTerminalReadyRequest): boolean {
+    return (
+      a.requestId === b.requestId &&
+      a.documentEpoch === b.documentEpoch &&
+      a.openAttempt === b.openAttempt &&
+      a.connectionGeneration === b.connectionGeneration &&
+      a.target.profileId === b.target.profileId &&
+      a.target.workspaceId === b.target.workspaceId &&
+      a.target.panelId === b.target.panelId
+    );
+  }
+
+  function postTerminalReady(result: RemoteTerminalReadyResult): void {
+    postHost({ type: "terminal-ready", ...result });
+  }
+
+  function invalidateTerminalReady(): void {
+    for (const request of pendingTerminalReady.values()) {
+      postTerminalReady({ ...request, ready: false, viewKind: "empty-state" });
+    }
+    pendingTerminalReady.clear();
+    terminalReadyDispatchAttempts.clear();
+  }
+
+  function dispatchTerminalReadyRequest(request: RemoteTerminalReadyRequest): void {
+    if (pendingTerminalReady.get(request.requestId) !== request) return;
+    const attempts = (terminalReadyDispatchAttempts.get(request.requestId) || 0) + 1;
+    terminalReadyDispatchAttempts.set(request.requestId, attempts);
+    if (attempts > TERMINAL_READY_MAX_DISPATCH_ATTEMPTS) {
+      pendingTerminalReady.delete(request.requestId);
+      terminalReadyDispatchAttempts.delete(request.requestId);
+      rlog("warn", "remote terminal readiness timed out", {
+        requestId: request.requestId,
+        connectionGeneration: request.connectionGeneration,
+        attempts: attempts - 1,
+      });
+      postTerminalReady({ ...request, ready: false, viewKind: "empty-state" });
+      return;
+    }
+    window.dispatchEvent(
+      new CustomEvent("strideterm:remote-terminal-ready-request", {
+        detail: {
+          ...request,
+          respond: (ready: boolean, viewKind: RemoteTerminalReadyResult["viewKind"]) =>
+            acceptTerminalReadyResult({ ...request, ready, viewKind }),
+        },
+      }),
+    );
+    window.setTimeout(() => dispatchTerminalReadyRequest(request), 300);
+  }
+
+  function isTerminalReadyRequest(
+    value: unknown,
+  ): value is RemoteTerminalReadyRequest & Partial<Pick<RemoteTerminalReadyResult, "ready" | "viewKind">> {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value as Partial<RemoteTerminalReadyRequest>;
+    const target = candidate.target;
+    return (
+      Number.isSafeInteger(candidate.requestId) &&
+      Number.isSafeInteger(candidate.documentEpoch) &&
+      Number.isSafeInteger(candidate.openAttempt) &&
+      Number.isSafeInteger(candidate.connectionGeneration) &&
+      !!target &&
+      typeof target.profileId === "string" &&
+      (typeof target.workspaceId === "string" || target.workspaceId === null) &&
+      (typeof target.panelId === "string" || target.panelId === null)
+    );
+  }
+
+  function acceptTerminalReadyResult(value: unknown): void {
+    if (!value || typeof value !== "object") return;
+    const result = value as Partial<RemoteTerminalReadyResult>;
+    if (!isTerminalReadyRequest(result) || typeof result.ready !== "boolean") return;
+    if (result.viewKind !== "terminal" && result.viewKind !== "nonterminal" && result.viewKind !== "empty-state")
+      return;
+    const pending = pendingTerminalReady.get(result.requestId);
+    if (!pending || !sameTerminalReadyRequest(pending, result)) return;
+    const ready =
+      result.ready &&
+      connectionGeneration === pending.connectionGeneration &&
+      ws?.readyState === WebSocket.OPEN &&
+      !!selectedRemoteTarget &&
+      selectedRemoteTarget.profileId === pending.target.profileId &&
+      selectedRemoteTarget.workspaceId === pending.target.workspaceId &&
+      selectedRemoteTarget.panelId === pending.target.panelId;
+    pendingTerminalReady.delete(result.requestId);
+    terminalReadyDispatchAttempts.delete(result.requestId);
+    postTerminalReady({ ...pending, ready, viewKind: result.viewKind });
+  }
+
   function noteCoreRevision(state: unknown): void {
     const selection = (
       state as {
@@ -676,6 +794,20 @@ export function createRemoteTransport(): Transport {
           { title?: unknown } | undefined)
       : undefined;
     const panelId = activePanel ? candidatePanelId : "";
+    const nextTarget = {
+      profileId: nextProfileId || "",
+      workspaceId: nextWorkspaceId,
+      panelId: panelId || null,
+    };
+    if (
+      selectedRemoteTarget &&
+      (selectedRemoteTarget.profileId !== nextTarget.profileId ||
+        selectedRemoteTarget.workspaceId !== nextTarget.workspaceId ||
+        selectedRemoteTarget.panelId !== nextTarget.panelId)
+    ) {
+      invalidateTerminalReady();
+    }
+    selectedRemoteTarget = nextTarget;
     const panelName =
       typeof activePanel?.title === "string" && activePanel.title.trim() ? activePanel.title.trim() : undefined;
     if (selection?.profileId)
@@ -797,7 +929,7 @@ export function createRemoteTransport(): Transport {
     }
   }
 
-  function handleWsMessage(event: MessageEvent): void {
+  function handleWsMessage(event: MessageEvent, socketGeneration: number): void {
     let message: { type: string; payload: unknown };
     try {
       message = JSON.parse(event.data as string) as { type: string; payload: unknown };
@@ -814,7 +946,11 @@ export function createRemoteTransport(): Transport {
       safeDispatch(listeners.stateUpdated, message.payload as CoreState, "stateUpdated");
     }
     if (message.type === "terminal:replay") {
-      safeDispatch(listeners.terminalReplay, message.payload as TerminalReplayPayload, "terminalReplay");
+      safeDispatch(
+        listeners.terminalReplay,
+        { ...(message.payload as TerminalReplayPayload), connectionGeneration: socketGeneration },
+        "terminalReplay",
+      );
     }
     if (message.type === "terminal:data") {
       safeDispatch(listeners.terminalData, message.payload as TerminalDataPayload, "terminalData");
@@ -910,6 +1046,9 @@ export function createRemoteTransport(): Transport {
   }
 
   function connectWebSocket(): void {
+    invalidateTerminalReady();
+    connectionGeneration += 1;
+    const socketGeneration = connectionGeneration;
     const nextWs = new WebSocket(buildWsUrl());
     ws = nextWs;
     const connectTimeout = window.setTimeout(() => {
@@ -999,7 +1138,7 @@ export function createRemoteTransport(): Transport {
     nextWs.addEventListener("message", (event) => {
       if (ws !== nextWs) return;
       markHealthy();
-      handleWsMessage(event);
+      handleWsMessage(event, socketGeneration);
     });
 
     nextWs.addEventListener("close", (event: CloseEvent) => {
@@ -1311,6 +1450,37 @@ export function createRemoteTransport(): Transport {
 
   if (typeof window !== "undefined") {
     (window as unknown as Record<string, unknown>).__stridetermRemote = {
+      requestTerminalReady: (request: RemoteTerminalReadyRequest) => {
+        if (!isTerminalReadyRequest(request)) return;
+        const prior = pendingTerminalReady.get(request.requestId);
+        if (prior) {
+          pendingTerminalReady.delete(request.requestId);
+          terminalReadyDispatchAttempts.delete(request.requestId);
+          postTerminalReady({ ...prior, ready: false, viewKind: "empty-state" });
+        }
+        if (
+          request.connectionGeneration !== connectionGeneration ||
+          ws?.readyState !== WebSocket.OPEN ||
+          !selectedRemoteTarget ||
+          selectedRemoteTarget.profileId !== request.target.profileId ||
+          selectedRemoteTarget.workspaceId !== request.target.workspaceId ||
+          selectedRemoteTarget.panelId !== request.target.panelId
+        ) {
+          postTerminalReady({ ...request, ready: false, viewKind: "empty-state" });
+          return;
+        }
+        if (pendingTerminalReady.size >= 8 && !pendingTerminalReady.has(request.requestId)) {
+          const oldest = pendingTerminalReady.values().next().value as RemoteTerminalReadyRequest | undefined;
+          if (oldest) {
+            pendingTerminalReady.delete(oldest.requestId);
+            terminalReadyDispatchAttempts.delete(oldest.requestId);
+            postTerminalReady({ ...oldest, ready: false, viewKind: "empty-state" });
+          }
+        }
+        pendingTerminalReady.set(request.requestId, request);
+        terminalReadyDispatchAttempts.set(request.requestId, 0);
+        dispatchTerminalReadyRequest(request);
+      },
       selectTarget: async (profileId: string, workspaceId: string | null, requestId: number, panelId?: string) => {
         try {
           let payload = await fetchJson("/api/remote-client/profile/activate", { profileId });
@@ -1387,7 +1557,7 @@ export function createRemoteTransport(): Transport {
     // `onPageFinished` can precede this assignment (notably while the one-time mobile bootstrap
     // reload is still changing documents). Tell the native host when this document's callable
     // bridge actually exists; it scopes the signal to its current navigation before selecting.
-    postHost({ type: "bridge-ready" });
+    postHost({ type: "bridge-ready", terminalReadyProtocol: 1 });
   }
 
   // --------------------------------------------------------------------

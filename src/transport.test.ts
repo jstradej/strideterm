@@ -123,7 +123,10 @@ describe("remote transport endpoint routing", () => {
       typeof (window as unknown as { __stridetermRemote?: { selectTarget?: unknown } }).__stridetermRemote
         ?.selectTarget,
     ).toBe("function");
-    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({ type: "bridge-ready" });
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "bridge-ready",
+      terminalReadyProtocol: 1,
+    });
   });
 
   it("activateProfile calls /api/remote-client/profile/activate with profileId", async () => {
@@ -1318,10 +1321,225 @@ describe("remote transport endpoint routing", () => {
     socket.close(1006, "secret reason must not cross the host boundary");
 
     expect(posted.map((message) => JSON.parse(message))).toEqual([
-      { type: "bridge-ready" },
-      { type: "connection-state", connected: true, reconnecting: false },
-      { type: "connection-state", connected: false, reconnecting: true, attempt: 1, code: 1006 },
+      { type: "bridge-ready", terminalReadyProtocol: 1 },
+      { type: "connection-state", connected: true, reconnecting: false, connectionGeneration: 1 },
+      {
+        type: "connection-state",
+        connected: false,
+        reconnecting: true,
+        connectionGeneration: 1,
+        attempt: 1,
+        code: 1006,
+      },
     ]);
+  });
+
+  it("increments connectionGeneration on every reconnect socket attempt", async () => {
+    vi.useFakeTimers();
+    const posted: Array<Record<string, unknown>> = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(JSON.parse(message)),
+    };
+    createRemoteTransport();
+    MockWebSocket.instances[0].open();
+    MockWebSocket.instances[0].close(1006);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    MockWebSocket.instances[1].open();
+    const generations = posted
+      .filter((message) => message.type === "connection-state" && message.connected === true)
+      .map((message) => message.connectionGeneration);
+    expect(generations).toEqual([1, 2]);
+  });
+
+  it("retries terminal readiness until the renderer listener is ready, then validates the target", async () => {
+    vi.useFakeTimers();
+    const posted: Array<Record<string, unknown>> = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(JSON.parse(message)),
+    };
+    createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel1" },
+        appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }] }] },
+      },
+    });
+    const request = (window as unknown as { __stridetermRemote: { requestTerminalReady(value: unknown): void } })
+      .__stridetermRemote.requestTerminalReady;
+    let dispatched = false;
+    const readyRequestListener = vi.fn();
+    const onReadyRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ respond: (ready: boolean, kind: string) => void }>).detail;
+      dispatched = true;
+      readyRequestListener();
+      detail.respond(true, "terminal");
+    };
+    request({
+      requestId: 11,
+      documentEpoch: 3,
+      openAttempt: 2,
+      target: { profileId: "p1", workspaceId: "ws1", panelId: "panel1" },
+      connectionGeneration: 1,
+    });
+    expect(dispatched).toBe(false);
+    expect(posted.some((message) => message.type === "terminal-ready")).toBe(false);
+    window.addEventListener("strideterm:remote-terminal-ready-request", onReadyRequest, { once: true });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(dispatched).toBe(true);
+    expect(readyRequestListener).toHaveBeenCalledTimes(1);
+    expect(posted.at(-1)).toEqual({
+      type: "terminal-ready",
+      requestId: 11,
+      documentEpoch: 3,
+      openAttempt: 2,
+      target: { profileId: "p1", workspaceId: "ws1", panelId: "panel1" },
+      connectionGeneration: 1,
+      ready: true,
+      viewKind: "terminal",
+    });
+    request({
+      requestId: 12,
+      documentEpoch: 3,
+      openAttempt: 2,
+      target: { profileId: "other", workspaceId: "ws1", panelId: "panel1" },
+      connectionGeneration: 1,
+    });
+    expect(posted.at(-1)).toMatchObject({ type: "terminal-ready", requestId: 12, ready: false });
+  });
+
+  it("reports a bounded terminal readiness timeout once with safe metadata", async () => {
+    vi.useFakeTimers();
+    const posted: Array<Record<string, unknown>> = [];
+    const logRenderer = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(JSON.parse(message)),
+    };
+    (window as unknown as Record<string, unknown>).strideterm = { logRenderer };
+    createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel1" },
+        appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }] }] },
+      },
+    });
+    const request = (window as unknown as { __stridetermRemote: { requestTerminalReady(value: unknown): void } })
+      .__stridetermRemote.requestTerminalReady;
+    request({
+      requestId: 21,
+      documentEpoch: 3,
+      openAttempt: 2,
+      target: { profileId: "p1", workspaceId: "ws1", panelId: "panel1" },
+      connectionGeneration: 1,
+    });
+
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    expect(posted.filter((message) => message.type === "terminal-ready" && message.requestId === 21)).toEqual([
+      expect.objectContaining({ ready: false, viewKind: "empty-state" }),
+    ]);
+    expect(logRenderer).toHaveBeenCalledTimes(1);
+    expect(logRenderer).toHaveBeenCalledWith("warn", "remote terminal readiness timed out", {
+      requestId: 21,
+      connectionGeneration: 1,
+      attempts: 83,
+    });
+  });
+
+  it.each(["target-change", "disconnect"] as const)("invalidates pending readiness on %s", (invalidation) => {
+    vi.useFakeTimers();
+    const posted: Array<Record<string, unknown>> = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(JSON.parse(message)),
+    };
+    createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel1" },
+        appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }] }] },
+      },
+    });
+    const request = (window as unknown as { __stridetermRemote: { requestTerminalReady(value: unknown): void } })
+      .__stridetermRemote.requestTerminalReady;
+    request({
+      requestId: 22,
+      documentEpoch: 3,
+      openAttempt: 2,
+      target: { profileId: "p1", workspaceId: "ws1", panelId: "panel1" },
+      connectionGeneration: 1,
+    });
+
+    if (invalidation === "target-change") {
+      socket.message({
+        type: "state:updated",
+        payload: {
+          remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel2" },
+          appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }, { id: "panel2" }] }] },
+        },
+      });
+    } else {
+      socket.close(1006);
+    }
+
+    expect(posted.filter((message) => message.type === "terminal-ready" && message.requestId === 22)).toEqual([
+      expect.objectContaining({ ready: false, viewKind: "empty-state" }),
+    ]);
+    return vi.advanceTimersByTimeAsync(300).then(() => {
+      expect(posted.filter((message) => message.type === "terminal-ready" && message.requestId === 22)).toHaveLength(1);
+    });
+  });
+
+  it("invalidates the old request before rejecting a same-ID replacement", async () => {
+    vi.useFakeTimers();
+    const posted: Array<Record<string, unknown>> = [];
+    (window as unknown as Record<string, unknown>).StridetermHost = {
+      postMessage: (message: string) => posted.push(JSON.parse(message)),
+    };
+    createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeViewId: "ws1:panel1" },
+        appState: { workspaces: [{ id: "ws1", panels: [{ id: "panel1" }] }] },
+      },
+    });
+    const request = (window as unknown as { __stridetermRemote: { requestTerminalReady(value: unknown): void } })
+      .__stridetermRemote.requestTerminalReady;
+    let respondToOld: ((ready: boolean, kind: string) => void) | undefined;
+    window.addEventListener(
+      "strideterm:remote-terminal-ready-request",
+      (event) => {
+        respondToOld = (event as CustomEvent<{ respond: (ready: boolean, kind: string) => void }>).detail.respond;
+      },
+      { once: true },
+    );
+    const original = {
+      requestId: 20,
+      documentEpoch: 3,
+      openAttempt: 2,
+      target: { profileId: "p1", workspaceId: "ws1", panelId: "panel1" },
+      connectionGeneration: 1,
+    };
+    request(original);
+    request({ ...original, target: { ...original.target, profileId: "other" } });
+    expect(posted.at(-1)).toMatchObject({ type: "terminal-ready", requestId: 20, ready: false });
+
+    respondToOld?.(true, "terminal");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(
+      posted.filter((message) => message.type === "terminal-ready" && message.requestId === 20 && message.ready),
+    ).toHaveLength(0);
   });
 
   it("sends state:sync with the bootstrap revision on first-connect open (closes the [bootstrap, open] window)", async () => {
@@ -1519,7 +1737,7 @@ describe("remote transport endpoint routing", () => {
     const replays: unknown[] = [];
     transport.onTerminalReplay((payload) => replays.push(payload));
     first.message({ type: "terminal:replay", payload: { sessionId: "ws1:a", data: "R", throughSeq: 3 } });
-    expect(replays).toContainEqual({ sessionId: "ws1:a", data: "R", throughSeq: 3 });
+    expect(replays).toContainEqual({ sessionId: "ws1:a", data: "R", throughSeq: 3, connectionGeneration: 1 });
   });
 
   // review-code-quality-2026-07.md finding §2.2 (src/transport.ts:417-418):

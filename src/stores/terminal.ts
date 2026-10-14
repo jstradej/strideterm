@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { shallowRef, watch } from "vue";
+import { nextTick, shallowRef, watch } from "vue";
 import type { SearchAddon } from "@xterm/addon-search";
 import { createTerminalController } from "../app/terminal-controller.js";
 import type { TerminalView, TerminalDiagnosticsSnapshot } from "../app/terminal-controller.js";
@@ -26,6 +26,18 @@ interface InitOptions {
   getOverlay: () => unknown;
   getPayload: () => StatePayload | null | undefined;
 }
+
+interface TerminalReadyChallenge {
+  requestId: number;
+  documentEpoch: number;
+  openAttempt: number;
+  connectionGeneration: number;
+  target: { profileId: string; workspaceId: string | null; panelId: string | null };
+  respond: (ready: boolean, viewKind: "terminal" | "nonterminal" | "empty-state") => void;
+}
+
+let remoteReadyRequestListener: ((event: Event) => void) | null = null;
+let terminalViewDisposedListener: ((event: Event) => void) | null = null;
 
 /**
  * Workspace whose UI a terminal write came from. Reads the live payload
@@ -61,6 +73,81 @@ export const useTerminalStore = defineStore("terminal", () => {
     appConfig: AppConfig,
     { getActiveSessionId, getOverlay, getPayload }: InitOptions,
   ): void {
+    if (remoteReadyRequestListener) {
+      window.removeEventListener("strideterm:remote-terminal-ready-request", remoteReadyRequestListener);
+      remoteReadyRequestListener = null;
+    }
+    if (terminalViewDisposedListener) {
+      window.removeEventListener("strideterm:terminal-view-disposed", terminalViewDisposedListener);
+      terminalViewDisposedListener = null;
+    }
+    const pendingReady = new Map<number, TerminalReadyChallenge>();
+    const parsedReplayGenerationBySession = new Map<string, number>();
+    let currentConnectionGeneration = 0;
+
+    const completeTerminalReadyForReplay = (sessionId: string, generation: number) => {
+      if (currentConnectionGeneration === 0 && generation > 0) currentConnectionGeneration = generation;
+      if (generation !== currentConnectionGeneration) return;
+      parsedReplayGenerationBySession.set(sessionId, generation);
+      for (const [requestId, challenge] of pendingReady) {
+        if (challenge.connectionGeneration !== generation) continue;
+        if (!targetMatches(challenge.target, getPayload())) {
+          pendingReady.delete(requestId);
+          challenge.respond(false, "empty-state");
+          continue;
+        }
+        if (getActiveSessionId() !== sessionId) continue;
+        pendingReady.delete(requestId);
+        challenge.respond(true, "terminal");
+      }
+    };
+
+    function selectedTarget(state: unknown): TerminalReadyChallenge["target"] {
+      const selection = (state as { remoteClient?: Record<string, unknown> } | null | undefined)?.remoteClient;
+      const profileId = typeof selection?.profileId === "string" ? selection.profileId : "";
+      const workspaceId =
+        typeof selection?.activeWorkspaceId === "string" && selection.activeWorkspaceId
+          ? selection.activeWorkspaceId
+          : null;
+      const activeViewId =
+        (typeof selection?.activeViewId === "string" && selection.activeViewId) ||
+        (typeof selection?.activeSessionId === "string" && selection.activeSessionId) ||
+        "";
+      const panelId =
+        workspaceId && activeViewId.startsWith(`${workspaceId}:`) ? activeViewId.slice(workspaceId.length + 1) : null;
+      return { profileId, workspaceId, panelId };
+    }
+
+    function targetMatches(target: TerminalReadyChallenge["target"], state: unknown): boolean {
+      const current = selectedTarget(state);
+      return (
+        current.profileId === target.profileId &&
+        current.workspaceId === target.workspaceId &&
+        current.panelId === target.panelId
+      );
+    }
+
+    let lastTargetKey = "";
+    api.onStateUpdated?.((state) => {
+      if (!api.isRemote) return;
+      const current = selectedTarget(state);
+      const key = JSON.stringify(current);
+      if (lastTargetKey && key !== lastTargetKey) {
+        for (const [requestId, challenge] of pendingReady) {
+          if (targetMatches(challenge.target, state)) continue;
+          pendingReady.delete(requestId);
+          challenge.respond(false, "empty-state");
+        }
+      }
+      lastTargetKey = key;
+    });
+
+    terminalViewDisposedListener = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (sessionId) parsedReplayGenerationBySession.delete(sessionId);
+    };
+    window.addEventListener("strideterm:terminal-view-disposed", terminalViewDisposedListener);
+
     // The controller reads `api.onSearchRequested` from the key handler when
     // the user presses Ctrl/Cmd+F inside a terminal. We don't want to bolt
     // that onto the Transport interface (it has nothing to do with the
@@ -127,8 +214,18 @@ export const useTerminalStore = defineStore("terminal", () => {
     // Remote-only: the server pushes terminal:replay on (re)subscribe as the
     // ordered reset point for a session. `seq`/`throughSeq` flow through so
     // the controller can drop live frames already covered by the replay.
-    api.onTerminalReplay?.(({ sessionId, data, throughSeq }) => {
-      controller!.handleTerminalReplay({ sessionId: sessionId || "", data, throughSeq });
+    api.onTerminalReplay?.(({ sessionId, data, throughSeq, connectionGeneration }) => {
+      const replaySessionId = sessionId || "";
+      parsedReplayGenerationBySession.delete(replaySessionId);
+      controller!.handleTerminalReplay({
+        sessionId: replaySessionId,
+        data,
+        throughSeq,
+        onParsed:
+          api.isRemote && typeof connectionGeneration === "number"
+            ? () => completeTerminalReadyForReplay(replaySessionId, connectionGeneration)
+            : undefined,
+      });
     });
 
     api.onTerminalExit!(({ sessionId, exitCode, intentional }) => {
@@ -136,6 +233,14 @@ export const useTerminalStore = defineStore("terminal", () => {
     });
 
     api.onConnectionState?.((connection) => {
+      if (typeof connection?.connectionGeneration === "number") {
+        currentConnectionGeneration = connection.connectionGeneration;
+      }
+      if (!connection?.connected) parsedReplayGenerationBySession.clear();
+      if (!connection?.connected) {
+        for (const challenge of pendingReady.values()) challenge.respond(false, "empty-state");
+        pendingReady.clear();
+      }
       if (!connection?.connected || !connection.reconnected) {
         return;
       }
@@ -143,6 +248,67 @@ export const useTerminalStore = defineStore("terminal", () => {
       window.clearTimeout(reconnectFitTimer);
       reconnectFitTimer = window.setTimeout(() => controller?.scheduleAllVisibleResize(), 150);
     });
+
+    if (api.isRemote) {
+      remoteReadyRequestListener = (event: Event) => {
+        const challenge = (event as CustomEvent<TerminalReadyChallenge>).detail;
+        if (!challenge || typeof challenge.respond !== "function") return;
+        const payload = getPayload() as unknown as
+          | {
+              remoteClient?: {
+                profileId?: string;
+                activeWorkspaceId?: string;
+                activeViewId?: string | null;
+                activeSessionId?: string | null;
+              };
+            }
+          | null
+          | undefined;
+        const selection = payload?.remoteClient;
+        const profileId = selection?.profileId || "";
+        const workspaceId = selection?.activeWorkspaceId || null;
+        const activeSessionId = getActiveSessionId();
+        const activeViewId = selection?.activeViewId || selection?.activeSessionId || activeSessionId || "";
+        const panelId =
+          workspaceId && activeViewId.startsWith(`${workspaceId}:`) ? activeViewId.slice(workspaceId.length + 1) : null;
+        if (
+          profileId !== challenge.target.profileId ||
+          workspaceId !== challenge.target.workspaceId ||
+          panelId !== challenge.target.panelId
+        ) {
+          challenge.respond(false, "empty-state");
+          return;
+        }
+        if (challenge.connectionGeneration > currentConnectionGeneration) {
+          currentConnectionGeneration = challenge.connectionGeneration;
+        }
+        if (challenge.connectionGeneration !== currentConnectionGeneration) return;
+        if (activeSessionId) {
+          const replayedGeneration = parsedReplayGenerationBySession.get(activeSessionId);
+          if (replayedGeneration === challenge.connectionGeneration) {
+            challenge.respond(true, "terminal");
+            return;
+          }
+          if (pendingReady.size >= 8 && !pendingReady.has(challenge.requestId)) {
+            const oldest = pendingReady.values().next().value;
+            if (oldest) {
+              pendingReady.delete(oldest.requestId);
+              oldest.respond(false, "empty-state");
+            }
+          }
+          pendingReady.set(challenge.requestId, challenge);
+          return;
+        }
+        const viewKind = challenge.target.panelId ? "nonterminal" : "empty-state";
+        void nextTick(() => {
+          window.setTimeout(() => {
+            if (challenge.connectionGeneration !== currentConnectionGeneration) return;
+            challenge.respond(true, viewKind);
+          }, 0);
+        });
+      };
+      window.addEventListener("strideterm:remote-terminal-ready-request", remoteReadyRequestListener);
+    }
 
     window.addEventListener("strideterm:theme-changed", () => controller?.syncTheme());
 

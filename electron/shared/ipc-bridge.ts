@@ -153,6 +153,8 @@ export interface TerminalReplayPayload {
   sessionId?: string;
   /** Newest sequence covered by this replay; live frames with seq <= this are duplicates. */
   throughSeq?: number;
+  /** Renderer-local socket attempt; absent on Electron IPC and HTTP snapshots. */
+  connectionGeneration?: number;
 }
 
 export interface TerminalExitPayload {

@@ -333,6 +333,92 @@ describe("TerminalTextSelectionDialog", () => {
   });
 
   describe("snapshot stability", () => {
+    it("provides a touch-sized scrollbar that scrolls the snapshot pane", async () => {
+      const { wrapper } = mountDialog();
+      const host = textNode(wrapper);
+      Object.defineProperties(host, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 100 },
+      });
+      await wrapper.find("[data-role='terminal-selection-text']").trigger("scroll");
+
+      const scrollbar = wrapper.find("[data-role='terminal-selection-scrollbar']");
+      expect(scrollbar.attributes("aria-label")).toBe("Scroll terminal snapshot");
+      expect(scrollbar.attributes("aria-orientation")).toBe("vertical");
+
+      await scrollbar.setValue("500");
+      expect(host.scrollTop).toBe(450);
+    });
+
+    it("keeps the scrollbar position in sync when the text pane scrolls", async () => {
+      const { wrapper } = mountDialog();
+      const host = textNode(wrapper);
+      Object.defineProperties(host, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 100 },
+        scrollTop: { configurable: true, writable: true, value: 450 },
+      });
+
+      await wrapper.find("[data-role='terminal-selection-text']").trigger("scroll");
+
+      expect((wrapper.find("[data-role='terminal-selection-scrollbar']").element as HTMLInputElement).value).toBe(
+        "500",
+      );
+    });
+
+    it("resyncs after the pane resizes and releases the observer on close", async () => {
+      let resize: ResizeObserverCallback | undefined;
+      const disconnect = vi.fn();
+      class TestResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          resize = callback;
+        }
+        observe = vi.fn();
+        unobserve = vi.fn();
+        disconnect = disconnect;
+      }
+      vi.stubGlobal("ResizeObserver", TestResizeObserver);
+
+      const { wrapper } = mountDialog();
+      try {
+        const host = textNode(wrapper);
+        Object.defineProperties(host, {
+          scrollHeight: { configurable: true, value: 1000 },
+          clientHeight: { configurable: true, value: 100 },
+          scrollTop: { configurable: true, writable: true, value: 225 },
+        });
+        resize?.([] as unknown as ResizeObserverEntry[], {} as ResizeObserver);
+        await nextTick();
+
+        expect((wrapper.find("[data-role='terminal-selection-scrollbar']").element as HTMLInputElement).value).toBe(
+          "250",
+        );
+      } finally {
+        wrapper.unmount();
+        vi.unstubAllGlobals();
+      }
+
+      expect(disconnect).toHaveBeenCalledOnce();
+    });
+
+    it("keeps native text selection available while the snapshot is scrolled", async () => {
+      const { wrapper } = mountDialog();
+      const host = textNode(wrapper);
+      Object.defineProperties(host, {
+        scrollHeight: { configurable: true, value: 1000 },
+        clientHeight: { configurable: true, value: 100 },
+      });
+      selectInsideText(wrapper, 0, 10);
+      await nextTick();
+      await wrapper.find("[data-role='terminal-selection-text']").trigger("scroll");
+      await wrapper.find("[data-role='terminal-selection-scrollbar']").setValue("500");
+
+      expect(document.getSelection()?.toString()).toBe(SNAPSHOT_TEXT.slice(0, 10));
+      await buttonNamed(wrapper, "Copy selection").trigger("click");
+      await flushPromises();
+      expect(writeText).toHaveBeenCalledWith(SNAPSHOT_TEXT.slice(0, 10));
+    });
+
     it("does not change when the terminal produces more output", async () => {
       const { wrapper, getSnapshot } = mountDialog();
       getSnapshot.mockReturnValue(snapshotOf({ text: "the TUI repainted everything" }) as AnyApi);

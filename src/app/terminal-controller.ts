@@ -371,6 +371,7 @@ export function createTerminalController({
    * input. Optional — tests don't wire it. */
   onUserInput?: (_sessionId: string, _data: string) => void;
 }) {
+  const pendingReplayCallbacks = new Map<string, () => void>();
   // ---------------------------------------------------------------------------
   // Font size: per-transport zoom (Ctrl+wheel, Ctrl+0, pinch, Settings)
   // ---------------------------------------------------------------------------
@@ -619,6 +620,10 @@ export function createTerminalController({
   }
 
   function disposeTerminalView(sessionId: string): void {
+    pendingReplayCallbacks.delete(sessionId);
+    if (api.isRemote) {
+      window.dispatchEvent(new CustomEvent("strideterm:terminal-view-disposed", { detail: { sessionId } }));
+    }
     const view = views.value.get(sessionId);
     if (!view) {
       buffers.value.delete(sessionId);
@@ -1771,8 +1776,15 @@ export function createTerminalController({
       view.term.open(view.mount);
       view.opened = true;
       const queued = buffers.value.get(sessionId);
-      if (queued) {
-        view.term.write(queued);
+      const replayParsed = pendingReplayCallbacks.get(sessionId);
+      if (queued || replayParsed) {
+        if (replayParsed) {
+          view.term.write(queued || "", () => {
+            if (pendingReplayCallbacks.get(sessionId) !== replayParsed) return;
+            pendingReplayCallbacks.delete(sessionId);
+            replayParsed();
+          });
+        } else view.term.write(queued || "");
         buffers.value.delete(sessionId);
         sessionsWithRendererData.add(sessionId);
       } else if (!api.isRemote && api.getTerminalReplay && !sessionsWithRendererData.has(sessionId)) {
@@ -1988,10 +2000,12 @@ export function createTerminalController({
     sessionId,
     data,
     throughSeq,
+    onParsed,
   }: {
     sessionId: string;
     data?: string;
     throughSeq?: number;
+    onParsed?: () => void;
   }): void {
     // Server-pushed on (re)subscribe. This is the ordered reset point for a
     // remote session: record throughSeq, then reset + rewrite so the replay is
@@ -1999,9 +2013,17 @@ export function createTerminalController({
     if (typeof throughSeq === "number") throughSeqBySession.set(sessionId, throughSeq);
     const payload = data || "";
     const view = views.value.get(sessionId);
+    pendingReplayCallbacks.delete(sessionId);
     if (view?.opened) {
       view.term.reset();
-      if (payload) view.term.write(payload);
+      if (onParsed) pendingReplayCallbacks.set(sessionId, onParsed);
+      if (onParsed) {
+        view.term.write(payload, () => {
+          if (pendingReplayCallbacks.get(sessionId) !== onParsed) return;
+          pendingReplayCallbacks.delete(sessionId);
+          onParsed();
+        });
+      } else if (payload) view.term.write(payload);
       sessionsWithRendererData.add(sessionId);
     } else {
       // Pane not opened yet — stage the replay as the pending buffer so attach
@@ -2011,6 +2033,7 @@ export function createTerminalController({
       } else {
         buffers.value.delete(sessionId);
       }
+      if (onParsed) pendingReplayCallbacks.set(sessionId, onParsed);
       sessionsWithRendererData.delete(sessionId);
     }
   }

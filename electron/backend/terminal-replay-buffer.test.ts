@@ -72,6 +72,70 @@ describe("TerminalReplayStore", () => {
     expect(Buffer.byteLength(snap.data, "utf8")).toBeLessThanOrEqual(4);
   });
 
+  test("restores DEC modes at a whole-chunk eviction boundary within the byte cap", () => {
+    const store = new TerminalReplayStore(96);
+    const setup = "\u001b[?1049h\u001b[?1000h\u001b[?1006h\u001b[?1h\u001b[?2004h";
+    store.append("s", setup);
+    store.append("s", "a".repeat(48));
+    store.append("s", "b".repeat(48));
+
+    const snapshot = store.snapshot("s");
+    expect(snapshot.data.startsWith("\u001b[?1049h\u001b[?1h\u001b[?1000h\u001b[?1006h\u001b[?2004h")).toBe(true);
+    expect(snapshot.data.endsWith("b".repeat(48))).toBe(true);
+    expect(Buffer.byteLength(snapshot.data, "utf8")).toBeLessThanOrEqual(96);
+    expect(snapshot.throughSeq).toBe(3);
+  });
+
+  test("keeps mode transitions in retained output after the boundary preamble", () => {
+    const store = new TerminalReplayStore(72);
+    store.append("s", "\u001b[?1049h\u001b[?1003h");
+    store.append("s", "x".repeat(55));
+    store.append("s", "\u001b[?1049l\u001b[?1003lTAIL");
+
+    const snapshot = store.snapshot("s");
+    expect(snapshot.data.startsWith("\u001b[?1049h\u001b[?1003h")).toBe(true);
+    expect(snapshot.data).toContain("\u001b[?1049l\u001b[?1003lTAIL");
+  });
+
+  test("advances fragmented CSI state across evicted chunks without replaying a suffix", () => {
+    const store = new TerminalReplayStore(20);
+    store.append("s", "\u001b[?1049");
+    store.append("s", "hVISIBLE");
+    store.append("s", "t".repeat(12));
+
+    const snapshot = store.snapshot("s");
+    expect(snapshot.data.startsWith("\u001b[?1049h")).toBe(true);
+    expect(snapshot.data).not.toContain("hVISIBLE");
+    expect(snapshot.data.endsWith("t".repeat(12))).toBe(true);
+  });
+
+  test("processes ESC out of evicted OSC and DCS strings like xterm", () => {
+    const store = new TerminalReplayStore(24);
+    store.append("s", "\u001b]0;title-\u001b[?1049h\u0007");
+    store.append("s", "x".repeat(24));
+
+    expect(store.snapshot("s").data).toBe("\u001b[?1049h");
+
+    const dcs = new TerminalReplayStore(12);
+    dcs.append("s", "\u001bPignored\u001b[?1003h\u001b\\");
+    dcs.append("s", "z".repeat(12));
+    expect(dcs.snapshot("s").data).toBe("\u001b[?1003h");
+  });
+
+  test("RIS and DECSTR reset the modes that xterm resets", () => {
+    const decstr = new TerminalReplayStore(40);
+    decstr.append("s", "\u001b[?1h\u001b[?66h\u001b[?1004h\u001b[?2004h");
+    decstr.append("s", "\u001b[!p");
+    decstr.append("s", "r".repeat(32));
+    expect(decstr.snapshot("s").data).toBe("r".repeat(32));
+
+    const ris = new TerminalReplayStore(34);
+    ris.append("s", "\u001b[?1049h\u001b[?1003h");
+    ris.append("s", "\u001bc");
+    ris.append("s", "q".repeat(28));
+    expect(ris.snapshot("s").data).toBe("q".repeat(28));
+  });
+
   test("assigns a seq even when storage is disabled (maxBytes 0)", () => {
     const store = new TerminalReplayStore(0);
     expect(store.append("s", "x")).toBe(1);

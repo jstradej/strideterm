@@ -85,6 +85,22 @@ describe("WorkspaceHero — copyPath feedback", () => {
 });
 
 describe("WorkspaceHero — remote reconnect countdown", () => {
+  it("leaves native WebView connection feedback to the host's fixed status strip", async () => {
+    const appStore = useAppStore();
+    appStore.remoteConnectionIssue = "The connection closed. Reconnecting in 10s...";
+    window.StridetermHost = { postMessage: vi.fn() };
+    const wrapper = mount(WorkspaceHero, {
+      global: {
+        provide: { [apiKey as symbol]: { isRemote: true } },
+        stubs: { WorkspaceLayoutChip: true, NotificationBell: true },
+      },
+    });
+
+    expect(wrapper.find(".workspace-remote-alert").exists()).toBe(false);
+    wrapper.unmount();
+    delete window.StridetermHost;
+  });
+
   it("counts down from the transport deadline instead of leaving the original delay stale", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-19T12:00:00Z"));
@@ -119,6 +135,26 @@ describe("WorkspaceHero — remote reconnect countdown", () => {
     expect(vi.getTimerCount()).toBe(0);
     wrapper.unmount();
     vi.useRealTimers();
+  });
+
+  it("shows a new connection issue after the previous message was dismissed", async () => {
+    const appStore = useAppStore();
+    appStore.remoteConnectionIssue = "The connection closed.";
+    const wrapper = mount(WorkspaceHero, {
+      global: {
+        provide: { [apiKey as symbol]: { isRemote: true } },
+        stubs: { WorkspaceLayoutChip: true, NotificationBell: true },
+      },
+    });
+
+    await wrapper.get(".workspace-remote-alert__dismiss").trigger("click");
+    expect(wrapper.find(".workspace-remote-alert").exists()).toBe(false);
+
+    appStore.remoteConnectionIssue = "The server rejected the connection.";
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get(".workspace-remote-alert__message").text()).toBe("The server rejected the connection.");
+    wrapper.unmount();
   });
 });
 

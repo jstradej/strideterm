@@ -1,6 +1,10 @@
 <template>
   <section data-role="workspace-hero">
-    <div v-if="isRemote && store.remoteConnectionIssue && !issueDismissed" class="workspace-remote-alert" role="alert">
+    <div
+      v-if="isRemote && !isNativeMobile && store.remoteConnectionIssue && !issueDismissed"
+      class="workspace-remote-alert"
+      role="alert"
+    >
       <div class="workspace-remote-alert__body">
         <p class="workspace-remote-alert__message">{{ remoteConnectionMessage }}</p>
         <p v-if="store.remoteConnectionHint" class="workspace-remote-alert__hint">
@@ -158,6 +162,7 @@ function copyPath() {
 }
 
 const isRemote = computed(() => api?.isRemote || false);
+const isNativeMobile = computed(() => typeof window.StridetermHost?.postMessage === "function");
 
 // The transport supplies an absolute deadline, so this renders a real countdown
 // rather than the stale "in 10s" snapshot emitted when the backoff began.

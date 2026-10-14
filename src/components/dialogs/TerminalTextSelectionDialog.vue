@@ -25,7 +25,28 @@
     <!-- The text is a plain interpolated text node inside <pre> — never
          v-html. Rows are NOT virtualised: a selection that scrolls out of a
          recycled row would be destroyed mid-drag. -->
-    <pre ref="textRef" class="termsel__text" data-role="terminal-selection-text" tabindex="-1">{{ text }}</pre>
+    <div class="termsel__output">
+      <pre
+        ref="textRef"
+        class="termsel__text"
+        data-role="terminal-selection-text"
+        tabindex="-1"
+        @scroll="syncScrollPosition"
+        >{{ text }}</pre>
+      <input
+        class="termsel__scrollbar"
+        data-role="terminal-selection-scrollbar"
+        type="range"
+        min="0"
+        max="1000"
+        step="1"
+        :value="scrollPosition"
+        :disabled="scrollRange === 0"
+        aria-label="Scroll terminal snapshot"
+        aria-orientation="vertical"
+        @input="scrollTextToPosition"
+      />
+    </div>
 
     <p class="termsel__status" role="status" aria-live="polite" :class="statusClass">{{ status }}</p>
 
@@ -97,7 +118,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { MAX_SNAPSHOT_CHARS, MAX_SNAPSHOT_SCROLLBACK_LINES } from "../../app/terminal-text-snapshot.js";
@@ -117,6 +138,9 @@ const store = useAppStore();
 const termStore = useTerminalStore();
 
 const textRef = ref<HTMLElement | null>(null);
+const scrollPosition = ref(0);
+const scrollRange = ref(0);
+let textResizeObserver: ResizeObserver | null = null;
 // Taken synchronously in setup, not in onMounted: the panel must paint with
 // the text already in it. A one-frame empty <pre> is a flash of "nothing to
 // select" on exactly the gesture that asked to select something.
@@ -182,6 +206,24 @@ function loadSnapshot(scrollbackLines: number): boolean {
   snapshot.value = snap;
   text.value = snap.text;
   return true;
+}
+
+function syncScrollPosition(): void {
+  const host = textRef.value;
+  if (!host) return;
+  const range = host.scrollHeight - host.clientHeight;
+  scrollRange.value = Math.max(0, range);
+  scrollPosition.value = range > 0 ? Math.round((host.scrollTop / range) * 1000) : 0;
+}
+
+function scrollTextToPosition(event: Event): void {
+  const host = textRef.value;
+  if (!host) return;
+  const value = Number((event.currentTarget as HTMLInputElement).value);
+  const range = host.scrollHeight - host.clientHeight;
+  host.scrollTop = range > 0 ? (value / 1000) * range : 0;
+  scrollRange.value = Math.max(0, range);
+  scrollPosition.value = value;
 }
 
 // --- Selection tracking ----------------------------------------------------
@@ -309,15 +351,28 @@ onMounted(() => {
   // Only while this panel is up: a global selectionchange listener left behind
   // would keep reading selections made in the composer or anywhere else.
   document.addEventListener("selectionchange", handleSelectionChange);
+  if (textRef.value) syncScrollPosition();
+  if (typeof ResizeObserver !== "undefined" && textRef.value) {
+    textResizeObserver = new ResizeObserver(syncScrollPosition);
+    textResizeObserver.observe(textRef.value);
+  }
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("selectionchange", handleSelectionChange);
+  textResizeObserver?.disconnect();
+  textResizeObserver = null;
   // Release the snapshot with the panel — nothing should hold a screenful of
   // another session's output after it closes.
   snapshot.value = null;
   text.value = "";
   capturedSelection.value = "";
+});
+
+watch(text, async () => {
+  await nextTick();
+  if (textRef.value) textRef.value.scrollTop = 0;
+  syncScrollPosition();
 });
 
 /**
@@ -413,12 +468,14 @@ watch(stillValid, (valid) => {
 
 .termsel__text {
   flex: 1 1 auto;
+  min-width: 0;
   /* min-height: 0 is what lets a flex item shrink below its content and
      scroll instead of pushing the footer off the screen. */
   min-height: 0;
   margin: 0;
   padding: 10px 12px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: rgba(var(--tint), 0.04);
@@ -431,12 +488,31 @@ watch(stillValid, (valid) => {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 8;
-  /* The whole point of the panel: native selection. The terminal host sets
-     touch-action: none and blocks the callout; this element must do neither. */
+  /* Vertical pan remains native while long-press text selection stays enabled. */
   user-select: text;
   -webkit-user-select: text;
-  touch-action: auto;
+  touch-action: pan-y;
   -webkit-touch-callout: default;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+.termsel__output {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 6px;
+}
+
+.termsel__scrollbar {
+  flex: 0 0 24px;
+  width: 24px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  writing-mode: vertical-lr;
+  touch-action: none;
 }
 
 .termsel__status {
@@ -513,6 +589,11 @@ watch(stillValid, (valid) => {
      ellipsised on one line rather than wrapped over three. */
   .termsel__heading .eyebrow {
     font-size: 10px;
+  }
+
+  .termsel__scrollbar {
+    flex-basis: 44px;
+    width: 44px;
   }
 
   .termsel__heading h2 {

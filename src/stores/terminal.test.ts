@@ -159,6 +159,7 @@ describe("useTerminalStore — font size watch", () => {
 // only in an uncalled module (app/runtime-bindings.ts, since deleted).
 describe("useTerminalStore — terminal event wiring (production path)", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     setActivePinia(createPinia());
     (window as AnyRecord).strideterm = { startupFlags: { windowId: "" } };
     handleTerminalDataMock.mockClear();
@@ -183,6 +184,111 @@ describe("useTerminalStore — terminal event wiring (production path)", () => {
     expect(api.onTerminalReplay).toHaveBeenCalledTimes(1);
     api.emitTerminalReplay({ sessionId: "ws1:a", data: "REPLAY", throughSeq: 7 });
     expect(handleTerminalReplayMock).toHaveBeenCalledWith({ sessionId: "ws1:a", data: "REPLAY", throughSeq: 7 });
+  });
+
+  test("terminal readiness waits for the selected session replay callback and rejects stale generations", () => {
+    const termStore = useTerminalStore();
+    const api = makeApi(true);
+    const payload = {
+      remoteClient: {
+        profileId: "p1",
+        activeWorkspaceId: "ws1",
+        activeViewId: "ws1:p1",
+        activeSessionId: "ws1:p1",
+      },
+    };
+    termStore.init(
+      api as never,
+      {},
+      {
+        getActiveSessionId: () => "ws1:p1",
+        getOverlay: () => null,
+        getPayload: () => payload as never,
+      },
+    );
+    api.emitConnectionState({ connected: true, connectionGeneration: 5 });
+    const respond = vi.fn();
+    const request = (requestId: number, generation: number) =>
+      window.dispatchEvent(
+        new CustomEvent("strideterm:remote-terminal-ready-request", {
+          detail: {
+            requestId,
+            documentEpoch: 2,
+            openAttempt: 3,
+            connectionGeneration: generation,
+            target: { profileId: "p1", workspaceId: "ws1", panelId: "p1" },
+            respond,
+          },
+        }),
+      );
+
+    request(21, 5);
+    expect(respond).not.toHaveBeenCalled();
+    api.emitTerminalReplay({ sessionId: "ws1:hidden", data: "WARM", throughSeq: 8, connectionGeneration: 5 });
+    const warmReplay = handleTerminalReplayMock.mock.calls.at(-1)?.[0] as { onParsed?: () => void };
+    warmReplay.onParsed?.();
+    expect(respond).not.toHaveBeenCalled();
+    api.emitTerminalReplay({ sessionId: "ws1:p1", data: "REPLAY", throughSeq: 9, connectionGeneration: 5 });
+    const replay = handleTerminalReplayMock.mock.calls.at(-1)?.[0] as { onParsed?: () => void };
+    expect(replay.onParsed).toBeTypeOf("function");
+    replay.onParsed?.();
+    expect(respond).toHaveBeenCalledWith(true, "terminal");
+
+    respond.mockClear();
+    window.dispatchEvent(new CustomEvent("strideterm:terminal-view-disposed", { detail: { sessionId: "ws1:p1" } }));
+    request(22, 5);
+    expect(respond).not.toHaveBeenCalled();
+    api.emitTerminalReplay({ sessionId: "ws1:p1", data: "REPAINT", throughSeq: 10, connectionGeneration: 5 });
+    const repaintReplay = handleTerminalReplayMock.mock.calls.at(-1)?.[0] as { onParsed?: () => void };
+    repaintReplay.onParsed?.();
+    expect(respond).toHaveBeenCalledWith(true, "terminal");
+
+    respond.mockClear();
+    api.emitConnectionState({ connected: false, connectionGeneration: 6 });
+    api.emitConnectionState({ connected: true, connectionGeneration: 6 });
+    request(23, 6);
+    api.emitTerminalReplay({ sessionId: "ws1:p1", data: "OLD", throughSeq: 9, connectionGeneration: 5 });
+    const staleReplay = handleTerminalReplayMock.mock.calls.at(-1)?.[0] as { onParsed?: () => void };
+    staleReplay.onParsed?.();
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  test("terminal readiness reports a selected nonterminal panel after the renderer tick", async () => {
+    const termStore = useTerminalStore();
+    const api = makeApi(true);
+    const payload = {
+      // The server session may still remember the prior terminal while the
+      // selected view is a file tab; appStore's activeSessionId is null for
+      // this nonterminal view (getActiveSessionId below models that contract).
+      remoteClient: {
+        profileId: "p1",
+        activeWorkspaceId: "ws1",
+        activeViewId: "ws1:files",
+        activeSessionId: "ws1:shell",
+      },
+    };
+    termStore.init(
+      api as never,
+      {},
+      { getActiveSessionId: () => null, getOverlay: () => null, getPayload: () => payload as never },
+    );
+    api.emitConnectionState({ connected: true, connectionGeneration: 4 });
+    const respond = vi.fn();
+    window.dispatchEvent(
+      new CustomEvent("strideterm:remote-terminal-ready-request", {
+        detail: {
+          requestId: 30,
+          documentEpoch: 2,
+          openAttempt: 4,
+          connectionGeneration: 4,
+          target: { profileId: "p1", workspaceId: "ws1", panelId: "files" },
+          respond,
+        },
+      }),
+    );
+    await nextTick();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(respond).toHaveBeenCalledWith(true, "nonterminal");
   });
 
   test("init forwards seq on terminal data (dedup guard depends on it)", () => {
