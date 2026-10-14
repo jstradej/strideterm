@@ -4379,7 +4379,9 @@ export async function createRuntime({
       taskRunner: taskRunner.getTaskSnapshot(),
       azureClosedPrCleanup: {
         parentWorkspaceIds: [...azureClosedPrCleanupInFlight],
-        lastRuns: [...azureClosedPrCleanupLastRuns.values()],
+        lastRuns: [...azureClosedPrCleanupLastRuns.values()].filter(
+          (run) => Date.now() - Date.parse(run.finishedAt) < AZURE_CLOSED_PR_CLEANUP_LAST_RUN_TTL_MS,
+        ),
       },
       // Surface OS-keychain availability so Settings can show a banner when
       // we're falling back to base64-on-disk for credentials. The user
@@ -5876,6 +5878,8 @@ export async function createRuntime({
   const azureClosedPrCleanupInFlight = new Set<string>();
   /** parent workspace id → its last finished run. Runtime-only; one entry per Azure parent. */
   const azureClosedPrCleanupLastRuns = new Map<string, AzureClosedPrCleanupFinished>();
+  /** A last run older than this is no longer offered to a client that connects later — it is history, not news. */
+  const AZURE_CLOSED_PR_CLEANUP_LAST_RUN_TTL_MS = 24 * 60 * 60 * 1000;
   const nativeWorkspaceOperations = new Map<string, Promise<unknown>>();
   function withNativeWorkspaceLock<T>(workspaceId: string, operation: () => Promise<T>): Promise<T> {
     const previous = nativeWorkspaceOperations.get(workspaceId) || Promise.resolve();
@@ -10116,18 +10120,28 @@ export async function createRuntime({
       };
       // One step: the run leaves the in-flight set and becomes the parent's last
       // run in the same broadcast, then the live event carries the same object.
+      // Called from the run's promise handlers, so a throw here (a listener of the
+      // event) would be an unhandled rejection: log it instead.
       const finish = (outcome: { result: AzureClosedPrCleanupResult } | { error: string }) => {
-        const finished: AzureClosedPrCleanupFinished = {
-          runId,
-          parentWorkspaceId,
-          profileId,
-          finishedAt: new Date().toISOString(),
-          ...outcome,
-        };
-        azureClosedPrCleanupLastRuns.set(parentWorkspaceId, finished);
-        azureClosedPrCleanupInFlight.delete(parentWorkspaceId);
-        broadcastState();
-        events.emit(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, finished);
+        try {
+          const finished: AzureClosedPrCleanupFinished = {
+            runId,
+            parentWorkspaceId,
+            profileId,
+            finishedAt: new Date().toISOString(),
+            ...outcome,
+          };
+          azureClosedPrCleanupLastRuns.set(parentWorkspaceId, finished);
+          azureClosedPrCleanupInFlight.delete(parentWorkspaceId);
+          broadcastState();
+          events.emit(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, finished);
+        } catch (err) {
+          log.error("azure closed PR cleanup result could not be published", {
+            parentWorkspaceId,
+            runId,
+            err: (err as Error)?.message || String(err),
+          });
+        }
       };
       run().then(
         (finished) => finish({ result: finished }),

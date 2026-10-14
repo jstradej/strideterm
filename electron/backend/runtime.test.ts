@@ -13713,6 +13713,52 @@ describe("Azure closed PR workspace cleanup", () => {
     await expect(fs.access(children[0].cwd)).rejects.toThrow();
   });
 
+  test("a listener that throws on the finished event is logged, not an unhandled rejection", async () => {
+    const logs = captureLogCalls();
+    try {
+      const { fixture } = await makeAzureCleanupFixture(async () => "active", [{ id: "pr-open", prId: "908" }]);
+      const finished = nextCleanupFinished(fixture);
+      fixture.runtime.on(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, () => {
+        throw new Error("listener broke");
+      });
+
+      await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+      const event = await finished;
+
+      await vi.waitFor(() =>
+        expect(logs).toContainEqual(
+          expect.objectContaining({
+            level: "error",
+            message: "azure closed PR cleanup result could not be published",
+            meta: expect.objectContaining({ runId: event.runId, err: "listener broke" }),
+          }),
+        ),
+      );
+      // The run still finished: not running, and its outcome is kept.
+      expect(fixture.runtime.getPayload().azureClosedPrCleanup).toEqual({ parentWorkspaceIds: [], lastRuns: [event] });
+    } finally {
+      logCallCapture.current = null;
+    }
+  });
+
+  test("a last run older than a day is no longer offered to clients", async () => {
+    const { fixture } = await makeAzureCleanupFixture(async () => "active", [{ id: "pr-open", prId: "909" }]);
+    const finished = nextCleanupFinished(fixture);
+    await fixture.runtime.cleanupAzureClosedPullRequests("azure-root", "win-1");
+    const event = await finished;
+    const finishedAt = Date.parse(event.finishedAt);
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(finishedAt + 23 * 60 * 60 * 1000);
+      expect(fixture.runtime.getPayload().azureClosedPrCleanup.lastRuns).toEqual([event]);
+      vi.setSystemTime(finishedAt + 24 * 60 * 60 * 1000 + 1);
+      expect(fixture.runtime.getPayload().azureClosedPrCleanup.lastRuns).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("an unexpected failure ends the run with an error event and an error log line", async () => {
     const logs = captureLogCalls();
     try {

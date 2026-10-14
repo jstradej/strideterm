@@ -114,6 +114,37 @@ function azureCleanupSkipCategory(reason: string): string {
   return "other reasons";
 }
 
+/**
+ * Closed-PR cleanup runs this client has already been told about, newest last.
+ * Per client (browser storage), bounded, and separate from the notification
+ * history on purpose: removing an entry or clearing all must not make the
+ * payload's replayed last run look new again after a reload.
+ */
+const NOTIFIED_AZURE_CLEANUP_RUNS_KEY = "strideterm-azure-closed-pr-cleanup-notified-runs";
+const NOTIFIED_AZURE_CLEANUP_RUNS_MAX = 100;
+
+function loadNotifiedAzureCleanupRunIds(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(NOTIFIED_AZURE_CLEANUP_RUNS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberNotifiedAzureCleanupRun(runId: string): void {
+  try {
+    // Re-read rather than keep a copy: another window of this client may have written since.
+    const ids = [...loadNotifiedAzureCleanupRunIds().filter((id) => id !== runId), runId];
+    window.localStorage.setItem(
+      NOTIFIED_AZURE_CLEANUP_RUNS_KEY,
+      JSON.stringify(ids.slice(-NOTIFIED_AZURE_CLEANUP_RUNS_MAX)),
+    );
+  } catch {
+    // Storage unavailable: this renderer's in-memory set still holds for its lifetime.
+  }
+}
+
 /** Title and body of a finished run's Notification Center entry. `failed`: any error at all. */
 function describeAzureClosedPrCleanupRun(run: AzureClosedPrCleanupFinished): {
   title: string;
@@ -168,27 +199,36 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   /**
-   * Runs this renderer has already turned into a Notification Center entry.
-   * The first, in-memory line of defence (every broadcast carries `lastRuns`
-   * again); `addAlertEvent`'s `sourceAlertId` search over the persisted
-   * history is the second, and the one that survives a reload.
+   * Runs this renderer has already handled. The in-memory line of defence
+   * (every broadcast carries `lastRuns` again); the stored list below is the
+   * one that survives a reload, a new window and the user removing the entry.
    */
   const reportedAzureCleanupRunIds = new Set<string>();
 
   /**
-   * One finished cleanup run → one Notification Center entry, whether it came
-   * live (`azure:closed-pr-cleanup:finished`) or later as the parent's last run
-   * in the payload (a phone that was locked, a client that reconnected). Shown
-   * by every client viewing the parent's profile: the phone that started it may
-   * be gone, and the desktop did not ask. The backend has already logged every
-   * per-PR error and any unexpected failure to strideterm.log.
+   * One finished cleanup run → at most one Notification Center entry per client,
+   * whether it came live (`azure:closed-pr-cleanup:finished`) or later as the
+   * parent's last run in the payload (a phone that was locked, a client that
+   * reconnected). Shown by every client viewing the parent's profile: the phone
+   * that started it may be gone, and the desktop did not ask. The backend has
+   * already logged every per-PR error and any unexpected failure to
+   * strideterm.log.
+   *
+   * `late` marks the payload path. The payload replays the last run on every
+   * load for as long as the desktop keeps it, so a late delivery checks the
+   * stored list of runs this client was already told about: the notification
+   * history alone cannot say, because the user may have removed the entry. A
+   * live event skips that check — it is news to every window open at the time,
+   * the same as any other arrival.
    */
-  function reportAzureClosedPrCleanupFinished(run: AzureClosedPrCleanupFinished): void {
+  function reportAzureClosedPrCleanupFinished(run: AzureClosedPrCleanupFinished, { late = false } = {}): void {
     if (reportedAzureCleanupRunIds.has(run.runId)) return;
     // Not marked as reported: a window on another profile reports it once the
     // user switches to the run's profile.
     if (run.profileId !== ctx.myActiveProfileId.value) return;
     reportedAzureCleanupRunIds.add(run.runId);
+    if (late && loadNotifiedAzureCleanupRunIds().includes(run.runId)) return;
+    rememberNotifiedAzureCleanupRun(run.runId);
     const notifications = useNotificationStore();
     const { title, body, failed } = describeAzureClosedPrCleanupRun(run);
     const urgency = failed ? "urgent" : "normal";
@@ -225,7 +265,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     if (!Array.isArray(runs)) return;
     for (const run of runs) {
       const parsed = azureClosedPrCleanupFinishedSchema.safeParse(run);
-      if (parsed.success) reportAzureClosedPrCleanupFinished(parsed.data);
+      if (parsed.success) reportAzureClosedPrCleanupFinished(parsed.data, { late: true });
     }
   }
 

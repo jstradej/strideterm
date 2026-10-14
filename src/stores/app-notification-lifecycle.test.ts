@@ -422,6 +422,82 @@ describe("app store — background Azure closed PR cleanup in the Notification C
     expect(fireNotificationAlert).not.toHaveBeenCalled();
   });
 
+  /** A reload, a new window or a reloaded phone page: a fresh renderer over this client's storage. */
+  async function reloadWith(payload: AnyApi) {
+    setActivePinia(createPinia());
+    const store = useAppStore();
+    const notifications = useNotificationStore();
+    store.init(makeTransport(payload) as AnyApi);
+    await settle();
+    return { store, notifications };
+  }
+
+  // The desktop keeps the last run in the payload until it restarts, so every
+  // later page load is handed the same run again.
+  it("a run whose entry the user removed does not come back after a reload", async () => {
+    const transport = makeTransport(azurePayload(["azure-root"]));
+    const store = useAppStore();
+    const notifications = useNotificationStore();
+    store.init(transport as AnyApi);
+    await settle();
+    transport._cleanupFinished(succeeded);
+    transport._push(azurePayload([], [succeeded]));
+    await settle();
+    const [session] = notifications.sessions.filter((s) => s.category === "azure-cleanup");
+    notifications.remove(session.id);
+    expect(cleanupEntries(notifications)).toEqual([]);
+
+    vi.mocked(fireNotificationAlert).mockClear();
+    const reloaded = await reloadWith(azurePayload([], [succeeded]));
+
+    expect(cleanupEntries(reloaded.notifications)).toEqual([]);
+    expect(reloaded.notifications.latestToast).toBeNull();
+    expect(fireNotificationAlert).not.toHaveBeenCalled();
+  });
+
+  it("a run delivered late and then cleared with Clear all does not come back after a reload", async () => {
+    const { notifications } = await reloadWith(azurePayload([], [succeeded]));
+    expect(cleanupEntries(notifications)).toHaveLength(1);
+    notifications.clearAll();
+    expect(cleanupEntries(notifications)).toEqual([]);
+
+    vi.mocked(fireNotificationAlert).mockClear();
+    const reloaded = await reloadWith(azurePayload([], [succeeded]));
+
+    expect(cleanupEntries(reloaded.notifications)).toEqual([]);
+    expect(fireNotificationAlert).not.toHaveBeenCalled();
+  });
+
+  it("without usable storage a renderer still reports each run once", async () => {
+    const originalGet = Storage.prototype.getItem;
+    const originalSet = Storage.prototype.setItem;
+    const key = "strideterm-azure-closed-pr-cleanup-notified-runs";
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, name) {
+      if (name === key) throw new Error("storage disabled");
+      return originalGet.call(this, name);
+    });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, name, value) {
+      if (name === key) throw new Error("storage disabled");
+      originalSet.call(this, name, value);
+    });
+    try {
+      const transport = makeTransport(azurePayload([], [succeeded]));
+      const store = useAppStore();
+      const notifications = useNotificationStore();
+      store.init(transport as AnyApi);
+      await settle();
+      transport._cleanupFinished(succeeded);
+      transport._push(azurePayload([], [succeeded]));
+      await settle();
+
+      expect(cleanupEntries(notifications)).toHaveLength(1);
+      expect(fireNotificationAlert).toHaveBeenCalledTimes(1);
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+
   it("remote: the core built for the client's profile drives the spinner and the entries; another profile's run never shows", async () => {
     const otherProfileRun = run({ runId: "run-p2", parentWorkspaceId: "azure-p2", profileId: "p2", error: "boom" });
     // Exactly what remote-server.ts sends a protocol-2 client bound to p1.
