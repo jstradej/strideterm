@@ -260,12 +260,16 @@ describe("Settings → About — update status by distribution", () => {
 
   test("Portable: up to date with GitHub, and a manual check asks GitHub again", async () => {
     const { checker, githubRequests } = await realUpdateChecker("portable", { upToDate: true });
-    const { banner, checkButton } = await mountAbout(payloadMeta("portable", checker.getCachedResult()), () =>
-      checker.checkForUpdates(true),
+    // The real checker reads and writes its cache file, which flushPromises() cannot wait for.
+    let check: Promise<unknown> | undefined;
+    const { banner, checkButton } = await mountAbout(
+      payloadMeta("portable", checker.getCachedResult()),
+      () => (check = checker.checkForUpdates(true)),
     );
 
     expect(banner().get(".update-banner__text").text()).toBe("You are on the latest version.");
     await checkButton()!.trigger("click");
+    await check;
     await flushPromises();
     expect(githubRequests).toHaveLength(2);
     expect(banner().get(".update-banner__text").text()).toBe("You are on the latest version.");
@@ -294,13 +298,16 @@ describe("Settings → About — update status by distribution", () => {
 
   test("a check GitHub never answered, with nothing cached, tells the user instead of showing nothing", async () => {
     const { checker, githubRequests } = await realUpdateChecker("portable", { offline: true });
+    // The real checker reads its cache file, which flushPromises() cannot wait for.
+    let check: Promise<unknown> | undefined;
     const { banner, checkButton, toast, logRenderer } = await mountAbout(
       payloadMeta("portable", checker.getCachedResult()),
-      () => checker.checkForUpdates(true),
+      () => (check = checker.checkForUpdates(true)),
     );
     expect(banner().exists()).toBe(false);
 
     await checkButton()!.trigger("click");
+    await check;
     await flushPromises();
     expect(githubRequests).toHaveLength(2);
     expect(toast()).toMatchObject({
