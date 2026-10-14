@@ -2777,6 +2777,36 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       },
     );
 
+    test("a remote client learns the desktop's distribution from GET /api/state, v2 core and legacy alike", async () => {
+      await withServer("tok-dist", async ({ port, runtime }) => {
+        // `meta` as runtime.ts getPayload() builds it on a Microsoft Store install (runtime.test.ts
+        // pins that shape against a real runtime).
+        const storeUrl = "https://apps.microsoft.com/detail/9PBP826FCHF7";
+        const meta = {
+          appVersion: "3.0.6",
+          repositoryUrl: "https://github.com/jstradej/strideterm",
+          distribution: "microsoft-store",
+          microsoftStoreUrl: storeUrl,
+          versionCheck: { updateChannel: "microsoft-store", storeUrl },
+          platform: "win32",
+          recoveryCandidates: [],
+        };
+        Object.assign(runtime.getPayload(), { meta });
+
+        const core = (await (await apiGet(port, "/api/state", "tok-dist", "dist-v2-client")).json()) as AnyState;
+        expect(core.stateProtocol).toBe(2);
+        expect(core.meta).toEqual(meta);
+
+        const legacy = (await (
+          await fetch(`http://127.0.0.1:${port}/api/state`, {
+            headers: { Authorization: "Bearer tok-dist", "X-Strideterm-Client-Id": "dist-legacy-client" },
+          })
+        ).json()) as AnyState;
+        expect(legacy.stateProtocol).toBeUndefined();
+        expect(legacy.meta).toEqual(meta);
+      });
+    });
+
     test("git workspace-detail returns {resource,revision,data}; cross-profile is 403", async () => {
       await withServer("tok-det", async ({ port }) => {
         // Bind a token-client session (profile p1) via one authorized call.

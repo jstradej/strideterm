@@ -20,6 +20,7 @@ import { APP_CONFIG, getRendererDevUrl, resolveRemoteAccessPort } from "../confi
 import { getLogger, getLogDir, setLogDir, shutdownLogger } from "./backend/logger.js";
 import { applySystemCaTrust } from "./backend/net/system-ca.js";
 import { SMOKE_READY_MARKER } from "./shared/smoke-protocol.js";
+import { detectAppDistribution } from "./shared/app-distribution.js";
 import { createPerformanceSampler } from "./performance-metrics.js";
 import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
 import type { TaskExecutionState } from "./shared/types/task.js";
@@ -149,6 +150,12 @@ const isDev = !app.isPackaged;
 if (process.env.STRIDETERM_ENV === undefined) {
   process.env.STRIDETERM_ENV = "prod";
 }
+const appDistribution = detectAppDistribution({
+  isPackaged: app.isPackaged,
+  platform: process.platform,
+  windowsStore: process.windowsStore === true,
+  env: process.env,
+});
 const rendererUrl = getRendererDevUrl();
 const isSmokeTest = process.env.STRIDETERM_SMOKE_TEST === "1";
 const forceDist = process.env.STRIDETERM_FORCE_DIST === "1" || isSmokeTest;
@@ -1432,6 +1439,8 @@ async function loadBootstrapPayload(): Promise<Record<string, unknown>> {
       meta: {
         appVersion: packageVersion,
         repositoryUrl: APP_CONFIG.app.repositoryUrl,
+        distribution: appDistribution,
+        microsoftStoreUrl: APP_CONFIG.app.microsoftStoreUrl,
         bootstrap: true,
         platform: process.platform,
       },
@@ -1506,6 +1515,7 @@ async function startServices(): Promise<void> {
     dependencies: {
       safeStorage,
       enableAgentSshMcp: true,
+      distribution: appDistribution,
       /**
        * The managed relay's internal origin.
        *

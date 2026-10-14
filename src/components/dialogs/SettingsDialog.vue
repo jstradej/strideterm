@@ -238,6 +238,7 @@ import SettingsTelegramTab from "./settings/SettingsTelegramTab.vue";
 import SettingsMobileTab from "./settings/SettingsMobileTab.vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 import type { RemoteBrowserSession } from "../../../electron/shared/remote-access.js";
+import type { AppDistribution } from "../../../electron/shared/app-distribution.js";
 import SettingsTemplatesTab from "./settings/SettingsTemplatesTab.vue";
 import { useAgentHookSettings } from "./settings/useAgentHookSettings.js";
 
@@ -337,6 +338,8 @@ interface Props {
   profiles?: ProfileSetting[];
   appVersion?: string;
   repositoryUrl?: string;
+  distribution?: AppDistribution | "";
+  microsoftStoreUrl?: string;
   versionCheck?: { versionsBehind: number; latestVersion: string; latestUrl: string } | null;
   saveError?: string;
   saveCompleted?: number;
@@ -351,6 +354,8 @@ const props = withDefaults(defineProps<Props>(), {
   profiles: () => [],
   appVersion: "",
   repositoryUrl: "",
+  distribution: "",
+  microsoftStoreUrl: "",
   initialTab: "general",
   versionCheck: null,
   saveError: "",
@@ -477,6 +482,15 @@ const checkingUpdate = ref(false);
 const manualCheckResult = ref<unknown>(null);
 
 const updateInfo = computed(() => {
+  if (props.distribution === "microsoft-store") {
+    return {
+      kind: "update-banner--store",
+      message:
+        "Updates are delivered through the Microsoft Store, automatically unless app updates are turned off in the Store's settings.",
+      url: props.microsoftStoreUrl,
+      linkLabel: "Open in Microsoft Store",
+    };
+  }
   const check = (manualCheckResult.value || props.versionCheck) as
     { versionsBehind: number; latestVersion: string; latestUrl: string } | null | undefined;
   if (!check) return null;

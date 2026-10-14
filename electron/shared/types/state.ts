@@ -3,6 +3,7 @@ import type { SshHost, SshKey, SshCert } from "./ssh.js";
 import type { SshConnectionSettings } from "../ssh-connection.js";
 import type { Alert } from "./notifications.js";
 import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-events.js";
+import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../app-distribution.js";
 
 // Re-export for convenience
 export type { Alert };
@@ -974,14 +975,14 @@ export interface RemoteAccessState {
   };
 }
 
+/** The GitHub releases comparison `createVersionChecker` (electron/backend/version-checker.ts) caches and hands out. */
 export interface VersionCheckState {
-  latestVersion: string | null;
-  latestUrl?: string;
-  currentVersion: string;
-  updateAvailable: boolean;
-  versionsBehind?: number;
-  lastCheckedAt: string | null;
-  error: string | null;
+  lastCheckAt: string;
+  etag: string;
+  latestVersion: string;
+  latestUrl: string;
+  versionsBehind: number;
+  releases: Array<{ tag: string; url: string; publishedAt: string }>;
 }
 
 export interface RecoveryCandidate {
@@ -1069,7 +1070,10 @@ export interface RecoveryDecisionReport {
 export interface MetaState {
   appVersion: string;
   repositoryUrl: string;
-  versionCheck: VersionCheckState;
+  distribution: AppDistribution;
+  microsoftStoreUrl: string;
+  /** Null until the first GitHub check answers; never a GitHub comparison on a Microsoft Store install. */
+  versionCheck: VersionCheckState | MicrosoftStoreUpdateStatus | null;
   platform: string;
   recoveryCandidates: RecoveryCandidate[];
 }

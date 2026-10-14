@@ -214,7 +214,7 @@ npm run dist:linux       # Linux AppImage + .deb
 npm run smoke            # Build + headless startup test
 ```
 
-`dist:store` packages the already built Windows payload without rebuilding the app. Set `MS_STORE_IDENTITY_NAME`, `MS_STORE_PUBLISHER`, and `MS_STORE_PUBLISHER_DISPLAY_NAME` to the exact Partner Center values. All absent means the Store build is skipped; partial configuration fails. The output is unsigned for Store submission.
+`dist:store` packages the already built Windows payload without rebuilding the app. Set `MS_STORE_IDENTITY_NAME`, `MS_STORE_PUBLISHER`, and `MS_STORE_PUBLISHER_DISPLAY_NAME` to the exact Partner Center values. All absent means the Store build is skipped; partial configuration fails. The output is unsigned for Store submission. The release workflow does not run it: the Store package comes from the Store AppX workflow, dispatched in `store` mode from the release tag.
 
 Single test file:
 

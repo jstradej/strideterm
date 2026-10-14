@@ -28,6 +28,7 @@ import { createCredentialStore } from "./shared/credential-store.js";
 import { shortPathKey } from "./azure-devops-utils.js";
 import { REMOTE_ACCESS_TOKEN_REF } from "./shared/connection-secret.js";
 import type { WorkspaceState } from "../shared/types/state.js";
+import { APP_CONFIG } from "../../config/app-config.js";
 import { readFileContent, withCallerProfile } from "./file-manager.js";
 import { createInMemoryMobileFirebaseTransport } from "./mobile/mobile-firebase-transport.js";
 import { createFirebaseMobileTransport } from "./mobile/mobile-firebase-transport-rest.js";
@@ -1290,6 +1291,68 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     expect(strayStatePayloadKeys(fixture.runtime.getPayload())).toEqual([]);
+  });
+
+  // main.ts detects the distribution (electron/shared/app-distribution.ts) and hands it in; it decides
+  // where updates come from, for the desktop and for every remote client.
+  test("a Microsoft Store runtime says so to every client and never asks GitHub for updates", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    try {
+      const fixture = await createFixture({ dependencies: { distribution: "microsoft-store" } });
+      fixtures.push(fixture);
+      const storeMeta = {
+        distribution: "microsoft-store",
+        microsoftStoreUrl: APP_CONFIG.app.microsoftStoreUrl,
+        versionCheck: { updateChannel: "microsoft-store", storeUrl: APP_CONFIG.app.microsoftStoreUrl },
+      };
+
+      expect(fixture.runtime.getPayload().meta).toMatchObject(storeMeta);
+      await expect(fixture.runtime.checkForUpdates()).resolves.toEqual(storeMeta.versionCheck);
+      expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("github.com"))).toEqual([]);
+
+      // What the remote server sends a protocol-2 client (every mobile session is one).
+      const registry = new RemoteClientRegistry();
+      fixture.runtime.setRemoteClientRegistry(registry);
+      registry.getOrCreate("phone", fixture.store.getState(), "default");
+      const core = buildRemoteCore(
+        registry.composePayload("phone", fixture.runtime.getPayload()) as Record<string, unknown>,
+      );
+      expect(core.meta).toMatchObject(storeMeta);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test("an installer runtime keeps checking GitHub releases", async () => {
+    const githubRequests: string[] = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (!url.startsWith("https://api.github.com/")) throw new Error("offline");
+      githubRequests.push(url);
+      const release = {
+        tag_name: "v999.0.0",
+        html_url: "https://github.com/x/y/releases/tag/v999.0.0",
+        published_at: "2026-10-01T00:00:00Z",
+        prerelease: false,
+        draft: false,
+      };
+      return new Response(JSON.stringify([release]), { status: 200, headers: { etag: '"e1"' } });
+    });
+    try {
+      const fixture = await createFixture({ dependencies: { distribution: "windows-installer" } });
+      fixtures.push(fixture);
+
+      expect(fixture.runtime.getPayload().meta.distribution).toBe("windows-installer");
+      await expect(fixture.runtime.checkForUpdates()).resolves.toMatchObject({
+        latestVersion: "999.0.0",
+        versionsBehind: 1,
+      });
+      expect(githubRequests).toHaveLength(1);
+      expect(githubRequests[0]).toMatch(/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases\?per_page=50$/);
+      expect(fixture.runtime.getPayload().meta.versionCheck).toMatchObject({ versionsBehind: 1 });
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   test("forwards payload-free SSH state events during host create, save, and delete", async () => {

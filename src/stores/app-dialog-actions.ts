@@ -621,6 +621,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       profiles: ctx.payload.value?.appState?.profiles || [],
       appVersion: (ctx.payload.value as AnyApi)?.meta?.appVersion || "",
       repositoryUrl: (ctx.payload.value as AnyApi)?.meta?.repositoryUrl || "",
+      distribution: (ctx.payload.value as AnyApi)?.meta?.distribution || "",
+      microsoftStoreUrl: (ctx.payload.value as AnyApi)?.meta?.microsoftStoreUrl || "",
       versionCheck: (ctx.payload.value as AnyApi)?.meta?.versionCheck || null,
       initialTab: opts.initialTab || "general",
       initialMobileView: opts.initialMobileView,

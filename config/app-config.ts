@@ -53,6 +53,8 @@ export const APP_CONFIG = {
   },
   app: {
     repositoryUrl: envString("STRIDETERM_REPOSITORY_URL", "https://github.com/jstradej/strideterm"),
+    // Store listing a Microsoft Store install is updated from (see electron/shared/app-distribution.ts).
+    microsoftStoreUrl: envString("STRIDETERM_MICROSOFT_STORE_URL", "https://apps.microsoft.com/detail/9PBP826FCHF7"),
   },
   runtime: {
     dockerPollMs: envNumber("STRIDETERM_DOCKER_POLL_MS", 30000),

@@ -240,7 +240,8 @@ import {
 } from "./runtime-utils.js";
 import { APP_CONFIG, resolveRemoteAccessPort, resolveRemoteBindHost } from "../../config/app-config.js";
 // @ts-ignore — version-checker.js will be migrated in a later phase
-import { createVersionChecker } from "./version-checker.js";
+import { createUpdateCheckerForDistribution } from "./version-checker.js";
+import type { AppDistribution } from "../shared/app-distribution.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger, createAuditLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
@@ -527,6 +528,8 @@ interface RuntimeDependencies {
 
   /** Enables local desktop-only, per-panel Built-in SSH MCP launches. */
   enableAgentSshMcp?: boolean;
+  /** Which build is running — detected by main.ts, which can ask Electron (this module cannot). */
+  distribution?: AppDistribution;
   createSshMcpBroker?: typeof createSshMcpBroker;
 
   fetchImpl?: typeof fetch;
@@ -570,7 +573,8 @@ export async function createRuntime({
 }) {
   // Logger must init before anything else logs
   initLogger();
-  log.info("createRuntime starting", { userDataPath, deferInitialRefresh });
+  const distribution = dependencies.distribution ?? "development";
+  log.info("createRuntime starting", { userDataPath, deferInitialRefresh, distribution });
 
   // Forward reference populated at the end of createRuntime() so async
   // handlers (e.g. Telegram command dispatch) can call runtime methods.
@@ -4081,10 +4085,12 @@ export async function createRuntime({
 
   tunnel.setBinaryPreference?.(getState().settings.remoteAccess.cloudflaredPath || "");
 
-  const versionChecker = createVersionChecker({
+  const versionChecker = createUpdateCheckerForDistribution({
     currentVersion: packageVersion,
     repositoryUrl: APP_CONFIG.app.repositoryUrl,
     userDataPath,
+    distribution,
+    microsoftStoreUrl: APP_CONFIG.app.microsoftStoreUrl,
   });
 
   const {
@@ -4292,6 +4298,8 @@ export async function createRuntime({
       meta: {
         appVersion: packageVersion,
         repositoryUrl: APP_CONFIG.app.repositoryUrl,
+        distribution,
+        microsoftStoreUrl: APP_CONFIG.app.microsoftStoreUrl,
         versionCheck: versionChecker.getCachedResult(),
         platform: process.platform,
         recoveryCandidates: _recoveryCandidates,

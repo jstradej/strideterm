@@ -2,7 +2,12 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
-import { createVersionChecker, parseVersion, compareVersions } from "./version-checker.js";
+import {
+  createUpdateCheckerForDistribution,
+  createVersionChecker,
+  parseVersion,
+  compareVersions,
+} from "./version-checker.js";
 
 const tempPaths: string[] = [];
 
@@ -474,4 +479,71 @@ describe("createVersionChecker", () => {
     const cachedView = updatedChecker.getCachedResult();
     expect(cachedView!.versionsBehind).toBe(0);
   });
+});
+
+// -- createUpdateCheckerForDistribution --
+
+describe("createUpdateCheckerForDistribution", () => {
+  const STORE_URL = "https://apps.microsoft.com/detail/9PBP826FCHF7";
+  const REPO = "https://github.com/test/repo";
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function recordingFetch(requests: string[], releases: any[]) {
+    const respond = createMockFetch(releases);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return async (url: any, opts: any) => {
+      requests.push(String(url));
+      return respond(url, opts);
+    };
+  }
+
+  test("a Microsoft Store install never asks GitHub, even with a cache an installer build left behind", async () => {
+    const dir = await createTempDir();
+    // Two installs share one data dir: the installer build's cache says this version is 2 behind.
+    await createVersionChecker({
+      currentVersion: "1.4.1",
+      repositoryUrl: REPO,
+      userDataPath: dir,
+      fetchImpl: createMockFetch([mockRelease("v1.6.0"), mockRelease("v1.5.0")]),
+    }).checkForUpdates();
+
+    const requests: string[] = [];
+    const checker = createUpdateCheckerForDistribution({
+      distribution: "microsoft-store",
+      microsoftStoreUrl: STORE_URL,
+      currentVersion: "1.4.1",
+      repositoryUrl: REPO,
+      userDataPath: dir,
+      fetchImpl: recordingFetch(requests, [mockRelease("v1.6.0")]),
+    });
+
+    const storeStatus = { updateChannel: "microsoft-store", storeUrl: STORE_URL };
+    expect(checker.getCachedResult()).toEqual(storeStatus);
+    expect(await checker.checkForUpdates()).toEqual(storeStatus);
+    expect(await checker.checkForUpdates(true)).toEqual(storeStatus);
+    expect(checker.getCachedResult()).toEqual(storeStatus);
+    expect(requests).toEqual([]);
+  });
+
+  test.each(["windows-installer", "portable", "macos", "appimage", "linux-package", "development"] as const)(
+    "%s keeps the GitHub releases check",
+    async (distribution) => {
+      const dir = await createTempDir();
+      const requests: string[] = [];
+      const checker = createUpdateCheckerForDistribution({
+        distribution,
+        microsoftStoreUrl: STORE_URL,
+        currentVersion: "1.4.1",
+        repositoryUrl: REPO,
+        userDataPath: dir,
+        fetchImpl: recordingFetch(requests, [mockRelease("v1.6.0"), mockRelease("v1.5.0"), mockRelease("v1.4.1")]),
+      });
+
+      const result = await checker.checkForUpdates(true);
+
+      expect(requests).toEqual(["https://api.github.com/repos/test/repo/releases?per_page=50"]);
+      expect(result).toMatchObject({ latestVersion: "1.6.0", versionsBehind: 2 });
+      expect(checker.getCachedResult()).toMatchObject({ versionsBehind: 2 });
+    },
+  );
 });

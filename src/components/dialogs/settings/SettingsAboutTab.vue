@@ -11,7 +11,7 @@
         :href="updateInfo.url"
         class="link-accent"
         @click.prevent="api?.openExternal?.(updateInfo.url)"
-        >View release</a
+        >{{ updateInfo.linkLabel || "View release" }}</a
       >
     </div>
     <p v-else-if="checkingUpdate" class="about-version">Checking for updates...</p>
@@ -38,6 +38,7 @@ interface UpdateInfo {
   kind: string;
   message: string;
   url: string;
+  linkLabel?: string;
 }
 
 interface Props {
@@ -105,6 +106,11 @@ const emit = defineEmits<{
 .update-banner--behind {
   background: rgba(255, 163, 71, 0.1);
   color: #ffb347;
+}
+
+.update-banner--store {
+  background: rgba(var(--tint), 0.05);
+  color: var(--text);
 }
 
 .update-banner__text {

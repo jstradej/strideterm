@@ -115,7 +115,10 @@
         <div class="sidebar-footer__card">
           <div class="sidebar-footer__meta">
             <span class="eyebrow">App</span>
-            <strong class="sidebar-footer__version">{{ versionLabel }}</strong>
+            <strong class="sidebar-footer__version" :title="distributionInfo?.title">
+              {{ versionLabel }}
+              <span v-if="distributionInfo" class="sidebar-footer__distribution">· {{ distributionInfo.label }}</span>
+            </strong>
             <button
               v-if="versionsBehind > 0"
               type="button"
@@ -126,6 +129,15 @@
               {{ versionsBehind }} {{ versionsBehind === 1 ? "update" : "updates" }} behind
             </button>
           </div>
+          <button
+            v-if="microsoftStoreUrl"
+            type="button"
+            class="sidebar-footer__repo"
+            :title="`Open strIDEterm in the Microsoft Store (${microsoftStoreUrl}). The Store delivers updates for this copy.`"
+            @click="api?.openExternal?.(microsoftStoreUrl)"
+          >
+            Microsoft Store
+          </button>
           <button
             v-if="repositoryUrl"
             type="button"
@@ -308,6 +320,7 @@
 import { computed, inject, onErrorCaptured, onMounted, onUnmounted, ref, watch } from "vue";
 import type { ComponentPublicInstance } from "vue";
 import type { Transport } from "./transport.js";
+import type { AppDistribution } from "../electron/shared/app-distribution.js";
 import { apiKey } from "./types/keys.js";
 import { useAppStore } from "./stores/app.js";
 import { useGlobalEvents } from "./composables/useGlobalEvents.js";
@@ -385,8 +398,29 @@ const versionLabel = computed(() => {
 
 const repositoryUrl = computed(() => store.payload?.meta?.repositoryUrl || "");
 
-// -- Version check --
-const versionCheck = computed(() => store.payload?.meta?.versionCheck);
+const DISTRIBUTION_INFO: Record<AppDistribution, { label: string; title: string }> = {
+  "microsoft-store": {
+    label: "Microsoft Store",
+    title: "Installed from the Microsoft Store, which delivers updates for this copy.",
+  },
+  "windows-installer": { label: "Installer", title: "Installed with the Windows installer." },
+  portable: { label: "Portable", title: "Portable Windows build, run without installing." },
+  macos: { label: "macOS", title: "Packaged macOS app." },
+  appimage: { label: "AppImage", title: "Linux AppImage." },
+  "linux-package": { label: "Linux package", title: "Installed from a Linux package such as the .deb." },
+  development: { label: "Development", title: "Running from source, not a packaged build." },
+};
+const distribution = computed(() => store.payload?.meta?.distribution);
+const distributionInfo = computed(() => (distribution.value ? DISTRIBUTION_INFO[distribution.value] : null) ?? null);
+const microsoftStoreUrl = computed(() =>
+  distribution.value === "microsoft-store" ? store.payload?.meta?.microsoftStoreUrl || "" : "",
+);
+
+// -- Version check -- (GitHub releases; the Microsoft Store updates a Store install itself)
+const versionCheck = computed(() => {
+  const check = store.payload?.meta?.versionCheck;
+  return distribution.value === "microsoft-store" || !check || "updateChannel" in check ? null : check;
+});
 const versionsBehind = computed(() => versionCheck.value?.versionsBehind || 0);
 const latestVersionLabel = computed(() => versionCheck.value?.latestVersion || "");
 // Always use GitHub's /releases/latest redirect rather than the cached

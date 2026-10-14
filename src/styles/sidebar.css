@@ -550,6 +550,11 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   color: var(--text);
 }
 
+.sidebar-footer__distribution {
+  color: var(--muted);
+  font-weight: 500;
+}
+
 .sidebar-footer__repo {
   width: 100%;
   border: 1px solid var(--border);
@@ -2462,7 +2467,8 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   text-align: center;
 }
 
-.frame--sidebar-collapsed .sidebar-footer__update-hint {
+.frame--sidebar-collapsed .sidebar-footer__update-hint,
+.frame--sidebar-collapsed .sidebar-footer__distribution {
   display: none;
 }
 

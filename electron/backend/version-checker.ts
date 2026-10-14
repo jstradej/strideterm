@@ -3,6 +3,8 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { getLogger } from "./logger.js";
 import { atomicWriteFile } from "./hook-config-engine.js";
+import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../shared/app-distribution.js";
+import type { VersionCheckState } from "../shared/types/state.js";
 
 const log = getLogger("version-check");
 
@@ -15,14 +17,7 @@ interface ParsedVersion {
   patch: number;
 }
 
-interface CachedResult {
-  lastCheckAt: string;
-  etag: string;
-  latestVersion: string;
-  latestUrl: string;
-  versionsBehind: number;
-  releases: Array<{ tag: string; url: string; publishedAt: string }>;
-}
+type CachedResult = VersionCheckState;
 
 interface GitHubRelease {
   tag_name: string;
@@ -216,4 +211,22 @@ export function createVersionChecker({
   }
 
   return { checkForUpdates, getCachedResult };
+}
+
+/**
+ * The update check for this distribution. A Microsoft Store install never asks GitHub: the Store
+ * updates it once Microsoft has certified a version, which can be days after the GitHub release. Nor
+ * does it read `version-check.json` — an installer build sharing the data dir may have left one.
+ */
+export function createUpdateCheckerForDistribution({
+  distribution,
+  microsoftStoreUrl,
+  ...options
+}: Parameters<typeof createVersionChecker>[0] & { distribution: AppDistribution; microsoftStoreUrl: string }) {
+  if (distribution !== "microsoft-store") return createVersionChecker(options);
+  const status: MicrosoftStoreUpdateStatus = { updateChannel: "microsoft-store", storeUrl: microsoftStoreUrl };
+  return {
+    checkForUpdates: async (): Promise<MicrosoftStoreUpdateStatus> => status,
+    getCachedResult: (): MicrosoftStoreUpdateStatus => status,
+  };
 }

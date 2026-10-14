@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Build a validation-only package or use the configured Partner Center identity
+        description: Build a validation-only package, or (store) the Partner Center package — run store mode from the release tag (Use workflow from → Tags → vX.Y.Z)
         required: true
         type: choice
         options:
@@ -29,6 +29,19 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      # The release workflow does not build the Store package; this is its only source. Pinning it
+      # to the release tag keeps it the same code as the GitHub release. The AppX version is
+      # package.json's version with a ".0" revision (electron-builder), so the tag must match it.
+      - name: Require the release tag for the Store package
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'store'
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF}" != "refs/tags/v${version}" ]; then
+            echo "::error::Run store mode from the release tag v${version} (Use workflow from → Tags), not ${GITHUB_REF}."
+            exit 1
+          fi
 
       - run: npm ci
       - run: npm test
