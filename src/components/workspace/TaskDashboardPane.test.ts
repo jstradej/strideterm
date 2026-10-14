@@ -439,6 +439,26 @@ describe("TaskDashboardPane — attached mode (Companion loop) labels", () => {
     expect(labels.some((l) => l === "↻ Judge")).toBe(false);
   });
 
+  test("a refused answer says why: an earlier answer still on its way, or the task no longer waiting", async () => {
+    const answerCompanionTask = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, reason: "answer-in-flight" })
+      .mockResolvedValueOnce({ ok: false });
+    const wrapper = mountAttached({ state: "awaiting-user" }, { answerCompanionTask });
+    const toastSpy = vi.spyOn(useNotificationStore(), "pushEphemeralToast");
+    const statusTab = wrapper.findComponent(TaskDashboardCompanionStatusTab);
+
+    await statusTab.vm.$emit("answer", { questionIds: ["q1"], answer: "Use the v2 API." });
+    await flushPromises();
+    await statusTab.vm.$emit("answer", { questionIds: ["q1"], answer: "Use the v2 API." });
+    await flushPromises();
+
+    expect(toastSpy).toHaveBeenCalledTimes(2);
+    expect(toastSpy.mock.calls[0][0].body).toContain("previous answer is still on its way");
+    expect(toastSpy.mock.calls[0][0].body).not.toContain("no longer be awaiting");
+    expect(toastSpy.mock.calls[1][0].body).toContain("no longer be awaiting your input");
+  });
+
   test("brief-ready shows a role-specific 'Start Reviewer loop' button instead of the generic Start", () => {
     const wrapper = mountAttached({ state: "brief-ready" });
     const labels = wrapper.findAll("button").map((b) => b.text());

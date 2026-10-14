@@ -1947,10 +1947,11 @@ describe("AgentTaskRunner — attached mode (Companion loop)", () => {
             subtype: "permission_prompt",
           });
 
-          // Falls through to the normal idle-hook path instead — the
-          // Primary keeps its own permission mode (plan §10); only the
+          // The Primary keeps its own permission mode (plan §10); only the
           // inspect-only Judge/Companion is held to the violation contract.
-          expect(consumed).toBe(true);
+          // Its dialog is not an idle of the loop either: not consumed, so
+          // the user's own permission alert goes out for it.
+          expect(consumed).toBe(false);
           expect(companionWorkspace.task.judgePolicyViolation).toBeFalsy();
           expect(companionWorkspace.task.state).toBe("judge-evaluating");
         } finally {

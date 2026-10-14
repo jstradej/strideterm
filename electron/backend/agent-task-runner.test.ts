@@ -1469,13 +1469,26 @@ describe("resumeTask - late prompt delivery", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       // The /clear's Enter is withheld — it would have sent "/clearx".
       expect(written.filter((w) => w.sessionId === sessionId).map((w) => w.data)).toEqual(["/clear"]);
-      let started: boolean | undefined;
-      void start.then((result) => (started = result));
-      for (let i = 0; i < 600 && started === undefined; i += 1) {
+      // Start answers as soon as its write waits for the user; the rest of the
+      // start goes on in the background.
+      expect(await start).toBe(true);
+      expect(ws.task.promptSent).toBe(false);
+      // Fake time only moves once the runner's own file I/O (the prompt file)
+      // has landed — bounded by real time, so a loaded machine cannot let the
+      // budget run out under it.
+      const letIoFinish = async () => {
+        const deadline = performance.now() + 10_000;
+        do await new Promise((resolve) => setImmediate(resolve));
+        while (
+          process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback") &&
+          performance.now() < deadline
+        );
+      };
+      for (let fakeMs = 0; fakeMs < 120_000 && !ws.task.promptSent; fakeMs += 100) {
         await vi.advanceTimersByTimeAsync(100);
-        await new Promise((resolve) => setImmediate(resolve));
+        await letIoFinish();
       }
-      expect(started).toBe(true);
+      expect(ws.task.promptSent).toBe(true);
       const sequence = written
         .filter((w) => w.sessionId === sessionId)
         .map((w) => (w.data.startsWith("Read ") ? "prompt" : w.data));

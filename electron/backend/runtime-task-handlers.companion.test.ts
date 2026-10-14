@@ -297,6 +297,22 @@ describe("answerCompanionTask", () => {
     expect(taskRunner.answerCompanionTask).toHaveBeenCalledWith("workspace-companion", ["Q-1", "Q-2"], "Go with B.");
     expect(result.ok).toBe(true);
   });
+
+  test("a refused answer says when it is because an earlier one is still being delivered", async () => {
+    const { runtime, taskRunner } = createTestRuntime();
+    const inFlight = vi.fn(() => true);
+    Object.assign(taskRunner, { isCompanionAnswerInFlight: inFlight });
+    taskRunner.answerCompanionTask.mockResolvedValueOnce(false);
+    const refused = await runtime.answerCompanionTask("workspace-companion", ["Q-1"], "Go with B.", "window-1");
+    expect(refused).toMatchObject({ ok: false, reason: "answer-in-flight" });
+
+    // Refused for another reason (the task no longer waits): no such claim.
+    inFlight.mockReturnValue(false);
+    taskRunner.answerCompanionTask.mockResolvedValueOnce(false);
+    const other = await runtime.answerCompanionTask("workspace-companion", ["Q-1"], "Go with B.", "window-1");
+    expect(other.ok).toBe(false);
+    expect(other).not.toHaveProperty("reason");
+  });
 });
 
 describe("resolveTaskRecovery — attached mode dangling source (plan §8.7 step 5)", () => {

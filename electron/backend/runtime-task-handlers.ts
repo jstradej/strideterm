@@ -1195,10 +1195,18 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
     async answerCompanionTask(workspaceId: any, questionIds: any, answer: any, windowId?: string) {
       assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       const ids = Array.isArray(questionIds) ? questionIds.map(String) : [];
+      // Read before the call, which refuses a second answer at once: the
+      // dashboard must say that one is on its way, not that the task stopped
+      // waiting for an answer.
+      const answerInFlight = taskRunner.isCompanionAnswerInFlight?.(String(workspaceId)) === true;
       const result = await taskRunner.answerCompanionTask(String(workspaceId), ids, String(answer || ""));
       // Answering a question the task asked for IS work (V2 plan allowlist).
       if (result) await recordWorkspaceWork(String(workspaceId), windowId);
-      return { ok: result, payload: getPayload() };
+      return {
+        ok: result,
+        ...(!result && answerInFlight ? { reason: "answer-in-flight" } : {}),
+        payload: getPayload(),
+      };
     },
 
     /**

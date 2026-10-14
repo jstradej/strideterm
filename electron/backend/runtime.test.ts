@@ -2753,6 +2753,72 @@ describe("runtime integration", () => {
     }
   });
 
+  test("a permission_prompt in a running task's Worker panel still reaches the user — the task runner does not take it as an idle", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-permission-"));
+    tempPaths.push(cwd);
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "task-ws",
+              name: "Task",
+              kind: "task",
+              cwd,
+              activePanelId: "worker",
+              panels: [
+                { id: "worker", title: "Worker", command: "claude", shell: true, startup: "default" },
+                { id: "judge", title: "Judge", command: "claude", shell: true, startup: "default" },
+              ],
+              task: {
+                taskId: "task-ws-tid",
+                state: "running",
+                workerPanelId: "worker",
+                judgePanelId: "judge",
+                currentRound: 1,
+                promptSent: true,
+                description: "Implement the parser.",
+              },
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+      // reconcileOnStartup parks an active task as "paused"; this one is running.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await fixture.store.mutate((draft: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ws = draft.workspaces.find((w: any) => w.id === "task-ws");
+        ws.task.state = "running";
+      });
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "task-ws:worker", data: "working…" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("task-ws:worker", "y");
+
+      fixture.runtime.notifyAgentHook("task-ws:worker", "permission_prompt");
+
+      expect(fixture.runtime.getPayload().attention.byProject["task-ws"]?.alerts[0]).toMatchObject({
+        detail: "hook:Notification:permission_prompt",
+        urgency: "urgent",
+      });
+      const task = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "task-ws")!.task!;
+      expect(task.state).toBe("running");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("Codex OSC questions reach attention, Telegram and mobile even in a visible terminal", async () => {
     const fixture = await createFixture({ initialState: questionFixtureState() });
     fixtures.push(fixture);

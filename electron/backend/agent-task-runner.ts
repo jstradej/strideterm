@@ -225,7 +225,25 @@ const EXPLAINED_INJECTION_CANCELS: ReadonlySet<InjectionCancelReason> = new Set(
 type RunnerWriteOutcome = "submitted" | "interrupted" | "stopped";
 
 /** What a polite runner write is waiting for — see #politeWaitReason. */
-type PoliteWaitReason = "user-typing" | "dialog-open" | "agent-turn" | "agent-answer" | "submit-pending";
+type PoliteWaitReason =
+  "dialog-open" | "ui-uncertain" | "user-typing" | "agent-turn" | "agent-answer" | "submit-pending";
+
+/**
+ * What the agent's screen shows, as far as the runner can know it:
+ *  - "prompt"    — at its prompt (nothing signalled otherwise);
+ *  - "dialog"    — a permission / question / elicitation dialog is up;
+ *  - "uncertain" — the user pressed Esc twice in a row, which may have
+ *    opened a selector where an Enter picks an old message: Claude Code's
+ *    rewind picker (two Escs within 800 ms) or Codex's backtrack (two Escs
+ *    with no other key between them, however far apart). The runner cannot
+ *    see the gap the agent saw, so any two Escs in a row count. Only a
+ *    submitted prompt (UserPromptSubmit) or the user's own word settles it
+ *    — never a turn-end signal, which might arrive with the selector open.
+ * A single Esc only closes a menu, rejects a dialog or interrupts the turn —
+ * the agent is back at its prompt after it. Anything but "prompt" blocks
+ * every runner write — see #politeWaitReason.
+ */
+type SessionUiState = "prompt" | "dialog" | "uncertain";
 
 /**
  * What the runner knows about the user's hands in one task session — fed by
@@ -245,10 +263,16 @@ interface SessionUserActivity {
   /** …and that turn answers the user (their Enter, or ours sent on their behalf). */
   userTurn: boolean;
   turnStartedAt: number;
-  /** A permission / question / elicitation dialog is on screen. */
-  dialogOpen: boolean;
+  /** What the agent's screen shows — see SessionUiState. */
+  uiState: SessionUiState;
+  /** Escs pressed in a row, with no other key (the user's or the runner's) between them. */
+  escRun: number;
+  /** This session has reported a submitted prompt (its UserPromptSubmit hook works). */
+  sawPromptSubmit: boolean;
   /** When the runner's own write was last submitted into this session. */
   lastRunnerSubmitAt: number;
+  /** When the agent last reported a submitted prompt (UserPromptSubmit), anyone's. */
+  lastPromptSubmitAt: number;
   /** The injection whose /clear still waits for its prompt, and when the /clear went in. */
   clearGeneration: AbortController | null;
   clearedAt: number;
@@ -260,6 +284,22 @@ const DIALOG_IDLE_SOURCES: ReadonlySet<string> = new Set([
   "hook:elicitation_dialog",
   "hook:elicitation_url_dialog",
   "hook:agent_needs_input",
+]);
+
+/** Task states in which runtime-attention.ts holds back a task panel's normal-urgency question. */
+const RUNNER_OWNED_TURN_STATES: ReadonlySet<string> = new Set([
+  "running",
+  "evaluating",
+  "judge-evaluating",
+  "refreshing",
+]);
+
+/** Turn ends the agent reports itself — they also mean no dialog is open. */
+const DIALOG_CLOSING_IDLE_SOURCES: ReadonlySet<string> = new Set([
+  "hook:stop",
+  "hook:idle_prompt",
+  "hook:notification",
+  "osc133",
 ]);
 
 /** Idle-signal sources that end the agent's turn: hooks for hook-capable
@@ -282,21 +322,43 @@ const BRACKETED_PASTE_END = "\x1b[201~";
  *  - printable text and bracketed-paste content → pending;
  *  - a bare Enter ("\r") → submits it — unless it follows a backslash or ESC,
  *    the newline forms agents accept (backslash+Enter, Alt/Option+Enter);
- *  - Ctrl+C → clears it;
+ *  - Ctrl+C → clears it (or, with nothing typed, interrupts the agent);
+ *  - Esc (a lone ESC, not the start of a key sequence) → interrupts the agent
+ *    and leaves the composer as it was;
  *  - anything else (arrows, history, editing keys, "\n", CSI-u Shift+Enter,
  *    unknown sequences) → pending.
  * When unsure it says "pending": a false pending only costs an Enter on an
  * empty composer, which agent TUIs ignore, while a false "submitted" would let
  * the runner glue its prompt onto the user's text. `entered` reports any bare
  * Enter (it also answers an open dialog); `submitted` one that sent text.
+ * `dismissed` reports Esc or Ctrl+C — both reject an open dialog — `escaped`
+ * Esc alone, and `interrupted` that the agent's turn was cut short (no Stop
+ * hook follows). `escRun` counts the Escs pressed in a row with no other key
+ * between them, across chunks; `doubleEscaped` says it reached two — the one
+ * Esc pattern that may open a selector (see SessionUiState).
  */
 export function foldTerminalInput(
-  state: { pending: boolean; lastChar: string },
+  state: { pending: boolean; lastChar: string; escRun?: number },
   data: string,
-): { pending: boolean; lastChar: string; entered: boolean; submitted: boolean } {
+): {
+  pending: boolean;
+  lastChar: string;
+  entered: boolean;
+  submitted: boolean;
+  dismissed: boolean;
+  escaped: boolean;
+  interrupted: boolean;
+  escRun: number;
+  doubleEscaped: boolean;
+} {
   let { pending, lastChar } = state;
+  let escRun = state.escRun ?? 0;
   let entered = false;
   let submitted = false;
+  let dismissed = false;
+  let escaped = false;
+  let interrupted = false;
+  let doubleEscaped = false;
   let index = 0;
   while (index < data.length) {
     if (data.startsWith(BRACKETED_PASTE_START, index)) {
@@ -304,15 +366,32 @@ export function foldTerminalInput(
       index = end < 0 ? data.length : end + BRACKETED_PASTE_END.length;
       pending = true;
       lastChar = "";
+      escRun = 0;
       continue;
     }
     const char = data[index];
     index += 1;
     if (char === "\x03") {
+      dismissed = true;
+      // With text in the composer Ctrl+C clears it; with none it interrupts.
+      if (!pending) interrupted = true;
       pending = false;
       lastChar = "";
+      escRun = 0;
       continue;
     }
+    // A lone ESC is the Esc key — xterm sends sequences (arrows, Alt+key,
+    // Alt+Enter) as one chunk that starts with ESC and goes on.
+    if (char === "\x1b" && (index >= data.length || data[index] === "\x1b")) {
+      dismissed = true;
+      escaped = true;
+      interrupted = true;
+      lastChar = "";
+      escRun += 1;
+      if (escRun >= 2) doubleEscaped = true;
+      continue;
+    }
+    escRun = 0;
     if (char === "\r" && lastChar !== "\\" && lastChar !== "\x1b") {
       entered = true;
       if (pending) submitted = true;
@@ -323,7 +402,7 @@ export function foldTerminalInput(
     pending = true;
     lastChar = char;
   }
-  return { pending, lastChar, entered, submitted };
+  return { pending, lastChar, entered, submitted, dismissed, escaped, interrupted, escRun, doubleEscaped };
 }
 
 type TaskStateKind =
@@ -941,6 +1020,18 @@ export class AgentTaskRunner {
    * Start (or resume) the task — inject initial prompt into worker.
    */
   async startTask(workspaceId: string): Promise<boolean> {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (workspace) this.#takeUserWordForScreens(workspace, ["worker", "judge"], "start");
+    return this.#runUserAction(
+      workspaceId,
+      "startTask",
+      this.#startTask(workspaceId),
+      (state) =>
+        `The task prompt did not reach the agent (the task is now ${state}). Continue sends it on the agent's next idle, or use Resend.`,
+    );
+  }
+
+  async #startTask(workspaceId: string): Promise<boolean> {
     const state = this.#getState?.();
     const candidate = state?.workspaces.find((w) => w.id === workspaceId);
     if (!candidate || !isTaskWorkspace(candidate)) {
@@ -1096,6 +1187,7 @@ export class AgentTaskRunner {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
     this.#cancelTaskInjections(workspace);
+    this.#forgetUserActivity(workspace);
 
     // Krok 4 — record where we paused from so Continue resumes to the right
     // state (e.g. judge-evaluating, so the verdict gets read) rather than
@@ -1124,6 +1216,7 @@ export class AgentTaskRunner {
       return false;
 
     this.#cancelTaskInjections(workspace);
+    this.#forgetUserActivity(workspace);
 
     // Krok 4 — capture the pre-pause state for a correct Continue.
     workspace.task.pausedFromState = workspace.task.state;
@@ -1487,6 +1580,8 @@ export class AgentTaskRunner {
 
     const task = workspace.task;
     const previousState = task.state;
+    this.#forgetUserActivity(workspace);
+    this.#takeUserWordForScreens(workspace, ["worker", "judge"], "continue");
     this.#advanceTaskLifecycle(workspaceId, "resume");
     // Restore to the state we were in before pausing, not always "running".
     // If paused during judge-evaluating, resume to judge-evaluating so the
@@ -1693,6 +1788,7 @@ export class AgentTaskRunner {
 
     let task = workspace.task;
     this.#cancelTaskInjections(workspace);
+    this.#forgetUserActivity(workspace);
     const previousState = task.state;
     const isAttached = task.mode === "attached";
     this.#advanceTaskLifecycle(workspaceId, "reset");
@@ -1803,6 +1899,31 @@ export class AgentTaskRunner {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
     const sessionId = sessionIdFor(workspace, role);
+    const vouched = this.#takeUserWordForScreens(workspace, [role], "resend");
+    // A write into this session is already on its way (waiting for the user,
+    // or going in) — possibly before any instruction was sent, like the /clear
+    // ahead of the first one: a second write beside it would glue the two
+    // together in the composer, and it carries the latest instruction anyway.
+    if ((this.#deliveriesInFlight.get(sessionId) ?? 0) > 0 || (this.#politeWaits.get(sessionId) ?? 0) > 0) {
+      log.info("resendLastInstruction: a delivery to this session is already in progress — not starting another", {
+        workspaceId,
+        role,
+        vouched,
+        ...this.#politeLogContext(sessionId),
+      });
+      const where = this.#panelPhrase(workspace.task, role);
+      void this.#logTaskEvent(
+        workspace,
+        "resend-skipped",
+        this.#politeWaitReason(sessionId) === "dialog-open"
+          ? `The ${role}'s next write is already waiting — behind a dialog open in ${where}. Answer the dialog there and it goes in.`
+          : vouched
+            ? `Taken as your word that ${where} is at its prompt: the ${role}'s next write goes in as soon as the panel is free.`
+            : `The ${role}'s next write is already on its way — it goes in as soon as the panel is free.`,
+      );
+      this.#broadcastState!();
+      return true;
+    }
     const text = this.#lastInjected.get(sessionId);
     if (!text) {
       log.warn("resendLastInstruction: nothing to resend", { workspaceId, role });
@@ -2037,27 +2158,75 @@ export class AgentTaskRunner {
       task.companionLastFeedbackAt = new Date().toISOString();
     }
 
-    try {
-      if (!refresh()) return false;
-      if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) {
-        if (!refresh()) return false;
-        await rollback();
-        return false;
-      }
-      if (!refresh()) return false;
-    } catch (err: unknown) {
-      if (!refresh()) return false;
-      log.error("rejectTaskVerdict: failed to inject prompt", { workspaceId, err: (err as Error)?.message });
+    const target = task.mode === "attached" ? "Primary conversation" : "Worker";
+    // A delivery that fails undoes the round, says so on the task log, and —
+    // once the user's action has already returned — raises an alert, so the
+    // failure reaches them either way.
+    const failDelivery = async (err: unknown, afterReturn: boolean): Promise<void> => {
+      log.error("rejectTaskVerdict: failed to inject prompt", {
+        workspaceId,
+        afterReturn,
+        err: err instanceof Error ? err.message : err === null ? "not delivered" : String(err),
+      });
       const { verificationRestored } = await rollback();
-      const target = task.mode === "attached" ? "Primary conversation" : "Worker";
-      void this.#logTaskEvent(
-        workspace,
-        "verdict-reject-failed",
-        verificationRestored
-          ? `Could not deliver your feedback to the ${target} — the verdict stands, try again.`
-          : `Could not deliver your feedback to the ${target} — the verdict stands, but ${VERIFICATION_FILE} could NOT be put back and now holds an empty template. Check it before sending back again.`,
-      );
+      const message = verificationRestored
+        ? `Could not deliver your feedback to the ${target} — the verdict stands, try again.`
+        : `Could not deliver your feedback to the ${target} — the verdict stands, but ${VERIFICATION_FILE} could NOT be put back and now holds an empty template. Check it before sending back again.`;
+      const current = workspace;
+      if (!current) return;
+      void this.#logTaskEvent(current, "verdict-reject-failed", message);
+      if (afterReturn) this.#raiseTaskAlert(current, "failed", message);
       this.#broadcastState!();
+    };
+
+    if (!refresh()) return false;
+    // The prompt waits for the user if they are working in the panel — that
+    // can take minutes, and the user's own Send back must not: a request with
+    // no answer for 30 s is dropped by the mobile relay. Whatever is still
+    // undecided once the delivery has to wait goes on in the background, like
+    // Resend.
+    const settled = this.#injectPrompt(workerSessionId, prompt, workspace).then(
+      (delivered) => ({ delivered, err: null as unknown }),
+      (err: unknown) => ({ delivered: false, err }),
+    );
+    const outcome = await this.#awaitUnlessUserDefers(workspaceId, settled);
+    if (!outcome.done) {
+      log.info("rejectTaskVerdict: feedback queued until the user is done in the panel", {
+        workspaceId,
+        round: task.currentRound,
+        ...this.#politeLogContext(workerSessionId),
+      });
+      void settled.then(async ({ delivered, err }) => {
+        if (delivered) return;
+        if (err || refresh() || this.#onlySessionsChanged(operation, expectedStates)) {
+          // The task still stands where Send back left it (at most its session
+          // was replaced): undo the round and say so.
+          const current = this.#findTaskWorkspace(workspaceId);
+          if (current && !refresh())
+            operation = this.#captureTaskOperation(current, "reject-task-verdict", { round: true });
+          await failDelivery(err, true);
+          return;
+        }
+        // The task moved on before the feedback went in (Pause, the session
+        // exiting, Reset). Nothing to undo — but the user must know it never
+        // arrived; it stays the last instruction, so Resend can deliver it.
+        const current = this.#findTaskWorkspace(workspaceId);
+        if (!current || current.task.taskId !== operation.taskId) return;
+        const message = `Your feedback did not reach the ${target} (the task is now ${current.task.state}). It is kept as the last instruction — use Resend once the ${target} is working again.`;
+        log.error("rejectTaskVerdict: feedback was not delivered", {
+          workspaceId,
+          state: current.task.state,
+          ...this.#politeLogContext(workerSessionId),
+        });
+        void this.#logTaskEvent(current, "verdict-reject-undelivered", message);
+        this.#raiseTaskAlert(current, "failed", message);
+        this.#broadcastState!();
+      });
+    } else if (!outcome.value.delivered) {
+      if (!refresh()) return false;
+      await failDelivery(outcome.value.err, false);
+      return false;
+    } else if (!refresh()) {
       return false;
     }
 
@@ -2087,6 +2256,42 @@ export class AgentTaskRunner {
     const isJudge = role === "judge";
     // Before any state branch: the turn ended whatever the task does with it.
     this.#noteAgentSignal(sessionId, source);
+    // A dialog is the agent asking the user something in the middle of its
+    // turn — not an idle. Nothing here may treat it as one: no nudge (Claude
+    // delivers a message typed mid-turn into the running turn), no evaluation,
+    // no round. Not consumed either, so the runtime raises the user's own
+    // alert for it — in a task panel nothing else would tell them.
+    if (DIALOG_IDLE_SOURCES.has(source)) {
+      // A permission prompt is classified urgent, so the runtime's own alert
+      // reaches the user. Any other dialog (an MCP elicitation, a session
+      // needing input) is a normal-urgency question, which raiseAlert in
+      // runtime-attention.ts holds back while the runner owns the turn — and
+      // with no runner write waiting, no long-wait warning would follow
+      // either. Then the task tells the user itself, at once.
+      const runtimeHoldsBack = source !== "hook:permission_prompt" && this.#runtimeHoldsBackQuestions(task, role);
+      log.info("onAgentIdle: a dialog waits for the user in a task panel — not the task's idle", {
+        sessionId,
+        source,
+        workspaceId,
+        role,
+        taskState: task.state,
+        runnerAlerts: runtimeHoldsBack,
+      });
+      if (runtimeHoldsBack) this.#tellUserTaskWaits(sessionId, "dialog-open");
+      return false;
+    }
+    // A runner write is still waiting for the user here, so this idle ends a
+    // turn of theirs (or one from before it) — not the agent's answer to the
+    // write the task is waiting on. Driving the task with it would start an
+    // evaluation, a nudge or the same prompt again ahead of that write.
+    if ((this.#politeWaits.get(sessionId) ?? 0) > 0) {
+      log.debug("onAgentIdle: a runner write waits for the user in this session — not the task's idle", {
+        sessionId,
+        source,
+        ...this.#politeLogContext(sessionId),
+      });
+      return true;
+    }
     log.debug("onAgentIdle: task workspace found", {
       sessionId,
       workspaceId,
@@ -3354,6 +3559,8 @@ export class AgentTaskRunner {
       case "Notification":
         // Recorded before the attached-judge branch below can consume it: an
         // open dialog must block the runner from pressing Enter for the user.
+        // A dialog is not consumed (onAgentIdle returns false for it): the
+        // user's own alert has to go out for it.
         this.#noteAgentSignal(sessionId, subtype ? `hook:${subtype}` : "hook:notification");
         if (subtype === "permission_prompt" && this.#handleJudgePermissionPrompt(sessionId)) return true;
         return this.onAgentIdle(sessionId, subtype ? `hook:${subtype}` : "hook:notification");
@@ -3445,7 +3652,11 @@ export class AgentTaskRunner {
     const runnerWaiting = (this.#submitWaiters.get(sessionId)?.length ?? 0) > 0;
     activity.turnActive = true;
     activity.turnStartedAt = Date.now();
-    activity.dialogOpen = false;
+    activity.lastPromptSubmitAt = activity.turnStartedAt;
+    activity.uiState = "prompt";
+    activity.sawPromptSubmit = true;
+    const providerKey = this.#promptSubmitProviderKey(sessionId);
+    if (providerKey) this.#promptSubmitProviders.add(providerKey);
     if (!runnerWaiting) {
       activity.userTurn = true;
       activity.pending = false;
@@ -5568,6 +5779,11 @@ Write the corrected file, then stop.`;
     void this.#logTaskEvent(workspace, "task-resumed-reconcile", `Resumed to ${resumeTo}; nothing to reconcile.`);
   }
 
+  /** An answer to this task is still being delivered — answerCompanionTask refuses another. */
+  isCompanionAnswerInFlight(workspaceId: string): boolean {
+    return this.#answersInFlight.has(workspaceId);
+  }
+
   /**
    * Explicit answer action for an attached task in `awaiting-user`
    * (plan §8.5). Appends the clarification to TASK.md as authoritative
@@ -5575,6 +5791,34 @@ Write the corrected file, then stop.`;
    * round — a needs-input pause never consumes a round.
    */
   async answerCompanionTask(workspaceId: string, questionIds: string[], answer: string): Promise<boolean> {
+    // One answer at a time: a second one would supersede the first delivery
+    // and append a second clarification to TASK.md.
+    if (this.#answersInFlight.has(workspaceId)) {
+      log.warn("answerCompanionTask: an answer is already being delivered", { workspaceId });
+      const workspace = this.#findTaskWorkspace(workspaceId);
+      if (workspace) {
+        void this.#logTaskEvent(
+          workspace,
+          "companion-answer-rejected",
+          "Your previous answer is still on its way to the Primary conversation — it goes in as soon as the panel is free.",
+        );
+      }
+      return false;
+    }
+    this.#answersInFlight.add(workspaceId);
+    const answering = this.#answerCompanionTask(workspaceId, questionIds, answer).finally(() =>
+      this.#answersInFlight.delete(workspaceId),
+    );
+    return this.#runUserAction(
+      workspaceId,
+      "answerCompanionTask",
+      answering,
+      (state) =>
+        `Your answer did not reach the Primary conversation (the task is now ${state}). The questions stay open — answer again.`,
+    );
+  }
+
+  async #answerCompanionTask(workspaceId: string, questionIds: string[], answer: string): Promise<boolean> {
     let workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
     const task = workspace.task;
@@ -5655,7 +5899,22 @@ Write the corrected file, then stop.`;
     const prompt = buildCompanionAnswerPrompt(workspace.task, answeredPending, trimmed);
     const workerSessionId = sessionIdFor(workspace, "worker");
     try {
-      if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) return false;
+      if (!(await this.#injectPrompt(workerSessionId, prompt, workspace))) {
+        if (this.#onlySessionsChanged(operation, new Set(["awaiting-user"]))) {
+          // The Primary's session went away under the delivery; the task is
+          // still waiting for this answer.
+          log.error("answerCompanionTask: the Primary session ended before the answer went in", { workspaceId });
+          const current = this.#findTaskWorkspace(workspaceId);
+          if (current) {
+            void this.#logTaskEvent(
+              current,
+              "companion-answer-failed",
+              "Could not deliver the answer — the Primary conversation's session ended. The question is still open, answer again.",
+            );
+          }
+        }
+        return false;
+      }
       if (!refresh()) return false;
     } catch (err: unknown) {
       if (!refresh()) return false;
@@ -6003,6 +6262,17 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * evaluates from a clean context after the user's own Q&A.
    */
   async #clearSessionContext(sessionId: string, workspace: TaskWorkspaceState): Promise<boolean> {
+    this.#deliveriesInFlight.set(sessionId, (this.#deliveriesInFlight.get(sessionId) ?? 0) + 1);
+    try {
+      return await this.#clearSessionContextNow(sessionId, workspace);
+    } finally {
+      const remaining = (this.#deliveriesInFlight.get(sessionId) ?? 1) - 1;
+      if (remaining > 0) this.#deliveriesInFlight.set(sessionId, remaining);
+      else this.#deliveriesInFlight.delete(sessionId);
+    }
+  }
+
+  async #clearSessionContextNow(sessionId: string, workspace: TaskWorkspaceState): Promise<boolean> {
     if (!this.#writeToSession) return true;
     if (this.#disposed) return false;
     const generation = this.#beginSessionInjection(sessionId, workspace);
@@ -6034,6 +6304,17 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * "Read {file} and follow it now" directives via tmux send_keys.
    */
   async #injectPrompt(sessionId: string, text: string, workspace: TaskWorkspaceState | null): Promise<boolean> {
+    this.#deliveriesInFlight.set(sessionId, (this.#deliveriesInFlight.get(sessionId) ?? 0) + 1);
+    try {
+      return await this.#injectPromptNow(sessionId, text, workspace);
+    } finally {
+      const remaining = (this.#deliveriesInFlight.get(sessionId) ?? 1) - 1;
+      if (remaining > 0) this.#deliveriesInFlight.set(sessionId, remaining);
+      else this.#deliveriesInFlight.delete(sessionId);
+    }
+  }
+
+  async #injectPromptNow(sessionId: string, text: string, workspace: TaskWorkspaceState | null): Promise<boolean> {
     if (!this.#writeToSession || this.#disposed) {
       log.warn("injectPrompt: writeToSession not available", { sessionId });
       return false;
@@ -6114,43 +6395,42 @@ Do NOT continue working on the task — only write the handoff summary.`;
       return true;
     }
 
-    const SUBMIT_CONFIRM_TIMEOUT_MS = AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS;
-    const MAX_RESUBMITS = AgentTaskRunner.MAX_RESUBMITS;
-    // The confirmation clock starts when the text actually goes in — after any
-    // polite wait, and afresh for a restarted write — so waiting for the user
-    // never reads as a lost Enter.
-    let confirmation: { promise: Promise<boolean>; cancel: () => void } | null = null;
-    await this.#writeAndSubmit(sessionId, injection, strategy, generation, injectionSignal, {
-      ...writeOptions,
-      beforeWrite: () => {
-        confirmation?.cancel();
-        confirmation = this.#startSubmitConfirmation(sessionId, SUBMIT_CONFIRM_TIMEOUT_MS);
-      },
-    });
-    const firstConfirmation = confirmation as { promise: Promise<boolean> } | null;
-    if (!this.#isCurrentInjection(sessionId, generation) || !firstConfirmation) return false;
-    if (await this.#confirmedInjection(sessionId, generation, firstConfirmation.promise, 0, injection, strategy)) {
-      return true;
-    }
-    for (let attempt = 1; attempt <= MAX_RESUBMITS; attempt++) {
-      if (!this.#isCurrentInjection(sessionId, generation)) return false;
-      // Text is already in the composer — just re-send Enter. Not once the user
-      // has typed there since our Enter: that Enter would submit THEIR text.
-      if (this.#userTypedSince(sessionId, this.#activityFor(sessionId).lastRunnerSubmitAt)) {
-        log.info("injectPrompt: not re-sending Enter — the user is typing in the session", {
+    let rewrites = 0;
+    for (;;) {
+      // The confirmation clock starts when the text actually goes in — after any
+      // polite wait, and afresh for a restarted write — so waiting for the user
+      // never reads as a lost Enter.
+      let confirmation: { promise: Promise<boolean>; cancel: () => void } | null = null;
+      await this.#writeAndSubmit(sessionId, injection, strategy, generation, injectionSignal, {
+        ...writeOptions,
+        beforeWrite: () => {
+          confirmation?.cancel();
+          confirmation = this.#startSubmitConfirmation(sessionId, AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS);
+        },
+      });
+      const firstConfirmation = confirmation as { promise: Promise<boolean> } | null;
+      if (!this.#isCurrentInjection(sessionId, generation) || !firstConfirmation) return false;
+      const outcome = await this.#awaitSubmitConfirmation(
+        sessionId,
+        generation,
+        firstConfirmation.promise,
+        injection,
+        strategy,
+      );
+      if (outcome === "rewrite") {
+        rewrites += 1;
+        if (rewrites <= AgentTaskRunner.MAX_UNCONFIRMED_REWRITES) continue;
+        log.warn("injectPrompt: still unconfirmed after rewriting the prompt — assuming it went in", {
           sessionId,
-          attempt,
+          rewrites,
           ...this.#politeLogContext(sessionId),
         });
         return true;
       }
-      const confirmed = this.#waitForSubmitConfirmation(sessionId, SUBMIT_CONFIRM_TIMEOUT_MS);
-      log.warn("injectPrompt: submit not confirmed, re-sending Enter", { sessionId, attempt });
-      this.#writeToSession!(sessionId, "\r", injectionSignal);
-      this.#noteRunnerSubmit(sessionId, true);
-      if (await this.#confirmedInjection(sessionId, generation, confirmed, attempt, injection, strategy)) return true;
+      if (outcome !== "unconfirmed") return outcome === "confirmed";
+      break;
     }
-    if (!this.#isCurrentInjection(sessionId, generation)) return false;
+    const MAX_RESUBMITS = AgentTaskRunner.MAX_RESUBMITS;
     log.warn("injectPrompt: submit unconfirmed after retries", { sessionId });
     if (workspace) {
       void this.#logTaskEvent(
@@ -6160,6 +6440,87 @@ Do NOT continue working on the task — only write the handoff summary.`;
       );
     }
     return true;
+  }
+
+  /**
+   * Hook-capable providers: wait for UserPromptSubmit after our Enter, and
+   * re-send Enter if it does not come — unless the user has typed into the
+   * session since, because that Enter would submit THEIR text. Then the
+   * outcome is settled with them (see #settleUnconfirmedSubmit), never just
+   * assumed: a lost Enter left our prompt unsubmitted while the task waited
+   * for a Stop that could not come.
+   */
+  async #awaitSubmitConfirmation(
+    sessionId: string,
+    generation: AbortController,
+    firstConfirmation: Promise<boolean>,
+    injection: string,
+    strategy: InjectionStrategy,
+  ): Promise<"confirmed" | "unconfirmed" | "rewrite" | "stopped"> {
+    if (await this.#confirmedInjection(sessionId, generation, firstConfirmation, 0, injection, strategy)) {
+      return "confirmed";
+    }
+    for (let attempt = 1; attempt <= AgentTaskRunner.MAX_RESUBMITS; attempt++) {
+      if (!this.#isCurrentInjection(sessionId, generation)) return "stopped";
+      const enterAt = this.#activityFor(sessionId).lastRunnerSubmitAt;
+      // The user typed since our Enter (that Enter would submit THEIR text), or
+      // the screen is no longer a prompt (it would answer what is on it).
+      if (this.#userTypedSince(sessionId, enterAt) || this.#politeWaitReason(sessionId) !== null) {
+        if (!this.#reportsPromptSubmit(sessionId)) {
+          // No UserPromptSubmit ever arrived from this provider: a missing one
+          // proves nothing, so the prompt may well be in — never write it twice.
+          log.info("injectPrompt: submit unconfirmed, but this provider never reports submits — not rewriting", {
+            sessionId,
+            attempt,
+            ...this.#politeLogContext(sessionId),
+          });
+          // Let the user finish: text they leave behind — ours with it, if our
+          // Enter was the one that got lost — is sent for them once the agent
+          // is at its prompt.
+          if (!(await this.#awaitPoliteWindow(sessionId, generation))) return "stopped";
+          return "unconfirmed";
+        }
+        return this.#settleUnconfirmedSubmit(sessionId, generation, enterAt, attempt);
+      }
+      const confirmed = this.#waitForSubmitConfirmation(sessionId, AgentTaskRunner.SUBMIT_CONFIRM_TIMEOUT_MS);
+      log.warn("injectPrompt: submit not confirmed, re-sending Enter", { sessionId, attempt });
+      this.#writeToSession!(sessionId, "\r", generation.signal);
+      this.#noteRunnerSubmit(sessionId, true);
+      if (await this.#confirmedInjection(sessionId, generation, confirmed, attempt, injection, strategy)) {
+        return "confirmed";
+      }
+    }
+    return this.#isCurrentInjection(sessionId, generation) ? "unconfirmed" : "stopped";
+  }
+
+  /**
+   * Our Enter went unconfirmed and the user has typed since. Let them finish
+   * (the polite window also sends text they leave behind, and waits for the
+   * answer). Anything submitted after our Enter carried our prompt with it —
+   * alone, or together with their keys — so the write is done. Nothing
+   * submitted means our text never went in or the user cleared it: write it
+   * again.
+   */
+  async #settleUnconfirmedSubmit(
+    sessionId: string,
+    generation: AbortController,
+    enterAt: number,
+    attempt: number,
+  ): Promise<"confirmed" | "rewrite" | "stopped"> {
+    log.info("injectPrompt: submit unconfirmed and the user is typing — waiting for them before deciding", {
+      sessionId,
+      attempt,
+      ...this.#politeLogContext(sessionId),
+    });
+    const submittedSinceEnter = () => this.#activityFor(sessionId).lastPromptSubmitAt >= enterAt;
+    if (submittedSinceEnter()) return "confirmed";
+    if (!(await this.#awaitPoliteWindow(sessionId, generation))) return "stopped";
+    if (submittedSinceEnter()) return "confirmed";
+    log.info("injectPrompt: the runner's prompt never went in — writing it again", {
+      sessionId,
+      ...this.#politeLogContext(sessionId),
+    });
+    return "rewrite";
   }
 
   async #confirmedInjection(
@@ -6529,8 +6890,9 @@ Do NOT continue working on the task — only write the handoff summary.`;
           finish("stopped");
           return;
         }
-        // The user typed between two of our characters: stop at this boundary.
-        if (this.#userTypedSince(sessionId, inputMark)) {
+        // The user typed between two of our characters, or a dialog came up
+        // that our next character would answer: stop at this boundary.
+        if (this.#userTypedSince(sessionId, inputMark) || this.#screenNotAtPrompt(sessionId)) {
           finish("interrupted");
           return;
         }
@@ -6541,7 +6903,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
               finish("stopped");
               return;
             }
-            if (this.#userTypedSince(sessionId, inputMark)) {
+            if (this.#userTypedSince(sessionId, inputMark) || this.#screenNotAtPrompt(sessionId)) {
               finish("interrupted");
               return;
             }
@@ -6678,7 +7040,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
           finish("stopped");
           return;
         }
-        if (this.#userTypedSince(sessionId, inputMark)) {
+        if (this.#userTypedSince(sessionId, inputMark) || this.#screenNotAtPrompt(sessionId)) {
           finish("interrupted");
           return;
         }
@@ -6713,10 +7075,95 @@ Do NOT continue working on the task — only write the handoff summary.`;
   static POLITE_POLL_MS = 500;
   /** A turn with no busy output for this long counts as over even without its idle signal. */
   static TURN_QUIET_FALLBACK_MS = 30_000;
+  /** A polite wait this long is logged at warn (and again every interval) — never a silent stall. */
+  static POLITE_WAIT_WARN_MS = 5 * 60_000;
 
   #sessionActivity = new Map<string, SessionUserActivity>();
+  /** User actions (Start, Send back, answer) waiting on their own runner write, per task workspace. */
+  #userActionWaiters = new Map<string, Set<() => void>>();
+
+  /**
+   * Await `step` on behalf of a user action — unless one of the task's runner
+   * writes starts waiting for the user first: then stop waiting (`done:
+   * false`) and let the step finish in the background. A user's click must
+   * not hang for as long as they keep typing in a panel; over the mobile relay
+   * a request with no answer after 30 s is dropped.
+   */
+  async #awaitUnlessUserDefers<T>(
+    workspaceId: string,
+    step: Promise<T>,
+  ): Promise<{ done: true; value: T } | { done: false }> {
+    let release!: () => void;
+    const deferred = new Promise<{ done: false }>((resolve) => (release = () => resolve({ done: false })));
+    const waiters = this.#userActionWaiters.get(workspaceId) ?? new Set<() => void>();
+    waiters.add(release);
+    this.#userActionWaiters.set(workspaceId, waiters);
+    try {
+      return await Promise.race([step.then((value) => ({ done: true as const, value })), deferred]);
+    } finally {
+      waiters.delete(release);
+      if (waiters.size === 0) this.#userActionWaiters.delete(workspaceId);
+    }
+  }
+
+  /** A runner write for this session's task started waiting for the user. */
+  #releaseUserActionWaiters(sessionId: string): void {
+    const workspaceId = this.#resolveTaskBinding(sessionId)?.workspace.id;
+    const waiters = workspaceId ? this.#userActionWaiters.get(workspaceId) : undefined;
+    if (!waiters) return;
+    for (const release of [...waiters]) release();
+  }
+
+  /**
+   * Run a user action whose runner writes may have to wait for the user. It
+   * answers with its own result when that comes quickly; once a write waits,
+   * it answers "accepted" and the rest goes on in the background, where a
+   * failure is still logged and raised as a task alert.
+   */
+  async #runUserAction(
+    workspaceId: string,
+    label: string,
+    action: Promise<boolean>,
+    lateFailure: (_state: string) => string,
+  ): Promise<boolean> {
+    const settled = action.then(
+      (ok) => ({ ok, err: null as unknown }),
+      (err: unknown) => ({ ok: false, err }),
+    );
+    const outcome = await this.#awaitUnlessUserDefers(workspaceId, settled);
+    if (outcome.done) {
+      if (outcome.value.err) throw outcome.value.err;
+      return outcome.value.ok;
+    }
+    log.info(`${label}: continuing in the background — a write waits for the user in the panel`, { workspaceId });
+    void settled.then(({ ok, err }) => {
+      if (ok) return;
+      // The user's action already answered "accepted": a failure now must
+      // still reach them, not only the log (CLAUDE.md, failed user actions).
+      const workspace = this.#findTaskWorkspace(workspaceId);
+      log.error(`${label}: did not complete in the background`, {
+        workspaceId,
+        state: workspace?.task.state ?? null,
+        err: err === null ? null : ((err as Error)?.message ?? String(err)),
+      });
+      if (!workspace) return;
+      const message = lateFailure(workspace.task.state);
+      void this.#logTaskEvent(workspace, "user-action-failed", message);
+      this.#raiseTaskAlert(workspace, "failed", message);
+      this.#broadcastState!();
+    });
+    return true;
+  }
   /** Sessions with a runner write currently waiting for the user (count per session). */
   #politeWaits = new Map<string, number>();
+  /** Providers whose UserPromptSubmit hook has been seen working (see #reportsPromptSubmit). */
+  #promptSubmitProviders = new Set<string>();
+  /** Prompt / clear deliveries in flight per session — a Resend must not run beside one. */
+  #deliveriesInFlight = new Map<string, number>();
+  /** Task workspaces whose Companion answer is being delivered. */
+  #answersInFlight = new Set<string>();
+  /** A rewritten prompt is retried at most this often when its submit stays unconfirmed. */
+  static MAX_UNCONFIRMED_REWRITES = 2;
 
   #activityFor(sessionId: string): SessionUserActivity {
     let activity = this.#sessionActivity.get(sessionId);
@@ -6728,14 +7175,47 @@ Do NOT continue working on the task — only write the handoff summary.`;
         turnActive: false,
         userTurn: false,
         turnStartedAt: 0,
-        dialogOpen: false,
+        uiState: "prompt",
+        escRun: 0,
+        sawPromptSubmit: false,
         lastRunnerSubmitAt: 0,
+        lastPromptSubmitAt: 0,
         clearGeneration: null,
         clearedAt: 0,
       };
       this.#sessionActivity.set(sessionId, activity);
     }
     return activity;
+  }
+
+  /** A dialog or an uncertain screen appeared — no Enter may follow (see the rule). */
+  #screenNotAtPrompt(sessionId: string): boolean {
+    return (this.#sessionActivity.get(sessionId)?.uiState ?? "prompt") !== "prompt";
+  }
+
+  /** Which provider a session runs, for "does its UserPromptSubmit hook work?" — null when unknown. */
+  #promptSubmitProviderKey(sessionId: string): string | null {
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding || binding.task.mode === "attached") return null;
+    const config = binding.role === "worker" ? binding.task.workerProviderConfig : binding.task.judgeProviderConfig;
+    return config?.providerId || "claude";
+  }
+
+  /** UserPromptSubmit is known to reach the runner for this session (or its provider). */
+  #reportsPromptSubmit(sessionId: string): boolean {
+    if (this.#sessionActivity.get(sessionId)?.sawPromptSubmit) return true;
+    const providerKey = this.#promptSubmitProviderKey(sessionId);
+    return !!providerKey && this.#promptSubmitProviders.has(providerKey);
+  }
+
+  /** The operation is stale only because a session was replaced (respawn, exit). */
+  #onlySessionsChanged(operation: TaskOperationContext, expectedStates?: ReadonlySet<string>): boolean {
+    const failures = this.#staleTaskOperationChecks(
+      operation,
+      this.#findTaskWorkspace(operation.workspaceId),
+      expectedStates,
+    );
+    return failures.length > 0 && failures.every((failure) => failure.check === "sessionIncarnation");
   }
 
   #userTypedSince(sessionId: string, mark: number): boolean {
@@ -6756,6 +7236,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
     activity.lastRunnerSubmitAt = now;
     activity.pending = false;
     activity.lastChar = "\r";
+    activity.escRun = 0; // our keys came between: an Esc after them starts a new run
     // A slash command (/clear) is handled by the CLI itself: no agent turn, no Stop.
     if (startsTurn) {
       activity.turnActive = true;
@@ -6769,21 +7250,46 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * without a Stop hook; providers without hooks only ever end this way). */
   #agentTurnEnded(sessionId: string, activity: SessionUserActivity, now: number): boolean {
     if (!activity.turnActive) return true;
+    // A dialog is silent: "no output for 30 s" proves nothing then — only the
+    // agent's own signals end that turn.
+    if (activity.uiState !== "prompt") return false;
     return (
       now - activity.turnStartedAt >= AgentTaskRunner.TURN_QUIET_FALLBACK_MS &&
       !(this.#isSessionBusy?.(sessionId) ?? false)
     );
   }
 
-  /** What the runner's next write into `sessionId` has to wait for, if anything. */
+  /**
+   * What the runner's next write into `sessionId` has to wait for, if anything.
+   *
+   * THE RULE: the runner never answers, accepts, selects or confirms anything
+   * on the user's behalf. Every key it sends — its own text, the Enter after
+   * it, an Enter for text the user left behind, a key that dismisses a
+   * rate-limit dialog — lands on whatever the agent shows. So while a dialog
+   * is up, or the screen is uncertain (two Escs in a row: a selector may have
+   * opened), nothing is written at all. The wait ends only on a positive
+   * signal that the agent is at its prompt (see #noteAgentSignal /
+   * #recordUserInput; for an uncertain screen only a submitted prompt) or —
+   * for an uncertain screen, never for a dialog — the user's own word for it,
+   * a Continue / Resend / Start on the dashboard (#takeUserWordForScreens). It is never given up, warns every
+   * POLITE_WAIT_WARN_MS (the first time also on the task's dashboard, see
+   * #reportLongPoliteWait), and Pause / Stop / Reset end it at once.
+   *
+   * The single exception, by design: Claude Code's rate-limit menu, which the
+   * runner answers with Enter to take its default choice, "wait for the limit
+   * to reset" (#pressDialogEnter). The runner sees that menu in the output —
+   * no dialog hook reports it — and a task left on it would never resume.
+   */
   #politeWaitReason(sessionId: string, { quietOnly = false }: { quietOnly?: boolean } = {}): PoliteWaitReason | null {
     const activity = this.#sessionActivity.get(sessionId);
-    if (!activity || activity.lastInputAt === 0) return null; // the user never typed here
+    if (!activity) return null;
+    if (activity.uiState === "dialog") return "dialog-open";
+    if (activity.uiState === "uncertain") return "ui-uncertain";
+    if (activity.lastInputAt === 0) return null; // the user never typed here
     const now = Date.now();
     if (now - activity.lastInputAt < AgentTaskRunner.USER_QUIET_MS) return "user-typing";
     if (quietOnly) return null;
     if (activity.pending) {
-      if (activity.dialogOpen) return "dialog-open";
       if (!this.#agentTurnEnded(sessionId, activity, now)) return "agent-turn";
       return "submit-pending";
     }
@@ -6854,6 +7360,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
   async #politeWaitLoop(sessionId: string, controller: AbortController, quietOnly: boolean): Promise<boolean> {
     const startedAt = Date.now();
     let deferredFor: PoliteWaitReason | null = null;
+    let nextWarnAt = AgentTaskRunner.POLITE_WAIT_WARN_MS;
     for (;;) {
       if (!this.#isCurrentInjection(sessionId, controller)) return false;
       const reason = this.#politeWaitReason(sessionId, { quietOnly });
@@ -6877,7 +7384,19 @@ Do NOT continue working on the task — only write the handoff summary.`;
           waitingFor: reason,
           ...this.#politeLogContext(sessionId),
         });
+        if (deferredFor === null) this.#releaseUserActionWaiters(sessionId);
         deferredFor = reason;
+      }
+      const waitedMs = Date.now() - startedAt;
+      if (waitedMs >= nextWarnAt) {
+        log.warn("task injection still waiting for the user", {
+          sessionId,
+          waitingFor: reason,
+          waitedMs,
+          ...this.#politeLogContext(sessionId),
+        });
+        if (nextWarnAt === AgentTaskRunner.POLITE_WAIT_WARN_MS) this.#reportLongPoliteWait(sessionId, reason);
+        nextWarnAt += AgentTaskRunner.POLITE_WAIT_WARN_MS;
       }
       const activity = this.#activityFor(sessionId);
       const delay =
@@ -6886,6 +7405,97 @@ Do NOT continue working on the task — only write the handoff summary.`;
           : AgentTaskRunner.POLITE_POLL_MS;
       if (!(await this.#waitForInjectionDelay(sessionId, controller, Math.max(1, delay)))) return false;
     }
+  }
+
+  /**
+   * A runner write has waited POLITE_WAIT_WARN_MS: say so where the user looks,
+   * not only in strideterm.log — the task's Activity log says what it waits for
+   * and what ends the wait, and when only the user can end it (a dialog, a
+   * possible selector) an alert points at the panel.
+   */
+  #reportLongPoliteWait(sessionId: string, reason: PoliteWaitReason): void {
+    log.info("task injection: told the user about a long wait", {
+      sessionId,
+      waitingFor: reason,
+      ...this.#politeLogContext(sessionId),
+    });
+    this.#tellUserTaskWaits(sessionId, reason);
+  }
+
+  /**
+   * Tell the user that the task waits on them in a panel: the task's Activity
+   * log says what for and what ends the wait, and when only they can end it
+   * (a dialog, a possible selector) an urgent alert points at the panel.
+   */
+  #tellUserTaskWaits(sessionId: string, reason: PoliteWaitReason): void {
+    const binding = this.#resolveTaskBinding(sessionId);
+    if (!binding) return;
+    const { workspace, task, role } = binding;
+    const where = this.#panelPhrase(task, role);
+    const resend = this.#resendButtonLabel(task, role);
+    let message: string;
+    switch (reason) {
+      case "dialog-open":
+        message = `The task is waiting for you: a dialog is open in ${where}, and the runner never answers one for you. Answer it there and the task goes on.`;
+        break;
+      case "ui-uncertain":
+        message = `The task is waiting for you: Esc was pressed twice in ${where}, which may have opened a selector, so the runner types nothing into it. Close it there, then press ${resend} on the dashboard (or send a message in that panel) and the task goes on.`;
+        break;
+      case "user-typing":
+        message = `The task's next step for ${where} waits while you type there — it goes in once you leave the panel alone for ${AgentTaskRunner.USER_QUIET_MS / 1000} s.`;
+        break;
+      case "agent-turn":
+        message = `The task's next step for ${where} waits for the agent's current turn there to end; then the text you left in its composer is sent for you, and the task goes on.`;
+        break;
+      default:
+        message = `The task's next step for ${where} waits until the agent there has answered your message.`;
+    }
+    void this.#logTaskEvent(workspace, "waiting-for-user", message);
+    if (reason === "dialog-open" || reason === "ui-uncertain") {
+      this.#raiseAlert?.({
+        projectId: workspace.id,
+        panelId: role === "worker" ? task.workerPanelId : task.judgePanelId,
+        sessionId,
+        title: formatWorkspaceDisplayName(workspace),
+        kind: "waiting",
+        tier: 1,
+        // A task stalled on the user: urgent, like a failed task (a normal
+        // "waiting" alert is suppressed while the runner owns the turn).
+        urgency: "urgent",
+        detail: `task-waiting: ${message}`,
+      });
+    }
+    this.#broadcastState?.();
+  }
+
+  /**
+   * Mirrors the task-panel rule in runtime-attention.ts raiseAlert: a
+   * normal-urgency question from the Worker or Judge panel of a task
+   * workspace is not shown while the runner owns the turn. An attached
+   * task's Primary lives in an ordinary workspace, which the rule never
+   * covers.
+   */
+  #runtimeHoldsBackQuestions(task: RuntimeTaskState, role: "worker" | "judge"): boolean {
+    if (task.mode === "attached" && role === "worker") return false;
+    return RUNNER_OWNED_TURN_STATES.has(task.state);
+  }
+
+  /** The panel of a role, as the user knows it: "the Worker panel", "the Primary conversation"… */
+  #panelPhrase(task: RuntimeTaskState, role: "worker" | "judge"): string {
+    if (task.mode === "attached") {
+      return role === "worker"
+        ? "the Primary conversation"
+        : `the ${COMPANION_ROLE_DISPLAY_NAMES[task.companionRole as CompanionRole]} panel`;
+    }
+    return role === "worker" ? "the Worker panel" : "the Judge panel";
+  }
+
+  /** The dashboard's Resend button for a role, as TaskDashboardPane labels it. */
+  #resendButtonLabel(task: RuntimeTaskState, role: "worker" | "judge"): string {
+    if (task.mode === "attached") {
+      return role === "worker" ? "↻ Primary" : `↻ ${COMPANION_ROLE_DISPLAY_NAMES[task.companionRole as CompanionRole]}`;
+    }
+    return role === "worker" ? "↻ Worker" : "↻ Judge";
   }
 
   /** Step (b): press Enter on the text the user left behind — their message, sent for them. */
@@ -6900,6 +7510,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
     const now = Date.now();
     activity.pending = false;
     activity.lastChar = "\r";
+    activity.escRun = 0;
     activity.turnActive = true;
     activity.userTurn = true;
     activity.turnStartedAt = now;
@@ -6919,7 +7530,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
       pendingInput: activity?.pending ?? false,
       turnActive: activity?.turnActive ?? false,
       userTurn: activity?.userTurn ?? false,
-      dialogOpen: activity?.dialogOpen ?? false,
+      uiState: activity?.uiState ?? "prompt",
     };
   }
 
@@ -6933,15 +7544,48 @@ Do NOT continue working on the task — only write the handoff summary.`;
       activity.pending = true;
       return;
     }
-    const folded = foldTerminalInput({ pending: activity.pending, lastChar: activity.lastChar }, text);
+    const folded = foldTerminalInput(
+      { pending: activity.pending, lastChar: activity.lastChar, escRun: activity.escRun },
+      text,
+    );
+    const uiBefore = activity.uiState;
     activity.pending = folded.pending;
     activity.lastChar = folded.lastChar;
-    if (folded.entered && activity.dialogOpen) {
-      // Enter answered the dialog; the agent carries on with its own turn.
-      activity.dialogOpen = false;
+    activity.escRun = folded.escRun;
+    if (folded.interrupted) {
+      // An interrupted turn ends without a Stop hook.
+      //
+      // Known limitation: Claude Code may put the message whose turn an Esc
+      // interrupted back into its composer. The runner sees only the keys,
+      // not the screen, so that text is invisible to it: the runner's next
+      // write (after the usual quiet) is appended to it and both go in as one
+      // message. No agent signal reports a restored composer.
+      activity.turnActive = false;
+      activity.userTurn = false;
+    }
+    if (folded.doubleEscaped) {
+      // Two Escs in a row may have opened a selector (Claude's rewind picker,
+      // Codex's backtrack). Only the agent — or the user's own word — can say
+      // it did not (see the rule).
+      activity.uiState = "uncertain";
+    } else if (folded.dismissed && uiBefore === "dialog") {
+      // A single Esc or Ctrl+C rejects the dialog and leaves the agent at its
+      // prompt; neither opens anything. (A single Esc on an uncertain screen
+      // settles nothing: in Codex's backtrack it steps further back.)
+      activity.uiState = "prompt";
+    } else if (folded.entered && uiBefore === "dialog") {
+      // Enter answered the dialog — the user's own answer. The agent carries
+      // on with the turn, which still has to end before the runner writes.
+      activity.uiState = "prompt";
       return;
     }
     if (folded.submitted) {
+      // The user sent text from where they were. For an agent that reports
+      // nothing back (no hooks) that is the only proof there is that the
+      // screen was a prompt; one with hooks confirms it with UserPromptSubmit.
+      if (uiBefore === "uncertain" && !(this.#isSessionHookCapable?.(sessionId) ?? false)) {
+        activity.uiState = "prompt";
+      }
       activity.turnActive = true;
       activity.userTurn = true;
       activity.turnStartedAt = activity.lastInputAt;
@@ -6950,18 +7594,66 @@ Do NOT continue working on the task — only write the handoff summary.`;
 
   /** Turn and dialog bookkeeping from the idle / hook signals the runner already receives. */
   #noteAgentSignal(sessionId: string, source: string): void {
-    const activity = this.#sessionActivity.get(sessionId);
-    if (!activity) return;
     if (DIALOG_IDLE_SOURCES.has(source)) {
-      activity.dialogOpen = true;
+      // Recorded even for a session the user never typed in: the runner's own
+      // next write must not land in the dialog either.
+      this.#activityFor(sessionId).uiState = "dialog";
       return;
     }
-    if (!TURN_END_IDLE_SOURCES.has(source)) return;
+    const activity = this.#sessionActivity.get(sessionId);
+    if (!activity) return;
+    // A turn end the agent itself reports (Stop, idle_prompt, a shell prompt)
+    // closes a dialog; the runtime's silence timers do not — a dialog left
+    // open is silent too. Neither settles an uncertain screen: nothing proves
+    // an agent says nothing while its selector is open (Claude's rewind
+    // picker, Codex's backtrack), and an Enter there picks an old message.
+    // Only UserPromptSubmit or the user's own word does (onUserPromptSubmit,
+    // #recordUserInput, #takeUserWordForScreens).
+    if (DIALOG_CLOSING_IDLE_SOURCES.has(source) && activity.uiState === "dialog") activity.uiState = "prompt";
+    if (!TURN_END_IDLE_SOURCES.has(source) || activity.uiState === "dialog") return;
     activity.turnActive = false;
     activity.userTurn = false;
-    // Silence is not proof a dialog went away — a dialog is silent too. Only a
-    // real end of turn (or the user's Enter, or a new prompt) closes it.
-    if (source === "hook:stop" || source === "osc133") activity.dialogOpen = false;
+  }
+
+  /**
+   * A user action on the task (Pause, Stop, Reset, Continue) forgets the turn
+   * the runner believed was running — a lost Stop must not hold the next write
+   * back for ever. Never what is on the screen or in the composer: a dialog
+   * still open after Continue is still the user's to answer (see the rule).
+   */
+  #forgetUserActivity(workspace: TaskWorkspaceState): void {
+    for (const sessionId of [sessionIdFor(workspace, "worker"), sessionIdFor(workspace, "judge")]) {
+      const activity = this.#sessionActivity.get(sessionId);
+      if (!activity) continue;
+      activity.turnActive = false;
+      activity.userTurn = false;
+      activity.turnStartedAt = 0;
+    }
+  }
+
+  /**
+   * An explicit dashboard action (Continue, Resend, Start) is the user's word
+   * that these panels are at their prompt — it settles an uncertain screen
+   * (two Escs: maybe a selector), which no agent signal may ever settle for an
+   * agent that reports nothing back. Never a dialog: one the agent reported
+   * is still waiting for the user's answer in the panel (see the rule).
+   */
+  #takeUserWordForScreens(workspace: TaskWorkspaceState, roles: Array<"worker" | "judge">, action: string): boolean {
+    let settled = false;
+    for (const role of roles) {
+      const sessionId = sessionIdFor(workspace, role);
+      const activity = this.#sessionActivity.get(sessionId);
+      if (!activity || activity.uiState !== "uncertain") continue;
+      activity.uiState = "prompt";
+      activity.escRun = 0;
+      settled = true;
+      log.info("task injection: the user's dashboard action vouches the panel is at its prompt", {
+        sessionId,
+        action,
+        ...this.#politeLogContext(sessionId),
+      });
+    }
+    return settled;
   }
 
   /**
@@ -7039,8 +7731,9 @@ Do NOT continue working on the task — only write the handoff summary.`;
       // Send Enter separately after text is written (same pattern as #injectPrompt)
       setTimeout(() => {
         if (!this.#currentTaskOperation(operation, expectedState)) return;
-        // The user typed into our half-written notice: start over politely.
-        if (this.#userTypedSince(workerSessionId, inputMark)) {
+        // The user typed into our half-written notice, or a dialog came up
+        // that the Enter would answer: start over politely.
+        if (this.#userTypedSince(workerSessionId, inputMark) || this.#screenNotAtPrompt(workerSessionId)) {
           this.#activityFor(workerSessionId).pending = true;
           log.info("task injection restarted: the user typed during the runner's write", {
             sessionId: workerSessionId,
@@ -7073,10 +7766,12 @@ Do NOT continue working on the task — only write the handoff summary.`;
   }
 
   /**
-   * Answer an on-screen dialog with Enter (Claude's rate-limit options). Only
-   * the user's hands have to be off the keyboard (step a): the agent is not
-   * idle while the dialog is up, so waiting for its turn to end would wait
-   * forever.
+   * Answer an on-screen dialog with Enter (Claude's rate-limit options, whose
+   * default is "wait for the limit to reset") — the one deliberate exception
+   * to the rule in #politeWaitReason. Only the user's hands have to be off
+   * the keyboard (step a): the agent is not idle while the dialog is up, so
+   * waiting for its turn to end would wait forever. A dialog the agent
+   * reported, or an uncertain screen, still holds it back.
    */
   #pressDialogEnter(workspace: TaskWorkspaceState, sessionId: string): void {
     if (!this.#writeToSession) return;

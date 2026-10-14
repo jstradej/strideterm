@@ -707,7 +707,12 @@ async function onAnswerCompanion({ questionIds, answer }: { questionIds: string[
     const r = await api.answerCompanionTask({ workspaceId: id, questionIds, answer });
     if (r?.payload) store.handleBroadcastPayload(r.payload);
     if (r && (r as { ok?: boolean }).ok === false) {
-      await taskToast("Could not send decision", "The task may no longer be awaiting your input.");
+      await taskToast(
+        "Could not send decision",
+        (r as { reason?: string }).reason === "answer-in-flight"
+          ? "Your previous answer is still on its way to the Primary conversation — it goes in as soon as the panel is free."
+          : "The task may no longer be awaiting your input.",
+      );
     }
   } catch (err) {
     console.error("[task-dashboard] answer companion failed:", err);
