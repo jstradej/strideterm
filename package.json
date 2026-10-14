@@ -186,7 +186,7 @@
     "@types/yauzl": "3.4.0",
     "@vitejs/plugin-vue": "^6",
     "@vue/test-utils": "^2.5",
-    "concurrently": "^10.0.5",
+    "concurrently": "^10.0.6",
     "electron": "^44.7.0",
     "electron-builder": "^26.15.3",
     "eslint": "^10.12.0",
