@@ -173,7 +173,7 @@
     "winston": "^3.19.0",
     "ws": "^8.21.3",
     "yauzl": "3.4.0",
-    "zod": "^4.6.2"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@effect/language-service": "0.87.4",
