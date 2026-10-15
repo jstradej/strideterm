@@ -146,6 +146,59 @@ describe("RemoteClientRegistry", () => {
       expect(client.activeSessionId).toBe("ws-b:y");
     });
 
+    test("seeds from live focus within the requested profile and leaves existing views alone", () => {
+      const liveFocus = new Map([
+        ["p1-old", 100],
+        ["p1-current", 500],
+        ["p2-focused", 900],
+      ]);
+      const registry = new RemoteClientRegistry((windowId) => liveFocus.get(windowId));
+      const state = makeState({
+        profiles: [{ id: "p1" }, { id: "p2" }],
+        workspaces: [
+          { id: "ws-a", profileId: "p1" },
+          { id: "ws-b", profileId: "p1" },
+          { id: "ws-other", profileId: "p2" },
+        ],
+        windowSlots: [
+          {
+            id: "p1-old",
+            profileId: "p1",
+            activeWorkspaceId: "ws-a",
+            activeSessionId: "ws-a:shell",
+            lastFocusedAt: 900,
+          },
+          {
+            id: "p1-current",
+            profileId: "p1",
+            activeWorkspaceId: "ws-b",
+            activeSessionId: "ws-b:terminal",
+            lastFocusedAt: 100,
+          },
+          {
+            id: "p2-focused",
+            profileId: "p2",
+            activeWorkspaceId: "ws-other",
+            activeSessionId: "ws-other:shell",
+            lastFocusedAt: 1000,
+          },
+        ],
+      });
+
+      const first = registry.getOrCreate("session1", state, "p1");
+      expect(first.activeWorkspaceId).toBe("ws-b");
+      expect(first.activeSessionId).toBe("ws-b:terminal");
+
+      liveFocus.set("p1-old", 1000);
+      expect(registry.getOrCreate("session1", state, "p1")).toBe(first);
+      expect(first.activeWorkspaceId).toBe("ws-b");
+      expect(first.activeSessionId).toBe("ws-b:terminal");
+
+      const second = registry.getOrCreate("session2", state, "p1");
+      expect(second.activeWorkspaceId).toBe("ws-a");
+      expect(second.activeSessionId).toBe("ws-a:shell");
+    });
+
     test("most-recent wins regardless of slot array order", () => {
       const registry = new RemoteClientRegistry();
       const state = makeState({

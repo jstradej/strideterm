@@ -9533,6 +9533,10 @@ export async function createRuntime({
       if (windowId) windowFocusedAt.set(windowId, Date.now());
     },
 
+    getWindowFocusedAt(windowId: string): number | undefined {
+      return windowFocusedAt.get(windowId);
+    },
+
     async removeWindowSlot(windowId: string) {
       windowFocusedAt.delete(windowId);
       // The window that started the sign-in is closing, so the person who started it is gone. Any

@@ -425,6 +425,7 @@ type AnyFn = (...args: any[]) => any;
  * The actual runtime object returned by createRuntime() satisfies this shape.
  */
 interface Runtime {
+  getWindowFocusedAt?: (windowId: string) => number | undefined;
   isPrivateSshOperationSessionId?: (sessionId: unknown) => boolean;
   isSshTestSessionId?: (sessionId: unknown) => boolean;
   listWorkspaceDirectories?: (
@@ -2766,7 +2767,7 @@ export async function startRemoteServer({
 
   // Per-session remote client contexts — profile / workspace / session the
   // browser is currently looking at.  Never persisted; wiped on restart.
-  const registry = new RemoteClientRegistry();
+  const registry = new RemoteClientRegistry((windowId) => runtime.getWindowFocusedAt?.(windowId));
   registry.startCleanupSweep();
   // Expose the registry so runtime can call fallback helpers when profiles /
   // workspaces are deleted (runtime.setRemoteClientRegistry).

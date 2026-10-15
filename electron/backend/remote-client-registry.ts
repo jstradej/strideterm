@@ -31,10 +31,14 @@ export interface RemoteClientContext {
   lastSeenAt: number;
 }
 
+type WindowFocusTimestamp = (windowId: string) => number | undefined;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyState = any;
 
 export class RemoteClientRegistry {
+  constructor(private readonly getWindowFocusedAt?: WindowFocusTimestamp) {}
+
   private readonly clients = new Map<string, RemoteClientContext>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -81,17 +85,19 @@ export class RemoteClientRegistry {
   /**
    * The desktop window a freshly-bound client should adopt its view from: the
    * most recently focused slot in `profileId`, or null when the profile has no
-   * desktop window. Focus ordering follows the same convention as main.ts's
-   * primary-window pick (`lastFocusedAt || 0`, highest wins); ties keep the
-   * earlier slot so the result is deterministic.
+   * desktop window. Live runtime focus timestamps take precedence, with the
+   * persisted slot timestamp as a fallback; ties keep the earlier slot so the
+   * result is deterministic.
    */
   private primarySlotForProfile(appState: AnyState, profileId: string): AnyState | null {
     const slots: AnyState[] = appState?.windowSlots || [];
     const inProfile = slots.filter((slot: AnyState) => String(slot?.profileId || "") === profileId);
     if (inProfile.length === 0) return null;
-    return inProfile.reduce((best: AnyState, slot: AnyState) =>
-      Number(slot?.lastFocusedAt || 0) > Number(best?.lastFocusedAt || 0) ? slot : best,
-    );
+    const timestamp = (slot: AnyState): number => {
+      const live = this.getWindowFocusedAt?.(String(slot?.id || ""));
+      return typeof live === "number" && Number.isFinite(live) ? live : Number(slot?.lastFocusedAt || 0);
+    };
+    return inProfile.reduce((best: AnyState, slot: AnyState) => (timestamp(slot) > timestamp(best) ? slot : best));
   }
 
   /**
