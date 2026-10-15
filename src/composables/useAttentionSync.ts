@@ -122,6 +122,7 @@ export function useAttentionSync(api: Transport) {
   let lastSyncKey = "";
   let disposed = false;
   let windowFocused = typeof document !== "undefined" ? document.hasFocus() : true;
+  let hostVisible = true;
 
   // Track browser/Electron window focus so the backend can treat "visible +
   // focused" as real user engagement (Phase 2 § 3.2.5).
@@ -135,9 +136,20 @@ export function useAttentionSync(api: Transport) {
     lastSyncKey = "";
     sync();
   }
+  function onHostVisibility(event: Event) {
+    const detail = (event as CustomEvent<{ visible?: unknown; handled?: boolean }>).detail;
+    if (typeof detail?.visible !== "boolean") return;
+    detail.handled = true;
+    const visible = detail.visible;
+    if (visible === hostVisible) return;
+    hostVisible = visible;
+    lastSyncKey = "";
+    sync();
+  }
   if (typeof window !== "undefined") {
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
+    window.addEventListener("strideterm:host-visibility", onHostVisibility);
   }
 
   // The server dropped an id from this socket's live routing set (its panel was
@@ -188,11 +200,14 @@ export function useAttentionSync(api: Transport) {
     const base = documentTitleBase + profileLabel;
     document.title = count > 0 ? `(${count}) ${base}` : base;
 
-    const { visibleSessionIds, subscriptionIds, syncKey } = deriveAttentionSync(
+    const derived = deriveAttentionSync(
       appStore as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       windowFocused,
       isMobileViewport.value,
     );
+    const visibleSessionIds = hostVisible ? derived.visibleSessionIds : [];
+    const subscriptionIds = hostVisible ? derived.subscriptionIds : [];
+    const syncKey = `${derived.syncKey}:${hostVisible}`;
 
     // Deduplicate: skip API call if nothing changed
     if (syncKey === lastSyncKey) return;
@@ -208,7 +223,7 @@ export function useAttentionSync(api: Transport) {
       }
     }
 
-    api.syncAttentionContext?.({ visibleSessionIds, windowFocused });
+    api.syncAttentionContext?.({ visibleSessionIds, windowFocused: windowFocused && hostVisible });
 
     // Drive the remote terminal-stream subscription off what is actually
     // rendered: the client streams (and replays) only those terminals —
@@ -219,13 +234,14 @@ export function useAttentionSync(api: Transport) {
     // If any visible tab still has an attention alert, schedule a re-sync
     // so the backend clears it once ATTENTION_MIN_DISPLAY_MS (3s) elapses.
     clearTimeout(resyncTimer);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const hasVisibleAlert = (appStore.visibleTabs as any[]).some((tab: any) =>
-      appStore.getTabAttentionForView(
-        (tab.ownerWorkspaceId as string) || appStore.activeWorkspace?.id || "",
-        tabSessionId(tab),
-      ),
-    );
+    const hasVisibleAlert =
+      hostVisible &&
+      (appStore.visibleTabs as unknown[]).some((tab) =>
+        appStore.getTabAttentionForView(
+          ((tab as { ownerWorkspaceId?: string }).ownerWorkspaceId as string) || appStore.activeWorkspace?.id || "",
+          tabSessionId(tab as { id: string; sessionId?: string }),
+        ),
+      );
     if (hasVisibleAlert) {
       resyncTimer = setTimeout(() => {
         lastSyncKey = ""; // Force next sync
@@ -265,6 +281,7 @@ export function useAttentionSync(api: Transport) {
     if (typeof window !== "undefined") {
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("strideterm:host-visibility", onHostVisibility);
     }
   });
 }

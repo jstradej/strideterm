@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { nextTick } from "vue";
+import { effectScope, nextTick } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import { useAppStore } from "../stores/app.js";
 import { deriveAttentionSync, deriveGridSessionIds, useAttentionSync } from "./useAttentionSync.js";
@@ -295,6 +295,81 @@ describe("useAttentionSync — terminal:removed resyncs deterministically (findi
     pushState(appStore);
     await nextTick();
     expect(api.subscribeTerminals).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("useAttentionSync — native host visibility", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    setActivePinia(createPinia());
+  });
+  afterEach(() => vi.useRealTimers());
+
+  test("hidden host clears visible sessions and subscriptions, then restores current state", async () => {
+    const scope = effectScope();
+    const appStore = useAppStore();
+    appStore.payload = {
+      appState: {
+        profiles: [{ id: "default", name: "Default" }],
+        activeWorkspaceId: "ws1",
+        workspaces: [
+          {
+            id: "ws1",
+            kind: "terminal",
+            profileId: "default",
+            layout: { type: "solo", viewId: "ws1:p1" },
+            activeViewId: "ws1:p1",
+            panels: [{ id: "p1", title: "Terminal" }],
+          },
+        ],
+      },
+      remoteClient: { profileId: "default", activeWorkspaceId: "ws1", activeSessionId: "ws1:p1" },
+    } as never;
+    await nextTick();
+    const api = {
+      subscribeTerminals: vi.fn(),
+      syncAttentionContext: vi.fn(),
+    };
+    scope.run(() => useAttentionSync(api as never));
+
+    window.dispatchEvent(new CustomEvent("strideterm:host-visibility", { detail: { visible: false } }));
+    expect(api.subscribeTerminals).toHaveBeenLastCalledWith([]);
+    expect(api.syncAttentionContext).toHaveBeenLastCalledWith({ visibleSessionIds: [], windowFocused: false });
+
+    // Mutations during the hidden period still keep the server's view empty.
+    appStore.payload = {
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [
+          {
+            id: "ws1",
+            kind: "terminal",
+            profileId: "default",
+            layout: { type: "solo", viewId: "ws1:p1" },
+            activeViewId: "ws1:p1",
+            panels: [
+              { id: "p1", title: "Terminal" },
+              { id: "p2", title: "Shell" },
+            ],
+          },
+        ],
+      },
+      remoteClient: { profileId: "default", activeWorkspaceId: "ws1", activeSessionId: "ws1:p1" },
+      workspace: { workspace: { id: "ws1" }, sessions: [{ sessionId: "ws1:p1", panelId: "p1", title: "Terminal" }] },
+    } as never;
+    await nextTick();
+    vi.advanceTimersByTime(50);
+    expect(api.subscribeTerminals).toHaveBeenLastCalledWith([]);
+    expect(api.syncAttentionContext).toHaveBeenLastCalledWith({ visibleSessionIds: [], windowFocused: false });
+
+    window.dispatchEvent(new CustomEvent("strideterm:host-visibility", { detail: { visible: true } }));
+    expect(api.subscribeTerminals).toHaveBeenLastCalledWith(expect.arrayContaining([expect.any(String)]));
+    expect(api.syncAttentionContext).toHaveBeenLastCalledWith({
+      visibleSessionIds: expect.arrayContaining([expect.any(String)]),
+      windowFocused: document.hasFocus(),
+    });
+    scope.stop();
   });
 });
 

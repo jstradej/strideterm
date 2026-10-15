@@ -129,6 +129,35 @@ describe("remote transport endpoint routing", () => {
     });
   });
 
+  it("sets host visibility only for a native host and dispatches the visibility event", () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    createRemoteTransport();
+    const received: Array<{ visible: unknown; handled: boolean }> = [];
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      detail.handled = true;
+      received.push({ visible: detail.visible, handled: detail.handled });
+    };
+    const bridge = (window as unknown as { __stridetermRemote: { setHostVisible(value: unknown): boolean } })
+      .__stridetermRemote;
+
+    expect(bridge.setHostVisible(false)).toBe(false);
+    window.addEventListener("strideterm:host-visibility", handler);
+    expect(bridge.setHostVisible(false)).toBe(true);
+    expect(bridge.setHostVisible("false")).toBe(false);
+    expect(received).toEqual([{ visible: false, handled: true }]);
+    window.removeEventListener("strideterm:host-visibility", handler);
+    expect(bridge.setHostVisible(true)).toBe(false);
+  });
+
+  it("does not expose host visibility control in a plain browser", () => {
+    createRemoteTransport();
+    const bridge = (window as unknown as { __stridetermRemote: { setHostVisible(value: unknown): boolean } })
+      .__stridetermRemote;
+    expect(bridge.setHostVisible(false)).toBe(false);
+  });
+
   it("activateProfile calls /api/remote-client/profile/activate with profileId", async () => {
     const transport = createRemoteTransport();
     await transport.activateProfile!("p1").catch(() => {});
@@ -164,6 +193,100 @@ describe("remote transport endpoint routing", () => {
       type: "selection-result",
       requestId: 7,
       ok: true,
+    });
+  });
+
+  it("different-profile native selection activates profile before workspace", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const payload = { remoteClient: { profileId: "p2", activeWorkspaceId: "workspace-p2" } };
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      calls.push(String(url));
+      return { ok: true, json: async () => payload } as Response;
+    });
+    const transport = createRemoteTransport();
+    transport.onStateUpdated(vi.fn());
+    const socket = MockWebSocket.instances.at(-1)!;
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: { remoteClient: { profileId: "p1" }, appState: { workspaces: [] }, coreRevision: 1 },
+    });
+    const bridge = (
+      window as unknown as { __stridetermRemote: { selectTarget: (...args: unknown[]) => Promise<void> } }
+    ).__stridetermRemote;
+
+    await bridge.selectTarget("p2", "workspace-next", 15);
+
+    const selectionCalls = calls.filter((url) => url.includes("/api/remote-client/"));
+    expect(selectionCalls).toHaveLength(2);
+    expect(selectionCalls[0]).toContain("/api/remote-client/profile/activate");
+    expect(selectionCalls[1]).toContain("/api/remote-client/workspace/activate");
+  });
+
+  it("same-profile workspace selection skips profile activation", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const calls: string[] = [];
+    const payload = { remoteClient: { profileId: "p1", activeWorkspaceId: "ws-next" } };
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      calls.push(String(url));
+      return { ok: true, json: async () => payload } as Response;
+    });
+    const transport = createRemoteTransport();
+    transport.onStateUpdated(vi.fn());
+    const socket = MockWebSocket.instances.at(-1)!;
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws-current" },
+        appState: { workspaces: [] },
+        coreRevision: 1,
+      },
+    });
+    calls.length = 0;
+    const bridge = (
+      window as unknown as { __stridetermRemote: { selectTarget: (...args: unknown[]) => Promise<void> } }
+    ).__stridetermRemote;
+
+    await bridge.selectTarget("p1", "ws-next", 17);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("/api/remote-client/workspace/activate");
+    expect(calls.some((url) => url.includes("/api/remote-client/profile/activate"))).toBe(false);
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "selection-result",
+      requestId: 17,
+      ok: true,
+    });
+  });
+
+  it("does not attempt workspace activation when cross-profile activation fails", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      calls.push(String(url));
+      return { ok: false, status: 403, json: async () => ({}) } as Response;
+    });
+    const bridge =
+      (createRemoteTransport(),
+      (
+        window as unknown as {
+          __stridetermRemote: { selectTarget: (...args: unknown[]) => Promise<void> };
+        }
+      ).__stridetermRemote);
+
+    await bridge.selectTarget("p2", "workspace-next", 16);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("/api/remote-client/profile/activate");
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
+      type: "selection-result",
+      requestId: 16,
+      ok: false,
     });
   });
 

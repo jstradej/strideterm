@@ -1614,7 +1614,10 @@ export function createRemoteTransport(): Transport {
       },
       selectTarget: async (profileId: string, workspaceId: string | null, requestId: number, panelId?: string) => {
         try {
-          let payload = await fetchJson("/api/remote-client/profile/activate", { profileId });
+          let payload: unknown;
+          if (!workspaceId || profileId !== selectedProfileId) {
+            payload = await fetchJson("/api/remote-client/profile/activate", { profileId });
+          }
           if (workspaceId) payload = await fetchJson("/api/remote-client/workspace/activate", { workspaceId });
           noteCoreRevision(payload);
           if (panelId) {
@@ -1668,6 +1671,12 @@ export function createRemoteTransport(): Transport {
         } catch {
           postHost({ type: "selection-result", requestId, ok: false });
         }
+      },
+      setHostVisible: (visible: unknown) => {
+        if (!mobileHost || typeof mobileHost.postMessage !== "function" || typeof visible !== "boolean") return false;
+        const detail: { visible: boolean; handled: boolean } = { visible, handled: false };
+        window.dispatchEvent(new CustomEvent("strideterm:host-visibility", { detail }));
+        return detail.handled;
       },
       suspend: suspendTransport,
       resume: resumeTransport,
