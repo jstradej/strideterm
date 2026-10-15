@@ -202,6 +202,7 @@ export interface RemotePanelSelectionDetail {
   workspaceId: string;
   panelId: string;
   handled: boolean;
+  signal?: AbortSignal;
   resolve: () => void;
   reject: (reason?: unknown) => void;
 }
@@ -763,6 +764,8 @@ export function createRemoteTransport(): Transport {
   let lastCoreRevision = -1;
   let selectedProfileId: string | null = null;
   let selectedWorkspaceId: string | null = null;
+  let targetSelectionGeneration = 0;
+  let activeTargetSelection: { requestId: number; controller: AbortController } | null = null;
   let cancelActiveBrowse: (() => void) | null = null;
   // The FIRST WS is created synchronously at construction — before the HTTP
   // bootstrap has recorded a revision — so its URL cannot carry `?rev=` and the
@@ -1613,14 +1616,40 @@ export function createRemoteTransport(): Transport {
         dispatchTerminalReadyRequest(request);
       },
       selectTarget: async (profileId: string, workspaceId: string | null, requestId: number, panelId?: string) => {
+        const generation = ++targetSelectionGeneration;
+        const previousSelection = activeTargetSelection;
+        const controller = new AbortController();
+        const selection = { requestId, controller };
+        activeTargetSelection = selection;
+        previousSelection?.controller.abort();
+        const isCurrent = () => generation === targetSelectionGeneration && !controller.signal.aborted;
+        let failurePhase: "profile-activation" | "workspace-activation" | "panel-selection" = "profile-activation";
         try {
           let payload: unknown;
           if (!workspaceId || profileId !== selectedProfileId) {
-            payload = await fetchJson("/api/remote-client/profile/activate", { profileId });
+            if (!isCurrent()) return;
+            failurePhase = "profile-activation";
+            payload = await fetchJson(
+              "/api/remote-client/profile/activate",
+              { profileId },
+              { signal: controller.signal },
+            );
+            if (!isCurrent()) return;
           }
-          if (workspaceId) payload = await fetchJson("/api/remote-client/workspace/activate", { workspaceId });
+          if (workspaceId) {
+            if (!isCurrent()) return;
+            failurePhase = "workspace-activation";
+            payload = await fetchJson(
+              "/api/remote-client/workspace/activate",
+              { workspaceId },
+              { signal: controller.signal },
+            );
+            if (!isCurrent()) return;
+          }
           noteCoreRevision(payload);
+          if (!isCurrent()) return;
           if (panelId) {
+            failurePhase = "panel-selection";
             if (!workspaceId) throw new Error("A panel selection requires a workspace");
             await new Promise<void>((resolve, reject) => {
               let settled = false;
@@ -1629,6 +1658,7 @@ export function createRemoteTransport(): Transport {
                 workspaceId,
                 panelId,
                 handled: false,
+                signal: controller.signal,
                 resolve: () => finish(resolve),
                 reject: (reason) => finish(() => reject(reason)),
               };
@@ -1639,13 +1669,19 @@ export function createRemoteTransport(): Transport {
                 settled = true;
                 window.clearTimeout(readyTimeout);
                 window.removeEventListener(REMOTE_PANEL_SELECTION_READY_EVENT, onReady);
+                controller.signal.removeEventListener("abort", onAbort);
                 complete();
               };
+              const onAbort = () => finish(() => reject(new Error("Panel selection was superseded")));
               const failIfStillUnhandled = () => {
                 if (!detail.handled) finish(() => reject(new Error("Renderer panel selection is not ready")));
               };
               const requestSelection = () => {
                 if (settled) return;
+                if (!isCurrent()) {
+                  onAbort();
+                  return;
+                }
                 safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
                 window.dispatchEvent(
                   new CustomEvent<RemotePanelSelectionDetail>(REMOTE_PANEL_SELECTION_EVENT, { detail }),
@@ -1656,12 +1692,15 @@ export function createRemoteTransport(): Transport {
                 }
                 window.addEventListener(REMOTE_PANEL_SELECTION_READY_EVENT, onReady, { once: true });
               };
+              controller.signal.addEventListener("abort", onAbort, { once: true });
               readyTimeout = window.setTimeout(failIfStillUnhandled, REMOTE_PANEL_SELECTION_READY_TIMEOUT_MS);
               requestSelection();
             });
           } else {
+            if (!isCurrent()) return;
             safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
           }
+          if (!isCurrent()) return;
           postHost({
             type: "selection-result",
             requestId,
@@ -1669,8 +1708,18 @@ export function createRemoteTransport(): Transport {
             ...(panelId ? { profileId, workspaceId, panelId } : {}),
           });
         } catch {
-          postHost({ type: "selection-result", requestId, ok: false });
+          if (isCurrent()) postHost({ type: "selection-result", requestId, ok: false, failurePhase });
+        } finally {
+          if (activeTargetSelection === selection) activeTargetSelection = null;
         }
+      },
+      cancelTargetSelection: (requestId: number) => {
+        const selection = activeTargetSelection;
+        if (!selection || selection.requestId !== requestId) return false;
+        targetSelectionGeneration += 1;
+        activeTargetSelection = null;
+        selection.controller.abort();
+        return true;
       },
       setHostVisible: (visible: unknown) => {
         if (!mobileHost || typeof mobileHost.postMessage !== "function" || typeof visible !== "boolean") return false;

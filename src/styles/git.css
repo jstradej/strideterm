@@ -15,6 +15,42 @@
   display: none;
 }
 
+.git-view__loading-chip,
+.git-view__loading-tab,
+.git-view__loading-mobile-trigger {
+  display: block;
+  height: 22px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--muted), transparent 82%);
+}
+
+.git-view__loading-chip--branch {
+  width: 128px;
+}
+
+.git-view__loading-chip--worktree {
+  width: 84px;
+}
+
+.git-view__loading-chip--action {
+  width: 72px;
+  margin-left: auto;
+}
+
+.git-view__loading-tab {
+  width: 82px;
+  height: 29px;
+}
+
+.git-view__loading-panel {
+  display: grid;
+  place-items: center;
+}
+
+.git-view__loading-mobile-trigger {
+  display: none;
+}
+
 .git-view__panel {
   min-height: 0;
   overflow: hidden;
@@ -710,6 +746,24 @@
        triggers) and the data area. Toolbar and tabs both render as popovers
        anchored under the chrome strip when their menus are open. */
     grid-template-rows: 32px minmax(0, 1fr);
+  }
+
+  .git-view__loading-mobile-trigger {
+    display: block;
+    position: absolute;
+    top: 5px;
+    z-index: 1;
+    width: 92px;
+    height: 22px;
+  }
+
+  .git-view__loading-mobile-trigger--tabs {
+    left: 5px;
+  }
+
+  .git-view__loading-mobile-trigger--actions {
+    right: 5px;
+    width: 76px;
   }
 
   .git-view__panel {

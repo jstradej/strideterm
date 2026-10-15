@@ -193,6 +193,71 @@ describe("SessionManager", () => {
     }
   });
 
+  test("submits bracketed paste as one Paste event followed by one separate Enter", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = createState() as Parameters<typeof SessionManager.prototype.ensureSession>[0];
+      const manager = new SessionManager({ isBracketedPasteEnabled: () => true });
+      manager.ensureSession(state, "workspace-a:shell");
+      manager.submitToSession("workspace-a:shell", "first\r\nsecond\u001b[201~\t\u0085\u0001");
+      manager.writeToSession("workspace-a:shell", "later");
+
+      expect(handles[0]!.writes).toEqual(["\u001b[200~first\rsecond␛[201~\t\u0085\u001b[201~"]);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[0]!.writes).toEqual(["\u001b[200~first\rsecond␛[201~\t\u0085\u001b[201~", "\r", "later"]);
+      const wire = handles[0]!.writes.join("");
+      const pasteEnd = wire.indexOf("\u001b[201~", "\u001b[200~".length);
+      expect(wire.slice(0, "\u001b[200~".length)).toBe("\u001b[200~");
+      expect(wire.slice(pasteEnd + "\u001b[201~".length)).toBe("\rlater");
+
+      manager.submitToSession("workspace-a:shell", "stale");
+      await manager.restartSession(state, "workspace-a:shell");
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[0]!.writes.slice(-1)).toEqual(["\u001b[200~stale\u001b[201~"]);
+      expect(handles[1]!.writes).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("uses raw text for sessions without bracketed paste mode", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new SessionManager({ isBracketedPasteEnabled: () => false });
+      manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+      manager.submitToSession("workspace-a:shell", "first\nsecond\u001b[201~");
+      expect(handles[0]!.writes).toEqual(["first\nsecond\u001b[201~"]);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[0]!.writes).toEqual(["first\nsecond\u001b[201~", "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("samples bracketed-paste mode when queued submits reach the PTY", async () => {
+    vi.useFakeTimers();
+    try {
+      let bracketedPasteEnabled = false;
+      const manager = new SessionManager({
+        isBracketedPasteEnabled: () => bracketedPasteEnabled,
+      });
+      manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+
+      manager.submitToSession("workspace-a:shell", "already written raw");
+      manager.submitToSession("workspace-a:shell", "enable before write");
+      bracketedPasteEnabled = true;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(handles[0]!.writes).toEqual(["already written raw", "\r", "\u001b[200~enable before write\u001b[201~"]);
+
+      manager.submitToSession("workspace-a:shell", "disable before write");
+      bracketedPasteEnabled = false;
+      await vi.advanceTimersByTimeAsync(400);
+      expect(handles[0]!.writes.slice(-3)).toEqual(["\r", "disable before write", "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("bare Enter is immediate and independent sessions do not wait", () => {
     vi.useFakeTimers();
     try {

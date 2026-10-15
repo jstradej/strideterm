@@ -44,6 +44,7 @@ import {
 } from "./mobile/mobile-crypto.js";
 import { PROTOCOL_VERSION, SESSION_KEY_HKDF_INFO } from "./mobile/mobile-schemas.js";
 import { SshManager } from "./ssh/ssh-manager.js";
+import { SessionManager } from "./session-manager.js";
 
 // Lets a single test capture log calls made through getLogger(label), for any
 // label, without altering real logging behavior for the other ~230 tests in
@@ -425,9 +426,11 @@ class FakeSessionManager extends EventEmitter {
   declare getSessionEnv: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare getSessionLaunch: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare isBracketedPasteEnabled: any;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  constructor({ getSessionEnv, getSessionLaunch }: any = {}) {
+  constructor({ getSessionEnv, getSessionLaunch, isBracketedPasteEnabled }: any = {}) {
     super();
     this.sessions = new Map();
     this.syncedStates = [];
@@ -438,6 +441,7 @@ class FakeSessionManager extends EventEmitter {
     this.stopped = false;
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
     this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
+    this.isBracketedPasteEnabled = typeof isBracketedPasteEnabled === "function" ? isBracketedPasteEnabled : null;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1001,6 +1005,8 @@ async function createFixture({
           super();
           sessionManager.getSessionEnv = typeof opts?.getSessionEnv === "function" ? opts.getSessionEnv : null;
           sessionManager.getSessionLaunch = typeof opts?.getSessionLaunch === "function" ? opts.getSessionLaunch : null;
+          sessionManager.isBracketedPasteEnabled =
+            typeof opts?.isBracketedPasteEnabled === "function" ? opts.isBracketedPasteEnabled : null;
           return sessionManager;
         }
       },
@@ -1538,6 +1544,49 @@ describe("runtime integration", () => {
 
     await fixture.runtime.restartSession("backend:shell");
     expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({ data: "" });
+  });
+
+  test("uses terminal output mode when submitting text through SessionManager", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    const isBracketedPasteEnabled = fixture.sessionManager.isBracketedPasteEnabled as
+      ((sessionId: string) => boolean) | null;
+    const writes: string[] = [];
+    const sessions = new SessionManager({
+      isBracketedPasteEnabled: (sessionId) => isBracketedPasteEnabled?.(sessionId) === true,
+    });
+    sessions.sessions.set("backend:shell", {
+      id: "backend:shell",
+      workspaceId: "backend",
+      panelId: "shell",
+      title: "Shell",
+      command: "",
+      cols: 80,
+      rows: 24,
+      status: "running",
+      processHandle: { write: (data: string) => writes.push(data) },
+    } as never);
+
+    vi.useFakeTimers();
+    try {
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "\u001b[?20" });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "04h" });
+      sessions.submitToSession("backend:shell", "prompt");
+      expect(writes).toEqual(["\u001b[200~prompt\u001b[201~"]);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(writes).toEqual(["\u001b[200~prompt\u001b[201~", "\r"]);
+
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "\u001b[?2004l" });
+      sessions.submitToSession("backend:shell", "plain shell text");
+      expect(writes.slice(-1)).toEqual(["plain shell text"]);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(writes.slice(-2)).toEqual(["plain shell text", "\r"]);
+
+      fixture.sessionManager.emit("terminal:spawned", { sessionId: "backend:shell" });
+      expect(isBracketedPasteEnabled?.("backend:shell")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("keeps terminal replay after an UNEXPECTED exit so a later client sees the failure output", async () => {

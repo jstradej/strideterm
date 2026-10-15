@@ -196,6 +196,146 @@ describe("remote transport endpoint routing", () => {
     });
   });
 
+  it("does not let a late target response replace the newer native selection", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const baseline = { coreRevision: 1, remoteClient: { profileId: "p", activeWorkspaceId: "ws-start" } };
+    const payloadA = { coreRevision: 4, remoteClient: { profileId: "p", activeWorkspaceId: "ws-a" } };
+    const payloadB = { coreRevision: 3, remoteClient: { profileId: "p", activeWorkspaceId: "ws-b" } };
+    let finishA!: () => void;
+    let finishB!: () => void;
+    let startedA!: () => void;
+    let startedB!: () => void;
+    const aStarted = new Promise<void>((resolve) => (startedA = resolve));
+    const bStarted = new Promise<void>((resolve) => (startedB = resolve));
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === "/api/state") return { ok: true, json: async () => baseline } as Response;
+      const request = JSON.parse(String(init?.body || "{}")) as { workspaceId?: string };
+      if (request.workspaceId === "ws-a") {
+        startedA();
+        await new Promise<void>((resolve) => (finishA = resolve));
+        return { ok: true, json: async () => payloadA } as Response;
+      }
+      if (request.workspaceId === "ws-b") {
+        startedB();
+        await new Promise<void>((resolve) => (finishB = resolve));
+      }
+      return { ok: true, json: async () => payloadB } as Response;
+    });
+    const transport = createRemoteTransport();
+    await transport.getState();
+    const panelActivations: string[] = [];
+    window.addEventListener(
+      "strideterm:remote-select-panel",
+      ((event: CustomEvent<{ panelId: string; handled: boolean; resolve: () => void }>) => {
+        event.detail.handled = true;
+        panelActivations.push(event.detail.panelId);
+        event.detail.resolve();
+      }) as EventListener,
+      { once: true },
+    );
+    const bridge = (
+      window as unknown as {
+        __stridetermRemote: {
+          selectTarget: (...args: [string, string, number, string?]) => Promise<void>;
+          cancelTargetSelection: (requestId: number) => boolean;
+        };
+      }
+    ).__stridetermRemote;
+
+    const oldSelection = bridge.selectTarget("p", "ws-a", 41, "panel-a");
+    await aStarted;
+    const newSelection = bridge.selectTarget("p", "ws-b", 42, "panel-b");
+    await bStarted;
+    expect(bridge.cancelTargetSelection(41)).toBe(false);
+    finishB();
+    await newSelection;
+    finishA();
+    await oldSelection;
+
+    const targets = postMessage.mock.calls
+      .map(([message]) => JSON.parse(message as string))
+      .filter((message) => message.type === "selection-changed");
+    expect({ latestTarget: targets.at(-1), panelActivations }).toEqual({
+      latestTarget: expect.objectContaining({ profileId: "p", workspaceId: "ws-b" }),
+      panelActivations: ["panel-b"],
+    });
+  });
+
+  it("cancels only the matching active native target request", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const baseline = { coreRevision: 1, remoteClient: { profileId: "p", activeWorkspaceId: "ws-start" } };
+    const payloadA = { coreRevision: 2, remoteClient: { profileId: "p", activeWorkspaceId: "ws-a" } };
+    let finishA!: () => void;
+    let startedA!: () => void;
+    const aStarted = new Promise<void>((resolve) => (startedA = resolve));
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === "/api/state") return { ok: true, json: async () => baseline } as Response;
+      startedA();
+      await new Promise<void>((resolve) => (finishA = resolve));
+      return { ok: true, json: async () => payloadA } as Response;
+    });
+    const transport = createRemoteTransport();
+    await transport.getState();
+    const panelActivations: string[] = [];
+    const onPanelActivation = ((event: CustomEvent<{ panelId: string; handled: boolean }>) => {
+      event.detail.handled = true;
+      panelActivations.push(event.detail.panelId);
+    }) as EventListener;
+    window.addEventListener("strideterm:remote-select-panel", onPanelActivation);
+    const bridge = (
+      window as unknown as {
+        __stridetermRemote: {
+          selectTarget: (...args: [string, string, number, string?]) => Promise<void>;
+          cancelTargetSelection: (requestId: number) => boolean;
+        };
+      }
+    ).__stridetermRemote;
+    const oldSelection = bridge.selectTarget("p", "ws-a", 51, "panel-a");
+    await aStarted;
+
+    expect(bridge.cancelTargetSelection(52)).toBe(false);
+    expect(bridge.cancelTargetSelection(51)).toBe(true);
+    expect(bridge.cancelTargetSelection(51)).toBe(false);
+    finishA();
+    await oldSelection;
+
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message as string))).not.toContainEqual(
+      expect.objectContaining({ type: "selection-changed", workspaceId: "ws-a" }),
+    );
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message as string))).not.toContainEqual(
+      expect.objectContaining({ type: "selection-result", requestId: 51 }),
+    );
+    expect(panelActivations).toEqual([]);
+    window.removeEventListener("strideterm:remote-select-panel", onPanelActivation);
+  });
+
+  it("accepts a target payload with an equal core revision", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const baseline = { coreRevision: 4, remoteClient: { profileId: "p", activeWorkspaceId: "ws-start" } };
+    const target = { coreRevision: 4, remoteClient: { profileId: "p", activeWorkspaceId: "ws-a" } };
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      return { ok: true, json: async () => (String(url) === "/api/state" ? baseline : target) } as Response;
+    });
+    const transport = createRemoteTransport();
+    await transport.getState();
+    const bridge = (
+      window as unknown as {
+        __stridetermRemote: { selectTarget: (...args: [string, string, number]) => Promise<void> };
+      }
+    ).__stridetermRemote;
+
+    await bridge.selectTarget("p", "ws-a", 44);
+
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message as string))).toContainEqual({
+      type: "selection-changed",
+      profileId: "p",
+      workspaceId: "ws-a",
+    });
+  });
+
   it("different-profile native selection activates profile before workspace", async () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
@@ -287,6 +427,7 @@ describe("remote transport endpoint routing", () => {
       type: "selection-result",
       requestId: 16,
       ok: false,
+      failurePhase: "profile-activation",
     });
   });
 
@@ -454,6 +595,7 @@ describe("remote transport endpoint routing", () => {
       type: "selection-result",
       requestId: 9,
       ok: false,
+      failurePhase: "panel-selection",
     });
   });
 

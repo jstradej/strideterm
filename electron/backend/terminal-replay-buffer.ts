@@ -63,6 +63,8 @@ interface SessionReplay {
   seq: number;
   /** Parser and terminal modes immediately before the oldest retained chunk. */
   boundary: ReplayBoundaryState;
+  /** Parser and terminal modes at the end of all output, independent of replay eviction. */
+  current: ReplayBoundaryState;
 }
 
 const MAX_CSI_LENGTH = 128;
@@ -342,10 +344,18 @@ export class TerminalReplayStore {
     if (!sessionId) return 0;
     let entry = this.sessions.get(sessionId);
     if (!entry) {
-      entry = { chunks: [], head: 0, bytes: 0, seq: 0, boundary: defaultBoundaryState() };
+      entry = {
+        chunks: [],
+        head: 0,
+        bytes: 0,
+        seq: 0,
+        boundary: defaultBoundaryState(),
+        current: defaultBoundaryState(),
+      };
       this.sessions.set(sessionId, entry);
     }
     const seq = ++entry.seq;
+    if (data) feedControlState(entry.current, data);
     if (!this.maxBytes || !data) return seq;
     const bytes = Buffer.byteLength(data, "utf8");
     entry.chunks.push({ seq, data, bytes });
@@ -390,6 +400,10 @@ export class TerminalReplayStore {
     return { data, throughSeq: entry.seq };
   }
 
+  isBracketedPasteEnabled(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.current.modes.bracketedPaste === true;
+  }
+
   /**
    * Clear stored output but KEEP the sequence counter. Used on an intentional
    * restart: the next process generation continues the counter, so a client
@@ -403,6 +417,7 @@ export class TerminalReplayStore {
       entry.head = 0;
       entry.bytes = 0;
       entry.boundary = defaultBoundaryState();
+      entry.current = defaultBoundaryState();
     }
   }
 

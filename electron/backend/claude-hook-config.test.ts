@@ -649,6 +649,8 @@ interface StubInstance {
   offer: string;
   /** Document its commit returns as `hookOutput`, or null for none. */
   commit?: Record<string, unknown> | null;
+  /** Session id encoded in this instance's notify URL. */
+  sid?: string;
 }
 
 interface NotifyRun {
@@ -710,8 +712,9 @@ async function runNotifyForPermissionRequest(
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     servers.push(server);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    urls.push(`http://127.0.0.1:${(server.address() as any).port}/notify?sid=ws%3Ap&secret=s`);
+    urls.push(
+      `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/notify?sid=${encodeURIComponent(instance.sid || "ws:p")}&secret=s`,
+    );
   }
 
   try {
@@ -757,6 +760,28 @@ const ALLOW_DOCUMENT = {
 };
 
 describe("notify.mjs PermissionRequest decisions", () => {
+  test("a stale per-panel URL falls back only to the registry entry for its sid", async () => {
+    const deadServer = http.createServer(() => {});
+    await new Promise<void>((resolve) => deadServer.listen(0, "127.0.0.1", () => resolve()));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deadPort = (deadServer.address() as any).port;
+    await new Promise<void>((resolve) => deadServer.close(() => resolve()));
+
+    const { stdout, received } = await runNotifyForPermissionRequest(
+      [
+        { offer: "req-primary", commit: ALLOW_DOCUMENT, sid: "ws:p" },
+        { offer: "req-sibling", commit: ALLOW_DOCUMENT, sid: "ws:sibling" },
+      ],
+      undefined,
+      { STRIDETERM_NOTIFY_URL: `http://127.0.0.1:${deadPort}/notify?sid=ws%3Ap&secret=s` },
+    );
+
+    expect(stdout).toBe(JSON.stringify(ALLOW_DOCUMENT));
+    expect(received[0]).toHaveLength(2);
+    expect(received[0].map((body) => body.phase)).toEqual(["offer", "commit"]);
+    expect(received[1]).toHaveLength(0);
+  }, 20_000);
+
   test("the stdout contract is the hookSpecificOutput document, byte for byte", async () => {
     // The whole point of P0-1: the wrapper is not optional. Compared as an
     // exact string, not a parsed object, because what Claude Code reads is the
@@ -1419,7 +1444,7 @@ describe("notify.mjs registry resolution", () => {
     }
   }, 15_000);
 
-  test("a stale STRIDETERM_NOTIFY_URL does not stop the registry from being used", async () => {
+  test("a stale STRIDETERM_NOTIFY_URL falls back only to the registry entry for its sid", async () => {
     // P1-2: the notify server was restarted on a different port (the agent-hook
     // checkbox off and on again). A shell started before that still carries the
     // old URL in its environment and cannot be updated — so the env value must
@@ -1429,29 +1454,37 @@ describe("notify.mjs registry resolution", () => {
     await fs.mkdir(path.join(userDataPath, "hooks"), { recursive: true });
     const scriptResult = await ensureNotifyScript(userDataPath);
 
-    const seen: Array<Record<string, unknown>> = [];
-    const server = http.createServer((req, res) => {
-      let raw = "";
-      req.on("data", (chunk) => {
-        raw += chunk;
+    const seen: Array<Array<Record<string, unknown>>> = [[], []];
+    const servers: http.Server[] = [];
+    const liveUrls: string[] = [];
+    for (let index = 0; index < seen.length; index += 1) {
+      const bucket = seen[index];
+      const server = http.createServer((req, res) => {
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          try {
+            bucket.push(JSON.parse(raw || "{}") as Record<string, unknown>);
+          } catch {
+            // ignore
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("{}");
+        });
       });
-      req.on("end", () => {
-        try {
-          seen.push(JSON.parse(raw || "{}") as Record<string, unknown>);
-        } catch {
-          // ignore
-        }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end("{}");
-      });
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+      servers.push(server);
+      liveUrls.push(
+        `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/notify?sid=${index === 0 ? "ws%3Ap" : "ws%3Asibling"}&secret=s`,
+      );
+    }
 
     // A port nothing is listening on — the server that used to be there.
     const deadServer = http.createServer(() => {});
     await new Promise<void>((resolve) => deadServer.listen(0, "127.0.0.1", () => resolve()));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const deadPort = (deadServer.address() as any).port;
+    const deadPort = (deadServer.address() as import("node:net").AddressInfo).port;
     await new Promise<void>((resolve) => deadServer.close(() => resolve()));
 
     try {
@@ -1460,34 +1493,45 @@ describe("notify.mjs registry resolution", () => {
       await fs.mkdir(instancesDir, { recursive: true });
       const projectDir = path.join(tempDir, "stale-env-proj");
       const key = normalizeCwd(projectDir);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const liveUrl = `http://127.0.0.1:${(server.address() as any).port}/notify?sid=ws%3Ap&secret=s`;
       await fs.writeFile(
         path.join(instancesDir, "cccccccccccc.json"),
-        JSON.stringify({ [key]: [{ url: liveUrl, instanceId: "cccccccccccc", sid: "ws:p" }] }),
+        JSON.stringify({
+          [key]: [
+            { url: liveUrls[0], instanceId: "cccccccccccc", sid: "ws:p" },
+            { url: liveUrls[1], instanceId: "cccccccccccc", sid: "ws:sibling" },
+          ],
+        }),
       );
 
-      await new Promise<void>((resolve, reject) => {
-        const child = execFile(
-          process.execPath,
-          [scriptResult.path, "Stop"],
-          {
-            env: {
-              ...process.env,
-              STRIDETERM_NOTIFY_URL: `http://127.0.0.1:${deadPort}/notify?sid=ws%3Ap&secret=s`,
-              CLAUDE_PROJECT_DIR: projectDir,
-              STRIDETERM_HOOKS_DIR: sharedDir,
+      const invoke = (staleUrl: string) =>
+        new Promise<void>((resolve, reject) => {
+          const child = execFile(
+            process.execPath,
+            [scriptResult.path, "Stop"],
+            {
+              env: {
+                ...process.env,
+                STRIDETERM_NOTIFY_URL: staleUrl,
+                CLAUDE_PROJECT_DIR: projectDir,
+                STRIDETERM_HOOKS_DIR: sharedDir,
+              },
             },
-          },
-          (err) => (err ? reject(err) : resolve()),
-        );
-        child.stdin!.end(JSON.stringify({ session_id: "abc" }));
-      });
+            (err) => (err ? reject(err) : resolve()),
+          );
+          child.stdin!.end(JSON.stringify({ session_id: "abc" }));
+        });
 
-      expect(seen).toHaveLength(1);
-      expect(seen[0].hook).toBe("Stop");
+      await invoke(`http://127.0.0.1:${deadPort}/notify?sid=ws%3Ap&secret=s`);
+
+      expect(seen[0]).toHaveLength(1);
+      expect(seen[0][0].hook).toBe("Stop");
+      expect(seen[1]).toHaveLength(0);
+
+      await invoke(`http://127.0.0.1:${deadPort}/notify?sid=ws%3Amissing&secret=s`);
+      expect(seen[0]).toHaveLength(1);
+      expect(seen[1]).toHaveLength(0);
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
     }
   }, 20_000);
 });

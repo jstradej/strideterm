@@ -372,14 +372,26 @@
 
   .mobile-input-bar__row {
     display: flex;
+    align-items: flex-end;
     gap: 6px;
+  }
+
+  .mobile-input-bar__notice {
+    margin: 0;
+    padding: 0 2px;
+    font-size: 12px;
+    line-height: 1.3;
+    color: var(--muted);
   }
 
   .mobile-input-bar__input {
     flex: 1;
     min-width: 0;
-    height: 38px;
-    padding: 0 10px;
+    min-height: 38px;
+    max-height: 25dvh;
+    overflow-y: auto;
+    resize: none;
+    padding: 7px 10px;
     /* A faint accent tint instead of the near-invisible default border —
        the field is the whole point of the bar, so it must read as "type
        here" at a glance without competing with the focused state below. */
@@ -390,6 +402,14 @@
     /* 16px minimum — anything smaller makes iOS Safari auto-zoom the page
        on focus, which fights the visualViewport resize handling. */
     font-size: 16px;
+    line-height: 22px;
+    font-family: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-input-bar--editor-expanded .mobile-input-bar__input {
+    max-height: 55dvh;
   }
 
   .mobile-input-bar__input:focus {
@@ -400,12 +420,25 @@
   .mobile-input-bar__send {
     flex: 0 0 48px;
     height: 38px;
+    align-self: flex-end;
     border: 1px solid var(--border);
     border-radius: 4px;
     background: rgba(var(--tint), 0.1);
     color: var(--text);
     font-size: 17px;
     line-height: 1;
+    cursor: pointer;
+  }
+
+  .mobile-input-bar__editor-toggle {
+    flex: 0 0 30px;
+    height: 38px;
+    align-self: flex-end;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 15px;
     cursor: pointer;
   }
 

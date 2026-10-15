@@ -173,6 +173,7 @@ export const useAppStore = defineStore("app", () => {
   // --- UI state ---
   const activeViewId = ref<string | null>(null);
   const activeSessionId = ref<string | null>(null);
+  let viewActivationGeneration = 0;
   const splitGroup = ref<SplitGroup | null>(null); // { layout, viewIds } | null
   const hiddenViewIds = ref(new Set<string>());
   const sidebarCollapsed = ref(readSidebarCollapsed());
@@ -1378,9 +1379,22 @@ export const useAppStore = defineStore("app", () => {
 
   async function activateView(
     viewId: string,
-    { focus: _focus = true, requireConfirmation = false } = {},
+    {
+      focus: _focus = true,
+      requireConfirmation = false,
+      activationGeneration: requestedGeneration,
+      signal,
+    }: {
+      focus?: boolean;
+      requireConfirmation?: boolean;
+      activationGeneration?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<void> {
     if (!viewId || (viewId === activeViewId.value && !requireConfirmation)) return;
+    const generation = requestedGeneration ?? ++viewActivationGeneration;
+    const isCurrent = () => generation === viewActivationGeneration && !signal?.aborted;
+    if (!isCurrent()) throw new Error("View activation was superseded");
 
     // Borrowed Primary: activate the VIEW here, point the session at the
     // source PTY, and stop. Routing this through activateSession would send
@@ -1427,7 +1441,7 @@ export const useAppStore = defineStore("app", () => {
           (_api as CallableTransport)
             .refreshGit(wsId)
             .then((nextPayload) => {
-              if (nextPayload && !pendingWorkspaceActivationId.value) {
+              if (nextPayload && isCurrent() && !pendingWorkspaceActivationId.value) {
                 adoptPayload(nextPayload as StatePayload);
               }
             })
@@ -1447,12 +1461,13 @@ export const useAppStore = defineStore("app", () => {
 
     try {
       const nextPayload = (await (_api as CallableTransport).activateSession(viewId)) as StatePayload;
+      if (!isCurrent()) throw new Error("View activation was superseded");
       if (pendingViewActivationId.value === viewId && !(nextPayload as AnyApi)?.meta?.bootstrap) {
         pendingViewActivationId.value = "";
       }
       payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
     } catch (error) {
-      if (pendingViewActivationId.value === viewId) {
+      if (pendingViewActivationId.value === viewId && generation === viewActivationGeneration) {
         pendingViewActivationId.value = "";
       }
       if (requireConfirmation) throw error;
@@ -1701,18 +1716,28 @@ export const useAppStore = defineStore("app", () => {
         const detail = (event as CustomEvent<RemotePanelSelectionDetail>).detail;
         if (!detail?.profileId || !detail.workspaceId || !detail.panelId) return;
         detail.handled = true;
+        const activationGeneration = ++viewActivationGeneration;
+        pendingViewActivationId.value = "";
+        const isCurrent = () => activationGeneration === viewActivationGeneration && !detail.signal?.aborted;
 
         void (async () => {
+          if (!isCurrent()) throw new Error("Panel selection was superseded");
           const viewId = `${detail.workspaceId}:${detail.panelId}`;
           await new Promise<void>((resolve, reject) => {
             let timeout = 0;
             let stop = () => {};
             const finish = (complete: () => void) => {
               window.clearTimeout(timeout);
+              detail.signal?.removeEventListener("abort", onAbort);
               stop();
               complete();
             };
+            const onAbort = () => finish(() => reject(new Error("Panel selection was superseded")));
             const inspectTarget = () => {
+              if (!isCurrent()) {
+                finish(() => reject(new Error("Panel selection was superseded")));
+                return;
+              }
               if (myActiveProfileId.value !== detail.profileId || myActiveWorkspaceId.value !== detail.workspaceId) {
                 return;
               }
@@ -1724,16 +1749,27 @@ export const useAppStore = defineStore("app", () => {
               }
               finish(resolve);
             };
-            stop = watch([myActiveProfileId, myActiveWorkspaceId, payload, workspaceTabs], inspectTarget, {
-              flush: "post",
-            });
+            stop = watch(
+              [myActiveProfileId, myActiveWorkspaceId, payload, workspaceTabs, activeViewId],
+              inspectTarget,
+              {
+                flush: "post",
+              },
+            );
+            detail.signal?.addEventListener("abort", onAbort, { once: true });
             timeout = window.setTimeout(
               () => finish(() => reject(new Error("Renderer panel selection state did not become ready"))),
               5_000,
             );
             inspectTarget();
           });
-          await activateView(viewId, { requireConfirmation: true });
+          if (!isCurrent()) throw new Error("Panel selection was superseded");
+          await activateView(viewId, {
+            requireConfirmation: true,
+            activationGeneration,
+            signal: detail.signal,
+          });
+          if (!isCurrent()) throw new Error("Panel selection was superseded");
           if (activeViewId.value !== viewId) {
             throw new Error(`Target panel was not selected: ${detail.panelId}`);
           }

@@ -145,6 +145,34 @@ describe("TerminalReplayStore", () => {
     expect(store.snapshot("s")).toEqual({ data: "", throughSeq: 2 });
   });
 
+  test("tracks live bracketed-paste mode across chunks, resets, and disabled replay storage", () => {
+    const store = new TerminalReplayStore(0);
+    expect(store.isBracketedPasteEnabled("s")).toBe(false);
+    store.append("s", "\u001b[?20");
+    expect(store.isBracketedPasteEnabled("s")).toBe(false);
+    store.append("s", "04h");
+    expect(store.isBracketedPasteEnabled("s")).toBe(true);
+    store.append("s", "\u001b[?1049h");
+    expect(store.isBracketedPasteEnabled("s")).toBe(true);
+    store.append("s", "\u001b[?2004l");
+    expect(store.isBracketedPasteEnabled("s")).toBe(false);
+
+    store.append("s", "\u001b[?2004h");
+    expect(store.isBracketedPasteEnabled("s")).toBe(true);
+    store.append("s", "\u001b[!p");
+    expect(store.isBracketedPasteEnabled("s")).toBe(false);
+    store.append("s", "\u001b[?2004h");
+    store.append("s", "\u001bc");
+    expect(store.isBracketedPasteEnabled("s")).toBe(false);
+
+    store.append("s", "\u001b[?2004h");
+    store.clear("s");
+    expect(store.isBracketedPasteEnabled("s")).toBe(false);
+    store.append("s", "\u001b[?2004h");
+    store.delete("s");
+    expect(store.isBracketedPasteEnabled("s")).toBe(false);
+  });
+
   test("clear() empties output but keeps the counter (restart continuity)", () => {
     const store = new TerminalReplayStore(1024);
     store.append("s", "old-gen");

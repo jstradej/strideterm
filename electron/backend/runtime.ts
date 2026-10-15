@@ -1002,9 +1002,11 @@ export async function createRuntime({
     await sshMcpBroker.start();
   }
 
+  const terminalReplay = new TerminalReplayStore(APP_CONFIG.session.replayMaxChars || 0);
   const sessions = new SessionManagerImpl({
     sshManager,
     spawnPty: dependencies.sshTestPtySpawn,
+    isBracketedPasteEnabled: (sessionId: string) => terminalReplay.isBracketedPasteEnabled(sessionId),
     getSessionEnv: ({
       workspace,
       sessionId,
@@ -1441,8 +1443,6 @@ export async function createRuntime({
   let dockerPoll: ReturnType<typeof setInterval> | null = null;
   let gitPoll: ReturnType<typeof setInterval> | null = null;
   const attentionContext = createAttentionContext();
-  const terminalReplay = new TerminalReplayStore(APP_CONFIG.session.replayMaxChars || 0);
-
   /** Record a chunk and return the sequence number assigned to it. */
   function appendTerminalReplay(sessionId: string, data: string): number {
     return terminalReplay.append(sessionId, data);

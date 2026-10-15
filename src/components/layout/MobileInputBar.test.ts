@@ -130,7 +130,7 @@ describe("MobileInputBar", () => {
       await nextTick();
       expect(wrapper.find(".mobile-input-bar__input").exists()).toBe(false);
       await wrapper.get(".mobile-input-bar__expand").trigger("click");
-      const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input");
+      const input = wrapper.get<HTMLTextAreaElement>(".mobile-input-bar__input");
       expect(input.attributes("inputmode")).toBe("text");
       expect(wrapper.get(".mobile-input-bar").classes()).toContain("mobile-input-bar--system");
       expect(wrapper.find(".compact-terminal-keyboard").exists()).toBe(false);
@@ -190,7 +190,7 @@ describe("MobileInputBar", () => {
       try {
         await nextTick();
         document.body.appendChild(wrapper.element);
-        const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input").element;
+        const input = wrapper.get<HTMLTextAreaElement>(".mobile-input-bar__input").element;
         input.focus();
         expect(document.activeElement).toBe(input);
 
@@ -367,7 +367,7 @@ describe("MobileInputBar", () => {
       screenOrientation.setType("landscape-primary");
       await nextTick();
 
-      const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input").element;
+      const input = wrapper.get<HTMLTextAreaElement>(".mobile-input-bar__input").element;
       expect(wrapper.find(".mobile-input-bar--landscape").exists()).toBe(true);
       expect(wrapper.find(".mobile-input-bar__expand").exists()).toBe(false);
       expect(document.activeElement).not.toBe(input);
@@ -431,7 +431,7 @@ describe("MobileInputBar", () => {
 
       window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
       await flushPromises();
-      const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input").element;
+      const input = wrapper.get<HTMLTextAreaElement>(".mobile-input-bar__input").element;
       expect(wrapper.find(".mobile-input-bar__expand").exists()).toBe(false);
       expect(document.activeElement).toBe(input);
 
@@ -566,7 +566,7 @@ describe("MobileInputBar", () => {
     try {
       await nextTick();
       document.body.appendChild(wrapper.element);
-      const input = wrapper.get<HTMLInputElement>(".mobile-input-bar__input").element;
+      const input = wrapper.get<HTMLTextAreaElement>(".mobile-input-bar__input").element;
 
       window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
       window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: false } }));
@@ -736,11 +736,151 @@ describe("MobileInputBar", () => {
       vi.useRealTimers();
     });
 
+    describe("Enter handling", () => {
+      const input = (wrapper: VueWrapper) => wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
+      const toggleEditor = async (wrapper: VueWrapper) => {
+        await wrapper.get(".mobile-input-bar__editor-toggle").trigger("click");
+        await nextTick();
+      };
+
+      it("sends on Enter in normal mode and keeps Shift+Enter as a newline", async () => {
+        const { wrapper, submitTerminal } = mountBar();
+        const editor = input(wrapper);
+        await editor.setValue("ls -la");
+        await editor.trigger("keydown", { key: "Enter", shiftKey: true });
+        expect(submitTerminal).not.toHaveBeenCalled();
+        await editor.trigger("keydown", { key: "Enter" });
+        expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "ls -la", ORIGIN_WS);
+      });
+
+      it("sends on Ctrl+Enter and Cmd+Enter in normal mode", async () => {
+        const { wrapper, submitTerminal } = mountBar();
+        const editor = input(wrapper);
+        await editor.setValue("one");
+        await editor.trigger("keydown", { key: "Enter", ctrlKey: true });
+        await editor.setValue("two");
+        await editor.trigger("keydown", { key: "Enter", metaKey: true });
+        expect(submitTerminal).toHaveBeenNthCalledWith(1, SESSION_ID, "one", ORIGIN_WS);
+        expect(submitTerminal).toHaveBeenNthCalledWith(2, SESSION_ID, "two", ORIGIN_WS);
+      });
+
+      it("keeps Enter in the draft in editor mode and sends on Ctrl+Enter", async () => {
+        vi.spyOn(useTerminalStore(), "isBracketedPasteEnabled").mockReturnValue(true);
+        const { wrapper, submitTerminal } = mountBar();
+        await toggleEditor(wrapper);
+        const editor = input(wrapper);
+        await editor.setValue("first line\nsecond line");
+        await editor.trigger("keydown", { key: "Enter", ctrlKey: false });
+        expect(editor.element.value).toBe("first line\nsecond line");
+        expect(submitTerminal).not.toHaveBeenCalled();
+        await editor.trigger("keydown", { key: "Enter", ctrlKey: true });
+        expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "first line\nsecond line", ORIGIN_WS);
+      });
+
+      it("does not intercept Enter while an IME composition is active", async () => {
+        const { wrapper, submitTerminal } = mountBar();
+        const editor = input(wrapper);
+        await editor.setValue("příkaz");
+        await editor.trigger("keydown", { key: "Enter", isComposing: true });
+        expect(submitTerminal).not.toHaveBeenCalled();
+        await editor.trigger("compositionstart");
+        await editor.trigger("keydown", { key: "Enter" });
+        expect(submitTerminal).not.toHaveBeenCalled();
+      });
+
+      it("flips enterkeyhint and placeholder with the editor mode", async () => {
+        const { wrapper } = mountBar();
+        const editor = input(wrapper);
+        expect(editor.attributes("enterkeyhint")).toBe("send");
+        expect(editor.attributes("placeholder")).toBe("Type a command — ⏎ sends it");
+        await toggleEditor(wrapper);
+        expect(editor.attributes("enterkeyhint")).toBe("enter");
+        expect(editor.attributes("placeholder")).toContain("⏎ adds a line");
+        await toggleEditor(wrapper);
+        expect(editor.attributes("enterkeyhint")).toBe("send");
+      });
+    });
+
+    describe("multi-line confirm", () => {
+      const NOTICE = "[data-role='mobile-input-bar-multiline-notice']";
+
+      it("asks to confirm a multi-line draft when bracketed paste is not known to be on", async () => {
+        const { wrapper, submitTerminal } = mountBar();
+        const editor = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
+        await editor.setValue("first\nsecond");
+        await wrapper.get("form").trigger("submit");
+        expect(submitTerminal).not.toHaveBeenCalled();
+        expect(wrapper.get(NOTICE).text()).toContain("bracketed paste");
+        expect(editor.element.value).toBe("first\nsecond");
+        await wrapper.get("form").trigger("submit");
+        expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "first\nsecond", ORIGIN_WS);
+        expect(wrapper.find(NOTICE).exists()).toBe(false);
+      });
+
+      it("asks again when the draft changes after the notice", async () => {
+        const { wrapper, submitTerminal } = mountBar();
+        const editor = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
+        await editor.setValue("first\nsecond");
+        await wrapper.get("form").trigger("submit");
+        await editor.setValue("first\nsecond\nthird");
+        expect(wrapper.find(NOTICE).exists()).toBe(false);
+        await wrapper.get("form").trigger("submit");
+        expect(submitTerminal).not.toHaveBeenCalled();
+        expect(wrapper.find(NOTICE).exists()).toBe(true);
+      });
+
+      it("drops the pending confirm when the target session changes", async () => {
+        const { wrapper, submitTerminal } = mountBar();
+        const editor = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
+        await editor.setValue("first\nsecond");
+        await wrapper.get("form").trigger("submit");
+        const store = useAppStore();
+        store.activeViewId = "ws-a:panel-other";
+        store.activeSessionId = "ws-a:panel-other";
+        await nextTick();
+        expect(wrapper.find(NOTICE).exists()).toBe(false);
+        await editor.setValue("first\nsecond");
+        await wrapper.get("form").trigger("submit");
+        expect(submitTerminal).not.toHaveBeenCalled();
+        expect(wrapper.find(NOTICE).exists()).toBe(true);
+      });
+
+      it("sends a multi-line draft at once when bracketed paste is on", async () => {
+        const mode = vi.spyOn(useTerminalStore(), "isBracketedPasteEnabled").mockReturnValue(true);
+        const { wrapper, submitTerminal } = mountBar();
+        await wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']").setValue("first\nsecond");
+        await wrapper.get("form").trigger("submit");
+        expect(mode).toHaveBeenCalledWith(SESSION_ID);
+        expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "first\nsecond", ORIGIN_WS);
+        expect(wrapper.find(NOTICE).exists()).toBe(false);
+      });
+
+      it("never asks for a single-line draft", async () => {
+        const { wrapper, submitTerminal } = mountBar();
+        await wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']").setValue("pwd");
+        await wrapper.get("form").trigger("submit");
+        expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "pwd", ORIGIN_WS);
+      });
+    });
+
+    it("offers a larger editor without replacing or sending the draft", async () => {
+      const { wrapper, submitTerminal } = mountBar();
+      await wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']").setValue("keep\nthis draft");
+      await wrapper.get(".mobile-input-bar__editor-toggle").trigger("click");
+      await nextTick();
+      expect(wrapper.find(".mobile-input-bar--editor-expanded").exists()).toBe(true);
+      expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("keep\nthis draft");
+      expect(submitTerminal).not.toHaveBeenCalled();
+      await wrapper.get(".mobile-input-bar__editor-toggle").trigger("click");
+      expect(wrapper.find(".mobile-input-bar--editor-expanded").exists()).toBe(false);
+      expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("keep\nthis draft");
+    });
+
     it("captures the caret and inserts a validated attachment path without sending", async () => {
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
-      const { wrapper, writeTerminal, submitTerminal } = mountBar();
-      const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
       await input.setValue("echo done");
       input.element.setSelectionRange(5, 5);
       await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
@@ -783,7 +923,7 @@ describe("MobileInputBar", () => {
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
       const { wrapper } = mountBar();
-      await wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']").setValue("prompt");
+      await wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']").setValue("prompt");
       await nextTick();
       window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-open"));
       const opened = JSON.parse(postMessage.mock.calls.at(-1)![0]);
@@ -806,7 +946,7 @@ describe("MobileInputBar", () => {
       window.localStorage.setItem(COLLAPSED_KEY, "true");
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
-      const { wrapper, writeTerminal, submitTerminal } = mountBar();
+      const { wrapper, writeTerminal } = mountBar();
       window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-open"));
       const request = JSON.parse(postMessage.mock.calls.at(-1)![0]);
       window.dispatchEvent(
@@ -829,7 +969,7 @@ describe("MobileInputBar", () => {
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
       const { wrapper, submitTerminal } = mountBar();
-      const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
+      const input = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
       await input.setValue("cat");
       await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
       const request = JSON.parse(postMessage.mock.calls[0][0]);
@@ -858,7 +998,7 @@ describe("MobileInputBar", () => {
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
       const { wrapper, submitTerminal } = mountBar();
-      const input = wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']");
+      const input = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
       await input.setValue("old");
       await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
       const request = JSON.parse(postMessage.mock.calls[0][0]);
@@ -887,7 +1027,7 @@ describe("MobileInputBar", () => {
       const postMessage = vi.fn();
       (window as AnyApi).StridetermHost = { postMessage };
       const { wrapper, writeTerminal } = mountBar();
-      await wrapper.get<HTMLInputElement>("[data-role='mobile-input-bar-input']").setValue("cat");
+      await wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']").setValue("cat");
       await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
       const request = JSON.parse(postMessage.mock.calls[0][0]);
       const result = {
@@ -918,7 +1058,7 @@ describe("MobileInputBar", () => {
       expect(submitTerminal).toHaveBeenCalledTimes(1);
       expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "echo mobile-composer", ORIGIN_WS);
       expect(writeTerminal).not.toHaveBeenCalled();
-      expect((input.element as HTMLInputElement).value).toBe("");
+      expect((input.element as HTMLTextAreaElement).value).toBe("");
 
       vi.advanceTimersByTime(200);
       expect(submitTerminal).toHaveBeenCalledTimes(1);
@@ -965,7 +1105,7 @@ describe("MobileInputBar", () => {
     it("sends the committed IME composition result", async () => {
       const { wrapper, submitTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
-      const element = input.element as HTMLInputElement;
+      const element = input.element as HTMLTextAreaElement;
 
       await input.trigger("compositionstart");
       element.value = "prik";
@@ -982,7 +1122,7 @@ describe("MobileInputBar", () => {
     it("defers submit until the active IME composition commits", async () => {
       const { wrapper, submitTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
-      const element = input.element as HTMLInputElement;
+      const element = input.element as HTMLTextAreaElement;
 
       await input.trigger("compositionstart");
       element.value = "prik";
@@ -1010,7 +1150,7 @@ describe("MobileInputBar", () => {
       store.activeSessionId = "ws-a:panel-other";
       await nextTick();
 
-      expect((input.element as HTMLInputElement).value).toBe("");
+      expect((input.element as HTMLTextAreaElement).value).toBe("");
       await wrapper.find("form").trigger("submit");
       expect(submitTerminal).toHaveBeenCalledWith("ws-a:panel-other", "", ORIGIN_WS);
     });
@@ -1049,7 +1189,7 @@ describe("MobileInputBar", () => {
       expect(slash).toBeTruthy();
       await slash!.trigger("click");
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
-      expect((input.element as HTMLInputElement).value).toBe("/");
+      expect((input.element as HTMLTextAreaElement).value).toBe("/");
       expect(writeTerminal).not.toHaveBeenCalled();
     });
 
@@ -1062,7 +1202,7 @@ describe("MobileInputBar", () => {
         expect(item, `menu item "${cmd}" should exist`).toBeTruthy();
         await item!.trigger("click");
         const input = wrapper.find("[data-role='mobile-input-bar-input']");
-        expect((input.element as HTMLInputElement).value).toBe(cmd);
+        expect((input.element as HTMLTextAreaElement).value).toBe(cmd);
         expect(writeTerminal).not.toHaveBeenCalled();
       },
     );
@@ -1147,13 +1287,13 @@ describe("MobileInputBar", () => {
       await button!.trigger("click");
 
       expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, seq, ORIGIN_WS);
-      expect((input.element as HTMLInputElement).value).toBe("");
+      expect((input.element as HTMLTextAreaElement).value).toBe("");
     });
 
     it("does not restore a discarded IME draft after its compositionend event", async () => {
       const { wrapper, writeTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
-      const element = input.element as HTMLInputElement;
+      const element = input.element as HTMLTextAreaElement;
 
       await input.trigger("compositionstart");
       element.value = "unfinished";
@@ -1177,7 +1317,7 @@ describe("MobileInputBar", () => {
       await tab!.trigger("click");
 
       expect(writeTerminal).toHaveBeenCalledWith(SESSION_ID, "git che\t", ORIGIN_WS);
-      expect((input.element as HTMLInputElement).value).toBe("");
+      expect((input.element as HTMLTextAreaElement).value).toBe("");
     });
   });
 
@@ -1189,7 +1329,7 @@ describe("MobileInputBar", () => {
 
       await wrapper.find(".mobile-input-bar__key--slash").trigger("click");
 
-      expect((input.element as HTMLInputElement).value).toBe("echo /");
+      expect((input.element as HTMLTextAreaElement).value).toBe("echo /");
       expect(writeTerminal).not.toHaveBeenCalled();
     });
   });
@@ -1215,11 +1355,11 @@ describe("MobileInputBar", () => {
       await wrapper.find(PASTE).trigger("click");
       await flushPromises();
 
-      expect((input.element as HTMLInputElement).value).toBe("sudo npm run dev");
+      expect((input.element as HTMLTextAreaElement).value).toBe("sudo npm run dev");
       expect(writeTerminal).not.toHaveBeenCalled();
     });
 
-    it("flattens multi-line clipboard content to single spaces", async () => {
+    it("preserves line breaks from clipboard content", async () => {
       mockClipboard("line one\r\nline two\nline three");
       const { wrapper } = mountBar();
 
@@ -1227,7 +1367,7 @@ describe("MobileInputBar", () => {
       await flushPromises();
 
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
-      expect((input.element as HTMLInputElement).value).toBe("line one line two line three");
+      expect((input.element as HTMLTextAreaElement).value).toBe("line one\nline two\nline three");
     });
 
     it("leaves the draft untouched when the clipboard read is blocked", async () => {
@@ -1239,7 +1379,7 @@ describe("MobileInputBar", () => {
       await wrapper.find(PASTE).trigger("click");
       await flushPromises();
 
-      expect((input.element as HTMLInputElement).value).toBe("keep me");
+      expect((input.element as HTMLTextAreaElement).value).toBe("keep me");
       expect(writeTerminal).not.toHaveBeenCalled();
     });
 
@@ -1247,7 +1387,7 @@ describe("MobileInputBar", () => {
       mockClipboard("pasted");
       const { wrapper, submitTerminal } = mountBar();
       const input = wrapper.find("[data-role='mobile-input-bar-input']");
-      const element = input.element as HTMLInputElement;
+      const element = input.element as HTMLTextAreaElement;
 
       await input.trigger("compositionstart");
       element.value = "prik";
@@ -1303,7 +1443,7 @@ describe("MobileInputBar", () => {
         vi.advanceTimersByTime(600);
         await nextTick();
 
-        expect((input.element as HTMLInputElement).value).toBe("");
+        expect((input.element as HTMLTextAreaElement).value).toBe("");
         // The foreign value is gone from the draft too — ⏎ sends a bare Enter.
         await wrapper.find("form").trigger("submit");
         expect(submitTerminal).toHaveBeenCalledTimes(1);
@@ -1327,7 +1467,9 @@ describe("MobileInputBar", () => {
         vi.advanceTimersByTime(600);
         await nextTick();
 
-        expect((wrapper.find("[data-role='mobile-input-bar-input']").element as HTMLInputElement).value).toBe(expected);
+        expect((wrapper.find("[data-role='mobile-input-bar-input']").element as HTMLTextAreaElement).value).toBe(
+          expected,
+        );
       });
 
       it("keeps text typed into the field after the user focused it", async () => {
@@ -1339,7 +1481,7 @@ describe("MobileInputBar", () => {
         vi.advanceTimersByTime(600);
         await nextTick();
 
-        expect((input.element as HTMLInputElement).value).toBe("echo typed");
+        expect((input.element as HTMLTextAreaElement).value).toBe("echo typed");
         await wrapper.find("form").trigger("submit");
         expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "echo typed", ORIGIN_WS);
       });
@@ -1353,7 +1495,7 @@ describe("MobileInputBar", () => {
     // without a new action from them.
     it("restores what was typed after the page is reloaded, and sends nothing on its own", async () => {
       const first = mountBar();
-      const input = first.wrapper.find("input");
+      const input = first.wrapper.find("textarea");
       await input.setValue("git rebase -i HEAD~3");
       await nextTick();
       first.wrapper.unmount();
@@ -1361,7 +1503,7 @@ describe("MobileInputBar", () => {
       // A brand-new component, as after a reload: same session, same origin, new page.
       const second = mountBar();
       await nextTick();
-      expect((second.wrapper.find("input").element as HTMLInputElement).value).toBe("git rebase -i HEAD~3");
+      expect((second.wrapper.find("textarea").element as HTMLTextAreaElement).value).toBe("git rebase -i HEAD~3");
       expect(second.writeTerminal).not.toHaveBeenCalled();
 
       // And submitting is what sends it — the draft was one deliberate action away, not zero. (The
@@ -1372,18 +1514,18 @@ describe("MobileInputBar", () => {
 
     it("keeps one session's draft out of another session's field", async () => {
       const first = mountBar();
-      await first.wrapper.find("input").setValue("only for the shell panel");
+      await first.wrapper.find("textarea").setValue("only for the shell panel");
       await nextTick();
       first.wrapper.unmount();
 
       const second = mountBar({ sessionId: "ws-a:panel-other" });
       await nextTick();
-      expect((second.wrapper.find("input").element as HTMLInputElement).value).toBe("");
+      expect((second.wrapper.find("textarea").element as HTMLTextAreaElement).value).toBe("");
     });
 
     it("a draft cleared by sending is not resurrected by the next mount", async () => {
       const first = mountBar();
-      await first.wrapper.find("input").setValue("echo done");
+      await first.wrapper.find("textarea").setValue("echo done");
       await nextTick();
       await first.wrapper.find("form").trigger("submit");
       await nextTick();
@@ -1391,7 +1533,7 @@ describe("MobileInputBar", () => {
 
       const second = mountBar();
       await nextTick();
-      expect((second.wrapper.find("input").element as HTMLInputElement).value).toBe("");
+      expect((second.wrapper.find("textarea").element as HTMLTextAreaElement).value).toBe("");
     });
   });
 
@@ -1505,7 +1647,7 @@ describe("MobileInputBar — relocated Companion Primary", () => {
     });
     await flushPromises();
 
-    const input = wrapper.find("input");
+    const input = wrapper.find("textarea");
     expect(input.exists()).toBe(true);
     await input.setValue("hello");
     await wrapper.find("form").trigger("submit");
@@ -1529,7 +1671,7 @@ describe("MobileInputBar — relocated Companion Primary", () => {
     });
     await flushPromises();
 
-    expect(wrapper.find("input").exists()).toBe(false);
+    expect(wrapper.find("textarea").exists()).toBe(false);
     expect(writeTerminal).not.toHaveBeenCalled();
   });
 });

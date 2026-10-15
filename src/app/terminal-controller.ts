@@ -1940,6 +1940,10 @@ export function createTerminalController({
     return buildTerminalTextSnapshot(term, options);
   }
 
+  function isBracketedPasteEnabled(sessionId: string): boolean | undefined {
+    return views.value.get(sessionId)?.term.modes.bracketedPasteMode;
+  }
+
   function exportTerminalTranscript(sessionId: string, { title = "Terminal", lineCount = 500 } = {}): boolean {
     const transcript = getTerminalTranscript(sessionId, { lineCount });
     if (!transcript) {
@@ -2075,6 +2079,7 @@ export function createTerminalController({
     getSearchAddon,
     getVisibleTerminalText,
     getTerminalTextSnapshot,
+    isBracketedPasteEnabled,
     handleTerminalData,
     handleTerminalReplay,
     handleTerminalExit,

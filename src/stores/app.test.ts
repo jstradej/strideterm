@@ -137,11 +137,11 @@ function makeRemotePanelPayload(activePanelId = "panel-one"): AnyApi {
   });
 }
 
-function requestRemotePanel(panelId: string): Promise<void> {
+function requestRemotePanel(panelId: string, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     window.dispatchEvent(
       new CustomEvent("strideterm:remote-select-panel", {
-        detail: { profileId: "p1", workspaceId: "ws-panels", panelId, handled: false, resolve, reject },
+        detail: { profileId: "p1", workspaceId: "ws-panels", panelId, handled: false, signal, resolve, reject },
       }),
     );
   });
@@ -228,6 +228,60 @@ describe("useAppStore — remote mode identity", () => {
     await expect(requestRemotePanel("panel-two")).rejects.toThrow("Session unavailable");
     await expect(requestRemotePanel("panel-two")).rejects.toThrow("Session unavailable");
     expect(transport.activateSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not adopt a late panel activation after a newer panel selection", async () => {
+    const transport = makeRemoteTransport(makeRemotePanelPayload());
+    let resolvePanelOne!: (payload: AnyApi) => void;
+    let resolvePanelTwo!: (payload: AnyApi) => void;
+    (transport.activateSession as AnyApi).mockImplementation((sessionId: string) => {
+      return new Promise((resolve) => {
+        if (sessionId.endsWith("panel-one")) resolvePanelOne = resolve;
+        else resolvePanelTwo = resolve;
+      });
+    });
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const panelOneController = new AbortController();
+    const panelOne = requestRemotePanel("panel-one", panelOneController.signal).catch((error) => error);
+    await nextTick();
+    expect(transport.activateSession).toHaveBeenCalledWith("ws-panels:panel-one");
+
+    panelOneController.abort();
+    const panelTwo = requestRemotePanel("panel-two");
+    await nextTick();
+    expect(transport.activateSession).toHaveBeenCalledWith("ws-panels:panel-two");
+
+    resolvePanelTwo(makeRemotePanelPayload("panel-two"));
+    await panelTwo;
+    resolvePanelOne(makeRemotePanelPayload("panel-one"));
+    await expect(panelOne).resolves.toMatchObject({ message: /superseded/ });
+
+    expect(store.activeViewId).toBe("ws-panels:panel-two");
+    expect((store as AnyApi).payload.workspace.workspace.activePanelId).toBe("panel-two");
+  });
+
+  it("clears an older pending view when a newer panel selection fails before activation", async () => {
+    const transport = makeRemoteTransport(makeRemotePanelPayload());
+    let rejectActivation!: (error: Error) => void;
+    transport.activateSession = vi.fn(() => new Promise((_resolve, reject) => (rejectActivation = reject)));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const oldActivation = store.activateView("ws-panels:panel-two");
+    expect((store as AnyApi).pendingViewActivationId).toBe("ws-panels:panel-two");
+
+    await expect(requestRemotePanel("missing-panel")).rejects.toThrow("Target panel is missing");
+    expect((store as AnyApi).pendingViewActivationId).toBe("");
+
+    rejectActivation(new Error("Old activation failed"));
+    await oldActivation;
+    expect((store as AnyApi).pendingViewActivationId).toBe("");
   });
 
   it("selects a panel after a cold renderer receives the replayed remote payload", async () => {
@@ -690,6 +744,25 @@ describe("useAppStore — remote mode identity", () => {
     expect(store.activeWorkspace.id).toBe("ws2");
     expect((store as AnyApi).payload.remoteClient.activeSessionId).toBe("ws2:sh");
     expect((store as AnyApi).payload.appState.activeWorkspaceId).toBe("ws1");
+  });
+
+  it("keeps an in-flight activation when the active view is clicked again", async () => {
+    const transport = makeRemoteTransport(makeRemotePanelPayload());
+    let resolveActivation!: (payload: AnyApi) => void;
+    transport.activateSession = vi.fn(() => new Promise((resolve) => (resolveActivation = resolve)));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const activation = store.activateView("ws-panels:panel-two");
+    expect(store.activeViewId).toBe("ws-panels:panel-two");
+    await store.activateView("ws-panels:panel-two");
+    resolveActivation(makeRemotePanelPayload("panel-two"));
+    await activation;
+
+    expect((store as AnyApi).pendingViewActivationId).toBe("");
+    expect((store as AnyApi).payload.workspace.workspace.activePanelId).toBe("panel-two");
   });
 
   it("adds a tab on its OWN workspace when saveWorkspace returns a desktop-scoped payload", async () => {

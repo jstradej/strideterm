@@ -7,7 +7,28 @@
       :actions="headerActions"
       @action="onHeaderAction"
     />
-    <div v-if="!snapshot?.available" class="terminal-empty">
+    <div v-if="isLoadingRemoteSnapshot" class="git-view git-view--loading" aria-busy="true">
+      <div class="git-view__toolbar git-view__loading-toolbar" aria-hidden="true">
+        <span class="git-view__loading-chip git-view__loading-chip--branch"></span>
+        <span class="git-view__loading-chip git-view__loading-chip--worktree"></span>
+        <span class="git-view__loading-chip git-view__loading-chip--action"></span>
+      </div>
+      <nav class="git-tabs git-view__loading-tabs" aria-hidden="true">
+        <span class="git-view__loading-tab"></span>
+        <span class="git-view__loading-tab"></span>
+        <span class="git-view__loading-tab"></span>
+        <span class="git-view__loading-tab"></span>
+      </nav>
+      <section class="git-view__panel git-view__loading-panel">
+        <Spinner size="md" label="Loading Git workspace…" />
+      </section>
+      <span class="git-view__loading-mobile-trigger git-view__loading-mobile-trigger--tabs" aria-hidden="true"></span>
+      <span
+        class="git-view__loading-mobile-trigger git-view__loading-mobile-trigger--actions"
+        aria-hidden="true"
+      ></span>
+    </div>
+    <div v-else-if="!snapshot?.available" class="terminal-empty">
       <p>Git workspace is unavailable</p>
       <small>This workspace is not inside a Git repository.</small>
     </div>
@@ -397,6 +418,7 @@ import type { StrategyOption, UpdateStrategy } from "./git/update-strategy.js";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import ConfirmDialog from "../dialogs/ConfirmDialog.vue";
 import CustomSelect from "../common/CustomSelect.vue";
+import Spinner from "../common/Spinner.vue";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -426,6 +448,9 @@ function onToolbarClick(e: MouseEvent) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: git snapshot is an open-ended server JSON blob; typed in shared types but indexed dynamically here
 const snapshot = computed<Record<string, any> | null>(
   () => appStore.getActiveGitSnapshot(props.workspaceId) as Record<string, any> | null, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+);
+const isLoadingRemoteSnapshot = computed(
+  () => appStore.isRemoteTransport && snapshot.value == null && appStore.getGitSummary(props.workspaceId)?.available,
 );
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);

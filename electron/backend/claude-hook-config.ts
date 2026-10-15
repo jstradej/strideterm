@@ -70,7 +70,7 @@ const HOOK_MARKERS = ["STRIDETERM_NOTIFY_URL", "hooks/notify.mjs", "hooks\\notif
 //
 // argv[2] is the hook name (see HOOKS_TO_REGISTER) injected by buildHookEntry.
 // The script parses stdin as JSON, augments it with the hook name, and POSTs to
-// all URLs mapped to the current CLAUDE_PROJECT_DIR.
+// the current panel's URL, falling back by panel sid if that URL is stale.
 //
 // For every hook but one the response is discarded. `PermissionRequest` is the
 // exception: Claude Code reads this script's stdout to decide whether to show
@@ -83,9 +83,9 @@ const HOOK_MARKERS = ["STRIDETERM_NOTIFY_URL", "hooks/notify.mjs", "hooks\\notif
 // it cannot describe a notify server that moved to a new port afterwards, and
 // an agent started outside a strIDEterm PTY has none of it at all. URLs are
 // therefore ALSO resolved from a registry the runtime keeps up to date: the
-// env URL is tried first because it names one panel exactly, and the registry
-// (keyed by project directory) is the fallback when nothing could be delivered
-// over it.
+// env URL is tried first because it names one panel exactly. The registry is
+// keyed by project directory, so fallback must retain the env URL's sid instead
+// of sending one panel's event to every sibling panel in that directory.
 //
 // Paths resolve from `import.meta.url` so each installed script points at its
 // own <userDataPath> — critical for dev instances (dev.ps1 / --data-dir) whose
@@ -213,6 +213,10 @@ function readRegistry(file) {
 /** An entry is a bare URL string (older writers) or { url, instanceId, sid }. */
 function entryUrl(item) {
   return typeof item === "string" ? item : item && typeof item.url === "string" ? item.url : "";
+}
+
+function urlSid(value) {
+  try { return new URL(value).searchParams.get("sid") || ""; } catch { return ""; }
 }
 
 let anyRegistryRead = false;
@@ -379,6 +383,7 @@ process.stdin.on("end", () => {
   const projectDir = envProjectDir || payloadCwd;
   const envUrls = envUrl ? [envUrl] : [];
   const registryUrls = resolveUrls(projectDir).filter((u) => u !== envUrl);
+  const envSid = envUrl ? urlSid(envUrl) : "";
 
   if (envUrls.length === 0 && registryUrls.length === 0) {
     if (projectDir && !anyRegistryRead) {
@@ -388,7 +393,10 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
   const primaryUrls = envUrls.length ? envUrls : registryUrls;
-  const fallbackUrls = envUrls.length ? registryUrls : [];
+  // A stale per-session URL can be replaced by the current URL for that same
+  // sid. If the old URL has no sid, there is no safe way to pick its panel from
+  // the cwd-wide registry, so fail closed instead of copying the event to peers.
+  const fallbackUrls = envSid ? registryUrls.filter((u) => urlSid(u) === envSid) : [];
 
   // PermissionRequest is the one hook whose RESPONSE matters: Claude Code reads
   // our stdout to decide whether to show the permission dialog. Every other

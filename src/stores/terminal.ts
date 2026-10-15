@@ -441,6 +441,10 @@ export const useTerminalStore = defineStore("terminal", () => {
     return controller?.getTerminalTextSnapshot(sessionId, options) ?? null;
   }
 
+  function isBracketedPasteEnabled(sessionId: string): boolean | undefined {
+    return controller?.isBracketedPasteEnabled(sessionId);
+  }
+
   /**
    * Open the "Select text" panel for a session. The single entry point for
    * every trigger — the terminal long press, the TerminalPane control and the
@@ -511,6 +515,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     getSearchAddon,
     getVisibleTerminalText,
     getTerminalTextSnapshot,
+    isBracketedPasteEnabled,
     requestTextSelection,
     setTerminalDiagnosticsEnabled,
     getTerminalDiagnostics,

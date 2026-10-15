@@ -18,6 +18,7 @@
     class="mobile-input-bar"
     :class="{
       'mobile-input-bar--collapsed': panelCollapsed,
+      'mobile-input-bar--editor-expanded': editorExpanded,
       'mobile-input-bar--landscape': landscape,
       'mobile-input-bar--system': landscape && systemKeyboard && !panelCollapsed,
       'mobile-input-bar--rail': sideRailActive && !panelCollapsed,
@@ -29,7 +30,7 @@
       v-if="panelCollapsed"
       type="button"
       class="mobile-input-bar__expand"
-      title="Expand the terminal input bar — a plain text field where mobile autocorrect works correctly, plus Esc / Tab / arrow / Ctrl+C keys. Lines you type are sent to the active terminal on ⏎."
+      title="Expand the terminal input bar — a plain text field where mobile autocorrect works correctly, plus Esc / Tab / arrow / Ctrl+C keys. Lines you type are sent to the active terminal on ⏎ or the send button."
       @click="expand"
     >
       {{ landscape ? "⌨" : "⌨ Input bar ▴" }}
@@ -59,7 +60,7 @@
           v-if="!landscape"
           type="button"
           class="mobile-input-bar__key mobile-input-bar__key--slash"
-          title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎."
+          title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎ or the send button."
           @mousedown.prevent
           @click="insertSlash"
         >
@@ -69,7 +70,7 @@
           v-if="!landscape"
           type="button"
           class="mobile-input-bar__key mobile-input-bar__key--paste"
-          title="Paste the clipboard into the field — review or edit the text, then send it with ⏎. If the browser blocks clipboard access, long-press the field and paste from its menu instead."
+          title="Paste the clipboard into the field — review or edit the text, then send it with ⏎ or the send button. If the browser blocks clipboard access, long-press the field and paste from its menu instead."
           @mousedown.prevent
           @click="pasteFromClipboard"
         >
@@ -139,7 +140,7 @@
           <button
             type="button"
             class="mobile-input-bar__menu-item"
-            title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎."
+            title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎ or the send button."
             @click="insertSlash"
           >
             /&nbsp;&nbsp;Slash command
@@ -149,7 +150,7 @@
             :key="cmd"
             type="button"
             class="mobile-input-bar__menu-item mobile-input-bar__menu-item--cmd"
-            :title="`Put ${cmd} in the field, ready to send with ⏎ (or add arguments first).`"
+            :title="`Put ${cmd} in the field, ready to send with ⏎ or the send button (or add arguments first).`"
             @click="setSlashCommand(cmd)"
           >
             {{ cmd }}
@@ -209,13 +210,17 @@
            Keep prediction enabled, with form/vendor password-manager opt-outs and
            dropAutofilledValue() guarding unsolicited values. -->
       <form class="mobile-input-bar__row" autocomplete="off" @submit.prevent="sendComposed">
-        <input
+        <textarea
           ref="inputRef"
           v-model="draft"
-          type="text"
+          rows="1"
           :inputmode="compactKeyboard ? 'none' : 'text'"
           class="mobile-input-bar__input"
-          placeholder="Type a command — ⏎ sends it"
+          :placeholder="
+            editorExpanded
+              ? 'Compose a multi-line prompt — ⏎ adds a line, send with the button'
+              : 'Type a command — ⏎ sends it'
+          "
           name="strideterm-terminal-line"
           autocomplete="on"
           autocorrect="on"
@@ -225,13 +230,32 @@
           data-bwignore="true"
           data-form-type="other"
           autocapitalize="none"
-          enterkeyhint="send"
-          title="Compose a line for the active terminal. Mobile predictive text and autocorrect work normally here — what you see is exactly what gets sent when you press ⏎."
+          :enterkeyhint="editorExpanded ? 'enter' : 'send'"
+          title="Compose text for the active terminal. Mobile predictive text and autocorrect work normally here — what you see is exactly what gets sent."
           data-role="mobile-input-bar-input"
           @focus="touched = true"
+          @input="resizeInput"
+          @keydown="onInputKeydown"
           @compositionstart="handleCompositionStart"
           @compositionend="handleCompositionEnd"
         />
+        <button
+          type="button"
+          class="mobile-input-bar__editor-toggle"
+          :aria-label="editorExpanded ? 'Shrink command editor' : 'Expand command editor'"
+          :title="
+            editorExpanded
+              ? 'Shrink command editor — ⏎ sends the draft again'
+              : 'Expand command editor for multi-line prompts — ⏎ then adds a line, send with the button'
+          "
+          @mousedown.prevent
+          @click="
+            editorExpanded = !editorExpanded;
+            nextTick(resizeInput);
+          "
+        >
+          {{ editorExpanded ? "↙" : "↗" }}
+        </button>
         <button
           type="submit"
           class="mobile-input-bar__send"
@@ -241,6 +265,14 @@
           ⏎
         </button>
       </form>
+      <p
+        v-if="multilineNotice"
+        class="mobile-input-bar__notice"
+        role="status"
+        data-role="mobile-input-bar-multiline-notice"
+      >
+        This program hasn't enabled bracketed paste, so each line would be sent as its own Enter. Send again to confirm.
+      </p>
     </template>
   </div>
 </template>
@@ -294,8 +326,10 @@ const targetSessionId = computed<string | null>(() => {
 });
 
 const draft = ref("");
+const multilineNotice = ref(false);
+const editorExpanded = ref(false);
 const collapsed = ref(readMobileInputBarCollapsed());
-const inputRef = ref<HTMLInputElement | null>(null);
+const inputRef = ref<HTMLTextAreaElement | null>(null);
 const { isMobile, isPortrait, hasCoarsePointer } = useIsNarrow();
 const nativeSessionRail = ref(document.documentElement.classList.contains("native-session-rail"));
 const devicePortrait = ref(readDevicePortrait());
@@ -354,10 +388,16 @@ function finishSending() {
 }
 const compactKeyboard = computed(() => landscape.value && !systemKeyboard.value);
 
-watch(landscape, () => {
+watch(landscape, async () => {
+  const wasFocused = inputRef.value === document.activeElement;
   landscapeExpanded.value = false;
   systemKeyboard.value = true;
-  inputRef.value?.blur();
+  if (wasFocused) {
+    collapsed.value = false;
+    landscapeExpanded.value = true;
+    await nextTick();
+    inputRef.value?.focus({ preventScroll: true });
+  }
 });
 async function toggleKeyboardMode() {
   keyboardFocusGeneration++;
@@ -489,7 +529,9 @@ onUnmounted(() => {
   nativeSessionRailObserver?.disconnect();
   railResizeObserver?.disconnect();
   window.removeEventListener("resize", updateRailMetrics);
+  window.removeEventListener("resize", resizeInput);
   window.visualViewport?.removeEventListener("resize", updateRailMetrics);
+  window.visualViewport?.removeEventListener("resize", resizeInput);
   window.visualViewport?.removeEventListener("scroll", updateRailMetrics);
   window.removeEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
@@ -498,7 +540,9 @@ onUnmounted(() => {
 onMounted(() => {
   observeRailGeometry();
   window.addEventListener("resize", updateRailMetrics);
+  window.addEventListener("resize", resizeInput);
   window.visualViewport?.addEventListener("resize", updateRailMetrics);
+  window.visualViewport?.addEventListener("resize", resizeInput);
   window.visualViewport?.addEventListener("scroll", updateRailMetrics);
   window.screen.orientation?.addEventListener("change", updateDeviceOrientation);
   window.addEventListener("orientationchange", updateDeviceOrientation);
@@ -561,6 +605,7 @@ watch(targetSessionId, (sessionId, previousSessionId) => {
     composing.value = false;
     submitAfterComposition.value = false;
     draftOwner = sessionId;
+    multilineNotice.value = false;
     rewritingDraft = false;
     // The new session's own draft, if it has one. Empty is the ordinary case and leaves the field as
     // the lines above just left it.
@@ -1219,12 +1264,51 @@ function sendComposed(): void {
   const sessionId = targetSessionId.value;
   if (!sessionId) return;
   const text = draft.value;
+  if (/[\r\n]/.test(text) && !multilineNotice.value && termStore.isBracketedPasteEnabled(sessionId) !== true) {
+    multilineNotice.value = true;
+    return;
+  }
+  multilineNotice.value = false;
   notifications.resolveByEngagement(sessionId, text || "\r");
   // Keep whitespace intact. The backend queues text and Enter as one submit
   // operation so a closed session cannot receive a delayed ghost Enter.
   api?.submitTerminal(sessionId, text, originWorkspaceIdFor(sessionId));
   draft.value = "";
   finishSending();
+}
+
+function resizeInput(): void {
+  const input = inputRef.value;
+  if (!input) return;
+  input.style.height = "auto";
+  const styles = getComputedStyle(input);
+  const lineHeight = Number.parseFloat(styles.lineHeight) || 22;
+  const padding = (Number.parseFloat(styles.paddingTop) || 0) + (Number.parseFloat(styles.paddingBottom) || 0);
+  const border = (Number.parseFloat(styles.borderTopWidth) || 0) + (Number.parseFloat(styles.borderBottomWidth) || 0);
+  const availableHeight = window.visualViewport?.height ?? window.innerHeight;
+  const maxHeight = Math.max(
+    lineHeight + padding + border,
+    Math.floor(availableHeight * (editorExpanded.value ? 0.55 : 0.25)),
+  );
+  input.style.maxHeight = `${maxHeight}px`;
+  input.style.height = `${Math.min(input.scrollHeight, maxHeight)}px`;
+}
+
+watch(draft, () => {
+  multilineNotice.value = false;
+  void nextTick(resizeInput);
+});
+
+function onInputKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Enter") return;
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault();
+    sendComposed();
+    return;
+  }
+  if (editorExpanded.value || event.shiftKey || event.altKey || event.isComposing || composing.value) return;
+  event.preventDefault();
+  sendComposed();
 }
 
 function handleCompositionStart(): void {
@@ -1248,9 +1332,7 @@ async function pasteFromClipboard(): Promise<void> {
   ignoreCompositionEnd.value = composing.value;
   composing.value = false;
   submitAfterComposition.value = false;
-  // A single-line <input> can't render line breaks — flatten them so the
-  // field shows exactly what would be sent.
-  draft.value = current + text.replace(/\r?\n/g, " ");
+  draft.value = current + text;
   valueAfterIgnoredComposition = draft.value;
   // Set the element directly: Vue's v-model skips view updates while the
   // browser still considers the composition active.

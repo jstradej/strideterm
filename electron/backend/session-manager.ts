@@ -108,8 +108,20 @@ interface SessionLaunchOverride {
 interface SessionManagerOpts {
   getSessionEnv?: ((ctx: SessionEnvContext) => Record<string, string>) | null;
   getSessionLaunch?: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
+  isBracketedPasteEnabled?: ((sessionId: string) => boolean) | null;
   sshManager?: SshManager | null;
   spawnPty?: typeof pty.spawn;
+}
+
+function prepareBracketedPaste(text: string): string {
+  // Keep prompt line breaks as paste content and prevent user text from closing
+  // the outer bracketed-paste frame or injecting terminal control sequences.
+  const content = text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u001b/g, "␛")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/\n/g, "\r");
+  return `\u001b[200~${content}\u001b[201~`;
 }
 
 export type SshTestPtySpawn = typeof pty.spawn;
@@ -494,12 +506,14 @@ export class SessionManager extends EventEmitter {
   failedSpawns: Set<string>;
   getSessionEnv: ((ctx: SessionEnvContext) => Record<string, string>) | null;
   getSessionLaunch: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
+  isBracketedPasteEnabled: ((sessionId: string) => boolean) | null;
   sshManager: SshManager | null;
   spawnPty: typeof pty.spawn;
 
   constructor({
     getSessionEnv = null,
     getSessionLaunch = null,
+    isBracketedPasteEnabled = null,
     sshManager = null,
     spawnPty = pty.spawn,
   }: SessionManagerOpts = {}) {
@@ -509,6 +523,7 @@ export class SessionManager extends EventEmitter {
     this.failedSpawns = new Set();
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
     this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
+    this.isBracketedPasteEnabled = typeof isBracketedPasteEnabled === "function" ? isBracketedPasteEnabled : null;
     this.sshManager = sshManager || null;
     this.spawnPty = spawnPty;
   }
@@ -1479,7 +1494,11 @@ export class SessionManager extends EventEmitter {
       }
       if (operation.signal?.aborted) continue;
       try {
-        this.#writeNow(sessionId, operation.data, queue.session);
+        const data =
+          operation.submit && this.isBracketedPasteEnabled?.(sessionId)
+            ? prepareBracketedPaste(operation.data)
+            : operation.data;
+        this.#writeNow(sessionId, data, queue.session);
       } catch (error) {
         this.cancelTerminalWrites(sessionId);
         log.warn("queued terminal write failed", { sessionId, err: (error as Error)?.message || String(error) });
