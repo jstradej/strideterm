@@ -393,4 +393,33 @@ describe("terminal readiness as the phone sees it", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(page.answers(40).map(({ phone }) => phone?.ready)).toEqual([true]);
   });
+
+  test("a second lost replay proof on the same socket requests another replay", async () => {
+    const page = openPage();
+    bootstrap(page, "ws1", "ws1:shell");
+    serverReplays(page, "ws1:shell");
+
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await expect(page.transport.getState()).rejects.toThrow();
+    page.socket.message({ type: "state:updated", payload: serverState("ws1", "ws1:shell") });
+
+    const afterFirstLoss = page.socket.sent.length;
+    page.challenge(50, { workspaceId: "ws1", panelId: "shell" });
+    await vi.advanceTimersByTimeAsync(900);
+    const firstCycle = page.socket.sent.slice(afterFirstLoss).map((raw) => JSON.parse(raw));
+    expect(firstCycle).toEqual([{ type: "terminal:subscribe", sessionIds: ["ws1:shell"], replay: ["ws1:shell"] }]);
+    serverReplays(page, "ws1:shell");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(page.answers(50).map(({ phone }) => phone?.ready)).toEqual([true]);
+
+    await expect(page.transport.getState()).rejects.toThrow();
+    page.socket.message({ type: "state:updated", payload: serverState("ws1", "ws1:shell") });
+    const afterSecondLoss = page.socket.sent.length;
+    page.challenge(51, { workspaceId: "ws1", panelId: "shell" });
+    await vi.advanceTimersByTimeAsync(900);
+    const secondCycle = page.socket.sent.slice(afterSecondLoss).map((raw) => JSON.parse(raw));
+    expect(secondCycle).toEqual([{ type: "terminal:subscribe", sessionIds: ["ws1:shell"], replay: ["ws1:shell"] }]);
+  });
 });

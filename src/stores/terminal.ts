@@ -247,6 +247,7 @@ export const useTerminalStore = defineStore("terminal", () => {
         currentConnectionGeneration = connection.connectionGeneration;
       }
       if (!connection?.connected) {
+        replayRequested.clear();
         for (const [sessionId, generation] of parsedReplayGenerationBySession) {
           lostReplayProofBySession.set(sessionId, generation);
         }
@@ -301,7 +302,8 @@ export const useTerminalStore = defineStore("terminal", () => {
             return;
           }
           // The proof was erased while this very socket stayed up, and the server will not replay an
-          // id it already streams unless asked: ask, once.
+          // id it already streams unless asked: ask once per lost-proof episode (an episode starts at
+          // `connected:false`, which clears `replayRequested`).
           const replayKey = `${challenge.connectionGeneration}:${activeSessionId}`;
           if (
             lostReplayProofBySession.get(activeSessionId) === challenge.connectionGeneration &&
