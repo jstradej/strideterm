@@ -559,6 +559,26 @@ export async function startMockServer({
           return;
         }
 
+        if (url.pathname.endsWith("/file/git-diff") && payload.__fileGitDiff) {
+          const relativePath = String(body.relativePath || "file.txt");
+          const fixtureDiffs = payload.__fileGitDiff || {};
+          const configured = fixtureDiffs[relativePath];
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify(
+              configured || {
+                ok: true,
+                language: relativePath.endsWith(".ts") ? "typescript" : "plaintext",
+                leftLabel: "HEAD",
+                rightLabel: body.source === "staged" ? "Index" : "Working Tree",
+                leftContent: `// before: ${relativePath}\nexport const value = "old";\n`,
+                rightContent: `// after: ${relativePath}\nexport const value = "new";\n`,
+              },
+            ),
+          );
+          return;
+        }
+
         // File read — return injected content if available
         if (url.pathname.endsWith("/file/read") && body.relativePath !== undefined) {
           const content = fileContents[body.relativePath] ?? "";

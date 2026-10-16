@@ -169,6 +169,7 @@ interface Props {
   loading?: boolean;
   hideLabels?: boolean;
   hideToolbar?: boolean;
+  initialInline?: boolean;
   // When set, the toolbar shows a "Pop out" button that opens this diff in
   // a separate Electron window. The string becomes the window title and
   // the popout's headline (e.g. "src/foo.ts @ 1a2b3c4"). No button shown
@@ -223,6 +224,7 @@ const props = withDefaults(defineProps<Props>(), {
   loading: false,
   hideLabels: false,
   hideToolbar: false,
+  initialInline: false,
   popoutTitle: "",
   targetLine: -1,
   targetSide: "new",
@@ -286,7 +288,7 @@ function revealTargetLine() {
 
 const containerRef = ref<HTMLDivElement | null>(null);
 const bodyRef = ref<HTMLDivElement | null>(null);
-const sideBySide = ref(true);
+const sideBySide = ref(!props.initialInline);
 const visibleFileAnnotations = computed(() => [
   ...props.fileAnnotations,
   ...(!sideBySide.value

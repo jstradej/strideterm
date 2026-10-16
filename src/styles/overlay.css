@@ -420,7 +420,6 @@ select option:checked {
   }
 
   .docker-manager__header,
-  .terminal-toolbar__actions,
   .workspace-pane__header,
   .workspace-pane__actions,
   .dialog__footer,

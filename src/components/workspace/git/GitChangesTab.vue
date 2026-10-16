@@ -1,158 +1,399 @@
 <template>
-  <div class="git-section git-section--changes">
+  <div
+    ref="changesRoot"
+    class="git-section git-section--changes"
+    :class="{ 'git-changes--mobile': compactChanges }"
+    :data-mode="mobileMode ? mobileMode : undefined"
+    :data-layout="compactChanges ? mobileLayout : undefined"
+  >
+    <header v-if="mobileMode" class="git-changes__mobile-head">
+      <button
+        v-if="mobileMode === 'list'"
+        class="git-changes__mobile-branch button button--ghost"
+        type="button"
+        title="Browse and switch branches"
+        :disabled="isReviewWorkspace || !!gitUi.busyAction || operation.inProgress"
+        @click="gitUiStore.gitSwitchTab(workspaceId, 'branches')"
+      >
+        {{ snapshot.branch || "Detached HEAD" }} ▾
+      </button>
+      <button
+        v-if="mobileMode === 'list'"
+        type="button"
+        class="button button--ghost"
+        aria-label="Refresh repository"
+        @click="gitUiStore.refreshGit(workspaceId)"
+      >
+        ↻
+      </button>
+      <button v-if="mobileMode !== 'list'" type="button" class="button button--ghost" @click="returnToList">
+        ‹ Changes
+      </button>
+      <span
+        v-if="mobileMode === 'diff'"
+        class="git-changes__mobile-path"
+        :title="gitUi.selectedDiff?.path"
+        :aria-label="gitUi.selectedDiff?.path"
+      >
+        <span class="git-changes__mobile-path-prefix">{{ selectedPathPrefix }}</span>
+        <strong>{{ selectedPathBase }}</strong>
+      </span>
+      <span v-if="mobileMode === 'commit'">Commit changes</span>
+      <button
+        v-if="mobileMode === 'diff'"
+        type="button"
+        class="button button--ghost"
+        aria-label="Previous file"
+        @click="moveDiff(-1)"
+      >
+        ↑
+      </button>
+      <button
+        v-if="mobileMode === 'diff'"
+        type="button"
+        class="button button--ghost"
+        aria-label="Next file"
+        @click="moveDiff(1)"
+      >
+        ↓
+      </button>
+    </header>
+    <nav
+      v-if="mobileMode === 'list' || (mobileLayout === 'split' && mobileMode === 'diff')"
+      class="git-changes__filters"
+      aria-label="Change scope filter"
+    >
+      <button
+        v-for="filter in scopeFilters"
+        :key="filter.id"
+        type="button"
+        :aria-pressed="activeFilter === filter.id"
+        :class="{ active: activeFilter === filter.id }"
+        @click="activeFilter = filter.id"
+      >
+        {{ filter.label }}<span>{{ filter.id === "all" ? distinctPaths.size : scopeCounts[filter.id] }}</span>
+      </button>
+    </nav>
+
     <div class="git-changes__body">
-      <Splitpanes :horizontal="isNarrow" class="default-theme git-changes__splitpanes">
-        <Pane :size="40" :min-size="20">
-          <div class="git-section__files git-section__files--split">
-            <article class="git-card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Changes</p>
-                  <h3>{{ snapshot.dirty ? "Working tree overview" : "No local changes" }}</h3>
+      <div class="git-changes__layout">
+        <Splitpanes v-if="!compactChanges" :horizontal="isNarrow" class="default-theme git-changes__splitpanes">
+          <Pane :size="40" :min-size="20">
+            <div class="git-section__files git-section__files--split">
+              <article class="git-card">
+                <div v-if="!compactChanges" class="section-head">
+                  <div>
+                    <p class="eyebrow">Changes</p>
+                    <h3>{{ snapshot.dirty ? "Working tree overview" : "No local changes" }}</h3>
+                  </div>
                 </div>
-              </div>
-              <div v-if="isDetachedHead" class="git-info-banner git-info-banner--warn" style="margin-bottom: 8px">
-                <strong>Detached HEAD</strong>
-                <p>You are on a detached HEAD. Commits will be lost unless you create a branch.</p>
-                <button
-                  v-if="!isReviewWorkspace"
-                  type="button"
-                  class="button button--ghost button--small"
-                  @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`, '')"
+                <div
+                  v-if="isDetachedHead && !compactChanges"
+                  class="git-info-banner git-info-banner--warn"
+                  style="margin-bottom: 8px"
                 >
-                  Create branch from HEAD
-                </button>
-              </div>
-              <GitDiffStat :stat="snapshot.diffStat" />
-              <GitChangeTree
-                :files="allChangedFiles"
-                :selected-path="gitUi.selectedDiff?.path || ''"
-                :selected-scope="gitUi.selectedDiff?.scope || ''"
-                :selectable="snapshot.dirty && !isReviewWorkspace"
-                :selected-set="selectedPaths"
-                @select="onFileSelect"
-                @toggle-select="toggleSelect"
-                @context-menu="onFileContextMenu"
-              />
-              <div v-if="snapshot.dirty && !isReviewWorkspace" class="git-commit-form" style="margin-top: 12px">
-                <input
-                  v-model="commitMessage"
-                  name="commit-message"
-                  type="text"
-                  placeholder="Commit message"
-                  :disabled="operation.inProgress"
-                  :title="!snapshot.staged?.length && snapshot.dirty ? 'Will stage and commit all changes' : ''"
-                  @keydown.enter="onCommitAll"
+                  <strong>Detached HEAD</strong>
+                  <p>You are on a detached HEAD. Commits will be lost unless you create a branch.</p>
+                  <button
+                    v-if="!isReviewWorkspace"
+                    type="button"
+                    class="button button--ghost button--small"
+                    @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`, '')"
+                  >
+                    Create branch from HEAD
+                  </button>
+                </div>
+                <GitDiffStat v-if="!compactChanges" :stat="snapshot.diffStat" />
+                <GitChangeTree
+                  :files="allChangedFiles"
+                  :selected-path="gitUi.selectedDiff?.path || ''"
+                  :selected-scope="gitUi.selectedDiff?.scope || ''"
+                  :selectable="snapshot.dirty && !isReviewWorkspace"
+                  :selected-set="selectedPaths"
+                  :grouped="compactChanges"
+                  :scope-filter="mobileMode ? activeFilter : 'all'"
+                  @select="onFileSelect"
+                  @toggle-select="toggleSelect"
+                  @context-menu="onFileContextMenu"
                 />
-                <button
-                  type="button"
-                  class="button"
-                  :disabled="
-                    !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
-                  "
-                  :title="commitButtonTitle"
-                  @click="onCommitAll"
+                <div
+                  v-if="!mobileMode && snapshot.dirty && !isReviewWorkspace"
+                  class="git-commit-form"
+                  style="margin-top: 12px"
                 >
-                  {{ commitButtonLabel }}
-                </button>
-              </div>
-              <div v-if="snapshot.dirty && !isReviewWorkspace" class="git-stash-form" style="margin-top: 8px">
+                  <input
+                    v-model="commitMessage"
+                    name="commit-message"
+                    type="text"
+                    placeholder="Commit message"
+                    :disabled="operation.inProgress"
+                    :title="!snapshot.staged?.length && snapshot.dirty ? 'Will stage and commit all changes' : ''"
+                    @keydown.enter="onCommitAll"
+                  />
+                  <button
+                    type="button"
+                    class="button"
+                    :disabled="
+                      !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
+                    "
+                    :title="commitButtonTitle"
+                    @click="onCommitAll"
+                  >
+                    {{ commitButtonLabel }}
+                  </button>
+                </div>
+                <div
+                  v-if="!mobileMode && snapshot.dirty && !isReviewWorkspace"
+                  class="git-stash-form"
+                  style="margin-top: 8px"
+                >
+                  <input
+                    v-model="stashMessage"
+                    name="stash-message"
+                    type="text"
+                    class="git-stash-form__message"
+                    placeholder="Stash message (optional)"
+                    :disabled="stashBusy"
+                  />
+                  <label class="git-stash-form__untracked" title="Also stash files git isn't tracking yet">
+                    <input
+                      type="checkbox"
+                      :checked="includeUntracked"
+                      :disabled="stashBusy"
+                      @change="onToggleUntracked"
+                    />
+                    <span>Include untracked</span>
+                  </label>
+                  <div class="git-stash-form__buttons">
+                    <button
+                      type="button"
+                      class="button button--ghost button--small"
+                      :disabled="stashBusy || !distinctPaths.size"
+                      :title="allSelected ? 'Uncheck every file' : 'Check every changed file'"
+                      @click="toggleSelectAll"
+                    >
+                      {{ allSelected ? "Clear" : "Select all" }}
+                    </button>
+                    <button
+                      type="button"
+                      class="button button--small"
+                      :disabled="stashBusy || selectedPaths.size === 0"
+                      title="Stash only the checked files — the rest stay in your working tree. The message above names the stash."
+                      @click="onStashSelected"
+                    >
+                      {{ stashBusy ? "Stashing…" : `Stash selected (${selectedPaths.size})` }}
+                    </button>
+                    <button
+                      type="button"
+                      class="button button--ghost button--small"
+                      :disabled="stashBusy"
+                      title="Stash the entire working tree and clear it. The message above names the stash."
+                      @click="onStashAll"
+                    >
+                      Stash all
+                    </button>
+                  </div>
+                </div>
+                <div
+                  v-if="!mobileMode && initialCommitPrompt"
+                  class="git-info-banner git-info-banner--warn"
+                  style="margin-top: 8px"
+                >
+                  <strong>No commits yet</strong>
+                  <p>
+                    Stash needs an initial commit to attach to. Create an empty initial commit now and stash on top of
+                    it?
+                  </p>
+                  <div class="git-stash-form__buttons" style="margin-left: 0">
+                    <button
+                      type="button"
+                      class="button button--small"
+                      :disabled="stashBusy"
+                      @click="confirmCreateInitialCommit"
+                    >
+                      {{ stashBusy ? "Working…" : "Create empty commit & stash" }}
+                    </button>
+                    <button
+                      type="button"
+                      class="button button--ghost button--small"
+                      :disabled="stashBusy"
+                      @click="clearInitialCommitPrompt"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </Pane>
+          <Pane :size="60" :min-size="25">
+            <div class="git-section__preview git-section__preview--diff">
+              <article class="git-card git-card--diff">
+                <div v-if="!compactChanges" class="section-head">
+                  <div>
+                    <p class="eyebrow">Diff Preview</p>
+                    <h3>{{ gitUi.selectedDiff?.path || "Select a file" }}</h3>
+                  </div>
+                </div>
+                <div class="git-monaco-host">
+                  <MonacoDiffPanel
+                    v-if="gitUi.selectedDiff?.path"
+                    :payload="monacoDiffPayload"
+                    :loading="monacoDiffLoading"
+                    :initial-inline="compactChanges"
+                  />
+                  <p v-else class="git-card__hint">Click a file to load a diff preview.</p>
+                </div>
+              </article>
+            </div>
+          </Pane>
+        </Splitpanes>
+        <div v-show="compactChanges && mobileMode !== 'commit'" class="git-changes__mobile-panes">
+          <div
+            class="git-changes__mobile-list"
+            :class="{ 'is-visible': mobileMode === 'list' || mobileLayout === 'split' }"
+          >
+            <div
+              v-if="compactChanges && mobileMode === 'list' && isDetachedHead"
+              class="git-info-banner git-info-banner--warn git-changes__detached-banner"
+            >
+              <strong>Detached HEAD</strong><span>Commits may be lost unless you create a branch.</span>
+              <button
+                v-if="!isReviewWorkspace"
+                type="button"
+                class="button button--ghost button--small"
+                @click="gitUiStore.gitCreateBranch(workspaceId, 'branch-from-detached', '')"
+              >
+                Create branch
+              </button>
+            </div>
+            <GitChangeTree
+              :key="`${workspaceId}:${activeRootPath}`"
+              v-model:expanded-set="mobileExpandedDirectories"
+              :files="allChangedFiles"
+              :selected-path="gitUi.selectedDiff?.path || ''"
+              :selected-scope="gitUi.selectedDiff?.scope || ''"
+              :selectable="snapshot.dirty && !isReviewWorkspace"
+              :selected-set="selectedPaths"
+              :grouped="true"
+              :scope-filter="activeFilter"
+              @select="onFileSelect"
+              @toggle-select="toggleSelect"
+              @context-menu="onFileContextMenu"
+            />
+            <details
+              v-if="compactChanges && mobileMode === 'list' && snapshot.dirty && !isReviewWorkspace"
+              class="git-changes__mobile-actions"
+            >
+              <summary>More actions</summary>
+              <div class="git-stash-form">
                 <input
                   v-model="stashMessage"
-                  name="stash-message"
+                  name="mobile-stash-message"
                   type="text"
                   class="git-stash-form__message"
                   placeholder="Stash message (optional)"
                   :disabled="stashBusy"
                 />
-                <label class="git-stash-form__untracked" title="Also stash files git isn't tracking yet">
-                  <input
+                <label class="git-stash-form__untracked"
+                  ><input
                     type="checkbox"
                     :checked="includeUntracked"
                     :disabled="stashBusy"
                     @change="onToggleUntracked"
-                  />
-                  <span>Include untracked</span>
-                </label>
-                <div class="git-stash-form__buttons">
-                  <button
-                    type="button"
-                    class="button button--ghost button--small"
-                    :disabled="stashBusy || !distinctPaths.size"
-                    :title="allSelected ? 'Uncheck every file' : 'Check every changed file'"
-                    @click="toggleSelectAll"
-                  >
-                    {{ allSelected ? "Clear" : "Select all" }}
-                  </button>
-                  <button
-                    type="button"
-                    class="button button--small"
-                    :disabled="stashBusy || selectedPaths.size === 0"
-                    title="Stash only the checked files — the rest stay in your working tree. The message above names the stash."
-                    @click="onStashSelected"
-                  >
-                    {{ stashBusy ? "Stashing…" : `Stash selected (${selectedPaths.size})` }}
-                  </button>
-                  <button
-                    type="button"
-                    class="button button--ghost button--small"
-                    :disabled="stashBusy"
-                    title="Stash the entire working tree and clear it. The message above names the stash."
-                    @click="onStashAll"
-                  >
-                    Stash all
-                  </button>
-                </div>
+                  /><span>Include untracked</span></label
+                >
+                <button
+                  type="button"
+                  class="button button--small"
+                  :disabled="stashBusy || !selectedPaths.size"
+                  @click="onStashSelected"
+                >
+                  Stash selected ({{ selectedPaths.size }})
+                </button>
+                <button
+                  type="button"
+                  class="button button--ghost button--small"
+                  :disabled="stashBusy"
+                  @click="onStashAll"
+                >
+                  Stash all
+                </button>
               </div>
-              <div v-if="initialCommitPrompt" class="git-info-banner git-info-banner--warn" style="margin-top: 8px">
+              <div v-if="initialCommitPrompt" class="git-info-banner git-info-banner--warn">
                 <strong>No commits yet</strong>
-                <p>
-                  Stash needs an initial commit to attach to. Create an empty initial commit now and stash on top of it?
-                </p>
-                <div class="git-stash-form__buttons" style="margin-left: 0">
-                  <button
-                    type="button"
-                    class="button button--small"
-                    :disabled="stashBusy"
-                    @click="confirmCreateInitialCommit"
-                  >
-                    {{ stashBusy ? "Working…" : "Create empty commit & stash" }}
-                  </button>
-                  <button
-                    type="button"
-                    class="button button--ghost button--small"
-                    :disabled="stashBusy"
-                    @click="clearInitialCommitPrompt"
-                  >
-                    Cancel
-                  </button>
-                </div>
+                <p>Create an empty initial commit before stashing?</p>
+                <button
+                  type="button"
+                  class="button button--small"
+                  :disabled="stashBusy"
+                  @click="confirmCreateInitialCommit"
+                >
+                  Create empty commit & stash
+                </button>
+                <button
+                  type="button"
+                  class="button button--ghost button--small"
+                  :disabled="stashBusy"
+                  @click="clearInitialCommitPrompt"
+                >
+                  Cancel
+                </button>
               </div>
-            </article>
+            </details>
           </div>
-        </Pane>
-        <Pane :size="60" :min-size="25">
-          <div class="git-section__preview git-section__preview--diff">
-            <article class="git-card git-card--diff">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Diff Preview</p>
-                  <h3>{{ gitUi.selectedDiff?.path || "Select a file" }}</h3>
-                </div>
-              </div>
-              <div class="git-monaco-host">
-                <MonacoDiffPanel
-                  v-if="gitUi.selectedDiff?.path"
-                  :payload="monacoDiffPayload"
-                  :loading="monacoDiffLoading"
-                />
-                <p v-else class="git-card__hint">Click a file to load a diff preview.</p>
-              </div>
-            </article>
+          <div
+            class="git-changes__mobile-diff"
+            :class="{ 'is-visible': mobileMode === 'diff' || mobileLayout === 'split' }"
+          >
+            <MonacoDiffPanel
+              v-if="compactChanges && gitUi.selectedDiff?.path"
+              :payload="monacoDiffPayload"
+              :loading="monacoDiffLoading"
+              :initial-inline="true"
+            />
+            <p v-else class="git-card__hint">Select a file to load a diff preview.</p>
           </div>
-        </Pane>
-      </Splitpanes>
+        </div>
+        <section v-if="mobileMode === 'commit'" class="git-changes__commit-screen">
+          <label :for="commitMessageId">Commit message</label>
+          <textarea
+            :id="commitMessageId"
+            ref="commitMessageInput"
+            v-model="commitMessage"
+            placeholder="Describe the change…"
+            :disabled="commitBusy || !!gitUi.busyAction || operation.inProgress"
+          />
+          <strong>{{
+            selectedPaths.size ? `Selected paths (${selectedPaths.size})` : `All changes (${distinctPaths.size} files)`
+          }}</strong>
+          <p>Selection is by path. Staged and unstaged changes to the same file are committed together.</p>
+          <p v-if="renameSelection.previousPaths.length">Renamed files include their previous path.</p>
+        </section>
+      </div>
     </div>
+
+    <footer v-if="mobileMode" class="git-changes__mobile-dock">
+      <template v-if="mobileMode === 'list' || (mobileLayout === 'split' && mobileMode === 'diff')">
+        <span>{{ selectedPaths.size ? `${selectedPaths.size} selected` : `${distinctPaths.size} files` }}</span>
+        <button v-if="!isReviewWorkspace && snapshot.dirty" type="button" class="button" @click="openMobileCommit">
+          {{ selectedPaths.size ? `Commit ${selectedPaths.size}…` : "Commit all…" }}
+        </button>
+      </template>
+      <template v-else-if="mobileMode === 'commit'">
+        <button type="button" class="button button--ghost" @click="returnToList">Back to changes</button>
+        <button
+          type="button"
+          class="button"
+          :disabled="
+            commitBusy || !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
+          "
+          @click="submitMobileCommit"
+        >
+          {{ commitButtonLabel }}
+        </button>
+      </template>
+    </footer>
 
     <!-- File / directory context menu (right-click a changed entry) -->
     <Teleport to="body">
@@ -204,7 +445,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
@@ -241,6 +482,56 @@ const gitUiStore = useGitUiStore();
 const stashStore = useGitStashStore();
 const notifications = useNotificationStore();
 const { isNarrow } = useIsNarrow();
+const changesRoot = ref<HTMLElement | null>(null);
+const mobileMode = ref<"list" | "diff" | "commit" | "">("");
+const mobileLayout = ref<"single" | "split">("single");
+const activeFilter = ref("all");
+const commitBusy = ref(false);
+const commitMessageId = useId();
+const commitMessageInput = ref<HTMLTextAreaElement | null>(null);
+const mobileExpandedDirectories = ref<Set<string>>(new Set());
+let resizeObserver: ResizeObserver | null = null;
+let mobileViewport = false;
+const compactChanges = ref(false);
+let changesWidth = 0;
+
+const scopeFilters = [
+  { id: "all", label: "All" },
+  { id: "staged", label: "Staged" },
+  { id: "unstaged", label: "Unstaged" },
+  { id: "untracked", label: "New" },
+] as const;
+
+const scopeCounts = computed(() => ({
+  staged: new Set(allChangedFiles.value.filter((file) => file.scope === "staged").map((file) => file.path)).size,
+  unstaged: new Set(allChangedFiles.value.filter((file) => file.scope === "unstaged").map((file) => file.path)).size,
+  untracked: new Set(allChangedFiles.value.filter((file) => file.scope === "untracked").map((file) => file.path)).size,
+}));
+
+function updateMobileLayout() {
+  if (typeof window === "undefined") return;
+  mobileViewport = window.matchMedia("(max-width: 768px), (max-height: 500px)").matches;
+  compactChanges.value = mobileViewport || changesWidth < 640 || mobileMode.value === "commit";
+  mobileMode.value = compactChanges.value ? mobileMode.value || "list" : "";
+  mobileLayout.value = compactChanges.value && changesWidth >= 640 ? "split" : "single";
+}
+
+onMounted(() => {
+  if (typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver((entries) => {
+      changesWidth = entries[0]?.contentRect.width || 0;
+      updateMobileLayout();
+    });
+    if (changesRoot.value) resizeObserver.observe(changesRoot.value);
+  }
+  window.addEventListener("resize", updateMobileLayout);
+  updateMobileLayout();
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  window.removeEventListener("resize", updateMobileLayout);
+});
 
 const allChangedFiles = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -251,7 +542,12 @@ const allChangedFiles = computed(() => {
     const key = `${scope}:${f.path}`;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ ...f, scope });
+    out.push({
+      ...f,
+      scope,
+      stagedStatus: f.stagedStatus || (scope === "staged" ? f.code || "" : ""),
+      unstagedStatus: f.unstagedStatus || (scope === "unstaged" ? f.code || "" : ""),
+    });
   };
   for (const f of props.snapshot?.staged || []) push(f, "staged");
   for (const f of props.snapshot?.unstaged || []) push(f, "unstaged");
@@ -290,15 +586,25 @@ function diffSourceForScope(scope: string) {
 
 // Working-tree file diff — shared seq-guarded loader (see
 // useMonacoDiffLoader.ts), also used by GitBranchesTab.vue's commit diff.
-const diffLoader = useMonacoDiffLoader((path: string, scope: string) => {
+const diffLoader = useMonacoDiffLoader(async (path: string, scope: string) => {
   const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
-  return api.fileGitDiff({
+  const payload = await api.fileGitDiff({
     rootPath: props.activeRootPath,
     relativePath: path,
     source: diffSourceForScope(scope),
     revisionRef: "",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as Promise<any>;
+  });
+  if (payload?.leftContent?.includes("\0") || payload?.rightContent?.includes("\0")) {
+    return {
+      ...payload,
+      ok: false,
+      leftContent: "",
+      rightContent: "",
+      leftError: "Binary file; text diff is unavailable.",
+      rightError: "",
+    };
+  }
+  return payload;
 }, "Failed to load diff");
 const monacoDiffPayload = diffLoader.payload;
 const monacoDiffLoading = diffLoader.loading;
@@ -326,7 +632,28 @@ watch(
   { deep: true, immediate: true },
 );
 
+watch(
+  () => props.activeRootPath,
+  (rootPath) => {
+    const selection = props.gitUi.selectedDiff;
+    if (selection?.path && rootPath) void diffLoader.load(selection.path, selection.scope);
+    else monacoDiffPayload.value = null;
+  },
+);
+
 const commitMessage = ref("");
+
+watch(
+  () => [props.workspaceId, props.activeRootPath],
+  () => {
+    selectedPaths.value = new Set();
+    mobileExpandedDirectories.value = new Set();
+    commitMessage.value = "";
+    activeFilter.value = "all";
+    mobileMode.value = compactChanges.value ? "list" : "";
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  },
+);
 
 // Commit button mirrors the stash row: label + tooltip switch to a
 // selection-scoped commit whenever files are checked, otherwise commit all.
@@ -359,6 +686,55 @@ function onCommitAll() {
   commitMessage.value = "";
 }
 
+function returnToList() {
+  mobileMode.value = "list";
+  updateMobileLayout();
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+}
+
+function openMobileCommit() {
+  if (props.isReviewWorkspace || !props.snapshot.dirty) return;
+  mobileMode.value = "commit";
+  void nextTick(() => commitMessageInput.value?.focus());
+}
+
+async function submitMobileCommit() {
+  const message = commitMessage.value.trim();
+  if (!message || commitBusy.value || props.isReviewWorkspace) return;
+  const { paths, previousPaths } = commitSelection();
+  const workspaceId = props.workspaceId;
+  const rootPath = props.activeRootPath;
+  commitBusy.value = true;
+  try {
+    await gitUiStore.gitCommitAll(
+      props.workspaceId,
+      message,
+      paths.length ? paths : undefined,
+      previousPaths.length ? previousPaths : undefined,
+    );
+    if (workspaceId !== props.workspaceId || rootPath !== props.activeRootPath || props.gitUi.lastResult?.ok === false)
+      return;
+    commitMessage.value = "";
+    mobileMode.value = "list";
+    updateMobileLayout();
+  } finally {
+    commitBusy.value = false;
+  }
+}
+
+function moveDiff(direction: number) {
+  const paths = [...new Set<string>(filteredFiles.value.map((file) => file.path))];
+  if (!paths.length) return;
+  const selected = props.gitUi.selectedDiff;
+  const index = paths.indexOf(selected?.path);
+  const current = index < 0 ? (direction > 0 ? -1 : 0) : index;
+  const path = paths[(current + direction + paths.length) % paths.length];
+  const next =
+    filteredFiles.value.find((file) => file.path === path && file.scope === selected?.scope) ||
+    filteredFiles.value.find((file) => file.path === path)!;
+  onFileSelect(next.path, next.scope);
+}
+
 // --- Selective stash ---
 const stashState = computed(() => stashStore.get(props.workspaceId));
 const stashBusy = computed(() => stashState.value.busyAction === "create");
@@ -373,6 +749,33 @@ const distinctPaths = computed(() => {
   for (const f of allChangedFiles.value) s.add(f.path as string);
   return s;
 });
+
+const filteredFiles = computed(() =>
+  !compactChanges.value || activeFilter.value === "all"
+    ? allChangedFiles.value
+    : allChangedFiles.value.filter((file) => file.scope === activeFilter.value),
+);
+
+const renameSelection = computed(() => buildCommitSelection(allChangedFiles.value, selectedPaths.value));
+const selectedPathPrefix = computed(() => {
+  const path = String(props.gitUi.selectedDiff?.path || "");
+  return path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+});
+const selectedPathBase = computed(
+  () =>
+    String(props.gitUi.selectedDiff?.path || "")
+      .split("/")
+      .pop() || "",
+);
+
+watch(
+  () => props.gitUi.selectedDiff,
+  (selection) => {
+    if (compactChanges.value && selection?.path && mobileMode.value !== "commit") {
+      mobileMode.value = "diff";
+    }
+  },
+);
 
 const allSelected = computed(
   () => distinctPaths.value.size > 0 && [...distinctPaths.value].every((p) => selectedPaths.value.has(p)),
@@ -587,10 +990,345 @@ useContextMenu({
 </script>
 
 <style scoped>
-.git-changes__body {
+.git-section--changes {
+  display: flex;
+  flex-direction: column;
+  grid-template-columns: none;
+  grid-template-rows: none;
+  align-content: stretch;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.git-changes__body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.git-changes--mobile {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  gap: 0;
+  padding-bottom: 0;
+}
+
+.git-changes__mobile-head,
+.git-changes__mobile-dock,
+.git-changes__filters {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-changes__mobile-branch {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.git-changes__mobile-path {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.git-changes__mobile-path-prefix {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.git-changes__mobile-path strong {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-changes__filters button {
+  min-height: 34px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.git-changes__filters button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.git-changes__filters span {
+  margin-left: 5px;
+  opacity: 0.75;
+}
+
+.git-changes--mobile .git-changes__body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.git-changes__layout {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.git-changes__mobile-panes {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.git-changes--mobile .git-changes__mobile-panes {
+  display: flex;
+}
+
+.git-changes__mobile-list,
+.git-changes__mobile-diff {
+  display: none;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.git-changes__mobile-list.is-visible,
+.git-changes__mobile-diff.is-visible {
+  display: flex;
+  flex-direction: column;
+}
+
+.git-changes__mobile-list > :deep(.gct) {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  overflow: auto;
+}
+
+.git-changes__mobile-list {
+  overflow: hidden;
+}
+
+.git-changes__mobile-diff > :deep(.mdp) {
+  flex: 1;
+  min-height: 0;
+}
+
+.git-changes--mobile[data-layout="single"] .git-changes__mobile-list.is-visible,
+.git-changes--mobile[data-layout="single"] .git-changes__mobile-diff.is-visible {
+  width: 100%;
+}
+
+.git-changes--mobile[data-layout="split"] .git-changes__mobile-list.is-visible {
+  flex: 0 0 36%;
+  border-right: 1px solid var(--border);
+}
+
+.git-changes--mobile[data-layout="split"] .git-changes__mobile-diff.is-visible {
+  flex: 1;
+}
+
+.git-changes--mobile[data-mode="commit"] .git-changes__mobile-panes {
+  display: none;
+}
+
+.git-changes__mobile-diff,
+.git-changes__commit-screen {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.git-changes__commit-screen {
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+}
+
+.git-changes__commit-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.git-changes__commit-screen textarea {
+  flex: 1 1 110px;
+  width: 100%;
+  min-height: 80px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+}
+
+.git-changes__mobile-dock {
+  justify-content: space-between;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+}
+
+.git-changes__mobile-actions {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 4px 8px;
+  max-height: 70%;
+  overflow: auto;
+}
+
+.git-changes__mobile-actions summary {
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.git-changes__mobile-actions .git-stash-form {
+  padding: 6px 0;
+}
+
+.git-changes__detached-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 8px;
+  padding: 6px;
+  font-size: 11px;
+}
+
+.git-changes__detached-banner span {
+  flex: 1;
+}
+
+.git-changes--mobile[data-mode="commit"] .git-changes__mobile-dock {
+  padding-bottom: max(8px, env(safe-area-inset-bottom), var(--strideterm-keyboard-bottom, 0px));
+}
+
+@media (max-width: 639px) {
+  .git-changes__filters {
+    justify-content: space-between;
+    padding: 4px;
+  }
+
+  .git-changes__filters button {
+    padding: 3px 5px;
+    font-size: 11px;
+  }
+}
+
+@media (max-height: 500px) {
+  .git-changes--mobile[data-layout="split"]:not([data-mode="commit"]) {
+    display: grid;
+    grid-template-columns: minmax(230px, 36%) minmax(0, 1fr);
+    grid-template-rows: 34px minmax(0, 1fr) auto;
+  }
+
+  .git-changes--mobile[data-layout="split"]:not([data-mode="commit"]) .git-changes__mobile-head {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    padding: 2px 6px;
+    border: 0;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__filters {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: start;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 0 4px;
+    border: 0;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__filters button {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 2px 5px;
+    font-size: 10px;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__body {
+    display: contents;
+  }
+
+  .git-changes--mobile[data-layout="split"]:not([data-mode="commit"]) .git-changes__layout {
+    display: contents;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-panes {
+    display: contents;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-list {
+    grid-column: 1;
+    grid-row: 2;
+    margin-top: 0;
+    border-right: 1px solid var(--border);
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-diff {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 0;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-dock {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    min-height: 32px;
+    padding: 2px 6px;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-dock .button,
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-head .button {
+    min-height: 28px;
+    padding: 2px 6px;
+  }
+
+  .git-changes__mobile-actions {
+    padding: 0 6px;
+  }
+
+  .git-changes__mobile-actions summary {
+    min-height: 24px;
+  }
+
+  .git-changes--mobile[data-layout="split"][data-mode="commit"] .git-changes__body {
+    display: flex;
+  }
+
+  .git-changes--mobile[data-layout="split"][data-mode="commit"] .git-changes__mobile-panes {
+    display: none;
+  }
 }
 
 /* Splitpanes default-theme has higher specificity (.default-theme.splitpanes

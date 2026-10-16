@@ -1,13 +1,51 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
-import { ref } from "vue";
+import { ref, type ComponentPublicInstance } from "vue";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
+
+const { monacoPayloads } = vi.hoisted(() => ({ monacoPayloads: vi.fn() }));
+
+vi.mock("../../shared/MonacoDiffPanel.vue", async () => {
+  const { defineComponent, h, watch } = await import("vue");
+  return {
+    __esModule: true,
+    default: defineComponent({
+      name: "MonacoDiffPanel",
+      props: ["payload"],
+      setup(props) {
+        watch(
+          () => props.payload,
+          (payload) => monacoPayloads(payload),
+          { immediate: true, deep: true },
+        );
+        return () => h("div", { class: "monaco-test-panel" });
+      },
+    }),
+  };
+});
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakeApi: Record<string, any> = {};
 const refreshGit = vi.fn(async () => {});
 const gitClearSelectedDiff = vi.fn();
+const gitSelectDiff = vi.fn();
+const openConflictDialog = vi.fn();
+const gitSwitchTab = vi.fn();
+const gitCommitAll = vi.fn(async () => {});
 const showError = vi.fn();
+let observedWidth = 390;
+
+class ResizeObserverMock {
+  constructor(private callback: ResizeObserverCallback) {}
+  observe() {
+    this.callback(
+      [{ contentRect: { width: observedWidth } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+  disconnect() {}
+  unobserve() {}
+}
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({ getApi: () => fakeApi }),
@@ -16,11 +54,11 @@ vi.mock("../../../stores/git-ui.js", () => ({
   useGitUiStore: () => ({
     refreshGit,
     gitClearSelectedDiff,
-    gitSelectDiff: vi.fn(),
-    openConflictDialog: vi.fn(),
-    gitSwitchTab: vi.fn(),
+    gitSelectDiff,
+    openConflictDialog,
+    gitSwitchTab,
     gitCreateBranch: vi.fn(),
-    gitCommitAll: vi.fn(),
+    gitCommitAll,
   }),
 }));
 vi.mock("../../../stores/git-stash.js", () => ({
@@ -40,10 +78,22 @@ vi.mock("../../../composables/useIsNarrow.js", () => ({
 import GitChangesTab from "./GitChangesTab.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mountedWrappers: VueWrapper<any>[] = [];
+type GitChangesTabTestProps = {
+  workspaceId: string;
+  snapshot: Record<string, unknown>;
+  gitUi: Record<string, unknown>;
+  operation: Record<string, unknown>;
+  activeRootPath?: string;
+  isReviewWorkspace?: boolean;
+};
+type GitChangesTabTestWrapper = VueWrapper<
+  InstanceType<typeof GitChangesTab>,
+  ComponentPublicInstance<GitChangesTabTestProps>
+>;
 
-function mountTab() {
+const mountedWrappers: GitChangesTabTestWrapper[] = [];
+
+function mountTab(overrides: Record<string, unknown> = {}): GitChangesTabTestWrapper {
   const wrapper = mount(GitChangesTab, {
     props: {
       workspaceId: "ws1",
@@ -60,21 +110,30 @@ function mountTab() {
       gitUi: {},
       operation: { inProgress: false, conflicts: [] },
       activeRootPath: "/repo",
+      ...overrides,
     },
     attachTo: document.body,
-  });
+  }) as unknown as GitChangesTabTestWrapper;
   mountedWrappers.push(wrapper);
   return wrapper;
 }
 
 beforeEach(() => {
+  observedWidth = 390;
+  vi.stubGlobal("ResizeObserver", ResizeObserverMock);
   setActivePinia(createPinia());
   for (const k of Object.keys(fakeApi)) delete fakeApi[k];
   fakeApi.fileDelete = vi.fn(async () => ({ ok: true }));
   fakeApi.fileGitIgnore = vi.fn(async () => ({ ok: true }));
   refreshGit.mockClear();
   gitClearSelectedDiff.mockClear();
+  gitSelectDiff.mockReset();
+  openConflictDialog.mockReset();
+  gitSwitchTab.mockReset();
+  gitCommitAll.mockReset();
+  gitCommitAll.mockResolvedValue(undefined);
   showError.mockClear();
+  monacoPayloads.mockReset();
   document.body.innerHTML = "";
 });
 
@@ -84,10 +143,222 @@ afterEach(async () => {
   for (const w of mountedWrappers) w.unmount();
   mountedWrappers.length = 0;
   document.body.innerHTML = "";
+  vi.unstubAllGlobals();
   await flushPromises();
 });
 
 describe("GitChangesTab", () => {
+  test("opens a file diff from the mobile list and returns to the list", async () => {
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        branch: "main",
+        staged: [],
+        unstaged: [{ path: "src/a.ts", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.attributes("data-mode")).toBe("list");
+    wrapper.findComponent(GitChangeTree).vm.$emit("select", "src/a.ts", "unstaged");
+    await wrapper.setProps({ gitUi: { selectedDiff: { path: "src/a.ts", scope: "unstaged" } } });
+    await flushPromises();
+    expect(gitSelectDiff).toHaveBeenCalledWith("ws1", "src/a.ts", "unstaged");
+    expect(wrapper.attributes("data-mode")).toBe("diff");
+
+    await wrapper.get(".git-changes__mobile-head button").trigger("click");
+    expect(wrapper.attributes("data-mode")).toBe("list");
+  });
+
+  test("branch header opens the Branches tab", async () => {
+    const wrapper = mountTab({ snapshot: { dirty: false, branch: "main", staged: [], unstaged: [], untracked: [] } });
+    await flushPromises();
+
+    await wrapper.get(".git-changes__mobile-branch").trigger("click");
+    expect(gitSwitchTab).toHaveBeenCalledWith("ws1", "branches");
+    expect(gitCommitAll).not.toHaveBeenCalled();
+  });
+
+  test("replaces actual NUL-byte diff content with the binary notice before rendering Monaco", async () => {
+    fakeApi.fileGitDiff = vi.fn(async () => ({
+      ok: true,
+      leftContent: "source\0binary-data",
+      rightContent: "changed\0binary-data",
+      leftLabel: "HEAD",
+      rightLabel: "Working tree",
+    }));
+    mountTab({
+      gitUi: { selectedDiff: { path: "image.bin", scope: "unstaged" } },
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "image.bin", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+
+    expect(fakeApi.fileGitDiff).toHaveBeenCalledWith({
+      rootPath: "/repo",
+      relativePath: "image.bin",
+      source: "head",
+      revisionRef: "",
+    });
+    expect(
+      monacoPayloads.mock.calls.some(
+        ([payload]) =>
+          payload?.ok === false &&
+          payload.leftContent === "" &&
+          payload.rightContent === "" &&
+          payload.leftError === "Binary file; text diff is unavailable.",
+      ),
+    ).toBe(true);
+    expect(monacoPayloads.mock.calls.flat().some((payload) => JSON.stringify(payload).includes("\u0000"))).toBe(false);
+  });
+
+  test("next file navigation skips a duplicate staged/unstaged path", async () => {
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [{ path: "same.ts", code: "M" }],
+        unstaged: [
+          { path: "same.ts", code: "M" },
+          { path: "next.ts", code: "M" },
+        ],
+        untracked: [],
+        diffStat: null,
+      },
+      gitUi: {},
+    });
+    await flushPromises();
+    await wrapper.setProps({ gitUi: { selectedDiff: { path: "same.ts", scope: "staged" } } });
+    await flushPromises();
+
+    await wrapper.get('[aria-label="Next file"]').trigger("click");
+    expect(gitSelectDiff).toHaveBeenLastCalledWith("ws1", "next.ts", "unstaged");
+  });
+
+  test("opens conflicted files in Conflict Center instead of selecting a diff", async () => {
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "conflict.txt", code: "UU", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+      operation: { inProgress: false, conflicts: ["conflict.txt"] },
+    });
+    await flushPromises();
+
+    wrapper.findComponent(GitChangeTree).vm.$emit("select", "conflict.txt", "unstaged");
+    expect(openConflictDialog).toHaveBeenCalledWith("ws1", "/repo");
+    expect(gitSwitchTab).toHaveBeenCalledWith("ws1", "conflicts");
+    expect(gitSelectDiff).not.toHaveBeenCalled();
+  });
+
+  test("readonly review workspace exposes neither commit action nor file selection", async () => {
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "review.txt", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+      isReviewWorkspace: true,
+    });
+    await flushPromises();
+
+    expect(wrapper.find(".git-changes__mobile-dock .button").exists()).toBe(false);
+    expect(wrapper.find("input[type=checkbox]").exists()).toBe(false);
+  });
+
+  test("commits a selected rename once with its old path, even when the path has two scopes", async () => {
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [{ path: "new-name.ts", previousPath: "old-name.ts", code: "R", stagedStatus: "R" }],
+        unstaged: [{ path: "new-name.ts", previousPath: "old-name.ts", code: "M", unstagedStatus: "M" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+    wrapper.findComponent(GitChangeTree).vm.$emit("toggle-select", "new-name.ts");
+    await wrapper.get(".git-changes__mobile-dock .button").trigger("click");
+    await wrapper.get(".git-changes__commit-screen textarea").setValue("rename module");
+    await wrapper.findAll(".git-changes__mobile-dock .button").at(-1)!.trigger("click");
+    await flushPromises();
+
+    expect(gitCommitAll).toHaveBeenCalledWith("ws1", "rename module", ["new-name.ts"], ["old-name.ts"]);
+  });
+
+  test("keeps mobile commit text and screen after a failed result, then clears on success", async () => {
+    let resolveCommit: (() => void) | undefined;
+    gitCommitAll.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCommit = resolve;
+        }),
+    );
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+      gitUi: { lastResult: { ok: false } },
+    });
+    await flushPromises();
+    await wrapper.get(".git-changes__mobile-dock .button").trigger("click");
+    await wrapper.get(".git-changes__commit-screen textarea").setValue("keep this message");
+    await wrapper.findAll(".git-changes__mobile-dock .button").at(-1)!.trigger("click");
+    resolveCommit?.();
+    await flushPromises();
+
+    expect(wrapper.attributes("data-mode")).toBe("commit");
+    expect((wrapper.get(".git-changes__commit-screen textarea").element as HTMLTextAreaElement).value).toBe(
+      "keep this message",
+    );
+
+    await wrapper.setProps({ gitUi: { lastResult: { ok: true } } });
+    gitCommitAll.mockResolvedValueOnce(undefined);
+    await wrapper.findAll(".git-changes__mobile-dock .button").at(-1)!.trigger("click");
+    await flushPromises();
+    expect(wrapper.attributes("data-mode")).toBe("list");
+    await wrapper.get(".git-changes__mobile-dock .button").trigger("click");
+    expect((wrapper.get(".git-changes__commit-screen textarea").element as HTMLTextAreaElement).value).toBe("");
+  });
+
+  test("clears path selection and commit draft when the active root changes", async () => {
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+    wrapper.findComponent(GitChangeTree).vm.$emit("toggle-select", "a.txt");
+    await wrapper.get(".git-changes__mobile-dock .button").trigger("click");
+    await wrapper.get(".git-changes__commit-screen textarea").setValue("draft");
+
+    await wrapper.setProps({ activeRootPath: "/other-repo" });
+    await flushPromises();
+    expect(wrapper.attributes("data-mode")).toBe("list");
+    expect(wrapper.text()).not.toContain("1 selected");
+    await wrapper.get(".git-changes__mobile-dock .button").trigger("click");
+    expect((wrapper.get(".git-changes__commit-screen textarea").element as HTMLTextAreaElement).value).toBe("");
+  });
+
   describe("confirmDelete — batch delete", () => {
     test("one failing delete does not abort the rest of the batch, and fires a single error notification", async () => {
       const wrapper = mountTab();

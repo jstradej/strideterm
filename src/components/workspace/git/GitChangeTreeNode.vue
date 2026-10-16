@@ -3,28 +3,51 @@
     <div
       :class="[
         'gct-node__row',
+        grouped && 'gct-node__row--grouped',
+        isDir && 'gct-node__row--folder',
         node.kind === 'file' && isSelected && 'gct-node__row--selected',
         node.kind === 'file' && `gct-node__row--git-${node.status}`,
         node.kind === 'file' && node.scope === 'review' && node.code === 'D' && 'gct-node__row--review-deleted',
       ]"
-      :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
+      :style="{ paddingLeft: depth * (grouped ? 10 : 14) + 6 + 'px' }"
       :title="node.kind === 'file' ? `${node.statusTitle || statusTitle(node.status)}: ${node.path}` : node.path"
+      :tabindex="isKeyboardTarget ? 0 : undefined"
       @click="onClick"
+      @keydown.enter="onRowKeydown"
+      @keydown.space="onRowKeydown"
       @contextmenu="contextMenuEnabled && onContextMenu($event)"
     >
       <span v-if="isDir" class="gct-node__chevron">{{ expanded ? "▾" : "▸" }}</span>
       <span v-else class="gct-node__chevron gct-node__chevron--leaf"></span>
-      <input
-        v-if="selectable && node.kind === 'file'"
-        type="checkbox"
-        class="gct-node__check"
-        :checked="isChecked"
-        :aria-label="`Select ${node.path} for stashing`"
-        @click.stop
-        @change="$emit('toggle-select', node.path)"
-      />
+      <label v-if="selectable && node.kind === 'file'" class="gct-node__check-target" @click.stop>
+        <input
+          type="checkbox"
+          class="gct-node__check"
+          :checked="isChecked"
+          :aria-label="`Select ${node.path} for commit and stash`"
+          @change="$emit('toggle-select', node.path)"
+        />
+      </label>
       <span class="gct-node__icon" aria-hidden="true">{{ isDir ? "📁" : "📄" }}</span>
+      <span v-if="node.previousPath" class="gct-node__rename" :title="`${node.previousPath} → ${node.path}`"
+        >{{ node.previousPath }} →</span
+      >
+      <span v-if="node.namePrefix" class="gct-node__prefix">{{ node.namePrefix }}</span>
       <span class="gct-node__name">{{ node.name }}</span>
+      <span v-if="grouped && node.kind === 'file'" class="gct-node__scopes">
+        <button
+          v-for="entry in visibleScopes"
+          :key="entry.scope"
+          type="button"
+          class="gct-node__scope"
+          :class="{ 'gct-node__scope--active': selectedPath === node.path && selectedScope === entry.scope }"
+          :aria-label="`Open ${node.path} ${entry.scope} diff`"
+          :title="`${node.path} · ${entry.scope === 'staged' ? 'HEAD to index' : entry.scope === 'unstaged' ? 'HEAD to working tree' : 'Untracked file'}`"
+          @click.stop="$emit('select', { ...node, scope: entry.scope })"
+        >
+          {{ entry.scope === "staged" ? "Idx" : entry.scope === "unstaged" ? "WT" : "New" }}
+        </button>
+      </span>
       <span
         v-if="node.kind === 'file' && node.code"
         class="gct-node__code"
@@ -33,6 +56,7 @@
       >
         {{ node.code }}
       </span>
+      <span v-if="grouped && isDir" class="gct-node__count">{{ node.fileCount }}</span>
     </div>
     <ul v-if="isDir && expanded && node.children.length" class="gct-node__children">
       <GitChangeTreeNode
@@ -46,6 +70,8 @@
         :selectable="selectable"
         :context-menu-enabled="contextMenuEnabled"
         :selected-set="selectedSet"
+        :grouped="grouped"
+        :scope-filter="scopeFilter"
         @toggle="(p) => $emit('toggle', p)"
         @select="(file) => $emit('select', file)"
         @toggle-select="(p) => $emit('toggle-select', p)"
@@ -70,6 +96,8 @@ const props = withDefaults(
     selectable?: boolean;
     contextMenuEnabled?: boolean;
     selectedSet?: Set<string>;
+    grouped?: boolean;
+    scopeFilter?: string;
   }>(),
   {
     depth: 0,
@@ -78,6 +106,8 @@ const props = withDefaults(
     selectable: false,
     contextMenuEnabled: true,
     selectedSet: () => new Set<string>(),
+    grouped: false,
+    scopeFilter: "all",
   },
 );
 
@@ -93,13 +123,30 @@ const isDir = computed(() => props.node.kind === "dir");
 const expanded = computed(() => props.expandedSet.has(props.node.path as string));
 const isSelected = computed(
   () =>
-    props.node.kind === "file" && props.selectedPath === props.node.path && props.selectedScope === props.node.scope,
+    props.node.kind === "file" &&
+    props.selectedPath === props.node.path &&
+    (props.node.scopes || [{ scope: props.node.scope }]).some(
+      (entry: Record<string, unknown>) => entry.scope === props.selectedScope,
+    ),
 );
 const isChecked = computed(() => props.node.kind === "file" && !!props.selectedSet?.has(props.node.path as string));
+const visibleScopes = computed(() => {
+  const scopes = props.node.scopes || [{ scope: props.node.scope }];
+  return props.scopeFilter === "all"
+    ? scopes
+    : scopes.filter((entry: Record<string, unknown>) => entry.scope === props.scopeFilter);
+});
+const isKeyboardTarget = computed(() => isDir.value || props.node.kind === "file");
 
 function onClick() {
   if (isDir.value) emit("toggle", props.node.path as string);
   else emit("select", props.node);
+}
+
+function onRowKeydown(event: KeyboardEvent) {
+  if (event.target !== event.currentTarget) return;
+  event.preventDefault();
+  onClick();
 }
 
 function onContextMenu(e: MouseEvent) {
@@ -196,6 +243,105 @@ function onContextMenu(e: MouseEvent) {
 .gct-node__name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.gct-node__prefix {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.gct-node__scopes {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.gct-node__scope {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+}
+
+.gct-node__scope::before {
+  position: absolute;
+  inset: 7px 4px;
+  content: "";
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  pointer-events: none;
+}
+
+.gct-node__scope--active::before {
+  border-color: var(--accent);
+}
+
+.gct-node__scope--active {
+  color: var(--accent);
+}
+
+.gct-node__row--grouped {
+  min-height: 42px;
+  padding-left: 6px;
+  gap: 5px;
+}
+
+.gct-node__row--grouped {
+  padding-left: 2px;
+  gap: 4px;
+}
+
+.gct-node__row--grouped.gct-node__row--folder {
+  min-height: 30px;
+}
+
+.gct-node__rename {
+  flex: 0 1 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.gct-node__count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.gct-node__row--grouped .gct-node__check {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.gct-node__check-target {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.gct-node__row--grouped .gct-node__check-target {
+  width: 40px;
+  height: 40px;
+}
+
+.gct-node__row--grouped .gct-node__chevron--leaf,
+.gct-node__row--grouped:not(.gct-node__row--folder) .gct-node__icon {
+  display: none;
 }
 
 .gct-node__code {

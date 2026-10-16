@@ -1024,17 +1024,4 @@ const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b)
     transform: rotate(360deg);
   }
 }
-
-/* Changes tab layout (the rest lives in the tab components themselves so
-   scoped styles target their inner DOM correctly). */
-:deep(.git-section--changes) {
-  display: flex !important;
-  flex-direction: column;
-  grid-template-columns: none !important;
-  grid-template-rows: none !important;
-  align-content: stretch;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
 </style>
